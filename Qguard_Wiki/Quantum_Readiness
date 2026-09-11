@@ -22,8 +22,8 @@ Do not use mock data, fake KPIs, hardcoded percentages, placeholder reports, or 
 
 
 /dashboard/quantum-readiness
-/dashboard/quantum-readiness/command-center
-/dashboard/quantum-readiness/executive
+/dashboard/quantum-readiness/command-center   [RETIRED -> /dashboard/quantum-readiness]
+/dashboard/quantum-readiness/executive        [RETIRED -> /dashboard/quantum-readiness/ai-executive-advisor]
 /dashboard/quantum-readiness/exposure-graph
 /dashboard/quantum-readiness/risk-analysis
 /dashboard/quantum-readiness/ai-executive-advisor
@@ -150,6 +150,10 @@ navigateToAssessmentPage(route)
 
 # 2. Assessment Command Center
 
+> RETIRED as redundant. The Overview at `/dashboard/quantum-readiness` renders the
+> same `useQuantumReadiness` snapshot this section describes. The old path now
+> redirects there. Kept for design history.
+
 ## Route
 
 ```txt
@@ -198,6 +202,9 @@ subscribeToAssessmentTelemetry()
 ---
 
 # 3. Executive Dashboard
+
+> RETIRED as redundant. `/dashboard/quantum-readiness/ai-executive-advisor` owns the
+> board-ready executive view. The old path now redirects there. Kept for design history.
 
 ## Route
 

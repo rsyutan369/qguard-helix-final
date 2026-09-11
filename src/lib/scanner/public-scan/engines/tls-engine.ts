@@ -304,8 +304,28 @@ export interface TlsIntelligence {
   /**
    * False when hybrid ML-KEM probing was skipped because the endpoint does not
    * negotiate TLS 1.3 — the groups are then genuinely unsupported, not untested.
+   *
+   * NOTE this is NOT "the hybrid groups were measured". It is assigned
+   * `supportsTls13`, i.e. "hybrid probing was worth attempting". Use
+   * `hybridGroupsSettled` / `hybridGroupsInconclusive` to tell a measured
+   * refusal from a probe that never produced an answer.
    */
   hybridProbed: boolean
+  /**
+   * Hybrid ML-KEM groups that reached a CONCLUSIVE verdict — accepted or
+   * refused on evidence that met the confirmation standard.
+   *
+   * Published because an empty `hybridGroups` has two completely different
+   * meanings. "The endpoint refused every hybrid group" is a finding about the
+   * endpoint; "the probe ran out of budget, was throttled, or the local
+   * OpenSSL cannot offer the group" is a finding about the scan. Collapsing
+   * the second into the first published `Not offered · state: fail` — with the
+   * words "offered in isolation and refused" — for endpoints running
+   * X25519MLKEM768, and every post-quantum number on the page followed it down.
+   */
+  hybridGroupsSettled: string[]
+  /** Hybrid groups that never reached a verdict. Nothing is claimed about these. */
+  hybridGroupsInconclusive: string[]
   /** Groups the local OpenSSL build cannot offer, so nothing was measured. */
   untestableGroups: string[]
   /** Groups whose repeat samples disagreed — the endpoint answered unstably. */
@@ -344,6 +364,8 @@ export function emptyTls(error: string | null = null): TlsIntelligence {
     groupsProbed: false,
     inconclusiveGroups: [],
     hybridProbed: false,
+    hybridGroupsSettled: [],
+    hybridGroupsInconclusive: [],
     untestableGroups: [],
     unstableGroups: [],
     groupHandshakes: 0,
@@ -724,6 +746,17 @@ async function probeNamedGroups(
     .filter(([, verdict]) => verdict === 'inconclusive')
     .map(([group]) => group)
 
+  /* Split the hybrid groups by whether they actually produced an ANSWER.
+     `hybridGroups` being empty is not evidence of refusal on its own: a
+     budget-skipped, untestable or throttled group lands in `inconclusive`, and
+     a consumer that reads only the accepted list cannot tell the two apart. */
+  const hybridCandidates = groups.filter((group) => groupKind(group) === 'hybrid')
+  const hybridGroupsInconclusive = hybridCandidates.filter((group) => verdicts.get(group) === 'inconclusive')
+  const hybridGroupsSettled = hybridCandidates.filter((group) => {
+    const verdict = verdicts.get(group)
+    return verdict === 'accepted' || verdict === 'rejected'
+  })
+
   return {
     /** How each negative was established — printed as provenance, not inferred. */
     confirmationBasis: streamHealthy
@@ -741,6 +774,8 @@ async function probeNamedGroups(
     classicalGroups: accepted.filter((group) => groupKind(group) === 'classical'),
     inconclusiveGroups: inconclusive,
     hybridProbed: supportsTls13,
+    hybridGroupsSettled,
+    hybridGroupsInconclusive,
     untestableGroups: untestable,
     unstableGroups: unstable,
     budgetSkippedGroups: budgetSkipped,
@@ -1120,6 +1155,8 @@ export async function runTlsEngine(
       groupsProbed: true,
       inconclusiveGroups: groups.inconclusiveGroups,
       hybridProbed: groups.hybridProbed,
+      hybridGroupsSettled: groups.hybridGroupsSettled,
+      hybridGroupsInconclusive: groups.hybridGroupsInconclusive,
       untestableGroups: groups.untestableGroups,
       unstableGroups: groups.unstableGroups,
       groupHandshakes: groups.handshakes,

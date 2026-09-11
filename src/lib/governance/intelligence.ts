@@ -759,10 +759,10 @@ function buildReconciliation(input: {
     row('Managed keys', input.snapshot.inventory.keysDiscovered, 'Quantum Readiness snapshot · inventory.keysDiscovered', ['QKMS Inventory'], 'Key population for CTL-KEY-01..03.'),
   )
   rows.push(
-    row('Critical findings', input.snapshot.riskDistribution.critical, 'Quantum Readiness snapshot · riskDistribution.critical', ['Vulnerabilities', 'Quantum Readiness', 'Executive Command Center'], 'Per-instance severity distribution from the scanner intelligence bundle.'),
+    row('Critical findings', input.snapshot.riskDistribution.critical, 'Quantum Readiness snapshot · riskDistribution.critical', ['Quantum Risk Analysis', 'Quantum Readiness', 'Executive Command Center'], 'Per-instance severity distribution from the scanner intelligence bundle.'),
   )
   rows.push(
-    row('High findings', input.snapshot.riskDistribution.high, 'Quantum Readiness snapshot · riskDistribution.high', ['Vulnerabilities', 'Quantum Readiness'], 'Per-instance severity distribution from the scanner intelligence bundle.'),
+    row('High findings', input.snapshot.riskDistribution.high, 'Quantum Readiness snapshot · riskDistribution.high', ['Quantum Risk Analysis', 'Quantum Readiness'], 'Per-instance severity distribution from the scanner intelligence bundle.'),
   )
   rows.push(
     row('Quantum readiness', input.snapshot.scores.quantumReadiness, 'Quantum Readiness snapshot · scores.quantumReadiness', ['Quantum Readiness', 'Executive Command Center', 'Report Center'], 'Mirrored, not recomputed.'),

@@ -27,7 +27,6 @@ import DashboardLayout from './app/dashboard/dashboard_layout/DashboardLayout';
 import DashboardPage from './app/dashboard/page';
 import DashboardOverview from './app/dashboard/dashboard_overview/page';
 import AssetsMap from './app/dashboard/assets_map/page';
-import Vulnerabilities from './app/dashboard/vulnerabilities/page';
 import MigrationPlanner from './app/dashboard/migration_planner/page';
 import MigrationIntelligencePage from './app/dashboard/migration-intelligence/page';
 import PqcOnboardingPage from './app/dashboard/pqc-onboarding/page';
@@ -106,8 +105,6 @@ import PQAuthRuntimeTelemetryPage from './app/dashboard/pqauth/runtime-telemetry
 import PQAuthCompliancePage from './app/dashboard/pqauth/compliance/page';
 import PQAuthQkmsPage from './app/dashboard/pqauth/qkms/page';
 import QuantumReadinessLandingPage from './app/dashboard/quantum-readiness/page';
-import QuantumReadinessCommandCenterPage from './app/dashboard/quantum-readiness/command-center/page';
-import QuantumReadinessExecutivePage from './app/dashboard/quantum-readiness/executive/page';
 import QuantumReadinessExposureGraphPage from './app/dashboard/quantum-readiness/exposure-graph/page';
 import QuantumReadinessRiskAnalysisPage from './app/dashboard/quantum-readiness/risk-analysis/page';
 import QuantumRemediationPage from './app/dashboard/quantum-readiness/remediation/page';
@@ -168,7 +165,9 @@ export default function App() {
           <Route path="assets" element={<AssetsMap />} />
           <Route path="assets_map" element={<AssetsMap />} />
 
-          <Route path="vulnerabilities" element={<Vulnerabilities />} />
+          {/* The Vulnerability Center was retired as redundant — Quantum Risk Analysis
+              owns finding triage. Keep old bookmarks and deep links working. */}
+          <Route path="vulnerabilities" element={<Navigate to="/dashboard/quantum-readiness/risk-analysis" replace />} />
 
           <Route path="migration-intelligence" element={<MigrationIntelligencePage />} />
           <Route path="migration-planner" element={<MigrationPlanner />} />
@@ -277,8 +276,11 @@ export default function App() {
           <Route path="multi-cloud-telemetry" element={<MultiCloudTelemetryPage />} />
           {/* Quantum Readiness Assessment Engine™ */}
           <Route path="quantum-readiness" element={<QuantumReadinessLandingPage />} />
-          <Route path="quantum-readiness/command-center" element={<QuantumReadinessCommandCenterPage />} />
-          <Route path="quantum-readiness/executive" element={<QuantumReadinessExecutivePage />} />
+          {/* Assessment Command Center and Executive Dashboard were retired as
+              redundant — the Overview owns the assessment snapshot and the AI
+              Executive Advisor owns the board-ready view. Keep old bookmarks working. */}
+          <Route path="quantum-readiness/command-center" element={<Navigate to="/dashboard/quantum-readiness" replace />} />
+          <Route path="quantum-readiness/executive" element={<Navigate to="/dashboard/quantum-readiness/ai-executive-advisor" replace />} />
           <Route path="quantum-readiness/exposure-graph" element={<QuantumReadinessExposureGraphPage />} />
           <Route path="quantum-readiness/risk-analysis" element={<QuantumReadinessRiskAnalysisPage />} />
           <Route path="quantum-readiness/remediation" element={<QuantumRemediationPage />} />

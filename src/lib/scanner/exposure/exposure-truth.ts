@@ -38,6 +38,9 @@
  */
 
 import type { ExposureAssessment, ExposureFinding, FindingSeverity, QuantumStatus } from './types';
+/* `algorithms` imports only types, so this cannot close a cycle with `cbom`,
+   which reads `postQuantumReadiness` back out of this module. */
+import { describeAlgorithm } from './algorithms';
 
 /* ─────────────────────────────────────────────────────────────── the shape ── */
 
@@ -52,6 +55,17 @@ export interface QuantumCounts {
   notApplicable: number;
   /** Everything quantum-relevant, i.e. the denominator readiness is a share of. */
   quantumRelevant: number;
+  /**
+   * Of these, how many are broken by CLASSICAL cryptanalysis (MD5, SHA-1, RC4,
+   * DES, 3DES, Blowfish, MD4, RIPEMD).
+   *
+   * They sit in `resistant`, and correctly so — `resistant` is a verdict about
+   * Shor's algorithm alone. But "Resistant 230" rendered in cyan, with no
+   * qualifier, tells a CISO that 230 components are healthy. Populated only for
+   * component tallies, where the algorithm name is available; findings and
+   * exposures carry 0.
+   */
+  classicallyWeak: number;
   total: number;
 }
 
@@ -122,7 +136,7 @@ export interface ExposureTruth {
 
 const EMPTY_COUNTS: QuantumCounts = {
   vulnerable: 0, hybrid: 0, pqc: 0, resistant: 0, unknown: 0, notApplicable: 0,
-  quantumRelevant: 0, total: 0,
+  quantumRelevant: 0, classicallyWeak: 0, total: 0,
 };
 
 function tally(statuses: QuantumStatus[]): QuantumCounts {
@@ -141,28 +155,64 @@ function tally(statuses: QuantumStatus[]): QuantumCounts {
   /* `unknown` is excluded from the denominator deliberately: a primitive whose
      quantum status could not be established is not evidence of readiness OR of
      exposure, and folding it into either direction is a fabricated verdict.
-     `not-applicable` is excluded because symmetric material and hashes are not
-     what a post-quantum migration replaces. */
-  counts.quantumRelevant = counts.vulnerable + counts.hybrid + counts.pqc + counts.resistant;
+
+     `resistant` and `not-applicable` are excluded because symmetric material
+     and hashes are not what a post-quantum migration replaces. The comment
+     used to say exactly that while the code added `resistant` back in — and
+     since the pipeline labels every symmetric cipher and hash `resistant`
+     (never `not-applicable`), the intended exclusion never fired. An estate
+     full of AES-256 and SHA-256 therefore reported high readiness while every
+     one of its signatures was still RSA: the precise error §16 forbids. */
+  counts.quantumRelevant = counts.vulnerable + counts.hybrid + counts.pqc;
   return counts;
+}
+
+/**
+ * Post-quantum readiness — THE formula, for every panel and every export.
+ *
+ * A share of the quantum-relevant components: those a post-quantum migration
+ * actually replaces (asymmetric key establishment, signatures, certificates).
+ * Hybrid deployments count at 0.6 rather than 1.0 because a hybrid still
+ * carries a classical half that has to be retired eventually — it is real,
+ * substantial progress, but it is not a finished migration.
+ *
+ * `null` means NOT MEASURABLE, not zero: an estate with no asymmetric
+ * cryptography in scope has nothing to be ready or unready about, and 0%
+ * would be a verdict the evidence does not support.
+ */
+export function postQuantumReadiness(counts: {
+  vulnerable: number;
+  hybrid: number;
+  pqc: number;
+}): number | null {
+  const relevant = counts.vulnerable + counts.hybrid + counts.pqc;
+  if (relevant === 0) return null;
+  return Math.round(((counts.pqc + counts.hybrid * 0.6) / relevant) * 100);
 }
 
 /* ────────────────────────────────────────────────────────── the reconciler ── */
 
 export function reconcileExposure(assessment: ExposureAssessment): ExposureTruth {
   const components = tally(assessment.cbom.map((entry) => entry.quantumStatus));
+  /* Only components carry an algorithm name, so this is the only tally that can
+     answer "is the resistant bucket actually healthy?". */
+  components.classicallyWeak = assessment.cbom.filter(
+    (entry) => describeAlgorithm(entry.canonicalAlgorithm)?.classicallyWeak === true,
+  ).length;
   const findings = tally(assessment.findings.map((entry) => entry.quantumStatus));
   const exposures = tally(assessment.exposures.map((entry) => entry.quantumStatus));
 
   /* Readiness is a share of COMPONENTS, always. Computing it over findings
      would make an estate look worse the more thoroughly it was scanned, since
-     a single weak component can raise several findings. */
-  const readiness = components.quantumRelevant > 0
-    ? Math.round(((components.hybrid + components.pqc + components.resistant) / components.quantumRelevant) * 100)
-    : null;
+     a single weak component can raise several findings.
+
+     ONE formula, shared with `summariseCbom` — see `postQuantumReadiness`. The
+     two used to disagree on the same scan (48% here, 31% on the CBOM panel)
+     because this one counted `resistant` on both sides of the ratio. */
+  const readiness = postQuantumReadiness(components);
 
   const readinessReason = readiness !== null
-    ? `${components.hybrid + components.pqc + components.resistant} of ${components.quantumRelevant} quantum-relevant components are hybrid or post-quantum.`
+    ? `${components.pqc} of ${components.quantumRelevant} quantum-relevant components are post-quantum and ${components.hybrid} are hybrid (counted at 0.6, since a hybrid deployment still carries a classical half). Symmetric and hash primitives are excluded from both sides of the ratio: they are not what a post-quantum migration replaces.`
     : components.total > 0
       ? 'No post-quantum readiness percentage is published: cryptography was observed, but none of it is quantum-relevant (asymmetric key exchange, signatures or certificates). That is not the same as being quantum-safe.'
       : 'No post-quantum readiness percentage is published: no cryptographic component was observed in scope. That is not the same as being quantum-safe.';
@@ -193,21 +243,15 @@ export function reconcileExposure(assessment: ExposureAssessment): ExposureTruth
       detail: run.detail ?? 'The engine did not complete, so this dimension is incomplete rather than clean.',
     }));
 
-  /* De-duplicated BY DIMENSION, merging the reasons.
-     The coverage ledger keys on `dimension|reason`, so two engines that could
-     not read the same dimension for slightly different reasons both survive —
-     and the panel then said "2 dimensions could not be read (Dependency
-     vulnerability advisories, Dependency vulnerability advisories)". One
-     dimension is one gap however many engines noticed it. */
-  const notAssessedByDimension = new Map<string, string[]>();
-  for (const entry of assessment.task.coverage.notAssessed) {
-    const reasons = notAssessedByDimension.get(entry.dimension) ?? [];
-    if (!reasons.includes(entry.reason)) reasons.push(entry.reason);
-    notAssessedByDimension.set(entry.dimension, reasons);
-  }
-  const notAssessed = [...notAssessedByDimension.entries()].map(([dimension, reasons]) => ({
-    dimension,
-    reason: reasons.join(' '),
+  /* Read, not re-deduplicated. `mergeCoverage` now keys the ledger on the
+     dimension itself, so the list arriving here already holds one entry per
+     gap. This used to run its own dedup pass, which fixed the completeness
+     note and left the Assessment Coverage panel — reading the same ledger
+     directly — still showing the duplicate. Two implementations of one rule
+     drift; the rule belongs at the write path, once. */
+  const notAssessed = assessment.task.coverage.notAssessed.map((entry) => ({
+    dimension: entry.dimension,
+    reason: entry.reason,
   }));
 
   /* Only stated when a reader would actually notice. Two numbers that differ by

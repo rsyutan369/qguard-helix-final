@@ -34,6 +34,13 @@ import type { CbomComponent, ExposureAssessment, ExposureFinding } from '@/lib/s
 import { buildCbom, summariseCbom } from '@/lib/scanner/exposure/cbom';
 import { correlateFindings } from '@/lib/scanner/exposure/correlate';
 import { computeScores } from '@/lib/scanner/exposure/risk';
+import {
+  buildIntelligenceDigest,
+  EXPOSURE_HISTORY_RECORD_VERSION,
+  rowSourceFor,
+  scannerModeFor,
+  type HistoryIntelligenceDigest,
+} from '@/lib/scanner/exposure/history';
 
 export interface PersistResult {
   scanSessionId: string | null;
@@ -82,6 +89,12 @@ export async function persistExposureAssessment(input: {
   const targetLabel = describeTarget(input.assessment);
   const now = new Date().toISOString();
 
+  /* The only part of the presentation intelligence that cannot be recomputed
+     from the findings and components this call is about to write. Capped and
+     re-truncated here because a Local assessment arrives from the browser and
+     this is the trust boundary. */
+  const intelligenceDigest = sanitiseDigest(buildIntelligenceDigest(input.assessment.intelligence));
+
   /* ── 1. the scan session ───────────────────────────────────────────────── */
   const sessionPayload = {
     user_id: input.userId,
@@ -92,10 +105,34 @@ export async function persistExposureAssessment(input: {
     scanned_assets: 1,
     findings_count: findings.length,
     metadata: {
-      scannerMode: `exposure-${input.source}`,
+      scannerMode: scannerModeFor(input.source),
       exposureMode: input.assessment.task.mode,
       profileId: input.assessment.task.profileId,
       engines: input.assessment.task.engines,
+      /* ── the History record (§ Exposure Assessment History) ──────────────
+         Everything below exists so a recorded assessment can be read back as
+         the assessment it was, rather than as a row of totals. It is
+         deliberately BOUNDED: this table is read on every dashboard, and an
+         unbounded metadata blob here is what once made a 32-row table time out
+         at 13.9 MB per query. Findings and components stay in their own
+         tables; only what cannot be recomputed from them is kept here. */
+      recordVersion: EXPOSURE_HISTORY_RECORD_VERSION,
+      /* The id the ENGINE gave this scan, which is not the id of the row it is
+         being written to. The History tab needs it to recognise that a Dev scan
+         still held in the API's job store has already been recorded — without
+         it the same assessment appears twice, once as a record and once as an
+         unrecorded session scan, for as long as the job store keeps it. */
+      sourceScanId: input.assessment.task.scanId,
+      /* The structured target, so history states WHAT was assessed rather than
+         re-parsing the display label. */
+      target: input.assessment.task.target,
+      /* The task's own verdict. `status` above collapses partial into
+         completed for the platform's shared vocabulary; a reviewer of this
+         assessment must still be able to see it completed with gaps. */
+      taskStatus: input.assessment.task.status,
+      failureReason: input.assessment.task.failureReason ?? null,
+      exclusions: input.assessment.task.exclusions,
+      intelligence: intelligenceDigest,
       runs: input.assessment.task.runs.map((run) => ({
         engineId: run.engineId,
         label: run.label,
@@ -161,74 +198,24 @@ export async function persistExposureAssessment(input: {
     },
   });
 
+  /* One context for both row builders, so a finding row and a component row
+     from the same assessment can never disagree about which scan they belong
+     to. */
+  const rowContext: RowContext = {
+    userId: input.userId,
+    scanSessionId,
+    assetId,
+    source: input.source,
+    now,
+  };
+
   /* ── 3. CBOM components ────────────────────────────────────────────────── */
-  const inventoryRows = cbom.slice(0, MAX_ROWS).map((component) => ({
-    user_id: input.userId,
-    asset_id: assetId,
-    item_type: itemTypeFor(component),
-    name: `${component.usage === 'unknown' ? component.layer : component.usage}: ${component.canonicalAlgorithm}`,
-    algorithm: component.canonicalAlgorithm,
-    key_size: component.keySize ?? null,
-    protocol: component.protocol ?? null,
-    exposure_level: exposureLevelFor(component),
-    is_vulnerable: component.quantumStatus === 'vulnerable',
-    is_quantum_safe: component.quantumStatus === 'pqc' || component.quantumStatus === 'hybrid',
-    metadata: {
-      scanSessionId,
-      source: `exposure-${input.source}`,
-      componentId: component.id,
-      layer: component.layer,
-      usage: component.usage,
-      library: component.library ?? null,
-      package: component.package ?? null,
-      version: component.version ?? null,
-      language: component.language ?? null,
-      file: component.file ?? null,
-      line: component.line ?? null,
-      provider: component.provider ?? null,
-      detectionMethod: component.detection,
-      confidence: component.confidence,
-      quantumStatus: component.quantumStatus,
-      evidence: component.evidence.slice(0, 3).map((entry) => entry.summary),
-      dependsOn: component.dependsOn ?? [],
-    },
-    discovered_at: now,
-  }));
+  const inventoryRows = cbom.slice(0, MAX_ROWS).map((component) => buildInventoryRow(component, rowContext));
 
   const cryptoInventoryRows = await insertBatched(client, 'crypto_inventory', inventoryRows);
 
   /* ── 4. findings ───────────────────────────────────────────────────────── */
-  const resultRows = findings.slice(0, MAX_ROWS).map((finding) => ({
-    user_id: input.userId,
-    scan_session_id: scanSessionId,
-    asset_id: assetId,
-    finding_type: finding.category,
-    algorithm: finding.canonicalAlgorithm ?? finding.algorithm ?? null,
-    threat_level: finding.severity,
-    description: finding.description,
-    remediation: finding.recommendation ?? null,
-    metadata: {
-      scanSessionId,
-      source: `exposure-${input.source}`,
-      findingId: finding.id,
-      engineId: finding.engineId,
-      layer: finding.layer,
-      subcategory: finding.subcategory ?? null,
-      severity: finding.severity,
-      confidence: finding.confidence,
-      detectionMethod: finding.detection,
-      quantumStatus: finding.quantumStatus,
-      quantumRationale: finding.quantumRationale ?? null,
-      role: finding.role ?? null,
-      keySize: finding.keySize ?? null,
-      component: finding.component ?? null,
-      version: finding.version ?? null,
-      correlationKey: finding.correlationKey ?? null,
-      location: finding.evidence[0]?.file ?? finding.evidence[0]?.reference ?? null,
-      evidence: finding.evidence.slice(0, 3),
-      migration: finding.migration ?? null,
-    },
-  }));
+  const resultRows = findings.slice(0, MAX_ROWS).map((finding) => buildFindingRow(finding, rowContext));
 
   const scanResultRows = await insertBatched(client, 'pqc_scan_results', resultRows);
 
@@ -285,6 +272,111 @@ export async function persistExposureAssessment(input: {
   };
 }
 
+/* ────────────────────────────────────────────────────────────── row builders ── */
+
+/**
+ * The row shape the writer produces, extracted so the READER can be tested
+ * against it.
+ *
+ * The History tab rebuilds an assessment from these rows. If the two ever drift
+ * — a field renamed here, still read under its old name there — a recorded
+ * assessment starts reading back wrong, and nothing would fail loudly. Because
+ * both sides are now pure functions over the same shapes,
+ * `tools/exposure-history-check.ts` can round-trip a real assessment through
+ * them and assert it comes back identical.
+ */
+export interface RowContext {
+  userId: string;
+  scanSessionId: string;
+  assetId: string | null;
+  source: 'local' | 'dev';
+  now: string;
+}
+
+export function buildInventoryRow(component: CbomComponent, context: RowContext) {
+  return {
+    user_id: context.userId,
+    asset_id: context.assetId,
+    item_type: itemTypeFor(component),
+    name: `${component.usage === 'unknown' ? component.layer : component.usage}: ${component.canonicalAlgorithm}`,
+    algorithm: component.canonicalAlgorithm,
+    key_size: component.keySize ?? null,
+    protocol: component.protocol ?? null,
+    exposure_level: exposureLevelFor(component),
+    is_vulnerable: component.quantumStatus === 'vulnerable',
+    is_quantum_safe: component.quantumStatus === 'pqc' || component.quantumStatus === 'hybrid',
+    metadata: {
+      scanSessionId: context.scanSessionId,
+      source: rowSourceFor(context.source),
+      componentId: component.id,
+      layer: component.layer,
+      usage: component.usage,
+      library: component.library ?? null,
+      package: component.package ?? null,
+      version: component.version ?? null,
+      language: component.language ?? null,
+      file: component.file ?? null,
+      line: component.line ?? null,
+      provider: component.provider ?? null,
+      detectionMethod: component.detection,
+      confidence: component.confidence,
+      quantumStatus: component.quantumStatus,
+      evidence: component.evidence.slice(0, 3).map((entry) => entry.summary),
+      dependsOn: component.dependsOn ?? [],
+    },
+    discovered_at: context.now,
+  };
+}
+
+export function buildFindingRow(finding: ExposureFinding, context: RowContext) {
+  return {
+    user_id: context.userId,
+    scan_session_id: context.scanSessionId,
+    asset_id: context.assetId,
+    finding_type: finding.category,
+    algorithm: finding.canonicalAlgorithm ?? finding.algorithm ?? null,
+    threat_level: finding.severity,
+    description: finding.description,
+    remediation: finding.recommendation ?? null,
+    metadata: {
+      scanSessionId: context.scanSessionId,
+      source: rowSourceFor(context.source),
+      findingId: finding.id,
+      engineId: finding.engineId,
+      layer: finding.layer,
+      /* ── retained for the History record ─────────────────────────────────
+         `finding_type` holds the CATEGORY and `description` the prose; without
+         the title a recorded finding has no headline, and history would have to
+         invent one. These are short strings — the row's size is dominated by
+         `evidence`, which is already capped. */
+      title: finding.title,
+      /* The raw algorithm string as the engine saw it. The column holds the
+         CANONICAL name (Kyber → ML-KEM), and losing the observed spelling makes
+         a historical finding impossible to reconcile against its own evidence. */
+      algorithmRaw: finding.algorithm ?? null,
+      protocol: finding.protocol ?? null,
+      library: finding.library ?? null,
+      references: (finding.references ?? []).slice(0, 8),
+      firstSeen: finding.firstSeen,
+      lastSeen: finding.lastSeen,
+      subcategory: finding.subcategory ?? null,
+      severity: finding.severity,
+      confidence: finding.confidence,
+      detectionMethod: finding.detection,
+      quantumStatus: finding.quantumStatus,
+      quantumRationale: finding.quantumRationale ?? null,
+      role: finding.role ?? null,
+      keySize: finding.keySize ?? null,
+      component: finding.component ?? null,
+      version: finding.version ?? null,
+      correlationKey: finding.correlationKey ?? null,
+      location: finding.evidence[0]?.file ?? finding.evidence[0]?.reference ?? null,
+      evidence: finding.evidence.slice(0, 3),
+      migration: finding.migration ?? null,
+    },
+  };
+}
+
 /* ───────────────────────────────────────────────────────────── sanitation ─── */
 
 /**
@@ -327,6 +419,37 @@ function sanitiseFindings(findings: ExposureFinding[]): ExposureFinding[] {
   }
 
   return out;
+}
+
+/**
+ * Bound and re-truncate the History digest.
+ *
+ * `buildIntelligenceDigest` decides WHAT is kept and how much of it; this
+ * decides how long each string in it may be, because a Local assessment is
+ * composed in the browser and every string in it is caller-controlled.
+ */
+function sanitiseDigest(digest: HistoryIntelligenceDigest): HistoryIntelligenceDigest {
+  return {
+    languages: digest.languages.map((entry) => ({
+      language: truncate(String(entry.language ?? ''), 60),
+      files: Number.isFinite(entry.files) ? entry.files : 0,
+    })),
+    frameworks: digest.frameworks.map((entry) => truncate(String(entry ?? ''), 80)),
+    dependencies: digest.dependencies.map((entry) => ({
+      name: truncate(String(entry.name ?? ''), 160),
+      version: truncate(String(entry.version ?? ''), 60),
+      ecosystem: truncate(String(entry.ecosystem ?? ''), 40),
+      direct: Boolean(entry.direct),
+      cryptoRelevant: Boolean(entry.cryptoRelevant),
+      quantumRelevant: Boolean(entry.quantumRelevant),
+    })),
+    facts: digest.facts.map((entry) => ({
+      label: truncate(String(entry.label ?? ''), 80),
+      value: truncate(String(entry.value ?? ''), 240),
+      detail: entry.detail ? truncate(String(entry.detail), 160) : undefined,
+    })),
+    dependenciesTruncated: digest.dependenciesTruncated,
+  };
 }
 
 function scrubSnippet(snippet: string): string {

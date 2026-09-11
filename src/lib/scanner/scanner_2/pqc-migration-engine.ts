@@ -23,7 +23,7 @@ export interface PQCRecommendation {
 const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   'RSA-1024': {
     classicalAlgorithm: 'RSA-1024',
-    recommendedPQC: 'CRYSTALS-Kyber (ML-KEM-768)',
+    recommendedPQC: 'ML-KEM-768 (FIPS 203)',
     alternativePQC: ['FrodoKEM', 'Classic McEliece', 'NTRU', 'HQC'],
     migrationType: 'Key Exchange / Encryption Replacement',
     migrationComplexity: 'CRITICAL',
@@ -39,7 +39,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'RSA-2048': {
     classicalAlgorithm: 'RSA-2048',
-    recommendedPQC: 'CRYSTALS-Kyber (ML-KEM-768)',
+    recommendedPQC: 'ML-KEM-768 (FIPS 203)',
     alternativePQC: ['FrodoKEM', 'BIKE', 'HQC', 'Classic McEliece'],
     migrationType: 'TLS Key Exchange Replacement',
     migrationComplexity: 'HIGH',
@@ -55,7 +55,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'RSA-4096': {
     classicalAlgorithm: 'RSA-4096',
-    recommendedPQC: 'CRYSTALS-Kyber (ML-KEM-1024)',
+    recommendedPQC: 'ML-KEM-1024 (FIPS 203)',
     alternativePQC: ['FrodoKEM-1344', 'Classic McEliece'],
     migrationType: 'High-Security Key Exchange Replacement',
     migrationComplexity: 'MEDIUM',
@@ -70,7 +70,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'ECC-P256': {
     classicalAlgorithm: 'ECC-P256',
-    recommendedPQC: 'CRYSTALS-Kyber (ML-KEM-768)',
+    recommendedPQC: 'ML-KEM-768 (FIPS 203)',
     alternativePQC: ['BIKE', 'HQC', 'FrodoKEM'],
     migrationType: 'Elliptic Curve Key Exchange Replacement',
     migrationComplexity: 'HIGH',
@@ -85,7 +85,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'ECC-P384': {
     classicalAlgorithm: 'ECC-P384',
-    recommendedPQC: 'CRYSTALS-Kyber (ML-KEM-1024)',
+    recommendedPQC: 'ML-KEM-1024 (FIPS 203)',
     alternativePQC: ['FrodoKEM-1344', 'Classic McEliece'],
     migrationType: 'High-Assurance Key Exchange Replacement',
     migrationComplexity: 'MEDIUM',
@@ -100,7 +100,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'ECC-secp256k1': {
     classicalAlgorithm: 'ECC-secp256k1',
-    recommendedPQC: 'CRYSTALS-Dilithium (ML-DSA-65)',
+    recommendedPQC: 'ML-DSA-65 (FIPS 204)',
     alternativePQC: ['Falcon-512', 'SPHINCS+-SHA2-128f', 'XMSS'],
     migrationType: 'Blockchain Signature Migration',
     migrationComplexity: 'CRITICAL',
@@ -116,7 +116,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'ECDSA-P256': {
     classicalAlgorithm: 'ECDSA-P256',
-    recommendedPQC: 'CRYSTALS-Dilithium (ML-DSA-44)',
+    recommendedPQC: 'ML-DSA-44 (FIPS 204)',
     alternativePQC: ['Falcon-512', 'SPHINCS+-SHA2-128f'],
     migrationType: 'Digital Signature Replacement',
     migrationComplexity: 'HIGH',
@@ -132,7 +132,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'ECDSA-P384': {
     classicalAlgorithm: 'ECDSA-P384',
-    recommendedPQC: 'CRYSTALS-Dilithium (ML-DSA-65)',
+    recommendedPQC: 'ML-DSA-65 (FIPS 204)',
     alternativePQC: ['Falcon-1024', 'SPHINCS+-SHA2-192f'],
     migrationType: 'High-Assurance Signature Replacement',
     migrationComplexity: 'HIGH',
@@ -147,7 +147,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'DH-1024': {
     classicalAlgorithm: 'DH-1024',
-    recommendedPQC: 'CRYSTALS-Kyber (ML-KEM-768)',
+    recommendedPQC: 'ML-KEM-768 (FIPS 203)',
     alternativePQC: ['FrodoKEM', 'NTRU'],
     migrationType: 'Key Exchange Replacement (Urgent)',
     migrationComplexity: 'CRITICAL',
@@ -162,7 +162,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'DH-2048': {
     classicalAlgorithm: 'DH-2048',
-    recommendedPQC: 'CRYSTALS-Kyber (ML-KEM-768)',
+    recommendedPQC: 'ML-KEM-768 (FIPS 203)',
     alternativePQC: ['FrodoKEM', 'BIKE', 'HQC'],
     migrationType: 'Key Exchange Replacement',
     migrationComplexity: 'HIGH',
@@ -177,7 +177,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'DSA-1024': {
     classicalAlgorithm: 'DSA-1024',
-    recommendedPQC: 'CRYSTALS-Dilithium (ML-DSA-44)',
+    recommendedPQC: 'ML-DSA-44 (FIPS 204)',
     alternativePQC: ['Falcon-512', 'SPHINCS+-SHA2-128f'],
     migrationType: 'Legacy Signature Replacement (Urgent)',
     migrationComplexity: 'CRITICAL',
@@ -192,7 +192,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'DSA-2048': {
     classicalAlgorithm: 'DSA-2048',
-    recommendedPQC: 'CRYSTALS-Dilithium (ML-DSA-44)',
+    recommendedPQC: 'ML-DSA-44 (FIPS 204)',
     alternativePQC: ['Falcon-512', 'SPHINCS+-SHA2-128f'],
     migrationType: 'Signature Scheme Replacement',
     migrationComplexity: 'HIGH',
@@ -207,7 +207,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'Ed25519': {
     classicalAlgorithm: 'Ed25519',
-    recommendedPQC: 'CRYSTALS-Dilithium (ML-DSA-44)',
+    recommendedPQC: 'ML-DSA-44 (FIPS 204)',
     alternativePQC: ['Falcon-512', 'SPHINCS+-SHA2-128f'],
     migrationType: 'SSH / Git Signature Migration',
     migrationComplexity: 'MEDIUM',
@@ -222,7 +222,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'X25519': {
     classicalAlgorithm: 'X25519',
-    recommendedPQC: 'CRYSTALS-Kyber (ML-KEM-768)',
+    recommendedPQC: 'ML-KEM-768 (FIPS 203)',
     alternativePQC: ['BIKE', 'HQC', 'FrodoKEM'],
     migrationType: 'Key Exchange Hybrid Upgrade',
     migrationComplexity: 'MEDIUM',
@@ -237,7 +237,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'PGP-RSA': {
     classicalAlgorithm: 'PGP-RSA',
-    recommendedPQC: 'CRYSTALS-Kyber (ML-KEM-768) + CRYSTALS-Dilithium (ML-DSA-44)',
+    recommendedPQC: 'ML-KEM-768 (FIPS 203) + ML-DSA-44 (FIPS 204)',
     alternativePQC: ['Falcon-512', 'SPHINCS+'],
     migrationType: 'PGP Key Migration',
     migrationComplexity: 'HIGH',
@@ -253,7 +253,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'PGP-ECC': {
     classicalAlgorithm: 'PGP-ECC',
-    recommendedPQC: 'CRYSTALS-Kyber (ML-KEM-768) + CRYSTALS-Dilithium (ML-DSA-44)',
+    recommendedPQC: 'ML-KEM-768 (FIPS 203) + ML-DSA-44 (FIPS 204)',
     alternativePQC: ['Falcon-512', 'SPHINCS+'],
     migrationType: 'PGP Key Migration',
     migrationComplexity: 'HIGH',
@@ -268,7 +268,7 @@ const PQC_MIGRATION_MAP: Record<string, PQCRecommendation> = {
   },
   'S/MIME-RSA': {
     classicalAlgorithm: 'S/MIME-RSA',
-    recommendedPQC: 'CRYSTALS-Kyber (ML-KEM-768)',
+    recommendedPQC: 'ML-KEM-768 (FIPS 203)',
     alternativePQC: ['FrodoKEM', 'Classic McEliece'],
     migrationType: 'Enterprise Email Certificate Migration',
     migrationComplexity: 'HIGH',
@@ -413,8 +413,8 @@ export function getMigrationRecommendation(algorithm: string): PQCRecommendation
  * Get all available PQC algorithms for reference
  */
 export const PQC_ALGORITHMS = [
-  { name: 'CRYSTALS-Kyber (ML-KEM)', type: 'Key Encapsulation', nist: 'FIPS 203', status: 'Standardized' },
-  { name: 'CRYSTALS-Dilithium (ML-DSA)', type: 'Digital Signature', nist: 'FIPS 204', status: 'Standardized' },
+  { name: 'ML-KEM (CRYSTALS-Kyber)', type: 'Key Encapsulation', nist: 'FIPS 203', status: 'Standardized' },
+  { name: 'ML-DSA (CRYSTALS-Dilithium)', type: 'Digital Signature', nist: 'FIPS 204', status: 'Standardized' },
   { name: 'Falcon', type: 'Digital Signature', nist: 'FIPS 206 (draft)', status: 'Standardized' },
   { name: 'SPHINCS+ (SLH-DSA)', type: 'Digital Signature', nist: 'FIPS 205', status: 'Standardized' },
   { name: 'Classic McEliece', type: 'Key Encapsulation', nist: 'Round 4', status: 'Under Evaluation' },
@@ -426,63 +426,104 @@ export const PQC_ALGORITHMS = [
   { name: 'LMS', type: 'Hash-Based Signature', nist: 'SP 800-208', status: 'Standardized (stateful)' },
 ]
 
+export interface QuantumReadinessSummary {
+  /** Share of OBSERVATIONS that need no migration, 0-100. */
+  score: number
+  /** Readiness band for `score`. Never a risk level — see the note below. */
+  label: string
+  color: string
+  /** Observations needing migration, by cryptographic category. */
+  assetsRequiringMigration: Record<string, number>
+  /** Cryptographic observations scored. This is a FINDING count. */
+  totalFindings: number
+  /** Observations that need no migration. A FINDING count. */
+  quantumSafeFindings: number
+  /** Distinct scan targets the observations came from. An ASSET count. */
+  totalAssets: number
+  /** Distinct targets with no observation requiring migration. */
+  quantumSafeAssets: number
+  /** True when no observation was scored, so `score` asserts nothing. */
+  notAssessed: boolean
+}
+
 /**
- * Calculate quantum readiness score from scan findings
+ * Quantum readiness over the cryptographic OBSERVATIONS in a scan.
+ *
+ * ── Two defects this signature exists to prevent ──────────────────────────
+ *
+ * 1. It returned `totalAssets: findings.length` and `quantumSafeAssets`, and
+ *    the Quantum Posture card printed them verbatim as
+ *    "3 of 16 inventoried asset(s) are already quantum-safe" — on a tenant with
+ *    exactly ONE scanned asset. The numbers were finding counts wearing the
+ *    word "asset". Both populations are now returned, each named for what it
+ *    counts, and the distinct-target count is a real asset count.
+ *
+ * 2. Its bands ran "Quantum-Ready / Mostly Protected / At Risk / High Risk /
+ *    Critical Risk" — three readiness labels and two RISK labels on one scale.
+ *    A readiness of 19% rendered as "Critical Risk", which then sat two rows
+ *    above Scanner_2's risk aggregate reading "moderate-risk": two contradictory
+ *    risk verdicts from the same engine on the same evidence. The bands are now
+ *    readiness labels throughout; risk is reported only by the risk engine.
  */
 export function calculateQuantumReadiness(findings: {
   detectedAlgorithm: string
   threatLevel: string
   riskScore: number
-}[]): {
-  score: number
-  label: string
-  color: string
-  assetsRequiringMigration: Record<string, number>
-  totalAssets: number
-  quantumSafeAssets: number
-} {
+  target?: { name?: string }
+}[]): QuantumReadinessSummary {
   if (findings.length === 0) {
+    /* Nothing was scored. This is NOT "fully quantum-ready" — it used to
+       return 100, which turns an empty scan into a perfect posture. */
     return {
-      score: 100,
-      label: 'Fully Quantum-Ready',
-      color: '#30d158',
+      score: 0,
+      label: 'Not assessed',
+      color: '#64748b',
       assetsRequiringMigration: {},
+      totalFindings: 0,
+      quantumSafeFindings: 0,
       totalAssets: 0,
       quantumSafeAssets: 0,
+      notAssessed: true,
     }
   }
 
   const assetsRequiringMigration: Record<string, number> = {}
+  const assetNeedsMigration = new Map<string, boolean>()
   let quantumSafeCount = 0
 
   for (const f of findings) {
+    const asset = f.target?.name?.trim() || '(unattributed)'
+    if (!assetNeedsMigration.has(asset)) assetNeedsMigration.set(asset, false)
     const rec = getMigrationRecommendation(f.detectedAlgorithm)
     if (rec && rec.migrationComplexity !== 'LOW') {
       const category = getCryptoCategory(f.detectedAlgorithm)
       assetsRequiringMigration[category] = (assetsRequiringMigration[category] || 0) + 1
+      assetNeedsMigration.set(asset, true)
     } else {
       quantumSafeCount++
     }
   }
 
-  const vulnerableCount = findings.length - quantumSafeCount
-  const score = Math.round(((findings.length - vulnerableCount) / findings.length) * 100)
+  const score = Math.round((quantumSafeCount / findings.length) * 100)
 
   let label: string
   let color: string
   if (score >= 80) { label = 'Quantum-Ready'; color = '#30d158' }
-  else if (score >= 60) { label = 'Mostly Protected'; color = '#00d4ff' }
-  else if (score >= 40) { label = 'At Risk'; color = '#ffcc00' }
-  else if (score >= 20) { label = 'High Risk'; color = '#ff6b35' }
-  else { label = 'Critical Risk'; color = '#ff2d55' }
+  else if (score >= 60) { label = 'Mostly Ready'; color = '#00d4ff' }
+  else if (score >= 40) { label = 'Partially Ready'; color = '#ffcc00' }
+  else if (score >= 20) { label = 'Early Stage'; color = '#ff6b35' }
+  else { label = 'Not Started'; color = '#ff2d55' }
 
   return {
     score,
     label,
     color,
     assetsRequiringMigration,
-    totalAssets: findings.length,
-    quantumSafeAssets: quantumSafeCount,
+    totalFindings: findings.length,
+    quantumSafeFindings: quantumSafeCount,
+    totalAssets: assetNeedsMigration.size,
+    quantumSafeAssets: Array.from(assetNeedsMigration.values()).filter((needs) => !needs).length,
+    notAssessed: false,
   }
 }
 

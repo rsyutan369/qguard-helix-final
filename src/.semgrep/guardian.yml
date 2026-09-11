@@ -1,0 +1,11 @@
+serial: 1
+anonymous_user_id: a0b362bd-cf07-4348-8240-f06ad47b765f
+deployment:
+    user_id: 0
+    orgs:
+        - id: 98410
+          name: threathunter369-personal-org
+          display_name: threathunter369-personal-org
+semgrep:
+    auth_method: oauth
+expiry: 2026-09-10T21:56:55.6528104+08:00

@@ -21,7 +21,7 @@ import type {
 } from './types'
 import { parseTarget, analyzeTls } from './tls-analyzer'
 import { collectEdgeIntelligence, type EdgeIntelligence } from './edge-intelligence'
-import { measuredKeyAgreement } from './edge-intelligence-model'
+import { hybridProbeSettled, measuredKeyAgreement } from './edge-intelligence-model'
 import { pqcReplacementFor } from './oid-database'
 import { leafRestatedOids } from './certificate-parser'
 import { analyzeCipherSuites } from './cipher-suite-analyzer'
@@ -29,6 +29,9 @@ import { scanRepository, repositoryProvider } from './repo-scanner'
 import { PROVIDER_LABEL } from './repo-providers'
 import { scanWebCrypto } from './web-crypto-scanner'
 import { scanApiSecurity } from './api-security-scanner'
+/* The module ledger is pure and dependency-free precisely so producers and
+   consumers can share its routing rules rather than reimplement them. */
+import { isTokenSigningObservation } from '@/api-server/scanner-module-ledger'
 import { evaluateDetectionRules } from './detection-rules'
 import { calculateRiskScore, calculateNistComplianceScore, calculateConfidenceScore } from './risk-scoring'
 import { generatePqcRecommendations } from './pqc-recommendations'
@@ -729,9 +732,16 @@ export async function executeWebScan(
               threatLevel: kexThreat,
               category: 'Key Exchange',
               description: `${getKeyExchangeDescription(tlsResult.keyExchange, kexThreat)}${observed ? ` (${observed})` : ''}${
-                pqAgreement?.hybridProbed
-                  ? `. Every hybrid ML-KEM group was offered in isolation and refused across ${pqAgreement.handshakes} handshake(s)`
-                  : ''
+                /* `hybridProbed` is assigned `supportsTls13` — it says the
+                   probe was worth attempting, not that it answered. Phrasing a
+                   refusal off it put "offered in isolation and refused" into
+                   the finding text of endpoints whose hybrid probes had merely
+                   been throttled. */
+                hybridProbeSettled(pqAgreement)
+                  ? `. Every hybrid ML-KEM group was offered in isolation and refused across ${pqAgreement!.handshakes} handshake(s)`
+                  : pqAgreement?.probed
+                    ? '. Hybrid ML-KEM groups did not settle on this run, so no post-quantum claim is made either way'
+                    : ''
               }`,
               recommendation: getKeyExchangeRecommendation(kexThreat),
               quantumBreakTime: kexThreat === 'SAFE' ? 'N/A' : '~2-8 hours (CRQC)',
@@ -1006,7 +1016,15 @@ export async function executeWebScan(
 
         // ─── Phase 6: Security Header & API Analysis ──────────────────
         phaseStart('header-inspection', 'Security Header & API Analysis', 58)
-        moduleStart('api-security-scanner', 'Security Header & API Scanner', hostname, 58)
+        /* ONE probe, TWO measurements, TWO module lifecycles.
+           The header/API surface and the token-signing surface are read from
+           the same network pass but belong to different discovery surfaces, and
+           while they shared a module every HSTS finding was owned by the JWT
+           signing scanner and rendered on Identity & Tokens. Each now reports
+           its own terminal state and its own finding count, so per-module
+           counts still sum to the assessment total. */
+        moduleStart('http-security-scanner', 'HTTP Security Header & API Scanner', hostname, 58)
+        moduleStart('jwt-signing-scanner', 'Token Signing Algorithm Scanner', hostname, 58)
         const apiFindingStart = findings.length
         try {
           const apiAttempt = await withRetry(
@@ -1064,16 +1082,32 @@ export async function executeWebScan(
               classicalBreakTime: 'N/A',
             })
           }
-          moduleComplete('api-security-scanner', 'Security Header & API Scanner', hostname, 64, findings.length - apiFindingStart, apiAttempt.error)
-        } catch (err) {
+          /* Counted with the LEDGER'S OWN predicate, not a second regex: the
+             module's finding count and the finding's owning module have to be
+             one rule, or per-module counts stop summing to the assessment
+             total. */
+          const produced = findings.slice(apiFindingStart)
+          const tokenFindings = produced.filter((finding) =>
+            isTokenSigningObservation(finding.category, finding.algorithm)
+          ).length
+          const httpFindings = produced.length - tokenFindings
+          moduleComplete('http-security-scanner', 'HTTP Security Header & API Scanner', hostname, 64, httpFindings, apiAttempt.error)
           moduleComplete(
-            'api-security-scanner',
-            'Security Header & API Scanner',
+            'jwt-signing-scanner',
+            'Token Signing Algorithm Scanner',
             hostname,
             64,
-            findings.length - apiFindingStart,
-            `API/header probe failed: ${(err as Error).message || 'request failed'}`
+            tokenFindings,
+            tokenFindings > 0
+              ? apiAttempt.error
+              : notApplicable(
+                  `no token-issuing surface answered on ${hostname} — JWKS, OpenID configuration and OAuth endpoints were probed and none returned signing material`
+                )
           )
+        } catch (err) {
+          const message = `API/header probe failed: ${(err as Error).message || 'request failed'}`
+          moduleComplete('http-security-scanner', 'HTTP Security Header & API Scanner', hostname, 64, findings.length - apiFindingStart, message)
+          moduleComplete('jwt-signing-scanner', 'Token Signing Algorithm Scanner', hostname, 64, 0, message)
           // API scan failed — non-critical, continue
         }
         phaseComplete('header-inspection', 'Header & API Analysis Complete', 65)
@@ -1157,7 +1191,8 @@ export async function executeWebScan(
           ['signature-algorithm-analyzer', 'Signature Algorithm Analyzer'],
           ['hash-algorithm-analyzer', 'Hash Algorithm Analyzer'],
           ['cipher-suite-analyzer', 'Cipher Suite Enumeration'],
-          ['api-security-scanner', 'Security Header & API Scanner'],
+          ['http-security-scanner', 'HTTP Security Header & API Scanner'],
+          ['jwt-signing-scanner', 'Token Signing Algorithm Scanner'],
           ['web-crypto-scanner', 'Web Crypto Scanner'],
           ['dns-security-analyzer', 'DNS Security Analyzer'],
           ['pq-key-agreement-analyzer', 'Post-Quantum Key Agreement Prober'],

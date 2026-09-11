@@ -22,7 +22,7 @@
 
 import React from 'react';
 import { motion } from 'motion/react';
-import { Code2, Globe, Lock, MonitorSmartphone } from 'lucide-react';
+import { Code2, Globe, History, Lock, MonitorSmartphone, Radar } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ScanMode } from '@/lib/scanner/exposure/types';
 
@@ -184,5 +184,111 @@ export function ExposureModeCaption({ mode }: { mode: ScanMode }) {
   if (!tab) return null;
   return (
     <p className="mt-2 font-mono text-[10px] uppercase tracking-[0.16em] text-slate-500">{tab.hint}</p>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════ view tabs ══ */
+
+/** The surfaces a single assessment mode offers. */
+export type ExposureView = 'assessment' | 'history';
+
+const VIEWS: Array<{ id: ExposureView; label: string; icon: typeof Globe; hint: string }> = [
+  { id: 'assessment', label: 'Assessment', icon: Radar, hint: 'Configure and run an assessment' },
+  { id: 'history', label: 'History', icon: History, hint: 'Previously recorded assessments and their findings' },
+];
+
+export interface ExposureViewTabsProps {
+  value: ExposureView;
+  onChange: (view: ExposureView) => void;
+  badges?: Partial<Record<ExposureView, string | number>>;
+  className?: string;
+  /** `layoutId` scope, so this strip's indicator is its own. */
+  scope?: string;
+}
+
+/**
+ * Assessment / History, within one mode.
+ *
+ * Visually subordinate to `ExposureModeTabs` on purpose — the mode is the
+ * primary choice and this is a view of it, so the strip is smaller, quieter and
+ * carries its own `layoutId` scope rather than competing for the mode
+ * indicator. Keyboard behaviour follows the same WAI-ARIA tabs pattern.
+ */
+export function ExposureViewTabs({ value, onChange, badges, className, scope = 'exposure-view' }: ExposureViewTabsProps) {
+  const refs = React.useRef<Array<HTMLButtonElement | null>>([]);
+
+  const move = (from: number, delta: number) => {
+    const count = VIEWS.length;
+    const index = (from + delta + count) % count;
+    refs.current[index]?.focus();
+    onChange(VIEWS[index].id);
+  };
+
+  return (
+    <div
+      role="tablist"
+      aria-label="Assessment view"
+      className={cn(
+        'inline-flex items-center gap-1 rounded-lg border border-white/[0.07] bg-[#060b16]/60 p-0.5 backdrop-blur-xl',
+        className,
+      )}
+    >
+      {VIEWS.map((view, index) => {
+        const active = value === view.id;
+        const badge = badges?.[view.id];
+
+        return (
+          <button
+            key={view.id}
+            ref={(element) => {
+              refs.current[index] = element;
+            }}
+            type="button"
+            role="tab"
+            id={`exposure-view-${view.id}`}
+            aria-selected={active}
+            aria-controls={`exposure-view-panel-${view.id}`}
+            tabIndex={active ? 0 : -1}
+            title={view.hint}
+            onClick={() => onChange(view.id)}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+                event.preventDefault();
+                move(index, 1);
+              } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+                event.preventDefault();
+                move(index, -1);
+              }
+            }}
+            className={cn(
+              'relative inline-flex items-center gap-1.5 rounded-[7px] px-3 py-1.5 text-[12px] font-bold transition-colors duration-200',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60',
+              active ? 'text-cyan-300' : 'text-slate-400 hover:text-slate-200',
+            )}
+          >
+            {active && (
+              <motion.span
+                layoutId={`${scope}-view-tab-active`}
+                aria-hidden
+                className="absolute inset-0 rounded-[7px] border border-cyan-400/25 bg-cyan-400/[0.08]"
+                transition={{ type: 'spring', stiffness: 420, damping: 34 }}
+              />
+            )}
+            <view.icon aria-hidden className="relative h-3.5 w-3.5 shrink-0" />
+            <span className="relative whitespace-nowrap">{view.label}</span>
+            {badge !== undefined && badge !== null && badge !== '' && (
+              <span
+                className={cn(
+                  'relative rounded px-1.5 py-0.5 font-mono text-[10px] font-black',
+                  active ? 'bg-cyan-400/20 text-cyan-200' : 'bg-white/[0.07] text-slate-400',
+                )}
+              >
+                {badge}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
   );
 }

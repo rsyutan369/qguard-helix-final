@@ -47,7 +47,7 @@ import {
   StatusPill,
   scoreColor,
 } from '@/components/quantum-scan/ui';
-import { riskColorFor, type ScannerAssessment } from './_intel';
+import { pluralize, riskColorFor, type ScannerAssessment } from './_intel';
 import type { ModuleState } from './_types';
 
 /* ================================================================ executive = */
@@ -80,18 +80,28 @@ export function ScannerExecutiveSummary({ assessment }: { assessment: ScannerAss
       /* Not scored is rendered as such. A number here beside the panel's own
          "was not scored" footnote is the contradiction this replaced. */
       big: executive.postQuantumReadiness === null ? 'Not scored' : `${executive.postQuantumReadiness}%`,
+      /* NAMES THE POPULATION IT SCORES.
+         This is the published Post-Quantum Readiness category — hybrid key
+         agreement, PQ signatures, a TLS 1.3 floor, certificate lifetime, CT.
+         It is not a share of components, and captioning it "Majority
+         quantum-safe / Most discovered components already use quantum-safe
+         cryptography" put it in direct conflict with the Estate Footprint
+         panel, which counted 14 of 18 components quantum-vulnerable on the
+         same scan. */
       sub:
         executive.postQuantumReadiness === null
           ? 'Not measured on this scan'
           : executive.postQuantumReadiness >= 60
-            ? 'Majority quantum-safe'
+            ? 'Controls largely in place'
             : 'Migration outstanding',
       detail:
         executive.postQuantumReadiness === null
           ? executive.postQuantumReadinessReason ?? 'This dimension was not measured, so no readiness figure is published.'
-          : executive.postQuantumReadiness >= 60
-            ? 'Most discovered components already use quantum-safe cryptography.'
-            : 'Most discovered components still rely on quantum-vulnerable cryptography.',
+          : `${
+              executive.postQuantumReadiness >= 60
+                ? 'Most of the post-quantum readiness controls this model scores are deployed'
+                : 'Most of the post-quantum readiness controls this model scores are not yet deployed'
+            } — ${assessment.footprint.components.total > 0 ? `${assessment.footprint.components.vulnerable} of ${assessment.footprint.components.total} inventoried components remain quantum-vulnerable` : 'no cryptographic component was inventoried on this run'}.`,
       ring: executive.postQuantumReadiness ?? 0,
       color: scoreColor(executive.postQuantumReadiness ?? 0),
     },
@@ -190,10 +200,18 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
   const [open, setOpen] = React.useState(false);
 
   const measured = scoreComponents.filter((component) => component.score !== null);
-  const classicalWeight = scoreComponents
-    .filter((component) => component.key !== 'pqcReadiness')
-    .reduce((sum, component) => sum + component.weight, 0);
-  const pqWeight = scoreComponents.find((component) => component.key === 'pqcReadiness')?.weight ?? 0;
+  /* BOTH FLANKS AND BOTH CAPTIONS COME FROM ONE COMPUTATION.
+     `postureSplit` is the same function `buildAssessment` used to derive
+     `classicalScore`, taken over the MEASURED weight — so the two percentages
+     sum to 100, each describes the aggregation that produced the number above
+     it, and a reader can multiply them out and land on the gauge.
+
+     Previously the weights were summed over every category including the
+     unmeasured ones, and the right-hand number was the Post-Quantum Readiness
+     category (weight 3) captioned "8% of the weighted model" — the 8% slice is
+     that category plus Cryptographic Algorithms and scored 27 on the audited
+     scan, so the flanks could not reproduce the middle. */
+  const { classical, postQuantum } = assessment.postureSplit;
   const classicalRating = scoreToGrade(executive.classicalScore);
 
   return (
@@ -217,7 +235,7 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
             className="mx-auto mt-3 max-w-[9rem] sm:mx-0"
           />
           <p className="mt-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-600">
-            {classicalWeight}% of the weighted model
+            {classical.weightShare}% of the measured model
           </p>
         </div>
 
@@ -232,28 +250,39 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
         />
 
         <div className="text-center sm:text-right">
+          {/* POSTURE, not READINESS.
+              This flank is the post-quantum HALF OF THE MODEL — Cryptographic
+              Algorithms plus Post-Quantum Readiness — because that is the only
+              number that, weighted against the classical flank, reproduces the
+              gauge. The Post-Quantum Readiness CATEGORY is a different, narrower
+              measurement and keeps its own name on the Executive Summary tile
+              and in the row below. Two numbers, two names, both stated. */}
           <p className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
-            Post-Quantum Readiness
+            Post-Quantum Posture
           </p>
-          {executive.postQuantumReadiness === null ? (
+          {postQuantum.score === null ? (
             <>
               <span className="mt-2 block text-3xl font-black tracking-tight text-slate-500">Not scored</span>
               <p className="mt-1 max-w-[13rem] text-[11px] leading-relaxed text-slate-500 sm:ml-auto">
-                {executive.postQuantumReadinessReason}
+                {executive.postQuantumReadinessReason ??
+                  'Neither post-quantum category was measured on this run, so no post-quantum posture is published.'}
               </p>
             </>
           ) : (
             <>
-              <CountUp value={executive.postQuantumReadiness} className="mt-2 block text-5xl font-black tracking-tight" />
-              <p className="mt-1 text-xs font-semibold" style={{ color: scoreColor(executive.postQuantumReadiness) }}>
-                {executive.postQuantumReadiness >= 60 ? 'Majority ready' : 'Limited'}
+              <CountUp value={postQuantum.score} className="mt-2 block text-5xl font-black tracking-tight" />
+              <p className="mt-1 text-xs font-semibold" style={{ color: scoreColor(postQuantum.score) }}>
+                {postQuantum.score >= 60 ? 'Controls largely in place' : 'Migration outstanding'}
               </p>
-              <Meter
-                value={executive.postQuantumReadiness}
-                className="mx-auto mt-3 max-w-[9rem] sm:mx-0 sm:ml-auto"
-              />
+              <Meter value={postQuantum.score} className="mx-auto mt-3 max-w-[9rem] sm:mx-0 sm:ml-auto" />
               <p className="mt-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-600">
-                {pqWeight}% of the weighted model
+                {postQuantum.weightShare}% of the measured model
+              </p>
+              <p className="mt-1 text-[10.5px] leading-snug text-slate-600 sm:ml-auto sm:max-w-[13rem]">
+                {postQuantum.categories.join(' + ')}
+                {executive.postQuantumReadiness !== null && (
+                  <> · readiness category on its own: {executive.postQuantumReadiness}</>
+                )}
               </p>
             </>
           )}
@@ -285,9 +314,17 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
         {executive.classicalScore >= 70
           ? 'Strong classical encryption across the scanned estate,'
           : 'Classical encryption across the scanned estate needs hardening,'}{' '}
-        {executive.postQuantumReadiness >= 60
-          ? 'with most components already quantum-safe.'
-          : 'with post-quantum migration still outstanding.'}
+        {/* `postQuantumReadiness` is the published readiness CATEGORY, not a
+            share of components — and it is nullable. Both were wrong here: at 78
+            this read "with most components already quantum-safe" on a scan whose
+            Estate Footprint counted 14 of 18 components quantum-vulnerable. */}
+        {/* Reads the same flank rendered above it, so one panel never states two
+            post-quantum positions. */}
+        {postQuantum.score === null
+          ? 'with post-quantum posture not scored on this run.'
+          : postQuantum.score >= 60
+            ? 'with the post-quantum controls largely in place.'
+            : 'with post-quantum migration still outstanding.'}
       </p>
 
       <button
@@ -302,10 +339,29 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
 
       {open && (
         <div className="space-y-3 border-t border-white/[0.06] px-5 py-4">
+          {/* The weights are READ from the decomposition rendered below, never
+              restated. This line was hardcoded to "25 + 25 + 20 + 15 + 15 = 100"
+              — a five-term model the scanner stopped using — and printed it
+              directly above a table of twelve categories weighted
+              18/15/12/12/10/8/5/5/4/3/5/3. The caption and the table it
+              captions cannot disagree if only one of them holds the numbers. */}
           <p className="text-[11px] leading-relaxed text-slate-500">
-            The scanner&apos;s own published weighted risk model (25 + 25 + 20 + 15 + 15 = 100), inverted from
-            exposure to posture. Dimensions the scan could not measure are excluded rather than scored as zero.
-            {measured.length === 0 && ' No per-target decomposition has been collected yet.'}
+            The scanner&apos;s own published weighted risk model
+            {scoreComponents.length > 0 && (
+              <>
+                {' '}({scoreComponents.length} categories, total weight{' '}
+                {scoreComponents.reduce((sum, component) => sum + component.weight, 0)})
+              </>
+            )}
+            , inverted from exposure to posture. Dimensions the scan could not measure are excluded rather than
+            scored as zero
+            {measured.length > 0 && measured.length < scoreComponents.length && (
+              <>
+                {' '}— {measured.reduce((sum, component) => sum + component.weight, 0)} of{' '}
+                {scoreComponents.reduce((sum, component) => sum + component.weight, 0)} weight was measured on this run
+              </>
+            )}
+            .{measured.length === 0 && ' No per-target decomposition has been collected yet.'}
           </p>
 
           {/* Reconciliation, stated rather than assumed. The weighted model and
@@ -335,30 +391,62 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
               )}
             </p>
           )}
+          {/* EVERY ROW SAYS WHAT IT MEASURES.
+              The reported contradiction — "TLS Configuration: TLSv1.3, 100"
+              beside "Post-Quantum Key Agreement: Not offered" — was never two
+              numbers disagreeing. Both are correct: that category scores the
+              protocol VERSION, and TLS 1.3 is the prerequisite for hybrid key
+              agreement rather than evidence of it. The page just never said so,
+              so a full green bar labelled "TLS Configuration" read as "TLS is
+              fine". The published description now travels with the row, and the
+              categories where post-quantum deployment actually moves the score
+              are marked, so a reader can see where the quantum verdict is
+              decided instead of inferring it from a bar that never carried it. */}
           {scoreComponents.map((component) => (
             <div
               key={component.key}
-              className="grid grid-cols-[minmax(0,1fr)] gap-1.5 sm:grid-cols-[13rem_minmax(0,1fr)_3rem] sm:items-center sm:gap-4"
+              className="grid grid-cols-[minmax(0,1fr)] gap-1.5 sm:grid-cols-[13rem_minmax(0,1fr)_3rem] sm:items-start sm:gap-4"
             >
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-slate-200">{component.label}</span>
-                <span className="font-mono text-[9px] text-slate-600">w{component.weight}</span>
-                {component.score === null && <StatusPill status="unknown" label="Not measured" />}
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="text-xs font-bold text-slate-200">{component.label}</span>
+                  <span className="font-mono text-[9px] text-slate-600">w{component.weight}</span>
+                  {component.postQuantumRelevant && (
+                    <span
+                      className="rounded border border-violet-400/25 bg-violet-400/[0.07] px-1 py-px font-mono text-[8.5px] font-bold uppercase tracking-[0.1em] text-violet-300"
+                      title="Deploying post-quantum cryptography moves this category's score. The categories without this mark measure classical controls and stay unchanged by a PQC migration."
+                    >
+                      PQ
+                    </span>
+                  )}
+                  {component.score === null && <StatusPill status="unknown" label="Not measured" />}
+                </div>
+                {component.description && (
+                  <p className="mt-0.5 text-[10px] leading-snug text-slate-600">{component.description}</p>
+                )}
               </div>
-              <div>
+              <div className="sm:pt-1">
                 <Meter value={component.score ?? 0} />
-                <p className="mt-1 truncate font-mono text-[10px] text-slate-600" title={component.observed}>
+                <p className="mt-1 font-mono text-[10px] leading-snug text-slate-600" title={component.observed}>
                   {component.observed}
                 </p>
               </div>
               <span
-                className="text-right text-sm font-black tabular-nums"
+                className="text-right text-sm font-black tabular-nums sm:pt-0.5"
                 style={{ color: component.score === null ? ACCENT.slate : scoreColor(component.score) }}
               >
                 {component.score ?? '—'}
               </span>
             </div>
           ))}
+
+          {/* The one sentence that answers the reported contradiction directly. */}
+          <p className="rounded-md border border-violet-400/15 bg-violet-400/[0.04] px-2.5 py-2 text-[10.5px] leading-relaxed text-violet-100/80">
+            Rows marked <span className="font-mono font-bold">PQ</span> are the ones a post-quantum migration moves.
+            The rest score classical controls: a protocol version, a suite list or a certificate lifetime can be
+            perfect and still leave the endpoint quantum-vulnerable, because TLS 1.3 is the prerequisite for hybrid
+            key agreement, not evidence of it.
+          </p>
         </div>
       )}
     </Panel>
@@ -494,6 +582,9 @@ export function ScannerAttackSurface({ assessment }: { assessment: ScannerAssess
 const QUANTUM_VULNERABILITY_COLOR: Record<string, string> = {
   'Quantum-safe': ACCENT.emerald,
   'Hybrid-protected': ACCENT.cyan,
+  /* Amber, not cyan: hybrid key agreement is live but does not cover every path
+     the endpoint accepts, so the colour must not read as "done". */
+  'Hybrid — partial coverage': ACCENT.amber,
   'Classical only': ACCENT.amber,
   'High Risk': ACCENT.amber,
   Vulnerable: ACCENT.rose,
@@ -512,6 +603,7 @@ const RISK_IMPACT_COLOR: Record<string, string> = {
 const QUANTUM_VULNERABILITY_PREFIX: Record<string, string> = {
   'Quantum-safe': '✦ ',
   'Hybrid-protected': '✦ ',
+  'Hybrid — partial coverage': '▲ ',
   'High Risk': '▲ ',
   Vulnerable: '▲ ',
 };
@@ -526,7 +618,21 @@ export function ScannerCryptoIntelligence({ assessment }: { assessment: ScannerA
 
       <div className="space-y-4 px-5 py-4">
         <div>
-          <p className="text-[11px] font-semibold text-slate-500">Observed Algorithms</p>
+          {/* THE COUNT AND THE LIST DESCRIBE ONE POPULATION.
+              The panel renders the first rows of the census while the score
+              decomposition quotes the census TOTAL, and the two sat on the same
+              page with nothing connecting them — which is how "4 algorithms
+              observed · 1 quantum-safe" came to be published directly above a
+              list of three. The total and the remainder are stated here, from
+              the same census object, so the numbers reconcile on sight. */}
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <p className="text-[11px] font-semibold text-slate-500">Observed Algorithms</p>
+            {intelligence.algorithmCensus.observed > 0 && (
+              <p className="font-mono text-[10px] text-slate-600">
+                {intelligence.observedAlgorithms.length} of {intelligence.algorithmCensus.observed} shown
+              </p>
+            )}
+          </div>
           {intelligence.observedAlgorithms.length === 0 ? (
             <p className="mt-2 text-[12px] text-slate-600">No algorithm has been observed in this view yet.</p>
           ) : (
@@ -542,6 +648,21 @@ export function ScannerCryptoIntelligence({ assessment }: { assessment: ScannerA
                 </li>
               ))}
             </ul>
+          )}
+          {intelligence.algorithmCensus.observed > intelligence.observedAlgorithms.length && (
+            <p className="mt-1.5 text-[10.5px] leading-snug text-slate-600">
+              {intelligence.algorithmCensus.observed - intelligence.observedAlgorithms.length} further observed
+              algorithm
+              {intelligence.algorithmCensus.observed - intelligence.observedAlgorithms.length === 1 ? '' : 's'} not
+              listed here — the full census is in the CBOM and in the Cryptographic Algorithms row of the score
+              decomposition.
+            </p>
+          )}
+          {/* The census sentence, verbatim — the same string the score
+              decomposition prints, so the panel and the category row state one
+              population in one wording. */}
+          {intelligence.algorithmCensus.observed > 0 && (
+            <p className="mt-1.5 text-[10.5px] leading-snug text-slate-500">{intelligence.algorithmCensus.summary}</p>
           )}
         </div>
 
@@ -591,8 +712,8 @@ export function ScannerCryptoIntelligence({ assessment }: { assessment: ScannerA
           </p>
           {intelligence.scanner2Readiness && (
             <div className="flex items-center justify-between gap-3">
-              <dt className="text-slate-400" title="Asset-level readiness reported by the Scanner_2 migration engine — a different population from the component-level headline above, so it is reported separately rather than blended into it.">
-                Scanner_2 Asset Readiness
+              <dt className="text-slate-400" title="Share of the cryptographic OBSERVATIONS Scanner_2 could map onto its migration catalogue that need no migration. A different population from the endpoint posture below — and not a share of the asset inventory, which is what this row used to claim — so it is reported separately rather than blended into it.">
+                Scanner_2 Migration Readiness
               </dt>
               <dd className="font-bold text-violet-300">
                 {intelligence.scanner2Readiness.score}% · {intelligence.scanner2Readiness.label}
@@ -603,10 +724,28 @@ export function ScannerCryptoIntelligence({ assessment }: { assessment: ScannerA
 
         {/* Measured post-quantum readiness for the scanned endpoint, with the
             reasons the engine used to arrive at it. Deliberately separate from
-            the Scanner_2 asset-readiness figure above: that one counts assets
-            across the estate, this one grades the endpoint in front of you, and
-            blending two different populations into one percentage is how a
-            readiness number stops meaning anything. */}
+            the Scanner_2 migration-readiness figure above: that one counts
+            cryptographic OBSERVATIONS against a migration catalogue, this one
+            grades the endpoint in front of you, and blending two different
+            populations into one percentage is how a readiness number stops
+            meaning anything. (The comment here used to say the row above
+            "counts assets across the estate" — it never did; it counted the
+            findings of the scan in view, and the label said "asset".) */}
+        {/* Withheld, and it says why — the same sentence the score
+            decomposition prints, so the two panels never differ on whether
+            this endpoint's readiness was measured at all. */}
+        {!intelligence.postQuantumReadiness && intelligence.postQuantumReadinessReason && (
+          <div className="border-t border-white/[0.06] pt-3">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="font-semibold text-slate-500">Endpoint PQ Readiness</span>
+              <span className="font-bold text-slate-500">Not measured</span>
+            </div>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-slate-500">
+              {intelligence.postQuantumReadinessReason}
+            </p>
+          </div>
+        )}
+
         {intelligence.postQuantumReadiness && (
           <div className="border-t border-white/[0.06] pt-3">
             <div className="flex items-center justify-between text-[11px]">
@@ -635,7 +774,23 @@ export function ScannerCryptoIntelligence({ assessment }: { assessment: ScannerA
 
         {intelligence.quantumRiskFactors.length > 0 && (
           <div className="border-t border-white/[0.06] pt-3">
-            <p className="text-[11px] font-semibold text-slate-500">Quantum Risk Factors</p>
+            {/* THE SCALE IS NAMED.
+                These words are a PER-FACTOR quantum impact rating, and the
+                Executive Summary a few hundred pixels away prints "N critical
+                findings" — a count of scan findings on a severity scale. Two
+                different scales sharing the vocabulary CRITICAL/HIGH/MEDIUM/LOW
+                and neither of them labelled is a contradiction a reader has no
+                way to resolve. */}
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+              <p className="text-[11px] font-semibold text-slate-500">Quantum Risk Factors</p>
+              <p className="font-mono text-[9px] uppercase tracking-[0.12em] text-slate-600">
+                Quantum impact per factor
+              </p>
+            </div>
+            <p className="mt-0.5 text-[10.5px] leading-snug text-slate-600">
+              How exposed each primitive is to a cryptographically-relevant quantum computer. A separate scale from
+              the finding severities counted in the Executive Summary.
+            </p>
             <ul className="mt-2 space-y-2">
               {intelligence.quantumRiskFactors.map((factor) => (
                 <li key={factor.factor} title={factor.explanation}>
@@ -1173,15 +1328,38 @@ export function ScannerCoverage({ assessment }: { assessment: ScannerAssessment 
 
 export function ScannerSophiaInsight({ assessment }: { assessment: ScannerAssessment }) {
   const { executive, hndl } = assessment;
+  const components = assessment.footprint.components;
 
-  // Narrative assembled from measured values only — every clause below names a
-  // number the scanner produced.
+  /* Narrative assembled from measured values only — every clause below names a
+     number the scanner produced, and names the population that number counts.
+
+     TWO DEFECTS THIS REPLACES
+     -------------------------
+     1. It read "with ${executive.postQuantumReadiness}% of discovered
+        components already quantum-safe". `postQuantumReadiness` is the
+        published Post-Quantum Readiness CATEGORY — a posture score built from
+        hybrid key agreement, PQ signatures, a TLS 1.3 floor and certificate
+        lifetime. It is not a share of anything. On a real scan it read 78%
+        while the Estate Footprint panel beside it counted 14 of 18 components
+        quantum-vulnerable — 22% safe. The component claim now comes from the
+        component counts, and the readiness score is reported as the posture
+        score it is.
+     2. `postQuantumReadiness` is `number | null` — null meaning "not scored",
+        with a reason the Executive Summary already renders. Interpolated
+        unguarded, it printed the literal string "null%" to the operator. */
+  const componentClause = components.total > 0
+    ? ` Of ${pluralize(components.total, 'cryptographic component')} inventoried by this scan, ${components.vulnerable} ${components.vulnerable === 1 ? 'is' : 'are'} quantum-vulnerable.`
+    : '';
+  const readinessClause = executive.postQuantumReadiness === null
+    ? ` Post-quantum readiness was not scored: ${executive.postQuantumReadinessReason ?? 'no measurable evidence for that dimension'}.`
+    : ` Measured post-quantum readiness for this endpoint is ${executive.postQuantumReadiness}/100.`;
+
   const narrative = assessment.hasEvidence
     ? `The scanned estate holds a composite cryptographic posture of ${executive.encryptionScore}/100${
         executive.gradeable ? ` (grade ${executive.grade}, ${executive.gradeLabel})` : ''
-      }, with ${executive.postQuantumReadiness}% of discovered components already quantum-safe. Business risk reads ${executive.businessRisk} and the evidence behind it carries ${executive.confidence}% confidence.${
+      }.${componentClause}${readinessClause} Business risk reads ${executive.businessRisk} and the evidence behind it carries ${executive.confidence}% confidence.${
         hndl.immediate + hndl.soon > 0
-          ? ` ${hndl.immediate + hndl.soon} harvest-now exposures need attention before the modelled break window.`
+          ? ` ${pluralize(hndl.immediate + hndl.soon, 'harvest-now exposure')} need attention before the modelled break window.`
           : ''
       }`
     : 'No scan evidence exists for this tenant yet. Queue an authorized target above and the copilot will assess the estate from the scanner’s own findings.';

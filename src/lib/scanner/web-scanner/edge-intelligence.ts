@@ -135,6 +135,8 @@ function buildPqKeyAgreement(bundle: ScanEvidenceBundle): EdgePostQuantumKeyAgre
     postQuantumComponent: components?.postQuantum ?? kemSets[0] ?? null,
     probed: tls.groupsProbed,
     hybridProbed: tls.hybridProbed,
+    hybridGroupsSettled: tls.hybridGroupsSettled,
+    hybridGroupsInconclusive: tls.hybridGroupsInconclusive,
     handshakes: tls.groupHandshakes,
     inconclusiveGroups: tls.inconclusiveGroups,
     unstableGroups: tls.unstableGroups,
@@ -248,12 +250,43 @@ function buildPqKeyAgreement(bundle: ScanEvidenceBundle): EdgePostQuantumKeyAgre
     }
   }
 
+  /* ── The negative branch, gated on evidence ───────────────────────────────
+     "Not offered" is a claim about the ENDPOINT, and it is the claim every
+     post-quantum number on the page is built on: the key-exchange category
+     drops 100 -> 70, the readiness model forfeits its 55-point hybrid
+     allowance, the quantum verdict flips to Vulnerable and the migration
+     engine starts recommending a primitive the endpoint may already run.
+
+     An empty `hybridGroups` does not establish it. A group that was budget-
+     skipped, throttled into a reset, ignored by the server or unsupported by
+     the scanner's own OpenSSL build lands in `inconclusiveGroups`, and reading
+     that as a refusal is how an endpoint measured at X25519MLKEM768 came to be
+     published as "offered in isolation and refused". A refusal has to be
+     measured before it can be reported. */
+  const settled = tls.hybridGroupsSettled ?? []
+  const unsettled = tls.hybridGroupsInconclusive ?? []
+  if (settled.length === 0) {
+    return {
+      ...base,
+      value: 'Not measured',
+      state: 'unknown',
+      detail:
+        `No hybrid ML-KEM group reached a conclusive verdict on this run${
+          unsettled.length ? ` — ${unsettled.join(', ')} ${unsettled.length === 1 ? 'was' : 'were'} offered but never settled` : ''
+        }. Group probing opens one handshake per group and is the first thing an endpoint throttles, so this is "not measured", not "not supported". Re-run the scan to settle it; nothing is claimed about post-quantum key agreement either way.`,
+      evidence,
+    }
+  }
+
   return {
     ...base,
     value: 'Not offered',
     state: 'fail',
     detail:
-      `Every hybrid ML-KEM group was offered in isolation under a TLS 1.3 floor and refused${base.handshakes ? ` across ${base.handshakes} handshake(s)` : ''}. Session secrets rest on classical key agreement alone and are recoverable by a future CRQC from traffic recorded today.`,
+      `${settled.length === 1 ? 'The' : 'Every'} hybrid ML-KEM group that settled (${settled.join(', ')}) was offered in isolation under a TLS 1.3 floor and refused${base.handshakes ? ` across ${base.handshakes} handshake(s)` : ''}. Session secrets rest on classical key agreement alone and are recoverable by a future CRQC from traffic recorded today.` +
+      (unsettled.length
+        ? ` ${unsettled.join(', ')} never settled and ${unsettled.length === 1 ? 'is' : 'are'} excluded from this verdict.`
+        : ''),
     evidence,
   }
 }
@@ -333,6 +366,9 @@ export async function collectEdgeIntelligence(
     pqSignatureObserved: crypto.pqSignatureObserved,
     quantumRisk: crypto.quantumRisk,
     hybridProbed: tls.hybridProbed,
+    /* Settled, not merely attempted. `hybridProbed` is `supportsTls13` and
+       says nothing about whether the groups answered. */
+    hybridMeasured: (tls.hybridGroupsSettled ?? []).length > 0,
     supportsTls13,
     /* Critical factors OTHER than the key exchange. When hybrid is deployed the
        key-exchange factor is already Low, so anything still rated Critical here

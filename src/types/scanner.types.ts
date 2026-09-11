@@ -235,6 +235,15 @@ export interface QuantumRiskScore {
   hndlRiskCount: number
   lastScanAt: string
   trend: QScoreTrend[]
+  /**
+   * The categories this run actually observed. A category with no findings was
+   * not scanned, and it contributes NOTHING to `overall` — its weight is
+   * redistributed across the ones that were measured. Consumers must render the
+   * unmeasured categories as unassessed rather than as a passing score.
+   */
+  measuredCategories: Array<keyof QuantumRiskScore['breakdown']>
+  /** Share of the model's weight that was actually measured, 0-1. */
+  measuredWeight: number
 }
 
 export interface QScore {

@@ -19,8 +19,25 @@ const CATEGORY_WEIGHTS = {
   infrastructure: 0.10,
 } as const
 
-/** Default score assigned to categories with no findings. */
-const DEFAULT_CATEGORY_SCORE = 850
+/**
+ * Score shown for a category this run did not observe.
+ *
+ * THIS IS A DISPLAY PLACEHOLDER ONLY — it never enters `overall`.
+ *
+ * It used to be 850 AND to carry its full weight into the weighted mean, which
+ * inverted the platform's "unmeasured is not zero" rule into something worse:
+ * unmeasured read as GOOD. A web scan reaches `networks` and `applications`
+ * only, so devices, cloud, blockchain, telecom and infrastructure — 0.65 of the
+ * total weight — were a constant describing nothing. A real Google endpoint
+ * measured networks 440 / applications 720 and still published
+ * "749 · moderate-risk", because 65% of that number was the constant. That is
+ * the row operators saw beside a Critical grade on every other panel.
+ *
+ * Unmeasured categories now leave the denominator entirely (see below), exactly
+ * as the published grading model already redistributes weight for inapplicable
+ * categories.
+ */
+const UNMEASURED_CATEGORY_DISPLAY_SCORE = 0
 
 /** Module ID prefix mappings to categories. */
 const NETWORK_PREFIXES = ['network-', 'tls-', 'cert-', 'vpn-', 'ssh-', 'dns-']
@@ -111,28 +128,39 @@ export function calculateQuantumRiskScore(
     }
   }
 
-  // Calculate per-category scores
+  // Calculate per-category scores. A category with no findings was not
+  // observed on this run and is recorded as unmeasured, never as a score.
   const breakdown = {} as QuantumRiskScore['breakdown']
   const categories = Object.keys(CATEGORY_WEIGHTS) as CategoryKey[]
+  const measuredCategories: CategoryKey[] = []
 
   for (const category of categories) {
     const catFindings = categoryFindings[category]
     if (catFindings.length === 0) {
-      breakdown[category] = DEFAULT_CATEGORY_SCORE
-    } else {
-      const avgRisk =
-        catFindings.reduce((sum, f) => sum + f.riskScore, 0) / catFindings.length
-      // Score = 1000 minus average risk (clamped to 0-1000)
-      breakdown[category] = Math.max(0, Math.min(1000, Math.round(1000 - avgRisk)))
+      breakdown[category] = UNMEASURED_CATEGORY_DISPLAY_SCORE
+      continue
     }
+    measuredCategories.push(category)
+    const avgRisk =
+      catFindings.reduce((sum, f) => sum + f.riskScore, 0) / catFindings.length
+    // Score = 1000 minus average risk (clamped to 0-1000). `riskScore` is
+    // Scanner_2's 0-1000 scale; see `riskScoreToScanner2Severity`.
+    breakdown[category] = Math.max(0, Math.min(1000, Math.round(1000 - avgRisk)))
   }
 
-  // Calculate weighted overall score
+  /* Weighted over the MEASURED categories only, with the unmeasured weight
+     redistributed. Averaging in a placeholder for a category nobody scanned
+     publishes a posture the platform never measured — and because the
+     placeholder was a passing 850, it published a *better* posture the less the
+     scan covered. */
+  const measuredWeight = measuredCategories.reduce((sum, category) => sum + CATEGORY_WEIGHTS[category], 0)
   let overall = 0
-  for (const category of categories) {
-    overall += breakdown[category] * CATEGORY_WEIGHTS[category]
+  if (measuredWeight > 0) {
+    for (const category of measuredCategories) {
+      overall += breakdown[category] * CATEGORY_WEIGHTS[category]
+    }
+    overall = Math.max(0, Math.min(1000, Math.round(overall / measuredWeight)))
   }
-  overall = Math.max(0, Math.min(1000, Math.round(overall)))
 
   const level = scoreToRiskLevel(overall)
   const trend = generateTrend(overall)
@@ -149,6 +177,8 @@ export function calculateQuantumRiskScore(
     hndlRiskCount,
     lastScanAt: new Date().toISOString(),
     trend,
+    measuredCategories,
+    measuredWeight: Number(measuredWeight.toFixed(4)),
   }
 }
 

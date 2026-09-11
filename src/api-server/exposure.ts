@@ -54,6 +54,16 @@ import { probeAzure } from '@/lib/scanner/exposure/dev/cloud/azure';
 import { probeGcp } from '@/lib/scanner/exposure/dev/cloud/gcp';
 import { getCallerIdentity } from '@/lib/scanner/exposure/dev/cloud/aws';
 import { persistExposureAssessment } from './exposure-persistence';
+import {
+  deleteExposureHistoryEntry,
+  historyFingerprint,
+  HistoryQueryError,
+  loadExposureHistory,
+  loadExposureHistoryDetail,
+  notifyHistoryChanged,
+  onHistoryChanged,
+} from './exposure-history';
+import type { ExposureHistoryMode } from '@/lib/scanner/exposure/history';
 import type { ExposureAssessment } from '@/lib/scanner/exposure/types';
 import type { TargetFacet } from '@/lib/scanner/exposure/engine-contract';
 import {
@@ -947,6 +957,9 @@ router.post('/local/sync', requireMode('local'), async (req: AuthedRequest, res)
       client: req.client ?? null,
       source: 'local',
     });
+    /* The History stream lives in this process. Telling it now is what makes a
+       just-recorded assessment appear in the tab without a reload. */
+    if (!result.degraded) notifyHistoryChanged(req.user!.id);
     res.json({ data: result });
   } catch (error) {
     jsonError(res, 500, 'SYNC_FAILED', (error as Error).message);
@@ -964,9 +977,188 @@ router.post('/scans/:scanId/sync', requireMode('dev'), async (req: AuthedRequest
       client: req.client ?? null,
       source: 'dev',
     });
+    if (!result.degraded) notifyHistoryChanged(req.user!.id);
     res.json({ data: result });
   } catch (error) {
     jsonError(res, 500, 'SYNC_FAILED', (error as Error).message);
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════ history ═ */
+
+/**
+ * The History surface for the Local and Dev assessment modes.
+ *
+ * `/dashboard/scanner?mode=local` and `?mode=dev` each gain a History tab that
+ * reads these four routes. Everything they return comes from the tenant's own
+ * recorded rows — sessions, findings and cryptographic components — so a scan
+ * reviewed later reports exactly what it reported when it ran.
+ *
+ * The mode arrives as a query parameter rather than being baked into the path
+ * because the entitlement differs between them (Local is BASIC, Dev is PRO) and
+ * must be enforced per request. `requireHistoryMode` resolves it and then hands
+ * off to the same `requireMode` gate every other route on this router uses, so
+ * there is exactly one place where exposure entitlement is decided.
+ */
+function requireHistoryMode(options: { allowQueryToken?: boolean } = {}) {
+  return (req: AuthedRequest, res: Response, next: NextFunction) => {
+    const requested = typeof req.query.mode === 'string' ? req.query.mode : '';
+    if (requested !== 'local' && requested !== 'dev') {
+      return jsonError(res, 400, 'BAD_REQUEST', "A mode of 'local' or 'dev' is required.");
+    }
+    (req as AuthedRequest & { historyMode?: ExposureHistoryMode }).historyMode = requested;
+    return requireMode(requested, options)(req, res, next);
+  };
+}
+
+function historyModeOf(req: AuthedRequest): ExposureHistoryMode {
+  return (req as AuthedRequest & { historyMode?: ExposureHistoryMode }).historyMode ?? 'local';
+}
+
+/**
+ * Report a history failure as a failure.
+ *
+ * A read that could not run must never reach the browser as an empty list: an
+ * empty History tab has to mean "nothing recorded", and the moment it can also
+ * mean "the query failed" the tab stops being evidence of anything.
+ */
+function historyError(res: Response, error: unknown) {
+  if (error instanceof HistoryQueryError) {
+    return jsonError(res, 502, 'HISTORY_QUERY_FAILED', error.message, { table: error.table });
+  }
+  return jsonError(res, 500, 'HISTORY_FAILED', (error as Error).message ?? 'The assessment history could not be read.');
+}
+
+/**
+ * Live history for the tenant.
+ *
+ * Declared BEFORE `/history/:scanId` so the literal path is not captured as a
+ * scan id — Express matches in registration order.
+ */
+router.get('/history/stream', requireHistoryMode({ allowQueryToken: true }), (req: AuthedRequest, res) => {
+  const mode = historyModeOf(req);
+  const userId = req.user!.id;
+  const client = req.client;
+  if (!client) return jsonError(res, 503, 'NO_DATABASE', 'No database client is available for this session.');
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  let closed = false;
+  let lastFingerprint: string | null = null;
+  let liveRunning = false;
+  let timer: NodeJS.Timeout | null = null;
+  let emitting = false;
+
+  const send = (event: string, data: unknown) => {
+    if (closed) return;
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  const emit = async (force: boolean) => {
+    /* Overlapping ticks would queue database work behind a slow read and then
+       deliver it out of order. One emit at a time, always. */
+    if (closed || emitting) return;
+    emitting = true;
+    try {
+      const payload = await loadExposureHistory(client, userId, mode, { fresh: force });
+      liveRunning = payload.entries.some((entry) => entry.live?.running === true);
+      const fingerprint = historyFingerprint(payload.entries);
+      if (force || fingerprint !== lastFingerprint) {
+        lastFingerprint = fingerprint;
+        send('exposure-history', payload);
+      }
+    } catch (error) {
+      send('exposure-history-error', {
+        message: error instanceof Error ? error.message : 'The assessment history could not be read.',
+      });
+    } finally {
+      emitting = false;
+    }
+  };
+
+  /* The cadence follows the work: a running Dev assessment moves, a recorded
+     history does not. Polling a settled history every three seconds would cost
+     every open dashboard a query for nothing, and a recorded assessment already
+     arrives instantly through the change signal below. */
+  const schedule = () => {
+    if (closed) return;
+    timer = setTimeout(() => {
+      void emit(false).then(schedule);
+    }, liveRunning ? 3_000 : 15_000);
+  };
+
+  const unsubscribe = onHistoryChanged((changedUserId) => {
+    if (changedUserId !== userId) return;
+    void emit(true);
+  });
+
+  const heartbeat = setInterval(() => {
+    if (!closed) res.write(': heartbeat\n\n');
+  }, 25_000);
+
+  void emit(true).then(schedule);
+
+  req.on('close', () => {
+    closed = true;
+    unsubscribe();
+    clearInterval(heartbeat);
+    if (timer) clearTimeout(timer);
+  });
+});
+
+/** The recorded assessments for this tenant and mode. */
+router.get('/history', requireHistoryMode(), async (req: AuthedRequest, res) => {
+  const client = req.client;
+  if (!client) return jsonError(res, 503, 'NO_DATABASE', 'No database client is available for this session.');
+  try {
+    const payload = await loadExposureHistory(client, req.user!.id, historyModeOf(req));
+    res.json({ data: payload });
+  } catch (error) {
+    historyError(res, error);
+  }
+});
+
+/** One recorded assessment, rebuilt in full from its own rows. */
+router.get('/history/:scanId', requireHistoryMode(), async (req: AuthedRequest, res) => {
+  const client = req.client;
+  if (!client) return jsonError(res, 503, 'NO_DATABASE', 'No database client is available for this session.');
+  const scanId = String(req.params.scanId || '').trim();
+  if (!scanId) return jsonError(res, 400, 'BAD_REQUEST', 'A scan id is required.');
+
+  try {
+    const detail = await loadExposureHistoryDetail(client, req.user!.id, historyModeOf(req), scanId);
+    if (!detail) return jsonError(res, 404, 'NOT_FOUND', 'No recorded assessment with that id.');
+    res.json({ data: detail });
+  } catch (error) {
+    historyError(res, error);
+  }
+});
+
+/**
+ * Delete one recorded assessment and everything it wrote.
+ *
+ * This removes real inventory: the findings, the cryptographic components and
+ * the quantum exposures that assessment contributed stop being counted by every
+ * dashboard that reads them. That is the intent — a superseded assessment must
+ * not keep inflating the estate — and it is why the route is scoped to the
+ * caller's own tenant and to this mode's own records on every statement.
+ */
+router.delete('/history/:scanId', requireHistoryMode(), async (req: AuthedRequest, res) => {
+  const client = req.client;
+  if (!client) return jsonError(res, 503, 'NO_DATABASE', 'No database client is available for this session.');
+  const scanId = String(req.params.scanId || '').trim();
+  if (!scanId) return jsonError(res, 400, 'BAD_REQUEST', 'A scan id is required.');
+
+  try {
+    const removed = await deleteExposureHistoryEntry(client, req.user!.id, historyModeOf(req), scanId);
+    if (!removed) return jsonError(res, 404, 'NOT_FOUND', 'No recorded assessment with that id.');
+    res.json({ data: removed });
+  } catch (error) {
+    historyError(res, error);
   }
 });
 

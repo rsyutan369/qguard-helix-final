@@ -4,7 +4,6 @@ import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
-  Activity,
   ArrowRight,
   Award,
   Boxes,
@@ -13,7 +12,6 @@ import {
   FileText,
   Gauge,
   KeyRound,
-  LayoutDashboard,
   Network,
   Play,
   RefreshCw,
@@ -23,7 +21,6 @@ import {
   ShieldCheck,
   Sparkles,
   Target,
-  TrendingUp,
   Wrench,
 } from 'lucide-react';
 import {
@@ -51,15 +48,12 @@ import {
   ORANGE,
   RED,
   VIOLET,
-  EMERALD,
   AMBER,
   GOLD,
   TruncationNote,
 } from './_shared';
 
 const MODULES = [
-  { label: 'Command Center', detail: 'Operational assessment dashboard & live telemetry', path: '/dashboard/quantum-readiness/command-center', icon: LayoutDashboard, color: BLUE },
-  { label: 'Executive Dashboard', detail: 'Board-ready posture, business impact & forecast', path: '/dashboard/quantum-readiness/executive', icon: TrendingUp, color: EMERALD },
   { label: 'Quantum Exposure Graph™', detail: 'Dependency & blast-radius visualization', path: '/dashboard/quantum-readiness/exposure-graph', icon: Network, color: CYAN },
   { label: 'Quantum Risk Analysis', detail: 'Technical risk prioritization & evidence', path: '/dashboard/quantum-readiness/risk-analysis', icon: ShieldAlert, color: RED },
   { label: 'Quantum Remediation Engine™', detail: 'Asset-level remediation roadmap to certification', path: '/dashboard/quantum-readiness/remediation', icon: Wrench, color: CYAN },
@@ -289,8 +283,8 @@ export default function QuantumReadinessLandingPage() {
             <HeaderButton icon={BrainCircuit} onClick={() => navigate('/dashboard/quantum-readiness/ai-migration-advisor')}>
               Plan Migration
             </HeaderButton>
-            <HeaderButton icon={Activity} onClick={() => navigate('/dashboard/quantum-readiness/command-center')}>
-              Command Center
+            <HeaderButton icon={Sparkles} onClick={() => navigate('/dashboard/quantum-readiness/ai-executive-advisor')}>
+              Executive Advisor
             </HeaderButton>
           </div>
         </div>

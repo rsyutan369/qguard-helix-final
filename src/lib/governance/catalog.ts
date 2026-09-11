@@ -348,7 +348,7 @@ export const CONTROL_CATALOG: ControlDefinition[] = [
     domain: 'remediation',
     evaluator: 'findingOwnership',
     criterion: 'An open finding passes when it maps to an asset that records an owner.',
-    remediationRoute: '/dashboard/vulnerabilities',
+    remediationRoute: '/dashboard/quantum-readiness/risk-analysis',
     evidenceSources: ['vulnerabilities', 'scanner_alerts', 'assets'],
     weight: 3,
   },

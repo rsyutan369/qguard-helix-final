@@ -163,10 +163,21 @@ export function buildQuantumRiskAssessment(results: ScanResult[]): QuantumRiskAs
   }
 }
 
+/**
+ * `ScanFinding.riskScore` is Scanner_2's 0-1000 scale — the same scale the
+ * fingerprints document, the algorithm profiles emit (`riskScore * 10`) and
+ * every detection rule uses (600-950).
+ *
+ * These thresholds were 80/60/40, i.e. the 0-100 ladder, applied to a 0-1000
+ * average. Anything above 8% of the scale therefore classified as CRITICAL, so
+ * this function returned CRITICAL for effectively every finding set it was ever
+ * given — including quantum-safe ones. That is the "1 chain(s) · CRITICAL" row
+ * on the Quantum Posture card, and it was not a measurement of anything.
+ */
 function riskScoreToClassification(score: number): QuantumRiskClassification {
-  if (score >= 80) return 'CRITICAL'
-  if (score >= 60) return 'HIGH'
-  if (score >= 40) return 'MEDIUM'
+  if (score >= 800) return 'CRITICAL'
+  if (score >= 600) return 'HIGH'
+  if (score >= 400) return 'MEDIUM'
   return 'LOW'
 }
 

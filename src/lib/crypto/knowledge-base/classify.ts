@@ -29,6 +29,7 @@ import type {
   StandardReference,
 } from './types';
 import { QUANTUM_RELEVANT_ROLES } from './types';
+import { hybridRoles, type HybridParticipant } from '../hybrid-construction';
 import { canonicalName, findAlgorithm, parseKeySize } from './algorithms';
 import { curveSupportsRole, findCurve } from './curves';
 import { findLibrary } from './apis';
@@ -252,20 +253,30 @@ export function quantumVerdict(input: {
      because Streamlined NTRU Prime was not selected for FIPS 203. Whether the
      algorithm is standardised is reported separately, through `standardStatus`
      and the standards list, where a governance reader can act on it. */
-  const isPostQuantumAsymmetric = (candidate: AlgorithmDefinition | null | undefined): boolean =>
-    Boolean(
-      candidate &&
-        !candidate.shorBroken &&
-        (candidate.primitiveType === 'key-establishment' || candidate.primitiveType === 'digital-signature'),
-    );
+  const asHybridParticipant = (candidate: AlgorithmDefinition): HybridParticipant => ({
+    asymmetric:
+      candidate.primitiveType === 'key-establishment' ||
+      candidate.primitiveType === 'digital-signature' ||
+      candidate.primitiveType === 'public-key-encryption',
+    shorBroken: candidate.shorBroken,
+  });
 
-  const selfIsPqc = isPostQuantumAsymmetric(algorithm);
-  const partnerIsPqc = isPostQuantumAsymmetric(hybridPartner);
+  /* ── hybrid: a classical ASYMMETRIC primitive deployed WITH a PQC one ───
+     Both halves must be asymmetric. The rule used to be "one side is PQC and
+     the other is not", which is true of every hash and every symmetric cipher,
+     so MD5 beside an ML-KEM mention was published as completed migration work.
+     `hybridRoles` is the one place that decision is made — see
+     `src/lib/crypto/hybrid-construction.ts`. */
+  const pair = hybridPartner
+    ? hybridRoles(
+        { ...asHybridParticipant(algorithm), entry: algorithm },
+        { ...asHybridParticipant(hybridPartner), entry: hybridPartner },
+      )
+    : null;
 
-  /* ── hybrid: a classical primitive deployed WITH a PQC one ────────────── */
-  if (hybridPartner && selfIsPqc !== partnerIsPqc) {
-    const classical = selfIsPqc ? hybridPartner : algorithm;
-    const pqc = selfIsPqc ? algorithm : hybridPartner;
+  if (pair) {
+    const classical = pair.classical.entry;
+    const pqc = pair.pqc.entry;
     return {
       status: 'HYBRID',
       rationale: `${classical.canonicalName} is combined with ${pqc.canonicalName}${
@@ -458,7 +469,10 @@ export function classify(input: ClassifyInput): CryptoClassification {
 
   /* ── key size: explicit, then from the algorithm string, then the curve ── */
   let keySize = input.keySize ?? null;
-  if (keySize === null) keySize = parseKeySize(observedAs);
+  /* The algorithm is passed so the size has to be written against IT. Without
+     it, `sha256WithRSAEncryption` published "RSA-256" — the digest length read
+     as the modulus — as a critical finding. */
+  if (keySize === null) keySize = parseKeySize(observedAs, algorithm);
   if (keySize === null && curve) keySize = curve.bits;
   if (keySize === null && algorithm && (algorithm.family === 'RSA' || algorithm.family === 'DH')) {
     undetermined.push('key size');
@@ -555,24 +569,153 @@ export function extractHash(raw: string): string | null {
 }
 
 /**
- * Detect the other half of a hybrid construction on the same line.
+ * The primitives a hybrid name can be built from.
+ *
+ * `denotes` is what the marker STANDS FOR, in the order the partner name
+ * should be resolved. Curve markers are the reason this is a list rather than
+ * a string: `p256_mlkem768` names its classical half by the CURVE, and P-256
+ * is a curve, not an algorithm — `findAlgorithm('P-256')` is null. The
+ * algorithm it denotes is ECDH in a key-establishment hybrid and ECDSA in a
+ * signature composite, so the PQC half decides which name is returned.
+ */
+interface HybridMarker {
+  pattern: string;
+  kind: 'classical' | 'pqc';
+  denotes: string[];
+}
+
+const HYBRID_MARKERS: HybridMarker[] = [
+  /* Longest first: `secp256r1` must win before `p-?256` can match inside it. */
+  { pattern: 'secp256r1', kind: 'classical', denotes: ['ECDH', 'ECDSA'] },
+  { pattern: 'secp384r1', kind: 'classical', denotes: ['ECDH', 'ECDSA'] },
+  { pattern: 'secp521r1', kind: 'classical', denotes: ['ECDH', 'ECDSA'] },
+  { pattern: 'x25519', kind: 'classical', denotes: ['X25519', 'ECDH'] },
+  { pattern: 'x448', kind: 'classical', denotes: ['X448', 'ECDH'] },
+  { pattern: 'ed25519', kind: 'classical', denotes: ['Ed25519'] },
+  { pattern: 'ed448', kind: 'classical', denotes: ['Ed448'] },
+  { pattern: 'ecdsa', kind: 'classical', denotes: ['ECDSA'] },
+  { pattern: 'ecdh', kind: 'classical', denotes: ['ECDH'] },
+  { pattern: 'p-?256', kind: 'classical', denotes: ['ECDH', 'ECDSA'] },
+  { pattern: 'p-?384', kind: 'classical', denotes: ['ECDH', 'ECDSA'] },
+  { pattern: 'p-?521', kind: 'classical', denotes: ['ECDH', 'ECDSA'] },
+  { pattern: 'rsa', kind: 'classical', denotes: ['RSA'] },
+
+  { pattern: 'ml-?kem', kind: 'pqc', denotes: ['ML-KEM'] },
+  { pattern: 'kyber', kind: 'pqc', denotes: ['ML-KEM'] },
+  { pattern: 'ml-?dsa', kind: 'pqc', denotes: ['ML-DSA'] },
+  { pattern: 'dilithium', kind: 'pqc', denotes: ['ML-DSA'] },
+  { pattern: 'slh-?dsa', kind: 'pqc', denotes: ['SLH-DSA'] },
+  { pattern: 'sphincs', kind: 'pqc', denotes: ['SLH-DSA'] },
+  { pattern: 'falcon', kind: 'pqc', denotes: ['Falcon'] },
+  { pattern: 'sntrup761', kind: 'pqc', denotes: ['Streamlined NTRU Prime'] },
+  { pattern: 'frodokem', kind: 'pqc', denotes: ['FrodoKEM'] },
+  { pattern: 'mceliece', kind: 'pqc', denotes: ['Classic McEliece'] },
+  { pattern: 'bike', kind: 'pqc', denotes: ['BIKE'] },
+  { pattern: 'hqc', kind: 'pqc', denotes: ['HQC'] },
+];
+
+const HYBRID_MARKER_SCAN = new RegExp(HYBRID_MARKERS.map((entry) => `(${entry.pattern})`).join('|'), 'g');
+
+/** Name-like runs: a hybrid is named as ONE of these, never across two. */
+const NAME_TOKEN = /[a-z0-9_+.@-]+/g;
+
+/**
+ * What may sit BETWEEN two halves of a fused name: parameter digits and at
+ * most one joining character. Nothing else — a letter between them means they
+ * are two separate words that happen to share a token, which is how
+ * `rsa_to_mlkem_migration` (a function name) used to read as a deployment.
+ */
+const HYBRID_JOIN = /^[0-9]*[-_+.]?[0-9]*$/;
+
+interface MarkerHit {
+  marker: HybridMarker;
+  start: number;
+  end: number;
+}
+
+function scanMarkers(token: string): MarkerHit[] {
+  const hits: MarkerHit[] = [];
+  HYBRID_MARKER_SCAN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = HYBRID_MARKER_SCAN.exec(token)) !== null) {
+    const groupIndex = match.slice(1).findIndex((value) => value !== undefined);
+    if (groupIndex < 0) continue;
+    hits.push({ marker: HYBRID_MARKERS[groupIndex], start: match.index, end: match.index + match[0].length });
+  }
+  return hits;
+}
+
+/**
+ * Detect the other half of a hybrid construction NAMED IN ONE IDENTIFIER.
  *
  * Reporting the classical half of `X25519MLKEM768` as a standalone vulnerable
  * exposure turns the customer's completed post-quantum WORK into a finding
  * against them — the single most misleading result a PQC scanner can produce.
+ *
+ * ── Why fusion, and not co-occurrence ───────────────────────────────────────
+ *
+ * This used to answer "is there a PQC token ANYWHERE in the text, and a
+ * classical token ANYWHERE in the text", over a ±4-line window. Any file that
+ * merely NAMES both — an algorithm catalogue, a config enum, a switch over
+ * supported suites, a migration comment — made every primitive near it hybrid.
+ * A Dev scan of this repository published 33 RSA components and 46 ECDSA
+ * components as hybrid, i.e. as quantum-PROTECTED, because the surrounding
+ * lines happened to mention ML-KEM. Understating RSA exposure is the precise
+ * failure this platform exists to prevent.
+ *
+ * A hybrid deployment is named as ONE thing — `X25519MLKEM768`,
+ * `x25519_kyber768`, `sntrup761x25519-sha512@openssh.com`, `Ed25519+ML-DSA`.
+ * That fusion is the evidence; two names in the same neighbourhood are not.
  */
 export function detectHybridPartner(text: string, algorithmName: string): string | null {
-  const lower = text.toLowerCase();
   const self = findAlgorithm(algorithmName);
   if (!self) return null;
 
-  const pqcTokens = ['mlkem', 'ml-kem', 'kyber', 'mldsa', 'ml-dsa', 'dilithium', 'slh-dsa', 'sphincs', 'falcon', 'sntrup761'];
-  const classicalTokens = ['x25519', 'x448', 'ed25519', 'ed448', 'ecdh', 'ecdsa', 'p256', 'p-256', 'p384', 'secp256r1', 'secp384r1', 'rsa'];
+  for (const [token] of text.toLowerCase().matchAll(NAME_TOKEN)) {
+    const hits = scanMarkers(token);
+    if (hits.length < 2) continue;
 
-  const foundPqc = pqcTokens.find((token) => lower.includes(token));
-  const foundClassical = classicalTokens.find((token) => lower.includes(token));
-  if (!foundPqc || !foundClassical) return null;
+    /* Two halves are FUSED when only parameter digits and at most one joining
+       character separate them. Adjacency is checked between consecutive
+       markers, so a chain like `ecdsa_p256_mldsa44` holds together while
+       `rsa_to_mlkem_migration` does not. */
+    let pair: { classical: HybridMarker; pqc: HybridMarker } | null = null;
+    for (let index = 0; index + 1 < hits.length && !pair; index += 1) {
+      const left = hits[index];
+      const right = hits[index + 1];
+      if (left.marker.kind === right.marker.kind) continue;
+      if (!HYBRID_JOIN.test(token.slice(left.end, right.start))) continue;
+      pair = left.marker.kind === 'classical'
+        ? { classical: left.marker, pqc: right.marker }
+        : { classical: right.marker, pqc: left.marker };
+    }
+    if (!pair) continue;
 
-  const selfIsPqc = self.quantumStatus === 'PQC_STANDARDIZED';
-  return selfIsPqc ? foundClassical : foundPqc;
+    /* The observation being classified must itself be named in this token. A
+       hybrid group named elsewhere in the window says nothing about it — that
+       assumption is what published RSA as quantum-protected. */
+    const selfIsNamed = hits.some((hit) => hit.marker.denotes.includes(self.canonicalName));
+    if (!selfIsNamed) continue;
+
+    const selfKind = pair.pqc.denotes.includes(self.canonicalName) ? 'pqc' : 'classical';
+    const partner = selfKind === 'pqc' ? pair.classical : pair.pqc;
+
+    /* Curve markers denote more than one algorithm; the half we are pairing
+       with decides which. A hybrid KEM's classical half is a key agreement,
+       a composite signature's is a signature. */
+    const wantSignature = selfKind === 'pqc'
+      ? self.primitiveType === 'digital-signature'
+      : findAlgorithm(pair.pqc.denotes[0])?.primitiveType === 'digital-signature';
+
+    const ordered = partner.denotes.length > 1 && wantSignature
+      ? [...partner.denotes].sort((a, b) => (a === 'ECDSA' ? -1 : b === 'ECDSA' ? 1 : 0))
+      : partner.denotes;
+
+    for (const candidate of ordered) {
+      if (candidate === self.canonicalName) continue;
+      if (findAlgorithm(candidate)) return candidate;
+    }
+  }
+
+  return null;
 }

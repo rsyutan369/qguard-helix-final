@@ -28,6 +28,7 @@ import type {
 } from './types';
 import { stableHash } from './types';
 import { canonicalAlgorithmName, describeAlgorithm } from './algorithms';
+import { postQuantumReadiness } from './exposure-truth';
 
 /* ─────────────────────────────────────────────── component qualification ── */
 
@@ -344,16 +345,43 @@ export interface CbomSummary {
    * not 100%.
    */
   readiness: number | null;
-  byAlgorithm: Array<{ algorithm: string; count: number; quantumStatus: QuantumStatus }>;
+  /**
+   * Components whose primitive is broken by CLASSICAL cryptanalysis — MD5,
+   * SHA-1, RC4, DES, Blowfish and friends.
+   *
+   * These live in the `resistant` bucket, because `resistant` is a statement
+   * about Shor's algorithm and nothing else. That is a correct quantum verdict
+   * and a dangerous headline on its own: a reader sees "Resistant 230" in cyan
+   * and concludes 230 components are fine. This count is what lets every panel
+   * qualify that cell instead of implying an all-clear the evidence contradicts.
+   */
+  classicallyWeak: number;
+  byAlgorithm: Array<{
+    algorithm: string;
+    count: number;
+    /**
+     * The status MOST of this algorithm's components carry — not the status of
+     * whichever component happened to be enumerated first, which is what this
+     * used to publish. One ML-KEM component sitting in an X25519+ML-KEM hybrid
+     * made all 90 ML-KEM components read `hybrid`, directly beneath a cell
+     * reporting 23 hybrid components in total.
+     */
+    quantumStatus: QuantumStatus;
+    /** Every status present in the group, largest first. Length > 1 = mixed. */
+    mix: Array<{ status: QuantumStatus; count: number }>;
+    /** Components in this group broken by classical cryptanalysis. */
+    classicallyWeak: number;
+  }>;
   byUsage: Array<{ usage: CryptoRole; count: number }>;
   byLayer: Array<{ layer: string; count: number }>;
 }
 
 export function summariseCbom(components: CbomComponent[]): CbomSummary {
   const counts = { vulnerable: 0, hybrid: 0, pqc: 0, resistant: 0, unknown: 0, notApplicable: 0 };
-  const byAlgorithm = new Map<string, { count: number; quantumStatus: QuantumStatus }>();
+  const byAlgorithm = new Map<string, { count: number; classicallyWeak: number; statuses: Map<QuantumStatus, number> }>();
   const byUsage = new Map<CryptoRole, number>();
   const byLayer = new Map<string, number>();
+  let classicallyWeak = 0;
 
   for (const component of components) {
     switch (component.quantumStatus) {
@@ -365,9 +393,22 @@ export function summariseCbom(components: CbomComponent[]): CbomSummary {
       default: counts.unknown += 1; break;
     }
 
-    const algorithmEntry = byAlgorithm.get(component.canonicalAlgorithm);
-    if (algorithmEntry) algorithmEntry.count += 1;
-    else byAlgorithm.set(component.canonicalAlgorithm, { count: 1, quantumStatus: component.quantumStatus });
+    /* The knowledge base already knows MD5 and RC4 are broken; nothing read the
+       flag, so the verdict never reached a panel. */
+    const weak = describeAlgorithm(component.canonicalAlgorithm)?.classicallyWeak === true;
+    if (weak) classicallyWeak += 1;
+
+    let algorithmEntry = byAlgorithm.get(component.canonicalAlgorithm);
+    if (!algorithmEntry) {
+      algorithmEntry = { count: 0, classicallyWeak: 0, statuses: new Map() };
+      byAlgorithm.set(component.canonicalAlgorithm, algorithmEntry);
+    }
+    algorithmEntry.count += 1;
+    if (weak) algorithmEntry.classicallyWeak += 1;
+    algorithmEntry.statuses.set(
+      component.quantumStatus,
+      (algorithmEntry.statuses.get(component.quantumStatus) ?? 0) + 1,
+    );
 
     byUsage.set(component.usage, (byUsage.get(component.usage) ?? 0) + 1);
     byLayer.set(component.layer, (byLayer.get(component.layer) ?? 0) + 1);
@@ -376,16 +417,34 @@ export function summariseCbom(components: CbomComponent[]): CbomSummary {
   /* The denominator is the quantum-relevant population: vulnerable + hybrid +
      pqc. Symmetric and hash components are excluded on both sides, because
      including them lets an estate full of AES-256 report high readiness while
-     every one of its signatures is RSA — the exact error §16 forbids. */
-  const relevant = counts.vulnerable + counts.hybrid + counts.pqc;
-  const readiness = relevant === 0 ? null : Math.round(((counts.pqc + counts.hybrid * 0.6) / relevant) * 100);
+     every one of its signatures is RSA — the exact error §16 forbids.
+
+     The formula lives in `postQuantumReadiness` so this panel and the
+     reconciler behind every other panel cannot publish different percentages
+     for one scan, which they did: 31% here against 48% from the reconciler. */
+  const readiness = postQuantumReadiness(counts);
 
   return {
     total: components.length,
     ...counts,
     readiness,
+    classicallyWeak,
     byAlgorithm: [...byAlgorithm.entries()]
-      .map(([algorithm, entry]) => ({ algorithm, count: entry.count, quantumStatus: entry.quantumStatus }))
+      .map(([algorithm, entry]) => {
+        /* Dominant status, with the WORSE verdict winning a tie. A group split
+           evenly between vulnerable and pqc is reported vulnerable: understating
+           exposure on a coin-flip is the one failure mode worth ruling out. */
+        const mix = [...entry.statuses.entries()]
+          .map(([status, count]) => ({ status, count }))
+          .sort((a, b) => b.count - a.count || QUANTUM_RANK[b.status] - QUANTUM_RANK[a.status]);
+        return {
+          algorithm,
+          count: entry.count,
+          quantumStatus: mix[0]?.status ?? 'unknown',
+          mix,
+          classicallyWeak: entry.classicallyWeak,
+        };
+      })
       .sort((a, b) => b.count - a.count),
     byUsage: [...byUsage.entries()].map(([usage, count]) => ({ usage, count })).sort((a, b) => b.count - a.count),
     byLayer: [...byLayer.entries()].map(([layer, count]) => ({ layer, count })).sort((a, b) => b.count - a.count),

@@ -741,7 +741,7 @@ const EVALUATORS: Record<string, Evaluator> = {
         status: str(row.status) || 'open',
         openedAt: ms(row.created_at),
         assetId: str(row.asset_id) || null,
-        href: '/dashboard/vulnerabilities',
+        href: '/dashboard/quantum-readiness/risk-analysis',
       })
     }
     for (const row of inputs.scannerAlerts) {
@@ -833,7 +833,7 @@ const EVALUATORS: Record<string, Evaluator> = {
         title: str(row.title) || 'Vulnerability',
         assetId: str(row.asset_id),
         severity: /critical/i.test(str(row.severity)) ? 'critical' : /high/i.test(str(row.severity)) ? 'high' : 'medium',
-        href: '/dashboard/vulnerabilities',
+        href: '/dashboard/quantum-readiness/risk-analysis',
         at: str(row.created_at) || null,
       })
     }
@@ -846,7 +846,7 @@ const EVALUATORS: Record<string, Evaluator> = {
         title: `${str(row.algorithm) || 'Quantum-vulnerable algorithm'} detected`,
         assetId: str(row.asset_id),
         severity: threat.includes('critical') ? 'critical' : 'high',
-        href: '/dashboard/vulnerabilities',
+        href: '/dashboard/quantum-readiness/risk-analysis',
         at: str(row.created_at) || null,
       })
     }

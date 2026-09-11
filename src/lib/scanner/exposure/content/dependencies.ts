@@ -728,26 +728,20 @@ export const dependencyEngine: ExposureEngine = {
       });
     }
 
+    /* Declared ONCE. This gap used to be reported twice — here through
+       `context.notAssessed` and again in the returned coverage below, with two
+       different wordings. `mergeCoverage` keyed on `dimension|reason`, so both
+       survived, and the Assessment Coverage panel listed "Dependency
+       vulnerability advisories" twice under "Not assessed (3)" while the
+       completeness note beside it said 2 dimensions. One gap is one entry
+       however many code paths noticed it. */
     context.notAssessed(
       'Dependency vulnerability advisories',
-      'This engine carries no vulnerability database, so no CVE claim is made about any dependency. Connect an advisory source to assess known vulnerabilities.',
+      'This engine carries no vulnerability database, so no CVE claim is made about any dependency: known-vulnerability status is unassessed rather than clean. Connect an advisory source to assess known vulnerabilities.',
     );
 
     context.workspace.meta.dependencies = enriched;
 
-    return completed(
-      findings,
-      {
-        dependencies: enriched.length,
-        notAssessed: [
-          {
-            dimension: 'Dependency vulnerability advisories',
-            reason: 'No advisory database is connected; known-vulnerability status is unassessed rather than clean.',
-            engineId: 'dependency-analysis',
-          },
-        ],
-      },
-      { dependencies: enriched },
-    );
+    return completed(findings, { dependencies: enriched.length }, { dependencies: enriched });
   },
 };

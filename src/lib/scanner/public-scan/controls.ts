@@ -20,6 +20,7 @@
  *  • Weights of the scored controls sum to exactly 100.
  */
 
+import { hybridProbeSettled } from '../web-scanner/edge-intelligence-model'
 import type { ControlState, PublicScanEvidence } from './types'
 
 /** Scored dimensions and their weights. Must sum to 100. */
@@ -561,26 +562,37 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
   const pureKem = keyAgreement.pureKemGroups ?? []
   // Hybrid ML-KEM is only reachable on an endpoint that negotiates TLS 1.3.
   const hybridReachable = evidence.engines?.tls?.data?.hybridProbed ?? true
+  /* "Not Supported / Fail / HIGH" is a claim about the endpoint, and an empty
+     accepted-list is also what a throttled or budget-skipped probe leaves
+     behind. Without a settled refusal this control reports Unknown — the same
+     rule the dashboard's verdict, the detection rules and the orchestrator's
+     finding text now share. */
+  const hybridAnswered = hybridProbeSettled(evidence.engines?.tls?.data)
+  const undetermined = !keyAgreement.probed || (!hybrid.length && !pureKem.length && !hybridAnswered)
   states.push(
     control({
       key: 'pq-key-agreement',
       control: 'Post-Quantum Key Agreement',
       shortLabel: 'Post-Quantum Key Agreement',
-      status: !keyAgreement.probed ? 'Unknown' : hybrid.length ? 'Healthy' : 'Not Supported',
-      severity: !keyAgreement.probed ? 'LOW' : hybrid.length ? 'SAFE' : 'HIGH',
-      value: !keyAgreement.probed ? 'Unknown' : hybrid.length ? 'Pass' : 'Fail',
+      status: undetermined ? 'Unknown' : hybrid.length ? 'Healthy' : 'Not Supported',
+      severity: undetermined ? 'LOW' : hybrid.length ? 'SAFE' : 'HIGH',
+      value: undetermined ? 'Unknown' : hybrid.length ? 'Pass' : 'Fail',
       finding: !keyAgreement.probed
         ? 'Could not be determined'
         : hybrid.length
           ? hybrid.join(', ')
           : pureKem.length
             ? `Standalone ${pureKem.join(', ')} only — no hybrid group`
-            : 'No hybrid PQ group accepted',
+            : hybridAnswered
+              ? 'No hybrid PQ group accepted'
+              : 'Hybrid group probe did not settle — not measured',
       // When the endpoint has no TLS 1.3, hybrid ML-KEM is not merely absent —
       // it is unreachable, because those groups exist only in the TLS 1.3
       // key_share. Saying so is far more useful than "no group accepted".
       evidence: !keyAgreement.probed
         ? 'Named-group probe did not run'
+        : undetermined
+          ? 'No hybrid ML-KEM group reached a conclusive verdict on this run — group probing opens one handshake per group and is the first thing an endpoint throttles. Nothing is claimed either way; re-run to settle it.'
         : !hybridReachable
           ? 'Endpoint does not negotiate TLS 1.3, where ML-KEM groups are defined — hybrid PQ is unreachable until TLS 1.3 is enabled'
           : [

@@ -335,14 +335,27 @@ export type EnterpriseScanner2 = {
     lowCount: number;
     totalFindings: number;
     hndlRiskCount: number;
+    /** Categories actually observed. Absent on records written before the
+     *  aggregate stopped scoring unobserved categories at a passing 850. */
+    measuredCategories?: string[];
+    /** Share of the model's weight that was measured, 0-1. */
+    measuredWeight?: number;
   } | null;
   quantumReadiness?: {
     score: number;
     label: string;
     color: string;
     assetsRequiringMigration: Record<string, number>;
+    /* Two populations, named. `totalAssets` was previously filled with the
+       FINDING count, which the Quantum Posture card printed as
+       "N of M inventoried asset(s)" on single-asset tenants. Both counts are
+       now returned and both are optional here so historical records still
+       render. */
     totalAssets: number;
     quantumSafeAssets: number;
+    totalFindings?: number;
+    quantumSafeFindings?: number;
+    notAssessed?: boolean;
   } | null;
   migrationRecommendations?: PqcRecommendation[];
 };

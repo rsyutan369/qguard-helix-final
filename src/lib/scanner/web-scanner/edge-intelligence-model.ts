@@ -48,6 +48,22 @@ export interface EdgePostQuantumKeyAgreement extends EdgeControl {
   probed: boolean
   /** True when the TLS 1.3-only hybrid groups were reachable to probe. */
   hybridProbed: boolean
+  /**
+   * Hybrid groups that reached a conclusive verdict, and those that did not.
+   *
+   * A negative post-quantum claim is only publishable when a hybrid group was
+   * actually refused. Without this split, an empty `hybridGroups` — which is
+   * also what a throttled, budget-skipped or locally-unsupported probe
+   * produces — was read as a refusal, and the page published
+   * "Not offered · every hybrid ML-KEM group was offered in isolation and
+   * refused" for endpoints measurably running X25519MLKEM768.
+   *
+   * Optional on the TYPE so snapshots persisted before this field existed keep
+   * deserialising; `measuredKeyAgreement` treats `undefined` as "the old
+   * pipeline made no split", never as "settled".
+   */
+  hybridGroupsSettled?: string[]
+  hybridGroupsInconclusive?: string[]
   /** Handshakes actually spent. Provenance, never an estimate. */
   handshakes: number
   inconclusiveGroups: string[]
@@ -166,7 +182,20 @@ export interface EdgeHttpSurface {
  */
 export type EdgeQuantumVulnerability =
   | 'Quantum-safe'
+  /**
+   * Hybrid key agreement, and every path the endpoint accepts carries it.
+   */
   | 'Hybrid-protected'
+  /**
+   * Hybrid key agreement measured, but the endpoint ALSO accepts a path the
+   * hybrid group cannot reach — static RSA key transport, or a pre-1.3
+   * protocol. The caveat used to live only in the reason string while the
+   * verdict word stayed "Hybrid-protected", and a one-word verdict on a card
+   * face is what gets read: a Google endpoint accepting four static-RSA suites
+   * was published as hybrid-protected directly above its own
+   * "Static RSA accepted: Yes · 4 suite(s)" row.
+   */
+  | 'Hybrid — partial coverage'
   | 'Classical only'
   | 'High Risk'
   | 'Vulnerable'
@@ -236,6 +265,17 @@ export interface EdgeIntelligence {
 export interface MeasuredKeyAgreement {
   /** True when named-group probing ran at all. False ⇒ everything below is unknown, not negative. */
   probed: boolean
+  /**
+   * True when at least one HYBRID group reached a conclusive verdict.
+   *
+   * `probed` covers the group probe as a whole, and the classical groups
+   * usually settle even when the hybrid ones do not — they are cheaper and are
+   * attempted first. So `probed && !hybrid` does NOT license "hybrid was
+   * refused", and every consumer that phrased it that way ("every hybrid ML-KEM
+   * group was offered in isolation and refused") was making a claim from the
+   * absence of an answer.
+   */
+  hybridSettled: boolean
   /** Classical hedge + ML-KEM accepted together — the recommended migration posture. */
   hybrid: boolean
   /** Standalone ML-KEM accepted with no classical hedge. */
@@ -258,6 +298,7 @@ export interface MeasuredKeyAgreement {
 /** The verdict for an endpoint no probe ever reached. Never a negative result. */
 export const UNPROBED_KEY_AGREEMENT: MeasuredKeyAgreement = {
   probed: false,
+  hybridSettled: false,
   hybrid: false,
   pureKem: false,
   kemApplied: false,
@@ -288,8 +329,16 @@ export function measuredKeyAgreement(edge: EdgeIntelligence | null | undefined):
   const pureKem = !hybrid && pq.pureKemGroups.length > 0
   const group = hybrid ? (pq.primaryGroup ?? pq.hybridGroups[0]) : pureKem ? pq.pureKemGroups[0] : null
 
+  /* An acceptance settles the question by itself — it is unforgeable, a
+     throttled connection cannot fake one. Otherwise a hybrid group has to have
+     been conclusively refused. Snapshots written before the split carry no
+     lists; they fall back to the old reading rather than being retro-actively
+     turned into "unmeasured". */
+  const hybridSettled = hybrid || pureKem || hybridProbeSettled(pq)
+
   return {
     probed: true,
+    hybridSettled,
     hybrid,
     pureKem,
     kemApplied: hybrid || pureKem,
@@ -303,6 +352,39 @@ export function measuredKeyAgreement(edge: EdgeIntelligence | null | undefined):
 }
 
 /**
+ * Did the hybrid probe actually produce an ANSWER for this endpoint?
+ *
+ * The one predicate every negative post-quantum claim has to pass. Four
+ * independent consumers phrased "no hybrid group was accepted" as a finding
+ * about the endpoint — the Not-offered verdict, detection rules PQC-002 and
+ * PQC-003, the orchestrator's key-exchange finding text and the /public-scan
+ * control — and all four reached it from an empty accepted-list, which is also
+ * what a throttled or budget-skipped probe produces. Stating the rule once is
+ * what stops the fifth consumer from reintroducing it.
+ *
+ * An ACCEPTANCE settles the question by itself: a reset connection cannot forge
+ * a successful handshake. Otherwise a hybrid group has to have been
+ * conclusively refused.
+ */
+export function hybridProbeSettled(
+  pq:
+    | {
+        hybridGroups?: string[] | null
+        pureKemGroups?: string[] | null
+        hybridGroupsSettled?: string[] | null
+      }
+    | null
+    | undefined,
+): boolean {
+  if (!pq) return false
+  if ((pq.hybridGroups?.length ?? 0) > 0 || (pq.pureKemGroups?.length ?? 0) > 0) return true
+  // Snapshots written before the split carry no list: keep the old reading
+  // rather than retro-actively turning every stored verdict into "unmeasured".
+  if (pq.hybridGroupsSettled === undefined || pq.hybridGroupsSettled === null) return true
+  return pq.hybridGroupsSettled.length > 0
+}
+
+/**
  * Shorthand for "are the session secrets on this channel out of Shor's reach?".
  *
  * Deliberately narrower than "has any PQC been observed anywhere": a repository
@@ -310,6 +392,81 @@ export function measuredKeyAgreement(edge: EdgeIntelligence | null | undefined):
  */
 export function measuredKemApplied(edge: EdgeIntelligence | null | undefined): boolean {
   return measuredKeyAgreement(edge).kemApplied
+}
+
+/* ───────────────────────────────────────────────── transport-header tally ── */
+
+/** One transport-security header reading, as either probe reports it. */
+export interface HeaderTallySource {
+  name?: string | null
+  present?: boolean | null
+  secure?: boolean | null
+  status?: string | null
+}
+
+export interface HeaderTally {
+  /** Null when nothing was measured — never 0, which reads as "all failed". */
+  hardened: number | null
+  applicable: number | null
+  /** `4/9 hardened`, or the reason it could not be measured. */
+  label: string
+  /** Which probe the reading came from, so the panel can state its provenance. */
+  source: 'edge' | 'api-probe' | 'none'
+}
+
+/**
+ * ONE transport-header tally for the whole page.
+ *
+ * ── The defect this removes ─────────────────────────────────────────────────
+ * Three readers each counted their own population for one scan:
+ *
+ *   published-scoring.ts   `apiSecurityResult.securityHeaders` minus HSTS, with
+ *                          no notion of applicability      →  "4/9 hardened"
+ *   Observed Attack Surface  the edge model's applicable set →  "3/8 hardened"
+ *   Code & Dependencies      every probed header, HSTS included
+ *
+ * So the score decomposition and the surface row published different ratios for
+ * the same headers, on the same card, at the same time.
+ *
+ * The edge model is the better measurement — it drops headers that are not
+ * applicable or are superseded by a stronger one, and it scores HSTS on its own
+ * control — so it wins wherever it exists. The API probe's list is the fallback
+ * for records written before the edge engine ran, and it excludes HSTS too, so
+ * the two sources at least count the same KIND of thing.
+ */
+export function headerTally(
+  edgeHttp: { reachable?: boolean | null; hardenedCount?: number | null; applicableCount?: number | null; error?: string | null } | null | undefined,
+  apiHeaders: readonly HeaderTallySource[] | null | undefined,
+): HeaderTally {
+  if (edgeHttp?.reachable && (edgeHttp.applicableCount ?? 0) > 0) {
+    const hardened = edgeHttp.hardenedCount ?? 0
+    const applicable = edgeHttp.applicableCount ?? 0
+    return { hardened, applicable, label: `${hardened}/${applicable} hardened`, source: 'edge' }
+  }
+
+  // HSTS is scored on its own control, so it never enters this denominator.
+  const nonHsts = (apiHeaders ?? []).filter(
+    (header) => String(header.name ?? '').toLowerCase() !== 'strict-transport-security',
+  )
+  if (nonHsts.length > 0) {
+    const hardened = nonHsts.filter((header) => header.secure === true).length
+    return {
+      hardened,
+      applicable: nonHsts.length,
+      label: `${hardened}/${nonHsts.length} hardened`,
+      source: 'api-probe',
+    }
+  }
+
+  return {
+    hardened: null,
+    applicable: null,
+    label:
+      edgeHttp && edgeHttp.reachable === false
+        ? `not measured — the origin did not answer over HTTPS (${edgeHttp.error ?? 'no response'})`
+        : 'not measured — no HTTPS response headers were collected',
+    source: 'none',
+  }
 }
 
 /* ─────────────────────────────────────────────────── quantum vulnerability ── */
@@ -345,6 +502,21 @@ export function classifyQuantumVulnerability(input: {
   /** Null when nothing was observed — handled by the `hasTransportEvidence` gate. */
   quantumRisk: 'Low' | 'Medium' | 'High' | 'Critical' | null
   hybridProbed: boolean
+  /**
+   * True when at least one hybrid ML-KEM group reached a conclusive verdict.
+   *
+   * Every negative branch below asserts "no hybrid post-quantum group is
+   * accepted". That is a measurement, and it is only available when a hybrid
+   * group was actually settled. When the probe was throttled, budget-skipped or
+   * locally untestable the honest verdict is Unknown — the certificate and
+   * protocol risk factors are still reported on their own rows, so nothing is
+   * hidden by withholding the endpoint-wide word.
+   *
+   * Optional so callers written before the split keep compiling; `undefined`
+   * means "this pipeline made no split" and preserves the previous behaviour
+   * rather than silently turning every historical verdict into Unknown.
+   */
+  hybridMeasured?: boolean
   supportsTls13: boolean
   /**
    * Critical factors that are NOT the key exchange — static RSA key transport,
@@ -373,7 +545,12 @@ export function classifyQuantumVulnerability(input: {
   }
   if (input.hybridObserved && input.pqSignatureObserved) {
     return {
-      vulnerability: 'Quantum-safe',
+      /* THE VERDICT WORD CARRIES THE CAVEAT, NOT JUST THE REASON.
+         `downgradeCaveat` is appended below either way, but a reader who sees
+         only the verdict must not be told the endpoint is finished when a
+         Critical residual factor means a session can avoid the hybrid group
+         entirely. */
+      vulnerability: residual.length ? 'Hybrid — partial coverage' : 'Quantum-safe',
       reason:
         'Hybrid ML-KEM key agreement and a post-quantum certificate signature were both observed — confidentiality and authentication survive a CRQC.' +
         downgradeCaveat,
@@ -381,10 +558,19 @@ export function classifyQuantumVulnerability(input: {
   }
   if (input.hybridObserved) {
     return {
-      vulnerability: 'Hybrid-protected',
+      vulnerability: residual.length ? 'Hybrid — partial coverage' : 'Hybrid-protected',
       reason:
         'Hybrid ML-KEM key agreement is in use, so traffic recorded today cannot be decrypted by a future CRQC. The certificate chain is still signed with classical algorithms, so authentication remains a migration target.' +
         downgradeCaveat,
+    }
+  }
+  /* No hybrid group was observed — but "not observed" is only a finding about
+     the endpoint once a hybrid group has actually been refused. */
+  if (input.hybridMeasured === false) {
+    return {
+      vulnerability: 'Unknown',
+      reason:
+        'No hybrid ML-KEM group reached a conclusive verdict on this run, so it is not established whether this endpoint offers post-quantum key agreement. The certificate and protocol risk factors below are measured and stand on their own; the endpoint-wide quantum verdict is withheld until group probing settles.',
     }
   }
   if (input.quantumRisk === 'Critical') {

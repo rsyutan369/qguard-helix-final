@@ -26,7 +26,7 @@ function eventHref(e: SecurityEvent): string {
   if (e.assetId) return `/dashboard/assets?asset=${encodeURIComponent(e.assetId)}`
   if (type.includes('scan')) return '/dashboard/scanner'
   if (type.includes('runtime') || type.includes('crypto')) return '/dashboard/runtime-telemetry'
-  if (type.includes('vulnerab') || type.includes('finding')) return '/dashboard/vulnerabilities'
+  if (type.includes('vulnerab') || type.includes('finding')) return '/dashboard/quantum-readiness/risk-analysis'
   if (type.includes('migration')) return '/dashboard/live-migration'
   if (type.includes('cert')) return '/dashboard/certificate-telemetry'
   return '/dashboard/audit-vault'

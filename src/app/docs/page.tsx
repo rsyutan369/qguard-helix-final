@@ -333,8 +333,8 @@ const SECTIONS: DocSection[] = [
         id: 'tutorial-review-vulns',
         title: 'Review vulnerabilities and exposure',
         audience: 'Security teams',
-        href: '/dashboard/vulnerabilities',
-        steps: ['Open Vulnerabilities', 'Filter by critical and high severity', 'Open affected asset context', 'Review remediation guidance', 'Queue migration or defense action'],
+        href: '/dashboard/quantum-readiness/risk-analysis',
+        steps: ['Open Quantum Risk Analysis', 'Filter by critical and high severity', 'Open affected asset context', 'Review remediation guidance', 'Queue migration or defense action'],
       },
     ],
   },
@@ -348,7 +348,7 @@ const SECTIONS: DocSection[] = [
     tags: ['hndl', 'harvest now decrypt later', 'critical alerts', 'threat intelligence', 'defense actions', 'incident response'],
     quickLinks: [
       { label: 'Open HNDL', href: '/dashboard/harvest-now', icon: EyeOff },
-      { label: 'Vulnerabilities', href: '/dashboard/vulnerabilities', icon: Radio },
+      { label: 'Risk Analysis', href: '/dashboard/quantum-readiness/risk-analysis', icon: Radio },
       { label: 'Runtime Intel', href: '/dashboard/runtime-crypto-intel', icon: Activity },
     ],
     topics: [
@@ -521,9 +521,9 @@ const SECTIONS: DocSection[] = [
       },
       {
         id: 'step-vulnerability-cbom',
-        title: '3. Confirm the evidence in Vulnerabilities, CBOM, and Exposure Graph',
-        body: 'Use /dashboard/vulnerabilities for the work queue, /dashboard/cbom for technical evidence, and /dashboard/quantum-readiness/exposure-graph for blast radius.',
-        bullets: ['Vulnerabilities shows what must be remediated first', 'CBOM explains algorithm, protocol, key size, source asset, detection method, and recommendation', 'The Exposure Graph shows which asset creates the most risk to the environment', 'Prioritize critical and high findings before medium and low hardening work'],
+        title: '3. Confirm the evidence in Risk Analysis, CBOM, and Exposure Graph',
+        body: 'Use /dashboard/quantum-readiness/risk-analysis for the work queue, /dashboard/cbom for technical evidence, and /dashboard/quantum-readiness/exposure-graph for blast radius.',
+        bullets: ['Quantum Risk Analysis shows what must be remediated first', 'CBOM explains algorithm, protocol, key size, source asset, detection method, and recommendation', 'The Exposure Graph shows which asset creates the most risk to the environment', 'Prioritize critical and high findings before medium and low hardening work'],
       },
       {
         id: 'step-select-targets',
@@ -552,7 +552,7 @@ const SECTIONS: DocSection[] = [
       {
         id: 'step-validate-finish',
         title: '8. Rescan, validate, and close compliance evidence',
-        body: 'After execution, return to /dashboard/scanner and run a fresh validation scan. Then confirm /dashboard/assets and /dashboard/vulnerabilities show the finding as fixed or no longer detected.',
+        body: 'After execution, return to /dashboard/scanner and run a fresh validation scan. Then confirm /dashboard/assets and /dashboard/quantum-readiness/risk-analysis show the finding as fixed or no longer detected.',
         bullets: ['Compare before and after findings', 'Check that vulnerable components decreased and PQC-ready or monitored components increased', 'Open /dashboard/compliance to review NIST and governance evidence', 'Export the final report for audit, leadership, or client proof'],
       },
     ],
@@ -562,7 +562,7 @@ const SECTIONS: DocSection[] = [
         title: 'Complete a beginner PQC migration',
         audience: 'Beginner users',
         href: '/dashboard/scanner',
-        steps: ['Open Scanner and run an authorized scan', 'Open Assets and inspect Observed Cryptography plus Detected Vulnerabilities', 'Open Vulnerabilities and prioritize critical or high findings', 'Open CBOM to confirm the exact algorithm, key size, protocol, evidence, and recommendation', 'Open Crypto Exposure to check blast radius and asset priority', 'Open Migration Planner and create a phased plan with target quantum-safe algorithm, owner, validation, and rollback', 'Open Migration Sandbox and simulate the change before production', 'Open PQC Orchestration to queue or approve the workflow', 'Open Live Migration to monitor execution and logs', 'Return to Scanner, rescan, then verify Assets, Vulnerabilities, and Compliance show the corrected state'],
+        steps: ['Open Scanner and run an authorized scan', 'Open Assets and inspect Observed Cryptography plus Detected Vulnerabilities', 'Open Quantum Risk Analysis and prioritize critical or high findings', 'Open CBOM to confirm the exact algorithm, key size, protocol, evidence, and recommendation', 'Open Crypto Exposure to check blast radius and asset priority', 'Open Migration Planner and create a phased plan with target quantum-safe algorithm, owner, validation, and rollback', 'Open Migration Sandbox and simulate the change before production', 'Open PQC Orchestration to queue or approve the workflow', 'Open Live Migration to monitor execution and logs', 'Return to Scanner, rescan, then verify Assets, Quantum Risk Analysis, and Compliance show the corrected state'],
       },
       {
         id: 'tutorial-sandbox-before-production',
@@ -653,7 +653,7 @@ const SECTIONS: DocSection[] = [
     quickLinks: [
       { label: 'Telemetry Correlation', href: '/dashboard/telemetry-correlation', icon: Network },
       { label: 'Runtime Telemetry', href: '/dashboard/runtime-telemetry', icon: Radio },
-      { label: 'Vulnerabilities', href: '/dashboard/vulnerabilities', icon: Bell },
+      { label: 'Risk Analysis', href: '/dashboard/quantum-readiness/risk-analysis', icon: Bell },
     ],
     topics: [
       {
@@ -851,7 +851,7 @@ stream.addEventListener('metrics-update', (event) => {
 const WIZARD_STEPS = [
   { id: 'wizard-scan', label: 'Run authorized scan', href: '/dashboard/scanner' },
   { id: 'wizard-assets', label: 'Review assets', href: '/dashboard/assets' },
-  { id: 'wizard-vulnerabilities', label: 'Prioritize vulnerabilities', href: '/dashboard/vulnerabilities' },
+  { id: 'wizard-vulnerabilities', label: 'Prioritize vulnerabilities', href: '/dashboard/quantum-readiness/risk-analysis' },
   { id: 'wizard-cbom', label: 'Confirm CBOM evidence', href: '/dashboard/cbom' },
   { id: 'wizard-plan', label: 'Create migration plan', href: '/dashboard/migration-planner' },
   { id: 'wizard-sandbox', label: 'Simulate in sandbox', href: '/dashboard/migration-sandbox' },

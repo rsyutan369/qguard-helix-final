@@ -1,0 +1,16 @@
+- generic [ref=f7e2]:
+  - generic [ref=f7e3]:
+    - banner [ref=f7e4]:
+      - link "Qguard Helix" [ref=f7e5] [cursor=pointer]:
+        - /url: /
+      - button "Sign out" [ref=f7e10]
+    - generic [ref=f7e15]:
+      - generic [ref=f7e20]: Starter plan required
+      - heading "Subscription required" [level=1] [ref=f7e24]
+      - paragraph [ref=f7e25]: Your account does not have an active subscription. Choose a plan to unlock the platform.
+      - generic [ref=f7e26]:
+        - button "View plans" [ref=f7e27]
+        - link "Manage subscription" [ref=f7e31] [cursor=pointer]:
+          - /url: /dashboard/settings
+      - paragraph [ref=f7e32]: Each higher tier includes everything in the tiers below it. Access is verified on every request.
+  - status "Demo session active": Demo session · not real tenant data

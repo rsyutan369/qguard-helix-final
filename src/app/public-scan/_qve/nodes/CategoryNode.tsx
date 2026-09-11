@@ -229,11 +229,31 @@ export const CategoryNode = React.memo(function CategoryNode({
               {verdict.label}
             </span>
             {node.score !== null && node.hasEvidence && (
-              <span className="shrink-0 font-mono text-[9.5px] font-bold tabular-nums" style={{ color: live ? color : palette.inkMuted }}>
+              <span
+                className="shrink-0 font-mono text-[9.5px] font-bold tabular-nums"
+                style={{ color: live ? color : palette.inkMuted }}
+                title={
+                  node.scoreScope
+                    ? `Posture ${node.score}/100, projected from the published grading categories: ${node.scoreScope}. It grades those controls, not whether this surface's own modules ran.`
+                    : `Posture ${node.score}/100.`
+                }
+              >
                 {node.score}
               </span>
             )}
           </p>
+          {/* WHAT THE NUMBER IS A SCORE OF.
+              A surface score is a projection of the published model onto this
+              card, and without the category names it reads as a verdict on the
+              surface's own machinery: Asset Discovery showed `0 · Critical`
+              from DNS CAA alone while all five of its modules had reported
+              cleanly. Naming the source is what makes the two readings
+              distinguishable. */}
+          {node.score !== null && node.hasEvidence && node.scoreScope && (
+            <p className="truncate font-mono text-[9px] uppercase tracking-[0.08em] text-slate-600" title={node.scoreScope}>
+              {node.scoreScope}
+            </p>
+          )}
           {context && (
             <p className="truncate text-[10px] leading-snug text-slate-400" title={context}>
               {context}

@@ -14,7 +14,7 @@ import type { Row } from '@/lib/migration/asset-intelligence'
  * The implementation this replaces queried nine tables and keyword-matched
  * their rows for the word "drift" — so it re-published the vulnerability
  * inventory under a different noun and never compared anything to anything.
- * Everything that page showed already existed on /dashboard/vulnerabilities.
+ * Everything that page showed already existed on Quantum Risk Analysis.
  */
 
 const router = Router()

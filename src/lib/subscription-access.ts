@@ -107,7 +107,6 @@ const MODULE_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/dashboard/telemetry-correlation', tier: 'pro' },
   { prefix: '/dashboard/drift', tier: 'pro' },
   { prefix: '/dashboard/quantum-risk-scoring', tier: 'pro' },
-  { prefix: '/dashboard/vulnerabilities', tier: 'pro' },
   // PRO — PQAuth
   { prefix: '/dashboard/pqauth', tier: 'pro' },
   // PRO — Observability

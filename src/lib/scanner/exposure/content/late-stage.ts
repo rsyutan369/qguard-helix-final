@@ -89,10 +89,20 @@ export const quantumEngine: ExposureEngine = {
        so the estate-level verdict is itself evidence-backed and exportable —
        not so the finding count can be padded. */
     if (summary.vulnerable > 0) {
+      /* Count the VULNERABLE members of each group, not the group total.
+         Filtering on a single per-algorithm status dropped any group whose
+         dominant status was something else — even when it carried vulnerable
+         components — and printed the full group size for the ones it kept, so
+         the "largest contributors" did not add up to the total they explained. */
       const worstAlgorithms = summary.byAlgorithm
-        .filter((entry) => entry.quantumStatus === 'vulnerable')
+        .map((entry) => ({
+          algorithm: entry.algorithm,
+          vulnerable: entry.mix.find((slice) => slice.status === 'vulnerable')?.count ?? 0,
+        }))
+        .filter((entry) => entry.vulnerable > 0)
+        .sort((a, b) => b.vulnerable - a.vulnerable)
         .slice(0, 5)
-        .map((entry) => `${entry.algorithm} (${entry.count})`);
+        .map((entry) => `${entry.algorithm} (${entry.vulnerable})`);
 
       const finding = buildFinding({
         scanId: context.scanId,
@@ -108,7 +118,14 @@ export const quantumEngine: ExposureEngine = {
             ? 'No post-quantum readiness percentage is published because no quantum-relevant component was observed.'
             : `Post-quantum readiness across the quantum-relevant population is ${summary.readiness}%.`,
           worstAlgorithms.length ? `The largest contributors are ${worstAlgorithms.join(', ')}.` : '',
-          `${summary.resistant} symmetric and hash components are quantum-resistant at adequate key sizes; they are deliberately excluded from the readiness ratio, because their presence says nothing about the state of the asymmetric cryptography that actually needs migrating.`,
+          /* This used to assert "at adequate key sizes" unconditionally. On a
+             corpus where all 230 resistant components were MD5, SHA-1, RC4 and
+             DES, the platform published that sentence about primitives it had
+             itself flagged as classically broken. Resistant is a verdict about
+             Shor's algorithm; it is not a clean bill of health. */
+          summary.classicallyWeak > 0
+            ? `${summary.resistant} symmetric and hash components are not broken by Shor's algorithm and are excluded from the readiness ratio, because their presence says nothing about the state of the asymmetric cryptography that actually needs migrating. ${summary.classicallyWeak} of them are nevertheless broken by classical cryptanalysis (MD5, SHA-1, RC4, DES and similar) and need replacing on their own merits, independently of any quantum timeline.`
+            : `${summary.resistant} symmetric and hash components are quantum-resistant at adequate key sizes; they are deliberately excluded from the readiness ratio, because their presence says nothing about the state of the asymmetric cryptography that actually needs migrating.`,
         ].filter(Boolean).join(' '),
         severity: summary.vulnerable > 0 && summary.readiness !== null && summary.readiness < 25 ? 'high' : 'medium',
         confidence: 'high',

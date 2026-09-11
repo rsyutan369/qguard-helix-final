@@ -208,16 +208,32 @@ function computeMigrationRisk(exposures: CorrelatedExposure[]): { score: number 
 /* ─────────────────────────────────────────────────────────────── coverage ── */
 
 function computeCoverage(coverage: ScanCoverage, runs: EngineRun[]): { score: number | null; basis: string } {
-  const attempted = runs.filter((run) => run.state !== 'pending' && run.state !== 'skipped');
-  if (attempted.length === 0) {
-    return { score: null, basis: 'No engine ran, so no coverage figure is published.' };
+  /* Coverage is MEASURED / APPLICABLE, never measured / catalogue.
+     `not-applicable` engines leave the denominator: a repository with no
+     Dockerfile, no Kubernetes manifests, no IaC and no CI/CD definitions was
+     scanned completely, and reporting it as 68% covered punishes it for
+     lacking things it does not have. It also makes the figure meaningless —
+     no repository of that shape could ever reach 100% however thoroughly it
+     was read. */
+  const applicable = runs.filter(
+    (run) => run.state !== 'pending' && run.state !== 'skipped' && run.state !== 'not-applicable',
+  );
+  const inapplicable = runs.length - applicable.length;
+
+  if (applicable.length === 0) {
+    return {
+      score: null,
+      basis: inapplicable > 0
+        ? `No coverage figure is published: all ${inapplicable} selected engine${inapplicable === 1 ? '' : 's'} reported that they do not apply to this target.`
+        : 'No engine ran, so no coverage figure is published.',
+    };
   }
 
   /* Two components, deliberately: what fraction of the ENGINES reported, and
      what fraction of the FILES were read. An engine that failed reduces
      coverage even if every file it would have read was analysed by another. */
-  const reported = attempted.filter((run) => run.state === 'completed').length;
-  const engineShare = reported / attempted.length;
+  const reported = applicable.filter((run) => run.state === 'completed').length;
+  const engineShare = reported / applicable.length;
 
   const discovered = coverage.filesDiscovered;
   const fileShare = discovered > 0 ? coverage.filesAnalyzed / discovered : 1;
@@ -230,9 +246,16 @@ function computeCoverage(coverage: ScanCoverage, runs: EngineRun[]): { score: nu
   if (coverage.notAssessed.length) limitations.push(`${coverage.notAssessed.length} dimension${coverage.notAssessed.length === 1 ? '' : 's'} not assessed`);
   if (coverage.truncated) limitations.push('a bounded budget truncated the analysis');
 
+  /* Stated, not hidden: a reader comparing "6 of 6 engines" against a catalogue
+     of 13 needs to be told the other 7 were excluded because they do not
+     apply, or the figure looks like it is quietly ignoring them. */
+  const applicabilityNote = inapplicable > 0
+    ? ` ${inapplicable} further engine${inapplicable === 1 ? '' : 's'} did not apply to this target and ${inapplicable === 1 ? 'is' : 'are'} excluded from the ratio.`
+    : '';
+
   return {
     score: Math.max(0, Math.min(100, score)),
-    basis: `Coverage ${score}%: ${reported} of ${attempted.length} engines completed and ${coverage.filesAnalyzed} of ${discovered} discovered files were analysed${limitations.length ? `. Limitations: ${limitations.join('; ')}` : '.'}`,
+    basis: `Coverage ${score}%: ${reported} of ${applicable.length} applicable engines completed and ${coverage.filesAnalyzed} of ${discovered} discovered files were analysed${limitations.length ? `. Limitations: ${limitations.join('; ')}.` : '.'}${applicabilityNote}`,
   };
 }
 

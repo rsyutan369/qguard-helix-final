@@ -55,7 +55,8 @@ import {
   scoreColor,
 } from '@/components/quantum-scan/ui';
 import { ScannerHero } from './_hero';
-import { ExposureModeTabs } from '@/components/exposure/ExposureModeTabs';
+import { ExposureModeTabs, ExposureViewTabs, type ExposureView } from '@/components/exposure/ExposureModeTabs';
+import { ExposureHistoryPanel } from '@/components/exposure/ExposureHistoryPanel';
 import { useExposureAccess } from '@/hooks/use-exposure-access';
 import { LocalAssessmentPanel } from '@/components/exposure/LocalAssessmentPanel';
 import { DevAssessmentPanel } from '@/components/exposure/DevAssessmentPanel';
@@ -806,6 +807,16 @@ export default function ScannerDashboard() {
     return requested === 'local' || requested === 'dev' ? requested : 'web';
   });
 
+  /* Assessment vs History, within Local and Dev.
+
+     The two panels are BOTH mounted and toggled with `hidden` rather than
+     swapped, because a Local assessment runs in a Web Worker owned by
+     `LocalAssessmentPanel`'s hook: unmounting it to look at the history would
+     kill a scan the operator is in the middle of. */
+  const [exposureView, setExposureView] = useState<ExposureView>(() =>
+    searchParams.get('view') === 'history' ? 'history' : 'assessment',
+  );
+
   /* Lock badges on the tabs. Reaching /dashboard/scanner at all already needs
      BASIC, so Local is normally open here — but Dev needs PRO, and a Basic
      tenant must see that before they click rather than after. */
@@ -840,6 +851,17 @@ export default function ScannerDashboard() {
     const nextParams = new URLSearchParams(searchParams);
     if (mode === 'web') nextParams.delete('mode');
     else nextParams.set('mode', mode);
+    /* Web has its own tab bar and no `view`; leaving the parameter behind would
+       put the URL in a state the page does not render. */
+    if (mode === 'web') nextParams.delete('view');
+    setSearchParams(nextParams, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  const handleViewSelect = useCallback((view: ExposureView) => {
+    setExposureView(view);
+    const nextParams = new URLSearchParams(searchParams);
+    if (view === 'assessment') nextParams.delete('view');
+    else nextParams.set('view', view);
     setSearchParams(nextParams, { replace: true });
   }, [searchParams, setSearchParams]);
 
@@ -2533,19 +2555,48 @@ export default function ScannerDashboard() {
           sideways on a phone. */}
       <div className="relative z-10 mx-auto max-w-[92rem] overflow-x-clip px-3 pb-16 pt-4 sm:px-5 sm:pt-6">
         {/* ── Assessment mode: Web / Local / Dev (§3) ──────────────────── */}
-        <div className="mb-5">
+        <div className="mb-5 flex flex-wrap items-center gap-3">
           <ExposureModeTabs value={exposureMode} onChange={handleModeSelect} locked={lockedModes} scope="dashboard-scanner" />
+          {/* Assessment / History, for the two modes that record one. Web keeps
+              its own full tab bar further down the page, History included. */}
+          {exposureMode !== 'web' && (
+            <ExposureViewTabs value={exposureView} onChange={handleViewSelect} scope={`dashboard-scanner-${exposureMode}`} />
+          )}
         </div>
 
         {exposureMode === 'local' && (
           <div role="tabpanel" id="exposure-panel-local" aria-labelledby="exposure-tab-local">
-            <LocalAssessmentPanel onSync={syncLocalAssessment} />
+            {/* Kept mounted, never swapped: the Local worker lives in this
+                panel's hook and a running scan must survive a trip to History. */}
+            <div id="exposure-view-panel-assessment" hidden={exposureView !== 'assessment'}>
+              <LocalAssessmentPanel onSync={syncLocalAssessment} />
+            </div>
+            {exposureView === 'history' && (
+              <div id="exposure-view-panel-history">
+                <ExposureHistoryPanel
+                  mode="local"
+                  active
+                  onStartAssessment={() => handleViewSelect('assessment')}
+                />
+              </div>
+            )}
           </div>
         )}
 
         {exposureMode === 'dev' && (
           <div role="tabpanel" id="exposure-panel-dev" aria-labelledby="exposure-tab-dev">
-            <DevAssessmentPanel authenticated onSync={syncDevAssessment} />
+            <div id="exposure-view-panel-assessment" hidden={exposureView !== 'assessment'}>
+              <DevAssessmentPanel authenticated onSync={syncDevAssessment} />
+            </div>
+            {exposureView === 'history' && (
+              <div id="exposure-view-panel-history">
+                <ExposureHistoryPanel
+                  mode="dev"
+                  active
+                  onStartAssessment={() => handleViewSelect('assessment')}
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -2581,6 +2632,7 @@ export default function ScannerDashboard() {
                  derive its own from the finding list, which is how the cards
                  came to contradict the gauge they surround. */
               nodeScores: assessment.nodeScores,
+              nodeScoreScopes: assessment.nodeScoreScopes,
             }}
             scoreComponents={assessment.scoreComponents}
             onStart={() => {

@@ -197,8 +197,14 @@ const CATEGORY_OWNERS: Array<[string, string]> = [
   ['OID (ECC)', 'certificate-scanner'],
   ['OID (HASH)', 'hash-algorithm-scanner'],
   ['SSH Host Key', 'ssh-host-key-scanner'],
-  ['API Security', 'jwt-signing-scanner'],
-  ['Security Headers', 'jwt-signing-scanner'],
+  /* The API probe emits two classes of observation and they belong to two
+     surfaces. HSTS and Information Disclosure are application-layer facts; only
+     signing material is identity. While both were owned by the JWT scanner, the
+     Identity & Tokens card reported "2 findings" for an endpoint that issues no
+     tokens, directly above its own "nothing to read" empty state. */
+  ['API Security', 'http-security-scanner'],
+  ['Security Headers', 'http-security-scanner'],
+  ['Cookie Security', 'http-security-scanner'],
   ['Source Code (asymmetric)', 'dependency-crypto-scanner'],
   ['Web Crypto (hash)', 'dependency-crypto-scanner'],
   ['Repository Access', 'dependency-crypto-scanner'],

@@ -33,7 +33,7 @@ function eventHref(event: SecurityEvent) {
   if (event.assetId) return `/dashboard/assets?asset=${encodeURIComponent(event.assetId)}`;
   if (type.includes('scan') || type.includes('scanner')) return '/dashboard/scanner';
   if (type.includes('runtime') || type.includes('crypto')) return '/dashboard/runtime-telemetry';
-  if (type.includes('vulnerab') || type.includes('finding')) return '/dashboard/vulnerabilities';
+  if (type.includes('vulnerab') || type.includes('finding')) return '/dashboard/quantum-readiness/risk-analysis';
   if (type.includes('migration')) return '/dashboard/live-migration';
   if (type.includes('cert')) return '/dashboard/certificate-telemetry';
   if (type.includes('audit') || type.includes('auth') || type.includes('vault')) return '/dashboard/audit-vault';

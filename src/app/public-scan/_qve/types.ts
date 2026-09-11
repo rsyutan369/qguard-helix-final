@@ -163,6 +163,18 @@ export interface QveNode {
   score: number | null;
   /** Grade band derived from {@link score}. Null while unscored. */
   band: QveGradeBand | null;
+  /**
+   * The published categories {@link score} projects, named on the card face.
+   *
+   * A surface score is a PROJECTION of the composite model, not a verdict on
+   * the surface's own machinery, and the two read identically when the card
+   * shows only a number. Asset Discovery published `0 · Critical` off a single
+   * category (DNS CAA) while every module behind it had completed cleanly, and
+   * nothing on the card licensed a different reading. Optional: a surface with
+   * no published category — Identity & Tokens — carries no score and therefore
+   * no scope.
+   */
+  scoreScope?: string | null;
 }
 
 /* ------------------------------------------------------------- engine state - */
@@ -472,10 +484,34 @@ const riskRank = (band: RiskBand): number => RISK_ORDER.indexOf(band);
  * "worst finding" and "measured posture" are expressed on a single scale and can
  * actually be compared instead of one silently overriding the other.
  */
-function riskFromSeverity(severity: ScanEventSeverity, state: QveNodeState): RiskBand | null {
+/**
+ * The risk band a surface's WORST OBSERVATION justifies, or null when nothing
+ * observed there outranks its measured posture.
+ *
+ * THE `state === 'warning'` CLAUSE THAT USED TO BE HERE
+ * ----------------------------------------------------
+ * A finding's node state comes from `STATUS_FOR_THREAT`, which maps LOW as well
+ * as MEDIUM to `'warning'`. So a single LOW finding put the node in the warning
+ * state, this function read that state as `Elevated`, and `Elevated` outranks
+ * the `Very Low` risk of a grade-A+ score — so the card rendered
+ *
+ *   ASSET DISCOVERY   Review   100
+ *
+ * for a surface whose only scored category was 100/100 and whose only finding
+ * was LOW ("Zone Not DNSSEC-Signed"). Worse, the basis tooltip then asserted
+ * "The most severe finding on this surface is MEDIUM, which outranks its
+ * measured posture" — naming a severity that was never observed.
+ *
+ * The clause could only ever fire for a LOW finding: `node.severity` is a
+ * running maximum, so any event that legitimately warranted `warning` also
+ * raised the severity to `medium` and is caught by the test above. Removing it
+ * leaves the ladder saying what the model's own basis strings already claim —
+ * nothing at or below LOW decides a surface's verdict.
+ */
+function riskFromSeverity(severity: ScanEventSeverity, _state: QveNodeState): RiskBand | null {
   if (severity === 'critical') return 'Critical';
   if (severity === 'high') return 'High';
-  if (severity === 'medium' || state === 'warning') return 'Elevated';
+  if (severity === 'medium') return 'Elevated';
   return null;
 }
 

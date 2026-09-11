@@ -47,6 +47,7 @@ import { buildPublishedCategories, publishedPostureScore } from '../src/lib/scan
 import { DETECTION_RULES } from '../src/lib/scanner/web-scanner/detection-rules'
 import { scoreToGrade } from '../src/lib/scanner/public-scan/grading-model'
 import {
+  PQ_SENSITIVE_CATEGORY_KEYS,
   SCANNER_NODE_CATEGORIES,
   scoreNodesFromCategories,
   type ScoreComponent,
@@ -450,6 +451,8 @@ const components: ScoreComponent[] = hybridRows.map((row) => ({
   weight: row.weight,
   score: row.applicable ? row.score : null,
   observed: row.observed,
+  description: row.label,
+  postQuantumRelevant: PQ_SENSITIVE_CATEGORY_KEYS.has(row.key),
 }))
 const nodeScores = scoreNodesFromCategories(components)
 const composite = publishedPostureScore(hybridRows)
@@ -495,6 +498,8 @@ const rsaComponents: ScoreComponent[] = hybridPlusStaticRsa.map((row) => ({
   weight: row.weight,
   score: row.applicable ? row.score : null,
   observed: row.observed,
+  description: row.label,
+  postQuantumRelevant: PQ_SENSITIVE_CATEGORY_KEYS.has(row.key),
 }))
 const rsaTransport = scoreNodesFromCategories(rsaComponents).transport ?? 0
 assert(

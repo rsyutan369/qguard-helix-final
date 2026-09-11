@@ -1,0 +1,564 @@
+- generic [ref=e2]:
+  - generic [ref=e115]:
+    - complementary [ref=e116]:
+      - link "Qguard Helix Quantum Defense" [ref=e118] [cursor=pointer]:
+        - /url: /
+        - generic [ref=e122]:
+          - generic [ref=e123]: Qguard Helix
+          - generic [ref=e124]: Quantum Defense
+      - navigation [ref=e125]:
+        - generic [ref=e126]:
+          - generic [ref=e127] [cursor=pointer]: Core Modules
+          - generic [ref=e132]:
+            - link "Overview" [ref=e133] [cursor=pointer]:
+              - /url: /dashboard
+            - link "Sophia AI Security Copilot™" [ref=e141] [cursor=pointer]:
+              - /url: /dashboard/sophia
+            - link "Quantum Readiness Assessment Engine™" [ref=e146] [cursor=pointer]:
+              - /url: /dashboard/quantum-readiness
+            - link "Migration Intelligence™" [ref=e151] [cursor=pointer]:
+              - /url: /dashboard/migration-intelligence
+            - link "Migration Planner" [ref=e157] [cursor=pointer]:
+              - /url: /dashboard/migration-planner
+            - link "Migration Sandbox" [ref=e163] [cursor=pointer]:
+              - /url: /dashboard/migration-sandbox
+            - link "Live Migration Ops" [ref=e168] [cursor=pointer]:
+              - /url: /dashboard/live-migration
+        - generic [ref=e175]: Discovery
+        - generic [ref=e181]: Quantum Readiness Assessment Engine™
+        - generic [ref=e187]: Operations
+        - generic [ref=e193]: Ecosystem & Supply Chain
+        - generic [ref=e199]: Intelligence
+        - generic [ref=e205]: PQAuth™
+        - generic [ref=e211]: Observability
+        - generic [ref=e217]: QKMS™
+        - generic [ref=e223]: Trust Center
+        - generic [ref=e229]: Governance
+        - generic [ref=e235]: Telemetry
+        - generic [ref=e241]: Quantum Tools
+        - generic [ref=e250]: System
+      - generic [ref=e256]:
+        - generic [ref=e257]:
+          - button "Switch to light mode" [ref=e258] [cursor=pointer]:
+            - generic [ref=e271]: Dark
+          - button "Auto" [ref=e272] [cursor=pointer]
+        - button "Collapse" [ref=e285]
+        - button "Exit System" [ref=e289]
+    - main [ref=e294]:
+      - generic [ref=e296]:
+        - generic [ref=e297]:
+          - generic [ref=e298]:
+            - heading "Quantum Security Command Center" [level=1] [ref=e303]
+            - paragraph [ref=e304]: Enterprise Post-Quantum Cryptographic Posture · Discover → Migrate → Govern
+          - generic [ref=e305]:
+            - generic [ref=e306]: Synced just now
+            - generic [ref=e307]: degraded
+            - link "Export Report" [ref=e310] [cursor=pointer]:
+              - /url: /dashboard/quantum-readiness/reports
+            - button "Refresh command center" [ref=e315]
+        - generic [ref=e321]:
+          - generic [ref=e322]:
+            - generic [ref=e323]:
+              - generic [ref=e324]: Sophia · Executive Briefing
+              - heading "Good afternoon, Demo" [level=1] [ref=e329]
+              - paragraph [ref=e330]: No cryptographic telemetry yet. Run a PQC discovery scan or connect an integration to populate your command center.
+              - link "Priority Connect PKI / certificate inventory Certificate evidence is required to score PKI maturity accurately." [ref=e331] [cursor=pointer]:
+                - /url: /dashboard/pki-visibility
+                - generic [ref=e332]: Priority
+                - generic [ref=e333]:
+                  - generic [ref=e334]: Connect PKI / certificate inventory
+                  - generic [ref=e335]: Certificate evidence is required to score PKI maturity accurately.
+            - generic [ref=e338]:
+              - generic [ref=e339]:
+                - generic [ref=e340]: Readiness
+                - generic [ref=e344]: "0"
+                - generic [ref=e345]: Not Started
+              - generic [ref=e347]:
+                - generic [ref=e348]: Risk
+                - generic [ref=e352]: 0/100
+                - generic [ref=e353]: Minimal
+          - generic [ref=e354]:
+            - generic [ref=e355]:
+              - generic [ref=e356]: Quantum-Vulnerable Components
+              - generic [ref=e357]: "0"
+            - generic [ref=e358]:
+              - generic [ref=e359]: High-risk findings
+              - generic [ref=e360]: "0"
+            - generic [ref=e361]:
+              - generic [ref=e362]: Risk trend
+              - generic [ref=e363]: stable
+            - generic [ref=e364]:
+              - generic [ref=e365]: Migration progress
+              - generic [ref=e366]: 0%
+            - generic [ref=e367]:
+              - generic [ref=e368]: Est. quick remediation
+              - generic [ref=e369]: 12 hrs
+            - generic [ref=e370]:
+              - generic [ref=e371]: Migration timeline
+              - generic [ref=e372]: Complete
+          - generic [ref=e373]: AI confidence 0% · generated from tenant telemetry only
+        - generic [ref=e375]:
+          - 'link "Quantum Risk Score: 0/100" [ref=e376] [cursor=pointer]':
+            - /url: /dashboard/quantum-risk-scoring
+            - generic [ref=e378]: Quantum Risk Score
+            - generic [ref=e380]:
+              - generic [ref=e381]: "0"
+              - generic [ref=e382]: /100
+            - generic [ref=e383]: stable
+            - generic [ref=e386]: no trend series
+            - generic [ref=e388]:
+              - generic [ref=e389]: "Target: Below 20"
+              - generic [ref=e390]: just now
+            - generic: Composite quantum exposure — lower is safer.
+          - 'link "Quantum-Vulnerable Components: 0" [ref=e391] [cursor=pointer]':
+            - /url: /dashboard/cbom
+            - generic [ref=e393]: Quantum-Vulnerable Components
+            - generic [ref=e395]: "0"
+            - generic [ref=e397]: stable
+            - generic [ref=e400]: no trend series
+            - generic [ref=e402]:
+              - generic [ref=e403]: "Target: Zero components at risk"
+              - generic [ref=e404]: just now
+            - generic: "No asset inventory yet — reporting the unit that was actually measured: vulnerable CBOM components."
+          - 'link "PQC-Ready Components: 0" [ref=e405] [cursor=pointer]':
+            - /url: /dashboard/cbom
+            - generic [ref=e407]: PQC-Ready Components
+            - generic [ref=e409]: "0"
+            - generic [ref=e411]: stable
+            - generic [ref=e414]: no trend series
+            - generic [ref=e416]:
+              - generic [ref=e417]: "Target: of 0"
+              - generic [ref=e418]: just now
+            - generic: No asset inventory yet — reporting PQC-ready CBOM components, the unit that was measured.
+          - 'link "Migration Progress: 0%" [ref=e419] [cursor=pointer]':
+            - /url: /dashboard/migration-planner
+            - generic [ref=e421]: Migration Progress
+            - generic [ref=e423]:
+              - generic [ref=e424]: "0"
+              - generic [ref=e425]: "%"
+            - generic [ref=e426]: stable
+            - generic [ref=e429]: no trend series
+            - generic [ref=e431]:
+              - generic [ref=e432]: "Target: 100%"
+              - generic [ref=e433]: just now
+            - generic: Canonical migration lifecycle — matches Migration Planner.
+          - 'link "Compliance Score: 0%" [ref=e434] [cursor=pointer]':
+            - /url: /dashboard/compliance
+            - generic [ref=e436]: Compliance Score
+            - generic [ref=e438]:
+              - generic [ref=e439]: "0"
+              - generic [ref=e440]: "%"
+            - generic [ref=e441]: stable
+            - generic [ref=e444]: no trend series
+            - generic [ref=e446]:
+              - generic [ref=e447]: "Target: 100%"
+              - generic [ref=e448]: just now
+            - generic: Matches the Compliance dashboard.
+          - 'link "Open Findings: 0" [ref=e449] [cursor=pointer]':
+            - /url: /dashboard/quantum-readiness/risk-analysis
+            - generic [ref=e451]: Open Findings
+            - generic [ref=e453]: "0"
+            - generic [ref=e455]: stable
+            - generic [ref=e462]:
+              - generic [ref=e463]: "Target: Zero open"
+              - generic [ref=e464]: just now
+            - generic: Unresolved cryptographic findings.
+          - 'link "Harvest Now Risk: 0/100" [ref=e465] [cursor=pointer]':
+            - /url: /dashboard/harvest-now
+            - generic [ref=e467]: Harvest Now Risk
+            - generic [ref=e469]:
+              - generic [ref=e470]: "0"
+              - generic [ref=e471]: /100
+            - generic [ref=e472]: stable
+            - generic [ref=e479]:
+              - generic [ref=e480]: "Target: Below 20"
+              - generic [ref=e481]: just now
+            - generic: Harvest-Now-Decrypt-Later exposure.
+          - 'link "AI Confidence: 0%" [ref=e482] [cursor=pointer]':
+            - /url: /dashboard/sophia
+            - generic [ref=e484]: AI Confidence
+            - generic [ref=e486]:
+              - generic [ref=e487]: "0"
+              - generic [ref=e488]: "%"
+            - generic [ref=e489]: stable
+            - generic [ref=e492]: no trend series
+            - generic [ref=e494]:
+              - generic [ref=e495]: "Target: Above 90%"
+              - generic [ref=e496]: just now
+            - generic: Evidence breadth behind AI insights.
+          - 'link "Runtime Health: —%" [ref=e497] [cursor=pointer]':
+            - /url: /dashboard/runtime-telemetry
+            - generic [ref=e499]: Runtime Health
+            - generic [ref=e501]: —
+            - generic [ref=e503]: stable
+            - generic [ref=e506]: no trend series
+            - generic [ref=e508]:
+              - generic [ref=e509]: "Target: Connect telemetry"
+              - generic [ref=e510]: just now
+            - generic: No runtime telemetry yet — deploy an agent to measure.
+          - 'link "Certificate Coverage: 0%" [ref=e511] [cursor=pointer]':
+            - /url: /dashboard/certificate-telemetry
+            - generic [ref=e513]: Certificate Coverage
+            - generic [ref=e515]:
+              - generic [ref=e516]: "0"
+              - generic [ref=e517]: "%"
+            - generic [ref=e518]: stable
+            - generic [ref=e521]: no trend series
+            - generic [ref=e523]:
+              - generic [ref=e524]: "Target: 100%"
+              - generic [ref=e525]: just now
+            - generic: Assets with certificate visibility.
+          - 'link "Cryptographic Inventory: 0" [ref=e526] [cursor=pointer]':
+            - /url: /dashboard/cbom
+            - generic [ref=e528]: Cryptographic Inventory
+            - generic [ref=e530]: "0"
+            - generic [ref=e532]: stable
+            - generic [ref=e535]: no trend series
+            - generic [ref=e537]:
+              - generic [ref=e538]: "Target: Full CBOM"
+              - generic [ref=e539]: just now
+            - generic: Discovered CBOM components.
+          - 'link "Business Risk: $0USD" [ref=e540] [cursor=pointer]':
+            - /url: /dashboard/revenue-intelligence
+            - generic [ref=e542]:
+              - generic [ref=e543]: Business Risk
+              - generic "Modelled estimate" [ref=e544]: model
+            - generic [ref=e545]: $0
+            - generic [ref=e547]: stable
+            - generic [ref=e550]: no trend series
+            - generic [ref=e552]:
+              - generic [ref=e553]: "Target: $0 exposed"
+              - generic [ref=e554]: just now
+            - generic: Modelled financial exposure.
+        - generic [ref=e555]:
+          - link "Shared Responsibility Migration Intelligence™" [ref=e557] [cursor=pointer]:
+            - /url: /dashboard/migration-intelligence
+          - generic [ref=e564]:
+            - generic [ref=e565]:
+              - link "Shared Responsibility Overview" [ref=e566] [cursor=pointer]:
+                - /url: /dashboard/migration-intelligence
+              - generic [ref=e573]: Live
+            - generic [ref=e576]: No findings to classify yet — run a scan or connect a provider.
+        - generic [ref=e577]:
+          - generic [ref=e578]:
+            - link "Estate Exposure Workflow™" [ref=e579] [cursor=pointer]:
+              - /url: /dashboard/assets
+            - generic [ref=e585]: 0 of 0 assets assessed · 0 relationships
+          - generic [ref=e588]:
+            - paragraph [ref=e589]: No estate evidence yet
+            - paragraph [ref=e590]: The workflow is drawn from your own assets, scans, CBOM records and certificates. Run a PQC discovery scan or connect an integration and every asset, relationship and finding it produces appears here.
+            - link "Run a discovery scan" [ref=e591] [cursor=pointer]:
+              - /url: /dashboard/scanner
+        - generic [ref=e594]:
+          - generic [ref=e595]:
+            - link "AI Recommendations" [ref=e597] [cursor=pointer]:
+              - /url: /dashboard/quantum-risk-scoring
+            - generic [ref=e603]:
+              - generic [ref=e604]:
+                - generic [ref=e605]: AI Recommendations
+                - generic [ref=e610]: Sophia-ranked
+              - generic [ref=e612]:
+                - generic [ref=e618]:
+                  - generic [ref=e619]:
+                    - generic [ref=e620]: Medium
+                    - generic [ref=e621]: quantum-readiness
+                  - heading "Connect PKI / certificate inventory" [level=3] [ref=e622]
+                  - paragraph [ref=e623]: Certificate evidence is required to score PKI maturity accurately.
+                  - generic [ref=e624]:
+                    - generic [ref=e625]: "Risk: Medium"
+                    - generic [ref=e626]: "Impact: Moderate"
+                    - generic [ref=e627]: "Effort: medium"
+                    - generic [ref=e628]: ~4 hrs
+                  - link "/dashboard/pki-visibility" [ref=e632] [cursor=pointer]:
+                    - /url: /dashboard/crypto-agility
+                - generic [ref=e640]:
+                  - generic [ref=e641]:
+                    - generic [ref=e642]: Medium
+                    - generic [ref=e643]: quantum-readiness
+                  - heading "Run your first PQC discovery scan" [level=3] [ref=e644]
+                  - paragraph [ref=e645]: Discover cryptographic assets to begin the quantum readiness assessment.
+                  - generic [ref=e646]:
+                    - generic [ref=e647]: "Risk: Medium"
+                    - generic [ref=e648]: "Impact: Moderate"
+                    - generic [ref=e649]: "Effort: medium"
+                    - generic [ref=e650]: ~4 hrs
+                  - link "/dashboard/scanner" [ref=e654] [cursor=pointer]:
+                    - /url: /dashboard/scanner
+          - generic [ref=e657]:
+            - link "Threat Timeline" [ref=e659] [cursor=pointer]:
+              - /url: /dashboard/audit-vault
+            - generic [ref=e666]:
+              - generic [ref=e667]:
+                - generic [ref=e668]: Threat Timeline
+                - generic [ref=e674]: Idle
+              - generic [ref=e677]:
+                - textbox "Search events…" [ref=e679]
+                - generic [ref=e680]:
+                  - button "All" [ref=e681]
+                  - button "Critical" [ref=e682]
+                  - button "Warning" [ref=e683]
+                  - button "Info" [ref=e684]
+                  - button "Success" [ref=e685]
+              - generic [ref=e687]:
+                - paragraph [ref=e692]: No security events recorded
+                - paragraph [ref=e693]: Nothing has been written to the event stream yet. This is not an assessment of your posture.
+        - generic [ref=e694]:
+          - generic [ref=e695]:
+            - link "Migration Pipeline" [ref=e697] [cursor=pointer]:
+              - /url: /dashboard/migration-planner
+            - generic [ref=e704]:
+              - generic [ref=e705]:
+                - link "Migration Pipeline" [ref=e706] [cursor=pointer]:
+                  - /url: /dashboard/migration-planner
+                - generic [ref=e713]: 0% complete
+              - generic [ref=e715]:
+                - generic [ref=e717]:
+                  - generic [ref=e718]:
+                    - generic [ref=e719]: "01"
+                    - text: Discovery
+                  - generic [ref=e720]:
+                    - generic [ref=e721]: 0%
+                    - generic [ref=e722]: 0 left
+                - generic [ref=e725]:
+                  - generic [ref=e726]:
+                    - generic [ref=e727]: "02"
+                    - text: Assessment
+                  - generic [ref=e728]:
+                    - generic [ref=e729]: 0%
+                    - generic [ref=e730]: 0 left
+                - generic [ref=e733]:
+                  - generic [ref=e734]:
+                    - generic [ref=e735]: "03"
+                    - text: Planning
+                  - generic [ref=e736]:
+                    - generic [ref=e737]: 0%
+                    - generic [ref=e738]: 2 left
+                - generic [ref=e741]:
+                  - generic [ref=e742]:
+                    - generic [ref=e743]: "04"
+                    - text: Migration
+                  - generic [ref=e744]:
+                    - generic [ref=e745]: 0%
+                    - generic [ref=e746]: 0 left
+                - generic [ref=e749]:
+                  - generic [ref=e750]:
+                    - generic [ref=e751]: "05"
+                    - text: Validation
+                  - generic [ref=e752]:
+                    - generic [ref=e753]: 0%
+                    - generic [ref=e754]: 0 left
+                - generic [ref=e757]:
+                  - generic [ref=e758]:
+                    - generic [ref=e759]: "06"
+                    - text: Certified
+                  - generic [ref=e760]:
+                    - generic [ref=e761]: 0%
+                    - generic [ref=e762]: 0 left
+              - generic [ref=e764]:
+                - generic [ref=e765]:
+                  - generic [ref=e766]: Remaining Assets
+                  - generic [ref=e767]: "0"
+                - generic [ref=e768]:
+                  - generic [ref=e769]: Est. Finish
+                  - generic [ref=e770]: On track
+                - generic [ref=e771]:
+                  - generic [ref=e772]: Bottleneck
+                  - generic [ref=e773]: Discovery
+          - generic [ref=e774]:
+            - link "Compliance" [ref=e776] [cursor=pointer]:
+              - /url: /dashboard/compliance
+            - generic [ref=e782]:
+              - generic [ref=e783]:
+                - link "Compliance Frameworks" [ref=e784] [cursor=pointer]:
+                  - /url: /dashboard/compliance
+                - generic [ref=e790]: 0% overall
+              - generic [ref=e792]:
+                - link "0 NIST PQC modelled 12 gaps" [ref=e793] [cursor=pointer]:
+                  - /url: /dashboard/compliance
+                  - generic [ref=e794]: "0"
+                  - generic [ref=e800]: NIST PQC
+                  - generic [ref=e801]: modelled
+                  - generic [ref=e802]: 12 gaps
+                - link "0 FIPS 140-3 modelled 11 gaps" [ref=e803] [cursor=pointer]:
+                  - /url: /dashboard/compliance
+                  - generic [ref=e804]: "0"
+                  - generic [ref=e810]: FIPS 140-3
+                  - generic [ref=e811]: modelled
+                  - generic [ref=e812]: 11 gaps
+                - link "0 CNSA 2.0 modelled 8 gaps" [ref=e813] [cursor=pointer]:
+                  - /url: /dashboard/compliance
+                  - generic [ref=e814]: "0"
+                  - generic [ref=e820]: CNSA 2.0
+                  - generic [ref=e821]: modelled
+                  - generic [ref=e822]: 8 gaps
+                - link "0 PCI DSS modelled 12 gaps" [ref=e823] [cursor=pointer]:
+                  - /url: /dashboard/compliance
+                  - generic [ref=e824]: "0"
+                  - generic [ref=e830]: PCI DSS
+                  - generic [ref=e831]: modelled
+                  - generic [ref=e832]: 12 gaps
+                - link "0 ISO 27001 modelled 14 gaps" [ref=e833] [cursor=pointer]:
+                  - /url: /dashboard/compliance
+                  - generic [ref=e834]: "0"
+                  - generic [ref=e840]: ISO 27001
+                  - generic [ref=e841]: modelled
+                  - generic [ref=e842]: 14 gaps
+                - link "0 SOC 2 modelled 5 gaps" [ref=e843] [cursor=pointer]:
+                  - /url: /dashboard/compliance
+                  - generic [ref=e844]: "0"
+                  - generic [ref=e850]: SOC 2
+                  - generic [ref=e851]: modelled
+                  - generic [ref=e852]: 5 gaps
+                - link "0 NIS2 modelled 10 gaps" [ref=e853] [cursor=pointer]:
+                  - /url: /dashboard/compliance
+                  - generic [ref=e854]: "0"
+                  - generic [ref=e860]: NIS2
+                  - generic [ref=e861]: modelled
+                  - generic [ref=e862]: 10 gaps
+                - link "0 Cyber Essentials modelled 5 gaps" [ref=e863] [cursor=pointer]:
+                  - /url: /dashboard/compliance
+                  - generic [ref=e864]: "0"
+                  - generic [ref=e870]: Cyber Essentials
+                  - generic [ref=e871]: modelled
+                  - generic [ref=e872]: 5 gaps
+        - generic [ref=e873]:
+          - generic [ref=e874]:
+            - link "Business Impact" [ref=e876] [cursor=pointer]:
+              - /url: /dashboard/revenue-intelligence
+            - generic [ref=e882]:
+              - generic [ref=e883]:
+                - link "Business Impact" [ref=e884] [cursor=pointer]:
+                  - /url: /dashboard/revenue-intelligence
+                - button "Modelled" [ref=e891]
+              - generic [ref=e894]:
+                - generic [ref=e895]:
+                  - generic [ref=e896]: Financial Exposure
+                  - generic [ref=e897]: $0
+                - generic [ref=e898]:
+                  - generic [ref=e899]: Revenue Protected
+                  - generic [ref=e900]: $0
+                - generic [ref=e901]:
+                  - generic [ref=e902]: Critical Assets at Risk
+                  - generic [ref=e903]: "0"
+                - generic [ref=e904]:
+                  - generic [ref=e905]: Applications at Risk
+                  - generic [ref=e906]: "0"
+                - generic [ref=e907]:
+                  - generic [ref=e908]: Operational Impact
+                  - generic [ref=e909]: 0/100
+                - generic [ref=e910]:
+                  - generic [ref=e911]: Est. Cutover Downtime
+                  - generic [ref=e912]: 0 hrs
+                - generic [ref=e913]:
+                  - generic [ref=e914]: Projected ROI
+                  - generic [ref=e915]: 0%
+                - generic [ref=e916]:
+                  - generic [ref=e917]: Migration Cost
+                  - generic [ref=e918]: $0
+              - generic [ref=e919]: Risk trend stable
+          - generic [ref=e924]:
+            - link "Asset Inventory" [ref=e926] [cursor=pointer]:
+              - /url: /dashboard/assets
+            - generic [ref=e939]:
+              - generic [ref=e940]:
+                - link "Asset Inventory" [ref=e941] [cursor=pointer]:
+                  - /url: /dashboard/assets
+                - generic [ref=e954]: 0 total
+              - generic [ref=e956]:
+                - paragraph [ref=e967]: No assets discovered
+                - paragraph [ref=e968]: Run a discovery scan or connect an integration to build inventory.
+        - generic [ref=e969]:
+          - link "Live Runtime Telemetry" [ref=e971] [cursor=pointer]:
+            - /url: /dashboard/runtime-telemetry
+          - generic [ref=e976]:
+            - generic [ref=e977]:
+              - link "Live Runtime Telemetry" [ref=e978] [cursor=pointer]:
+                - /url: /dashboard/runtime-telemetry
+              - generic [ref=e987]: Live
+            - generic [ref=e990]:
+              - generic [ref=e991]:
+                - generic [ref=e992]: Events / 24h
+                - generic [ref=e996]: —
+              - generic [ref=e997]:
+                - generic [ref=e998]: Queue Depth
+                - generic [ref=e1004]: "0"
+              - generic [ref=e1005]:
+                - generic [ref=e1006]: Workers Online
+                - generic [ref=e1011]: —
+              - generic [ref=e1012]:
+                - generic [ref=e1013]: Scan / hr
+                - generic [ref=e1018]: "0"
+              - generic [ref=e1019]:
+                - generic [ref=e1020]: CPU (server)
+                - generic [ref=e1025]: 765 ms
+              - generic [ref=e1026]:
+                - generic [ref=e1027]: Heap Used
+                - generic [ref=e1031]: 309.5 MB
+              - generic [ref=e1032]:
+                - generic [ref=e1033]: Agg. Latency
+                - generic [ref=e1038]: 4426 ms
+              - generic [ref=e1039]:
+                - generic [ref=e1040]: Realtime
+                - generic [ref=e1046]: SSE up
+            - generic [ref=e1047]:
+              - generic [ref=e1048]: No collector enrolled.
+              - generic [ref=e1049]: Estate telemetry reads “—” because nothing is observing it yet.
+              - link "Deploy an agent" [ref=e1050] [cursor=pointer]:
+                - /url: /dashboard/downloads
+            - paragraph [ref=e1051]: CPU · heap · latency reflect the platform aggregation service (real process telemetry) · estate cells require a collector
+        - generic [ref=e1052]:
+          - generic [ref=e1053]:
+            - link "Threat Intelligence" [ref=e1055] [cursor=pointer]:
+              - /url: /dashboard/quantum-readiness/risk-analysis
+            - generic [ref=e1065]:
+              - link "Threat Intelligence" [ref=e1067] [cursor=pointer]:
+                - /url: /dashboard/quantum-readiness/risk-analysis
+              - generic [ref=e1077]:
+                - generic [ref=e1078]:
+                  - generic [ref=e1079]: "0"
+                  - generic [ref=e1080]: Shor-at-Risk
+                - generic [ref=e1081]:
+                  - generic [ref=e1082]: "0"
+                  - generic [ref=e1083]: Grover-Weakened
+                - generic [ref=e1084]:
+                  - generic [ref=e1085]: "0"
+                  - generic [ref=e1086]: HNDL Signals
+                - generic [ref=e1087]:
+                  - generic [ref=e1088]: "0"
+                  - generic [ref=e1089]: Legacy Crypto
+                - generic [ref=e1090]:
+                  - generic [ref=e1091]: "0"
+                  - generic [ref=e1092]: Downgrade
+                - generic [ref=e1093]:
+                  - generic [ref=e1094]: "0"
+                  - generic [ref=e1095]: Shadow Crypto
+                - generic [ref=e1096]:
+                  - generic [ref=e1097]: "0"
+                  - generic [ref=e1098]: KEV
+                - generic [ref=e1099]:
+                  - generic [ref=e1100]: "0"
+                  - generic [ref=e1101]: CVEs
+              - generic [ref=e1102]:
+                - generic [ref=e1103]: Quantum-relevant feed
+                - paragraph [ref=e1106]: No exploited-vulnerability feed connected. Enrichment (KEV / EPSS / MITRE) activates when a threat-intel source is integrated.
+          - generic [ref=e1107]:
+            - link "Security Events" [ref=e1109] [cursor=pointer]:
+              - /url: /dashboard/audit-vault
+            - generic [ref=e1115]:
+              - generic [ref=e1116]:
+                - heading "Security Events" [level=2] [ref=e1117]
+                - generic [ref=e1121]: Real-time
+              - paragraph [ref=e1130]: No recent security events
+              - link "View All Audit Logs" [ref=e1133] [cursor=pointer]:
+                - /url: /dashboard/audit-vault
+        - generic [ref=e1134]:
+          - generic [ref=e1135]:
+            - img "Logo" [ref=e1136]
+            - generic [ref=e1137]: QGuard Helix Protocol v2.4
+          - generic [ref=e1138]:
+            - generic [ref=e1139]: End-to-End PQC Encrypted
+            - generic [ref=e1140]: GDPR / NIST / FIPS 140-3 Aligned
+            - generic [ref=e1141]: Tenant-Isolated
+    - button [ref=e1142]:
+      - img "Ask Sophia" [ref=e1144]
+  - status "Demo session active": Demo session · not real tenant data

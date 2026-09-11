@@ -376,14 +376,25 @@ export function mergeCoverage(base: ScanCoverage, patch: Partial<ScanCoverage>):
     next.exclusions = Array.from(new Set([...next.exclusions, ...patch.exclusions]));
   }
   if (patch.notAssessed?.length) {
-    const seen = new Set(next.notAssessed.map((entry) => `${entry.dimension}|${entry.reason}`));
-    next.notAssessed = [...next.notAssessed];
+    /* Keyed on DIMENSION alone. Keying on `dimension|reason` let one gap appear
+       several times whenever two code paths worded it differently — which is
+       how the panel came to read "Not assessed (3)" over two real dimensions,
+       beside a completeness note that had deduplicated to 2.
+
+       A dimension is one gap however many engines noticed it, so a second
+       report of a dimension already present merges its reason instead of
+       adding a row. The first engine to report it keeps attribution: it is the
+       one whose absence the reader is being told about. */
+    const byDimension = new Map(next.notAssessed.map((entry) => [entry.dimension, { ...entry }]));
     for (const entry of patch.notAssessed) {
-      const key = `${entry.dimension}|${entry.reason}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      next.notAssessed.push(entry);
+      const existing = byDimension.get(entry.dimension);
+      if (!existing) {
+        byDimension.set(entry.dimension, { ...entry });
+        continue;
+      }
+      if (!existing.reason.includes(entry.reason)) existing.reason = `${existing.reason} ${entry.reason}`.trim();
     }
+    next.notAssessed = [...byDimension.values()];
   }
   return next;
 }
@@ -571,7 +582,23 @@ export interface ExposureIntelligence {
   severity: Record<FindingSeverity, number>;
   byLayer: Array<{ layer: ExposureLayer; findings: number; critical: number; components: number }>;
   byEngine: Array<{ engineId: string; label: string; findings: number; state: EngineRunState }>;
-  topAlgorithms: Array<{ algorithm: string; count: number; quantumStatus: QuantumStatus }>;
+  /**
+   * The algorithms observed, largest group first.
+   *
+   * `quantumStatus` is the DOMINANT status in the group and `mix` carries the
+   * full split, because an algorithm group is not homogeneous: ML-KEM appears
+   * both standalone (`pqc`) and inside hybrid constructions (`hybrid`). A single
+   * status per algorithm was published from whichever component happened to be
+   * enumerated first, which is how 202 components rendered `hybrid` under a cell
+   * reporting 23.
+   */
+  topAlgorithms: Array<{
+    algorithm: string;
+    count: number;
+    quantumStatus: QuantumStatus;
+    mix: Array<{ status: QuantumStatus; count: number }>;
+    classicallyWeak: number;
+  }>;
   languages: Array<{ language: string; files: number }>;
   frameworks: string[];
   dependencies: Array<{

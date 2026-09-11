@@ -270,7 +270,7 @@ export default function TrustStateDiscovery() {
           value={data.totals.findings}
           detail="Cryptographic weaknesses on these subjects"
           tone={data.totals.findings > 0 ? 'warning' : 'good'}
-          href="/dashboard/vulnerabilities"
+          href="/dashboard/quantum-readiness/risk-analysis"
           hint="Scanner-reported and engine-derived findings, merged rather than summed."
         />
       </section>

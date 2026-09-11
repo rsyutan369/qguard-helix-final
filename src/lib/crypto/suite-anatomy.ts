@@ -100,7 +100,11 @@ const MACS: Array<[RegExp, string]> = [
   [/SHA[-_]?256/, 'SHA-256'],
   [/SHA[-_]?512/, 'SHA-512'],
   [/POLY1305/, 'Poly1305'],
-  [/\bSHA1?\b|SHA[-_]?1\b/, 'SHA-1'],
+  /* The trailing `(?![0-9])` is what lets `sha1WithRSAEncryption` keep its
+     digest: `\b` never fires between "1" and "W", so the composite OID form
+     used to lose the fact that it is signed with SHA-1. The longer SHA-2/SHA-3
+     entries are matched first, so this cannot steal SHA-512 or SHA-384. */
+  [/\bSHA1?\b|SHA[-_]?1(?![0-9])/, 'SHA-1'],
   [/\bMD5\b/, 'MD5'],
 ]
 
@@ -319,13 +323,41 @@ export function analyzeCryptoObservation(input: ObservationInput, isCryptography
   if (/ED25519|ED448/.test(value)) {
     return { ...policy, kind: 'signature', authentication: algorithm, family: 'Ed25519', quantumClass: 'vulnerable' }
   }
-  if (/\bRSA\b|RSASSA|RSA-?PSS|RSA-?\d{3,4}/.test(value)) {
+  /* Composite signature names carry BOTH primitives, and only one of them
+     bears the quantum risk.
+     ------------------------------------------------------------------------
+     `sha256WithRSAEncryption` is the commonest certificate signature on the
+     internet. `\bRSA\b` finds no word boundary before "Encryption", `WITHRSA`
+     has none before "RSA" either, so this branch used to miss the string
+     entirely — and the hash branch below then claimed it, publishing
+     `kind: 'hash', quantumClass: 'safe'`. An RSA signature was reported as a
+     quantum-SAFE hash by the decomposer that Harvest Now, Drift, Runtime
+     Crypto, Telemetry Correlation, QKMS and the Trust Fabric all read, while
+     the scanner's own panel — which classifies it separately — showed it as
+     quantum-vulnerable on the same estate.
+
+     The digest is kept in `mac`, because it is genuinely present; the quantum
+     verdict comes from the signature primitive, which is the part Shor breaks.
+     `ecdsa-with-SHA384` and `SHA256withECDSA` are already caught by the ECDSA
+     branch above, which does the same thing. */
+  if (/\bRSA\b|RSASSA|RSA-?PSS|RSA-?\d{3,4}|RSAENCRYPTION|WITH[-_]?RSA/.test(value)) {
     const bits = value.match(/\b(1024|2048|3072|4096)\b/)?.[1]
     return {
       ...policy,
       kind: itemType === 'certificate' ? 'certificate' : 'signature',
       authentication: algorithm,
+      mac: matchFirst(value, MACS),
       family: bits ? `RSA-${bits}` : 'RSA',
+      quantumClass: 'vulnerable',
+    }
+  }
+  if (/WITH[-_]?(DSA|ED25519|ED448)\b|\bDSA[-_]?WITH\b/.test(value)) {
+    return {
+      ...policy,
+      kind: itemType === 'certificate' ? 'certificate' : 'signature',
+      authentication: algorithm,
+      mac: matchFirst(value, MACS),
+      family: /ED25519|ED448/.test(value) ? 'Ed25519' : 'DSA',
       quantumClass: 'vulnerable',
     }
   }

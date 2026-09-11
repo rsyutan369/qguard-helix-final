@@ -26,6 +26,16 @@
  */
 
 import type { CryptoRole, FindingSeverity, QuantumStatus } from './types';
+import { hybridRoles } from '@/lib/crypto/hybrid-construction';
+
+/**
+ * Families whose primitives can be a half of a hybrid construction.
+ *
+ * These are the asymmetric ones — the key agreements and the signatures. A
+ * hash or a symmetric cipher is never a participant, however close in the
+ * source it happens to appear to a post-quantum name.
+ */
+const ASYMMETRIC_FAMILIES = new Set<AlgorithmFamily>(['rsa', 'ecc', 'dh', 'dsa']);
 
 /* ────────────────────────────────────────────────────── canonical families ── */
 
@@ -666,12 +676,23 @@ export function classifyQuantum(input: {
 
   const pqcFamilies: AlgorithmFamily[] = ['ml-kem', 'ml-dsa', 'slh-dsa', 'falcon', 'pqc-other'];
   const selfIsPqc = pqcFamilies.includes(entry.family);
-  const partnerIsPqc = partner ? pqcFamilies.includes(partner.family) : false;
 
-  // Hybrid: a classical primitive deployed alongside a standardised PQC one.
-  if ((selfIsPqc && partner && !partnerIsPqc) || (!selfIsPqc && partnerIsPqc)) {
-    const classical = selfIsPqc ? partner! : entry;
-    const pqc = selfIsPqc ? entry : partner!;
+  /* Hybrid: a classical ASYMMETRIC primitive deployed alongside a PQC one.
+     Both halves have to be asymmetric — the test used to be "one side is PQC
+     and the other is not", which is true of every hash and every symmetric
+     cipher, so MD5 named beside an ML-KEM was published as a hybrid
+     construction. `hybridRoles` is the single rule, shared with the crypto
+     knowledge base; see `src/lib/crypto/hybrid-construction.ts`. */
+  const asParticipant = (candidate: CanonicalAlgorithm) => ({
+    asymmetric: ASYMMETRIC_FAMILIES.has(candidate.family) || pqcFamilies.includes(candidate.family),
+    shorBroken: candidate.shorBroken,
+    entry: candidate,
+  });
+
+  const pair = partner ? hybridRoles(asParticipant(entry), asParticipant(partner)) : null;
+  if (pair) {
+    const classical = pair.classical.entry;
+    const pqc = pair.pqc.entry;
     return {
       status: 'hybrid',
       rationale: `${classical.canonical} is combined with ${pqc.canonical}${pqc.standard ? ` (${pqc.standard})` : ''}, so the exchange stays secure if either component holds.`,

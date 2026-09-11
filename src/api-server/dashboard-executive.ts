@@ -512,7 +512,7 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
         value: vulnerableAssets,
         unitLabel: 'assets',
         hint: 'Quantum-vulnerable assets (matches Quantum Readiness).',
-        route: '/dashboard/vulnerabilities',
+        route: '/dashboard/quantum-readiness/risk-analysis',
       }
     : {
         label: 'Quantum-Vulnerable Components',
@@ -637,7 +637,7 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
     {
       id: 'open-findings', label: 'Open Findings', value: openFindings, unit: '', format: 'count',
       direction: 'lower-better', target: 0, targetLabel: 'Zero open', ...trendOf(findingSeries, true),
-      sparkline: findingSeries, lastUpdated, route: '/dashboard/vulnerabilities', hint: 'Unresolved cryptographic findings.',
+      sparkline: findingSeries, lastUpdated, route: '/dashboard/quantum-readiness/risk-analysis', hint: 'Unresolved cryptographic findings.',
     },
     {
       id: 'hndl-risk', label: 'Harvest Now Risk', value: scores.hndlRisk, unit: '/100', format: 'score',

@@ -48,8 +48,7 @@ const NAV_SECTIONS = [
     label: 'Quantum Readiness Assessment Engine™',
     collapsible: true,
     items: [
-      { name: 'Assessment Command Center', path: '/dashboard/quantum-readiness/command-center', icon: LayoutDashboard },
-      { name: 'Executive Dashboard', path: '/dashboard/quantum-readiness/executive', icon: Crown },
+      { name: 'Assessment Overview', path: '/dashboard/quantum-readiness', icon: LayoutDashboard },
       { name: 'Quantum Exposure Graph™', path: '/dashboard/quantum-readiness/exposure-graph', icon: Network },
       { name: 'Quantum Risk Analysis', path: '/dashboard/quantum-readiness/risk-analysis', icon: Target },
       { name: 'Quantum Remediation Engine™', path: '/dashboard/quantum-readiness/remediation', icon: Wrench },
@@ -87,7 +86,6 @@ const NAV_SECTIONS = [
       { name: 'Telemetry Correlation', path: '/dashboard/telemetry-correlation', icon: LineChart },
       { name: 'Drift Detection', path: '/dashboard/drift', icon: GitCompare },
       { name: 'Quantum Risk Scoring', path: '/dashboard/quantum-risk-scoring', icon: Target },
-      { name: 'Vulnerabilities', path: '/dashboard/vulnerabilities', icon: ShieldAlert },
     ],
   },
   {

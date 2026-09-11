@@ -2483,7 +2483,7 @@ function buildKpis(input: {
       criticalFindings.length,
       criticalFindings.length > 0 ? 'Open cryptographic findings at critical severity' : 'No critical cryptographic findings open',
       criticalFindings.length > 0 ? 'critical' : 'good',
-      '/dashboard/vulnerabilities?severity=critical',
+      '/dashboard/quantum-readiness/risk-analysis',
       criticalFindings.map((finding) => finding.id),
       'Same finding records the Scanner, CBOM and Quantum Readiness modules report.',
     ),

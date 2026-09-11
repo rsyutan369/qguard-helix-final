@@ -384,7 +384,7 @@ function CriticalFindingsPanel({ data }: { data: QuantumRiskIntelligence }) {
         title="Critical & High Findings"
         icon={AlertTriangle}
         meta={`${fmtInt(data.criticalFindings.length)} shown`}
-        action={<LinkButton href="/dashboard/vulnerabilities" tone="ghost">Vulnerability Center</LinkButton>}
+        action={<LinkButton href="/dashboard/quantum-readiness/risk-analysis" tone="ghost">Quantum Risk Analysis</LinkButton>}
       />
       {data.criticalFindings.length === 0 ? (
         <EmptyRow>No critical or high cryptographic findings are open for this environment.</EmptyRow>

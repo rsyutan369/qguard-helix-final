@@ -10,7 +10,7 @@ import type {
   DetectionRuleCategory,
   ThreatLevel,
 } from './types'
-import { measuredKemApplied as measuredKemAppliedForEdge } from './edge-intelligence-model'
+import { hybridProbeSettled, measuredKemApplied as measuredKemAppliedForEdge } from './edge-intelligence-model'
 
 /**
  * Has this scan actually OBSERVED post-quantum cryptography?
@@ -648,6 +648,11 @@ export const DETECTION_RULES: DetectionRule[] = [
       const edge = ctx.edgeIntelligence
       if (!ctx.tlsResult || !edge?.pqKeyAgreement.probed) return null
       if (edge.quantum.hybridObserved) return null
+      /* A HIGH finding is a claim about the endpoint. An empty accepted-list is
+         also what a throttled or budget-skipped probe leaves behind, and this
+         rule used to fire on it — asserting "offered in isolation" about groups
+         that were never settled. No answer, no finding. */
+      if (!hybridProbeSettled(edge.pqKeyAgreement)) return null
       return makeResult('PQC-002', 'No Hybrid TLS', 'pqc-readiness', 'HIGH',
         edge.pqKeyAgreement.hybridProbed
           ? 'No hybrid (classical + PQC) key exchange accepted when each hybrid group was offered in isolation'
@@ -666,6 +671,8 @@ export const DETECTION_RULES: DetectionRule[] = [
       const edge = ctx.edgeIntelligence
       if (!ctx.tlsResult || !edge?.pqKeyAgreement.probed) return null
       if (edge.pqKeyAgreement.kemParameterSets.length) return null
+      // Same rule as PQC-002: "not accepted" needs a refusal, not a silence.
+      if (!hybridProbeSettled(edge.pqKeyAgreement)) return null
       return makeResult('PQC-003', 'No ML-KEM Support', 'pqc-readiness', 'MEDIUM',
         'ML-KEM key encapsulation not accepted on any probed named group — server is not PQC-ready',
         'Enable ML-KEM-768 (FIPS 203) in server TLS configuration')

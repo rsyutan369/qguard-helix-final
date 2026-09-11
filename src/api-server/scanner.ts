@@ -22,6 +22,7 @@ import { DETECTION_RULES as ENTERPRISE_DETECTION_RULES } from '@/lib/scanner/sca
 import { CRYPTO_FINGERPRINTS } from '@/lib/scanner/scanner_2/fingerprints'
 import { matchFingerprints } from '@/lib/scanner/scanner_2/engine/fingerprint-matcher'
 import { calculateQuantumRiskScore } from '@/lib/scanner/scanner_2/engine/risk-scoring'
+import { normalizeToScanner2Algorithm } from '@/lib/scanner/scanner_2/algorithm-normalizer'
 import { evaluateFindings } from '@/lib/scanner/scanner_2/rules/detection-rules'
 import { quickOwnershipTag, type OwnershipFindingInput } from '@/lib/shared-responsibility'
 import { analyzeHNDLRisks } from '@/lib/scanner/scanner_2/hndl-analyzer'
@@ -348,10 +349,35 @@ function threatToScanner2Threat(threat: ThreatLevel): QuantumThreatLevel {
   return 'safe'
 }
 
+/**
+ * Scanner_2 risk scores are 0-1000, everywhere.
+ *
+ * THE DEFECT THIS THRESHOLD SET REPLACES
+ * --------------------------------------
+ * Scanner_2's own producers all emit 0-1000: `ALGORITHM_PROFILES` are scaled
+ * `* 10`, the crypto fingerprints document `riskScore // 0-1000`, and every
+ * detection rule sits between 600 and 950. Only this API adapter emitted 0-100,
+ * and `runEnterpriseScanner2Pass` then merges the two with a bare comparison:
+ *
+ *   if (ruleResult.adjustedRiskScore > finding.riskScore) finding.riskScore = …
+ *
+ * 950 > 82 for every finding on every scan, so a rule hit ALWAYS won and the
+ * enriched set came out on two scales at once — a real capture read
+ * `[20, 850, 55, 5, 82, 950, 5, 950, …]`. `calculateQuantumRiskScore` then
+ * averages that and inverts it (`1000 - avgRisk`), so an unmatched finding
+ * scored ~950 ("safe") and a matched one ~50 ("catastrophic") from identical
+ * evidence. That mixture is what put "749 · moderate-risk" on a card the rest
+ * of the page grades Critical.
+ *
+ * One scale, declared once, is the fix. These thresholds are the 0-100 ladder
+ * (85/60/30) moved onto it.
+ */
+const SCANNER2_RISK_SCALE_MAX = 1000
+
 function riskScoreToScanner2Severity(score: number): ScanFinding['severity'] {
-  if (score >= 85) return 'critical'
-  if (score >= 60) return 'high'
-  if (score >= 30) return 'moderate'
+  if (score >= 850) return 'critical'
+  if (score >= 600) return 'high'
+  if (score >= 300) return 'moderate'
   return 'low'
 }
 
@@ -368,45 +394,6 @@ function algorithmCategoryForScanner2(algorithm: ClassicalAlgorithm): ScanFindin
   if (algorithm.startsWith('AES') || algorithm === '3DES') return 'symmetric'
   if (algorithm.startsWith('ECDSA') || algorithm.startsWith('DSA') || algorithm === 'Ed25519') return 'signature'
   return 'public-key'
-}
-
-function normalizeToScanner2Algorithm(value: string): ClassicalAlgorithm | null {
-  const lower = value.toLowerCase()
-  const bits = Number(value.match(/(?:rsa|dh|aes|p-?|nistp|secp)?[-_ ]?(\d{3,4}|\d{2,3})/i)?.[1])
-  if (lower.includes('rsa')) {
-    if (bits && bits <= 1024) return 'RSA-1024'
-    if (bits && bits >= 4096) return 'RSA-4096'
-    return 'RSA-2048'
-  }
-  if (lower.includes('ecdsa') || lower.includes('secp')) {
-    if (lower.includes('384') || lower.includes('p384')) return 'ECDSA-P384'
-    if (lower.includes('secp256k1')) return 'ECC-secp256k1'
-    return 'ECDSA-P256'
-  }
-  if (lower.includes('ecdh') || lower.includes('p-256') || lower.includes('prime256') || lower.includes('nistp256')) return 'ECC-P256'
-  if (lower.includes('p-384') || lower.includes('nistp384')) return 'ECC-P384'
-  if (lower.includes('x25519') || lower.includes('curve25519')) return 'X25519'
-  if (lower.includes('ed25519')) return 'Ed25519'
-  if (lower.includes('diffie') || lower.includes('dhe') || lower.includes('dh-')) {
-    if (bits && bits <= 1024) return 'DH-1024'
-    return 'DH-2048'
-  }
-  if (lower.includes('tls') || lower.includes('tlsv')) {
-    if (lower.includes('1.0')) return 'TLS-1.0'
-    if (lower.includes('1.1')) return 'TLS-1.1'
-    if (lower.includes('1.2')) return 'TLS-1.2'
-    if (lower.includes('1.3')) return 'TLS-1.3'
-  }
-  if (lower.includes('sha-1') || lower.includes('sha1')) return 'SHA-1'
-  if (lower.includes('sha-256') || lower.includes('sha256')) return 'SHA-256'
-  if (lower.includes('md5')) return 'MD5'
-  if (lower.includes('aes-128') || lower.includes('aes_128')) return 'AES-128'
-  if (lower.includes('aes-256') || lower.includes('aes_256')) return 'AES-256'
-  if (lower.includes('3des') || lower.includes('triple-des')) return '3DES'
-  if (lower.includes('pgp') && lower.includes('rsa')) return 'PGP-RSA'
-  if (lower.includes('pgp') && (lower.includes('ecc') || lower.includes('ec'))) return 'PGP-ECC'
-  if (lower.includes('s/mime') && lower.includes('rsa')) return 'S/MIME-RSA'
-  return null
 }
 
 function scanner2ModuleForFinding(finding: DefensiveFinding) {
@@ -439,7 +426,11 @@ function toObservedScanner2Finding(
       detectionMethod: finding.detectionMethod,
     },
   }
-  const riskScore = Math.max(0, Math.min(100, finding.threatLevel === 'CRITICAL' ? 95 : finding.threatLevel === 'HIGH' ? 82 : finding.threatLevel === 'MEDIUM' ? 55 : finding.threatLevel === 'LOW' ? 20 : 5))
+  /* On Scanner_2's own 0-1000 scale — see `riskScoreToScanner2Severity`. The
+     ladder is unchanged in shape (95/82/55/20/5); only the scale is corrected,
+     so a detection rule now escalates a finding only when it genuinely rates it
+     higher rather than merely because it speaks a different unit. */
+  const riskScore = Math.max(0, Math.min(SCANNER2_RISK_SCALE_MAX, finding.threatLevel === 'CRITICAL' ? 950 : finding.threatLevel === 'HIGH' ? 820 : finding.threatLevel === 'MEDIUM' ? 550 : finding.threatLevel === 'LOW' ? 200 : 50))
   const quantumThreat = inferQuantumThreat(detectedAlgorithm)
   return {
     id: `scanner2-${finding.id}`,
@@ -629,7 +620,7 @@ function replacementFor(algorithm: string) {
   return 'Review against NIST PQC migration policy'
 }
 
-function normalizeWebFinding(finding: WebScanFinding, result: WebScanCompleteResult): DefensiveFinding {
+export function normalizeWebFinding(finding: WebScanFinding, result: WebScanCompleteResult): DefensiveFinding {
   return {
     id: finding.id,
     algorithm: finding.algorithm,
@@ -648,7 +639,7 @@ function normalizeWebFinding(finding: WebScanFinding, result: WebScanCompleteRes
   }
 }
 
-function normalizeWebResult(result: WebScanCompleteResult, startedAt: string): DefensiveResult {
+export function normalizeWebResult(result: WebScanCompleteResult, startedAt: string): DefensiveResult {
   const completedAt = new Date().toISOString()
   return {
     scanId: result.scanId,
@@ -1637,7 +1628,7 @@ function buildLiveSummary(results: DefensiveResult[], extraFindings: DefensiveFi
   }
 }
 
-function runEnterpriseScanner2Pass(items: Array<{ target: AuthorizedTarget; result: DefensiveResult }>): EnterpriseScanner2Result {
+export function runEnterpriseScanner2Pass(items: Array<{ target: AuthorizedTarget; result: DefensiveResult }>): EnterpriseScanner2Result {
   const observedFindings = items.flatMap(({ target, result }) =>
     result.findings
       .map((finding) => toObservedScanner2Finding(finding, result, target))
@@ -1967,7 +1958,7 @@ router.get('/stream', async (req, res) => {
       const targetStart = new Date().toISOString()
       if (target.type === 'ssh') {
         updateModule('ssh-host-key-scanner', { status: 'Running', target: target.normalized }, 'SSH host key scanner running')
-        ;['tls-protocol-scanner', 'certificate-scanner', 'cipher-suite-scanner', 'key-exchange-scanner', 'pq-key-agreement-scanner', 'signature-algorithm-scanner', 'hash-algorithm-scanner', 'revocation-transparency-scanner', 'dns-security-scanner', 'edge-infrastructure-scanner', 'crypto-detection-rules', 'jwt-signing-scanner', 'dependency-crypto-scanner'].forEach((moduleId) => {
+        ;['tls-protocol-scanner', 'certificate-scanner', 'cipher-suite-scanner', 'key-exchange-scanner', 'pq-key-agreement-scanner', 'signature-algorithm-scanner', 'hash-algorithm-scanner', 'revocation-transparency-scanner', 'dns-security-scanner', 'edge-infrastructure-scanner', 'crypto-detection-rules', 'jwt-signing-scanner', 'http-security-scanner', 'dependency-crypto-scanner'].forEach((moduleId) => {
           const moduleName = SCANNER_MODULE_CATALOG.find((module) => module.id === moduleId)?.name || moduleId
           const reason = `an SSH endpoint exposes host keys, not a TLS/HTTP surface — ${target.normalized} is out of scope for this module`
           updateModule(

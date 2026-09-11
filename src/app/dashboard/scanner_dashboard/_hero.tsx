@@ -219,6 +219,8 @@ export interface ScannerHeroProps {
     postQuantumReadiness: number | null;
     gradeable: boolean;
     nodeScores: Record<string, number>;
+    /** Published categories behind each node score — the card's "projected from". */
+    nodeScoreScopes: Record<string, string>;
   } | null;
   /**
    * The assessment's published category decomposition.

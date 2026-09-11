@@ -397,8 +397,8 @@ function QRFooter() {
 
         <div className="grid grid-cols-2 gap-8 sm:grid-cols-3">
           <FooterCol title="Assessment" links={[
-            { label: 'Command Center', to: '/dashboard/quantum-readiness/command-center' },
-            { label: 'Executive Dashboard', to: '/dashboard/quantum-readiness/executive' },
+            { label: 'Assessment Overview', to: '/dashboard/quantum-readiness' },
+            { label: 'AI Executive Advisor', to: '/dashboard/quantum-readiness/ai-executive-advisor' },
             { label: 'Risk Analysis', to: '/dashboard/quantum-readiness/risk-analysis' },
             { label: 'Report Center', to: '/dashboard/quantum-readiness/reports' },
           ]} />

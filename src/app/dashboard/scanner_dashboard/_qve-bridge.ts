@@ -24,6 +24,16 @@ import type { DefensiveFinding, ModuleState, ScanStatus, ScanSummary, ThreatLeve
 /** Milliseconds between released events. Matches the public hero's cadence. */
 const RELEASE_INTERVAL_MS = 110;
 
+/**
+ * Backlog above which the release accelerates.
+ *
+ * A live run delivers events in bursts — one SSE frame can carry thirty
+ * findings — and at a fixed 110ms the queue falls behind the data by the size
+ * of the burst. The visualization is meant to narrate the scan, not to lag it.
+ */
+const BACKLOG_THRESHOLD = 12;
+const FAST_RELEASE_INTERVAL_MS = 24;
+
 let sequence = 0;
 function nextId(prefix: string): string {
   sequence += 1;
@@ -186,6 +196,8 @@ export interface DashboardScanBridgeInput {
      * (and did) describe one scan with two incompatible verdicts.
      */
     nodeScores: Record<string, number>;
+    /** Published categories behind each node score — the card's "projected from". */
+    nodeScoreScopes: Record<string, string>;
   } | null;
 }
 
@@ -222,9 +234,36 @@ export function useDashboardScanBridge({
         return;
       }
       dispatch({ type: 'ingest', event: next });
-      timer.current = window.setTimeout(step, RELEASE_INTERVAL_MS);
+      timer.current = window.setTimeout(
+        step,
+        queue.current.length > BACKLOG_THRESHOLD ? FAST_RELEASE_INTERVAL_MS : RELEASE_INTERVAL_MS,
+      );
     };
     step();
+  }, [dispatch]);
+
+  /**
+   * Release everything still queued, immediately.
+   *
+   * THE STATE THIS REMOVES
+   * ----------------------
+   * `run` only leaves `'scanning'` when the store ingests `SCAN_COMPLETED`, and
+   * that frame is appended to the SAME paced queue as every finding and module
+   * transition. A run producing sixty events therefore left the hero reading
+   * "SCANNING · Collecting cryptographic evidence · 100%" for seconds after the
+   * assessment below it was complete and fully rendered — the header
+   * contradicting every panel on the page.
+   *
+   * The pacing exists to narrate a run in progress. Once the run is over there
+   * is nothing left to narrate, so the backlog is flushed in one dispatch pass
+   * and the terminal frame lands with it.
+   */
+  const flush = React.useCallback(() => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+    const pending = queue.current;
+    queue.current = [];
+    for (const event of pending) dispatch({ type: 'ingest', event });
   }, [dispatch]);
 
   const enqueue = React.useCallback(
@@ -323,10 +362,13 @@ export function useDashboardScanBridge({
           asset,
         },
       ]);
+      // The run is over: nothing below is still being narrated, so the header
+      // must not keep claiming it is.
+      flush();
     }
 
     previousRun.current = status;
-  }, [status, progress, asset, error, dispatch, enqueue]);
+  }, [status, progress, asset, error, dispatch, enqueue, flush]);
 
   /* ── Module state transitions ──────────────────────────────────────────── */
   React.useEffect(() => {
@@ -381,6 +423,7 @@ export function useDashboardScanBridge({
       score,
       postQuantumScore: postQuantum,
       nodeScores: verdict?.nodeScores ?? {},
+      nodeScoreScopes: verdict?.nodeScoreScopes ?? {},
     });
   }, [summary, status, findings, state.run, dispatch, verdict]);
 }

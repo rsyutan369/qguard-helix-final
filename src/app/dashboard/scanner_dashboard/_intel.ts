@@ -23,6 +23,7 @@
 import {
   RISK_COLOR,
   RISK_ORDER,
+  SCORE_CATEGORY_DEFS,
   scoreToGrade,
 } from '@/lib/scanner/public-scan/grading-model';
 /* The scanner's own finding-ownership rule, imported rather than reimplemented.
@@ -31,15 +32,26 @@ import {
    module, and this page routes the same finding to the surface that module
    belongs to, so the two can never disagree. */
 import { moduleIdForFinding } from '@/api-server/scanner-module-ledger';
+/* The recommendation join runs through the SAME normalizer that produced the
+   recommendation — see `buildRecommendations`. */
+import { normalizeToScanner2Algorithm } from '@/lib/scanner/scanner_2/algorithm-normalizer';
+/* The platform's shared component rule — the same one CBOM, the Quantum
+   Readiness engine and the estate workflow filter through, so this panel's
+   component count reconciles with theirs for the same scan. */
+import { isCryptographicComponent } from '@/lib/scanner/finding-identity';
+import { algorithmFamily } from '@/lib/governance/subjects';
 /* The edge attribution line is DERIVED, not re-derived. `edge-intelligence-model`
    is the isomorphic half of the edge engine (pure functions, no sockets), so the
    dashboard and the scanner phrase "behind Cloudflare" from one implementation
    instead of two that can drift. */
-import { describeEdgeInfrastructure } from '@/lib/scanner/web-scanner/edge-intelligence-model';
+import { describeEdgeInfrastructure, headerTally } from '@/lib/scanner/web-scanner/edge-intelligence-model';
+import { buildAlgorithmCensus, type AlgorithmCensus } from '@/lib/scanner/web-scanner/algorithm-census';
 import { decomposeSuite } from '@/lib/crypto/tls-intelligence';
+import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy';
 import {
   displayForwardSecrecy,
   reconcileTransport,
+  staticRsaSuites,
   transportReconciliationNote,
 } from '@/lib/scanner/web-scanner/transport-truth';
 import type { RiskBand } from '@/lib/scanner/public-scan/types';
@@ -85,7 +97,7 @@ export const SCANNER_NODE_MODULES: Record<string, readonly string[]> = {
     'revocation-transparency-scanner',
   ],
   identity: ['ssh-host-key-scanner', 'jwt-signing-scanner'],
-  code: ['dependency-crypto-scanner', 'cbom-generator', 'scanner2-fingerprint-matcher', 'scanner2-detection-rules'],
+  code: ['dependency-crypto-scanner', 'http-security-scanner', 'cbom-generator', 'scanner2-fingerprint-matcher', 'scanner2-detection-rules'],
   posture: [
     'crypto-detection-rules',
     'scanner2-hndl-analyzer',
@@ -189,6 +201,22 @@ export interface ScoreComponent {
   score: number | null;
   /** What the number was computed from — shown verbatim, never a caption. */
   observed: string;
+  /**
+   * WHAT THIS CATEGORY MEASURES, from the published model.
+   *
+   * The reported contradiction — "TLS Configuration: TLSv1.3, 100" sitting
+   * beside "Post-Quantum Key Agreement: Not offered" and "Quantum
+   * Vulnerability: Vulnerable" — is not a disagreement between two numbers.
+   * Both readings are correct: that category scores the protocol VERSION, and
+   * TLS 1.3 is a prerequisite for hybrid key agreement rather than evidence of
+   * it. The page simply never said so, leaving a full green bar labelled "TLS
+   * Configuration" to be read as "TLS is fine". The scope now travels with the
+   * row, so a reader can see which categories carry the post-quantum verdict
+   * and which do not.
+   */
+  description: string;
+  /** True when this category's score moves with post-quantum deployment. */
+  postQuantumRelevant: boolean;
 }
 
 export interface SurfaceItem {
@@ -293,9 +321,26 @@ export interface ScannerAssessment {
   decompositionScore: number | null;
   /** True when the decomposition and the composite agree within rounding. */
   decompositionAgrees: boolean;
+  /**
+   * The published model split into its classical and post-quantum halves, with
+   * the share of MEASURED weight each half carries. The Encryption Score panel
+   * renders both flanks from this, so the two numbers beside the gauge
+   * reproduce the gauge.
+   */
+  postureSplit: ReturnType<typeof postureSlices>;
+  /** Short "projected from" caption per node surface, keyed like `nodeScores`. */
+  nodeScoreScopes: Record<string, string>;
   attackSurface: SurfaceItem[];
   intelligence: {
+    /** The rows the panel renders — the census, capped for display. */
     observedAlgorithms: Array<{ name: string; role: string; quantumVulnerable: boolean; count: number }>;
+    /**
+     * The FULL census behind those rows, so the panel can state the total it is
+     * truncating and print the same sentence the score decomposition prints.
+     * One census: the score row and this panel can no longer disagree about how
+     * many algorithms were observed or how many of them are post-quantum.
+     */
+    algorithmCensus: AlgorithmCensus;
     keyExchange: string;
     forwardSecrecy: string;
     quantumVulnerability: string;
@@ -306,6 +351,8 @@ export interface ScannerAssessment {
      * evidence behind it. Null when no public-edge measurement is attached.
      */
     postQuantumReadiness: { score: number; reasons: string[] } | null;
+    /** Set only when readiness is withheld — the same reason the model states. */
+    postQuantumReadinessReason: string | null;
     /** The Quantum Risk Engine's per-primitive explanation of the verdict. */
     quantumRiskFactors: Array<{ factor: string; observed: string; impact: string; explanation: string }>;
     migrationTargets: Array<{ name: string; standard: string; replaces: string }>;
@@ -318,6 +365,18 @@ export interface ScannerAssessment {
     metrics: FootprintMetric[];
     exposureLevel: string;
     basis: string;
+    /**
+     * The component population, derived ONCE.
+     *
+     * Every panel that wants to say something about "components" reads these
+     * rather than recomputing. Sophia's narrative used to assert
+     * "78% of discovered components are already quantum-safe" from
+     * `executive.postQuantumReadiness`, which is the published READINESS
+     * CATEGORY — a posture score over controls, not a share of an inventory —
+     * while the Estate Footprint beside it counted 14 of 18 components
+     * quantum-vulnerable.
+     */
+    components: { total: number; vulnerable: number; policyFindings: number };
   };
   coverage: CoverageItem[];
   scope: { analyzed: string[]; notAnalyzed: string[]; statement: string };
@@ -348,7 +407,14 @@ function average(values: number[]): number | null {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
-function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+/**
+ * Count + noun, with an explicit plural when the default "+s" is wrong.
+ *
+ * Exported so panels phrase a count the same way the derivations do. The
+ * default caught out `pluralize(6, 'algorithm family')` → "6 algorithm familys",
+ * which shipped on the Executive Summary.
+ */
+export function pluralize(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
@@ -444,6 +510,31 @@ export function scoreNodesFromCategories(components: ScoreComponent[]): Record<s
 }
 
 /**
+ * The SHORT form of the same provenance, for the card face.
+ *
+ * The inspector's full sentence is only reachable after a click, and the
+ * contradiction a reader hits first is on the card: Asset Discovery rendering
+ * `0 · Critical` in red while every row inside it — 1 target, 1 asset
+ * synchronized, 5 of 5 modules reported — is healthy. Nothing on that card said
+ * its posture number is a projection of one published category (DNS CAA), so
+ * the number read as a verdict on discovery itself.
+ *
+ * Naming the categories on the face is what makes the number checkable without
+ * making it wrong.
+ */
+export function nodeScoreScopes(components: ScoreComponent[]): Record<string, string> {
+  const byKey = new Map(components.map((component) => [component.key, component]));
+  const scopes: Record<string, string> = {};
+  for (const [node, categories] of Object.entries(SCANNER_NODE_CATEGORIES)) {
+    const measured = categories
+      .map((key) => byKey.get(key))
+      .filter((component): component is ScoreComponent => Boolean(component) && component!.score !== null);
+    if (measured.length > 0) scopes[node] = measured.map((component) => component.label).join(' + ');
+  }
+  return scopes;
+}
+
+/**
  * What a node's score was computed from, for the inspector's provenance line.
  * A number an operator cannot trace is a number they cannot defend in an audit.
  */
@@ -464,8 +555,112 @@ export function nodeScoreBasis(nodeKey: string, components: ScoreComponent[]): s
     .join(' · ')} — the same categories, weights and grade table that produced the composite score above.`;
 }
 
+/**
+ * Post-quantum signature and KEM primitives, by name.
+ *
+ * Declared once so the certificate panel, the observed-algorithm list and any
+ * future consumer classify a chain the same way. Both call sites previously
+ * hardcoded "recoverable by Shor", which would have mislabelled the very
+ * migration target this dashboard recommends.
+ */
+export const PQ_ALGORITHM_PATTERN = /ml-?kem|ml-?dsa|slh-?dsa|dilithium|kyber|sphincs|falcon|xmss|lms\b/i;
+
 /** The two quantum categories of the published model. */
-const PQ_CATEGORY_KEYS = new Set(['cryptographic-algorithms', 'post-quantum-readiness']);
+/**
+ * The two quantum categories of the published model.
+ *
+ * Exported because the Encryption Score panel splits the model into classical
+ * and post-quantum weight, and it was doing so with `key !== 'pqcReadiness'` —
+ * a key that does not exist in the decomposition. That filter matched nothing,
+ * so the panel printed "100% of the weighted model" under Classical Encryption
+ * and "0% of the weighted model" under a Post-Quantum Readiness score of 78.
+ */
+export const PQ_CATEGORY_KEYS = new Set(['cryptographic-algorithms', 'post-quantum-readiness']);
+
+/**
+ * Every category whose score MOVES when post-quantum cryptography is deployed.
+ *
+ * Wider than `PQ_CATEGORY_KEYS`, which is the classical/quantum weight SPLIT.
+ * Key Exchange belongs here too — a hybrid group scores it 100 and a classical
+ * one 70 — and saying so is what reconciles "TLS Configuration 100" with
+ * "Quantum Vulnerability: Vulnerable" for a reader: the protocol version is a
+ * prerequisite for hybrid key agreement, not evidence of it, and the three rows
+ * below are where the post-quantum verdict is actually decided.
+ */
+export const PQ_SENSITIVE_CATEGORY_KEYS = new Set([
+  'key-exchange',
+  'cryptographic-algorithms',
+  'post-quantum-readiness',
+]);
+
+/** What each published category measures, by key. */
+const CATEGORY_DESCRIPTION = new Map(SCORE_CATEGORY_DEFS.map((def) => [def.key, def.description]));
+
+/**
+ * The published model split into its classical and post-quantum halves.
+ *
+ * ONE computation, because the Encryption Score panel shows all three numbers
+ * at once — classical on the left, post-quantum on the right, the composite in
+ * the gauge between them — and a reader is entitled to check that the flanks
+ * produce the middle.
+ *
+ * Two things were wrong before. The weight captions were taken over EVERY
+ * category including the unmeasured ones, while the scores beside them are
+ * weighted means over the measured ones only, so the percentages described a
+ * different aggregation than the numbers they captioned. And the right-hand
+ * number was the Post-Quantum Readiness CATEGORY (weight 3) captioned "8% of
+ * the weighted model" — the 8% slice is that category plus Cryptographic
+ * Algorithms, and on the audited scan it scored 27, not 73. The two flanks
+ * therefore could not reproduce the gauge no matter how carefully a reader
+ * added them up.
+ *
+ * Shares are taken over MEASURED weight, so they sum to 100 and mean
+ * "this much of what was actually aggregated".
+ */
+export interface PostureSlice {
+  /** Weighted mean over this half's measured categories. Null when none were. */
+  score: number | null;
+  /** Share of the MEASURED weight this half carries, 0-100. */
+  weightShare: number;
+  /** The categories that contributed, for the provenance line. */
+  categories: string[];
+}
+
+export function postureSlices(components: ScoreComponent[]): {
+  classical: PostureSlice;
+  postQuantum: PostureSlice;
+  /** Weighted mean over everything measured — must equal the decomposition. */
+  composite: number | null;
+} {
+  const measured = components.filter((component) => component.score !== null);
+  const totalWeight = measured.reduce((sum, component) => sum + component.weight, 0);
+
+  const slice = (keep: (component: ScoreComponent) => boolean): PostureSlice => {
+    const rows = measured.filter(keep);
+    const weight = rows.reduce((sum, component) => sum + component.weight, 0);
+    return {
+      score:
+        weight > 0
+          ? clamp(rows.reduce((sum, component) => sum + (component.score as number) * component.weight, 0) / weight)
+          : null,
+      weightShare: totalWeight > 0 ? Math.round((weight / totalWeight) * 100) : 0,
+      categories: rows.map((component) => component.label),
+    };
+  };
+
+  const classical = slice((component) => !PQ_CATEGORY_KEYS.has(component.key));
+  const postQuantum = slice((component) => PQ_CATEGORY_KEYS.has(component.key));
+  return {
+    classical,
+    postQuantum,
+    composite:
+      totalWeight > 0
+        ? clamp(
+            measured.reduce((sum, component) => sum + (component.score as number) * component.weight, 0) / totalWeight,
+          )
+        : null,
+  };
+}
 
 /**
  * Merge each target's published category scores into one estate decomposition.
@@ -496,6 +691,8 @@ function mergePublishedCategories(
         observed: risk !== undefined
           ? `${definition.description} (engineering model — rescan for the published categories)`
           : 'Not decomposed — run a scan to collect the per-target model',
+        description: definition.description,
+        postQuantumRelevant: PQ_SENSITIVE_CATEGORY_KEYS.has(definition.key),
       };
     });
   }
@@ -515,6 +712,11 @@ function mergePublishedCategories(
       observed: observedValues.length
         ? observedValues.slice(0, 2).join(' · ')
         : template.observed || 'not observed',
+      /* Read from the published defs by key rather than from the persisted row.
+         Scans written before the description existed still get it, and a stored
+         row can never carry a stale description of what the category measures. */
+      description: CATEGORY_DESCRIPTION.get(template.key) ?? '',
+      postQuantumRelevant: PQ_SENSITIVE_CATEGORY_KEYS.has(template.key),
     };
   });
 }
@@ -680,19 +882,43 @@ export function buildNodeEvidence(
         : supported.filter((protocol) => /1\.0|1\.1|SSLv/i.test(protocol));
       const negotiated = tls?.tlsVersion || edgeTransport?.negotiatedProtocol || '';
       const suites = tls?.cipherSuites ?? [];
-      const vulnerableSuites = suites.filter((suite) => suite.quantumVulnerable).length;
-      const staticRsa = suites.filter((suite) => /^RSA$/i.test(suite.keyExchange ?? ''));
+      /* ONE predicate for the whole page — see `isStaticRsaSuite`. This line
+         tested only `keyExchange === 'RSA'`, so a `TLS_RSA_WITH_…` suite whose
+         key exchange the analyser left blank was counted by the Observed Attack
+         Surface and not here: "Static RSA accepted" on one panel, "No" on the
+         other, for one handshake. */
+      const staticRsa = staticRsaSuites(suites);
       const hybridApplied = Boolean(pq?.probed && pq.state === 'pass' && pq.hybridGroups.length > 0);
       const pureKem = Boolean(pq?.probed && !hybridApplied && pq.pureKemGroups.length > 0);
+      /* THE measured named group, or null. TLS 1.3 suites do not name their key
+         exchange, so every 1.3 suite this endpoint accepts is reached through
+         the same measured group — passing it to each of them is what lets one
+         model answer for every row below. */
+      const measuredGroup = hybridApplied || pureKem
+        ? (pq?.primaryGroup ?? pq?.pureKemGroups?.[0] ?? null)
+        : (tls?.negotiatedCurve ?? null);
       /* Decompose the NEGOTIATED suite, passing the measured named group so a
          TLS 1.3 suite is read against the group that was actually used rather
          than against the classical default its name implies. */
       /* ONE reconciled transport reading for every row below. */
       const transport = reconcileTransport(tls, edge, undefined);
       const negotiatedSuiteName = tls?.cipherSuite || edgeTransport?.negotiatedCipher || '';
-      const suiteAnatomy = negotiatedSuiteName
-        ? decomposeSuite(negotiatedSuiteName, hybridApplied || pureKem ? (pq?.primaryGroup ?? pq?.pureKemGroups?.[0] ?? null) : (tls?.negotiatedCurve ?? null))
-        : null;
+      const suiteAnatomy = negotiatedSuiteName ? decomposeSuite(negotiatedSuiteName, measuredGroup) : null;
+
+      /* Quantum exposure per ACCEPTED suite, from the one decomposer.
+         A suite whose name cannot be parsed is left out of the exposed count
+         rather than assumed either way — an unparsed suite gets no invented
+         attribution, here or in the locus row. */
+      const suiteExposure = suites.map((suite) => {
+        const name = suite.standardName ?? suite.name ?? '';
+        const anatomy = decomposeSuite(name, measuredGroup);
+        return { name, exposed: anatomy ? anatomy.quantumExposureFrom.length > 0 : Boolean(suite.quantumVulnerable) };
+      });
+      const exposedSuites = suiteExposure.filter((entry) => entry.exposed).length;
+      const negotiatedKey = negotiatedSuiteName.trim().toUpperCase();
+      const otherExposedSuites = suiteExposure.filter(
+        (entry) => entry.exposed && entry.name.trim().toUpperCase() !== negotiatedKey,
+      ).length;
 
       rows.push(
         {
@@ -767,23 +993,51 @@ export function buildNodeEvidence(
         ...(suiteAnatomy
           ? [
               {
-                label: 'Quantum exposure locus',
+                /* THE LABEL CARRIES THE SCOPE.
+                   This row decomposes the NEGOTIATED suite only, and on a
+                   hybrid TLS 1.3 endpoint it correctly finds no exposure — then
+                   printed "None identified in the suite" in the pass colour
+                   directly above "8 accepted · 8 quantum-vulnerable". Both
+                   statements were true of different populations and the page
+                   read as self-contradictory. The scope is now in the label,
+                   and the tone is capped when other accepted suites carry
+                   exposure the negotiated one does not. */
+                label: 'Quantum exposure locus · negotiated suite',
                 value: suiteAnatomy.quantumExposureFrom.length
                   ? suiteAnatomy.quantumExposureFrom
                       .map((part) => (part === 'key-exchange' ? 'Key agreement' : part === 'authentication' ? 'Server authentication' : part === 'bulk' ? 'Bulk cipher' : 'MAC'))
                       .join(' + ')
-                  : 'None identified in the suite',
-                tone: suiteAnatomy.quantumExposureFrom.length ? TONE_WARN : TONE_PASS,
-                detail: suiteAnatomy.quantumSummary,
+                  : otherExposedSuites > 0
+                    ? 'None in this suite — other accepted suites are exposed'
+                    : 'None identified in the suite',
+                tone: suiteAnatomy.quantumExposureFrom.length
+                  ? TONE_WARN
+                  : otherExposedSuites > 0
+                    ? TONE_WARN
+                    : TONE_PASS,
+                detail: otherExposedSuites > 0 && !suiteAnatomy.quantumExposureFrom.length
+                  ? `${suiteAnatomy.quantumSummary} This describes the suite that was negotiated. ${pluralize(otherExposedSuites, 'other accepted suite')} carr${otherExposedSuites === 1 ? 'ies' : 'y'} quantum-vulnerable key agreement, and a session steered onto one of those is not covered by it.`
+                  : suiteAnatomy.quantumSummary,
               },
             ]
           : []),
         {
           label: 'Suites enumerated',
-          value: suites.length ? `${suites.length} accepted · ${vulnerableSuites} quantum-vulnerable` : '—',
-          tone: vulnerableSuites > 0 ? TONE_WARN : undefined,
+          /* ONE model decides which suites are exposed.
+             This count used to read the per-suite `quantumVulnerable` flag,
+             which is set from the suite NAME alone — so it counted the
+             negotiated TLS 1.3 suite as vulnerable while the row above,
+             decomposing that same suite against the measured X25519MLKEM768
+             group, reported no exposure at all. Both rows now run
+             `decomposeSuite` with the measured group, so the negotiated suite
+             cannot be exposed in one row and protected in the other. */
+          value: suites.length ? `${suites.length} accepted · ${exposedSuites} quantum-vulnerable` : '—',
+          tone: exposedSuites > 0 ? TONE_WARN : suites.length ? TONE_PASS : undefined,
           detail: suites.length
-            ? `Each suite was offered alone and accepted by the endpoint: ${suites.map((suite) => suite.standardName ?? suite.name).join(', ')}`
+            ? `Each suite was offered alone and accepted by the endpoint: ${suites.map((suite) => suite.standardName ?? suite.name).join(', ')}.` +
+              (suites.length - exposedSuites > 0
+                ? ` ${pluralize(suites.length - exposedSuites, 'suite')} carr${suites.length - exposedSuites === 1 ? 'ies' : 'y'} no quantum-vulnerable key agreement${hybridApplied ? ` under the measured ${pq?.primaryGroup} group` : ''}.`
+                : '')
             : 'Full offered-suite enumeration from the cipher scanner',
         },
         /* Static-RSA acceptance is the single most consequential thing on this
@@ -944,8 +1198,23 @@ export function buildNodeEvidence(
     }
 
     case 'identity': {
-      const sshFindings = input.findings.filter((finding) => /ssh/i.test(finding.category));
-      const jwtFindings = input.findings.filter((finding) => /jwt|token/i.test(finding.category));
+      /* ROUTED BY THE SHARED RULE, NOT BY A SECOND ONE.
+         This panel used to select its rows with `/jwt|token/i` over the
+         category while the module ledger routed findings with
+         `moduleIdForFinding`. The two rules disagreed, and the panel rendered
+         its "no identity surface was submitted, so the identity modules had
+         nothing to read" empty state directly above its own module row reading
+         "JWT signing algorithm scanner · 2 findings". Selecting from
+         `nodeFindings` — which is `nodeForFindingCategory`, derived from the
+         ledger — makes that disagreement structurally impossible. */
+      const sshFindings = nodeFindings.filter(
+        (finding) => moduleIdForFinding({
+          category: finding.category,
+          detectionMethod: finding.detectionMethod,
+          algorithm: finding.algorithm,
+        }) === 'ssh-host-key-scanner',
+      );
+      const jwtFindings = nodeFindings.filter((finding) => !sshFindings.includes(finding));
       if (sshFindings.length === 0 && jwtFindings.length === 0) break;
       const hostKeys = Array.from(
         new Set(sshFindings.filter((finding) => /host key/i.test(finding.category)).map((finding) => finding.algorithm)),
@@ -984,19 +1253,47 @@ export function buildNodeEvidence(
 
     case 'code': {
       const headers = api?.securityHeaders ?? [];
-      const hardened = headers.filter((header) => header.secure).length;
       const repoPatterns = repo?.patterns ?? [];
       const webPatterns = webCrypto?.patterns ?? [];
-      if (headers.length === 0 && !repo && !webCrypto) break;
-      if (headers.length > 0) {
+      /* ONE header model for the whole page.
+         ------------------------------------------------------------------
+         This row counted `api.securityHeaders` — every header the probe asked
+         for, HSTS included, with no notion of applicability — while the
+         Observed Attack Surface row counts the EDGE model, which excludes HSTS
+         (it has its own row) and drops headers that are not applicable or are
+         superseded by a stronger one. The same scan therefore published
+         "2/10 hardened" here and "1/8 hardened" there.
+
+         The edge model is the better measurement and it is the one the
+         published `http-security-headers` category is scored from, so this row
+         reads it too. The probe's own list stays as the fallback for records
+         written before the edge engine ran. */
+      const edgeHttp = edge?.http;
+      /* ONE tally, shared with the Observed Attack Surface row and with the
+         published `http-security-headers` category. The fallback used to count
+         `headers.length` — every probed header, HSTS included — while the
+         surface row counted the non-HSTS set, so the same scan read
+         "1/3 hardened" here and "0/2 hardened" there. */
+      const tally = headerTally(edgeHttp, headers);
+      const useEdge = tally.source === 'edge';
+      const hardened = tally.hardened ?? 0;
+      const applicable = tally.applicable ?? 0;
+      if (headers.length === 0 && !edgeHttp?.reachable && !repo && !webCrypto) break;
+      if (applicable > 0) {
         rows.push({
           label: 'Security headers',
-          value: `${hardened}/${headers.length} hardened`,
-          tone: hardened === headers.length ? TONE_PASS : hardened > headers.length / 2 ? TONE_WARN : TONE_FAIL,
-          detail: headers
-            .filter((header) => !header.secure)
-            .map((header) => `${header.name}: ${header.present ? 'present, weak' : 'absent'}`)
-            .join(' · ') || 'Every probed header is hardened',
+          value: tally.label,
+          tone: hardened === applicable ? TONE_PASS : hardened > applicable / 2 ? TONE_WARN : TONE_FAIL,
+          detail: useEdge
+            ? (edgeHttp!.headers ?? [])
+                .filter((header) => header.name !== 'strict-transport-security' && header.status !== 'Not Applicable' && header.status !== 'Healthy')
+                .map((header) => `${header.name}: ${header.present ? header.weakness || 'present, weak' : 'absent'}`)
+                .join(' · ') ||
+              'Every applicable transport-security header is hardened. Counted over the applicable set — HSTS is reported on its own row.'
+            : headers
+                .filter((header) => !header.secure)
+                .map((header) => `${header.name}: ${header.present ? 'present, weak' : 'absent'}`)
+                .join(' · ') || 'Every probed header is hardened',
         });
       }
       if (repo) {
@@ -1039,6 +1336,26 @@ export function buildNodeEvidence(
           detail: `Against ${api.hostname ?? primary?.target ?? 'the submitted host'}`,
         });
       }
+      /* WHAT THIS SURFACE'S SCORE IS ACTUALLY ABOUT.
+         The published model has no category for application cryptography, so
+         this surface is scored on HTTP Security Headers and HSTS — which is
+         defensible, but the card is titled "Code & Dependencies" and reads as a
+         verdict on source code. When the dependency scanner did not run (a bare
+         domain exposes no repository and no page bundle), a reader is entitled
+         to know that the number in front of them was not measured from any
+         code at all. */
+      const dependencyModule = input.modules.find((module) => module.id === 'dependency-crypto-scanner');
+      if (!repo && !webCrypto) {
+        rows.push({
+          label: 'Application cryptography',
+          value: 'Not read',
+          tone: TONE_MUTED,
+          detail:
+            `${dependencyModule?.reason ?? 'No repository or page bundle was read on this run'}. ` +
+            'Submit a repository URL or an https:// page to read source and bundle cryptography. ' +
+            'The posture score on this card is measured from the response-header controls above, not from code.',
+        });
+      }
       break;
     }
 
@@ -1048,8 +1365,48 @@ export function buildNodeEvidence(
       const attack = scanner2?.attackAssessment ?? null;
       const hndl = scanner2?.hndlRisks ?? [];
       const quantum = edge?.quantum ?? null;
+      /* The PUBLISHED category, not the edge engine's raw number.
+         The row below calls itself "the published Post-Quantum Readiness
+         category for this target", and on a run whose hybrid probe never
+         settled that category is excluded — while the edge engine still
+         carries the figure it computed from a `hybridObserved: false` it had
+         no evidence for. Reading the raw number put "6%" inside a card whose
+         own score decomposition said the dimension was not measured. */
+      const publishedReadiness = input.scoreComponents.find(
+        (component) => component.key === 'post-quantum-readiness',
+      );
+      const endpointReadiness =
+        publishedReadiness && publishedReadiness.score !== null
+          ? publishedReadiness.score
+          : publishedReadiness
+            ? null
+            : (quantum?.postQuantumReadiness ?? null);
       const hybridApplied = Boolean(pq?.probed && pq.state === 'pass' && pq.hybridGroups.length > 0);
       if (!readiness && !risk && !attack && hndl.length === 0 && !quantum && !pq?.probed) break;
+
+      /* The SAME reconciliation the Transport panel and the Cryptographic
+         Intelligence panel read. Deriving a second quantum verdict here is how
+         "Hybrid-protected" came to sit above "Static RSA accepted: Yes". */
+      const transport = reconcileTransport(tls, edge, undefined);
+      const verdict = transport.quantumVulnerability;
+      const postureVerdict = verdict.measured
+        ? verdict.value === 'hybrid'
+          ? { label: 'Hybrid-protected', tone: TONE_PQ, basis: verdict.basis }
+          : verdict.value === 'hybrid-partial'
+            ? { label: 'Hybrid — partial coverage', tone: TONE_WARN, basis: verdict.basis }
+            : verdict.value === 'resistant'
+              ? { label: 'Quantum-resistant', tone: TONE_PQ, basis: verdict.basis }
+              : { label: 'Vulnerable', tone: TONE_FAIL, basis: verdict.basis }
+        : { label: 'Not measured', tone: TONE_MUTED, basis: verdict.basis };
+
+      /* How much of the assessment's evidence Scanner_2 could actually score.
+         Its model only accepts algorithms it can map onto the classical
+         catalogue, so its severity split is a subset of the assessment's — and
+         a subset presented without its denominator reads as a disagreement. */
+      const scanner2Mapped = scanner2?.observedFindings?.length ?? null;
+      const scanner2Coverage = scanner2Mapped !== null && input.findings.length > 0
+        ? { mapped: scanner2Mapped, total: input.findings.length, unmapped: Math.max(0, input.findings.length - scanner2Mapped) }
+        : null;
 
       /* The measured post-quantum posture leads, because it is the one thing on
          this surface that was DIRECTLY observed rather than modelled. An
@@ -1095,75 +1452,142 @@ export function buildNodeEvidence(
              answered reports "Not measured" and stays tonally neutral. */
           {
             label: 'PQ readiness · this endpoint',
-            value: quantum.postQuantumReadiness === null ? 'Not measured' : `${Math.round(quantum.postQuantumReadiness)}%`,
+            value: endpointReadiness === null ? 'Not measured' : `${Math.round(endpointReadiness)}%`,
             tone:
-              quantum.postQuantumReadiness === null
+              endpointReadiness === null
                 ? TONE_MUTED
-                : quantum.postQuantumReadiness >= 60
+                : endpointReadiness >= 60
                   ? TONE_PASS
-                  : quantum.postQuantumReadiness >= 35
+                  : endpointReadiness >= 35
                     ? TONE_WARN
                     : TONE_FAIL,
             detail:
-              `${quantum.readinessReasons.slice(0, 3).join(' · ') || 'Measured from the observed edge surface'}` +
-              ' — the published Post-Quantum Readiness category for this target, and the same number the surface score above is partly derived from.',
+              endpointReadiness === null
+                ? publishedReadiness?.observed ??
+                  'The published Post-Quantum Readiness category was not measured on this run.'
+                : `${quantum.readinessReasons.slice(0, 3).join(' · ') || 'Measured from the observed edge surface'}` +
+                  ' — the published Post-Quantum Readiness category for this target, and the same number the surface score above is partly derived from.',
           },
+          /* ONE lookup decides the word AND the colour.
+             This row used to take its value from `quantum.vulnerability` and its
+             tone from `quantum.quantumRisk` — two fields of the same object that
+             legitimately disagree, because one describes the key agreement and
+             the other aggregates every risk factor. The result was the literal
+             string "Hybrid-protected" rendered in the failure colour. It now
+             reads the reconciled transport verdict, the same one the
+             Cryptographic Intelligence panel prints, so the two cannot diverge
+             and a partially-covered hybrid endpoint is amber in both. */
           {
             label: 'Quantum vulnerability',
-            value: quantum.vulnerability,
-            tone:
-              // An `Unknown` verdict carries no risk level, so the old ternary's
-              // final branch painted it red — a failure colour on a row whose own
-              // value says nothing was determined.
-              quantum.quantumRisk === null
-                ? TONE_MUTED
-                : quantum.quantumRisk === 'Low'
-                  ? TONE_PASS
-                  : quantum.quantumRisk === 'Medium'
-                    ? TONE_WARN
-                    : TONE_FAIL,
-            detail: quantum.vulnerabilityReason,
+            value: postureVerdict.label,
+            tone: postureVerdict.tone,
+            detail: postureVerdict.basis,
           },
         );
       }
       if (readiness) {
+        /* NAME THE POPULATION, AND COUNT IT HONESTLY.
+           This row printed `readiness.totalAssets`, which the migration engine
+           filled with `findings.length` — so a single-asset scan reported
+           "3 of 16 inventoried asset(s)". The engine now returns both counts
+           separately; the row leads with the observation count it actually
+           grades and states the asset count beside it. */
+        /* Records written before the engine separated the two populations
+           carry only the old `totalAssets` (which held the finding count), so
+           the observation counts are optional and the row degrades to the
+           percentage rather than restating a number it can no longer name. */
+        const safeObservations = readiness.quantumSafeFindings;
+        const totalObservations = readiness.totalFindings;
+        const readinessDetail = readiness.notAssessed
+          ? 'No cryptographic observation could be mapped to the migration model, so no readiness share is claimed.'
+          : totalObservations !== undefined && safeObservations !== undefined
+            ? `${safeObservations} of ${totalObservations} cryptographic observation(s) on ` +
+              `${pluralize(readiness.totalAssets, 'scanned asset')} need no migration. This is a share of OBSERVATIONS, not of the ` +
+              "asset inventory, and not this endpoint's measured posture — it does not contribute to the surface score above."
+            : 'Share of the cryptographic observations Scanner_2 could map onto its migration model that need no migration. ' +
+              "This is a share of OBSERVATIONS, not of the asset inventory, and not this endpoint's measured posture.";
         rows.push({
-          /* A share of ASSETS, not a posture percentage — a different population
-             from the row above, which is why the two numbers can be far apart
-             without either being wrong. Reported separately and labelled with
-             its source, never averaged into the platform figure. */
-          label: 'Asset readiness · Scanner_2',
-          value: `${Math.round(readiness.score)}% · ${readiness.label}`,
-          tone: readiness.score >= 60 ? TONE_PASS : TONE_WARN,
-          detail: `${readiness.quantumSafeAssets} of ${readiness.totalAssets} inventoried asset(s) are already quantum-safe. This is a share of the asset population, NOT this endpoint's measured posture — it does not contribute to the surface score above.`,
+          label: 'Migration readiness · Scanner_2',
+          value: readiness.notAssessed ? 'Not assessed' : `${Math.round(readiness.score)}% · ${readiness.label}`,
+          tone: readiness.notAssessed ? TONE_MUTED : readiness.score >= 60 ? TONE_PASS : TONE_WARN,
+          detail: readinessDetail,
         });
       }
       if (risk) {
+        /* Scanner_2's model has seven categories; a web scan reaches two of
+           them. The other five are UNMEASURED — they used to be scored 850 and
+           carried their full weight, so 65% of this number described nothing at
+           all and always described it favourably. The weight is now
+           redistributed over what was measured, and the row states the coverage
+           so the number can be read for what it is. */
+        /* `measuredWeight` is absent on records written before the aggregate
+           stopped scoring unobserved categories, so its absence means "coverage
+           unknown" and must not be read as zero coverage. */
+        const measuredPct = risk.measuredWeight === undefined ? null : Math.round(risk.measuredWeight * 100);
+        const measuredNames = (risk.measuredCategories ?? []).join(', ');
         rows.push(
           {
             label: 'Risk aggregate · Scanner_2',
-            value: `${Math.round(risk.overall)} · ${risk.level}`,
-            tone: risk.level === 'quantum-safe' ? TONE_PASS : risk.level === 'critical-risk' ? TONE_FAIL : TONE_WARN,
-            detail: 'Scanner_2 aggregate over every enriched finding. A finding-weighted index on its own scale — not a 0-100 posture, and not an input to the surface score above.',
+            value: measuredPct === 0 ? 'Not assessed' : `${Math.round(risk.overall)} · ${risk.level}`,
+            tone:
+              measuredPct === 0
+                ? TONE_MUTED
+                : risk.level === 'quantum-safe'
+                  ? TONE_PASS
+                  : risk.level === 'critical-risk'
+                    ? TONE_FAIL
+                    : TONE_WARN,
+            detail: measuredPct === 0
+              ? 'No Scanner_2 category was observed on the submitted targets, so no aggregate is claimed.'
+              : `Finding-weighted index on Scanner_2's own 0-1000 scale — not a 0-100 posture, and not an input to the surface ` +
+                `score above.` +
+                (measuredPct === null
+                  ? ' Recorded before this run reported its category coverage.'
+                  : ` Computed over the ${measuredNames || 'observed'} categor${(risk.measuredCategories?.length ?? 0) === 1 ? 'y' : 'ies'} ` +
+                    `only (${measuredPct}% of the model's weight); the categories this scan did not reach are excluded rather than assumed safe.`),
           },
           {
             label: 'Severity split · Scanner_2',
             value: `${risk.criticalCount}C · ${risk.highCount}H · ${risk.moderateCount}M · ${risk.lowCount}L`,
-            detail: `${risk.totalFindings} enriched finding(s) scored`,
+            /* Scanner_2 scores only the observations whose algorithm it can map
+               onto its classical model, so this split is a SUBSET of the
+               assessment's own finding counts. Printing it beside them without
+               saying so is what made the two look like a disagreement. */
+            detail: scanner2Coverage
+              ? `${risk.totalFindings} of ${scanner2Coverage.total} recorded observation(s) carry an algorithm Scanner_2 models, and only those are scored here. ` +
+                `The remaining ${scanner2Coverage.unmapped} are counted in this assessment's own severity totals.`
+              : `${risk.totalFindings} enriched finding(s) scored`,
           },
         );
       }
       if (hndl.length > 0) {
         const immediate = hndl.filter((item) => item.urgencyLevel === 'immediate').length;
+        const exposedAssets = new Set(hndl.map((item) => item.targetName).filter(Boolean)).size || 1;
+        const algorithms = Array.from(new Set(hndl.map((item) => item.algorithm))).slice(0, 4).join(', ');
+        /* COUNT WHAT THE WORD SAYS.
+           `hndlRisks` holds one record per OBSERVATION, and every record from a
+           single-target scan carries the same `targetName` — so "8 asset(s)"
+           was eight observations on one asset. And "key agreement protected"
+           was asserted from `hybridApplied` alone, on an endpoint that also
+           accepted four static-RSA suites: those sessions are harvestable
+           whatever the hybrid group does. Coverage now decides the claim. */
+        const covered = hybridApplied && transport.hybridCoverage.value === true;
+        const partiallyCovered = hybridApplied && transport.hybridCoverage.value === false;
         rows.push({
           label: 'Harvest-now exposure',
-          value: hybridApplied
-            ? `${hndl.length} asset(s) · key agreement protected`
-            : `${hndl.length} asset(s) · ${immediate} immediate`,
-          tone: hybridApplied ? TONE_WARN : immediate > 0 ? TONE_FAIL : TONE_WARN,
-          detail: hybridApplied
-            ? `Transport key agreement is hybrid post-quantum, so recorded sessions are NOT decryptable by a future CRQC. The remaining exposure is signature and stored-data, not traffic: ${Array.from(new Set(hndl.map((item) => item.algorithm))).slice(0, 4).join(', ')}`
-            : Array.from(new Set(hndl.map((item) => item.algorithm))).slice(0, 4).join(', '),
+          value: covered
+            ? `${pluralize(hndl.length, 'observation')} · key agreement protected`
+            : partiallyCovered
+              ? `${pluralize(hndl.length, 'observation')} · hybrid does not cover every path`
+              : `${pluralize(hndl.length, 'observation')} · ${immediate} immediate`,
+          tone: covered ? TONE_WARN : immediate > 0 ? TONE_FAIL : TONE_WARN,
+          detail:
+            `Across ${pluralize(exposedAssets, 'scanned asset')}: ${algorithms}. ` +
+            (covered
+              ? 'Transport key agreement is hybrid post-quantum on every path measured, so recorded sessions are NOT decryptable by a future CRQC. The remaining exposure is signature and stored-data, not traffic.'
+              : partiallyCovered
+                ? transport.hybridCoverage.basis
+                : 'Recorded traffic protected by these algorithms is decryptable once a cryptographically relevant quantum computer exists.'),
         });
       }
       if (attack) {
@@ -1182,13 +1606,48 @@ export function buildNodeEvidence(
           },
         );
       }
-      const migration = scanner2?.migrationRecommendations ?? [];
+      /* ONE source of migration targets, and it is the one that measured this
+         endpoint.
+         ------------------------------------------------------------------
+         Two things were wrong here. The list was deduplicated on
+         `classicalAlgorithm`, so two suites mapping to the same target printed
+         it twice — the row read "TLS 1.3 with ML-KEM Hybrid, TLS 1.3 with
+         ML-KEM Hybrid". And it read Scanner_2's catalogue while the
+         Cryptographic Intelligence panel read the edge engine's, so the same
+         ECDSA P-256 leaf was told to migrate to ML-DSA-65 on one panel and
+         ML-DSA-44 on the other. The edge engine wins when it measured the
+         endpoint, exactly as `buildAssessment` already decides for the
+         intelligence panel, so the two panels cannot name different targets for
+         the same key. */
+      const edgeTargets = edge?.quantum.migrationTargets ?? [];
+      const migration = edgeTargets.length
+        ? Array.from(new Map(edgeTargets.map((target) => [target.name, {
+            recommendedPQC: target.name,
+            classicalAlgorithm: target.replaces,
+            nistStandard: target.standard,
+          }] as const)).values())
+        : Array.from(
+            new Map(
+              (scanner2?.migrationRecommendations ?? []).map((item) => [item.recommendedPQC, {
+                recommendedPQC: item.recommendedPQC,
+                classicalAlgorithm: item.classicalAlgorithm,
+                nistStandard: item.nistStandard,
+              }] as const),
+            ).values(),
+          );
       if (migration.length > 0) {
         rows.push({
           label: 'Migration targets',
           value: migration.slice(0, 2).map((item) => item.recommendedPQC).join(', '),
           tone: TONE_PQ,
-          detail: migration.map((item) => `${item.classicalAlgorithm} → ${item.recommendedPQC} (${item.nistStandard})`).join(' · '),
+          detail: `${migration
+            .map((item) => `${item.classicalAlgorithm} → ${item.recommendedPQC} (${item.nistStandard})`)
+            .join(' · ')}. ${
+            edgeTargets.length
+              ? 'Named from the primitives this scan actually observed on the endpoint' +
+                (hybridApplied ? `, which is why ${pq?.primaryGroup} does not appear — it is already deployed here.` : '.')
+              : 'From the Scanner_2 migration catalogue; no public-edge measurement is attached to this scan.'
+          }`,
         });
       }
       break;
@@ -1351,21 +1810,11 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
   const scoreComponents = mergePublishedCategories(results, breakdown);
 
   /* Classical = every category except the two quantum ones, matching
-     CLASSICAL_CATEGORY_KEYS in the published model. */
-  const classicalWeighted = scoreComponents
-    .filter((component) => component.score !== null && !PQ_CATEGORY_KEYS.has(component.key))
-    .reduce(
-      (accumulator, component) => {
-        accumulator.weighted += (component.score as number) * component.weight;
-        accumulator.weight += component.weight;
-        return accumulator;
-      },
-      { weighted: 0, weight: 0 },
-    );
-  const classicalScore =
-    classicalWeighted && classicalWeighted.weight > 0
-      ? clamp(classicalWeighted.weighted / classicalWeighted.weight)
-      : encryptionScore;
+     CLASSICAL_CATEGORY_KEYS in the published model. Both halves and their
+     weight shares come from ONE function, so the Encryption Score panel cannot
+     caption a number with a weight that was not used to compute it. */
+  const postureSplit = postureSlices(scoreComponents);
+  const classicalScore = postureSplit.classical.score ?? encryptionScore;
 
   // What the published weighted model alone says, kept beside the headline so a
   // divergence is visible rather than hidden.
@@ -1496,15 +1945,45 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
         : `No critical or high-severity cryptographic findings were recorded across ${scopeNoun}.`
     : 'Risk cannot be stated before a completed scan.';
 
+  /* ── Component population ─────────────────────────────────────────────
+     A cryptographic COMPONENT is an algorithm, key, certificate, suite or
+     protocol version in the inventory. A detection-rule observation — "No
+     Certificate Pinning", "Regulatory Compliance Gap" — is a finding about the
+     estate, not an inventory entry.
+
+     `isCryptographicComponent` is the platform's shared rule: CBOM, the Quantum
+     Readiness engine and the estate workflow all filter through it, and this
+     panel not doing so is why its "Crypto Components" tile could not be
+     reconciled against the CBOM page for the same scan. */
+  const componentFindings = findings.filter((finding) =>
+    isCryptographicComponent({ name: finding.category, algorithm: finding.algorithm }, algorithmFamily),
+  );
+  const vulnerableComponents = componentFindings.filter(
+    (finding) =>
+      finding.status === 'Quantum-vulnerable' ||
+      finding.status === 'Legacy/deprecated' ||
+      finding.status === 'Misconfigured',
+  ).length;
+  const policyFindings = findings.filter((finding) => !componentFindings.includes(finding));
+
   /* ── Migration complexity ─────────────────────────────────────────────── */
   const recommendations = scanner2?.migrationRecommendations ?? [];
+  /* Only entries that actually ask for work. The catalogue contains
+     "No Migration Needed" confirmations (AES-256 → AES-256), and counting them
+     made this line claim more families "require migration" than do — the same
+     entries the Executive Recommendations panel now drops. */
+  const migrationsRequired = recommendations.filter(
+    (recommendation) =>
+      !/no migration needed/i.test(recommendation.migrationType ?? '') &&
+      recommendation.classicalAlgorithm !== recommendation.recommendedPQC,
+  );
   const complexityRank: Record<PqcRecommendation['migrationComplexity'], number> = {
     LOW: 1,
     MEDIUM: 2,
     HIGH: 3,
     CRITICAL: 4,
   };
-  const worstComplexity = recommendations.reduce<PqcRecommendation['migrationComplexity'] | null>(
+  const worstComplexity = migrationsRequired.reduce<PqcRecommendation['migrationComplexity'] | null>(
     (worst, recommendation) =>
       !worst || complexityRank[recommendation.migrationComplexity] > complexityRank[worst]
         ? recommendation.migrationComplexity
@@ -1514,8 +1993,11 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
   const migrationComplexity = worstComplexity
     ? worstComplexity.charAt(0) + worstComplexity.slice(1).toLowerCase()
     : 'Unknown';
+  // `pluralize` appends "s" unless told otherwise — this line read "6 algorithm familys".
   const migrationComplexityDetail = worstComplexity
-    ? `${pluralize(recommendations.length, 'algorithm family')} require migration; the hardest is rated ${worstComplexity}.`
+    ? `${pluralize(migrationsRequired.length, 'algorithm family', 'algorithm families')} ${
+        migrationsRequired.length === 1 ? 'requires' : 'require'
+      } migration; the hardest is rated ${worstComplexity}.`
     : 'No migration recommendations have been generated for this estate yet.';
 
   /* ── Attack surface ─────────────────────────────────────────────────────
@@ -1525,7 +2007,15 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
 
   /* ── Cryptographic intelligence ───────────────────────────────────────── */
   const edge = results[0]?.metadata?.edgeIntelligence ?? null;
-  const observedAlgorithms = buildObservedAlgorithms(results, findings, edge);
+  const algorithmCensus = buildObservedAlgorithms(results, findings, edge);
+  /* The panel shows the first rows; the census total travels with them so the
+     panel can declare what it is not showing rather than silently truncating. */
+  const observedAlgorithms = algorithmCensus.entries.slice(0, 8).map((entry) => ({
+    name: entry.name,
+    role: entry.role,
+    quantumVulnerable: entry.quantumVulnerable,
+    count: entry.count,
+  }));
 
   // The negotiated key agreement is a direct measurement when the edge engine
   // reached the target. It is preferred over the raw handshake because Node
@@ -1593,9 +2083,15 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
   const quantumVulnerability = transportVerdict.measured
     ? transportVerdict.value === 'hybrid'
       ? 'Hybrid-protected'
-      : transportVerdict.value === 'resistant'
-        ? 'Quantum-resistant'
-        : 'Vulnerable'
+      /* A hybrid endpoint that ALSO accepts static RSA or a pre-1.3 protocol is
+         not harvest-now safe, and calling it "Hybrid-protected" beside its own
+         "Static RSA accepted: Yes" row is the contradiction operators reported.
+         The verdict names the gap instead of hiding it in the tooltip. */
+      : transportVerdict.value === 'hybrid-partial'
+        ? 'Hybrid — partial coverage'
+        : transportVerdict.value === 'resistant'
+          ? 'Quantum-resistant'
+          : 'Vulnerable'
     : edge
       ? edge.quantum.vulnerability
       : !hasEvidence
@@ -1690,23 +2186,47 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
     scoreComponents,
     decompositionScore,
     decompositionAgrees,
+    postureSplit,
     attackSurface,
     intelligence: {
       observedAlgorithms,
+      algorithmCensus,
       keyExchange,
       forwardSecrecy,
       quantumVulnerability,
       quantumVulnerabilityReason,
-      postQuantumReadiness: edge
-        ? { score: edge.quantum.postQuantumReadiness, reasons: edge.quantum.readinessReasons }
-        : null,
+      /* ONE READINESS NUMBER PER PAGE.
+         This read `edge.quantum.postQuantumReadiness` directly while the
+         Encryption Score panel read the published category, and on a run whose
+         hybrid probe never settled the two disagreed in the worst possible
+         way: the category was correctly withheld as "not measured" while this
+         panel published "Endpoint PQ Readiness 6%" — a confident number built
+         on a hybrid signal that carries 55 of its 100 points and was never
+         observed. It now reads the same category, so the panel is silent
+         exactly when the model is. */
+      postQuantumReadiness:
+        edge && postQuantumReadiness !== null
+          ? { score: postQuantumReadiness, reasons: edge.quantum.readinessReasons }
+          : null,
+      /* Why it is silent, in the score decomposition's own words. */
+      postQuantumReadinessReason: postQuantumReadiness === null ? postQuantumReadinessReason : null,
       quantumRiskFactors: edge?.quantum.riskFactors ?? [],
       migrationTargets,
       confidence,
       scanner2Readiness,
     },
     timeline: buildTimeline(hndl, encryptionScore, postQuantumReadiness),
-    recommendations: buildRecommendations(recommendations, findings),
+    recommendations: buildRecommendations(
+      recommendations,
+      findings,
+      [
+        /* Measured, not assumed: only primitives the named-group probe actually
+           accepted on this endpoint. */
+        ...(edge?.pqKeyAgreement.probed ? edge.pqKeyAgreement.kemParameterSets : []),
+        ...(edge?.pqKeyAgreement.probed ? edge.pqKeyAgreement.hybridGroups : []),
+      ],
+      edge?.quantum.migrationTargets ?? [],
+    ),
     footprint: {
       metrics: [
         {
@@ -1717,13 +2237,32 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
             ? 'authorized targets the scanner completed a pass over in this assessment'
             : 'assets in the tenant inventory, from the Scanner Intelligence snapshot',
         },
+        /* COMPONENTS ARE CRYPTOGRAPHY, NOT EVERY FINDING.
+           This tile printed the raw finding total under the label "Crypto
+           Components". The scan's findings include detection-RULE observations
+           — "No Certificate Pinning", "Regulatory Compliance Gap", "Wide Crypto
+           Attack Surface" — which are statements about the estate, not entries
+           in a cryptographic inventory. Counting them here made this panel
+           disagree with the CBOM page and the Quantum Readiness engine, which
+           both filter the same rows through `isCryptographicComponent`. It now
+           reads the same rule, and the policy findings are reported on their own
+           line instead of being silently folded into the component count. */
+        /* SCOPE IS PICKED ONCE, AND THIS TILE FOLLOWS IT.
+           In estate scope every other tile switches to the Scanner Intelligence
+           snapshot, but this one kept counting the findings still held in view
+           while its caption claimed tenant provenance — a scan-scoped number
+           labelled as an estate-scoped one, which is exactly the mix Rule 2
+           forbids. The snapshot carries TOTALS, not rows, so there is nothing
+           to classify against `isCryptographicComponent`: the honest estate
+           answer is the observation total, reported as the observation total
+           it is. */
         {
           key: 'components',
-          label: 'Crypto Components',
-          value: scoped.totalFindings,
+          label: scope === 'scan' ? 'Crypto Components' : 'Crypto Observations',
+          value: scope === 'scan' ? componentFindings.length : input.estate.totalFindings,
           countedFrom: scope === 'scan'
-            ? 'distinct cryptographic observations recorded by this assessment'
-            : 'distinct cryptographic observations persisted for this tenant',
+            ? `distinct cryptographic components recorded by this assessment, counted with the same rule CBOM and Quantum Readiness use${policyFindings.length ? ` — ${pluralize(policyFindings.length, 'further finding')} in this scan ${policyFindings.length === 1 ? 'is a policy or configuration observation' : 'are policy or configuration observations'}, not inventory` : ''}`
+            : 'cryptographic observations recorded for this tenant, from the Scanner Intelligence snapshot — a total, not a classified component inventory; open CBOM for the component view',
         },
         {
           key: 'cbom',
@@ -1738,10 +2277,19 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
           countedFrom: 'nodes added to the crypto exposure graph by the scan in view',
         },
       ],
+      /* Same population as the tile above it. `scoped.vulnerable` counts every
+         finding whose status is vulnerable/legacy/misconfigured, rule findings
+         included, so this line claimed 27 "quantum-vulnerable components" on a
+         scan holding far fewer actual components. */
       exposureLevel: gradeable
-        ? `${businessRisk} — ${pluralize(scoped.vulnerable, 'quantum-vulnerable component')}`
+        ? `${businessRisk} — ${pluralize(vulnerableComponents, 'quantum-vulnerable component')}`
         : 'Not assessed',
       basis: `Counted from the scanner's own persisted records for this tenant, scoped to ${scopeNoun}: ${pluralize(completedModules.length, 'module')} measured, ${pluralize(skippedModules.length, 'module')} not applicable, ${pluralize(input.linked.assets, 'asset record')} synchronized. Nothing here is estimated.`,
+      components: {
+        total: componentFindings.length,
+        vulnerable: vulnerableComponents,
+        policyFindings: policyFindings.length,
+      },
     },
     coverage: buildCoverage(modules, failedModules, skippedModules, unreportedModules),
     scope: {
@@ -1759,117 +2307,57 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
     /* Projected from the SAME decomposition the gauge and the category bars
        read, so a surface card can never contradict the composite above it. */
     nodeScores: scoreNodesFromCategories(scoreComponents),
+    nodeScoreScopes: nodeScoreScopes(scoreComponents),
     hndl,
   };
 }
 
 /**
- * Algorithms the scan actually observed — read from the cryptographic evidence,
- * not from finding titles.
+ * Algorithms the scan actually observed.
  *
- * Detection-rule findings carry a RULE NAME in `finding.algorithm` ("No PQC
- * Cipher Suites", "HNDL Risk: HIGH", "No PQC Migration Strategy"). Listing those
- * under "Observed Algorithms" was wrong twice over: they are not algorithms, and
- * because the view aggregates every retained scan of the same asset, each one
- * appeared with a multiplier ("x5") that looked like five distinct observations.
+ * Delegates to the platform's shared census. This function used to keep its own
+ * list, with its own vulnerability rule, while the backend's
+ * `cryptographic-algorithms` category kept a second one — so a single scan
+ * published "4 algorithms observed · 1 quantum-safe" in the score decomposition
+ * directly above a panel listing three algorithms, none of them quantum-safe.
  *
- * The primary source is therefore the parsed transport and certificate
- * evidence: negotiated protocol, cipher-suite components, key agreement,
- * signature algorithms and the certificate's public key. Findings are consulted
- * only as a fallback, for target types that produce no TLS evidence at all (a
- * repository scan), and even then rule-shaped titles are filtered out.
+ * The rules that made this list correct are preserved inside the census and now
+ * apply to both readers: detection-rule TITLES are not algorithms; the socket's
+ * "ECDHE (TLS 1.3 key_share)" placeholder names no group so it is not an
+ * observation of one; the named-group probe is authoritative for key agreement;
+ * and ordering is by algorithm CLASS so the symmetric and protocol material is
+ * not pushed past the display cap by a wall of Shor-breakable entries.
  */
 function buildObservedAlgorithms(
   results: ScanResultRecord[],
   findings: DefensiveFinding[],
   edge: EdgeIntelligence | null,
-): Array<{ name: string; role: string; quantumVulnerable: boolean; count: number }> {
-  /* Ordered by algorithm CLASS, not by severity. Ranking by vulnerability first
-     pushed every symmetric and protocol entry past the display cap, so the panel
-     showed eight flavours of "recoverable by Shor" and none of the AES/hash
-     material that is also part of the observed posture. */
-  const RANK = {
-    /* The measured post-quantum primitive leads the list when one exists. An
-       operator scanning a hybrid endpoint should not have to scroll past eight
-       classical entries to find the one algorithm that changes their risk. */
-    postQuantum: -1,
-    certificateKey: 0,
-    certificateSignature: 1,
-    keyAgreement: 2,
-    namedGroup: 3,
-    handshakeSignature: 4,
-    symmetric: 5,
-    protocol: 6,
-    chainKey: 7,
-    fallback: 8,
-  } as const;
-
-  const observed = new Map<string, { role: string; quantumVulnerable: boolean; count: number; rank: number }>();
-  const add = (name: string | null | undefined, role: string, quantumVulnerable: boolean, rank: number) => {
-    const clean = (name ?? '').trim();
-    if (!clean || clean.toLowerCase() === 'unknown' || clean === '-') return;
-    const existing = observed.get(clean);
-    if (existing) {
-      existing.count += 1;
-      existing.quantumVulnerable = existing.quantumVulnerable || quantumVulnerable;
-      existing.rank = Math.min(existing.rank, rank);
-      return;
-    }
-    observed.set(clean, { role, quantumVulnerable, count: 1, rank });
-  };
-
-  /* Measured post-quantum key encapsulation.
-     The TLS analyzer cannot see this: TLS 1.3 negotiates the group in the
-     key_share extension, which Node does not expose, so a hybrid endpoint's
-     ML-KEM never appeared in this list no matter how plainly it was deployed.
-     The named-group probe is the only source, and it is authoritative. */
-  if (edge?.pqKeyAgreement.probed) {
-    for (const parameterSet of edge.pqKeyAgreement.kemParameterSets) {
-      add(parameterSet, 'Key encapsulation - not recoverable by Shor', false, RANK.postQuantum);
-    }
-  }
-
-  for (const result of results) {
-    const tls = result.metadata?.tlsAnalysis ?? null;
-    const certificate = result.certificateInfo ?? null;
-
-    if (certificate) {
-      add(certificate.publicKeyAlgorithm, 'Certificate public key - recoverable by Shor', true, RANK.certificateKey);
-      add(certificate.signatureAlgorithm, 'Certificate signature - recoverable by Shor', true, RANK.certificateSignature);
-      for (const entry of certificate.chain ?? []) {
-        add(entry.publicKeyAlgorithm, 'Chain public key - recoverable by Shor', true, RANK.chainKey);
-      }
-    }
-
-    if (tls) {
-      add(tls.keyExchange, 'Key agreement - recoverable by Shor', true, RANK.keyAgreement);
-      add(tls.negotiatedCurve, 'Named group - recoverable by Shor', true, RANK.namedGroup);
-      add(tls.signatureAlgorithm, 'Handshake signature - recoverable by Shor', true, RANK.handshakeSignature);
-      for (const suite of tls.cipherSuites ?? []) {
-        // Symmetric primitives are only halved by Grover, not broken by Shor.
-        add(suite.encryption, 'Symmetric encryption - Grover halves the key', false, RANK.symmetric);
-      }
-      for (const protocol of tls.supportedProtocols ?? []) {
-        // A deprecated protocol is a CLASSICAL break, not a quantum one.
-        add(protocol, 'Transport protocol', /1\.0|1\.1|SSLv/i.test(protocol), RANK.protocol);
-      }
-    }
-  }
-
-  // Fallback for target types with no transport evidence at all.
-  if (observed.size === 0) {
-    for (const finding of findings) {
-      const name = finding.algorithm ?? '';
-      // Rule-shaped titles are statements about the estate, not algorithms.
-      if (/^(no|missing|weak|insecure)\b/i.test(name) || name.includes(':')) continue;
-      add(name, finding.category, finding.threatLevel !== 'SAFE', RANK.fallback);
-    }
-  }
-
-  return Array.from(observed.entries())
-    .sort((a, b) => a[1].rank - b[1].rank || b[1].count - a[1].count || a[0].localeCompare(b[0]))
-    .slice(0, 8)
-    .map(([name, value]) => ({ name, role: value.role, quantumVulnerable: value.quantumVulnerable, count: value.count }));
+): AlgorithmCensus {
+  return buildAlgorithmCensus({
+    observations: results.map((result) => {
+      const measured = result.metadata?.edgeIntelligence?.pqKeyAgreement;
+      return {
+        tls: result.metadata?.tlsAnalysis ?? null,
+        certificate: result.certificateInfo ?? null,
+        keyAgreement: measured?.probed
+          ? {
+              probed: true,
+              kemApplied: measured.hybridGroups.length > 0 || measured.pureKemGroups.length > 0,
+              hybrid: measured.hybridGroups.length > 0,
+              group:
+                measured.primaryGroup ?? measured.hybridGroups[0] ?? measured.pureKemGroups[0] ?? null,
+              classicalComponent: measured.classicalComponent ?? null,
+              postQuantumComponent: measured.postQuantumComponent ?? null,
+              kemParameterSets: measured.kemParameterSets ?? [],
+            }
+          : null,
+      };
+    }),
+    fallbackFindings: findings.map((finding) => ({
+      algorithm: finding.algorithm,
+      category: finding.category,
+    })),
+  });
 }
 
 /* =========================================================== sub-builders == */
@@ -2023,20 +2511,32 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
       : 'Protocol versions the endpoint accepted, probed individually.',
   });
 
-  const staticRsaSuites = (tls?.cipherSuites ?? []).filter(
-    (suite) => /(^|_)RSA_WITH/i.test(suite.name) || suite.category === 'rsa-kex',
-  );
+  /* Static-RSA key transport, counted ONCE for the whole page.
+     ------------------------------------------------------------------------
+     This filter was `/(^|_)RSA_WITH/i`, and `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`
+     contains `_RSA_WITH`. So the two forward-secret ECDHE_RSA suites were
+     counted as static RSA and this row published "6 static-RSA key-transport
+     suite(s)" while the Transport & Ciphers panel — which matches on the
+     suite's parsed KEY EXCHANGE — published "Yes · 4 suite(s)" for the same
+     handshake. RSA in `ECDHE_RSA` is the server's AUTHENTICATION, not the key
+     exchange; those sessions are forward secret and are not retroactively
+     decryptable.
+
+     The test is now anchored to the static-RSA grammar (`TLS_RSA_WITH_…`) and
+     to the parsed key exchange, which is what every other consumer of this fact
+     already uses — see `transport-truth.reconcileTransport`. */
+  const staticRsa = staticRsaSuites(tls?.cipherSuites ?? []);
   items.push({
     key: 'cipher',
     label: 'Cipher Suite',
     value: !tls
       ? 'Not observed'
-      : staticRsaSuites.length
+      : staticRsa.length
         ? 'Static RSA accepted'
         : tls.cipherSuite || 'Not observed',
-    status: !tls ? 'unknown' : staticRsaSuites.length ? 'fail' : /GCM|CHACHA20|CCM/i.test(tls.cipherSuite) ? 'pass' : 'partial',
-    detail: staticRsaSuites.length
-      ? `Negotiated ${tls?.cipherSuite}, but ${staticRsaSuites.length} static-RSA key-transport suite(s) are also accepted.`
+    status: !tls ? 'unknown' : staticRsa.length ? 'fail' : /GCM|CHACHA20|CCM/i.test(tls.cipherSuite) ? 'pass' : 'partial',
+    detail: staticRsa.length
+      ? `Negotiated ${tls?.cipherSuite}, but ${pluralize(staticRsa.length, 'static-RSA key-transport suite')} ${staticRsa.length === 1 ? 'is' : 'are'} also accepted.`
       : 'Cipher suite selected during the observed handshake.',
   });
 
@@ -2209,14 +2709,15 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
   );
   const nonHstsHeaders = headers.filter((header) => header.name.toLowerCase() !== 'strict-transport-security');
 
-  if (edge?.http.reachable && edge.http.applicableCount > 0) {
-    const hardened = edge.http.hardenedCount;
-    const applicable = edge.http.applicableCount;
+  const headerReading = headerTally(edge?.http, headers);
+  if (headerReading.source === 'edge') {
+    const hardened = headerReading.hardened ?? 0;
+    const applicable = headerReading.applicable ?? 0;
     const weak = edgeTransportHeaders.filter((header) => header.status !== 'Healthy');
     items.push({
       key: 'headers',
       label: 'HTTP Security Headers',
-      value: `${hardened}/${applicable} hardened`,
+      value: headerReading.label,
       status: hardened === applicable ? 'pass' : hardened === 0 ? 'fail' : 'partial',
       detail: weak.length
         ? weak
@@ -2232,12 +2733,12 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
             : 'absent',
       })),
     });
-  } else if (nonHstsHeaders.length) {
-    const hardened = nonHstsHeaders.filter((header) => header.secure).length;
+  } else if (headerReading.source === 'api-probe') {
+    const hardened = headerReading.hardened ?? 0;
     items.push({
       key: 'headers',
       label: 'HTTP Security Headers',
-      value: `${hardened}/${nonHstsHeaders.length} hardened`,
+      value: headerReading.label,
       status: hardened === nonHstsHeaders.length ? 'pass' : hardened === 0 ? 'fail' : 'partial',
       detail: nonHstsHeaders
         .filter((header) => !header.secure)
@@ -2584,20 +3085,110 @@ function buildTimeline(
       key: 'migration',
       title: 'Post-quantum migration',
       horizon: `${postQuantumReadiness}% ready`,
+      /* SAY WHAT THE NUMBER MEASURES.
+         `postQuantumReadiness` is the published Post-Quantum Readiness CATEGORY
+         — a posture score built from hybrid key agreement, PQ signatures, a
+         TLS 1.3 floor, certificate lifetime and CT. It is NOT a share of
+         components. The old copy read "A majority of discovered components are
+         already quantum-safe" at 78%, on a scan whose own Estate Footprint
+         panel two cards below reported 27 of 31 components quantum-vulnerable.
+         Both numbers were right; the sentence attached to one described the
+         other. */
       description:
         postQuantumReadiness >= 60
-          ? 'A majority of discovered components are already quantum-safe; finish the remainder through the Migration Planner.'
-          : 'Most discovered components still rely on quantum-vulnerable cryptography — plan the migration in the Migration Planner.',
+          ? `Measured post-quantum readiness for the scanned endpoint is ${postQuantumReadiness}/100 — the published readiness category, not a share of components. The controls it scores are largely in place; close the remainder through the Migration Planner.`
+          : `Measured post-quantum readiness for the scanned endpoint is ${postQuantumReadiness}/100 — the published readiness category, not a share of components. Most of the controls it scores are not yet deployed; plan the migration in the Migration Planner.`,
       state: 'target',
     },
   ];
 }
 
+/**
+ * Executive recommendations, joined to the evidence that produced them.
+ *
+ * ── The two defects this rewrite removes ────────────────────────────────────
+ *
+ * 1. THE JOIN NEVER MATCHED. `affected` was
+ *      `finding.algorithm.toLowerCase().includes(recommendation.classicalAlgorithm)`
+ *    — a raw substring test — while the recommendation itself was produced from
+ *    `normalizeToScanner2Algorithm(finding.algorithm)`. No finding's algorithm
+ *    string literally contains "rsa-2048"; the observations are
+ *    `TLS_RSA_WITH_AES_128_GCM_SHA256` and `sha256WithRSAEncryption`. So five of
+ *    six cards reported `affected: 0` and printed
+ *      "RSA-2048 was matched by the migration engine but no finding in the
+ *       current view uses it"
+ *    which contradicts the card's own existence: the engine derived it FROM
+ *    those findings. One rule now decides both, so the count cannot be zero for
+ *    a recommendation the evidence generated.
+ *
+ * 2. NO-OP CARDS. The catalogue contains entries whose `migrationType` is
+ *    "No Migration Needed" and whose step list is "No action required". One
+ *    rendered as "Replace AES-256 with AES-256 (quantum-resilient)" in a panel
+ *    headed Executive Recommendations. Those are confirmations, not
+ *    recommendations, and they no longer occupy a card.
+ */
+/**
+ * Which job a post-quantum primitive does.
+ *
+ * A KEM establishes a key and a signature scheme authenticates; neither can do
+ * the other's work, and the platform's own PQC standard says so in as many
+ * words. The migration catalogue is keyed on the CLASSICAL algorithm, and
+ * "RSA-2048" names two entirely different migrations depending on whether it is
+ * transporting a key or signing a certificate. When the edge engine's measured
+ * target (ML-DSA-65, replacing the leaf SIGNATURE) was allowed to override the
+ * catalogue's recommendation (ML-KEM-768, replacing RSA KEY TRANSPORT), the
+ * card kept the catalogue's rationale and alternatives — and published
+ * "Replace RSA-2048 with ML-DSA-65 · alternatives: FrodoKEM, BIKE, HQC", three
+ * KEMs offered as substitutes for a signature scheme, above the step "Disable
+ * RSA key exchange on servers".
+ *
+ * Named explicitly rather than inferred, because the shared decomposer
+ * classifies the round-3 competition names (Falcon, BIKE, HQC, NTRU, Classic
+ * McEliece, XMSS) as unclassifiable policy strings, and a silent `null` would
+ * let exactly the mismatch above through.
+ */
+type PqcRole = 'key-establishment' | 'signature';
+
+const PQC_PRIMITIVE_ROLE: Array<[RegExp, PqcRole]> = [
+  /* Word-anchored where the token is a short common substring. Unanchored,
+     "lms" matches inside ordinary words and "bike"/"hqc" inside product names —
+     the same missing-word-boundary trap that has produced false classifications
+     in this codebase before. */
+  [/ml-?kem|kyber|frodokem|mceliece|\bntru\b|\bbike\b|\bhqc\b|\bsike\b/i, 'key-establishment'],
+  [/ml-?dsa|dilithium|slh-?dsa|sphincs|falcon|\bxmss\b|\blms\b|picnic|rainbow/i, 'signature'],
+];
+
+export function pqcRole(name: string | null | undefined): PqcRole | null {
+  const value = String(name ?? '');
+  if (!value.trim()) return null;
+  for (const [pattern, role] of PQC_PRIMITIVE_ROLE) if (pattern.test(value)) return role;
+  const kind = analyzeCryptoObservation({ algorithm: value }).kind;
+  if (kind === 'signature') return 'signature';
+  if (kind === 'key-exchange') return 'key-establishment';
+  return null;
+}
+
 function buildRecommendations(
   recommendations: PqcRecommendation[],
   findings: DefensiveFinding[],
+  /** Primitives the scan MEASURED as already deployed on the endpoint. */
+  alreadyDeployed: string[] = [],
+  /**
+   * The edge engine's migration targets, when it measured this endpoint.
+   *
+   * These name the parameter set chosen for the primitive that was ACTUALLY
+   * observed, and they are what the Cryptographic Intelligence and Quantum
+   * Posture panels already publish. Without this, the same ECDSA P-256 leaf was
+   * told to migrate to ML-DSA-65 on two panels and ML-DSA-44 on this one.
+   */
+  edgeTargets: Array<{ name: string; standard: string; replaces: string }> = [],
 ): RecommendationCard[] {
-  if (recommendations.length === 0) {
+  const actionable = recommendations.filter(
+    (recommendation) =>
+      !/no migration needed/i.test(recommendation.migrationType ?? '') &&
+      recommendation.classicalAlgorithm !== recommendation.recommendedPQC,
+  );
+  if (actionable.length === 0) {
     // No fabricated advice: when the migration engine has produced nothing, the
     // panel says so rather than printing generic filler.
     return [];
@@ -2610,28 +3201,93 @@ function buildRecommendations(
     LOW: 'Low',
   };
 
-  return recommendations
+  const deployed = alreadyDeployed
+    .filter(Boolean)
+    .map((value) => value.toLowerCase().replace(/[^a-z0-9]/g, ''));
+
+  /* Edge target keyed by the classical primitive it replaces, through the same
+     normalizer the rest of this join uses. */
+  const measuredTargetFor = new Map<string, { name: string; standard: string }>();
+  for (const target of edgeTargets) {
+    const classical = normalizeToScanner2Algorithm(target.replaces);
+    if (classical) measuredTargetFor.set(classical, { name: target.name, standard: target.standard });
+  }
+
+  return actionable
     .map((recommendation) => {
-      const affected = findings.filter((finding) =>
-        finding.algorithm.toLowerCase().includes(recommendation.classicalAlgorithm.toLowerCase()),
+      /* The SAME normalizer that produced this recommendation decides which
+         observations it covers. */
+      const affected = findings.filter(
+        (finding) => normalizeToScanner2Algorithm(finding.algorithm) === recommendation.classicalAlgorithm,
       );
       const worst = affected.reduce<ThreatLevel>(
         (level, finding) => (THREAT_RANK[finding.threatLevel] > THREAT_RANK[level] ? finding.threatLevel : level),
         'SAFE',
       );
+      /* When the scan measured the recommended primitive as live on this
+         endpoint, the outstanding work is DISABLING the classical path, not
+         deploying the primitive. Telling an operator to "deploy hybrid
+         X25519 + ML-KEM-768" on an endpoint confirmed at 100% confidence to be
+         running X25519MLKEM768 is advice the same page disproves. */
+      /* The measured target wins over the catalogue's default parameter set —
+         but ONLY when the two do the same job.
+
+         The catalogue is keyed on the classical algorithm, and "RSA-2048" is
+         two different migrations: RSA key transport is replaced by a KEM, an
+         RSA certificate signature by a signature scheme. The edge engine's
+         measured target names the SIGNATURE replacement (ML-DSA-65), and
+         letting it override a key-exchange catalogue entry kept that entry's
+         rationale, alternatives and steps — publishing "Replace RSA-2048 with
+         ML-DSA-65 · alternatives: FrodoKEM, BIKE, HQC" above "Disable RSA key
+         exchange on servers". A KEM cannot sign, and the platform's own PQC
+         standard forbids saying otherwise. A cross-role target is left to the
+         PQ Migration Targets panel, which states the role it replaces. */
+      const measuredTarget = measuredTargetFor.get(recommendation.classicalAlgorithm);
+      const catalogueRole = pqcRole(recommendation.recommendedPQC);
+      const measured =
+        measuredTarget && (catalogueRole === null || pqcRole(measuredTarget.name) === catalogueRole)
+          ? measuredTarget
+          : undefined;
+      const recommendedPQC = measured?.name ?? recommendation.recommendedPQC;
+      const standard = measured?.standard ?? recommendation.nistStandard;
+      /* Alternatives must do the recommended primitive's job too. Filtered
+         rather than trusted, so a catalogue edit can never reintroduce the
+         cross-role list on a card. */
+      const alternatives = recommendation.alternativePQC.filter((alternative) => {
+        const role = pqcRole(alternative);
+        return catalogueRole === null || role === null || role === catalogueRole;
+      });
+      const target = recommendedPQC.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const isDeployed = deployed.some((primitive) => target.includes(primitive) || primitive.includes(target));
+      const observedNames = Array.from(new Set(affected.map((finding) => finding.algorithm))).slice(0, 3);
+      /* A step that says "deploy X" under a title that says X is already
+         deployed is the card arguing with itself. Those steps are dropped and
+         the remaining ones — which are the disable/rotate work that IS
+         outstanding — are kept in order. */
+      const steps = isDeployed
+        ? recommendation.migrationSteps.filter((step) => !/^\s*(deploy|enable|configure|generate|upgrade)\b/i.test(step))
+        : recommendation.migrationSteps;
       return {
         id: recommendation.classicalAlgorithm,
-        title: `Replace ${recommendation.classicalAlgorithm} with ${recommendation.recommendedPQC}`,
+        title: isDeployed
+          ? `Retire ${recommendation.classicalAlgorithm} — ${recommendedPQC} is already deployed`
+          : `Replace ${recommendation.classicalAlgorithm} with ${recommendedPQC}`,
         priority: priorityFor[recommendation.migrationComplexity],
         businessImpact:
           affected.length > 0
-            ? `${pluralize(affected.length, 'observation')} in the scanned estate use ${recommendation.classicalAlgorithm}; the most severe is rated ${worst}.`
-            : `${recommendation.classicalAlgorithm} was matched by the migration engine but no finding in the current view uses it.`,
+            ? `${pluralize(affected.length, 'observation')} in this assessment ${
+                affected.length === 1 ? 'resolves' : 'resolve'
+              } to ${recommendation.classicalAlgorithm}` +
+              `${observedNames.length ? ` (${observedNames.join(', ')})` : ''}; the most severe is rated ${worst}.` +
+              (isDeployed
+                ? ` ${recommendedPQC} was measured as live on this endpoint, so the outstanding work is disabling the classical path, not deploying the replacement.`
+                : '')
+            : `${recommendation.classicalAlgorithm} is in the migration catalogue, but no observation in this assessment resolves to it.`,
         effort: recommendation.estimatedEffort,
-        standard: recommendation.nistStandard,
+        standard,
         affected: affected.length,
-        steps: recommendation.migrationSteps,
-        rationale: `${recommendation.migrationType} · alternatives: ${recommendation.alternativePQC.slice(0, 3).join(', ') || 'none published'}`,
+        steps: steps.length ? steps : recommendation.migrationSteps,
+        rationale: `${recommendation.migrationType} · alternatives: ${alternatives.slice(0, 3).join(', ') || 'none published'}`,
       };
     })
     .sort((a, b) => {

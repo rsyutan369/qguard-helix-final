@@ -149,6 +149,11 @@ export type QveAction =
        * "not measured" and "measured as bad" must never render the same.
        */
       nodeScores?: Partial<Record<QveNodeKey, number>>;
+      /**
+       * The published categories each node score projects, for the card face.
+       * Keyed like `nodeScores`; absent keys simply carry no caption.
+       */
+      nodeScoreScopes?: Partial<Record<QveNodeKey, string>>;
     }
   | { type: 'reset' };
 
@@ -220,7 +225,12 @@ export function qveReducer(
         const node = nodes[key as QveNodeKey];
         if (!node || typeof value !== 'number') continue;
         const bounded = Math.max(0, Math.min(100, Math.round(value)));
-        nodes[key as QveNodeKey] = { ...node, score: bounded, band: bandForScore(bounded) };
+        nodes[key as QveNodeKey] = {
+          ...node,
+          score: bounded,
+          band: bandForScore(bounded),
+          scoreScope: action.nodeScoreScopes?.[key as QveNodeKey] ?? null,
+        };
       }
       return {
         ...state,

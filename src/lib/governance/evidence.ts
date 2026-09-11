@@ -344,7 +344,7 @@ export function buildEvidence(inputs: EvidenceInputs): EvidenceRecord[] {
       occurredAt: isoOrNull(row.created_at),
       recordedAt: isoOrNull(row.created_at),
       controlIds: ['CTL-PQC-01', 'CTL-VUL-01', 'CTL-ALG-01'],
-      href: '/dashboard/vulnerabilities',
+      href: '/dashboard/quantum-readiness/risk-analysis',
       digestPayload: {
         algorithm: str(row.algorithm),
         threatLevel: str(row.threat_level),
@@ -364,7 +364,7 @@ export function buildEvidence(inputs: EvidenceInputs): EvidenceRecord[] {
       occurredAt: isoOrNull(row.updated_at || row.created_at),
       recordedAt: isoOrNull(row.created_at),
       controlIds: ['CTL-VUL-01', 'CTL-VUL-02'],
-      href: '/dashboard/vulnerabilities',
+      href: '/dashboard/quantum-readiness/risk-analysis',
       digestPayload: {
         title: str(row.title),
         severity: str(row.severity),

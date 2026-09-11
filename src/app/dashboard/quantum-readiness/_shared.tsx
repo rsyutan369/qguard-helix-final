@@ -655,8 +655,6 @@ export function Donut({
 /* ------------------------------------------------------------------ */
 export const QR_PAGES: Array<{ label: string; short: string; path: string }> = [
   { label: 'Overview', short: 'Overview', path: '/dashboard/quantum-readiness' },
-  { label: 'Command Center', short: 'Command', path: '/dashboard/quantum-readiness/command-center' },
-  { label: 'Executive Dashboard', short: 'Executive', path: '/dashboard/quantum-readiness/executive' },
   { label: 'Quantum Exposure Graph™', short: 'Exposure Graph', path: '/dashboard/quantum-readiness/exposure-graph' },
   { label: 'Quantum Risk Analysis', short: 'Risk Analysis', path: '/dashboard/quantum-readiness/risk-analysis' },
   { label: 'Quantum Remediation Engine™', short: 'Remediation', path: '/dashboard/quantum-readiness/remediation' },

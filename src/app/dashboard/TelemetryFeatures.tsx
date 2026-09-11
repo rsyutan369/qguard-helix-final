@@ -383,7 +383,7 @@ export default function TelemetryFeatures({
         </div>
       </GlassPanel>
 
-      <GlassPanel href="/dashboard/vulnerabilities" label="Open vulnerabilities">
+      <GlassPanel href="/dashboard/quantum-readiness/risk-analysis" label="Open risk analysis">
         <PanelTitle title="Exposure Severity" live={!loading} />
         <div className="mt-2 flex flex-1 items-center gap-4">
           <DonutRing percentage={percent(safeAssets, totalAssets)} color="#3b82f6" label={`${percent(safeAssets, totalAssets)}%`} />

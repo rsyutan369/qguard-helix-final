@@ -150,7 +150,7 @@ const SOURCE_REGISTRY: Array<{
   {
     key: 'scanner_alerts',
     label: 'Collector alerts',
-    feeds: ['Scanner', 'Vulnerabilities', 'TLS Orchestrator'],
+    feeds: ['Scanner', 'Quantum Risk Analysis', 'TLS Orchestrator'],
     thresholdMs: 24 * HOUR,
     timeColumns: ['updated_at', 'created_at'],
   },
@@ -171,7 +171,7 @@ const SOURCE_REGISTRY: Array<{
   {
     key: 'crypto_exposures',
     label: 'Crypto exposures',
-    feeds: ['Quantum Readiness', 'Harvest Now', 'Vulnerabilities'],
+    feeds: ['Quantum Readiness', 'Harvest Now', 'Quantum Risk Analysis'],
     thresholdMs: 7 * DAY,
     timeColumns: ['updated_at', 'created_at'],
   },

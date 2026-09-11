@@ -12,7 +12,7 @@
 import { executeWebScan } from '../src/lib/scanner/web-scanner/scan-orchestrator'
 import { scanWebCrypto } from '../src/lib/scanner/web-scanner/web-crypto-scanner'
 import { moduleIdForFinding } from '../src/api-server/scanner-module-ledger'
-import { nodeForFindingCategory, scoreNodesFromCategories } from '../src/app/dashboard/scanner_dashboard/_intel'
+import { nodeForFindingCategory, scoreNodesFromCategories, PQ_SENSITIVE_CATEGORY_KEYS } from '../src/app/dashboard/scanner_dashboard/_intel'
 import type { WebScanTargetType } from '../src/lib/scanner/web-scanner/types'
 import type { DefensiveFinding } from '../src/app/dashboard/scanner_dashboard/_types'
 
@@ -92,6 +92,8 @@ async function main() {
       weight: category.weight,
       score: category.applicable ? category.score : null,
       observed: category.observed,
+      description: category.label,
+      postQuantumRelevant: PQ_SENSITIVE_CATEGORY_KEYS.has(category.key),
     })),
   )
   console.log(`\n3. Node score the hero card renders for "code": ${nodeScores.code ?? '(no score — not measured)'}`)

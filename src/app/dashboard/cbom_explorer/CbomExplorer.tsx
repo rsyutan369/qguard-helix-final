@@ -751,7 +751,7 @@ function FocusedTabDashboard({
             <DashboardMetric icon={Bell} label="Findings" value={findings.length} detail="De-duplicated scanner observations" tone="red" />
             <DashboardMetric icon={Zap} label="Critical Findings" value={criticalFindings} detail="Immediate remediation candidates" tone="red" />
             <div className="md:col-span-2">
-              <DashboardAction to="/dashboard/vulnerabilities" icon={ExternalLink} label="Open Vulnerability Center" detail="Review remediation workflows and risk evidence" />
+              <DashboardAction to="/dashboard/quantum-readiness/risk-analysis" icon={ExternalLink} label="Open Quantum Risk Analysis" detail="Review remediation priority and risk evidence" />
             </div>
           </div>
           <div className="space-y-3 xl:col-span-8">
@@ -1364,8 +1364,8 @@ export default function CbomExplorer() {
                 <span className={`ml-auto text-[10px] font-black uppercase ${qrLive ? 'text-emerald-300' : 'text-[var(--qg-text-muted)]'}`}>{qrLive ? 'Live' : 'Idle'}</span>
               </div>
             </div>
-            <Link to="/dashboard/quantum-readiness/command-center" className="inline-flex items-center justify-center gap-2 rounded-md border border-[var(--qg-cyan)]/35 bg-[var(--qg-cyan)]/10 px-3 py-2 text-[11px] font-black uppercase tracking-wider text-[var(--qg-cyan)] transition hover:border-[var(--qg-cyan)]/70">
-              <ExternalLink className="h-3.5 w-3.5" /> Open QR Command Center
+            <Link to="/dashboard/quantum-readiness" className="inline-flex items-center justify-center gap-2 rounded-md border border-[var(--qg-cyan)]/35 bg-[var(--qg-cyan)]/10 px-3 py-2 text-[11px] font-black uppercase tracking-wider text-[var(--qg-cyan)] transition hover:border-[var(--qg-cyan)]/70">
+              <ExternalLink className="h-3.5 w-3.5" /> Open Quantum Readiness
             </Link>
           </div>
         </div>

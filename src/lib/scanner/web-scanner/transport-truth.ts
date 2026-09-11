@@ -44,6 +44,7 @@
  */
 
 import type { EdgeIntelligence } from './edge-intelligence';
+import { hybridProbeSettled } from './edge-intelligence-model';
 import type { MeasuredKeyAgreement } from './edge-intelligence-model';
 
 /**
@@ -61,6 +62,53 @@ export interface TlsObservation {
   negotiatedCurve?: string | null;
   ephemeralKeyType?: string | null;
   cipherSuites?: Array<{ name?: string; category?: string }> | null;
+  /**
+   * Versions the endpoint accepted when each was offered alone.
+   *
+   * Read for hybrid COVERAGE: a pre-1.3 version the endpoint still accepts is a
+   * path no TLS 1.3 hybrid group can reach. The socket analyser probes these
+   * per version, so it answers even when the edge prober did not run.
+   */
+  supportedProtocols?: string[] | null;
+}
+
+/* ────────────────────────────────────────────────────── static RSA, once ──── */
+
+/**
+ * Is this suite static-RSA key transport?
+ *
+ * THE ONE PREDICATE. Static RSA is the most consequential fact on the transport
+ * surface — such a suite has NO forward secrecy, so recorded sessions become
+ * retroactively decryptable the moment the server key falls, and no hybrid key
+ * agreement anywhere on the endpoint prevents it. It is therefore stated on
+ * three separate panels, and every one of them must count the same suites.
+ *
+ * They did not. The Observed Attack Surface matched the suite NAME and the
+ * parsed category; Transport & Ciphers matched only `keyExchange === 'RSA'`.
+ * A suite the analyser named `TLS_RSA_WITH_…` but whose key exchange it left
+ * blank was counted on one panel and not the other, so the page read
+ * "Static RSA accepted" beside "Static RSA accepted: No".
+ *
+ * Note what is deliberately NOT here: `/(^|_)RSA_WITH/`. That substring also
+ * occurs in `TLS_ECDHE_RSA_WITH_…`, where RSA is the server's AUTHENTICATION
+ * and the key exchange is ephemeral ECDHE. Those sessions ARE forward secret.
+ */
+export function isStaticRsaSuite(suite: {
+  name?: string | null;
+  standardName?: string | null;
+  category?: string | null;
+  keyExchange?: string | null;
+}): boolean {
+  if ((suite.category ?? '').toLowerCase() === 'rsa-kex') return true;
+  if (/^RSA$/i.test((suite.keyExchange ?? '').trim())) return true;
+  return /^(TLS|SSL)_RSA_WITH/i.test(suite.standardName ?? suite.name ?? '');
+}
+
+/** Every static-RSA suite in an offered-suite enumeration. */
+export function staticRsaSuites<T extends { name?: string | null; standardName?: string | null; category?: string | null; keyExchange?: string | null }>(
+  suites: readonly T[] | null | undefined,
+): T[] {
+  return (suites ?? []).filter((suite) => isStaticRsaSuite(suite));
 }
 
 /* ─────────────────────────────────────────────────────────────── the shape ── */
@@ -123,8 +171,38 @@ export interface TransportTruth {
    * Note that a completed handshake DOES license a verdict about what it
    * negotiated, even when named-group probing failed — the certificate's public
    * key and the handshake signature are quantum-relevant and were observed.
+   *
+   * `hybrid-partial` is the state a hybrid endpoint reaches when it ALSO
+   * accepts a path the hybrid group does not cover. See
+   * {@link TransportTruth.hybridCoverage}.
    */
-  quantumVulnerability: Measured<'vulnerable' | 'hybrid' | 'resistant'>;
+  quantumVulnerability: Measured<'vulnerable' | 'hybrid' | 'hybrid-partial' | 'resistant'>;
+
+  /**
+   * Does the measured hybrid key agreement cover every path this endpoint will
+   * accept?
+   *
+   * THE CONTRADICTION THIS FIELD REMOVES
+   * ------------------------------------
+   * A hybrid group protects the sessions that USE it. It does nothing for a
+   * session an attacker forces onto static RSA key transport or onto TLS 1.0,
+   * both of which this same reconciliation already measures — `forwardSecrecy`
+   * is capped to "Partial" for exactly that reason. The quantum verdict did not
+   * consult either, so one panel published
+   *
+   *   Forward secrecy      Partial
+   *   Static RSA accepted  Yes · 4 suite(s)
+   *   Protocols accepted   TLSv1 / TLSv1.1 / TLSv1.2 / TLSv1.3
+   *
+   * directly above another publishing "Quantum vulnerability: Hybrid-protected"
+   * and "Harvest-now exposure: key agreement protected". Both were derived from
+   * the same handshake. Recorded traffic on the static-RSA path is decryptable
+   * the moment the server key falls, hybrid group or not.
+   *
+   * `false` means: hybrid measured, and at least one uncovered path measured
+   * alongside it. `null` means coverage was not established either way.
+   */
+  hybridCoverage: Measured<boolean>;
 
   /** Every reconciliation the module had to make, for the disclosure panel. */
   notes: string[];
@@ -271,6 +349,14 @@ export function reconcileTransport(
 
   const pq = edge?.pqKeyAgreement ?? null;
   const namedGroupProbed = Boolean(pq?.probed);
+  /* Did the HYBRID half of that probe produce an answer?
+     `probed` covers the group probe as a whole, and the classical groups are
+     cheaper and settle first — so a run can enumerate X25519 and P-256 happily
+     while every ML-KEM group is throttled into an inconclusive verdict. Reading
+     `probed && no hybrid accepted` as "classical only" is what published
+     "Every named group the endpoint accepted is classical" for an endpoint
+     that answers X25519MLKEM768 on demand. */
+  const hybridAnswered = hybridProbeSettled(pq);
 
   let postQuantum: TransportTruth['postQuantum'];
   if (!namedGroupProbed) {
@@ -298,13 +384,69 @@ export function reconcileTransport(
       group: pq!.pureKemGroups[0],
       reason: `Standalone ML-KEM accepted (${pq!.pureKemGroups.join(', ')}) with no classical hedge.`,
     };
+  } else if (!hybridAnswered) {
+    /* Probing ran and found classical groups, but no hybrid group settled.
+       Reported as unmeasured, which routes the verdict below into the branch
+       that scopes its claim to the session actually negotiated instead of
+       making one about the endpoint's full capability. */
+    postQuantum = {
+      state: 'not-measured',
+      label: 'Not measured',
+      group: null,
+      reason:
+        'Named-group probing ran, but no hybrid ML-KEM group reached a conclusive verdict' +
+        `${pq!.hybridGroupsInconclusive?.length ? ` (${pq!.hybridGroupsInconclusive.join(', ')} never settled)` : ''}` +
+        '. Group probing opens one handshake per group and is the first thing an endpoint throttles, so post-quantum key agreement is "not measured", not "not supported".',
+    };
   } else {
     postQuantum = {
       state: 'classical',
       label: 'Classical only',
       group: pq!.primaryGroup ?? null,
-      reason: 'Every named group offered was classical; no post-quantum group was accepted.',
+      reason: 'Every hybrid group that settled was refused and every accepted named group was classical; no post-quantum group was accepted.',
     };
+  }
+
+  /* ── hybrid coverage ────────────────────────────────────────────────────── */
+
+  /* Which measured facts prove a session can avoid the hybrid group. Both are
+     already established above from the same handshake, so consulting them here
+     costs nothing and cannot disagree with the rows that display them. */
+  const LEGACY_VERSION = /^(?:TLSv1(?:\.[01])?|SSLv[23])$/i;
+  const legacyProtocols = Array.from(
+    new Set(
+      [...(edgeTransport?.legacyProtocols ?? []), ...(tls?.supportedProtocols ?? [])].filter((protocol) =>
+        LEGACY_VERSION.test(String(protocol).trim()),
+      ),
+    ),
+  );
+  const uncoveredPaths: string[] = [];
+  if (staticRsaAccepted.value === true) {
+    uncoveredPaths.push('static-RSA key transport is accepted, and RSA key transport carries no ephemeral secret at all');
+  }
+  if (legacyProtocols.length > 0) {
+    uncoveredPaths.push(
+      `${legacyProtocols.join(', ')} ${legacyProtocols.length === 1 ? 'is' : 'are'} still accepted, and hybrid groups exist only in TLS 1.3`,
+    );
+  }
+
+  const hybridCoverage: Measured<boolean> =
+    postQuantum.state !== 'hybrid'
+      ? unmeasured<boolean>('Coverage is only meaningful once a hybrid group has been measured.')
+      : uncoveredPaths.length > 0
+        ? measured(false, `The hybrid group does not cover every accepted path: ${uncoveredPaths.join('; ')}.`)
+        : staticRsaAccepted.measured
+          ? measured(
+              true,
+              'No static-RSA suite and no pre-1.3 protocol was accepted, so every path measured on this endpoint carries the hybrid key agreement.',
+            )
+          : unmeasured<boolean>('Suite and protocol enumeration did not run, so alternative paths were not established.');
+
+  if (hybridCoverage.value === false) {
+    notes.push(
+      'Hybrid post-quantum key agreement was measured, but it does not cover every path this endpoint accepts. ' +
+        'Traffic recorded on an uncovered path stays harvestable regardless of the hybrid group.',
+    );
   }
 
   /* ── quantum vulnerability ──────────────────────────────────────────────── */
@@ -313,15 +455,21 @@ export function reconcileTransport(
      the certificate public key and the handshake signature are quantum-relevant
      and WERE observed. Refusing to say anything in that case is the opposite
      error to fabricating — it withholds a conclusion the evidence supports. */
-  let quantumVulnerability: Measured<'vulnerable' | 'hybrid' | 'resistant'>;
+  let quantumVulnerability: Measured<'vulnerable' | 'hybrid' | 'hybrid-partial' | 'resistant'>;
   if (postQuantum.state === 'hybrid') {
-    quantumVulnerability = measured('hybrid', `${postQuantum.group} protects the session against Shor.`);
+    quantumVulnerability = hybridCoverage.value === false
+      ? measured(
+          'hybrid-partial',
+          `${postQuantum.group} protects sessions that use it, but ${uncoveredPaths.join('; ')}. ` +
+            'A session forced onto one of those paths is recorded today and decryptable later, so this endpoint is not harvest-now safe until they are disabled.',
+        )
+      : measured('hybrid', `${postQuantum.group} protects the session against Shor.`);
   } else if (postQuantum.state === 'pq-only') {
     quantumVulnerability = measured('resistant', `${postQuantum.group} is post-quantum, with no classical hedge.`);
   } else if (postQuantum.state === 'classical') {
     quantumVulnerability = measured(
       'vulnerable',
-      'Every named group the endpoint accepted is classical, so a recorded session is retrospectively decryptable.',
+      'Every hybrid group that settled was refused and every named group the endpoint accepted is classical, so a recorded session is retrospectively decryptable.',
     );
   } else if (handshakeCompleted && keyExchange.measured) {
     /* Group probing failed, but the negotiated key exchange was observed. If it
@@ -337,7 +485,7 @@ export function reconcileTransport(
             'Whether this endpoint would ALSO accept a post-quantum group was not measured.',
         );
   } else {
-    quantumVulnerability = unmeasured<'vulnerable' | 'hybrid' | 'resistant'>(
+    quantumVulnerability = unmeasured<'vulnerable' | 'hybrid' | 'hybrid-partial' | 'resistant'>(
       handshakeFailure || 'Nothing quantum-relevant was observed.',
     );
   }
@@ -354,6 +502,7 @@ export function reconcileTransport(
     namedGroupProbed,
     postQuantum,
     quantumVulnerability,
+    hybridCoverage,
     notes,
   };
 }

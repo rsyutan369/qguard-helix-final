@@ -262,7 +262,7 @@ export default function Dashboard() {
       {/* Threat Intelligence + Security Events */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <div>
-          <SectionLabel href="/dashboard/vulnerabilities"><Radar className="h-4 w-4 text-cyan-300" /> Threat Intelligence</SectionLabel>
+          <SectionLabel href="/dashboard/quantum-readiness/risk-analysis"><Radar className="h-4 w-4 text-cyan-300" /> Threat Intelligence</SectionLabel>
           <div className="mt-2"><ThreatIntel intel={executive?.threatIntel} loading={execLoading} /></div>
         </div>
         <div>

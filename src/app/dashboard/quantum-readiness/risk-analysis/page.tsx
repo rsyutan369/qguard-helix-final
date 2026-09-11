@@ -230,7 +230,7 @@ export default function RiskAnalysisPage() {
         </Panel>
 
         <Panel className="p-5 xl:col-span-7">
-          <SectionTitle suffix={<ViewAllLink to="/dashboard/quantum-readiness/command-center">Command Center</ViewAllLink>}>Risk Trend</SectionTitle>
+          <SectionTitle suffix={<ViewAllLink to="/dashboard/quantum-readiness">Assessment Overview</ViewAllLink>}>Risk Trend</SectionTitle>
           <TrendChart points={snapshot.riskTrend} />
         </Panel>
       </section>

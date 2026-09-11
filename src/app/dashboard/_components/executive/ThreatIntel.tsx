@@ -22,7 +22,7 @@ export default function ThreatIntel({ intel, loading }: { intel: ExecutiveSnapsh
   return (
     <Panel>
       <PanelHeader
-        title="Threat Intelligence" icon={Radar} href="/dashboard/vulnerabilities"
+        title="Threat Intelligence" icon={Radar} href="/dashboard/quantum-readiness/risk-analysis"
         right={intel.epssMax > 0 ? <span className="text-[9px] font-black uppercase tracking-widest text-red-300">EPSS {intel.epssMax}%</span> : undefined}
       />
       <div className="grid grid-cols-4 gap-2">
@@ -44,7 +44,7 @@ export default function ThreatIntel({ intel, loading }: { intel: ExecutiveSnapsh
         {intel.hasThreatFeed ? (
           <div className="space-y-1">
             {intel.feeds.slice(0, 5).map((f) => (
-              <a key={f.id} href="/dashboard/vulnerabilities" className="flex items-center justify-between gap-2 rounded px-1.5 py-1 no-underline transition-colors hover:bg-white/[0.03]">
+              <a key={f.id} href="/dashboard/quantum-readiness/risk-analysis" className="flex items-center justify-between gap-2 rounded px-1.5 py-1 no-underline transition-colors hover:bg-white/[0.03]">
                 <span className="flex min-w-0 items-center gap-1.5">
                   <ShieldAlert className={cx('h-3 w-3 shrink-0', f.severity.includes('critical') ? 'text-red-400' : 'text-amber-400')} />
                   <span className="truncate text-[11px] text-white/70">{f.title}</span>

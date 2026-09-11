@@ -40,7 +40,9 @@ interface AssetRow {
   findings: number;
   critical: number;
   quantumVulnerable: number;
+  /** Post-quantum only. Hybrid is counted separately — it is not the same claim. */
   pqc: number;
+  hybrid: number;
   detail: string;
 }
 
@@ -61,7 +63,7 @@ function deriveAssets(assessment: ExposureAssessment): AssetRow[] {
     const row: AssetRow = {
       id, name, kind,
       state: 'scanned',
-      components: 0, findings: 0, critical: 0, quantumVulnerable: 0, pqc: 0,
+      components: 0, findings: 0, critical: 0, quantumVulnerable: 0, pqc: 0, hybrid: 0,
       detail: '',
     };
     byAsset.set(id, row);
@@ -75,7 +77,12 @@ function deriveAssets(assessment: ExposureAssessment): AssetRow[] {
     row.findings += 1;
     if (finding.severity === 'critical') row.critical += 1;
     if (finding.quantumStatus === 'vulnerable') row.quantumVulnerable += 1;
-    if (finding.quantumStatus === 'pqc' || finding.quantumStatus === 'hybrid') row.pqc += 1;
+    /* Hybrid is NOT post-quantum. It is a classical primitive still carrying a
+       classical half, deployed alongside a PQC one — substantial migration
+       progress, but the classical half has yet to be retired. Folding it into
+       a column rendered as "pqc" told the reader that work was finished. */
+    if (finding.quantumStatus === 'pqc') row.pqc += 1;
+    if (finding.quantumStatus === 'hybrid') row.hybrid += 1;
   }
 
   for (const component of assessment.cbom) {
@@ -185,12 +192,19 @@ export function AssetInventory({ assessment }: { assessment: ExposureAssessment 
                           {asset.quantumVulnerable} vuln
                         </span>
                       )}
+                      {asset.hybrid > 0 && (
+                        <span className="ml-2 font-mono text-[11.5px]" style={{ color: QUANTUM_COLOR.hybrid }}>
+                          {asset.hybrid} hybrid
+                        </span>
+                      )}
                       {asset.pqc > 0 && (
                         <span className="ml-2 font-mono text-[11.5px]" style={{ color: QUANTUM_COLOR.pqc }}>
                           {asset.pqc} pqc
                         </span>
                       )}
-                      {asset.quantumVulnerable === 0 && asset.pqc === 0 && <span className="text-slate-600">—</span>}
+                      {asset.quantumVulnerable === 0 && asset.pqc === 0 && asset.hybrid === 0 && (
+                        <span className="text-slate-600">—</span>
+                      )}
                     </td>
                   </tr>
                 );

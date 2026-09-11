@@ -971,13 +971,86 @@ export function sameAlgorithm(a: string | null | undefined, b: string | null | u
 }
 
 /** Extract a plausible key size. Rejects years and other incidental numbers. */
-export function parseKeySize(raw: string | null | undefined): number | null {
+const PLAUSIBLE_KEY_SIZES = new Set([
+  128, 160, 192, 224, 256, 283, 384, 448, 512, 521, 768, 1024, 1536, 2048, 3072, 4096, 7680, 8192, 15360,
+]);
+
+/**
+ * The smallest size that is a KEY rather than a digest or a block, per family.
+ *
+ * A three-digit run near an RSA reference is almost always a hash length: the
+ * modulus is four digits. Enforcing the floor is what stops `RSA-256` — which
+ * is not a key size that exists — from being published.
+ */
+function plausibleForFamily(value: number, algorithm: AlgorithmDefinition | null | undefined): boolean {
+  if (!PLAUSIBLE_KEY_SIZES.has(value)) return false;
+  if (!algorithm) return true;
+  const family = algorithm.family.toLowerCase();
+  if (family === 'rsa' || family === 'dh' || family === 'dsa' || family === 'elgamal') return value >= 512;
+  if (family === 'ecc' || family === 'ec') return value >= 160 && value <= 521;
+  return true;
+}
+
+/**
+ * A key size the observation actually STATES, for the algorithm that owns it.
+ *
+ * ── The defect this replaces ────────────────────────────────────────────────
+ *
+ * The size used to be the first plausible three-to-five digit run ANYWHERE in
+ * the string, with no requirement that it belong to the algorithm being
+ * classified. The digest length and the bulk cipher's key length were
+ * therefore read as the public key size:
+ *
+ *   sha256WithRSAEncryption            ->  256   -> "RSA-256"
+ *   TLS_ECDHE_RSA_WITH_AES_128_GCM     ->  128   -> "RSA-128"
+ *
+ * A live Dev scan of this repository published `RSA-256 for digital signature`
+ * as a CRITICAL finding. RSA-256 is not a key size that exists; it is a
+ * misread of a SHA-256 designation, and it appeared at the top of the panel.
+ *
+ * A digit run now counts only when it is written against the algorithm that
+ * owns it, or against an explicit bit marker. When no size is stated the
+ * answer is `null` — the caller records "key size not established", which is a
+ * measurement gap rather than an invented measurement.
+ */
+export function parseKeySize(
+  raw: string | null | undefined,
+  ownedBy?: AlgorithmDefinition | null,
+): number | null {
   if (!raw) return null;
-  const plausible = new Set([128, 160, 192, 224, 256, 283, 384, 448, 512, 521, 768, 1024, 1536, 2048, 3072, 4096, 7680, 8192, 15360]);
-  for (const match of String(raw).matchAll(/(?:^|[^0-9])(\d{3,5})(?:$|[^0-9])/g)) {
-    const value = Number(match[1]);
-    if (plausible.has(value)) return value;
+  const value = String(raw).trim();
+
+  /* A bare number is the size, with nothing else to misattribute it to. */
+  if (/^\d{3,5}$/.test(value)) {
+    const bare = Number(value);
+    return plausibleForFamily(bare, ownedBy) ? bare : null;
   }
+
+  /* "2048-bit", "2048 bits", "bits: 2048" — the marker names the quantity. */
+  for (const pattern of [/(\d{3,5})[-_ ]?bits?\b/i, /\bbits?[-_ :]+(\d{3,5})/i]) {
+    const match = value.match(pattern);
+    if (match) {
+      const stated = Number(match[1]);
+      if (plausibleForFamily(stated, ownedBy)) return stated;
+    }
+  }
+
+  /* Attached to the algorithm's own name: rsa-2048, rsa2048, RSA_2048,
+     rsaEncryption 2048, ML-KEM-768. Without a name to anchor to there is no
+     way to tell whose number it is, so nothing is returned. */
+  if (!ownedBy) return null;
+
+  const tokens = [ownedBy.canonicalName, ...ownedBy.aliases]
+    .map((name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '[-_ ]?'))
+    .filter((name) => name.length > 0);
+
+  for (const token of tokens) {
+    const match = value.match(new RegExp(`${token}[a-z]*[-_ ]?\\(?(\\d{3,5})\\)?`, 'i'));
+    if (!match) continue;
+    const stated = Number(match[1]);
+    if (plausibleForFamily(stated, ownedBy)) return stated;
+  }
+
   return null;
 }
 

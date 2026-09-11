@@ -184,6 +184,22 @@ const GUARDED_ROUTES: Array<{ method: string; path: string; mode: ExposureScanMo
   { method: 'post',   path: '/local/sync',                mode: 'local', why: 'persists a Local assessment into the estate' },
 ];
 
+/**
+ * Routes whose MODE is a request parameter, guarded by `requireHistoryMode`.
+ *
+ * The History surface serves both Local and Dev from one path, so it cannot
+ * name a mode at declaration time. `requireHistoryMode` resolves the mode from
+ * the query string, refuses anything else, and then delegates to the SAME
+ * `requireMode` gate every other route uses — which is asserted below, because
+ * a wrapper that forgot to delegate would leave four routes open.
+ */
+const MODE_ROUTED_ROUTES: Array<{ method: string; path: string; why: string }> = [
+  { method: 'get',    path: '/history/stream',    why: 'streams the tenant’s recorded assessments' },
+  { method: 'get',    path: '/history',           why: 'lists the tenant’s recorded assessments' },
+  { method: 'get',    path: '/history/:scanId',   why: 'rebuilds one recorded assessment in full' },
+  { method: 'delete', path: '/history/:scanId',   why: 'deletes a recorded assessment and everything it wrote' },
+];
+
 /** Endpoints that must stay reachable without an account. */
 const ANONYMOUS_ROUTES = [
   { method: 'get', path: '/capabilities', why: 'capability disclosure — what each mode does' },
@@ -229,6 +245,43 @@ function checkRouter(): void {
     );
   }
 
+  section('Mode-routed surfaces resolve the mode, then use the same gate');
+
+  for (const route of MODE_ROUTED_ROUTES) {
+    const escaped = route.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`router\\.${route.method}\\(\\s*'${escaped}'\\s*,\\s*([A-Za-z_$][\\w$]*)`);
+    const match = source.match(pattern);
+    if (!match) {
+      check(`${route.method.toUpperCase()} ${route.path} exists`, false, 'route not found — was it renamed?');
+      continue;
+    }
+    check(
+      `${route.method.toUpperCase()} ${route.path} → requireHistoryMode`,
+      match[1] === 'requireHistoryMode',
+      `first middleware is \`${match[1]}\` — ${route.why}`,
+    );
+  }
+
+  /* The wrapper is only as good as its delegation. These three assertions are
+     what make the four routes above genuinely guarded rather than nominally. */
+  const wrapper = source.slice(source.indexOf('function requireHistoryMode'));
+  const wrapperBody = wrapper.slice(0, wrapper.indexOf('\n}\n') + 2);
+  check(
+    'requireHistoryMode refuses a mode it does not recognise',
+    /requested !== 'local' && requested !== 'dev'/.test(wrapperBody) && /BAD_REQUEST/.test(wrapperBody),
+    'an unrecognised mode must be refused, never defaulted into a gated one',
+  );
+  check(
+    'requireHistoryMode delegates to requireMode with the resolved mode',
+    /return requireMode\(requested/.test(wrapperBody),
+    'the wrapper must not re-implement entitlement — one gate, one place',
+  );
+  check(
+    'the History stream is the only mode-routed route accepting a query token',
+    (source.match(/requireHistoryMode\(\{ allowQueryToken: true \}\)/g) ?? []).length === 1,
+    'a token in a URL is more exposed than one in a header; only the read-only stream may take one',
+  );
+
   section('Anonymous surfaces stay anonymous');
 
   for (const route of ANONYMOUS_ROUTES) {
@@ -255,9 +308,11 @@ function checkRouter(): void {
 
   /* Any route mentioning a Dev or Local execution surface that this tool does
      not know about is a gap in the list above, not a pass. */
-  const declared = new Set(GUARDED_ROUTES.map((r) => `${r.method} ${r.path}`).concat(
-    ANONYMOUS_ROUTES.map((r) => `${r.method} ${r.path}`),
-  ));
+  const declared = new Set(
+    GUARDED_ROUTES.map((r) => `${r.method} ${r.path}`)
+      .concat(MODE_ROUTED_ROUTES.map((r) => `${r.method} ${r.path}`))
+      .concat(ANONYMOUS_ROUTES.map((r) => `${r.method} ${r.path}`)),
+  );
   const found = [...source.matchAll(/router\.(get|post|put|patch|delete)\(\s*'([^']+)'/g)]
     .map((m) => `${m[1]} ${m[2]}`);
   const unknown = found.filter((route) => !declared.has(route));
@@ -265,7 +320,9 @@ function checkRouter(): void {
   check(
     'every exposure route is classified as gated or anonymous',
     unknown.length === 0,
-    unknown.length ? `unclassified: ${unknown.join(', ')} — add each to GUARDED_ROUTES or ANONYMOUS_ROUTES` : undefined,
+    unknown.length
+      ? `unclassified: ${unknown.join(', ')} — add each to GUARDED_ROUTES, MODE_ROUTED_ROUTES or ANONYMOUS_ROUTES`
+      : undefined,
   );
 
   section('Server and UI read the same matrix');

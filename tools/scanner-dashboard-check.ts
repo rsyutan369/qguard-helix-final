@@ -19,11 +19,19 @@
 import {
   buildAssessment,
   buildNodeEvidence,
+  nodeScoreScopes,
+  pqcRole,
   scoreNodesFromCategories,
   SCANNER_NODE_CATEGORIES,
   SCANNER_NODE_BLUEPRINTS,
   type AssessmentInput,
 } from '../src/app/dashboard/scanner_dashboard/_intel'
+import { buildAlgorithmCensus } from '../src/lib/scanner/web-scanner/algorithm-census'
+import {
+  classifyQuantumVulnerability,
+  measuredKeyAgreement,
+} from '../src/lib/scanner/web-scanner/edge-intelligence-model'
+import { buildPublishedCategories } from '../src/lib/scanner/web-scanner/published-scoring'
 import type {
   DefensiveFinding,
   EnterpriseScanner2,
@@ -301,7 +309,18 @@ function verifyPopulated() {
   )
 
   assert(a.intelligence.keyExchange.includes('ECDHE') && a.intelligence.keyExchange.includes('X25519'), `Key exchange from the TLS analysis (${a.intelligence.keyExchange})`)
-  assert(a.intelligence.forwardSecrecy === 'Enabled', `Intelligence forward secrecy agrees with the surface (${a.intelligence.forwardSecrecy})`)
+  /* "Partial", not "Enabled": this endpoint negotiated TLS 1.3 (forward secret
+     by construction) but ALSO accepts a static-RSA suite, and a session steered
+     onto that suite has no ephemeral secret at all. The surface row and the
+     intelligence row must read the same word, and that word is the capped one. */
+  assert(a.intelligence.forwardSecrecy === 'Partial', `Intelligence forward secrecy agrees with the surface (${a.intelligence.forwardSecrecy})`)
+  /* A hybrid group would not rescue it either — and the verdict must say so
+     rather than reporting the endpoint as protected. Here nothing hybrid was
+     measured, so the verdict is plainly Vulnerable. */
+  assert(
+    a.intelligence.quantumVulnerability === 'Vulnerable',
+    `Quantum verdict follows the measured transport, not the suite name (${a.intelligence.quantumVulnerability})`,
+  )
   assert(a.intelligence.scanner2Readiness?.score === 20, 'Scanner_2 readiness reported separately, not blended')
 
   const algorithmNames = a.intelligence.observedAlgorithms.map((entry) => entry.name)
@@ -433,7 +452,15 @@ function verifySingleSourceOfTruth() {
   const footprint = (key: string) => a.footprint.metrics.find((metric) => metric.key === key)?.value
 
   // Scan scope: the summary answers every headline, the estate snapshot none.
-  assert(footprint('components') === POPULATED.summary!.totalFindings, `Estate Footprint components = scan total (${footprint('components')})`)
+  /* The tile counts CRYPTOGRAPHIC COMPONENTS, not every finding — a
+     detection-rule observation ("Regulatory Compliance Gap") is a statement
+     about the estate, not an inventory row, and counting it here is what made
+     this tile irreconcilable with the CBOM page for the same scan. */
+  assert(footprint('components') === a.footprint.components.total, `Estate Footprint components = the derived component count (${footprint('components')})`)
+  assert(
+    a.footprint.components.total + a.footprint.components.policyFindings === POPULATED.findings.length,
+    `Components + policy findings account for the scan total (${a.footprint.components.total} + ${a.footprint.components.policyFindings} of ${POPULATED.findings.length})`,
+  )
   assert(footprint('assets') === POPULATED.summary!.targetsScanned, `Estate Footprint assets = targets scanned (${footprint('assets')})`)
   assert(a.target.count === POPULATED.summary!.targetsScanned, 'Assessment Scope target count comes from the same summary')
   assert(
@@ -445,8 +472,8 @@ function verifySingleSourceOfTruth() {
     'The risk statement names the scope it is describing',
   )
   assert(
-    a.footprint.exposureLevel.includes(String(POPULATED.summary!.vulnerable)),
-    `Exposure level counts the scan's vulnerable components (${a.footprint.exposureLevel})`,
+    a.footprint.exposureLevel.includes(String(a.footprint.components.vulnerable)),
+    `Exposure level counts the scan's vulnerable COMPONENTS, the same population as the tile (${a.footprint.exposureLevel})`,
   )
 
   /* Estate scope: with no scan in view EVERY number switches together. The bug
@@ -461,7 +488,13 @@ function verifySingleSourceOfTruth() {
     estate: { totalAssets: 6, totalFindings: 174, criticalFindings: 106, vulnerableAssets: 6, pqcReadiness: 12, riskScore: 61 },
   })
   const estateFootprint = (key: string) => estateOnly.footprint.metrics.find((metric) => metric.key === key)?.value
+  /* Estate scope holds totals, not rows — there is nothing to classify, so the
+     snapshot total is reported as the observation total it is. */
   assert(estateFootprint('components') === 174, `Estate scope: components from the snapshot (${estateFootprint('components')})`)
+  assert(
+    estateOnly.footprint.metrics.find((metric) => metric.key === 'components')?.countedFrom.includes('Scanner Intelligence snapshot') ?? false,
+    'Estate scope names the snapshot it counted from',
+  )
   assert(estateFootprint('assets') === 6, `Estate scope: assets from the snapshot (${estateFootprint('assets')})`)
   assert(estateOnly.executive.encryptionScore === 39, `Estate scope: score is 100 - estate risk (${estateOnly.executive.encryptionScore})`)
   assert(
@@ -494,7 +527,23 @@ function verifyNodeEvidence() {
   const transport = buildNodeEvidence('transport', base)
   assert(transport.rows.some((r) => r.label === 'Negotiated protocol' && r.value === 'TLSv1.3'), 'transport: negotiated protocol')
   assert(transport.rows.some((r) => r.label === 'Protocols accepted' && r.value.includes('TLSv1.0')), 'transport: legacy protocol surfaced')
-  assert(transport.rows.some((r) => r.label === 'Suites enumerated' && r.value.includes('1 quantum-vulnerable')), 'transport: quantum-vulnerable suite counted')
+  /* BOTH accepted suites are quantum-vulnerable here, and the count says so.
+     It used to read "1", because it trusted the per-suite `quantumVulnerable`
+     flag — which is set from the suite NAME and therefore called
+     TLS_AES_256_GCM_SHA384 safe even though this handshake negotiated it over
+     the classical X25519 group. The count and the locus row now run the one
+     decomposer against the one measured group, so they cannot disagree about
+     the same suite. */
+  assert(
+    transport.rows.some((r) => r.label === 'Suites enumerated' && r.value.includes('2 quantum-vulnerable')),
+    `transport: quantum-vulnerable suites counted from the measured group (${transport.rows.find((r) => r.label === 'Suites enumerated')?.value})`,
+  )
+  const locusRow = transport.rows.find((r) => r.label.startsWith('Quantum exposure locus'))
+  assert(Boolean(locusRow) && locusRow!.label.includes('negotiated suite'), 'transport: the locus row states the scope it describes')
+  assert(
+    Boolean(locusRow) && locusRow!.value.includes('Key agreement'),
+    `transport: the locus agrees with the count for the negotiated suite (${locusRow?.value})`,
+  )
   /* Forward secrecy replaced the raw "Ephemeral key" readout: the presence of
      ephemeral key material is the mechanism, forward secrecy is the security
      property, and the panel must state the property. */
@@ -519,7 +568,10 @@ function verifyNodeEvidence() {
   assert(certificates.rows.some((r) => r.label === 'Validity' && r.value.includes('day')), 'certificates: days remaining computed')
 
   const code = buildNodeEvidence('code', base)
-  assert(code.rows.some((r) => r.label === 'Security headers' && r.value === '1/3 hardened'), 'code: header hardening counted')
+  /* "0/2", not "1/3": HSTS is reported on its own row on the Observed Attack
+     Surface and now leaves this tally too, so the two panels state one
+     measurement. They read "2/10" and "1/8" for the same scan before this. */
+  assert(code.rows.some((r) => r.label === 'Security headers' && r.value === '0/2 hardened'), `code: header hardening counted (${code.rows.find((r) => r.label === 'Security headers')?.value})`)
   assert(code.rows.some((r) => r.label === 'API endpoints probed' && r.value === '6'), 'code: endpoints probed')
 
   const posture = buildNodeEvidence('posture', base)
@@ -527,8 +579,23 @@ function verifyNodeEvidence() {
      "readiness"-shaped numbers over different populations, and labelling them all
      "Quantum readiness" is what made the panel look self-contradictory. */
   assert(
-    posture.rows.some((r) => r.label === 'Asset readiness · Scanner_2' && r.value.startsWith('20%')),
-    'posture: Scanner_2 asset readiness names its source and population',
+    posture.rows.some((r) => r.label === 'Migration readiness · Scanner_2' && r.value.startsWith('20%')),
+    'posture: Scanner_2 migration readiness names its source and population',
+  )
+  /* The row must never call an observation an asset. `totalAssets` used to hold
+     the FINDING count, so a single-asset scan reported "3 of 16 inventoried
+     asset(s)". */
+  const readinessRow = posture.rows.find((r) => r.label === 'Migration readiness · Scanner_2')
+  assert(
+    Boolean(readinessRow) && !/inventoried asset/i.test(readinessRow!.detail ?? ''),
+    `posture: readiness does not describe observations as inventoried assets (${readinessRow?.detail})`,
+  )
+  /* The harvest-now row counts observations, and states the asset population
+     separately. It read "8 asset(s)" on a one-asset tenant. */
+  const hndlRow = posture.rows.find((r) => r.label === 'Harvest-now exposure')
+  assert(
+    Boolean(hndlRow) && /observation/.test(hndlRow!.value) && !/asset\(s\)/.test(hndlRow!.value),
+    `posture: harvest-now counts observations, not assets (${hndlRow?.value})`,
   )
   assert(posture.rows.some((r) => r.label === 'Break window' && r.value === '2030–2035'), 'posture: break window')
   assert(posture.rows.some((r) => r.label === 'Harvest-now exposure' && r.value.includes('1 immediate')), 'posture: HNDL urgency')
@@ -657,12 +724,485 @@ function verifyEmpty() {
   assert(evidence.score === null, 'No node score without measurements')
 }
 
+
+/* ─────────────────────────────── the twelve lower panels: one population ── */
+
+/**
+ * Cross-panel reconciliation for the result stack below the discovery ring.
+ *
+ * Every assertion here is a contradiction that shipped: two panels describing
+ * the same measurement with different numbers, or a sentence describing a
+ * different population from the number it is attached to.
+ */
+function verifyLowerPanels() {
+  console.log('\n=== Lower panels — one population, one number ===')
+  const a = buildAssessment(POPULATED)
+
+  /* ── Static RSA: counted once ──────────────────────────────────────────
+     The Observed Attack Surface row matched `/(^|_)RSA_WITH/`, which also
+     matches `TLS_ECDHE_RSA_WITH_…` — a forward-secret suite. It published
+     "6 static-RSA key-transport suite(s)" while Transport & Ciphers, matching
+     on the parsed key exchange, published "4". */
+  const cipherRow = a.attackSurface.find((item) => item.key === 'cipher')
+  const transport = buildNodeEvidence('transport', {
+    results: RESULTS, findings: FINDINGS, modules: MODULES, scanner2: SCANNER2,
+    targets: POPULATED.targets, linked: POPULATED.linked, scoreComponents: a.scoreComponents,
+  })
+  const staticRsaRow = transport.rows.find((row) => row.label === 'Static RSA accepted')
+  const surfaceCount = Number(cipherRow?.detail.match(/(\d+) static-RSA/)?.[1] ?? -1)
+  const panelCount = Number(staticRsaRow?.value.match(/(\d+) suite/)?.[1] ?? -1)
+  assert(
+    surfaceCount === panelCount,
+    `Static-RSA suites are counted once for the whole page (surface=${surfaceCount}, panel=${panelCount})`,
+  )
+  assert(
+    !/ECDHE/i.test(cipherRow?.detail ?? '') || surfaceCount === panelCount,
+    'A forward-secret ECDHE_RSA suite is never counted as static RSA key transport',
+  )
+
+  /* ── HTTP security headers: one model ──────────────────────────────────
+     The Code & Dependencies row counted every probed header including HSTS;
+     the attack-surface row counts the edge model's APPLICABLE set with HSTS on
+     its own row. The same scan read "2/10 hardened" and "1/8 hardened". */
+  const headerRow = a.attackSurface.find((item) => item.key === 'headers')
+  const code = buildNodeEvidence('code', {
+    results: RESULTS, findings: FINDINGS, modules: MODULES, scanner2: SCANNER2,
+    targets: POPULATED.targets, linked: POPULATED.linked, scoreComponents: a.scoreComponents,
+  })
+  const codeHeaderRow = code.rows.find((row) => row.label === 'Security headers')
+  assert(
+    Boolean(headerRow) && Boolean(codeHeaderRow) && headerRow!.value === codeHeaderRow!.value,
+    `Header hardening is one measurement (surface="${headerRow?.value}", code="${codeHeaderRow?.value}")`,
+  )
+
+  /* ── Observed Algorithms never contradicts the Key Exchange verdict ────
+     `tls.keyExchange` degrades to the literal "ECDHE (TLS 1.3 key_share)" on
+     every TLS 1.3 endpoint, and adding it published a quantum-vulnerable key
+     agreement on the same panel whose verdict read hybrid-protected. */
+  assert(
+    a.intelligence.observedAlgorithms.every((entry) => !/key_share/i.test(entry.name)),
+    `The socket's TLS 1.3 placeholder is never published as an observed algorithm (${a.intelligence.observedAlgorithms.map((e) => e.name).join(', ')})`,
+  )
+
+  /* ── Components are cryptography, not every finding ────────────────────
+     "Crypto Components" printed the raw finding total, so detection-rule
+     observations ("Regulatory Compliance Gap") were counted as inventory and
+     the tile could not be reconciled against CBOM for the same scan. */
+  const componentTile = a.footprint.metrics.find((metric) => metric.key === 'components')
+  assert(
+    componentTile?.value === a.footprint.components.total,
+    `The component tile reads the derived component count (${componentTile?.value} vs ${a.footprint.components.total})`,
+  )
+  assert(
+    a.footprint.components.total + a.footprint.components.policyFindings === FINDINGS.length,
+    `Components + policy findings account for every finding (${a.footprint.components.total} + ${a.footprint.components.policyFindings} vs ${FINDINGS.length})`,
+  )
+  assert(
+    a.footprint.components.vulnerable <= a.footprint.components.total,
+    'Quantum-vulnerable components cannot exceed the component population',
+  )
+
+  /* ── Recommendations join through the rule that produced them ──────────
+     `affected` used a raw substring match while the recommendation came from
+     the Scanner_2 normalizer, so every card reported 0 affected and printed
+     "no finding in the current view uses it" — contradicting its own
+     existence. */
+  for (const recommendation of a.recommendations) {
+    assert(
+      !/no finding in the current view uses it/i.test(recommendation.businessImpact) || recommendation.affected === 0,
+      `"${recommendation.title}" does not deny the evidence that generated it`,
+    )
+  }
+  assert(
+    a.recommendations.every((recommendation) => !/^Replace (.+) with \1/i.test(recommendation.title)),
+    'No card recommends replacing an algorithm with itself',
+  )
+  assert(
+    a.recommendations.every((recommendation) => !/no migration needed/i.test(recommendation.rationale)),
+    'A "No Migration Needed" catalogue entry never occupies a recommendation card',
+  )
+
+  /* ── The timeline states what its number measures ──────────────────────
+     "78% ready" was captioned "A majority of discovered components are already
+     quantum-safe" on a scan whose footprint counted most components
+     vulnerable. */
+  const migrationPhase = a.timeline.find((phase) => phase.key === 'migration')
+  assert(
+    Boolean(migrationPhase) && !/majority of discovered components/i.test(migrationPhase!.description),
+    'The migration phase does not describe a readiness score as a share of components',
+  )
+
+  /* ── Plural forms ─────────────────────────────────────────────────────────
+     The previous pattern tested `observations\b(?= in this assessment resolve)`,
+     which fires on the CORRECT plural ("2 observations … resolve") and never on
+     the defect it was written for ("1 observation … resolve"). It was inverted,
+     so it failed a well-formed sentence while the malformed one it was guarding
+     sailed past. Each clause below names one specific disagreement between a
+     count and the verb or noun that follows it. */
+  const counted = `${a.executive.migrationComplexityDetail} ${a.recommendations
+    .map((row) => row.businessImpact)
+    .join(' ')}`
+  const grammarDefects: Array<[RegExp, string]> = [
+    [/familys/, 'pluralised "family" as "familys"'],
+    [/\b1 (observations|algorithm families|assets|components|findings)\b/, 'a count of 1 with a plural noun'],
+    [/\b1 [a-z]+(?: [a-z]+)? (resolve|require|are|have)\b/, 'a count of 1 with a plural verb'],
+    [/\b(?!1\b)\d+ [a-z]+(?: [a-z]+)? (resolves|requires)\b/, 'a count above 1 with a singular verb'],
+  ]
+  for (const [pattern, description] of grammarDefects) {
+    assert(!pattern.test(counted), `Counted nouns agree with their verbs — no ${description}`)
+  }
+}
+
 verifyPopulated()
 verifyModuleLedgerContract()
 verifySingleSourceOfTruth()
 verifyNodeEvidence()
 verifyDivergentSummary()
 verifyUnmeasuredDimensionExcluded()
+verifyLowerPanels()
 verifyEmpty()
+/* ===========================================================================
+   Cross-panel accuracy audit, round 2.
+
+   One invariant per finding in tasks/todo.md. Each was reproduced against a
+   live scan of the reported target before it was written; none is hypothetical.
+   =========================================================================== */
+
+function verifyCrossPanelAudit() {
+  console.log('\n=== Cross-panel accuracy audit ===')
+
+  /* -- R1. A negative post-quantum verdict needs a measured refusal -------- */
+  const settledRefusal = measuredKeyAgreement({
+    pqKeyAgreement: {
+      hybridGroups: [], pureKemGroups: [], classicalGroups: ['X25519'], primaryGroup: null,
+      kemParameterSets: [], classicalComponent: null, postQuantumComponent: null,
+      probed: true, hybridProbed: true,
+      hybridGroupsSettled: ['X25519MLKEM768'], hybridGroupsInconclusive: [],
+      handshakes: 9, inconclusiveGroups: [], unstableGroups: [], untestableGroups: [],
+      confidence: 100, value: 'Not offered', state: 'fail', detail: '', evidence: [],
+    },
+  } as never)
+  const throttled = measuredKeyAgreement({
+    pqKeyAgreement: {
+      hybridGroups: [], pureKemGroups: [], classicalGroups: ['X25519'], primaryGroup: null,
+      kemParameterSets: [], classicalComponent: null, postQuantumComponent: null,
+      probed: true, hybridProbed: true,
+      hybridGroupsSettled: [], hybridGroupsInconclusive: ['X25519MLKEM768', 'SecP256r1MLKEM768'],
+      handshakes: 4, inconclusiveGroups: ['X25519MLKEM768', 'SecP256r1MLKEM768'],
+      unstableGroups: [], untestableGroups: [],
+      confidence: 40, value: 'Not measured', state: 'unknown', detail: '', evidence: [],
+    },
+  } as never)
+  assert(settledRefusal.hybridSettled, 'A conclusively refused hybrid group counts as settled')
+  assert(
+    !throttled.hybridSettled,
+    'A hybrid probe that never settled is NOT a refusal - the root cause of the reported screenshot',
+  )
+  assert(
+    classifyQuantumVulnerability({
+      hasTransportEvidence: true, hybridObserved: false, pqSignatureObserved: false,
+      quantumRisk: 'Critical', hybridProbed: true, hybridMeasured: false, supportsTls13: true,
+    }).vulnerability === 'Unknown',
+    'An unsettled hybrid probe withholds the quantum verdict instead of publishing "Vulnerable"',
+  )
+  assert(
+    classifyQuantumVulnerability({
+      hasTransportEvidence: true, hybridObserved: false, pqSignatureObserved: false,
+      quantumRisk: 'Critical', hybridProbed: true, hybridMeasured: true, supportsTls13: true,
+    }).vulnerability === 'Vulnerable',
+    'NEGATIVE CONTROL - a measured refusal still publishes "Vulnerable"',
+  )
+
+  /* The readiness category is excluded, never scored from a missing hybrid
+     signal that carries 55 of its 100 points. */
+  /* The edge bundle a throttled run leaves behind: classical groups settled,
+     every hybrid group inconclusive. Hoisted because the degraded end-to-end
+     assertion below has to attach the SAME bundle to the scan record — without
+     it the assessment takes its "no transport evidence at all" fallback, which
+     is a different code path answering a different question. */
+  const UNSETTLED_EDGE = {
+    transport: { supportedProtocols: ['TLSv1.2', 'TLSv1.3'], legacyProtocols: [], staticRsaAccepted: false },
+    certificate: { probed: false },
+    dns: { probed: false },
+    http: {
+      headers: [], hsts: { present: false, status: '', maxAge: null },
+      fingerprint: {
+        server: null, poweredBy: null, cdn: null, waf: null, cloudProvider: null,
+        reverseProxy: null, signals: [],
+      },
+      probed: false, reachable: false, error: null,
+    },
+    quantum: {
+      pqSignatureObserved: false, postQuantumReadiness: 6, readinessReasons: [],
+      riskFactors: [], migrationTargets: [], vulnerability: 'Unknown', vulnerabilityReason: '',
+      hybridObserved: false, keyExchange: 'ECDHE (X25519)', forwardSecrecy: 'Enabled',
+    },
+    pqKeyAgreement: {
+      hybridGroups: [], pureKemGroups: [], classicalGroups: ['X25519'], primaryGroup: null,
+      kemParameterSets: [], classicalComponent: null, postQuantumComponent: null,
+      probed: true, hybridProbed: true,
+      hybridGroupsSettled: [], hybridGroupsInconclusive: ['X25519MLKEM768'],
+      handshakes: 4, inconclusiveGroups: ['X25519MLKEM768'], unstableGroups: [], untestableGroups: [],
+      confidence: 40, value: 'Not measured', state: 'unknown', detail: '', evidence: [],
+    },
+  }
+
+  const unsettledCategories = buildPublishedCategories({
+    tlsResult: {
+      tlsVersion: 'TLSv1.3', cipherSuite: 'TLS_AES_256_GCM_SHA384',
+      keyExchange: 'ECDHE (TLS 1.3 key_share)', signatureAlgorithm: 'sha256WithRSAEncryption',
+      supportedProtocols: ['TLSv1.2', 'TLSv1.3'], protocolSupport: [], negotiatedCurve: null,
+      serverName: 'example.test', peerCertificate: null, cipherSuites: [],
+      ephemeralKeyType: null, ephemeralKeySize: null,
+    } as never,
+    certInfo: null, apiResult: null, repoResult: null, webCryptoResult: null,
+    ruleResults: [], findings: [],
+    edgeIntelligence: UNSETTLED_EDGE as never,
+  })
+  const readinessRow = unsettledCategories.find((row) => row.key === 'post-quantum-readiness')!
+  assert(
+    !readinessRow.applicable,
+    'Post-Quantum Readiness is excluded - not scored 0 - when the hybrid probe never settled',
+  )
+  assert(
+    /did not settle/i.test(readinessRow.observed),
+    'The exclusion states why, so the row never reads as a silent zero',
+  )
+  const kexRow = unsettledCategories.find((row) => row.key === 'key-exchange')!
+  assert(
+    !/offered in isolation and refused/i.test(kexRow.observed),
+    'The Key Exchange row does not claim a refusal that was never measured',
+  )
+
+  /* -- R2. One observation, one owner ------------------------------------- */
+  const legacyCensus = buildAlgorithmCensus({
+    observations: [
+      {
+        tls: {
+          keyExchange: null, negotiatedCurve: null, signatureAlgorithm: null,
+          cipherSuites: [], supportedProtocols: ['TLSv1', 'TLSv1.1', 'TLSv1.2', 'TLSv1.3'],
+        },
+        certificate: { publicKeyAlgorithm: 'RSA', signatureAlgorithm: 'sha256WithRSAEncryption', chain: [] },
+        keyAgreement: {
+          probed: true, hybrid: true, kemApplied: true,
+          group: 'X25519MLKEM768',
+          classicalComponent: 'X25519 (Curve25519 ECDHE)', postQuantumComponent: 'ML-KEM-768 (FIPS 203)',
+          kemParameterSets: ['ML-KEM-768'],
+        },
+      },
+    ],
+    patterns: [],
+  })
+  assert(
+    legacyCensus.classicallyBroken.length === 0,
+    'Deprecated PROTOCOLS are not counted as classically broken ALGORITHMS',
+  )
+  assert(
+    legacyCensus.legacyProtocols.length === 2,
+    `Legacy protocols are still reported as context (${legacyCensus.legacyProtocols.join(', ')})`,
+  )
+  assert(
+    /scored under TLS Configuration/i.test(legacyCensus.summary),
+    'The census hands the protocol penalty to the category that owns it, by name',
+  )
+  assert(
+    legacyCensus.score !== null && legacyCensus.score > 0,
+    `A hybrid endpoint with legacy protocols no longer scores 0 for its algorithms (${legacyCensus.score})`,
+  )
+
+  /* -- R3. One algorithm, one row ----------------------------------------- */
+  const mlkemRows = legacyCensus.entries.filter((entry) => /^ML-KEM-768/i.test(entry.name))
+  assert(
+    mlkemRows.length === 1,
+    `ML-KEM-768 and "ML-KEM-768 (FIPS 203)" are one algorithm, not two (${mlkemRows.map((r) => r.name).join(' | ')})`,
+  )
+  assert(
+    mlkemRows[0]?.name === 'ML-KEM-768 (FIPS 203)',
+    'The surviving row keeps the more informative spelling, with its standard',
+  )
+  assert(
+    legacyCensus.observed === legacyCensus.entries.length,
+    'The declared total is the row count - the panel and the score row cannot disagree',
+  )
+
+  /* -- R5. The two flanks reproduce the gauge ------------------------------ */
+  const a = buildAssessment(POPULATED)
+  const split = a.postureSplit
+  assert(
+    split.classical.weightShare + split.postQuantum.weightShare === 100,
+    `Classical and post-quantum weight shares are taken over the measured model and sum to 100 (${split.classical.weightShare} + ${split.postQuantum.weightShare})`,
+  )
+  if (split.classical.score !== null && split.postQuantum.score !== null && a.decompositionScore !== null) {
+    const recomposed = Math.round(
+      (split.classical.score * split.classical.weightShare + split.postQuantum.score * split.postQuantum.weightShare) /
+        100,
+    )
+    assert(
+      Math.abs(recomposed - a.decompositionScore) <= 1,
+      `The two flanks re-aggregate to the gauge (${recomposed} vs ${a.decompositionScore}, rounding only)`,
+    )
+  }
+
+  /* -- R6. Every decomposition row says what it measures ------------------- */
+  assert(
+    a.scoreComponents.every((component) => component.description.trim().length > 0),
+    'Every published category carries the description of what it measures',
+  )
+  const pqRows = a.scoreComponents.filter((component) => component.postQuantumRelevant).map((c) => c.key)
+  assert(
+    pqRows.includes('key-exchange') && pqRows.includes('post-quantum-readiness'),
+    'The rows that carry the post-quantum verdict are marked as such',
+  )
+  assert(
+    !pqRows.includes('tls-configuration'),
+    'TLS Configuration is NOT marked post-quantum - it scores the protocol version, the prerequisite rather than the evidence',
+  )
+
+  /* -- R7. A node score names the categories it projects ------------------- */
+  const scopes = nodeScoreScopes(a.scoreComponents)
+  for (const [node, score] of Object.entries(a.nodeScores)) {
+    assert(
+      typeof scopes[node] === 'string' && scopes[node].length > 0,
+      `Node "${node}" publishes ${score} and names what it projects (${scopes[node] ?? 'MISSING'})`,
+    )
+  }
+  assert(
+    scopes.identity === undefined,
+    'A surface with no published category has no score and therefore no scope caption',
+  )
+
+  /* -- R8. A KEM never stands in for a signature --------------------------- */
+  assert(pqcRole('ML-KEM-768 (FIPS 203)') === 'key-establishment', 'ML-KEM is key establishment')
+  assert(pqcRole('ML-DSA-65 (FIPS 204)') === 'signature', 'ML-DSA is a signature scheme')
+  for (const name of ['FrodoKEM', 'BIKE', 'HQC', 'Classic McEliece', 'NTRU']) {
+    assert(pqcRole(name) === 'key-establishment', `${name} is classified as key establishment`)
+  }
+  for (const name of ['Falcon-512', 'SPHINCS+-SHA2-128f', 'XMSS', 'SLH-DSA-SHA2-128s']) {
+    assert(pqcRole(name) === 'signature', `${name} is classified as a signature scheme`)
+  }
+  for (const card of a.recommendations) {
+    const named = card.title.replace(/^Replace\s+.*?\s+with\s+/i, '').replace(/^Retire\s+.*?\s+-+\s+/i, '')
+    const targetRole = pqcRole(named)
+    if (!targetRole) continue
+    const offered = card.rationale.split('alternatives:')[1] ?? ''
+    const crossRole = offered
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry && entry !== 'none published')
+      .filter((entry) => {
+        const role = pqcRole(entry)
+        return role !== null && role !== targetRole
+      })
+    assert(
+      crossRole.length === 0,
+      `"${card.title}" offers no cross-role alternative${crossRole.length ? ` (${crossRole.join(', ')})` : ''}`,
+    )
+  }
+  /* -- R10. The negotiated version is not the accepted set ---------------- */
+  const unenumerated = buildPublishedCategories({
+    tlsResult: {
+      tlsVersion: 'TLSv1.3', cipherSuite: 'TLS_AES_128_GCM_SHA256',
+      keyExchange: 'ECDHE (TLS 1.3 key_share)', signatureAlgorithm: 'sha256WithRSAEncryption',
+      // The per-version probe returned nothing: the endpoint throttled it.
+      supportedProtocols: [], protocolSupport: [], negotiatedCurve: null,
+      serverName: 'example.test', peerCertificate: null, cipherSuites: [],
+      ephemeralKeyType: null, ephemeralKeySize: null,
+    } as never,
+    certInfo: null, apiResult: null, repoResult: null, webCryptoResult: null,
+    ruleResults: [], findings: [], edgeIntelligence: null,
+  })
+  const tlsRow = unenumerated.find((row) => row.key === 'tls-configuration')!
+  assert(
+    !tlsRow.applicable,
+    'TLS Configuration is withheld when per-version probing returned no list - one handshake cannot rule the other versions out',
+  )
+  assert(
+    /not established|were not established|returned no accepted protocol list/i.test(tlsRow.observed),
+    'The withheld TLS Configuration row states why',
+  )
+  const enumerated = buildPublishedCategories({
+    tlsResult: {
+      tlsVersion: 'TLSv1.3', cipherSuite: 'TLS_AES_128_GCM_SHA256',
+      keyExchange: 'ECDHE (TLS 1.3 key_share)', signatureAlgorithm: 'sha256WithRSAEncryption',
+      supportedProtocols: ['TLSv1.3'], protocolSupport: [], negotiatedCurve: null,
+      serverName: 'example.test', peerCertificate: null, cipherSuites: [],
+      ephemeralKeyType: null, ephemeralKeySize: null,
+    } as never,
+    certInfo: null, apiResult: null, repoResult: null, webCryptoResult: null,
+    ruleResults: [], findings: [], edgeIntelligence: null,
+  })
+  const tlsRowEnumerated = enumerated.find((row) => row.key === 'tls-configuration')!
+  assert(
+    tlsRowEnumerated.applicable && tlsRowEnumerated.score === 100,
+    `NEGATIVE CONTROL - an enumerated TLS-1.3-only endpoint still scores 100 (${tlsRowEnumerated.score})`,
+  )
+
+  /* -- R11. One readiness number per page --------------------------------- */
+  /* The two panels describe different POPULATIONS when there is no edge
+     measurement — "Endpoint PQ Readiness" has no endpoint to report on, while
+     the executive tile can still fall back to an estate-wide share. So the
+     contract is not "both always show a number"; it is that the endpoint panel
+     may never be MORE confident than the model, and never silent without a
+     reason when the model was silent too. */
+  assert(
+    !(a.executive.postQuantumReadiness === null && a.intelligence.postQuantumReadiness !== null),
+    'The endpoint panel never publishes a readiness number the published model withheld',
+  )
+  if (a.executive.postQuantumReadiness !== null && a.intelligence.postQuantumReadiness !== null) {
+    assert(
+      a.executive.postQuantumReadiness === a.intelligence.postQuantumReadiness.score,
+      `Both panels publish the same readiness number (${a.executive.postQuantumReadiness} vs ${a.intelligence.postQuantumReadiness.score})`,
+    )
+  }
+  assert(
+    a.executive.postQuantumReadiness !== null || a.intelligence.postQuantumReadinessReason !== null,
+    'A withheld readiness always carries its reason, never a blank',
+  )
+
+  /* And the degraded case end to end: the model withholds, so the panel does. */
+  const degradedResults = [
+    {
+      ...POPULATED.results[0],
+      metadata: {
+        ...POPULATED.results[0].metadata,
+        scoreCategories: unsettledCategories,
+        edgeIntelligence: UNSETTLED_EDGE,
+      },
+    },
+  ]
+  const degraded = buildAssessment({ ...POPULATED, results: degradedResults } as AssessmentInput)
+  assert(
+    degraded.executive.postQuantumReadiness === null,
+    'An unsettled hybrid probe withholds the executive readiness tile',
+  )
+  assert(
+    degraded.intelligence.postQuantumReadiness === null,
+    'and the Cryptographic Intelligence panel with it - the 6% beside a "not measured" category is gone',
+  )
+  assert(
+    typeof degraded.intelligence.postQuantumReadinessReason === 'string' &&
+      /did not settle/i.test(degraded.intelligence.postQuantumReadinessReason),
+    'The panel states the reason the model itself gives for the silence',
+  )
+  /* And the third place the same number surfaces: the Quantum Posture card's
+     own evidence row, which calls itself "the published category". */
+  const posture = buildNodeEvidence('posture', {
+    results: degradedResults,
+    findings: POPULATED.findings,
+    modules: POPULATED.modules,
+    scanner2: POPULATED.scanner2,
+    targets: POPULATED.targets,
+    linked: POPULATED.linked,
+    scoreComponents: degraded.scoreComponents,
+  } as never)
+  const readinessRowOnCard = posture.rows.find((row) => row.label === 'PQ readiness · this endpoint')
+  assert(
+    !readinessRowOnCard || readinessRowOnCard.value === 'Not measured',
+    `The Quantum Posture card's readiness row is silent too, not "6%" (${readinessRowOnCard?.value ?? 'absent'})`,
+  )
+}
+
+verifyCrossPanelAudit()
+
 console.log(failures === 0 ? '\nAll Dashboard Scanner intelligence checks passed.' : `\n${failures} check(s) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

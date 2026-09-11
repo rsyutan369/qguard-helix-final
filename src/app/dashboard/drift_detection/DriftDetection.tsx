@@ -106,12 +106,12 @@ export default function DriftDetection() {
           body={data.baseline.note}
           bullets={[
             'Drift is change from a known baseline — it needs two observations of the same estate at two points in time.',
-            'The findings from a single scan are an inventory, not a set of changes; they are shown on the Vulnerability Center.',
+            'The findings from a single scan are an inventory, not a set of changes; they are shown on Quantum Risk Analysis.',
             'Once a second scan completes, this page reports what appeared, what disappeared, and which changes an approved migration explains.',
           ]}
           actions={[
             { href: '/dashboard/scanner', label: 'Run a Scan', primary: true },
-            { href: '/dashboard/vulnerabilities', label: 'Vulnerability Center' },
+            { href: '/dashboard/quantum-readiness/risk-analysis', label: 'Quantum Risk Analysis' },
           ]}
         />
       ) : null}
@@ -475,7 +475,7 @@ function ChangeDrawer({ event, onClose, onAsk }: { event: DriftEvent | null; onC
           <div className="flex flex-wrap gap-2 border-t border-white/8 pt-3">
             <LinkButton href={event.href}>Open asset</LinkButton>
             <LinkButton href="/dashboard/runtime-crypto-intel" tone="ghost">Runtime telemetry</LinkButton>
-            <LinkButton href="/dashboard/vulnerabilities" tone="ghost">Vulnerabilities</LinkButton>
+            <LinkButton href="/dashboard/quantum-readiness/risk-analysis" tone="ghost">Risk Analysis</LinkButton>
             <button
               type="button"
               onClick={() => onAsk(`On ${event.assetName}, ${event.summary}. Was this change expected, and what should I do about it?`)}

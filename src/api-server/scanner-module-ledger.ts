@@ -59,6 +59,14 @@ export const SCANNER_MODULE_CATALOG: Array<{ id: string; name: string }> = [
   { id: 'edge-infrastructure-scanner', name: 'Edge infrastructure scanner' },
   { id: 'ssh-host-key-scanner', name: 'SSH host key scanner' },
   { id: 'jwt-signing-scanner', name: 'JWT signing algorithm scanner' },
+  /* The header/API probe and the token probe are ONE network pass but TWO
+     measurements, and they belong to different surfaces. While they shared a
+     module, every HSTS and Information-Disclosure finding was owned by the JWT
+     signing scanner and therefore rendered on Identity & Tokens — which then
+     showed "2 findings" beside a panel body reading "no token-issuing surface
+     was submitted, so the identity modules had nothing to read". Splitting them
+     puts each observation on the surface that can act on it. */
+  { id: 'http-security-scanner', name: 'HTTP security header & API surface scanner' },
   { id: 'dependency-crypto-scanner', name: 'Dependency crypto scanner' },
   { id: 'crypto-detection-rules', name: 'Cryptographic detection rules engine' },
   { id: 'cbom-generator', name: 'CBOM generator' },
@@ -96,7 +104,11 @@ export const WEB_MODULE_TO_CATALOG: Record<string, string> = {
   'signature-algorithm-analyzer': 'signature-algorithm-scanner',
   'hash-algorithm-analyzer': 'hash-algorithm-scanner',
   'cipher-suite-analyzer': 'cipher-suite-scanner',
-  'api-security-scanner': 'jwt-signing-scanner',
+  /* The orchestrator now emits one lifecycle per measurement. The legacy
+     combined id stays mapped so a replayed historical stream still resolves. */
+  'api-security-scanner': 'http-security-scanner',
+  'http-security-scanner': 'http-security-scanner',
+  'jwt-signing-scanner': 'jwt-signing-scanner',
   'web-crypto-scanner': 'dependency-crypto-scanner',
   'github-scanner': 'dependency-crypto-scanner',
   'detection-rules': 'crypto-detection-rules',
@@ -120,12 +132,36 @@ export function mapWebModule(moduleId?: unknown, moduleName?: unknown, phase?: u
   if (id.includes('tls') || name.includes('tls') || p.includes('tls')) return 'tls-protocol-scanner'
   if (id.includes('certificate') || name.includes('certificate') || p.includes('cert')) return 'certificate-scanner'
   if (id.includes('cipher') || name.includes('cipher') || p.includes('cipher')) return 'cipher-suite-scanner'
-  if (id.includes('api-security') || name.includes('api')) return 'jwt-signing-scanner'
+  if (id.includes('jwt') || name.includes('token signing')) return 'jwt-signing-scanner'
+  if (id.includes('api-security') || id.includes('http-security') || name.includes('api') || name.includes('header')) return 'http-security-scanner'
   if (id.includes('web-crypto') || id.includes('github') || name.includes('repository') || p.includes('repo')) return 'dependency-crypto-scanner'
   if (id.includes('detection-rules')) return 'crypto-detection-rules'
   if (id.includes('risk-scoring') || id.includes('pqc-recommendations')) return 'risk-scoring-engine'
   if (id.includes('report')) return 'audit-history-logger'
   return null
+}
+
+/**
+ * Is this observation about TOKEN SIGNING MATERIAL?
+ *
+ * The API-security probe emits both classes of observation from one network
+ * pass — a JWKS key or an OIDC `alg` on one hand, HSTS and Information
+ * Disclosure on the other — and they belong to different discovery surfaces.
+ * Exported so the orchestrator counts them the same way the ledger owns them:
+ * when the module's finding count and the finding's owner are decided by two
+ * expressions, they drift, and per-module counts stop summing to the total.
+ */
+export function isTokenSigningObservation(category: string, algorithm: string): boolean {
+  const c = category.toLowerCase()
+  const a = algorithm.toLowerCase()
+  return (
+    a.includes('jwt') ||
+    a.includes('oauth') ||
+    a.includes('kid:') ||
+    c.includes('token') ||
+    c.includes('jwt') ||
+    c.includes('identity')
+  )
 }
 
 /**
@@ -194,7 +230,16 @@ export function moduleIdForFinding(finding: { category: string; detectionMethod:
   // suite.
   if (category.includes('cipher') || category === 'symmetric encryption') return 'cipher-suite-scanner'
   if (category.includes('certificate') || category.startsWith('oid (')) return 'certificate-scanner'
-  if (category.includes('api') || category.includes('security headers') || algorithm.includes('jwt')) return 'jwt-signing-scanner'
+  if (isTokenSigningObservation(category, algorithm)) return 'jwt-signing-scanner'
+  /* TOKEN MATERIAL vs HTTP HYGIENE.
+     Both come out of the one API probe, and `category.includes('api')` claimed
+     the lot for the JWT scanner — so "API Security / HSTS" and
+     "API Security / Information Disclosure" were published on the Identity &
+     Tokens surface of an endpoint that issues no tokens, while Code &
+     Dependencies (which is scored on exactly those header categories) showed
+     none. Token-shaped observations are matched FIRST and by what they are;
+     everything else the probe emits is application-layer. */
+  if (category.includes('api') || category.includes('security headers') || category.includes('cookie')) return 'http-security-scanner'
   if (category.includes('protocol') || category.includes('connectivity')) return 'tls-protocol-scanner'
   if (algorithm.includes('sha') || algorithm.includes('md5')) return 'hash-algorithm-scanner'
   return 'risk-scoring-engine'
@@ -272,7 +317,10 @@ export function moduleApplicability(targets: Array<{ type: string }>): Record<st
     reasons['edge-infrastructure-scanner'] = `no HTTP origin was in scope for this run (target types: ${typeList})`
   }
   if (!hasSsh) reasons['ssh-host-key-scanner'] = `no SSH target was authorized for this run (target types: ${typeList})`
-  if (!hasNetwork) reasons['jwt-signing-scanner'] = `token and header analysis needs an HTTP endpoint (target types: ${typeList})`
+  if (!hasNetwork) {
+    reasons['jwt-signing-scanner'] = `token analysis needs an HTTP endpoint (target types: ${typeList})`
+    reasons['http-security-scanner'] = `header and API analysis needs an HTTP endpoint (target types: ${typeList})`
+  }
   if (!hasRepo && !hasUrl) {
     reasons['dependency-crypto-scanner'] = `no repository or page was in scope to read application cryptography from (target types: ${typeList})`
   }

@@ -751,6 +751,23 @@ export function QuantumExposureSummary({ assessment }: { assessment: ExposureAss
         </p>
       )}
 
+      {/* "Resistant" is a verdict about Shor's algorithm and nothing else. Left
+          bare in cyan it reads as an all-clear — on an estate whose resistant
+          bucket is entirely MD5, SHA-1, RC4 and DES, that is the opposite of
+          what the evidence says. */}
+      {quantum.classicallyWeak > 0 && (
+        <p className="flex items-start gap-2 border-t border-rose-400/20 bg-rose-400/[0.05] px-5 py-2.5 text-[11.5px] leading-relaxed text-rose-100/85">
+          <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" style={{ color: ACCENT.rose }} aria-hidden />
+          <span>
+            <strong className="font-bold">{quantum.classicallyWeak}</strong> of the {quantum.resistant} resistant
+            component{quantum.resistant === 1 ? '' : 's'}{' '}
+            {quantum.classicallyWeak === 1 ? 'is' : 'are'} broken by <em>classical</em> cryptanalysis — MD5, SHA-1, RC4,
+            DES and similar. Resistant here means &ldquo;not broken by Shor&rsquo;s algorithm&rdquo;; it is not a clean
+            bill of health, and these need replacing regardless of any quantum timeline.
+          </span>
+        </p>
+      )}
+
       {/* Why this panel and the Findings table below show different numbers.
           Rendered only when they actually differ. */}
       {truth.unitNote && (
@@ -770,16 +787,46 @@ export function QuantumExposureSummary({ assessment }: { assessment: ExposureAss
         <div className="border-t border-white/[0.06] px-5 py-3">
           <p className="font-mono text-[9.5px] font-bold uppercase tracking-[0.16em] text-slate-500">Algorithms observed</p>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {topAlgorithms.map((entry) => (
-              <span
-                key={entry.algorithm}
-                className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px]"
-                style={{ borderColor: `${QUANTUM_COLOR[entry.quantumStatus]}33`, color: QUANTUM_COLOR[entry.quantumStatus] }}
-              >
-                <span className="font-bold">{entry.algorithm}</span>
-                <span className="font-mono text-[10px] text-slate-500">×{entry.count}</span>
-              </span>
-            ))}
+            {topAlgorithms.map((entry) => {
+              /* An algorithm group is not homogeneous. ML-KEM is `pqc` standalone
+                 and `hybrid` inside X25519+ML-KEM, so a single chip colour is a
+                 summary, not a fact about all 90 components. When the group is
+                 split, the split is the information — show it rather than let
+                 the dominant colour speak for members that do not share it. */
+              const mixed = entry.mix.length > 1;
+              return (
+                <span
+                  key={entry.algorithm}
+                  title={
+                    (mixed
+                      ? `${entry.algorithm}: ${entry.mix.map((slice) => `${slice.count} ${QUANTUM_LABEL[slice.status].toLowerCase()}`).join(', ')}`
+                      : `${entry.count} ${QUANTUM_LABEL[entry.quantumStatus].toLowerCase()} component${entry.count === 1 ? '' : 's'}`) +
+                    (entry.classicallyWeak > 0
+                      ? ` · ${entry.classicallyWeak} broken by classical cryptanalysis, independently of any quantum timeline`
+                      : '')
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px]"
+                  style={{ borderColor: `${QUANTUM_COLOR[entry.quantumStatus]}33`, color: QUANTUM_COLOR[entry.quantumStatus] }}
+                >
+                  <span className="font-bold">{entry.algorithm}</span>
+                  <span className="font-mono text-[10px] text-slate-500">×{entry.count}</span>
+                  {mixed && (
+                    <span className="flex items-center gap-0.5" aria-hidden>
+                      {entry.mix.map((slice) => (
+                        <span
+                          key={slice.status}
+                          className="h-1.5 w-1.5 rounded-full"
+                          style={{ backgroundColor: QUANTUM_COLOR[slice.status] }}
+                        />
+                      ))}
+                    </span>
+                  )}
+                  {entry.classicallyWeak > 0 && (
+                    <ShieldAlert className="h-3 w-3" style={{ color: ACCENT.rose }} aria-hidden />
+                  )}
+                </span>
+              );
+            })}
           </div>
         </div>
       )}
@@ -1413,6 +1460,8 @@ export function CoveragePanel({ coverage, mode }: { coverage: ScanCoverage; mode
 
 /** Rows rendered before the list is capped. Stated to the reader below. */
 const CORRELATED_LIMIT = 25;
+/** Evidence rows rendered per exposure. Anything beyond this is DISCLOSED. */
+const EVIDENCE_LIMIT = 8;
 
 export function CorrelatedExposures({ exposures }: { exposures: CorrelatedExposure[] }) {
   const [open, setOpen] = React.useState<string | null>(null);
@@ -1483,7 +1532,7 @@ export function CorrelatedExposures({ exposures }: { exposures: CorrelatedExposu
                         </ol>
                       )}
                       <ul className="space-y-1.5">
-                        {exposure.evidence.slice(0, 8).map((entry, index) => (
+                        {exposure.evidence.slice(0, EVIDENCE_LIMIT).map((entry, index) => (
                           <li key={index} className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2">
                             <p className="text-[11.5px] leading-snug text-slate-300">{entry.summary}</p>
                             {(entry.file || entry.reference) && (
@@ -1495,6 +1544,16 @@ export function CorrelatedExposures({ exposures }: { exposures: CorrelatedExposu
                           </li>
                         ))}
                       </ul>
+                      {/* A consolidated exposure can carry dozens of evidence
+                          sources. Stopping at the cap without saying so lets the
+                          reader count the list and conclude the exposure is
+                          smaller than it is. */}
+                      {exposure.evidence.length > EVIDENCE_LIMIT && (
+                        <p className="font-mono text-[10px] text-slate-500">
+                          Showing {EVIDENCE_LIMIT} of {exposure.evidence.length.toLocaleString()} evidence sources for
+                          this exposure. The counts above are computed over all {exposure.evidence.length.toLocaleString()}.
+                        </p>
+                      )}
                       {exposure.recommendation && (
                         <p className="rounded-lg border border-emerald-400/20 bg-emerald-400/[0.05] px-3 py-2 text-[11.5px] leading-relaxed text-emerald-100/85">
                           {exposure.recommendation}

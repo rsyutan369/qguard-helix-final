@@ -684,3 +684,289 @@ operator who had just asked for that filter would hunt for it. It now always
 renders and SAYS why it cannot help yet ("One asset in this estate — nothing to
 filter between yet"), which is the difference between a considered empty state
 and a missing feature.
+
+---
+
+## The whole site went black: Express reached the browser bundle
+
+**Symptom.** `http://localhost:3001/` painted a bare black background — no
+header, no image, no error overlay. Every other route was black too. Nothing was
+printed in the page, which is what made it look like a styling problem.
+
+**Root cause.** `src/app/dashboard/scanner_dashboard/_intel.ts` imported
+`normalizeToScanner2Algorithm` from `@/api-server/scanner`. That module opens
+with `import { Router } from 'express'`. Vite replaces Node built-ins with empty
+stubs in a browser bundle, so Express's `util.inherits(...)` resolved to
+`undefined` and threw while the module was being evaluated.
+
+**Why one bad import blanks the whole platform.** `src/App.tsx` imports every
+page EAGERLY — there is no route-level code splitting. The browser therefore
+evaluates one module graph containing the entire platform before React renders
+anything. A single module that throws during evaluation does not break one
+page: `createRoot().render()` never runs, `#root` stays empty, and every route
+paints an empty background.
+
+**Why it was invisible.** The throw happened before any error boundary existed,
+so no overlay rendered. The dev server was healthy and returned 200 for every
+module. Only `Runtime.exceptionThrown` over CDP showed it.
+
+**Fix.** The normaliser was pure and isomorphic — it was simply in the wrong
+file. Moved verbatim to `src/lib/scanner/scanner_2/algorithm-normalizer.ts` and
+imported from BOTH the api-server and the dashboard.
+
+**Prevention.** `tools/client-bundle-boundary-check.ts` walks the module graph
+from `src/main.tsx` and fails if any reachable first-party module imports a Node
+built-in or a server-only package, printing the import chain from the entry.
+Type-only imports are ignored — `import type { Request } from 'express'` is
+erased before bundling and is fine.
+
+**Rules this leaves behind.**
+* Shared scanner logic lives under `src/lib/`, NEVER in `src/api-server/`. If
+  both sides need a function, it is isomorphic and belongs in `src/lib/`.
+* A module under `src/api-server/` may be imported by client code only while it
+  is transitively dependency-free — a fragile guarantee. Two client files still
+  import `@/api-server/scanner-module-ledger` this way. It has zero imports
+  today, so it is safe today; adding one import to it blanks the whole site.
+  The boundary check is what catches that.
+* A blank page with NO console error is a module-evaluation throw, not CSS.
+  Check `#root.childElementCount` before looking at stylesheets.
+
+---
+
+## One algorithm, one status: the 202-vs-23 contradiction on Dev/Local
+
+**Symptom.** `/dashboard/scanner?mode=dev` and `?mode=local` rendered the Quantum
+Exposure panel with cells reading `Hybrid 23`, and directly beneath them a row of
+"Algorithms observed" chips including `ML-DSA x112` and `ML-KEM x90` both coloured
+and labelled **hybrid**. 202 components claimed hybrid under a cell reporting 23.
+Every cross-panel assertion passed while this was on screen.
+
+**Root cause.** `summariseCbom()` built its per-algorithm rollup like this:
+
+```ts
+const entry = byAlgorithm.get(component.canonicalAlgorithm);
+if (entry) entry.count += 1;                                     // count accumulates
+else byAlgorithm.set(name, { count: 1, quantumStatus: component.quantumStatus });
+```
+
+The **count** accumulated across the whole group; the **status** was captured from
+whichever component was enumerated first and never revisited. An algorithm group
+is not homogeneous — ML-KEM is `pqc` standalone and `hybrid` inside an
+X25519+ML-KEM construction — so one hybrid member arriving first relabelled all 90.
+
+The classification engine was never wrong. `classifyQuantum()` returns `pqc` for
+ML-KEM correctly. The defect was purely in the rollup, which is why every unit
+test on the classifier passed.
+
+**Three consumers, one bug.** The same array fed:
+1. the Quantum Exposure chips (`intelligence.topAlgorithms`),
+2. the CBOM `byAlgorithm` table,
+3. `late-stage.ts`'s "largest contributors are …" sentence inside a **published,
+   exportable finding** — which additionally printed each group's TOTAL size as
+   its vulnerable count, and dropped any group whose first member was not
+   vulnerable even when it held vulnerable components.
+
+**Fix.** Tally the status mix per algorithm. Publish the DOMINANT status (worse
+verdict wins a tie) plus the full `mix`, so a split group renders its split
+instead of letting one colour speak for members that do not share it.
+
+**Second defect found in the same panel — "Resistant" is not "safe".**
+The resistant bucket held 230 components. All 230 were MD5, SHA-1, RC4, DES,
+3DES, Blowfish, MD4 and RIPEMD — every one of them already flagged
+`classicallyWeak: true` in the algorithm catalogue. Nothing read that flag, so
+they rendered cyan under "Resistant", and the published finding asserted
+verbatim: *"230 symmetric and hash components are quantum-resistant **at adequate
+key sizes**"*.
+
+`resistant` is a verdict about Shor's algorithm and nothing else. That is a
+correct quantum verdict and a dangerous headline alone. `classicallyWeak` now
+flows through `CbomSummary`, `QuantumCounts` and `topAlgorithms`; the panel
+carries a qualifier and the finding no longer claims adequacy it cannot support.
+
+**Rules this leaves behind.**
+* A rollup keyed by a name must aggregate EVERY field it publishes. A field that
+  is written only in the `else` branch of a get-or-create is a first-wins field,
+  and first-wins is array order — not evidence. Grep for the shape.
+* Counts summing correctly is not consistency. `sum(byAlgorithm.count)` equalled
+  the component total throughout; the contradiction lived in a field no assertion
+  reconciled. Assert the **mix against the buckets**, not just the totals.
+* A negative verdict on one axis is not a positive verdict overall. Before
+  rendering any "safe-sounding" bucket, ask which axis it was measured on and
+  what it is silent about.
+
+**Prevention.** `tools/exposure-panel-audit.ts` gained six assertions: the
+per-algorithm mix must reconcile to each of the vulnerable/hybrid/pqc/resistant
+buckets, every mix must sum to its group and contain its published status, the
+per-algorithm counts must sum to the component total, and the classically-weak
+count must agree across the summary, the algorithm rollup and the reconciler.
+30/30 now pass in both `dev` and `local`.
+
+---
+
+## "Not assessed (3)" over two dimensions: the fix that patched the reader
+
+**Symptom.** Assessment Coverage listed `Not assessed (3)` with **Dependency
+vulnerability advisories appearing twice**, worded differently each time — while
+the Quantum Exposure panel immediately below said *"2 dimensions could not be
+read"*. One scan, two counts, same viewport.
+
+**Root cause, in two layers.**
+
+1. `dependencies.ts` declared one gap **twice**: once through
+   `context.notAssessed(...)` mid-run and again in the coverage returned by
+   `completed(...)`, with different reason text.
+2. `mergeCoverage()` de-duplicated on `` `${dimension}|${reason}` ``, so two
+   wordings of one gap were two distinct keys and both survived.
+
+**Why it had already been "fixed" once.** `reconcileExposure()` carried its own
+dedup pass keyed on dimension alone, added specifically for this symptom — its
+comment even quotes the doubled string. That repaired the completeness note and
+nothing else, because the Assessment Coverage panel reads
+`coverage.notAssessed` **directly**. The writer stayed broken; one of the two
+readers got a patch.
+
+**Fix.** Declare it once in `dependencies.ts`; key `mergeCoverage` on the
+dimension itself, merging reasons and keeping the first reporter's attribution;
+delete the reconciler's private dedup so it simply reads the canonical ledger.
+
+**Rules this leaves behind.**
+* When two panels disagree, fix the **write path**. Deduplicating in one reader
+  leaves every other reader wrong and hides the defect from the one place a test
+  would have caught it.
+* A dedup key made of `identity|description` is not an identity key. Free text
+  varies by call site, so the key silently degrades to "allow duplicates".
+* Two implementations of one rule drift by construction — Rule 5. The
+  reconciler's dedup and `mergeCoverage`'s dedup were the same rule in two
+  places, and they disagreed the moment one was corrected.
+
+**Prevention.** `tools/exposure-panel-audit.ts` asserts each not-assessed
+dimension is listed exactly once, that the coverage panel and the completeness
+note count the **same** number of gaps, and that every gap states a reason.
+
+---
+
+## The record id is not the scan id: History showed every synced Dev scan twice
+
+**Symptom (caught in review, before it shipped).** The Local/Dev History tab
+merges the tenant's RECORDED assessments with any Dev scan the API still holds
+in its in-memory job store, so a scan that has just finished is visible before
+it is saved. The de-duplication compared `job.scanId` against the recorded
+`session.id`.
+
+**Why that can never match.** They are different identifiers for different
+things. `job.scanId` is what the assessment ENGINE called the run; `session.id`
+is the primary key of the `pqc_scan_sessions` row the assessment was written to,
+minted by Postgres at insert time. Comparing them always returns false, so every
+saved Dev assessment would have appeared twice — once as a record and once as an
+"unrecorded, session only" row — for the full hour the job store keeps a job.
+
+**Fix.** The writer now retains `metadata.sourceScanId` (the engine's own id)
+alongside the record, the reader publishes it on the History entry, and the live
+merge matches on THAT. A v1 record that predates the field cannot be matched, so
+it shows both rows — which is the honest failure: two rows the operator can tell
+apart beats hiding a real record behind a guess.
+
+**Rule this leaves behind.** When one thing is written into a table, it acquires
+a SECOND identity. Any later reconciliation between the in-flight thing and the
+stored thing must carry the original identity forward explicitly — a foreign key
+or a retained id — never assume the two ids are the same value.
+
+---
+
+## A history that could not be read must not render as a history with nothing in it
+
+**Symptom.** With the tenant's Supabase project suspended, the History tab
+correctly showed a red "The assessment history could not be read" banner — and
+directly beneath it, in the body of the list, "**No assessment recorded yet.**
+Run one from the Assessment tab."
+
+**Why it matters.** Both statements were on screen at once and they contradict
+each other. The reassuring one is the one a reader believes, and it is the false
+one: this tenant may have hundreds of recorded assessments. The same shape has
+been shipped repeatedly on this platform — an empty list standing in for a failed
+read (the PostgREST 42703 trap, `safeRows` returning `[]` on error).
+
+**Fix.** `HistoryEmpty` takes an `unread` flag. Empty-because-nothing-recorded,
+empty-because-filtered and empty-because-the-read-failed are three different
+states with three different renderings, and the third never suggests the estate
+is clean.
+
+**Rule.** Wherever a panel can be empty for more than one reason, the reasons are
+different STATES, not one state with a different banner above it. An error
+banner does not license the body to keep asserting the happy case.
+
+## Dashboard Scanner — "the panels contradict each other" (2026-09-09)
+
+**Reported:** `TLS Configuration / Detected TLSv1.3` beside `Post-Quantum Key
+Agreement: Not offered` and `Quantum Vulnerability: Vulnerable`.
+
+**Root cause was not a disagreement between two numbers. It was two absences
+rendered as measurements**, and every visible contradiction was downstream of
+them.
+
+1. **A missing answer read as a negative answer.** `buildPqKeyAgreement` fell
+   through to `Not offered · state: fail` — detail "every hybrid ML-KEM group
+   was offered in isolation and refused" — whenever no hybrid group was
+   ACCEPTED. But a group that was budget-skipped, throttled into a reset, or
+   unsupported by the scanner's own OpenSSL lands in `inconclusiveGroups`, not
+   in the accepted list. `hybridProbed` could not distinguish them either: it
+   is assigned `supportsTls13`. One endpoint measured `Applied · 23 handshakes
+   · confidence 100%` on one run and `Not offered` on the next. The false
+   negative then cost the key-exchange category 30 points, forfeited the
+   readiness model's 55-point hybrid allowance (73% -> 6%), flipped the quantum
+   verdict, zeroed the census PQ share, and made the migration engine recommend
+   deploying what was already deployed.
+
+2. **A failed enumeration read as a perfect result.** `tls-configuration`
+   scores the protocol versions an endpoint ACCEPTS. When per-version probing
+   returned nothing, it fell back to the one version the socket negotiated and
+   scored TLS 1.3 as 100/100 — asserting "TLS 1.3 only" from a single
+   handshake, on a host that also accepts TLS 1.0.
+
+**Rules this produced:**
+
+* **A negative claim needs a settled measurement.** Publish `hybridGroupsSettled`
+  / `hybridGroupsInconclusive` from the prober and gate every negative on them
+  through ONE predicate (`hybridProbeSettled`). Five consumers had independently
+  phrased "no hybrid group was accepted" as a finding about the endpoint: the
+  edge verdict, detection rules PQC-002 and PQC-003, the orchestrator's finding
+  text, the /public-scan control and the transport reconciler. Writing the rule
+  once is what stops the sixth.
+* **An acceptance is unforgeable; a refusal is not.** A successful handshake
+  settles the question by itself. Everything else needs a confirmed refusal.
+* **`probed` is not `answered`.** A boolean that means "the probe ran" will be
+  read as "the probe concluded" by the next caller. Name it for what it is, and
+  publish the settled/unsettled split beside it.
+* **One number per page, from the published model.** Three surfaces rendered
+  post-quantum readiness and only the executive tile was gated on the published
+  category; the other two read the edge engine's raw figure and printed "6%"
+  beside their own "not measured" row.
+* **Ownership is unique, including penalties.** `cryptographic-algorithms`
+  docked 25 points per deprecated PROTOCOL, which `tls-configuration` already
+  scores at weight 18. A 50% post-quantum share became 0/100 beside "Key
+  Exchange 100/100".
+* **Identity, not spelling.** A census keyed on the raw string listed
+  `ML-KEM-768` and `ML-KEM-768 (FIPS 203)` as two algorithms, inflating both the
+  headline count and the denominator of the post-quantum ratio.
+* **A measured override may only replace a primitive of the SAME ROLE.**
+  "RSA-2048" names two migrations — key transport (a KEM) and certificate
+  signature (a signature scheme). Letting the measured signature target override
+  a key-exchange catalogue entry kept that entry's rationale and produced
+  "Replace RSA-2048 with ML-DSA-65 · alternatives: FrodoKEM, BIKE, HQC": three
+  KEMs offered as substitutes for a signature scheme.
+* **Say what a number is a score OF.** The reported contradiction was mostly a
+  disclosure failure: `TLS Configuration 100` scores the protocol VERSION, and
+  TLS 1.3 is the prerequisite for hybrid key agreement, not evidence of it. The
+  published description now renders on every row, the rows a PQC migration
+  actually moves are marked, and each surface card names the categories its
+  score projects.
+
+**Method note.** The offline suites all passed both before and after the
+defects existed. Every one of these was found by running the whole page from a
+real scan (`tools/scanner-panel-audit.ts`) and reading the panels side by side —
+and R10/R11 were found by running it AGAIN after the fixes, on a run that
+happened to be throttled. Re-run the live audit after fixing, not just before.
+
+**Windows/Python scripted-edit trap.** Patching a TS regex through a
+non-raw Python string turned `` into literal 0x08 backspace bytes inside the
+source. Use raw strings, and grep the result for control characters.
