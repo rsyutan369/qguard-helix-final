@@ -5,7 +5,6 @@
  *                       component groups, twin node inventory, PQC stack.
  * DependencyGraphTab  — per-asset dependsOn/usedBy, certificates, blast
  *                       radius, "what systems will be affected" impact view.
- * TopologyTab         — environment zones with green/yellow/orange/red heat.
  *
  * Detail data comes from GET /api/v1/sandbox/twin (bounded), refreshed with
  * the snapshot generation; summary-level data arrives via the SSE snapshot.
@@ -20,7 +19,6 @@ import {
   Key,
   Layers,
   Lock,
-  Map as MapIcon,
   Network,
   RefreshCw,
   Search,
@@ -42,20 +40,16 @@ import {
   ORANGE,
   Panel,
   Pill,
-  ProgressBar,
   PURPLE,
   RED,
   SectionHead,
   fmt,
-  heatColor,
   pct,
-  relTime,
   riskBadge,
   type DigitalTwinPayload,
   type FailurePredictionPayload,
   type GraphEdge,
   type GraphNode,
-  type HeatStatus,
   type PqcStackItem,
   type SimulationTypeDef,
   type TopologyPayload,
@@ -483,125 +477,6 @@ export function DependencyGraphTab({ detail, loading, error, reload }: {
           <Panel className="p-8"><EmptyBlock label="Select an asset to inspect its dependency chain and migration impact." /></Panel>
         )}
       </div>
-    </>
-  )
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   TOPOLOGY / RISK HEAT MAP TAB
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-const HEAT_ORDER: HeatStatus[] = ['blocked', 'high_risk', 'attention', 'ready']
-
-export function TopologyTab({ detail, loading, error, reload }: {
-  detail: TwinDetail | null
-  loading: boolean
-  error: string | null
-  reload: () => void
-}) {
-  const topology = detail?.topology
-
-  if (loading && !detail) {
-    return (
-      <Panel className="p-10">
-        <div className="flex items-center justify-center gap-3">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-gold/20 border-t-gold" />
-          <span className="text-xs font-bold text-white/45">Building topology heat map…</span>
-        </div>
-      </Panel>
-    )
-  }
-  if (error && !detail) return <Panel className="p-8"><EmptyBlock label={`Topology unavailable: ${error}`} /></Panel>
-  if (!topology || topology.zones.length === 0) return <Panel className="p-8"><EmptyBlock label="No environments discovered yet — the topology heat map renders your real asset zones once discovery runs." /></Panel>
-
-  const total = HEAT_ORDER.reduce((sum, key) => sum + topology.totals[key], 0)
-
-  return (
-    <>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {HEAT_ORDER.map((status) => {
-          const h = heatColor(status)
-          return (
-            <div key={status}>
-              <MetricTile
-                label={h.label}
-                value={fmt(topology.totals[status])}
-                detail={total > 0 ? `${Math.round((topology.totals[status] / total) * 100)}% of assets` : '--'}
-                icon={status === 'ready' ? ShieldCheck : status === 'attention' ? Shield : ShieldAlert}
-                color={h.color}
-              />
-            </div>
-          )
-        })}
-      </div>
-
-      <Panel className="p-5">
-        <SectionHead icon={MapIcon} suffix={
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-3">
-              {HEAT_ORDER.map((status) => {
-                const h = heatColor(status)
-                return (
-                  <span key={status} className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wider text-white/40">
-                    <span className="h-2 w-2 rounded-full" style={{ background: h.color, boxShadow: `0 0 8px ${h.color}88` }} />
-                    {h.label}
-                  </span>
-                )
-              })}
-            </div>
-            <ActionBtn icon={RefreshCw} label={loading ? 'Refreshing' : 'Refresh'} onClick={reload} disabled={loading} small />
-          </div>
-        }>Environment Topology — Migration Risk Heat Map</SectionHead>
-
-        <div className="space-y-4">
-          {topology.zones.map((zone) => {
-            const zoneTotal = HEAT_ORDER.reduce((sum, key) => sum + zone.counts[key], 0)
-            return (
-              <div key={zone.environment} className="rounded-xl border border-white/8 bg-white/[0.015] p-4">
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <Globe2 className="h-4 w-4 text-gold" />
-                    <span className="text-sm font-black capitalize text-white">{zone.environment}</span>
-                    <Pill className="border-white/10 bg-white/5 text-white/40">{fmt(zoneTotal)} assets</Pill>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {HEAT_ORDER.filter((status) => zone.counts[status] > 0).map((status) => {
-                      const h = heatColor(status)
-                      return <span key={status}><Pill className={h.badge}>{fmt(zone.counts[status])} {h.label.toLowerCase()}</Pill></span>
-                    })}
-                  </div>
-                </div>
-
-                <div className="mb-3 flex h-2 w-full overflow-hidden rounded-full bg-white/5">
-                  {HEAT_ORDER.map((status) => {
-                    const share = zoneTotal > 0 ? (zone.counts[status] / zoneTotal) * 100 : 0
-                    if (share === 0) return null
-                    return <div key={status} style={{ width: `${share}%`, background: heatColor(status).color }} />
-                  })}
-                </div>
-
-                <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                  {zone.assets.map((asset) => {
-                    const h = heatColor(asset.status)
-                    return (
-                      <div key={asset.id} className="flex items-center gap-2 rounded-lg border border-white/6 bg-white/[0.02] px-3 py-2">
-                        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: h.color, boxShadow: `0 0 8px ${h.color}88` }} />
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-[11px] font-bold text-white/75">{asset.name}</div>
-                          <div className="truncate text-[9px] text-white/30">{asset.component} · business criticality: {asset.criticality}</div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-        <p className="mt-4 text-[10px] leading-relaxed text-white/30">
-          Heat status derives from real evidence: red = critical exposures block migration, orange = concentrated vulnerable inventory or expiring certificates, yellow = open vulnerabilities or missing evidence, green = validated / no open crypto risk. Generated {relTime(detail?.generatedAt || null)}.
-        </p>
-      </Panel>
     </>
   )
 }

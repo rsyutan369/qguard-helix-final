@@ -1,4 +1,4 @@
-serial: 2
+serial: 3
 anonymous_user_id: 7c1794e4-0ddf-4a8c-91db-10642a95802e
 deployment:
     user_id: 0
@@ -8,4 +8,4 @@ deployment:
           display_name: threathunter369-personal-org
 semgrep:
     auth_method: oauth
-expiry: 2026-09-10T16:50:07.6348203+08:00
+expiry: 2026-09-14T22:17:23.4624816+08:00

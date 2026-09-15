@@ -50,6 +50,7 @@ import revenueRoutes from './revenue'
 import adminRoutes from './admin'
 import scannerRoutes from './scanner'
 import publicScanRoutes from './public-scan'
+import downloadRoutes, { blockPublicInstallerPath } from './downloads'
 import exposureRoutes from './exposure'
 import agentScannerRoutes, { startAgentScannerScheduler } from './agent-scanner'
 import agentInstallerRoutes from './agent-installer'
@@ -349,6 +350,11 @@ export function createApiServer() {
 
   const app = express()
   app.set('trust proxy', true)
+
+  /* Ahead of everything: the messaging installer must not be obtainable from
+     the static public/downloads path it used to live at. Entitlement is proven
+     at /api/v1/downloads/messaging/windows or not at all. */
+  app.use(blockPublicInstallerPath)
 
   app.use(installCookieHardening)
 
@@ -800,6 +806,12 @@ export function createApiServer() {
   // it mounts BEFORE the subscription gateway. It carries its own rate limiting,
   // concurrency cap, SSRF guard and result cache.
   app.use('/api/v1/public-scan', publicScanRoutes)
+
+  // Entitlement-gated product downloads. Mounted BEFORE the subscription
+  // gateway because it enforces a STRICTER rule than the gateway would: the
+  // gateway fails open on an entitlement lookup error so a blip cannot brick
+  // the platform, while handing out the signed installer must fail closed.
+  app.use('/api/v1/downloads', downloadRoutes)
 
   // Exposure Assessment Engine™ — the Local and Dev counterparts to the public
   // edge scanner. Mounted BEFORE the subscription gateway because capability

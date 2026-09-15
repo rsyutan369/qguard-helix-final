@@ -9,9 +9,11 @@ import {
   MANDATORY_PQC_CONFIG_VALUES,
   MANDATORY_PQC_STACK,
   mandatoryPqcStackMetadata,
+  matchesMandatoryConfigValue,
 } from '../../src/lib/crypto/mandatory-pqc-stack.ts'
 import { KNOWLEDGE_BASE_VERSION } from '../../src/lib/crypto/knowledge-base/ground-truth.ts'
 import { findAlgorithm } from '../../src/lib/crypto/knowledge-base/algorithms.ts'
+import { classifyAgentEvidence } from '../../src/lib/crypto/agent-evidence-verdict.ts'
 import { findLibrary } from '../../src/lib/crypto/knowledge-base/apis.ts'
 import {
   describeControlPlaneFailure,
@@ -635,28 +637,46 @@ function runtimeOperationType(evidence: ScannerEvidence) {
   return 'other'
 }
 
+/*
+ * Delegates to the ONE classifier (`src/lib/crypto/agent-evidence-verdict.ts`).
+ *
+ * This used to be a set of substring regexes over the STRINGIFIED evidence
+ * record. `dsa` matched ML-DSA and SLH-DSA, `ssl` matched OpenSSL, `fallback`
+ * matched the policy field `classicalFallback` — and because the whole
+ * `rawEvidence` blob was searched, every record carrying MANDATORY_PQC_STACK
+ * inherited all three. The agent's own post-patch success attestation carries
+ * it, so a remediation that WORKED scored critical, validated as failed, and
+ * was automatically rolled back. See the module header for all six defects.
+ */
 function runtimeFlags(evidence: ScannerEvidence) {
-  const text = `${evidence.evidenceType} ${evidence.observedAlgorithm || ''} ${evidence.protocol || ''} ${JSON.stringify(evidence.rawEvidence || {})}`.toLowerCase()
-  const isPqc = /ml-kem|ml-dsa|kyber|dilithium|sphincs|sntrup|pqc|post-quantum|hybrid/.test(text)
-  const isLegacy = /rsa|ecdsa|ecc|ecdh|dsa|dh-|diffie|sha-?1|md5|3des|des|rc4|ssl|tls-?1\.[01]|aes-128-cbc/.test(text)
-  const downgradeDetected = /downgrade|fallback|ssl|tls-?1\.[01]/.test(text)
-  const shadowCrypto = ['package-manifest', 'config-reference', 'crypto-library', 'jwt-algorithm'].includes(evidence.evidenceType)
-  const hndlRisk = isLegacy && Boolean(evidence.host || evidence.target) && /rsa|ecdsa|ecc|dh|tls|certificate/.test(text)
-  const severity: RuntimeCryptoEvent['severity'] = downgradeDetected || hndlRisk || (evidence.keySize && evidence.keySize <= 1024)
-    ? 'critical'
-    : isLegacy
-      ? 'high'
-      : shadowCrypto
-        ? 'moderate'
-        : isPqc
-          ? 'safe'
-          : 'low'
-  const riskScore = severity === 'critical' ? 92 : severity === 'high' ? 74 : severity === 'moderate' ? 55 : severity === 'low' ? 28 : 5
-  return { isPqc, isLegacy, downgradeDetected, shadowCrypto, hndlRisk, severity, riskScore }
+  const verdict = classifyAgentEvidence({
+    evidenceType: evidence.evidenceType,
+    observedAlgorithm: evidence.observedAlgorithm,
+    protocol: evidence.protocol,
+    host: evidence.host,
+    target: evidence.target,
+    keySize: evidence.keySize,
+    packageName: evidence.packageName,
+    rawEvidence: evidence.rawEvidence as Record<string, unknown> | null | undefined,
+  })
+  return {
+    isPqc: verdict.isPqc,
+    isLegacy: verdict.isLegacy,
+    downgradeDetected: verdict.downgradeDetected,
+    shadowCrypto: verdict.shadowCrypto,
+    hndlRisk: verdict.hndlRisk,
+    severity: verdict.severity as RuntimeCryptoEvent['severity'],
+    riskScore: verdict.riskScore,
+    /* Published next to the verdict so a reviewer can see why, not just what. */
+    verdictRationale: verdict.rationale,
+    classifiedAlgorithm: verdict.algorithm,
+    quantumStatus: verdict.quantumStatus,
+  }
 }
 
 function runtimeEventFromEvidence(evidence: ScannerEvidence): RuntimeCryptoEvent {
-  const flags = runtimeFlags(evidence)
+  /* The explanation travels in metadata, not as extra top-level event columns. */
+  const { verdictRationale, classifiedAlgorithm, quantumStatus, ...flags } = runtimeFlags(evidence)
   const processId = Number(evidence.rawEvidence?.processId || evidence.rawEvidence?.process_id)
   return {
     eventType: evidence.evidenceType,
@@ -686,6 +706,9 @@ function runtimeEventFromEvidence(evidence: ScannerEvidence): RuntimeCryptoEvent
       target: evidence.target,
       filePath: evidence.filePath,
       confidence: evidence.confidence,
+      verdictRationale,
+      classifiedAlgorithm,
+      quantumStatus,
       ...(evidence.rawEvidence || {}),
     },
     observedAt: evidence.observedAt || isoNow(),
@@ -1151,7 +1174,26 @@ async function scanPackageManifest(filePath: string): Promise<ScannerEvidence[]>
   return evidence
 }
 
+/*
+ * Order matters: `scanConfigFile` takes the FIRST rule that matches a line and
+ * stops. The post-quantum and hybrid rules therefore have to come first.
+ *
+ * They used not to. `TLS_GROUPS=X25519MLKEM768:X25519` matched the X25519 rule
+ * and was recorded as plain X25519; `SIGNATURE_ALGORITHM=Ed25519 + ML-DSA-65`
+ * matched the Ed25519 rule and was recorded as plain Ed25519. Both are the
+ * values the Patcher itself writes, so a SUCCESSFULLY remediated file re-read
+ * as four quantum-vulnerable primitives, validation failed, and the correct
+ * configuration was rolled back. A line naming both halves of a hybrid is
+ * evidence of the hybrid, not of its classical half.
+ */
 const CONFIG_PATTERNS: Array<{ pattern: RegExp; algorithm: string; label: string }> = [
+  { pattern: /\b(X25519MLKEM768|SecP256r1MLKEM768|P256MLKEM768|X25519Kyber768)\b/i, algorithm: 'X25519MLKEM768', label: 'Hybrid PQC key exchange group reference' },
+  { pattern: /\b(mlkem768x25519-sha256|sntrup761x25519-sha512(@openssh\.com)?)\b/i, algorithm: 'X25519MLKEM768', label: 'Hybrid PQC SSH key exchange reference' },
+  { pattern: /\b(ed25519|ssh-ed25519)\b[^\r\n]*\bML[-_ ]?DSA\b|\bML[-_ ]?DSA\b[^\r\n]*\b(ed25519|ssh-ed25519)\b/i, algorithm: 'Ed25519 + ML-DSA-65', label: 'Hybrid PQC signature reference' },
+  { pattern: /\b(ML[-_ ]?KEM|Kyber)\b/i, algorithm: 'ML-KEM-768', label: 'PQC KEM reference' },
+  { pattern: /\b(ML[-_ ]?DSA|Dilithium)\b/i, algorithm: 'ML-DSA-65', label: 'PQC signature reference' },
+  { pattern: /\b(SLH[-_ ]?DSA|SPHINCS)\b/i, algorithm: 'SLH-DSA-SHA2-128s', label: 'PQC stateless-hash signature reference' },
+  { pattern: /\b(OQS|liboqs|oqsprovider|oqs-provider)\b/i, algorithm: 'ML-KEM-768', label: 'PQC provider reference' },
   { pattern: /\bRSA[-_ ]?(1024|2048|3072|4096)?\b/i, algorithm: 'RSA-2048', label: 'RSA reference' },
   { pattern: /\bECDSA[-_ ]?(P-?256|P-?384|nistp256|nistp384)?\b/i, algorithm: 'ECDSA-P256', label: 'ECDSA reference' },
   { pattern: /\b(ECDH|Diffie[-_ ]?Hellman|DHE)\b/i, algorithm: 'DH-2048', label: 'DH/ECDH reference' },
@@ -1159,8 +1201,6 @@ const CONFIG_PATTERNS: Array<{ pattern: RegExp; algorithm: string; label: string
   { pattern: /\bssh-dss\b/i, algorithm: 'DSA-1024', label: 'SSH DSA key reference' },
   { pattern: /\b(ed25519|ssh-ed25519)\b/i, algorithm: 'Ed25519', label: 'Ed25519 key reference' },
   { pattern: /\b(X25519|curve25519)\b/i, algorithm: 'X25519', label: 'X25519 key exchange reference' },
-  { pattern: /\b(ML[-_ ]?KEM|Kyber|OQS|liboqs|oqsprovider|oqs-provider)\b/i, algorithm: 'ML-KEM-768', label: 'PQC KEM reference' },
-  { pattern: /\b(ML[-_ ]?DSA|Dilithium|SPHINCS)\b/i, algorithm: 'ML-DSA-65', label: 'PQC signature reference' },
   { pattern: /\bSHA[-_ ]?1\b/i, algorithm: 'SHA-1', label: 'SHA-1 reference' },
   { pattern: /\bMD5\b/i, algorithm: 'MD5', label: 'MD5 reference' },
   { pattern: /\b(3DES|DES|RC4)\b/i, algorithm: '3DES', label: 'Weak cipher suite reference' },
@@ -1232,6 +1272,9 @@ async function scanConfigFile(filePath: string): Promise<ScannerEvidence[]> {
     const line = lines[index]
     for (const rule of CONFIG_PATTERNS) {
       if (!rule.pattern.test(line)) continue
+      /* A line that already holds the prescribed value is the approved end
+         state, not an unremediated finding — see matchesMandatoryConfigValue. */
+      const conformant = matchesMandatoryConfigValue(line)
       evidence.push({
         evidenceType: configEvidenceTypeFor(filePath, line),
         assetName: path.basename(path.dirname(filePath)) || path.basename(filePath),
@@ -1244,6 +1287,13 @@ async function scanConfigFile(filePath: string): Promise<ScannerEvidence[]> {
           line: index + 1,
           label: rule.label,
           redacted: true,
+          ...(conformant
+            ? {
+                policyConformant: true,
+                policyKey: conformant.key,
+                ...(conformant.residualNote ? { acceptedResidual: conformant.residualNote } : {}),
+              }
+            : {}),
         },
         observedAt,
       })
@@ -1496,6 +1546,11 @@ async function collectRemediationValidationEvidence(job: RemediationJob, policy:
 
 function validationFromEvidence(evidence: ScannerEvidence[], scanned: boolean): RemediationValidation {
   const riskCount = evidence.filter((item) => {
+    /* A row that holds the value the approved policy prescribes is the intended
+       end state. It is still published as the primitive it is, so the CBOM and
+       HNDL surfaces keep seeing the residual; it just does not count as a
+       remediation failure, which is what used to roll the patch back. */
+    if ((item.rawEvidence as Record<string, unknown> | undefined)?.policyConformant === true) return false
     const flags = runtimeFlags(item)
     return flags.hndlRisk || flags.downgradeDetected || (flags.isLegacy && (flags.severity === 'critical' || flags.severity === 'high'))
   }).length
@@ -1648,9 +1703,15 @@ function patchKnownSafeCryptoToggles(content: string, filePath: string) {
   next = next.replace(/(\bssl_conf_command\s+Groups\s+)[^;\r\n]+;?/gi, `$1${MANDATORY_PQC_CONFIG_VALUES.tlsGroups};`)
   next = next.replace(/(\bssl_ciphers\s+)[^;\r\n]+;?/gi, '$1TLS_AES_256_GCM_SHA384;')
   next = next.replace(/(\bssl_protocols\s+.*?)(TLSv1(?:\.0)?\s+|TLSv1\.1\s+|TLSv1\.2\s+)/gi, '$1TLSv1.3 ')
-  next = next.replace(/(\bHostKeyAlgorithms\s+)[^\r\n]+/gi, '$1ssh-ed25519,rsa-sha2-512,rsa-sha2-256')
-  next = next.replace(/(\bPubkeyAcceptedAlgorithms\s+)[^\r\n]+/gi, '$1ssh-ed25519,rsa-sha2-512,rsa-sha2-256')
-  next = next.replace(/(\bKexAlgorithms\s+)[^\r\n]+/gi, `$1${MANDATORY_PQC_CONFIG_VALUES.tlsGroups}`)
+  /*
+   * SSH directives take SSH primitive names. `KexAlgorithms` used to be given
+   * MANDATORY_PQC_CONFIG_VALUES.tlsGroups ("X25519MLKEM768:X25519"), which is
+   * TLS group syntax: sshd rejects the file and refuses to start, so the patch
+   * broke the host and then failed its own validation.
+   */
+  next = next.replace(/(\bHostKeyAlgorithms\s+)[^\r\n]+/gi, `$1${MANDATORY_PQC_CONFIG_VALUES.sshHostKeyAlgorithms}`)
+  next = next.replace(/(\bPubkeyAcceptedAlgorithms\s+)[^\r\n]+/gi, `$1${MANDATORY_PQC_CONFIG_VALUES.sshPubkeyAcceptedAlgorithms}`)
+  next = next.replace(/(\bKexAlgorithms\s+)[^\r\n]+/gi, `$1${MANDATORY_PQC_CONFIG_VALUES.sshKexAlgorithms}`)
   next = next.replace(/(\btls-version-min\s+)[^\r\n]+/gi, '$1TLSv1.3')
   next = next.replace(/(\btls-ciphersuites\s+)[^\r\n]+/gi, '$1TLS_AES_256_GCM_SHA384')
   next = replaceConfigStringValue(next, ['CERTIFICATE_PROFILE', 'PKI_PROFILE'], 'Hybrid Ed25519 + ML-DSA', filePath)

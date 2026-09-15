@@ -106,8 +106,8 @@ export interface PlanInfo {
 export const PLAN_CATALOG: PlanInfo[] = [
   {
     tier: "Starter",
-    monthly: 3,
-    yearlyPerMonth: 3,
+    monthly: 1,
+    yearlyPerMonth: 1,
     tagline: "Unlock QGuard Messaging",
     highlights: ["Quantum-safe messaging", "Encrypted voice & video calls", "Quantum Vault file encryption", "All your devices, one account"],
   },

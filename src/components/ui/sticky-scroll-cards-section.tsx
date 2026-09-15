@@ -62,9 +62,9 @@ const capabilities: Capability[] = [
   },
   {
     num: "08",
-    title: "FUTURE-PROOF INVESTMENT",
+    title: "READY FOR THE NEXT TRANSITION",
     icon: Hourglass,
-    desc: "Continuously engineered to evolve alongside the rapidly changing quantum computing landscape, emerging cryptographic standards, and next-generation cyber threats.",
+    desc: "Post-quantum migration will not be the last cryptographic transition. The platform is built so algorithms, libraries, certificates and policies can be changed again as NIST, the IETF and vendors move.",
   },
 ];
 

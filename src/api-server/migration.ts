@@ -3138,6 +3138,31 @@ router.post('/plans/:planId/action', requireAuth, async (req: AuthenticatedReque
   const plan = await loadMigrationPlan(client, req.user!.id, planId)
   if (!plan) return res.status(404).json({ error: { code: 'PLAN_NOT_FOUND', message: 'Migration plan not found' } })
 
+  /*
+   * Governance gate. `start_execution` and `approve_next_phase` are what queue
+   * migration_jobs for the agents, and a queued job is claimed by an agent that
+   * will modify a real host's cryptographic configuration.
+   *
+   * The approval workflow already existed — POST /migration-planner/plans/:id/
+   * approval writes `approved` or `rejected` — but nothing read it here, so a
+   * plan the tenant had explicitly REJECTED, or one still sitting at
+   * `pending_approval`, could be dispatched to the fleet. Only the two
+   * governance states block; plans that never entered the approval workflow
+   * keep their existing behaviour.
+   */
+  const approvalState = String(plan.status || '').toLowerCase()
+  if ((action === 'start_execution' || action === 'approve_next_phase') && (approvalState === 'rejected' || approvalState === 'pending_approval')) {
+    return res.status(409).json({
+      error: {
+        code: 'PLAN_NOT_APPROVED',
+        message: approvalState === 'rejected'
+          ? 'This migration plan was rejected. Agent execution cannot be dispatched against a rejected plan.'
+          : 'This migration plan is still awaiting approval. Record an approval decision before dispatching agent execution.',
+        details: { planId, planStatus: approvalState },
+      },
+    })
+  }
+
   const jobs = await fetchPlanJobs(client, req.user!.id, planId)
   if (!jobs.length) return res.status(404).json({ error: { code: 'NO_PLAN_JOBS', message: 'No migration jobs are linked to this plan' } })
 

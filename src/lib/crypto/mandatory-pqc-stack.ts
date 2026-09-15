@@ -30,6 +30,32 @@ export const MANDATORY_PQC_STACK = {
     primary: 'ML-DSA-65',
     hybrid: 'Ed25519 + ML-DSA-65',
   },
+  /*
+   * SSH names its primitives differently from TLS, and a patcher that writes
+   * one syntax into the other produces a config the daemon refuses to load.
+   * `X25519MLKEM768:X25519` is a TLS group list; sshd expects SSH kex names,
+   * comma-separated. Writing the TLS form into `KexAlgorithms` stopped sshd
+   * from starting, which then failed post-patch validation and rolled back.
+   *
+   * `mlkem768x25519-sha256` is OpenSSH 10's default hybrid kex;
+   * `sntrup761x25519-sha512@openssh.com` is the OpenSSH 9.x hybrid, kept so
+   * the value applies to hosts that have not moved to 10 yet;
+   * `curve25519-sha256` remains last as the classical fallback.
+   */
+  ssh: {
+    kexAlgorithms: 'mlkem768x25519-sha256,sntrup761x25519-sha512@openssh.com,curve25519-sha256',
+    /*
+     * Stock OpenSSH has no post-quantum HOST KEY type: authentication stays
+     * classical until one is standardised in the protocol. This is the
+     * hardened classical set, and it is published as an accepted residual —
+     * never as evidence that SSH authentication is quantum-safe.
+     */
+    hostKeyAlgorithms: 'ssh-ed25519,rsa-sha2-512,rsa-sha2-256',
+    pubkeyAcceptedAlgorithms: 'ssh-ed25519,rsa-sha2-512,rsa-sha2-256',
+    ciphers: 'aes256-gcm@openssh.com,aes256-ctr',
+    hostKeyResidual:
+      'SSH host-key authentication remains classical: the protocol has no standardised post-quantum host-key type. Session confidentiality is protected by the hybrid ML-KEM key exchange, so recorded traffic is not harvestable.',
+  },
   encryption: {
     symmetric: 'AES-256-GCM',
     envelope: 'AES-256-GCM + ML-KEM-768 envelope',
@@ -102,7 +128,50 @@ export const MANDATORY_PQC_CONFIG_VALUES = {
   opensslConf: '/etc/ssl/oqs-openssl.cnf',
   oqsLibraries: MANDATORY_PQC_STACK.libraries.join(','),
   oqsProviderModule: 'oqsprovider',
+  sshKexAlgorithms: MANDATORY_PQC_STACK.ssh.kexAlgorithms,
+  sshHostKeyAlgorithms: MANDATORY_PQC_STACK.ssh.hostKeyAlgorithms,
+  sshPubkeyAcceptedAlgorithms: MANDATORY_PQC_STACK.ssh.pubkeyAcceptedAlgorithms,
+  sshCiphers: MANDATORY_PQC_STACK.ssh.ciphers,
 } as const
+
+/**
+ * Is this configuration line already the value the mandatory stack prescribes?
+ *
+ * Post-patch validation needs the distinction between "the patch failed" and
+ * "the approved end state legitimately still contains a classical primitive".
+ * SSH is the case that forces it: stock OpenSSH has no post-quantum host-key
+ * type, so `hostKeyAlgorithms` stays `ssh-ed25519,rsa-sha2-512,…` — the value
+ * the Patcher itself writes. Scoring that as remaining risk made every SSH
+ * remediation fail validation and roll back the configuration it had just
+ * correctly applied, forever.
+ *
+ * The row is still PUBLISHED as the classical primitive it is, so Harvest Now,
+ * the CBOM and the runtime dashboards keep seeing the residual honestly. Only
+ * the rollback gate treats it as satisfied.
+ */
+export function matchesMandatoryConfigValue(line: unknown): { key: string; value: string; residualNote?: string } | null {
+  const text = String(line ?? '').trim()
+  if (!text) return null
+  // Take everything after the first `=`, `:` or run of whitespace: that is the
+  // configured VALUE. Comparing whole lines would never match, because the
+  // directive names differ per file format.
+  const separator = text.search(/[:=]|\s/)
+  if (separator === -1) return null
+  const value = text
+    .slice(separator)
+    .replace(/^[:=\s]+/, '')
+    .replace(/[;,]\s*$/, '')
+    .trim()
+  if (!value) return null
+
+  for (const [key, prescribed] of Object.entries(MANDATORY_PQC_CONFIG_VALUES)) {
+    if (String(prescribed).toLowerCase() !== value.toLowerCase()) continue
+    return key === 'sshHostKeyAlgorithms' || key === 'sshPubkeyAcceptedAlgorithms'
+      ? { key, value, residualNote: MANDATORY_PQC_STACK.ssh.hostKeyResidual }
+      : { key, value }
+  }
+  return null
+}
 
 function compact(value: unknown) {
   return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '')

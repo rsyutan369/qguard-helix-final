@@ -681,7 +681,7 @@ function planAmountCents(plan: string, cycle: string) {
   if (normalizedPlan.includes('elite')) return annual ? 180000 : 19900
   if (normalizedPlan.includes('pro')) return annual ? 24000 : 3000
   if (normalizedPlan.includes('basic')) return annual ? 6000 : 800
-  if (normalizedPlan.includes('starter')) return annual ? 3600 : 300
+  if (normalizedPlan.includes('starter')) return annual ? 1200 : 100
   return 0
 }
 

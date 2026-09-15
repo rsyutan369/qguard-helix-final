@@ -177,9 +177,38 @@ export default function DownloadsPage() {
         </div>
       </header>
 
+      {/*
+        A failed load is only a page failure when the page has nothing to show.
+        One slow call on a cold start used to paint "Agent Center could not
+        load" across a console that had in fact rendered the runtime, the
+        platforms and every enrolled agent — an error louder than the truth.
+        With data present the failure is reported as what it is: this view is
+        showing the last good data and one refresh did not complete.
+      */}
       {installer.error ? (
         <div className="mb-5">
-          <ErrorState title="Agent Center could not load" message={installer.error} onRetry={() => void installer.refresh()} />
+          {installer.agents.length === 0 && !release ? (
+            <ErrorState title="Agent Center could not load" message={installer.error} onRetry={() => void installer.refresh()} />
+          ) : (
+            <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.06] px-4 py-3">
+              <div className="flex items-start gap-2.5">
+                <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                <div className="flex-1">
+                  <div className="text-sm font-bold text-amber-100">Showing the last successful load</div>
+                  <p className="mt-1 text-[11px] leading-relaxed text-amber-100/70">
+                    A refresh did not complete ({installer.error}), so the figures below may be out of date.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void installer.refresh()}
+                  className="shrink-0 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-1.5 text-[11px] font-black text-amber-100 transition hover:bg-amber-400/20"
+                >
+                  Retry
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       ) : null}
 

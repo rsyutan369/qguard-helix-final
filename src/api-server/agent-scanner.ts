@@ -1779,6 +1779,44 @@ function remediationProbeEvidence(job: any, agent: any): ScannerEvidenceRecord |
   }, 'local-agent', agent)
 }
 
+/** The migration plan a queued job belongs to, when it declares one. */
+function planIdForJob(job: any) {
+  const metadata = remediationJobMetadata(job)
+  return cleanString(metadata.planId || metadata.plan_id, 120) || ''
+}
+
+/**
+ * Plan ids among these jobs whose approval decision forbids execution.
+ *
+ * Reads the governance state written by POST /migration-planner/plans/:id/
+ * approval. A read failure returns an EMPTY set rather than blocking the whole
+ * fleet: a database hiccup must not look like a mass revocation, and the
+ * dispatch-time gate in migration.ts has already applied the same rule.
+ */
+async function rejectedPlanIdsFor(client: any, userId: string, jobs: any[]): Promise<Set<string>> {
+  const planIds = Array.from(new Set(jobs.map(planIdForJob).filter(Boolean)))
+  if (planIds.length === 0) return new Set()
+  try {
+    const { data, error } = await client
+      .from('migration_plans')
+      .select('id, status')
+      .eq('user_id', userId)
+      .in('id', planIds)
+    if (error) {
+      console.warn('[agent-remediation] Plan approval re-check skipped:', error.message)
+      return new Set()
+    }
+    return new Set(
+      ((data as any[]) || [])
+        .filter((row) => ['rejected', 'pending_approval'].includes(String(row.status || '').toLowerCase()))
+        .map((row) => String(row.id))
+    )
+  } catch (error: any) {
+    console.warn('[agent-remediation] Plan approval re-check failed:', error?.message || error)
+    return new Set()
+  }
+}
+
 function remediationJobAllowedForAgent(job: any, policy: ReturnType<typeof normalizePolicy>, agent: any) {
   const probe = remediationProbeEvidence(job, agent)
   if (!probe) {
@@ -4082,6 +4120,17 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
     return
   }
 
+  /*
+   * Governance re-check, for the same reason the write entitlement is
+   * re-checked above: this is the last point before a host is changed.
+   *
+   * A job can be queued while its plan is approved and claimed after the plan
+   * is rejected — the operator revokes approval precisely because they want the
+   * work to stop, and nothing was reading that decision here. Only plans in an
+   * explicit governance state block; a job with no owning plan is unaffected.
+   */
+  const blockedPlanIds = await rejectedPlanIdsFor(client, agent.user_id, jobs || [])
+
   const claimable = (jobs || [])
     .filter((job: any) => migrationJobIsAgentExecutable(job))
     .filter((job: any) => {
@@ -4089,6 +4138,7 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
       const assignedAgentId = cleanString(metadata.assignedAgentId || metadata.assigned_agent_id, 120)
       return !assignedAgentId || assignedAgentId === agent.id
     })
+    .filter((job: any) => !blockedPlanIds.has(planIdForJob(job)))
     .filter((job: any) => remediationJobAllowedForAgent(job, policy, agent))
     .slice(0, 5)
 

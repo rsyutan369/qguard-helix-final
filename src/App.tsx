@@ -10,6 +10,10 @@ import Checkout from './pages/Checkout';
 import PostQuantumMigrationPlatform from './pages/PostQuantumMigrationPlatform';
 import QuantumTrustGovernanceCenter from './pages/QuantumTrustGovernanceCenter';
 import PqcSolutions from './pages/PqcSolutions';
+import TermsPage from './pages/Terms';
+import PrivacyPage from './pages/Privacy';
+import RefundPage from './pages/Refund';
+import ContactPage from './pages/Contact';
 import QguardHelixFeatures from './pages/QguardHelixFeatures';
 import Auth from './app/authentication/Auth';
 import LoginPage from './app/authentication/login/page';
@@ -145,6 +149,17 @@ export default function App() {
           {/* Platform features showcase — Qguard_Wiki/Qguard_Helix_Features_Page */}
           <Route path="/qguard-helix-features" element={<QguardHelixFeatures />} />
           <Route path="/features" element={<Navigate to="/qguard-helix-features" replace />} />
+          {/* Public legal surfaces — required to be reachable for PayPal
+              recurring billing; all four read src/lib/site-identity.ts. */}
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/terms-of-service" element={<Navigate to="/terms" replace />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/privacy-policy" element={<Navigate to="/privacy" replace />} />
+          <Route path="/refund" element={<RefundPage />} />
+          <Route path="/refund-policy" element={<Navigate to="/refund" replace />} />
+          <Route path="/refunds" element={<Navigate to="/refund" replace />} />
+          <Route path="/contact" element={<ContactPage />} />
+          <Route path="/support" element={<Navigate to="/contact" replace />} />
           <Route path="/checkout" element={<Checkout />} />
           <Route path="/subscription/thank-you" element={<SubscriptionThankYou />} />
           <Route path="/verify-report" element={<VerifyReport />} />

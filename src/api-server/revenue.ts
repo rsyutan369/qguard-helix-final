@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
 import { getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
 import { isOwnerEmail } from '@/lib/admin-access'
-import { PLAN_PRICING } from './paypal'
+import { PLAN_PRICING } from '@/lib/billing/plan-pricing'
 
 /**
  * Revenue Intelligence™ — owner-only financial analytics service.

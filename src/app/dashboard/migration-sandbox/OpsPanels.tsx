@@ -5,24 +5,18 @@
  *                        14 scenario types, live asset selection with
  *                        risk/environment/type/owner/region/readiness filters,
  *                        pipeline preview, dry-run control.
- * TelemetryTab         — real bucketed event series (SSE-refreshed) + labeled
- *                        modeled per-simulation load.
- * PerformanceTab       — before/after benchmark projection with methodology.
  * ValidationTab        — compatibility + security validation + failure
  *                        prediction engine + risk factors.
  * ReportsTab           — 9 enterprise report types × PDF / Word / JSON / CSV.
  */
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Activity,
   AlertTriangle,
   BarChart3,
   CheckCircle2,
-  Cpu,
   Download,
   FileText,
   FlaskConical,
-  Gauge,
   Key,
   Play,
   RefreshCw,
@@ -38,29 +32,22 @@ import { useAuth } from '@/contexts/auth-context'
 import { cn } from '@/lib/utils'
 import {
   ActionBtn,
-  BLUE,
-  CYAN,
   EmptyBlock,
   GOLD,
   GREEN,
-  MetricTile,
   ORANGE,
   Panel,
   Pill,
   ProgressBar,
-  PURPLE,
   RED,
   ScoreGauge,
   SectionHead,
-  Sparkline,
   downloadBlob,
   fmt,
   pct,
   relTime,
   riskBadge,
-  severityIcon,
   type FailurePredictionPayload,
-  type PerformanceBenchmarkPayload,
   type PipelineStage,
   type RiskFactor,
   type SandboxSnapshot,
@@ -68,7 +55,6 @@ import {
   type SimulationAsset,
   type SimulationTypeDef,
   type SophiaPayload,
-  type TelemetryFramePayload,
 } from './_shared'
 import { SANDBOX_REPORT_TYPES, buildSandboxReportDoc, renderSandboxReportDocx, renderSandboxReportPdf, type SandboxReportType } from './sandbox-report'
 
@@ -350,197 +336,6 @@ export function SimulationBuilderTab({ simulationTypes, pipeline, pendingAction,
               {launching ? 'Launching…' : isCustom ? 'Launch Custom Simulation' : `Simulate ${selected.size} Asset${selected.size === 1 ? '' : 's'}`}
             </button>
           </div>
-        </div>
-      </Panel>
-    </>
-  )
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   TELEMETRY TAB
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-const SERIES_COLORS: Record<string, string> = {
-  crypto_ops: CYAN,
-  tls_signals: BLUE,
-  cert_validations: PURPLE,
-  migration_events: GOLD,
-  errors: RED,
-  warnings: ORANGE,
-}
-
-export function TelemetryTab({ frame, sseActive }: { frame: TelemetryFramePayload | undefined; sseActive: boolean }) {
-  if (!frame) return <Panel className="p-8"><EmptyBlock label="Telemetry frame not yet streamed — the SSE channel delivers it with each snapshot." /></Panel>
-
-  return (
-    <>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <MetricTile label="Crypto Ops (window)" value={fmt(frame.totals.cryptoOps)} detail={`${frame.windowMinutes}m rolling window`} icon={Cpu} color={CYAN} />
-        <MetricTile label="Migration Events" value={fmt(frame.totals.migrationEvents)} detail="Engine + operator activity" icon={Activity} color={GOLD} />
-        <MetricTile label="Errors" value={fmt(frame.totals.errors)} detail={frame.totals.errors > 0 ? 'Review execution logs' : 'Clean window'} icon={AlertTriangle} color={frame.totals.errors > 0 ? RED : GREEN} />
-        <MetricTile label="Warnings" value={fmt(frame.totals.warnings)} detail={frame.totals.warnings > 0 ? 'Attention required' : 'Clean window'} icon={AlertTriangle} color={frame.totals.warnings > 0 ? ORANGE : GREEN} />
-      </div>
-
-      <Panel className="p-5">
-        <SectionHead icon={Activity} suffix={
-          <Pill className={cn(sseActive ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/30 bg-amber-500/10 text-amber-300')}>
-            {sseActive ? 'SSE streaming — no polling' : 'SSE reconnecting'}
-          </Pill>
-        }>Real-Time Telemetry Streams</SectionHead>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {frame.series.map((series) => {
-            const color = SERIES_COLORS[series.id] || CYAN
-            const total = series.values.reduce((a, b) => a + b, 0)
-            return (
-              <div key={series.id} className="rounded-xl border border-white/8 bg-white/[0.02] p-4">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="truncate text-xs font-bold text-white/80">{series.label}</div>
-                    <div className="mt-0.5 font-mono text-[9px] text-white/30">{series.source}</div>
-                  </div>
-                  <span className="font-mono text-lg font-black" style={{ color }}>{fmt(total)}</span>
-                </div>
-                <div className="mt-2">
-                  <Sparkline values={series.values} color={color} />
-                </div>
-                <div className="mt-1 flex justify-between font-mono text-[8px] text-white/25">
-                  <span>-{frame.windowMinutes}m</span>
-                  <span>{frame.bucketMinutes}m buckets</span>
-                  <span>now</span>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </Panel>
-
-      <Panel className="p-5">
-        <SectionHead icon={Gauge}>Active Simulation Load (Twin-Modeled)</SectionHead>
-        {frame.simulatedLoad.length === 0 ? (
-          <EmptyBlock label="No simulations running — per-simulation CPU/memory/latency load appears here during execution." />
-        ) : (
-          <div className="grid gap-3 md:grid-cols-2">
-            {frame.simulatedLoad.map((load) => (
-              <div key={load.jobId} className="rounded-xl border border-white/8 bg-white/[0.02] p-4">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-xs font-bold text-white/85">{load.jobName}</span>
-                  <div className="flex items-center gap-2">
-                    <Pill className="border-cyan-500/25 bg-cyan-500/10 text-cyan-300">modeled</Pill>
-                    <Pill className="border-gold/25 bg-gold/10 text-gold">{load.phase}</Pill>
-                  </div>
-                </div>
-                <div className="mt-3 space-y-2.5">
-                  {[
-                    { label: 'CPU', value: `${load.cpuPct}%`, bar: load.cpuPct, color: load.cpuPct > 75 ? RED : CYAN },
-                    { label: 'Memory', value: `${fmt(load.memoryMb)} MB`, bar: Math.min(100, load.memoryMb / 8), color: PURPLE },
-                    { label: 'Latency', value: `${load.latencyMs} ms`, bar: Math.min(100, load.latencyMs), color: GOLD },
-                    { label: 'Progress', value: `${load.progress}%`, bar: load.progress, color: GREEN },
-                  ].map((row) => (
-                    <div key={row.label} className="grid grid-cols-[64px_1fr_70px] items-center gap-2">
-                      <span className="text-[9px] font-bold uppercase tracking-wider text-white/35">{row.label}</span>
-                      <ProgressBar value={row.bar} color={row.color} />
-                      <span className="text-right font-mono text-[10px] font-bold text-white/60">{row.value}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-        <p className="mt-3 text-[10px] leading-relaxed text-white/30">{frame.note}</p>
-      </Panel>
-    </>
-  )
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   PERFORMANCE TAB
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-export function PerformanceTab({ benchmark }: { benchmark: PerformanceBenchmarkPayload | undefined }) {
-  if (!benchmark || !benchmark.available) {
-    return (
-      <Panel className="p-8">
-        <EmptyBlock label="Performance benchmark requires discovered crypto inventory. Run discovery scans so the projection can model your real algorithm mix." />
-      </Panel>
-    )
-  }
-
-  const mix = benchmark.algorithmMix
-  return (
-    <>
-      <Panel className="border-sky-400/20 bg-sky-500/[0.02] p-5">
-        <SectionHead icon={BarChart3} suffix={<Pill className="border-sky-400/25 bg-sky-500/10 text-sky-300">{fmt(benchmark.sampleSize)} inventory records</Pill>}>
-          Benchmark Methodology
-        </SectionHead>
-        <p className="text-xs leading-relaxed text-white/55">{benchmark.methodology}</p>
-        {/* These are PREVALENCE shares — the fraction of inventory records that
-            mention each family — not a partition. One cipher suite record
-            (TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) counts toward RSA, ECC and
-            symmetric at once, so they overlap and do not sum to 100%. Presenting
-            them as a "mix" invited exactly that arithmetic. Rendered as
-            independent bars rather than one stacked bar for the same reason. */}
-        <div className="mt-4">
-          <div className="mb-1.5 text-[9px] font-bold uppercase tracking-wider text-white/30">
-            Algorithm Prevalence
-            <span className="ml-1.5 normal-case tracking-normal text-white/25">· share of {fmt(benchmark.sampleSize)} inventory records mentioning each family (records can match more than one, so these overlap)</span>
-          </div>
-          <div className="space-y-1.5">
-            {[
-              { share: mix.rsaSharePct, color: RED, label: 'RSA' },
-              { share: mix.eccSharePct, color: ORANGE, label: 'ECC / EC-DH' },
-              { share: mix.pqcSharePct, color: GREEN, label: 'PQC (ML-KEM/ML-DSA)' },
-              { share: mix.symmetricSharePct, color: BLUE, label: 'Symmetric (AES)' },
-              ...(mix.weakSharePct ? [{ share: mix.weakSharePct, color: PURPLE, label: 'Deprecated (3DES/RC4/SHA-1)' }] : []),
-            ].map((seg) => (
-              <div key={seg.label} className="grid grid-cols-[150px_1fr_38px] items-center gap-2">
-                <span className="flex items-center gap-1.5 text-[10px] font-bold text-white/45">
-                  <span className="h-2 w-2 rounded-full" style={{ background: seg.color }} />
-                  {seg.label}
-                </span>
-                <span className="h-2 w-full overflow-hidden rounded-full bg-white/5">
-                  <span className="block h-full rounded-full" style={{ width: `${Math.max(0, Math.min(100, seg.share))}%`, background: seg.color }} />
-                </span>
-                <span className="text-right font-mono text-[10px] text-white/45">{seg.share}%</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </Panel>
-
-      <Panel className="p-5">
-        <SectionHead icon={Gauge}>Before vs After Migration — Projected Impact</SectionHead>
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {benchmark.metrics.map((metric) => {
-            const worse = !metric.improved
-            const maxValue = Math.max(metric.before, metric.after, 1)
-            return (
-              <div key={metric.id} className="rounded-xl border border-white/8 bg-white/[0.02] p-4">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="truncate text-xs font-bold text-white/85">{metric.label}</div>
-                    <div className="mt-0.5 text-[9px] font-bold uppercase tracking-wider text-white/25">{metric.unit}</div>
-                  </div>
-                  <Pill className={cn(worse ? 'border-orange-500/25 bg-orange-500/10 text-orange-300' : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300')}>
-                    {metric.deltaPct > 0 ? '+' : ''}{metric.deltaPct}%
-                  </Pill>
-                </div>
-                <div className="mt-3 space-y-2">
-                  <div className="grid grid-cols-[52px_1fr_76px] items-center gap-2">
-                    <span className="text-[9px] font-bold uppercase text-white/35">Before</span>
-                    <ProgressBar value={(metric.before / maxValue) * 100} color={ORANGE} />
-                    <span className="text-right font-mono text-[10px] font-bold text-white/60">{metric.before}</span>
-                  </div>
-                  <div className="grid grid-cols-[52px_1fr_76px] items-center gap-2">
-                    <span className="text-[9px] font-bold uppercase text-white/35">After</span>
-                    <ProgressBar value={(metric.after / maxValue) * 100} color={metric.improved ? GREEN : GOLD} />
-                    <span className="text-right font-mono text-[10px] font-bold text-white/60">{metric.after}</span>
-                  </div>
-                </div>
-                <p className="mt-2.5 text-[10px] leading-relaxed text-white/35">{metric.note}</p>
-              </div>
-            )
-          })}
         </div>
       </Panel>
     </>

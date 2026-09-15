@@ -98,15 +98,65 @@ const bogus = await call('/api/v1/agent-installer/summary', 'not-a-real-jwt')
 check('forged bearer token rejected', bogus.status === 401, `got ${bogus.status}`)
 
 /* ---------------- 2. Entitlement ---------------- */
-console.log('\n[2] Plan entitlement (Agent Center is Pro+)')
-for (const [label, who] of [['starter', starter], ['basic', basic]]) {
-  const summary = await call('/api/v1/agent-installer/summary', who.token)
-  check(`${label} tenant blocked from /summary`, summary.status === 403, `got ${summary.status}`)
-  const releases = await call('/api/v1/agent-installer/releases', who.token)
-  check(`${label} tenant blocked from /releases`, releases.status === 403, `got ${releases.status}`)
-  const enroll = await call('/api/v1/agent-scanner/agents/enroll', who.token, { method: 'POST', body: JSON.stringify({ name: 'should-not-exist' }) })
-  check(`${label} tenant cannot enroll an agent`, enroll.status === 403, `got ${enroll.status}`)
+/*
+ * The boundary is per ROLE, not per route (src/lib/subscription-access.ts,
+ * AGENT_ROLE_MIN_TIER): `collector` and `scanner` are read-only and included
+ * from BASIC; `patcher` and `operator` WRITE to the tenant's hosts and are
+ * Pro+. The catalogue endpoints are deliberately readable by any authenticated
+ * caller, because they disclose each role with an `entitled` flag so the UI can
+ * say what the plan does and does not include instead of showing an empty page.
+ *
+ * This block used to assert "Agent Center is Pro+" wholesale. That is no longer
+ * the product matrix, and asserting it hid the check that actually matters:
+ * that a plan without write entitlement cannot mint an agent that modifies a
+ * host, and cannot be handed remediation work.
+ */
+console.log('\n[2] Plan entitlement (read-only roles Basic+, write roles Pro+)')
+
+check('starter is below the agent floor entirely', (await call('/api/v1/agent-scanner/agents/enroll', starter.token, {
+  method: 'POST',
+  body: JSON.stringify({ name: 'should-not-exist', role: 'collector' }),
+})).status === 403, 'starter must not enroll any agent')
+
+for (const role of ['patcher', 'operator']) {
+  const attempt = await call('/api/v1/agent-scanner/agents/enroll', basic.token, {
+    method: 'POST',
+    body: JSON.stringify({ name: `should-not-exist-${role}`, role }),
+  })
+  check(`basic tenant refused the write role "${role}"`, attempt.status === 403, `got ${attempt.status}`)
+  /* The refusal must name the requirement, not just deny. */
+  check(`the "${role}" refusal states the required plan`, /pro|elite/i.test(JSON.stringify(attempt.body)), JSON.stringify(attempt.body).slice(0, 160))
 }
+
+/* Role is server-resolved, so smuggling it through metadata must not work. */
+const smuggled = await call('/api/v1/agent-scanner/agents/enroll', basic.token, {
+  method: 'POST',
+  body: JSON.stringify({ name: 'should-not-exist-smuggled', metadata: { role: 'patcher' } }),
+})
+check('a write role smuggled through metadata is refused', smuggled.status === 403, `got ${smuggled.status}`)
+
+const basicCollector = await call('/api/v1/agent-scanner/agents/enroll', basic.token, {
+  method: 'POST',
+  body: JSON.stringify({ name: 'Isolation Basic Collector', role: 'collector', policy: { enabled: true, intervalSeconds: 3600, allowedTargets: [], allowedPaths: [], scanTypes: ['tls'], alertThreshold: 'moderate' } }),
+})
+check('basic tenant MAY enroll a read-only collector', basicCollector.status === 200 || basicCollector.status === 201, `got ${basicCollector.status}`)
+check('the enrolled agent is recorded as a collector, not upgraded', String(basicCollector.body?.data?.agent?.metadata?.role || '') === 'collector', JSON.stringify(basicCollector.body?.data?.agent?.metadata ?? {}).slice(0, 160))
+
+/* The gate that matters most: a read-only agent is never handed write work. */
+const basicAgentToken = basicCollector.body?.data?.enrollment?.agentToken
+const basicAgentId = basicCollector.body?.data?.enrollment?.agentId
+if (basicAgentToken && basicAgentId) {
+  const jobs = await fetch(`${BASE}/api/v1/agent-scanner/agent/remediation/jobs`, {
+    headers: { 'x-qguard-agent-id': basicAgentId, 'x-qguard-agent-token': basicAgentToken },
+  })
+  const jobsBody = await jobs.json().catch(() => ({}))
+  check('a basic-tenant collector is handed NO remediation jobs', (jobsBody?.data?.jobs || []).length === 0, JSON.stringify(jobsBody?.data ?? {}).slice(0, 160))
+  check('and the refusal states why', Boolean(jobsBody?.data?.reason), JSON.stringify(jobsBody?.data ?? {}).slice(0, 160))
+  await call(`/api/v1/agent-scanner/agents/${basicAgentId}`, basic.token, { method: 'DELETE' })
+} else {
+  check('basic collector enrolment returned an agent id + token', false, JSON.stringify(basicCollector.body ?? {}).slice(0, 200))
+}
+
 const proSummary = await call('/api/v1/agent-installer/summary', attacker.token)
 check('pro tenant allowed through the gate', proSummary.status === 200, `got ${proSummary.status}`)
 

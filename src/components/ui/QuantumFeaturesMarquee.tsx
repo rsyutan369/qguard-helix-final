@@ -26,7 +26,7 @@ const roadmapQuestions: Record<string, string> = {
   "How do I maintain hybrid cryptographic pipelines?": "Use crypto-agility: maintain a cryptographic inventory, abstract algorithm choices from application logic, centralize policy control, track dependencies, support configurable algorithms, and plan phased migration to NIST-standardized PQC where supported.",
   "Is there a standard ML-DSA parameter set?": "Yes. NIST FIPS 204 standardizes ML-DSA parameter sets including ML-DSA-44, ML-DSA-65, and ML-DSA-87. ML-DSA-65 is a reasonable enterprise-grade default, while ML-DSA-87 may be selected for higher-security use cases.",
   "Are our VPN tunnels secure against post-quantum intercepts?": "Traditional VPNs using RSA, Diffie-Hellman, ECDH, or ECDSA are not fully post-quantum secure. Organizations should evaluate vendor-supported hybrid or PQC-capable VPN options and test interoperability, performance, and compliance before production migration.",
-  "What encryption standards does CNSA 2.0 require?": "NSA CNSA 2.0 defines a transition toward quantum-resistant algorithms for national security systems, including ML-KEM for key establishment and ML-DSA or SLH-DSA for signatures. Exact requirements depend on system type, use case, and implementation timeline.",
+  "What encryption standards does CNSA 2.0 require?": "NSA CNSA 2.0 applies to national security systems and specifies the highest parameter sets only: ML-KEM-1024 for key establishment, ML-DSA-87 for signatures, AES-256 for symmetric encryption, and SHA-384 or SHA-512 for hashing. LMS and XMSS (NIST SP 800-208) are specified for software and firmware signing. SLH-DSA is a NIST standard but is not part of CNSA 2.0. Adoption timelines vary by system type.",
   "How do we audit third-party vendor cryptography?": "Audit vendors by requesting cryptographic inventories, certificates, SBOM/CBOM details, TLS configurations, algorithm lists, key-management practices, PQC migration roadmaps, FIPS validation status where required, and evidence of support for NIST-standardized PQC algorithms.",
 };
 
@@ -59,12 +59,12 @@ const features = [
   },
   {
     title: "FOCUS ON RESILIENCE",
-    description: "Every strategy is designed to minimize risk, eliminate vulnerabilities, and ensure cryptographic agility.",
+    description: "Every strategy is designed to reduce cryptographic exposure, sequence remediation by risk, and leave you able to change algorithms again.",
     icon: Zap,
   },
   {
-    title: "PROVEN FRAMEWORKS",
-    description: "With deep expertise in NIST guidelines and NSA directives, we bring proven frameworks to your enterprise.",
+    title: "PUBLISHED FRAMEWORKS",
+    description: "Built on the published guidance — NIST FIPS 203, 204 and 205, NIST IR 8547, NIST SP 1800-38 and NSA CNSA 2.0 — rather than a framework of our own invention.",
     icon: Workflow,
   },
   {

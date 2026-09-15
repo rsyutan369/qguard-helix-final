@@ -450,7 +450,7 @@ export default function SubscriptionPage(props: {
                 </div>
                 <div className="mt-2">
                   <span className="text-2xl font-bold text-ink-950">${price}</span>
-                  <span className="text-xs text-ink-500">/mo{cycle === "yearly" ? ", billed yearly" : ""}</span>
+                  <span className="text-xs text-ink-500">/mo{cycle === "yearly" ? ` · $${plan.yearlyPerMonth * 12} billed yearly` : ""}</span>
                 </div>
                 <div className="mt-1 text-[11px] font-semibold text-ink-500">{plan.tagline}</div>
                 <ul className="mt-3 flex-1 space-y-1.5">
@@ -477,7 +477,7 @@ export default function SubscriptionPage(props: {
         </div>
         <p className="mt-3 text-[11px] leading-relaxed text-ink-400">
           Payments are verified server-side before activation; your account unlocks on every device automatically.
-          Prices in USD. Yearly billing charges the discounted rate once per year.
+          Prices in USD. Yearly plans are billed once per year at the total shown.
         </p>
       </div>
 

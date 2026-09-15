@@ -271,6 +271,29 @@ export default defineConfig(({mode}) => {
             next()
           })
 
+          /* The dev server serves `public/` directly, so Vite — not the API app —
+             would answer /downloads/QGuard-Messaging-Setup.exe. Registering the
+             refusal here keeps `npm run dev` honest about the entitlement gate;
+             production gets the same block from blockPublicInstallerPath, which
+             the API app mounts ahead of express.static. Only the installer is
+             blocked: the images and latest.json in that folder stay public. */
+          server.middlewares.use((req: any, res: any, next: any) => {
+            const pathname = (req.url || '').split('?')[0]
+            if (pathname === '/downloads/QGuard-Messaging-Setup.exe') {
+              res.statusCode = 403
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({
+                error: {
+                  code: 'SUBSCRIPTION_REQUIRED',
+                  message: 'The QGuard Messaging installer is available to signed-in subscribers. Download it from /qguard-messaging.',
+                  detail: {downloadEndpoint: '/api/v1/downloads/messaging/windows'},
+                },
+              }))
+              return
+            }
+            next()
+          })
+
           server.middlewares.use((req: any, res: any, next: any) => {
             if (req.url?.startsWith('/api/')) {
               loadApiServer()

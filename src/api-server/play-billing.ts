@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { createHash, createSign, timingSafeEqual } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getServerUser, getServiceClient } from '@/lib/supabase-server'
-import { PLAN_PRICING } from './paypal'
+import { PLAN_PRICING } from '@/lib/billing/plan-pricing'
 
 /**
  * Google Play Billing subscription provider (QGuard Messaging Android paywall).

@@ -2,10 +2,9 @@
  * Enterprise Migration Sandbox & Digital Twin — real-time post-quantum
  * migration simulation platform.
  *
- * 15 enterprise tabs: Overview · Digital Twin · Simulation Builder ·
- * Migration Pipeline · Dependency Graph · Topology · Telemetry · Performance ·
- * Validation · Rollback · Compliance · AI Insights · Execution Logs ·
- * Reports · History.
+ * 12 enterprise tabs: Overview · Digital Twin · Simulation Builder ·
+ * Migration Pipeline · Dependency Graph · Validation · Rollback ·
+ * Compliance · AI Insights · Execution Logs · Reports · History.
  *
  * Data: /api/v1/sandbox (snapshot + SSE + Supabase realtime). Simulations
  * execute exclusively against the metadata-only digital twin — production is
@@ -36,7 +35,6 @@ import {
   Key,
   Layers,
   Lock,
-  Map as MapIcon,
   Network,
   Pause,
   Play,
@@ -105,16 +103,16 @@ import {
   type TimelineEntry,
   type WorkflowPhase,
 } from './_shared'
-import { DependencyGraphTab, DigitalTwinTab, TopologyTab, useTwinDetail } from './TwinPanels'
-import { PerformanceTab, ReportsTab, SimulationBuilderTab, TelemetryTab, ValidationTab } from './OpsPanels'
+import { DependencyGraphTab, DigitalTwinTab, useTwinDetail } from './TwinPanels'
+import { ReportsTab, SimulationBuilderTab, ValidationTab } from './OpsPanels'
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TYPES + EMPTY STATE
    ═══════════════════════════════════════════════════════════════════════════ */
 
 type ActiveTab =
-  | 'overview' | 'twin' | 'builder' | 'pipeline' | 'dependencies' | 'topology'
-  | 'telemetry' | 'performance' | 'validation' | 'rollback' | 'compliance'
+  | 'overview' | 'twin' | 'builder' | 'pipeline' | 'dependencies'
+  | 'validation' | 'rollback' | 'compliance'
   | 'ai' | 'logs' | 'reports' | 'history'
 
 type TerminalLineLevel = 'command' | 'telemetry' | 'event' | 'nist' | 'success' | 'warning' | 'error'
@@ -1534,7 +1532,7 @@ export default function MigrationSandbox() {
   const [historyRisk, setHistoryRisk] = useState('all')
 
   // Twin detail loads lazily the first time a twin-powered tab opens.
-  const twinTabsActive = tab === 'twin' || tab === 'dependencies' || tab === 'topology'
+  const twinTabsActive = tab === 'twin' || tab === 'dependencies'
   const { detail: twinDetail, loading: twinLoading, error: twinError, reload: twinReload } = useTwinDetail(twinTabsActive)
 
   const s = data.summary
@@ -1573,9 +1571,6 @@ export default function MigrationSandbox() {
     { key: 'builder', label: 'Simulation Builder', icon: Plus },
     { key: 'pipeline', label: `Migration Pipeline (${s.totalSimulations})`, icon: FlaskConical },
     { key: 'dependencies', label: 'Dependency Graph', icon: Network },
-    { key: 'topology', label: 'Topology', icon: MapIcon },
-    { key: 'telemetry', label: 'Telemetry', icon: Activity },
-    { key: 'performance', label: 'Performance', icon: Gauge },
     { key: 'validation', label: 'Validation', icon: ShieldAlert },
     { key: 'rollback', label: 'Rollback', icon: RotateCcw },
     { key: 'compliance', label: 'Compliance', icon: ShieldCheck },
@@ -2235,21 +2230,6 @@ export default function MigrationSandbox() {
         {/* ═══ TAB: DEPENDENCY GRAPH ═══ */}
         {tab === 'dependencies' && (
           <DependencyGraphTab detail={twinDetail} loading={twinLoading} error={twinError} reload={twinReload} />
-        )}
-
-        {/* ═══ TAB: TOPOLOGY ═══ */}
-        {tab === 'topology' && (
-          <TopologyTab detail={twinDetail} loading={twinLoading} error={twinError} reload={twinReload} />
-        )}
-
-        {/* ═══ TAB: TELEMETRY ═══ */}
-        {tab === 'telemetry' && (
-          <TelemetryTab frame={data.telemetryFrame} sseActive={sseActive} />
-        )}
-
-        {/* ═══ TAB: PERFORMANCE ═══ */}
-        {tab === 'performance' && (
-          <PerformanceTab benchmark={data.performanceBenchmark} />
         )}
 
         {/* ═══ TAB: VALIDATION ═══ */}

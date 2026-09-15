@@ -71,7 +71,10 @@ const HERO_LINE_TWO_PREFIX = 'Clock is ';
 const HERO_TICKING_WORD = 'TICKING';
 const HERO_CHARACTER_COUNT = HERO_LINE_ONE.length + HERO_LINE_TWO_PREFIX.length + HERO_TICKING_WORD.length;
 const HERO_TYPE_INTERVAL_MS = 72;
-const QUANTUM_MATURITY_TARGET = new Date(2029, 8, 9, 0, 0, 0);
+// NIST IR 8547: 112-bit-strength RSA/ECC/DH/ECDH/ECDSA are deprecated after
+// 2030 and disallowed after 2035. The countdown tracks that published
+// deprecation date, not a predicted "Q-Day" — nobody can date a CRQC.
+const QUANTUM_MATURITY_TARGET = new Date(2030, 11, 31, 23, 59, 59);
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const MS_PER_HOUR = 60 * 60 * 1000;
 const MS_PER_MINUTE = 60 * 1000;
@@ -128,7 +131,7 @@ const MIGRATION_PROCESS_STEPS: MigrationStep[] = [
     title: 'Discover',
     description: 'Identify all crypto assets and their dependencies.',
     details: 'Automated scans crawl network databases, cloud containers, SSH keystores, TLS endpoints, and custom proprietary protocol tunnels to build a secure unified index of all certificates and operational ciphers.',
-    badge: 'STANDARDS-COMPLIANT',
+    badge: 'CRYPTOGRAPHIC INVENTORY',
     icon: Search
   },
   {
@@ -136,7 +139,7 @@ const MIGRATION_PROCESS_STEPS: MigrationStep[] = [
     num: '02',
     title: 'Assess',
     description: 'Analyze risks and prioritize based on impact.',
-    details: 'Flag weak hashing protocols, vulnerable asymmetric algorithm families, and forecast decryptions calculated on Shor timelines. Assign high-risk status to critical system elements first.',
+    details: 'Flag deprecated hash algorithms, weak cipher suites, and quantum-vulnerable public-key families (RSA, finite-field Diffie-Hellman, ECDH, ECDSA, DSA). Rank assets by data lifetime, business criticality, and Harvest Now, Decrypt Later exposure so the longest-lived secrets are addressed first.',
     badge: 'AI-POWERED THREAT MODELING',
     icon: Shield
   },
@@ -154,7 +157,7 @@ const MIGRATION_PROCESS_STEPS: MigrationStep[] = [
     num: '04',
     title: 'Migrate',
     description: 'Execute migration with hybrid and PQC technology.',
-    details: 'Deploy post-quantum algorithms such as ML-KEM keys and ML-DSA signatures dynamically alongside safe fallback controls. Provision high-entropy grids across active channels.',
+    details: 'Introduce ML-KEM (FIPS 203) for key establishment and ML-DSA (FIPS 204) for signatures, using hybrid classical + post-quantum modes where interoperability requires it, with rollback controls at every checkpoint.',
     badge: 'ACTIVE HARDENING',
     icon: RefreshCcw
   },
@@ -163,8 +166,8 @@ const MIGRATION_PROCESS_STEPS: MigrationStep[] = [
     num: '05',
     title: 'Validate',
     description: 'Verify compatibility, performance, and security.',
-    details: 'Validate that larger post-quantum packet sizes navigate gateways, hardware decoders, firewalls, and routers without packet fragmentation or latency anomalies.',
-    badge: 'PERFORMANCE GUARANTEED',
+    details: 'Verify that the larger post-quantum key, ciphertext, and certificate sizes traverse gateways, firewalls, load balancers, and middleboxes, and measure the handshake and fragmentation impact before production cutover.',
+    badge: 'INTEROPERABILITY TESTING',
     icon: Check
   },
   {
@@ -172,8 +175,8 @@ const MIGRATION_PROCESS_STEPS: MigrationStep[] = [
     num: '06',
     title: 'Monitor',
     description: 'Continuously monitor, optimize, and stay ready.',
-    details: 'Continuous monitoring flags unauthorized non-PQC ciphers, runs audits against compliance guidance, and keeps firmware and ciphers modular automatically.',
-    badge: 'ZERO STATE DECAY',
+    details: 'Continuous monitoring flags reintroduced quantum-vulnerable cryptography, deprecated TLS versions, and unmanaged certificates, and maintains the crypto-agility controls needed to change algorithms again as standards evolve.',
+    badge: 'CONTINUOUS ASSURANCE',
     icon: Activity
   }
 ];
@@ -211,9 +214,9 @@ const CRYPTO_SANDBOX_KEYS: CryptoKey[] = [
     securityBits: 256,
     quantumStatus: "symmetric",
     quantumAttackModel:
-      "Not affected by Shor's algorithm. Grover's algorithm gives a quadratic brute-force speedup.",
+      "Not affected by Shor's algorithm. Grover's algorithm offers only a quadratic speedup, and it parallelizes poorly, so the practical margin is far better than a naive halving suggests.",
     assessment:
-      "AES-256 is commonly treated as providing about 128-bit post-quantum security when implemented correctly."
+      "AES-256 meets NIST security category 5 and is the AES key size required by NSA CNSA 2.0. NIST has not deprecated AES-128 either; the post-quantum transition targets public-key cryptography."
   },
   {
     name: "ML-KEM-768",
@@ -242,14 +245,14 @@ const CRYPTO_SANDBOX_KEYS: CryptoKey[] = [
   {
     name: "SLH-DSA",
     type: "NIST FIPS 205 Stateless Hash-Based Signature",
-    keySize: "Parameter-dependent",
+    keySize: "Parameter-dependent (SHA2 or SHAKE; 128/192/256, s or f)",
     structure: "Stateless Hash-Based Signature",
     securityBits: 128,
     quantumStatus: "pqc",
     quantumAttackModel:
       "Hash-based design. No known Shor-style polynomial-time attack applies.",
     assessment:
-      "Useful as a conservative signature option where larger signatures and performance tradeoffs are acceptable."
+      "A conservative signature option whose security rests only on its hash function, useful where larger signatures and slower signing are acceptable."
   }
 ];
 
@@ -350,20 +353,20 @@ const QUANTUM_USE_CASES: QuantumUseCaseFeature[] = [
     useCases: [
       "Real-time key generation for encryption",
       "Secure session IDs generation",
-      "Quantum-based OTP generation for financial transactions",
+      "High-entropy OTP generation for financial transactions",
       "Multi-factor authentication token generation",
       "Random number generation for lotteries",
-      "Quantum-enhanced MFA for secure access",
+      "Entropy-backed MFA for secure access",
       "Secure token generation",
       "Random sampling for analytics"
     ],
     keyFeatures: [
-      "Quantum-based randomness",
+      "Physical entropy source",
       "High entropy generation",
       "Cryptographically secure",
       "Real-time random numbers",
       "Quantum noise source",
-      "Perfect unpredictability"
+      "Continuous entropy health testing"
     ]
   },
   {
@@ -392,7 +395,7 @@ const QUANTUM_USE_CASES: QuantumUseCaseFeature[] = [
   {
     id: 3,
     title: "Security Authentication",
-    description: "Quantum-enhanced authentication systems for secure identity verification.",
+    description: "Post-quantum authentication systems for secure identity verification.",
     icon: Shield,
     image: "/Security_authentication.png",
     useCases: [
@@ -404,7 +407,7 @@ const QUANTUM_USE_CASES: QuantumUseCaseFeature[] = [
       "Secure transactions"
     ],
     keyFeatures: [
-      "Quantum authentication",
+      "Post-quantum authentication",
       "Multi-factor authentication",
       "Biometric verification",
       "Secure session management",
@@ -415,7 +418,7 @@ const QUANTUM_USE_CASES: QuantumUseCaseFeature[] = [
   {
     id: 4,
     title: "Digital Certificates",
-    description: "Quantum-secure digital certificates for trusted identity and encryption.",
+    description: "Post-quantum digital certificates for trusted identity and key establishment.",
     icon: FileCheck,
     image: "/Digital_certificates.png",
     useCases: [
@@ -427,12 +430,12 @@ const QUANTUM_USE_CASES: QuantumUseCaseFeature[] = [
       "IoT device authentication"
     ],
     keyFeatures: [
-      "Quantum certificate authority",
+      "Post-quantum certificate authority",
       "PKI infrastructure",
       "Certificate lifecycle",
       "Certificate revocation",
       "Secure distribution",
-      "Quantum signatures"
+      "ML-DSA (FIPS 204) signatures"
     ]
   },
   {
@@ -473,18 +476,18 @@ const QUANTUM_USE_CASES: QuantumUseCaseFeature[] = [
       "Secure remote access"
     ],
     keyFeatures: [
-      "Quantum key distribution",
+      "ML-KEM (FIPS 203) key establishment",
       "Secure messaging",
       "Encrypted channels",
       "Data integrity",
       "Secure file transfer",
-      "Quantum protocols"
+      "Hybrid TLS key exchange"
     ]
   },
   {
     id: 7,
     title: "Cloud Security",
-    description: "Quantum-enhanced security for multi-cloud environments and infrastructure.",
+    description: "Post-quantum security for multi-cloud environments and infrastructure.",
     icon: Cloud,
     image: "/Cloud_security.png",
     useCases: [
@@ -496,30 +499,29 @@ const QUANTUM_USE_CASES: QuantumUseCaseFeature[] = [
       "Cloud infrastructure security"
     ],
     keyFeatures: [
-      "Quantum cloud security",
+      "Post-quantum cloud security",
       "Multi-cloud protection",
       "Infrastructure security",
       "Compliance monitoring",
       "Data protection",
-      "Quantum encryption"
+      "Post-quantum encryption"
     ]
   }
 ];
 
 const TRUSTED_LEADERS = [
-  "Vercel",
-  "GitHub",
-  "Microsoft",
-  "Apple",
-  "Google",
-  "Amazon",
-  "Meta",
-  "Claude",
-  "Clerk",
-  "NVIDIA",
-  "Supabase",
-  "OpenAI",
-  "Turso"
+  "FIPS 203 — ML-KEM",
+  "FIPS 204 — ML-DSA",
+  "FIPS 205 — SLH-DSA",
+  "NIST IR 8547",
+  "NIST SP 1800-38",
+  "NIST SP 800-57",
+  "NSA CNSA 2.0",
+  "CISA Quantum Readiness",
+  "IETF TLS Hybrid Key Exchange",
+  "PCI DSS 4.0.1",
+  "SOC 2 TSC",
+  "ISO/IEC 27001"
 ];
 
 type PricingPlan = {
@@ -540,12 +542,12 @@ const PRICING_PLANS: PricingPlan[] = [
   {
     name: "Starter",
     description: "On-device Quantum Vault and encrypted Quantum Messaging for individuals who need private, post-quantum secure storage and communication.",
-    priceMonthly: 3,
-    priceYearly: 3,
+    priceMonthly: 1,
+    priceYearly: 1,
     badge: "SECURE DESKTOP",
     icon: Shield,
     features: [
-      "Desktop application Quantum Vault and Quantum Messaging access",
+      "Access to Desktop and Mobile application Quantum Messaging and Quantum Vault Access",
       "End-to-End encrypted Secure Chat and a strictly on-device Quantum Vault — protected by NIST post-quantum cryptography.",
       "End-to-end encrypted messages, voice & video calls, with disappearing messages, multi-device trust, and one-tap call verification.",
       "Encrypt any file or folder on your device into a sealed, tamper-evident container. Strictly local and zero-knowledge — your data never leaves your machine.",
@@ -584,7 +586,7 @@ const PRICING_PLANS: PricingPlan[] = [
     icon: Zap,
     features: [
       "Everything in Starter and Basic",
-      "Scan, Discover and Monitor up to 500 crypto assets",
+      "Scan, discover and monitor your cryptographic asset inventory",
       "Assets and CBOM Explorer",
       "Migration Planner, Timeline and Sandbox Analysis",
       "PQC-Auth Identity Migration Engine",
@@ -610,10 +612,10 @@ const PRICING_PLANS: PricingPlan[] = [
     icon: Sparkles,
     features: [
       "Everything in Starter, Basic, and Pro",
-      "Discover and govern up to 5,000 crypto assets",
+      "Discover and govern the full enterprise cryptographic estate",
       "Full QKMS overview, inventory, governance, and readiness",
       "Email Support",
-      "SOC 2, PCI-DSS 4.0, NIST, and custom compliance mapping"
+      "Control mapping for SOC 2, PCI DSS 4.0.1, NIST and custom frameworks"
     ],
     notIncluded: [],
     ctaText: "Choose Elite",
@@ -633,37 +635,37 @@ const FAQ_DATA = {
   "q-day": [
     {
       question: "What is Q-Day?",
-      answer: "Q-Day is the anticipated moment when quantum computers become powerful enough to break widely-used public-key cryptography, specifically RSA and ECC. Experts estimate this could arrive between 2030 and 2040, but some projections place it sooner given the rapid pace of qubit development."
+      answer: "Q-Day is the point at which a cryptographically relevant quantum computer (CRQC) can break widely-used public-key cryptography such as RSA and elliptic curve. No government or standards body has put a date on it, and credible expert surveys span roughly 2030 to 2040 with wide uncertainty. Planning does not depend on the date: NIST IR 8547 deprecates RSA, Diffie-Hellman, ECDH and ECDSA after 2030 and disallows them after 2035, so the migration deadline is already published."
     },
     {
       question: "What is a \"Harvest Now, Decrypt Later\" (HNDL) attack?",
-      answer: "Nation-state actors are already intercepting and archiving encrypted internet traffic today. They plan to decrypt it once quantum computers can crack RSA/ECC. This means data encrypted right now, including health records, financial data, and private communications, is already at risk of future exposure."
+      answer: "An adversary records encrypted traffic or copies encrypted archives today and stores them until a CRQC can recover the keys. CISA, the NSA and NIST describe this in their joint Quantum-Readiness guidance as the reason to migrate before a quantum computer exists. The exposure is proportional to how long the data must stay confidential, so health records, financial data, legal archives and government material are affected first."
     },
     {
       question: "How does Shor's algorithm threaten my encryption?",
-      answer: "Shor's algorithm is a quantum algorithm that can factor large integers and solve discrete logarithm problems in polynomial time, tasks that take classical computers billions of years. This directly breaks RSA-2048 and ECDSA, the foundations of TLS, SSH, and most digital signatures in use today."
+      answer: "Shor's algorithm solves integer factorization and discrete logarithms in polynomial time, the two problems RSA and elliptic-curve cryptography rely on. It requires a large-scale, fault-tolerant quantum computer, which does not exist today. When one does, it breaks RSA, Diffie-Hellman, ECDH and ECDSA, which are the foundations of TLS, SSH, VPNs and most digital signatures in use now."
     },
     {
       question: "What is Grover's algorithm and why does it matter for symmetric encryption?",
-      answer: "Grover's algorithm provides a quadratic speedup for unstructured search problems. For symmetric ciphers like AES-128, this effectively halves the security level to 64 bits, making it vulnerable. AES-256 reduces to 128-bit effective security, which remains acceptable. QGuard flags AES-128 usage as a medium-severity finding."
+      answer: "Grover's algorithm gives a quadratic speedup for unstructured search, which is often summarised as halving a symmetric key's strength. That summary overstates the effect: Grover parallelizes poorly, and NIST built a maximum-circuit-depth constraint into its own post-quantum security categories for exactly this reason. NIST has not deprecated AES-128, and the transition described in NIST IR 8547 targets public-key algorithms, not AES. AES-256 remains the recommendation for long-lived confidentiality and is the AES key size NSA CNSA 2.0 requires."
     },
     {
       question: "Is the quantum threat real today or just theoretical?",
-      answer: "The threat is real today via HNDL attacks. Adversaries do not need a quantum computer yet. They only need to harvest your data now and wait. IBM, Google, and various nation-state programs have demonstrated exponential qubit scaling. NIST finalized post-quantum standards FIPS 203, 204, and 205 in 2024 precisely because this threat is imminent."
+      answer: "The planning problem is real today, because Harvest Now, Decrypt Later does not require the adversary to own a quantum computer yet. No machine has been demonstrated that breaks RSA-2048, and no standards body calls the threat imminent. NIST published FIPS 203, 204 and 205 on 13 August 2024 because migrating an enterprise estate takes years, and NIST IR 8547 sets 2030 for deprecation and 2035 for disallowance to make that runway explicit."
     }
   ],
   migration: [
     {
       question: "What is Post-Quantum Cryptography (PQC)?",
-      answer: "PQC refers to cryptographic algorithms designed to be secure against both classical and quantum computers. NIST standardized three algorithms in 2024: ML-KEM for key encapsulation, ML-DSA for digital signatures, and SPHINCS+ as a stateless hash-based signature scheme."
+      answer: "PQC refers to cryptographic algorithms designed to resist both classical and quantum attack. NIST finalized three standards on 13 August 2024: ML-KEM (FIPS 203) for key establishment, ML-DSA (FIPS 204) for digital signatures, and SLH-DSA (FIPS 205) for stateless hash-based signatures. SLH-DSA is the standardized form of the SPHINCS+ submission. NIST selected HQC in March 2025 as a backup key-establishment algorithm, and FN-DSA (FIPS 206) is still in draft."
     },
     {
-      question: "How does the QGuard PQC Migration Wizard work?",
-      answer: "The wizard scans your codebase, certificates, and infrastructure for legacy cryptographic primitives including RSA, ECDSA, Diffie-Hellman, and SHA-1. It then generates a migration plan and applies NIST-approved replacements, ML-KEM for encryption and ML-DSA for signatures, using liboqs-based templates. The entire process typically takes under 20 minutes with zero downtime."
+      question: "How does QGuard plan and run a migration?",
+      answer: "Discovery scans your endpoints, certificates, repositories and infrastructure for quantum-vulnerable primitives such as RSA, ECDSA, Diffie-Hellman and SHA-1, and builds a CBOM from what it finds. Migration Planner turns that inventory into a sequenced plan, Migration Sandbox models the change before you make it, and Live Migration Ops runs approved waves with snapshots and rollback. ML-KEM replaces key establishment and ML-DSA or SLH-DSA replaces signatures. How long it takes depends on your estate, your vendors and your protocol support, so the platform measures it rather than promising a figure."
     },
     {
       question: "What is hybrid mode migration?",
-      answer: "Hybrid mode runs ML-KEM alongside your existing RSA/ECC simultaneously during the transition window. This ensures backward compatibility with clients that have not yet migrated, while still protecting against quantum-capable adversaries. QGuard automatically manages the hybrid handshake negotiation."
+      answer: "A hybrid key exchange derives the session secret from both a classical algorithm and ML-KEM, so the connection holds if either one does. The IETF design is already deployed in TLS 1.3 as X25519MLKEM768. It keeps backward compatibility with clients that have not migrated while protecting recorded traffic against a future CRQC. QGuard detects which of your endpoints negotiate a hybrid group and flags the ones that still fall back to classical-only key exchange."
     },
     {
       question: "Will PQC migration break my existing systems?",
@@ -671,17 +673,17 @@ const FAQ_DATA = {
     },
     {
       question: "Does QGuard support CI/CD pipeline integration?",
-      answer: "Yes. QGuard provides a GitHub Actions integration, a Docker-based CLI scanner, and a REST API for embedding PQC compliance checks directly into your pipeline. Failed scans can be configured to block merges, ensuring no quantum-vulnerable code reaches production."
+      answer: "QGuard ships signed collection agents for Windows, Linux and macOS that run scheduled scans against infrastructure you control and report into your tenant, and a REST API under /api/v1 for starting scans and pulling results programmatically. Repository and dependency scanning reads source and manifests directly. A packaged CI plugin that fails a build on a quantum-vulnerable finding is on the roadmap and is not available today."
     }
   ],
   vault: [
     {
       question: "What is the Quantum Vault?",
-      answer: "Quantum Vault is a zero-knowledge, PQC-encrypted file storage system. Every file is wrapped in ML-KEM-1024 encryption before it leaves your device. The vault server never sees your plaintext, only ciphertext arrives at rest. Even a full server breach exposes nothing readable."
+      answer: "Quantum Vault comes in two forms. The desktop and mobile vault in QGuard Messaging is strictly on-device: files are sealed into encrypted containers that never leave your machine. The workspace vault in the dashboard encrypts every file in your browser before upload, so only ciphertext is stored and the server never holds your plaintext or your keys. Both are zero-knowledge, and in both cases a full server breach exposes nothing readable."
     },
     {
       question: "What encryption does the Quantum Vault use?",
-      answer: "The vault uses ML-KEM-1024, NIST FIPS 203 security level 5, for key encapsulation and AES-256-GCM for symmetric file encryption. File integrity is verified using Merkle proofs. This combination is designed to remain secure beyond 2050 even with quantum hardware."
+      answer: "File contents are encrypted with AES-256-GCM. The symmetric key is protected using ML-KEM-1024, the FIPS 203 parameter set at NIST security category 5 and the key-establishment strength NSA CNSA 2.0 requires. ML-KEM is a key-encapsulation mechanism, so it protects the file key rather than encrypting the file itself. Integrity is verified with Merkle proofs over the encrypted chunks. No cryptosystem can be guaranteed secure for a fixed number of years, which is why the vault is built to have its algorithms replaced."
     },
     {
       question: "Is the Quantum Vault available offline?",
@@ -689,29 +691,29 @@ const FAQ_DATA = {
     },
     {
       question: "What happens to my files if QGuard is shut down?",
-      answer: "Your vault key pair is generated and stored locally on your device. QGuard provides an export feature that bundles your encrypted files and your key pair into a portable archive. You can decrypt your files independently using any liboqs-compatible tool."
+      answer: "Your vault key pair is generated and held on your device. QGuard exports your encrypted files together with your key material as a portable archive, and publishes the container format, so the contents can be recovered with any implementation of ML-KEM-1024 and AES-256-GCM. Decryption needs the format plus your passphrase and recovery key; a cryptographic library alone is not enough, because the archive layout has to be parsed."
     }
   ],
   keygen: [
     {
       question: "What is QRNG and why is it better than classical random number generators?",
-      answer: "QRNG, or Quantum Random Number Generator, derives entropy from quantum physical processes such as photon arrival times, vacuum fluctuations, or radioactive decay, which are fundamentally non-deterministic. Classical PRNGs are seeded algorithms: if an attacker learns the seed or state, they can predict all future outputs. Quantum entropy has no seed, so it is physically impossible to predict."
+      answer: "A Quantum Random Number Generator draws entropy from a physical process such as photon arrival times or vacuum fluctuations rather than from a seeded algorithm. Its output still has to be conditioned and health-tested, which is what NIST SP 800-90B validation is for. To be precise about what QGuard does today: keys are generated with the platform cryptographically secure RNG provided by the operating system and Web Crypto, which is an approved construction. Hardware QRNG sourcing is a preview capability, and the QRNG console is labelled as such in the product."
     },
     {
       question: "What key types can QGuard generate?",
-      answer: "QGuard generates ML-KEM-512, ML-KEM-768, and ML-KEM-1024 key pairs for encryption, ML-DSA-44, ML-DSA-65, and ML-DSA-87 signing key pairs, and SPHINCS+-SHAKE-256 stateless hash-based signature keys. All keys are seeded with QRNG entropy."
+      answer: "QGuard generates ML-KEM-512, ML-KEM-768 and ML-KEM-1024 key pairs for key establishment, ML-DSA-44, ML-DSA-65 and ML-DSA-87 signing key pairs, and SLH-DSA-SHA2-128s and SLH-DSA-SHA2-128f stateless hash-based signature keys. These are the FIPS 203, 204 and 205 parameter sets the platform implements today; the remaining SLH-DSA sets are not yet exposed."
     },
     {
-      question: "What entropy quality score does QGuard produce?",
-      answer: "QGuard keys achieve a minimum entropy quality score of 99.7% as measured by NIST SP 800-90B statistical test suites. The entropy scoring dashboard shows the randomness health of each generated key in real time."
+      question: "How is entropy quality measured?",
+      answer: "NIST SP 800-90B does not produce a percentage score. It is a validation methodology that estimates the min-entropy of a noise source in bits per sample and requires continuous health tests on that source. QGuard records the entropy source and the estimator result against every key in QKMS, so you can show an auditor where a key's randomness came from. A vendor quoting a percentage entropy score is giving you a marketing number, not an SP 800-90B result."
     },
     {
       question: "Can I export keys to an HSM or external system?",
-      answer: "Yes. QGuard supports secure export in PKCS#8 and JWK formats. For enterprise customers, direct HSM push is available via PKCS#11 interface for compatible hardware security modules including Thales, Yubico, and AWS CloudHSM. Keys are never transmitted in plaintext during export."
+      answer: "Keys export in PKCS#8 and PEM, and private key material is always wrapped before it leaves the platform, never sent in plaintext. Standard JWK encodings for ML-KEM and ML-DSA are still IETF drafts, so those are provisional. QGuard discovers and inventories the HSM and KMS bindings already in your estate, including PKCS#11 interfaces and cloud KMS, and its orchestration playbooks cover HSM key rotation. Direct push of generated keys into a specific HSM product is an integration scoped per deployment, not a switch you turn on."
     },
     {
-      question: "How do I integrate QRNG key generation into my CI/CD pipeline?",
-      answer: "QGuard exposes a REST API endpoint for programmatic key generation. Your pipeline calls the endpoint, receives the key pair, and the private key is immediately encrypted with your vault master key before storage. Public keys are automatically pushed to your configured certificate store or key management system."
+      question: "How do I integrate key generation into my CI/CD pipeline?",
+      answer: "QGuard exposes authenticated REST endpoints under /api/v1 so a pipeline can request a key pair and read back the public key and its QKMS record. Private key material is wrapped before it is stored and is never returned in plaintext over the API, because a private key that travels through CI logs is a private key you have to treat as compromised. Where your certificate store or KMS supports it, publish the public key there and keep the private key inside the HSM or KMS boundary."
     }
   ]
 };
@@ -1374,7 +1376,7 @@ function QuantumSecurityUseCasesSection() {
             <span className="h-px flex-1 bg-gradient-to-r from-transparent via-gold/55 to-transparent" />
           </div>
           <p className="mx-auto mt-6 max-w-2xl text-sm leading-7 text-muted-foreground md:text-base">
-            Harnessing quantum mechanics to build the next generation of unbreakable security.
+            Applying NIST-standardized post-quantum cryptography to the services enterprises depend on.
           </p>
           <p className="coming-soon-note mx-auto mt-4 max-w-2xl">
             Roadmap preview &mdash; these quantum encryption services are planned QGuard Helix capabilities. They are not yet available in the platform.
@@ -1499,10 +1501,10 @@ function TrustedLeadersSection() {
           className="mb-8 text-3xl font-bold leading-tight tracking-[0.08em] text-white/70 md:text-4xl"
         >
           <span className="block font-medium text-muted-foreground">
-            The Future Trusted Quantum Security Platform of
+            Built Against The Standards That Govern
           </span>
           <span className="mt-3 block text-gold gold-glow">
-            Industry Leaders
+            Post-Quantum Migration
           </span>
         </motion.h2>
 
@@ -1628,11 +1630,11 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
 
   const submissionSteps = useMemo(
     () => [
-      'Establishing quantum-safe tunnel... [ML-KEM-1024 active]',
-      'Signing payload credentials via post-quantum ML-DSA-87 signature...',
-      'Analyzing cryptographic posture of domain for migration fit...',
-      'Demultiplexing request to secure operations registry...',
-      'Quantum-secure handshake validated. Request approved!'
+      'Checking the details you entered...',
+      'Matching your migration stage to the right walkthrough...',
+      'Selecting the modules to cover in the session...',
+      'Preparing your request summary...',
+      'Request summary ready.'
     ],
     []
   );
@@ -1804,7 +1806,7 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
                   >
                     <option value="researching">Just researching / Educating self</option>
                     <option value="planning">Actively mapping cryptographic footprint</option>
-                    <option value="piloting">Piloting Post-Quantum Algorithms (Kyber/Dilithium)</option>
+                    <option value="piloting">Piloting Post-Quantum Algorithms (ML-KEM / ML-DSA)</option>
                     <option value="deployed">Fully migrated or in active production transition</option>
                   </select>
                 </div>
@@ -1817,7 +1819,7 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
                     className="mt-1 h-4 w-4 cursor-pointer rounded-sm border-2 border-slate-950 accent-cyan-400 focus:ring-0 focus:ring-offset-0"
                   />
                   <span className="font-mono text-[11px] uppercase leading-relaxed tracking-wide text-slate-500">
-                    Check to receive: <strong className="font-bold text-slate-900">"Post-Quantum Readiness Playbook (.pdf)"</strong> compiled by our standards board.
+                    Check to receive: <strong className="font-bold text-slate-900">"Post-Quantum Readiness Playbook (.pdf)"</strong> — a walkthrough of the NIST migration guidance applied to your estate.
                   </span>
                 </label>
 
@@ -1846,10 +1848,10 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
               <div className="mt-8 flex flex-col items-center justify-center py-8">
                 <Loader className="mb-4 h-10 w-10 animate-spin text-cyan-500" />
                 <h4 className="font-mono text-sm font-bold uppercase tracking-wider text-slate-950">
-                  Processing Secure Payload...
+                  Preparing Your Request...
                 </h4>
                 <p className="mt-1 font-mono text-[10px] uppercase tracking-widest text-cyan-600">
-                  Encrypting over post-quantum protocol
+                  Building your demo request summary
                 </p>
 
                 <div className="mt-6 max-h-40 w-full space-y-1.5 overflow-y-auto rounded-sm border-2 border-slate-950 bg-slate-900 p-4 font-mono text-[10px] text-cyan-400">
@@ -1877,19 +1879,19 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
                   <ShieldCheck className="h-8 w-8" />
                 </div>
                 <h4 className="font-sans text-lg font-black uppercase tracking-tight text-slate-950">
-                  Post-Quantum Handshake Achieved!
+                  Your Request Summary Is Ready
                 </h4>
                 <p className="mx-auto mt-2 max-w-sm font-mono text-[11px] uppercase tracking-wide text-slate-500">
-                  Hello, <strong>{formData.name}</strong>. Workspace registration completed for <strong>{formData.org}</strong>.
+                  Thanks, <strong>{formData.name}</strong>. Email the details below to support@qguardhelix.com and we will book the session for <strong>{formData.org}</strong>. This form does not send anything on its own.
                 </p>
                 <div className="my-5 rounded-sm border-2 border-slate-950 bg-slate-50 p-4 text-left">
                   <div className="grid grid-cols-2 gap-y-2 font-mono text-[10px]">
-                    <span className="text-slate-500">DECRYPTOR SLOT:</span>
+                    <span className="text-slate-500">CONTACT EMAIL:</span>
                     <span className="font-bold text-slate-900">{formData.email}</span>
                     <span className="text-slate-500">NIST PQC STAGE:</span>
                     <span className="font-bold uppercase text-slate-900">{formData.stage}</span>
-                    <span className="text-slate-500">MIGRATION GUIDE:</span>
-                    <span className="font-bold text-slate-900">{formData.whitepaper ? 'PENDING DISPATCH (.pdf)' : 'NOT REQUESTED'}</span>
+                    <span className="text-slate-500">READINESS GUIDE:</span>
+                    <span className="font-bold text-slate-900">{formData.whitepaper ? 'REQUESTED (.pdf)' : 'NOT REQUESTED'}</span>
                   </div>
                 </div>
 
@@ -1957,7 +1959,7 @@ function PricingSection({ onRequestDemo }: PricingSectionProps) {
             Invest in Post-Quantum Transition
           </h3>
           <p className="mx-auto max-w-xl font-mono text-xs leading-relaxed tracking-wide text-slate-500 sm:text-sm">
-            Transparent plans tailored to your enterprise migration velocity. Lock in long-term safety and establish certified crypto-agility.
+            Transparent plans tailored to your enterprise migration velocity. Build an evidence-backed cryptographic inventory and measurable crypto-agility.
           </p>
         </div>
 
@@ -2012,6 +2014,7 @@ function PricingSection({ onRequestDemo }: PricingSectionProps) {
             const Icon = plan.icon;
             const price = billingPeriod === "monthly" ? plan.priceMonthly : plan.priceYearly;
             const savings = billingPeriod === "yearly" ? (plan.priceMonthly - plan.priceYearly) * 12 : 0;
+            const annualTotal = plan.priceYearly * 12;
 
             return (
               <motion.div
@@ -2083,7 +2086,7 @@ function PricingSection({ onRequestDemo }: PricingSectionProps) {
 
                     {billingPeriod === "yearly" ? (
                       <p className="mt-1.5 font-mono text-[10px] font-bold uppercase tracking-wide text-emerald-600">
-                        Billed annually (Save ${savings}/year)
+                        ${annualTotal} billed annually{savings > 0 ? ` (Save $${savings}/year)` : ""}
                       </p>
                     ) : (
                       <p className="mt-1.5 font-mono text-[10px] text-slate-400">
@@ -2138,7 +2141,7 @@ function PricingSection({ onRequestDemo }: PricingSectionProps) {
                     {checkoutPlan === plan.name ? "Redirecting to PayPal…" : plan.ctaText}
                   </button>
                   <p className="mt-3 select-none text-center font-mono text-[9px] uppercase tracking-widest text-slate-400">
-                    Deployable in under 15 minutes
+                    7-day money-back on your first payment
                   </p>
                 </div>
               </motion.div>
@@ -2374,7 +2377,7 @@ const InactionCard = ({ risk, i }: any) => {
             animate={{ opacity: isHovered ? 1 : 0 }}
             className="mt-6 pt-4 border-t border-red-500/20 text-[10px] text-red-400/80 font-mono uppercase tracking-[0.2em]"
           >
-            "Status: Critical Compromise"
+            Impact if migration is deferred
           </motion.div>
         </div>
 
@@ -2451,7 +2454,7 @@ function MigrationProcessSection() {
         <span className="migration-process__eyebrow">Strategic Deployment Pipeline</span>
         <h3>Our Post-Quantum Migration Process</h3>
         <p>
-          A comprehensive, modular migration architecture formulated around global government standards to fortify digital footprints with zero downtime.
+          A modular migration architecture built on the published migration guidance — NIST IR 8547, NIST SP 1800-38 and the joint CISA, NSA and NIST Quantum-Readiness factsheet — with rollback controls at every stage.
         </p>
       </div>
 
@@ -2504,12 +2507,12 @@ function MigrationProcessSection() {
 
         <div className="migration-process__status" aria-label={`${selectedStep.title} module status`}>
           <SelectedIcon className="h-8 w-8" />
-          <strong>Module Status</strong>
-          <span>Protocol: Secured Sync</span>
+          <strong>Stage Position</strong>
+          <span>Lifecycle Sequence</span>
           <div className="migration-process__progress">
             <i style={{ width: `${implementationPercent}%` }} />
           </div>
-          <small>{implementationPercent}% Implemented</small>
+          <small>Stage {selectedIndex + 1} of {MIGRATION_PROCESS_STEPS.length}</small>
         </div>
       </motion.div>
     </motion.section>
@@ -3022,8 +3025,8 @@ export default function App() {
                 </span>
               </h1>
               <p className="text-lg md:text-xl text-muted-foreground mb-10 max-w-xl leading-relaxed">
-                Quantum computing advances exponentially. Today's encryption won't survive tomorrow's algorithms.
-                The time to migrate to Post-Quantum Cryptography (PQC) is <span className="text-quantum-blue font-bold">NOW</span>.
+                A future quantum computer breaks the public-key cryptography behind TLS, VPNs, SSH and code signing.
+                NIST has published the replacements, and migration takes years, so the time to start is <span className="text-quantum-blue font-bold">NOW</span>.
               </p>
 
               <div className="flex flex-wrap gap-4">
@@ -3051,7 +3054,7 @@ export default function App() {
                   <div>
                     <h4 className="text-gold font-bold uppercase tracking-[0.2em] text-sm mb-2 drop-shadow-[0_0_10px_rgba(212,175,55,0.5)]">Security Alert</h4>
                     <p className="text-white/90 text-sm leading-relaxed font-medium">
-                      "Harvest Now, Decrypt Later" programs are active. Your encrypted data is being captured today to be decrypted once quantum rigs mature.
+                      CISA, the NSA and NIST warn that adversaries can capture encrypted traffic today and decrypt it once a cryptographically relevant quantum computer exists. Data that must stay confidential for years is exposed first.
                     </p>
                   </div>
                 </div>
@@ -3084,15 +3087,15 @@ export default function App() {
                   <div className="quantum-countdown relative z-20">
                     <div className="quantum-countdown__title-row">
                       <span className="quantum-countdown__rail" />
-                      <h2 className="quantum-countdown__title">Projected PQC Migration Urgency Timeline</h2>
+                      <h2 className="quantum-countdown__title">NIST IR 8547 Deprecation Deadline</h2>
                       <span className="quantum-countdown__rail" />
                     </div>
                     <p className="quantum-countdown__subtitle">
-                      Industry migration timelines are accelerating as quantum research,<br />
-                      regulatory mandates, and cryptographic risk exposure continue to evolve.
+                      NIST IR 8547 deprecates RSA, Diffie-Hellman, ECDH and ECDSA after 2030<br />
+                      and disallows them after 2035. This is a published deadline, not a forecast.
                     </p>
 
-                    <div className="quantum-countdown__panel" aria-label="Time remaining until large-scale quantum threat maturity">
+                    <div className="quantum-countdown__panel" aria-label="Time remaining until NIST deprecates classical public-key cryptography">
                       {countdownUnits.map((unit) => (
                         <div className="quantum-countdown__cell" key={unit.label}>
                           <div className="quantum-countdown__label">{unit.label}</div>
@@ -3102,7 +3105,7 @@ export default function App() {
                     </div>
 
                     <div className="quantum-countdown__footer">
-                      Time remaining until large-scale quantum threat maturity
+                      Time remaining until NIST deprecates classical public-key cryptography
                     </div>
                     <div className="quantum-countdown__corner quantum-countdown__corner--left" />
                     <div className="quantum-countdown__corner quantum-countdown__corner--right" />
@@ -3172,9 +3175,9 @@ export default function App() {
 
               <div className="space-y-12">
                 {[
-                  { icon: Skull, title: "Harvest now, Decrypt later", text: "State actors are siphoning your data and traffic now. They don't need to break it today; they just need to store it until CRQC (Cryptographically Relevant Quantum Computers) arrive." },
-                  { icon: HourglassIcon, title: "The Window is Closing", text: "The transition to PQC takes years. Starting now is the only way to ensure data longevity. You have less than a decade to re-architect your entire stack." },
-                  { icon: Zap, title: "Act Before Maturity", text: "Organizations that wait until NIST completes all standards will find themselves in a 'Digital Dust' scenario, where their entire historical archive becomes public domain." }
+                  { icon: Skull, title: "Harvest now, Decrypt later", text: "CISA, the NSA and NIST warn that an adversary can record encrypted traffic today and store it. They do not need to break it now; they only need to keep it until a Cryptographically Relevant Quantum Computer (CRQC) exists." },
+                  { icon: HourglassIcon, title: "The Window is Closing", text: "Migrating an enterprise estate takes years. NIST IR 8547 deprecates RSA, Diffie-Hellman, ECDH and ECDSA after 2030 and disallows them after 2035, so the runway is already defined and it is shorter than most migration programmes." },
+                  { icon: Zap, title: "Start While You Can Phase It", text: "The core standards are already final — FIPS 203, 204 and 205 were published in August 2024. Organizations that wait turn a planned, phased migration into an emergency one, and anything captured in the meantime stays exposed." }
                 ].map((item, i) => (
                   <motion.div
                     key={i}
@@ -3212,7 +3215,7 @@ export default function App() {
               <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[60%] h-24 bg-gold/10 blur-[60px] rounded-full pointer-events-none" />
 
               <h2 className="text-4xl md:text-6xl font-black uppercase tracking-tight text-transparent bg-clip-text bg-gradient-to-b from-[#FFF3D0] via-[#D4AF37] to-[#8A6D3B] drop-shadow-[0_0_30px_rgba(212,175,55,0.55)]">
-                They’re Harvesting Your Data <span className="text-white gold-glow italic">Right Now</span>
+                Harvest Now, <span className="text-white gold-glow italic">Decrypt Later</span>
               </h2>
 
               <motion.div
@@ -3222,7 +3225,7 @@ export default function App() {
               >
                 <div className="h-px w-24 bg-gradient-to-r from-transparent via-gold to-transparent" />
                 <span className="text-gold font-mono text-xs font-bold uppercase tracking-[0.4em] drop-shadow-[0_0_8px_rgba(212,175,55,0.8)]">
-                  Ongoing Cyber Siphoning
+                  Long-Lived Data At Risk
                 </span>
                 <div className="h-px w-24 bg-gradient-to-r from-transparent via-gold to-transparent" />
               </motion.div>
@@ -3258,13 +3261,13 @@ export default function App() {
                 {
                   icon: Search,
                   label: "Inventory",
-                  front: "Discover every PQC-vulnerable key.",
+                  front: "Discover every quantum-vulnerable key.",
                   back: "Identify cryptographic assets across your entire infrastructure, including RSA, ECC, TLS certificates, VPN tunnels, SSH keys, databases, APIs, cloud workloads, IoT devices, and legacy applications. Build a real-time quantum exposure inventory with automated asset classification and cryptographic fingerprinting."
                 },
                 {
                   icon: Shield,
                   label: "Assess Risk",
-                  front: "Rank systems by crypto-urgency.",
+                  front: "Rank systems by quantum risk.",
                   back: "Analyze which systems are most vulnerable to Harvest Now, Decrypt Later attacks. Prioritize assets using quantum risk scoring, business criticality, data sensitivity, compliance impact, and cryptographic weakness analysis to accelerate remediation planning."
                 },
                 {
@@ -3277,13 +3280,13 @@ export default function App() {
                   icon: Lock,
                   label: "Implement",
                   front: "Deploy hybrid cryptographic stacks.",
-                  back: "Seamlessly deploy ML-KEM, ML-DSA, SLH-DSA, and hybrid cryptographic infrastructures across enterprise environments. Automate certificate rotation, secure key exchange modernization, PQ-TLS deployment, and cryptographic policy enforcement with real-time telemetry."
+                  back: "Plan and execute the move to ML-KEM (FIPS 203), ML-DSA (FIPS 204) and SLH-DSA (FIPS 205), using hybrid classical and post-quantum modes where interoperability requires them. Coordinate certificate rotation, key exchange modernization and policy enforcement, with snapshots and rollback at every wave. How far automation reaches depends on vendor and protocol support in your estate."
                 },
                 {
                   icon: Users,
                   label: "Educate",
                   front: "Train your security teams on PQC.",
-                  back: "Provide interactive learning modules, migration playbooks, threat simulations, compliance guidance, and hands-on quantum security training for security teams, engineers, executives, and infrastructure administrators to accelerate enterprise-wide PQC readiness."
+                  back: "Migration playbooks, a PQC readiness checklist, quantum simulations, AI migration and executive advisors, and per-asset remediation guidance mapped to the NIST standards — so engineers, security teams and executives can each see what the findings mean for them."
                 }
               ].map((item, i) => (
                 <div key={i} className="group h-[320px] perspective-1000">
@@ -3326,7 +3329,7 @@ export default function App() {
           <div className="max-w-7xl mx-auto px-6">
             <div className="mb-20 max-w-2xl text-center md:text-left">
               <h2 className="text-5xl font-black uppercase tracking-normal text-gold gold-glow"><span>NIST Migration</span> <br /><span className="tracking-widest">Strategy</span></h2>
-              <p className="text-white/70 mt-4 font-mono text-sm max-w-md">The unified standard for Post-Quantum Transitioning.</p>
+              <p className="text-white/70 mt-4 font-mono text-sm max-w-md">Our phasing of the published guidance: NIST IR 8547, NIST SP 1800-38 and the joint CISA, NSA and NIST Quantum-Readiness factsheet.</p>
             </div>
 
             <div className="relative rounded-2xl border border-gold/14 bg-white/[0.035] p-8 pt-16 shadow-[0_26px_96px_rgba(0,0,0,0.36)] backdrop-blur-xl">
@@ -3513,17 +3516,17 @@ export default function App() {
                 <p className="text-red-500/80 font-mono text-xs uppercase tracking-[0.5em] animate-pulse">Critical Vulnerability Detected</p>
                 <div className="h-1 w-48 bg-gradient-to-r from-transparent via-red-600/50 to-transparent" />
                 <p className="mt-4 text-white/60 font-medium uppercase tracking-widest max-w-2xl mx-auto leading-relaxed">
-                  “If you delay PQC migration, everything encrypted today becomes compromised tomorrow.”
+                  Delay does not pause the exposure. Anything protected by RSA or elliptic-curve key exchange and captured today can be opened later, and a phased migration becomes an emergency one.
                 </p>
               </div>
             </motion.div>
 
             <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-10">
               {[
-                { title: "Data Breaches", icon: Skull, val: "100%", desc: "All historically captured encrypted data becomes readable.", color: "text-gold" },
-                { title: "Financial Loss", icon: TrendingDown, val: "$4.3T", desc: "Estimated global cost of quantum crypto collapse.", color: "text-gold" },
-                { title: "National Risk", icon: Globe, val: "Critical", desc: "Military and government secrets exposed instantly.", color: "text-gold" },
-                { title: "Loss of Trust", icon: AlertTriangle, val: "Total", desc: "Digital trust ecosystem dismantled completely.", color: "text-gold" }
+                { title: "Data Exposure", icon: Skull, val: "RSA / ECC", desc: "Traffic and archives whose confidentiality rests on RSA or elliptic-curve key exchange become readable once a CRQC exists.", color: "text-gold" },
+                { title: "Unplanned Cost", icon: TrendingDown, val: "Unbudgeted", desc: "Re-encryption, certificate replacement and vendor re-contracting all land at once instead of being phased across budget cycles.", color: "text-gold" },
+                { title: "Compliance Risk", icon: Globe, val: "2030", desc: "NIST IR 8547 deprecates classical public-key cryptography after 2030 and disallows it after 2035; NSA CNSA 2.0 already binds national security systems.", color: "text-gold" },
+                { title: "Loss of Trust", icon: AlertTriangle, val: "Signatures", desc: "Code signing, firmware signing and PKI that still rely on RSA or ECDSA stop being defensible to auditors and customers.", color: "text-gold" }
               ].map((risk, i) => (
                 <InactionCard key={i} risk={risk} i={i} />
               ))}
@@ -3576,7 +3579,7 @@ export default function App() {
                 <span>
                   Empowering enterprises to build a quantum-secure future with
                   confidence through cryptographic automation, continuous
-                  vulnerability scanning, and real-time lattice defense protection.
+                  vulnerability scanning, and continuous post-quantum readiness monitoring.
                 </span>
               </p>
 
@@ -3654,8 +3657,8 @@ export default function App() {
             <aside className="homepage-footer__cta">
               <h3>Ready to become quantum safe?</h3>
               <p>
-                Schedule an active demo with our enterprise cryptographers to see
-                lattice encryption in effect.
+                Schedule a walkthrough to see cryptographic discovery, quantum
+                risk scoring and post-quantum migration running on real data.
               </p>
               <button
                 type="button"
@@ -3672,8 +3675,10 @@ export default function App() {
             <p>&copy; {new Date().getFullYear()} Qguard Helix. All rights reserved.</p>
 
             <div className="homepage-footer__legal">
-              <a href="/docs">Privacy Policy</a>
-              <a href="/docs">Terms of Service</a>
+              <a href="/privacy">Privacy Policy</a>
+              <a href="/terms">Terms of Service</a>
+              <a href="/refund">Refund Policy</a>
+              <a href="/contact">Contact</a>
               <a href="/docs">Security Specification</a>
             </div>
 

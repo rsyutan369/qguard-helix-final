@@ -15,18 +15,14 @@
  * rate x 12, once per year.
  */
 import 'dotenv/config'
+import { PLAN_PRICING, PLAN_TIERS } from '../src/lib/billing/plan-pricing'
 
 const ENV = String(process.env.PAYPAL_ENV || 'live').toLowerCase() === 'sandbox' ? 'sandbox' : 'live'
 const BASE = ENV === 'sandbox' ? 'https://api-m.sandbox.paypal.com' : 'https://api-m.paypal.com'
 const CLIENT_ID = process.env.PAYPAL_CLIENT_ID || ''
 const SECRET = process.env.PAYPAL_SECRET_KEY || process.env.PAYPAL_CLIENT_SECRET || ''
 
-const TIERS = [
-  { name: 'Starter', monthly: 3, yearlyPerMonth: 3 },
-  { name: 'Basic', monthly: 8, yearlyPerMonth: 5 },
-  { name: 'Pro', monthly: 30, yearlyPerMonth: 20 },
-  { name: 'Elite', monthly: 199, yearlyPerMonth: 150 },
-] as const
+const TIERS = PLAN_TIERS.map((name) => ({ name, ...PLAN_PRICING[name] }))
 
 async function getToken(): Promise<string> {
   const auth = Buffer.from(`${CLIENT_ID}:${SECRET}`).toString('base64')

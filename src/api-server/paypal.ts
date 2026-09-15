@@ -27,14 +27,9 @@ type DbCycle = 'monthly' | 'annual'
 
 export const PAYPAL_TIERS: Tier[] = ['Starter', 'Basic', 'Pro', 'Elite']
 
-// Source of truth: src/pages/Landing.tsx PRICING_PLANS.
-// Yearly plans bill the discounted monthly rate x 12, charged once per year.
-export const PLAN_PRICING: Record<Tier, { monthly: number; yearlyPerMonth: number }> = {
-  Starter: { monthly: 3, yearlyPerMonth: 3 },
-  Basic: { monthly: 8, yearlyPerMonth: 5 },
-  Pro: { monthly: 30, yearlyPerMonth: 20 },
-  Elite: { monthly: 199, yearlyPerMonth: 150 },
-}
+// Source of truth: src/lib/billing/plan-pricing.ts (mirrors the landing pricing
+// section). Yearly plans bill the discounted monthly rate x 12, once per year.
+export { PLAN_PRICING } from '@/lib/billing/plan-pricing'
 
 // ---- Config (read lazily; process.env may be populated after module import) ----
 

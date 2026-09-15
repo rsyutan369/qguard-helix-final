@@ -1,0 +1,556 @@
+# QGuard Helix — Scanner Deep Audit, Validation & Enterprise Hardening
+
+Target page:
+
+`http://localhost:3001/dashboard/scanner` WEB
+
+Please perform a **deep, end-to-end technical review, audit, validation, debugging, and production hardening** of the entire Scanner page and all underlying Scanner Engines, Detection Engines, Modules, APIs, database queries, data transformations, and frontend components.
+
+This is **not only a UI review**. Verify that the complete scanning pipeline is actually functioning and producing **accurate, evidence-based, real-time results from the actual scanned assets**.
+
+---
+
+## 1. Deep Audit of All Scanner Engines and Modules
+
+Review all Scanner/Engine implementations used by:
+
+`/dashboard/scanner`
+
+Verify that every scanner and detection engine is:
+
+* Properly initialized and executed
+* Actually connected to the correct backend/API
+* Receiving the correct scan targets
+* Processing real scan results
+* Detecting cryptographic technologies accurately
+* Correctly identifying quantum-vulnerable cryptography
+* Correctly identifying classical and post-quantum algorithms
+* Correctly identifying certificates and keys
+* Correctly identifying TLS versions, protocols, ciphers, and key exchanges
+* Correctly identifying cryptographic libraries and dependencies
+* Correctly identifying identity/token cryptography where applicable
+* Correctly calculating quantum-risk/posture information
+* Returning structured and consistent results
+* Handling errors, timeouts, partial results, and unavailable targets safely
+
+Do not assume that a scanner is working simply because its UI component renders.
+
+Trace the complete execution path:
+
+`UI → API → Scanner Engine → Detection Logic → Database/Storage → Normalization → Aggregation → Frontend → Dashboard`
+
+Identify and fix any broken, incomplete, duplicated, mocked, hardcoded, stale, or disconnected implementations.
+
+---
+
+# 2. Validate Quantum-Vulnerability Detection
+
+Deeply verify the detection logic for quantum-vulnerable cryptography.
+
+The system must accurately distinguish between:
+
+### Classical / Quantum-Vulnerable Cryptography
+
+Examples include:
+
+* RSA
+* RSA-2048 / RSA-3072 / RSA-4096
+* ECC
+* ECDSA
+* ECDH
+* Diffie-Hellman
+* DH
+* Classical TLS key exchanges
+* Legacy cryptographic signatures
+* Other cryptographic algorithms vulnerable to sufficiently capable quantum attacks
+
+### Post-Quantum / Quantum-Safe Cryptography
+
+Correctly recognize applicable algorithms such as:
+
+* ML-KEM
+* ML-KEM-768
+* ML-KEM-1024
+* ML-DSA
+* ML-DSA-65
+* ML-DSA-87
+* SLH-DSA
+* Hybrid classical + PQC constructions
+* X25519 + ML-KEM hybrid key exchange
+* Other supported PQC/hybrid implementations
+
+Do not classify algorithms incorrectly.
+
+For example:
+
+**ML-KEM is a Key Encapsulation Mechanism (KEM), not a digital signature algorithm.**
+
+Ensure the system's taxonomy, severity, classification, and reporting reflect the actual cryptographic purpose of each algorithm.
+
+---
+
+# 3. Validate the Hero Cards / Primary Dashboard Panels
+
+The following sections must display **accurate, current, and internally consistent data**:
+
+* ASSET DISCOVERY
+* TRANSPORT & CIPHERS
+* CERTIFICATES & KEYS
+* IDENTITY & TOKENS
+* CODE & DEPENDENCIES
+* QUANTUM POSTURE
+
+For every card/panel verify:
+
+* Data source
+* API endpoint
+* Database query
+* Aggregation logic
+* Counting logic
+* Filtering logic
+* Severity calculation
+* Quantum-vulnerability classification
+* Timestamp/freshness
+* Asset association
+* Scan association
+
+Numbers must come from actual scan results.
+
+Do not use:
+
+* Fake data
+* Placeholder data
+* Static numbers
+* Hardcoded statistics
+* Demo/mock results
+* Randomly generated values
+
+unless explicitly required for an isolated UI test.
+
+---
+
+# 4. Cross-Module Data Consistency and Synchronization
+
+This is one of the highest-priority requirements.
+
+All dashboard sections must be **aligned, synchronized, and mathematically consistent**.
+
+For example:
+
+If the system discovers:
+
+`100 Assets`
+
+then downstream modules must not incorrectly report:
+
+`87 Assets`
+
+without a legitimate scope/filter explanation.
+
+Likewise, if:
+
+`40 Quantum-Vulnerable Cryptographic Components`
+
+are discovered, every relevant module must derive its corresponding counts from the same normalized source of truth.
+
+Audit for:
+
+* Asset-count mismatches
+* Finding-count mismatches
+* Duplicate findings
+* Missing findings
+* Incorrect severity totals
+* Incorrect vulnerable/safe totals
+* Incorrect algorithm counts
+* Certificate-count mismatches
+* Dependency-count mismatches
+* Scan-result mismatches
+* Stale cached data
+* Race conditions
+* Different filtering rules
+* Different tenant scopes
+* Different scan scopes
+* Inconsistent normalization
+* Incorrect aggregation
+* Frontend/backend calculation differences
+
+There must be a clear **single source of truth** for normalized scan data.
+
+---
+
+# 5. Audit the Secondary Cards / Panels
+
+Deeply validate all of the following:
+
+### Executive Summary
+
+Must accurately summarize the current scan and actual discovered estate.
+
+### Encryption Score
+
+Verify that the score is calculated from real evidence and that the scoring methodology is deterministic and explainable.
+
+### Observed Attack Surface
+
+Must represent the actual assets, services, protocols, certificates, cryptographic components, and dependencies discovered by the scan.
+
+### Cryptographic Intelligence
+
+Must accurately reflect discovered cryptographic algorithms, libraries, protocols, certificates, key types, and quantum exposure.
+
+### Module Execution Flow
+
+Must show the actual scanner/module execution state rather than a decorative or hardcoded workflow.
+
+### Cryptographic Findings
+
+Must correspond to actual scanner findings and evidence.
+
+### Quantum Exposure Timeline
+
+Must be based on the actual quantum vulnerability/posture model and available evidence. Do not fabricate timelines or dates.
+
+### Executive Recommendations
+
+Recommendations must be generated from actual findings and risk conditions.
+
+### Estate Footprint Counted
+
+Must accurately represent the discovered estate within the current scan scope.
+
+### Discovery Coverage
+
+Must show genuine scanner coverage and clearly distinguish:
+
+* Discovered
+* Scanned
+* Analyzed
+* Unsupported
+* Failed
+* Unreachable
+* Not assessed
+
+Do not represent unavailable information as complete coverage.
+
+### Sophia AI Insight
+
+Sophia must use the **actual current tenant/scan data** and must not generate generic recommendations unrelated to the discovered environment.
+
+### Assessment Scope
+
+Must clearly reflect exactly what was scanned, including applicable:
+
+* Assets
+* URLs/endpoints
+* Hosts
+* Applications
+* Repositories
+* Certificates
+* Dependencies
+* Code
+* Network services
+* Other supported targets
+
+---
+
+# 6. Evidence-Based Results
+
+Every important finding should be traceable back to evidence.
+
+Where applicable, establish:
+
+`Finding → Detection Rule → Scanner → Evidence → Asset → Scan → Risk → Recommendation`
+
+A finding should not exist merely because a UI component expects one.
+
+For example:
+
+```text
+RSA-2048 Detected
+        ↓
+Detection Rule
+        ↓
+Actual Evidence
+        ↓
+Specific Asset
+        ↓
+Specific Scan
+        ↓
+Quantum Vulnerability Classification
+        ↓
+Risk/Severity
+        ↓
+Recommended Remediation
+```
+
+Make sure this chain remains intact throughout the platform.
+
+---
+
+# 7. Scan Lifecycle Validation
+
+Test the complete lifecycle:
+
+```text
+SCAN CREATED
+     ↓
+TARGET VALIDATION
+     ↓
+DISCOVERY
+     ↓
+SCANNING
+     ↓
+ANALYSIS
+     ↓
+NORMALIZATION
+     ↓
+CORRELATION
+     ↓
+RISK CLASSIFICATION
+     ↓
+QUANTUM ANALYSIS
+     ↓
+RESULT PERSISTENCE
+     ↓
+DASHBOARD AGGREGATION
+     ↓
+REAL-TIME UI UPDATE
+     ↓
+FINAL REPORT
+```
+
+Verify that each stage actually executes and that failures are propagated correctly.
+
+---
+
+# 8. Real-Time Data Validation
+
+Verify that the dashboard updates correctly while a scan is running.
+
+Ensure that:
+
+* Scan status is real
+* Progress is real
+* Module execution state is real
+* Findings appear from actual scanner events
+* Counts update correctly
+* Completion state is accurate
+* Failed modules are visible
+* Partial results are handled correctly
+* UI does not display stale results from a previous scan
+
+If SSE/WebSockets/hooks/realtime mechanisms are used, audit their complete data flow.
+
+---
+
+# 9. Security and Tenant Isolation
+
+Verify that scanner results cannot leak between tenants or users.
+
+Audit:
+
+* Authentication
+* Authorization
+* RBAC
+* Tenant isolation
+* Supabase RLS
+* API authorization
+* Scan ownership
+* Asset ownership
+* Finding ownership
+* Report ownership
+
+A user must only be able to access data belonging to their authorized tenant/scope.
+
+---
+
+# 10. Error Handling and Edge Cases
+
+Test:
+
+* Empty scan
+* No assets discovered
+* One asset
+* Large asset inventory
+* Duplicate assets
+* Duplicate findings
+* Unsupported protocols
+* Unsupported algorithms
+* Expired certificates
+* Invalid certificates
+* Missing certificates
+* Unreachable targets
+* Network timeout
+* Scanner timeout
+* API failure
+* Database failure
+* Partial scanner failure
+* Malformed scan results
+* Concurrent scans
+* Repeated scans
+* Scan cancellation
+* Refresh during scan
+* Browser reconnect
+* Backend restart
+
+The UI must never display misleading success states when a scan or module actually failed.
+
+---
+
+# 11. Remove Technical Debt and False Implementations
+
+Search the scanner implementation for:
+
+* TODO placeholders
+* Mock data
+* Fake results
+* Hardcoded counts
+* Temporary arrays
+* Demo values
+* Disabled detection rules
+* Dead code
+* Unused scanner modules
+* Duplicate scanners
+* Duplicate APIs
+* Incorrect imports
+* Broken hooks
+* Silent error handling
+* Console-only errors
+* Inconsistent schemas
+* Legacy implementations
+* Stale database queries
+* Incorrect environment assumptions
+
+Where appropriate, refactor rather than adding another workaround.
+
+Preserve existing working functionality and architecture unless a change is necessary to correct a defect or improve reliability.
+
+---
+
+# 12. Accuracy Over Appearance
+
+Do not optimize the dashboard merely to make the numbers "look correct."
+
+The objective is:
+
+**REAL DATA → CORRECT DETECTION → CORRECT NORMALIZATION → CORRECT CALCULATION → CORRECT UI**
+
+Never modify the UI simply to hide an underlying data inconsistency.
+
+If two modules disagree, find and fix the root cause.
+
+---
+
+# 13. Production-Ready Enterprise Requirements
+
+The final implementation must be:
+
+* Production-ready
+* Enterprise-grade
+* Deterministic
+* Observable
+* Secure
+* Scalable
+* Maintainable
+* Fault-tolerant
+* Accurate
+* Consistent
+* Fully integrated
+* Free from known runtime errors
+* Free from data mismatches
+* Free from contradictory dashboard statistics
+
+Use proper logging, validation, error handling, typing, schema validation, and monitoring where appropriate.
+
+Do not introduce unnecessary architectural complexity.
+
+---
+
+# 14. Required Final Verification
+
+After completing the audit and fixes:
+
+1. Run the application.
+2. Execute real scans using supported targets.
+3. Verify every scanner engine.
+4. Verify every detection category.
+5. Verify backend/API responses.
+6. Verify database persistence.
+7. Verify normalization and aggregation.
+8. Verify dashboard calculations.
+9. Verify real-time updates.
+10. Verify all Hero Cards.
+11. Verify all secondary panels.
+12. Verify cross-module consistency.
+13. Verify tenant/RBAC isolation.
+14. Test failure and edge cases.
+15. Check browser console errors.
+16. Check backend/server logs.
+17. Check API errors.
+18. Check database errors.
+19. Run available unit/integration/end-to-end tests.
+20. Perform a final production-readiness review.
+
+---
+
+# 15. Final Acceptance Criteria
+
+Do not consider this task complete until you can demonstrate that:
+
+```text
+Actual Scan
+     ↓
+Actual Evidence
+     ↓
+Correct Detection
+     ↓
+Correct Classification
+     ↓
+Correct Risk
+     ↓
+Correct Aggregation
+     ↓
+Correct Database State
+     ↓
+Correct API Response
+     ↓
+Correct Dashboard Data
+     ↓
+All Modules In-Sync
+```
+
+The following must have **one consistent, evidence-backed source of truth**:
+
+* Assets
+* Cryptographic components
+* Algorithms
+* Certificates
+* Keys
+* Protocols
+* Ciphers
+* Dependencies
+* Findings
+* Vulnerabilities
+* Quantum exposure
+* Risk scores
+* Coverage
+* Recommendations
+* Scan status
+* Executive metrics
+
+If any discrepancy is discovered, **identify the root cause, fix it, retest it, and verify that the fix did not introduce regressions elsewhere.**
+
+Finally, provide a concise audit report containing:
+
+* Issues discovered
+* Root causes
+* Changes implemented
+* Scanner engines verified
+* Detection categories verified
+* Data consistency results
+* Security issues found/fixed
+* Tests performed
+* Remaining limitations, if any
+* Final production-readiness assessment
+
+**Important:** Do not claim that something is working unless you actually verify it through the code, API, database, scanner execution, and/or test results.

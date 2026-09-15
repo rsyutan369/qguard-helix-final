@@ -43,8 +43,8 @@ const PLAN_CATALOG: Record<PlanName, {
 }> = {
   Starter: {
     name: 'Starter',
-    monthlyCents: 300,
-    annualCents: 3600,
+    monthlyCents: 100,
+    annualCents: 1200,
     teamMembers: 3,
     storageBytes: 5 * 1024 * 1024 * 1024,
     scanQuota: 25,

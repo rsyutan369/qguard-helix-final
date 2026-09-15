@@ -142,8 +142,22 @@ export function GhostButton({
  * each release, so they stay in lock-step with the binary actually published.
  */
 export const MESSAGING_INSTALLER = {
-  href: '/downloads/QGuard-Messaging-Setup.exe',
-  version: '1.3.2',
+  /**
+   * Entitlement-gated endpoint, NOT a static file. The binary used to sit in
+   * public/downloads, which made this button a presentation gate only — anyone
+   * could curl the .exe without an account. src/api-server/downloads.ts now
+   * verifies the session and the billing_subscriptions row server-side before
+   * a single byte is written, so the download cannot be obtained any other way.
+   * Requires an Authorization header: fetch it with downloadMessagingInstaller().
+   */
+  href: '/api/v1/downloads/messaging/windows',
+  /**
+   * The name the file is SAVED as. Kept as its own field because the href is an
+   * API path that does not end in the filename — deriving it from the URL would
+   * print "Get-FileHash windows" in the verification command below.
+   */
+  fileName: 'QGuard-Messaging-Setup.exe',
+  version: '1.3.7',
   sizeMb: 6,
   requirements: 'Windows 10/11 · 64-bit',
   /**
@@ -155,7 +169,7 @@ export const MESSAGING_INSTALLER = {
    * an honest user their legitimate download was tampered with, which is worse
    * than publishing no hash at all.
    */
-  sha256: 'BAC7B2B0BD5067EFC7269BE80671C2E73541A3D257F240AAB325FBDF2CA542E7',
+  sha256: '378FEB7BC7C299D55FF006B04AB066E2732C63E9D64CD57A2760B7FFB1667C58',
 };
 
 /**
@@ -164,20 +178,80 @@ export const MESSAGING_INSTALLER = {
  * flow (`/checkout?plan=&cycle=`).
  */
 const DOWNLOAD_PLANS = [
-  { name: 'Starter', priceMonthly: 3, priceYearly: 3, tagline: 'QGuard Messaging — Secure Chat & Quantum Vault' },
+  { name: 'Starter', priceMonthly: 1, priceYearly: 1, tagline: 'QGuard Messaging — Secure Chat & Quantum Vault' },
   { name: 'Basic', priceMonthly: 8, priceYearly: 5, tagline: '+ Quantum Readiness Assessment Engine, Migration Planner & Sandbox', featured: true },
   { name: 'Pro', priceMonthly: 30, priceYearly: 20, tagline: '+ Discovery, Operations, Ecosystem, Intelligence, PQAuth, Observability, Trust' },
   { name: 'Elite', priceMonthly: 199, priceYearly: 150, tagline: 'Everything — all modules' },
 ] as const;
 
-/** Actually fetch the installer (only reached once the user is entitled). */
-function startInstallerDownload() {
+/**
+ * A single optional-field shape rather than a discriminated union: this project
+ * compiles without `strict`, and without strictNullChecks TypeScript will not
+ * narrow `{ok: true} | {ok: false, ...}` on a truthiness check.
+ */
+export type InstallerDownloadResult = {
+  ok: boolean;
+  code?: 'UNAUTHORIZED' | 'SUBSCRIPTION_REQUIRED' | 'UNAVAILABLE';
+  message?: string;
+};
+
+/**
+ * Fetch the installer through the gated API and hand it to the browser.
+ *
+ * An `<a download>` cannot carry an Authorization header, so the bytes are
+ * fetched with the caller's bearer token and saved from a blob URL. The file is
+ * ~6 MB, small enough that buffering it costs nothing a user would notice.
+ *
+ * The server is the authority here: this returns whatever it decided, so the
+ * caller can send an expired session to login and an unsubscribed account to
+ * the plan modal instead of guessing.
+ */
+export async function downloadMessagingInstaller(accessToken: string | null | undefined): Promise<InstallerDownloadResult> {
+  if (!accessToken) {
+    return { ok: false, code: 'UNAUTHORIZED', message: 'Sign in to download QGuard Messaging.' };
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(MESSAGING_INSTALLER.href, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      credentials: 'same-origin',
+    });
+  } catch {
+    return { ok: false, code: 'UNAVAILABLE', message: 'Could not reach the download service. Check your connection and try again.' };
+  }
+
+  if (!response.ok) {
+    let payloadCode = '';
+    let message = '';
+    try {
+      const body = await response.json();
+      payloadCode = String(body?.error?.code || '');
+      message = String(body?.error?.message || '');
+    } catch {
+      /* Non-JSON refusal (proxy error page) — fall back to the status. */
+    }
+    if (response.status === 401) {
+      return { ok: false, code: 'UNAUTHORIZED', message: message || 'Your session has expired — sign in again.' };
+    }
+    if (response.status === 403 || payloadCode === 'SUBSCRIPTION_REQUIRED') {
+      return { ok: false, code: 'SUBSCRIPTION_REQUIRED', message: message || 'An active subscription is required to download QGuard Messaging.' };
+    }
+    return { ok: false, code: 'UNAVAILABLE', message: message || 'The download is unavailable right now. Please try again shortly.' };
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
-  anchor.href = MESSAGING_INSTALLER.href;
-  anchor.download = '';
+  anchor.href = url;
+  anchor.download = MESSAGING_INSTALLER.fileName;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
+  /* Revoke on the next tick: revoking synchronously can cancel the save in
+     Safari and older Chromium before the navigation to the blob completes. */
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return { ok: true };
 }
 
 /**
@@ -308,15 +382,17 @@ export function PlanGateModal({
  * see the plan-selection modal (→ PayPal).
  */
 export function DownloadButton({ className }: { className?: string }) {
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const subscription = useSubscription();
   const navigate = useNavigate();
   const location = useLocation();
   const [planModalOpen, setPlanModalOpen] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
-  const gating = Boolean(user) && subscription.loading;
+  const gating = (Boolean(user) && subscription.loading) || downloading;
 
-  const handleClick = () => {
+  const handleClick = async () => {
     if (!user) {
       // Send guests to sign in / register, returning to this page afterwards.
       navigate(`/login?next=${encodeURIComponent(location.pathname)}`);
@@ -327,7 +403,25 @@ export function DownloadButton({ className }: { className?: string }) {
       setPlanModalOpen(true);
       return;
     }
-    startInstallerDownload();
+
+    /* The local checks above only avoid a pointless round trip. The download
+       itself is authorized by the server, and whatever it decides is what the
+       user is told — a client-side "isActive" is never the reason a byte is
+       released. */
+    setDownloadError(null);
+    setDownloading(true);
+    const result = await downloadMessagingInstaller(session?.access_token);
+    setDownloading(false);
+    if (result.ok) return;
+    if (result.code === 'UNAUTHORIZED') {
+      navigate(`/login?next=${encodeURIComponent(location.pathname)}`);
+      return;
+    }
+    if (result.code === 'SUBSCRIPTION_REQUIRED') {
+      setPlanModalOpen(true);
+      return;
+    }
+    setDownloadError(result.message || 'The download could not be completed.');
   };
 
   return (
@@ -343,7 +437,7 @@ export function DownloadButton({ className }: { className?: string }) {
         )}
       >
         {gating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4 transition-transform group-hover:translate-y-0.5" />}
-        Download for Windows
+        {downloading ? 'Preparing download…' : 'Download for Windows'}
         {/*
           Background written as an arbitrary rgb() value on purpose. The light-theme
           sheet in index.css matches `[class*="bg-white/"]` and repaints any such
@@ -356,6 +450,9 @@ export function DownloadButton({ className }: { className?: string }) {
           v{MESSAGING_INSTALLER.version} · ~{MESSAGING_INSTALLER.sizeMb} MB
         </span>
       </button>
+      {downloadError && (
+        <p className="mt-2 text-xs font-semibold text-rose-500" role="alert">{downloadError}</p>
+      )}
       {planModalOpen && <PlanGateModal onClose={() => setPlanModalOpen(false)} />}
     </>
   );
@@ -452,9 +549,8 @@ export function InstallerIntegrity({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const { copied, copy } = useCopyField();
-  const { sha256, version, href } = MESSAGING_INSTALLER;
+  const { sha256, version, fileName } = MESSAGING_INSTALLER;
   const bodyId = useId();
-  const fileName = href.split('/').pop() || 'QGuard-Messaging-Setup.exe';
   // Compare inside PowerShell rather than asking the reader to eyeball 64 hex
   // characters - people skim the middle of a hash and miss exactly the kind of
   // targeted substitution this check exists to catch. This prints True or False.

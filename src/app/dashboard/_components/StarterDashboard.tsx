@@ -7,7 +7,7 @@ import {
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/auth-context';
 import { useBillingSettings } from '@/hooks/use-billing-settings';
-import { MESSAGING_INSTALLER, PlanGateModal } from '@/app/qguard-messaging/_shared';
+import { MESSAGING_INSTALLER, PlanGateModal, downloadMessagingInstaller } from '@/app/qguard-messaging/_shared';
 import ThemeToggle from '@/components/theme/ThemeToggle';
 
 // Dedicated dashboard for STARTER subscribers. STARTER is scoped to QGuard
@@ -37,10 +37,27 @@ const STATUS_TONE: Record<string, string> = {
 };
 
 export function StarterDashboard() {
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const { billing, loading, saving, error, runSubscriptionAction } = useBillingSettings();
   const [actionError, setActionError] = useState<string | null>(null);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
+  /* The installer is served by an entitlement-gated API route, which needs an
+     Authorization header a plain `<a download>` cannot send. */
+  const [installerBusy, setInstallerBusy] = useState(false);
+  const [installerError, setInstallerError] = useState<string | null>(null);
+
+  const handleInstallerDownload = async () => {
+    setInstallerError(null);
+    setInstallerBusy(true);
+    const result = await downloadMessagingInstaller(session?.access_token);
+    setInstallerBusy(false);
+    if (result.ok) return;
+    if (result.code === 'SUBSCRIPTION_REQUIRED') {
+      setUpgradeOpen(true);
+      return;
+    }
+    setInstallerError(result.message || 'The download could not be completed.');
+  };
   const sub = billing?.subscription;
   const email = user?.email ?? '';
 
@@ -182,12 +199,12 @@ export function StarterDashboard() {
           <p className="mb-4 text-sm text-slate-400">Install QGuard Messaging and open Secure Chat or the Quantum Vault.</p>
 
           <div className="grid gap-3 sm:grid-cols-3">
-            <a href={MESSAGING_INSTALLER.href} download
-              className="group flex flex-col rounded-xl border border-blue-400/25 bg-blue-500/[0.06] p-4 no-underline transition-colors hover:border-cyan-400/40">
+            <button type="button" onClick={() => void handleInstallerDownload()} disabled={installerBusy}
+              className="group flex flex-col rounded-xl border border-blue-400/25 bg-blue-500/[0.06] p-4 text-left no-underline transition-colors hover:border-cyan-400/40 disabled:cursor-wait disabled:opacity-70">
               <Download className="h-5 w-5 text-cyan-300" />
-              <span className="mt-3 text-sm font-bold text-slate-100">Windows installer</span>
+              <span className="mt-3 text-sm font-bold text-slate-100">{installerBusy ? 'Preparing download…' : 'Windows installer'}</span>
               <span className="mt-0.5 text-[11px] text-slate-400">v{MESSAGING_INSTALLER.version} · ~{MESSAGING_INSTALLER.sizeMb} MB · {MESSAGING_INSTALLER.requirements}</span>
-            </a>
+            </button>
             <Link to="/qguard-messaging/secure-chat"
               className="group flex flex-col rounded-xl border border-slate-700/40 bg-slate-800/40 p-4 no-underline transition-colors hover:border-cyan-400/40">
               <MessageSquareLock className="h-5 w-5 text-cyan-300" />
@@ -201,6 +218,9 @@ export function StarterDashboard() {
               <span className="mt-0.5 text-[11px] text-slate-400">On-device encrypted file vault</span>
             </Link>
           </div>
+          {installerError && (
+            <p className="mt-3 text-xs font-semibold text-rose-400" role="alert">{installerError}</p>
+          )}
           <p className="mt-4 text-[11px] text-slate-500">
             macOS, Linux, and mobile builds appear here as they become available.
           </p>

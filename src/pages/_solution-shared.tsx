@@ -187,8 +187,10 @@ function SolutionFooter({
       <div className="mx-auto mt-12 flex max-w-[96rem] flex-col gap-4 border-t border-slate-200 pt-6 text-xs text-slate-500 md:flex-row md:items-center md:justify-between">
         <p>&copy; {new Date().getFullYear()} QGuard Helix. All rights reserved.</p>
         <div className="flex items-center gap-4">
-          <a href="/docs" className="no-underline hover:text-gold">Privacy</a>
-          <a href="/docs" className="no-underline hover:text-gold">Terms</a>
+          <Link to="/privacy" className="no-underline hover:text-gold">Privacy</Link>
+          <Link to="/terms" className="no-underline hover:text-gold">Terms</Link>
+          <Link to="/refund" className="no-underline hover:text-gold">Refunds</Link>
+          <Link to="/contact" className="no-underline hover:text-gold">Contact</Link>
           <span className="inline-flex items-center gap-1.5"><Globe className="h-3.5 w-3.5" /> English <ChevronDown className="h-3.5 w-3.5" /></span>
         </div>
       </div>
