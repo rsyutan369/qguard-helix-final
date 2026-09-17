@@ -74,9 +74,9 @@ export const SCENARIOS: Scenario[] = [
       6: { name: "DEPLOY SHIELD DEFENSE", desc: "Initialize ML-KEM post-quantum key encapsulation tunnels.", objective: "Implement NIST FIPS 203 standards to immunize records against HNDL." }
     },
     decryptedFiles: [
-      { name: "Executive Diplomatic Cables", filename: "STATE_DEPT_CABLES_2023-2025.tar", size: "7.8 GB", tag: "TOP SECRET", tagColor: "bg-red-500/15 text-red-400 border-red-500/20" },
+      { name: "Executive Diplomatic Cables", filename: "DIPLOMATIC_CABLES_SPECIMEN.tar", size: "7.8 GB", tag: "TOP SECRET", tagColor: "bg-red-500/15 text-red-400 border-red-500/20" },
       { name: "Billion-Dollar Patent Blueprints", filename: "IP_PATENT_SOLID_FUEL_CHEM.zip", size: "14.2 GB", tag: "TS//SCI", tagColor: "bg-rose-500/15 text-rose-400 border-rose-500/20" },
-      { name: "Enterprise Customer Identity DB", filename: "IDENT_PROFILES_HASH_ALL.sql", size: "6.1 GB", tag: "RESTRICTED", tagColor: "bg-amber-500/10 text-amber-400 border-amber-500/20" }
+      { name: "Enterprise Customer Identity DB", filename: "IDENT_PROFILES_HASH_ALL.sql", size: "6.1 GB", tag: "CUI", tagColor: "bg-amber-500/10 text-amber-400 border-amber-500/20" }
     ]
   },
   {
@@ -85,7 +85,7 @@ export const SCENARIOS: Scenario[] = [
     shortName: "RSA/ECC Key Cracking",
     category: "Shor's Algorithm Integration",
     objectiveText: "Demonstrate Shor's Algorithm running on a full-scale quantum model to actively disintegrate RSA-2048 and Elliptic Curve Cryptography.",
-    narrative: "An active attack vector utilizing modular arithmetic period-finding on Shor arrays, reducing the mathematical difficulty of factoring primes from exponential to polynomial time.",
+    narrative: "An active attack vector using modular-arithmetic period finding on a cryptographically relevant quantum computer, reducing the difficulty of factoring a composite modulus from sub-exponential (the General Number Field Sieve) to polynomial time.",
     impactText: "Complete compromise of all asymmetric trust layers, collapsing CAs, digital signatures, and public keys.",
     impactBullets: [
       "Total failure of standard public-private key infrastructure",
@@ -120,8 +120,8 @@ export const SCENARIOS: Scenario[] = [
     name: "TLS / HTTPS Quantum Compromise",
     shortName: "TLS/HTTPS Session Intercept",
     category: "Man-In-The-Middle (MITM)",
-    objectiveText: "Execute real-time quantum session cracking to crack browser-to-server TLS handshakes, stripping HTTPS down to plaintext.",
-    narrative: "Quantum Man-In-the-Middle (MITM) arrays intercept public-key handshakes, decrypt session keys on the fly, and transform classified HTTPS sessions into unencrypted data.",
+    objectiveText: "Record browser-to-server TLS handshakes in bulk and solve their key agreements once a CRQC exists, stripping archived HTTPS sessions down to plaintext.",
+    narrative: "Public-key handshakes are recorded in bulk and the key agreement behind each is solved afterwards. Published resource estimates put one RSA-2048 solve at roughly 8 hours on a 20-million-qubit machine, so this is retroactive decryption of stored sessions, not a real-time man-in-the-middle.",
     impactText: "Direct exploitation of active human internet traffic, leaking corporate bank accounts and administrative credentials.",
     impactBullets: [
       "Real-time decryption of e-banking and operational administration data",
@@ -193,7 +193,7 @@ export const SCENARIOS: Scenario[] = [
     shortName: "Infrastructure SCADA Attack",
     category: "Operational Technology (OT)",
     objectiveText: "Simulate a state-sponsored quantum take-over of Operational Technology (OT) networks controlling smart grids, oil lines, and SCADA safety monitors.",
-    narrative: "Quantum platforms decrypt administrative PLC signature vaults, letting adversaries transmit command-override packets directly to power turbine nodes and water controllers.",
+    narrative: "Recovering the asymmetric keys behind administrative PLC signing lets an adversary forge authenticated command packets to turbine nodes and water controllers. The keys are recovered, not the ciphertext decrypted — forgery, not disclosure, is the failure here.",
     impactText: "Immediate physical shutdown of national resources, triggering mechanical damage and blackouts.",
     impactBullets: [
       "Physical loss of turbine grid control and generator safety locks",
@@ -265,7 +265,7 @@ export const SCENARIOS: Scenario[] = [
     shortName: "Satellite Comm Intercept",
     category: "Aerospace & Defense",
     objectiveText: "Intercept aerospace uplink communications using quantum computing to decrypt raw tactical satellite feeds dynamically.",
-    narrative: "Adversaries tap into terrestrial or orbital satellite links. Using quantum factorization, they crack military asymmetrically encrypted telemetries and mission planning files.",
+    narrative: "Adversaries tap terrestrial or orbital satellite links and record the key agreement. Shor's discrete-logarithm variant recovers the ECDSA P-384 signing key and the ECDH scalar, exposing stored telemetry and mission planning files once a CRQC exists.",
     impactText: "Complete compromise of defense satellite feeds, exposing real-time troop trackers and coordinates.",
     impactBullets: [
       "Leak coordinates and mission profiles of operational military forces",
@@ -290,9 +290,9 @@ export const SCENARIOS: Scenario[] = [
       6: { name: "DEPLOY DEEP SPACE PQC", desc: "Enforce stateful hash updates on satellite hardware components.", objective: "Protect military uplink tunnels from future decryption attempts." }
     },
     decryptedFiles: [
-      { name: "Orbital Telemetry Coordination Maps", filename: "SATCOM_COORD_MAPS_ACTIVE_ALL.kml", size: "12 GB", tag: "MILITARY SECRET", tagColor: "bg-red-500/20 text-red-100 border-red-500/20" },
-      { name: "Unmanned Vehicle Flight Profiles", filename: "DRONE_FLIGHT_PATTERNS_CENTCOM.xml", size: "1.2 GB", tag: "TOP SECRET", tagColor: "bg-rose-500/25 text-rose-300 border-rose-500/25" },
-      { name: "Active Military Operational Briefs", filename: "OPLAN_STRIKE_PACIFIC_2025.pdf", size: "450 MB", tag: "COSMIC TOP", tagColor: "bg-amber-500/15 text-amber-400 border-amber-500/20" }
+      { name: "Orbital Telemetry Coordination Maps", filename: "SATCOM_COORD_MAPS_ACTIVE_ALL.kml", size: "12 GB", tag: "SECRET", tagColor: "bg-red-500/20 text-red-100 border-red-500/20" },
+      { name: "Unmanned Vehicle Flight Profiles", filename: "UAV_FLIGHT_PROFILES_SPECIMEN.xml", size: "1.2 GB", tag: "TOP SECRET", tagColor: "bg-rose-500/25 text-rose-300 border-rose-500/25" },
+      { name: "Active Military Operational Briefs", filename: "OPLAN_SPECIMEN_THEATRE.pdf", size: "450 MB", tag: "COSMIC TOP SECRET", tagColor: "bg-amber-500/15 text-amber-400 border-amber-500/20" }
     ]
   },
   {
@@ -326,8 +326,8 @@ export const SCENARIOS: Scenario[] = [
       6: { name: "DEPLOY HEAL SECURE PQC", desc: "Migrate electronic health databases to ML-KEM and ML-DSA standards.", objective: "Render public health records immune to retroactive quantum threats." }
     },
     decryptedFiles: [
-      { name: "National Genetic DNA Sequences", filename: "NHGRI_GENOME_REG_7M_POP.db", size: "54 GB", tag: "DEEEP PHI", tagColor: "bg-red-500/15 text-pink-400 border-red-500/20" },
-      { name: "Active Clinical Oncology Trials", filename: "ONCO_TRIAL_RAW_PHASE3.tar.gz", size: "11.2 GB", tag: "TOP SECRET IP", tagColor: "bg-rose-500/20 text-rose-300 border-rose-500/20" },
+      { name: "National Genetic DNA Sequences", filename: "GENOME_REGISTRY_SPECIMEN.db", size: "54 GB", tag: "PHI", tagColor: "bg-red-500/15 text-pink-400 border-red-500/20" },
+      { name: "Active Clinical Oncology Trials", filename: "ONCO_TRIAL_RAW_PHASE3.tar.gz", size: "11.2 GB", tag: "PROPRIETARY", tagColor: "bg-rose-500/20 text-rose-300 border-rose-500/20" },
       { name: "Hospital Patient Health Records", filename: "EHR_PORTAL_EXPORTS_2025.csv", size: "8.1 GB", tag: "HIPAA COMPROMISE", tagColor: "bg-amber-500/15 text-amber-400 border-amber-500/20" }
     ]
   },
@@ -337,7 +337,7 @@ export const SCENARIOS: Scenario[] = [
     shortName: "AI Model Theft & Poisoning",
     category: "AI Security",
     objectiveText: "Decrypt secure model hosting clusters to steal neural network weights, enabling malicious AI supply chain manipulation.",
-    narrative: "As AI becomes a core asset, models are protected by enterprise PKI. Quantum platforms bypass key managers to extract raw model layers and poison weights.",
+    narrative: "As AI becomes a core asset, model weights move over TLS protected by enterprise PKI. Recovering the key agreement for those transfers exposes the weights themselves — a confidentiality loss. Tampering with weights in transit is a separate integrity problem that a signature forgery, not decryption, would enable.",
     impactText: "Theft of trade secrets worth billions and deep manipulation of critical autonomous systems.",
     impactBullets: [
       "Loss of proprietary artificial intelligence core weights",
@@ -409,7 +409,7 @@ export const SCENARIOS: Scenario[] = [
     shortName: "Nation-State Quantum Warfare",
     category: "Geopolitical Crisis",
     objectiveText: "Simulate a coordinated quantum-powered cyber attack targeting national banking, infrastructure, and communication frameworks simultaneously.",
-    narrative: "A geopolitical doomsday scenario. A nation-state launches Shor's engines concurrently against all legacy critical targets, triggering systemic cryptographic collapse.",
+    narrative: "A geopolitical worst case. A nation-state applies CRQC capacity to its highest-value recorded key agreements. Each solve costs hours to days of machine time, so the collapse is a prioritised queue working through an archive, not a simultaneous break of everything.",
     impactText: "Widespread, societal-scale disruption across multiple essential civilian and military sectors.",
     impactBullets: [
       "Simultaneous breakdown of internet communication, routing, and SaaS tools",
@@ -434,7 +434,7 @@ export const SCENARIOS: Scenario[] = [
       6: { name: "CORE CRYPTO SHIELDING", desc: "Enforce complete Post-Quantum Cryptography transition checklists.", objective: "Apply NIST FIPS 203, 204, and 205 algorithms across defense grids." }
     },
     decryptedFiles: [
-      { name: "National Intelligence Command Arch", filename: "INTEL_SOCIETAL_BREACH_CLASSIFIED.tar", size: "120 GB", tag: "TOP SECRET // SCI", tagColor: "bg-red-500/25 text-red-200 border-red-500/30" },
+      { name: "National Intelligence Command Arch", filename: "INTEL_COMMAND_ARCH_SPECIMEN.tar", size: "120 GB", tag: "TOP SECRET//SCI", tagColor: "bg-red-500/25 text-red-200 border-red-500/30" },
       { name: "Bank System Liquidity Ledger", filename: "NATIONAL_BANK_TRANS_BAL.csv", size: "45 GB", tag: "CRITICAL FINANCE", tagColor: "bg-rose-500/20 text-rose-300 border-rose-500/25" },
       { name: "Civil Power Distribution Map", filename: "CIVIL_POWER_GRID_PLC_SIGN.tar.gz", size: "3.2 GB", tag: "OT ASSET EXPOSED", tagColor: "bg-amber-500/15 text-amber-400 border-amber-500/20" }
     ]

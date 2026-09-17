@@ -19,7 +19,9 @@
     "prebuild": "npm run agent:release",
     "agent:test:isolation": "node tools/agent-installer-tests/verify-tenant-isolation.mjs",
     "agent:check:remediation": "tsx tools/agent-remediation-check.ts",
-    "agent:check:governance": "node tools/agent-governance-check.mjs"
+    "agent:check:governance": "node tools/agent-governance-check.mjs",
+    "agent:check:rollback": "tsx tools/rollback-check.ts",
+    "agent:check:rollback:live": "tsx tools/rollback-live-check.ts"
   },
   "dependencies": {
     "@aws-sdk/client-elastic-load-balancing-v2": "^3.1068.0",

@@ -171,6 +171,55 @@ const STATES = ['tls13-hybrid', 'tls13-classical', 'tls12-static-rsa', 'no-hands
 
 /* ══════════════════════════ 1. panels project the SAME control array ═══════ */
 
+/**
+ * ONE RISK VOCABULARY across the two columns a reader compares.
+ *
+ * The Public Findings table renders `status`; the Executive Summary, the
+ * business-risk escalation and Sophia all count `severity`. When the two
+ * disagreed, cloudflare.com published three rose "Critical" pills beneath a
+ * summary reading "1 critical edge exposure requires immediate action".
+ */
+function checkStatusAgreesWithSeverity(): void {
+  section('The status pill and the severity census agree');
+
+  const CRITICAL_PILL = 'Critical';
+  for (const state of STATES) {
+    const controls = buildControlStates(evidenceFor(state));
+    const findings = toFindings(controls);
+
+    const criticalPills = findings.filter((f: any) => f.status === CRITICAL_PILL);
+    const criticalSeverity = findings.filter((f: any) => f.severity === 'CRITICAL');
+    check(
+      `${state}: "Critical" pills equal the CRITICAL severity count`,
+      criticalPills.length === criticalSeverity.length,
+      `${criticalPills.length} pill(s) vs ${criticalSeverity.length} CRITICAL — ` +
+        criticalPills.filter((f: any) => f.severity !== 'CRITICAL').map((f: any) => `${f.control}=${f.severity}`).join(', '),
+    );
+
+    /* A pill that reads as a failure must not sit on a SAFE severity, and a
+       Healthy pill must not sit on a real one. Forward Secrecy did exactly the
+       first of these: an amber "Partial" row counted in the SAFE census. */
+    const failingPills = new Set(['Critical', 'High', 'Warning', 'Not Supported']);
+    const safeUnderFailure = findings.filter(
+      (f: any) => failingPills.has(f.status) && f.severity === 'SAFE',
+    );
+    check(
+      `${state}: no failing pill is counted as SAFE`,
+      safeUnderFailure.length === 0,
+      safeUnderFailure.map((f: any) => `${f.control} (${f.status}/SAFE)`).join(', '),
+    );
+
+    const healthyUnderRisk = findings.filter(
+      (f: any) => f.status === 'Healthy' && (f.severity === 'CRITICAL' || f.severity === 'HIGH'),
+    );
+    check(
+      `${state}: no Healthy pill hides a HIGH or CRITICAL severity`,
+      healthyUnderRisk.length === 0,
+      healthyUnderRisk.map((f: any) => `${f.control} (Healthy/${f.severity})`).join(', '),
+    );
+  }
+}
+
 function checkProjection(): void {
   section('Every panel is a projection of one control array');
 
@@ -463,6 +512,7 @@ function main(): void {
   checkScoreArithmetic();
   checkNoFabricatedFailures();
   checkPanelsHonourFlags();
+  checkStatusAgreesWithSeverity();
 
   console.log(`\n\x1b[1m${'═'.repeat(66)}\x1b[0m`);
   if (failed === 0) {

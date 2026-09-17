@@ -1,4 +1,4 @@
-import { importAesGcmKey, sealFrame, openFrame, headerLength } from "@/lib/call-frame-crypto";
+import { importAesGcmKey, sealFrame, openFrame, headerLength, frameCounter, FrameReplayWindow } from "@/lib/call-frame-crypto";
 
 export interface FrameCryptoOptions {
   operation: "encrypt" | "decrypt";
@@ -24,14 +24,24 @@ export async function makeFrameTransform(opts: FrameCryptoOptions): Promise<Tran
   const key = await importAesGcmKey(raw);
   const ctx = new Uint8Array(opts.contextTag);
   let counter = 0n;
+  // Receive side only: one window per (direction, media kind), which is exactly
+  // the scope of one key + contextTag pair, so audio and video never share it.
+  const replay = opts.operation === "decrypt" ? new FrameReplayWindow() : null;
   return new TransformStream({
     async transform(frame: RTCEncodedVideoFrame | RTCEncodedAudioFrame, controller) {
       const data = new Uint8Array(frame.data);
       const hl = headerLength(opts.kind, frame as { type?: "key" | "delta" });
       try {
-        frame.data = opts.operation === "encrypt"
-          ? await sealFrame(key, ctx, counter++, hl, data)
-          : await openFrame(key, ctx, hl, data);
+        if (replay) {
+          // Check before opening, commit after: a forged counter must not be
+          // able to consume a window slot or push the high-water mark forward.
+          const seq = frameCounter(data);
+          if (!replay.check(seq)) return;
+          frame.data = await openFrame(key, ctx, hl, data);
+          replay.commit(seq);
+        } else {
+          frame.data = await sealFrame(key, ctx, counter++, hl, data);
+        }
         controller.enqueue(frame);
       } catch {
         // Drop frames that fail AES-GCM auth — never forward plaintext or

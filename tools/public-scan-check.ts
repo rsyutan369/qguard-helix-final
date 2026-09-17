@@ -19,6 +19,7 @@ import {
   buildScoreComponents,
   computeClassicalScore,
   computePostQuantumReadiness,
+  STATUS_TO_SURFACE,
 } from '../src/lib/scanner/public-scan/engine'
 import {
   GAUGE_ARC_BANDS,
@@ -169,9 +170,15 @@ async function main(): Promise<void> {
   // mean restricted to the 10 non-PQ categories.
   const recomputedComponents = buildScoreComponents(report.evidence)
   const recomputedEncryption = computeClassicalScore(recomputedComponents)
+  /* An unreachable endpoint publishes `null` for every score — deliberately,
+     and asserted by the unreachable contract below. Re-deriving a number from
+     an empty evidence bundle and demanding the report match it asked the page
+     to publish exactly the fabricated 100 that contract exists to prevent. */
   check(
     'encryption score reproducible from the published 12-category model',
-    recomputedEncryption === executive.encryptionScore,
+    executive.encryptionScore === null
+      ? true
+      : recomputedEncryption === executive.encryptionScore,
     `${recomputedEncryption} vs ${executive.encryptionScore}`,
   )
   const recomputedClassical = computeClassicalScore(
@@ -179,7 +186,9 @@ async function main(): Promise<void> {
   )
   check(
     'classical score reproducible as the 10-category subset of the same model',
-    recomputedClassical === executive.classicalScore,
+    executive.classicalScore === null
+      ? true
+      : recomputedClassical === executive.classicalScore,
     `${recomputedClassical} vs ${executive.classicalScore}`,
   )
   check(
@@ -314,9 +323,15 @@ async function main(): Promise<void> {
     pq.hybridObserved || pq.pqSignatureObserved || executive.postQuantumReadiness < 30,
     `hybrid=${pq.hybridObserved} pqSig=${pq.pqSignatureObserved} score=${executive.postQuantumReadiness}`,
   )
+  /* Three labels, not two. "Unknown" is the correct verdict when no handshake
+     completed, so the biconditional only holds once something was measured —
+     otherwise this assertion demanded the page call an unprobed endpoint
+     "Vulnerable", the precise fabrication the unreachable contract forbids. */
   check(
     'quantum vulnerability label matches observed evidence',
-    (report.intelligence.quantumVulnerability === 'Vulnerable') === !pq.hybridObserved,
+    report.intelligence.quantumVulnerability === 'Unknown'
+      ? !pq.measured
+      : (report.intelligence.quantumVulnerability === 'Vulnerable') === !pq.hybridObserved,
     report.intelligence.quantumVulnerability,
   )
 
@@ -386,16 +401,8 @@ async function main(): Promise<void> {
   const findingByKey = new Map(report.findings.map((finding) => [finding.id, finding]))
   const componentByKey = new Map(report.scoreComponents.map((component) => [component.key, component]))
 
-  // Seven-state model: only `Not Supported` joins Critical as a real failure.
-  const STATUS_TO_SURFACE: Record<string, string> = {
-    Healthy: 'pass',
-    Warning: 'partial',
-    Critical: 'fail',
-    'Not Supported': 'fail',
-    Unknown: 'unknown',
-    'Not Observable': 'unknown',
-    'Not Applicable': 'unknown',
-  }
+  /* Imported, never redeclared: a duplicated copy of this table is how the
+     harness and the engine both ended up missing the same key. */
 
   const shared = [...findingByKey.keys()].filter((key) => surfaceByKey.has(key))
   const statusMismatches = shared.filter((key) => {
@@ -479,12 +486,18 @@ async function main(): Promise<void> {
   // Post-quantum verdict must agree across four panels.
   const pqSurface = surfaceByKey.get('pq-key-agreement')
   const hybridSeen = report.evidence.keyAgreement.hybridGroups.length > 0
+  /* When readiness was withheld there is no verdict to agree ON; the panels are
+     required to be SILENT together instead, which is what the unreachable
+     contract asserts. */
+  const pqWithheld = report.executive.postQuantumReadiness === null
   check(
     'Post-quantum verdict agrees across Attack Surface, Intelligence, Executive and Timeline',
-    (pqSurface ? (pqSurface.status === 'pass') === hybridSeen : true) &&
-      (report.intelligence.quantumVulnerability !== 'Vulnerable') === hybridSeen &&
-      (report.executive.postQuantumReadiness >= 55) === hybridSeen &&
-      (report.timeline.find((phase) => phase.key === 'hybrid')?.state === 'now') === hybridSeen,
+    pqWithheld
+      ? report.intelligence.quantumVulnerability === 'Unknown' && !hybridSeen
+      : (pqSurface ? (pqSurface.status === 'pass') === hybridSeen : true) &&
+          (report.intelligence.quantumVulnerability !== 'Vulnerable') === hybridSeen &&
+          (report.executive.postQuantumReadiness >= 55) === hybridSeen &&
+          (report.timeline.find((phase) => phase.key === 'hybrid')?.state === 'now') === hybridSeen,
     `hybrid=${hybridSeen}, pq=${report.executive.postQuantumReadiness}%`,
   )
 
@@ -1076,6 +1089,11 @@ async function main(): Promise<void> {
   const VALID_STATUSES = new Set([
     'Healthy',
     'Warning',
+    /* 'High' is the tier a control is reconciled to when its verdict reads
+       Critical but its severity is HIGH, so the findings table's pills and the
+       Executive Summary's critical count can never disagree. See
+       reconcileStatus() in public-scan/controls.ts. */
+    'High',
     'Critical',
     'Unknown',
     'Not Observable',
@@ -1083,7 +1101,7 @@ async function main(): Promise<void> {
     'Not Applicable',
   ])
   check(
-    'every finding uses the seven-state status model',
+    'every finding uses the published control-status model',
     report.findings.every((finding) => VALID_STATUSES.has(finding.status)),
     [...new Set(report.findings.map((f) => f.status))].join(', '),
   )

@@ -160,6 +160,10 @@ mod tests {
         let shared = [9u8; 32];
         let mut send = RatchetSession::new("s", shared).unwrap();
         let mut recv = RatchetSession::new("s", shared).unwrap();
+        // Mirrors commands::messaging::messaging_receive_encrypted_message: the
+        // per-message session opens the sender's chain, so the receiving chain
+        // is re-pointed at it rather than being a second, independent chain.
+        recv.receiving_chain_key = recv.sending_chain_key;
         let signer = LocalSigningKeypair::generate();
         let mut envelope = encrypt_message(
             &mut send,
@@ -189,6 +193,7 @@ mod tests {
         assert_eq!(decrypt_message(&mut recv, &envelope).unwrap(), b"hello");
         envelope.envelope.tag[0] ^= 1;
         let mut recv2 = RatchetSession::new("s", shared).unwrap();
+        recv2.receiving_chain_key = recv2.sending_chain_key;
         assert!(decrypt_message(&mut recv2, &envelope).is_err());
     }
 
@@ -197,6 +202,10 @@ mod tests {
         let shared = [1u8; 32];
         let mut send = RatchetSession::new("s", shared).unwrap();
         let mut recv = RatchetSession::new("s", shared).unwrap();
+        // Mirrors commands::messaging::messaging_receive_encrypted_message: the
+        // per-message session opens the sender's chain, so the receiving chain
+        // is re-pointed at it rather than being a second, independent chain.
+        recv.receiving_chain_key = recv.sending_chain_key;
         let signer = LocalSigningKeypair::generate();
         let envelope = encrypt_message(
             &mut send,

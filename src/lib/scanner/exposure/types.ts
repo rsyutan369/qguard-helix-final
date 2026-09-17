@@ -599,6 +599,14 @@ export interface ExposureIntelligence {
     mix: Array<{ status: QuantumStatus; count: number }>;
     classicallyWeak: number;
   }>;
+  /**
+   * Distinct algorithm groups in the CBOM, before `topAlgorithms` is capped.
+   *
+   * The chip row shows the twelve largest groups. Saying so needs this total,
+   * or a reader sums the chips and gets fewer components than the CBOM panel
+   * beside it reports.
+   */
+  algorithmGroups: number;
   languages: Array<{ language: string; files: number }>;
   frameworks: string[];
   dependencies: Array<{
@@ -628,6 +636,16 @@ export interface ExposureIntelligence {
     effort: 'low' | 'medium' | 'high';
     findingIds: string[];
   }>;
+  /**
+   * How many distinct actions the scan actually produced, before the panel cap.
+   *
+   * `recommendations` is capped at ten so the panel stays readable. Rendering
+   * that cap with no denominator tells a reader the estate needs ten things
+   * done, when a real scan produced 27 — the reader then plans against a list
+   * that silently dropped more work than it showed. The panel prints
+   * "the 10 highest-priority of 27" because this number is published.
+   */
+  recommendationCandidates: number;
 }
 
 /* ───────────────────────────────────────────────────────────── utilities ─── */

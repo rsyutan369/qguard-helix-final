@@ -297,7 +297,8 @@ export const SCENARIO_CRYPTO: ScenarioCryptoProfile[] = [
     protocol: 'National security systems under CNSA 2.0 transition',
     groupId: 0x0018,
     shelfLifeYears: 75,
-    shelfLifeBasis: 'Typical automatic declassification horizon for national security information.',
+    shelfLifeBasis:
+      'The outer limit under E.O. 13526 rather than the typical one: automatic declassification falls at 25 years, with exemptions to 50 and — for narrow categories — 75 years subject to ISCAP approval. National security traffic is modelled against that worst case.',
     sessionsPerDay: 250_000,
     weakestLink: 'Everything transmitted before the CNSA 2.0 exclusive-use deadlines.',
   },

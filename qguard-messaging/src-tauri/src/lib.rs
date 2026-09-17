@@ -82,6 +82,13 @@ pub fn run() {
                 "--disable-direct-composition-video-overlays ",
                 "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,MediaFoundationD3D11VideoCapture",
             ));
+            // Transport policy. This is the ONLY point at which the app can set
+            // it: WebView2 fixes its network stack configuration when the
+            // environment is created, and every Supabase request afterwards
+            // rides that stack. See security::tls_policy for the platform scope
+            // and the QGUARD_TLS_POLICY=compat escape hatch.
+            args.push(' ');
+            args.push_str(&security::tls_browser_arguments(&security::tls_policy()));
             if gpu_safe_mode {
                 args.push_str(concat!(
                     " --disable-accelerated-video-decode",

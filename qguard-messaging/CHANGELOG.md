@@ -8,6 +8,99 @@ website download label in `../src/app/qguard-messaging/_shared.tsx` — all thre
 are kept in lock-step by `tools/release.ps1`, because a mismatch silently breaks
 auto-update.
 
+## [1.3.8] — 2026-09-16
+
+Security release. Desktop and Android. Every item below was found by a full
+audit of the message, call and file paths against the QGuard Helix mandatory
+cryptographic stack; the primitives were already correct, and every defect was
+in a layer that treated a self-consistency check as proof of identity.
+
+**Requires migration `034_sender_identity_remains_verifiable.sql`.** Without it,
+messages a peer sent before their most recent device re-key show as
+"Sender unverified" rather than "Verified".
+
+### Security
+
+- **Messages were not authenticated.** An inbound envelope's Ed25519 + ML-DSA-65
+  signature was verified against the sender's public keys *carried inside that
+  same envelope*, which proves the envelope is internally consistent and nothing
+  more. Anyone able to insert a row into `messaging_message_envelopes` could mint
+  their own keypair, encapsulate to the recipient's published prekey bundle
+  (public by design), stamp any `sender_device_id` on the result, sign it with
+  their own key, and the message would decrypt and render with a **"Verified"**
+  badge under the impersonated sender's name. Row-level security kept ordinary
+  users from forging another user's `sender_user_id`, so the live reach was the
+  relay itself or a compromised service role — exactly the adversary
+  end-to-end encryption exists to resist. It also made out-of-band safety-number
+  verification decorative for messages: a verified fingerprint did not stop
+  forgeries signed by a key that fingerprint never covered.
+
+  `verify_sender_identity` now requires the envelope's signing keys to be the
+  ones the named device published to `messaging_devices`. Keys match, the message
+  is **Verified**; no registry row is available, it is **Sender unverified**; the
+  row exists and the keys differ, the message is **refused**. The associated data
+  is also recomputed from the envelope and required to match, so a message can
+  never display one sender while having been sealed under another.
+
+- **Call signals were not bound to the call's peer device.** `messaging_call_signals`
+  is writable by every member of a conversation and only `from_user_id` is
+  enforced, so a third member could write an `answer` carrying the live call id
+  and re-point the media transport, inject ICE candidates, or end someone else's
+  call with a single `hangup` row. Inbound signals are now accepted only from the
+  device the call is actually bound to — any ringing device before an answer,
+  the answering device after it, the caller for a callee. Media was never
+  readable by an injector, since the media key is encapsulated to the device that
+  answered; the exposure was session hijack and denial of service.
+
+- **End-to-end call media encryption could fail open.** On the
+  `createEncodedStreams` fallback path used by older WebView2 builds, a transform
+  that failed to install was swallowed as "non-fatal", leaving media protected by
+  hop-by-hop DTLS-SRTP alone while the app still displayed a safety number and
+  reported the call as quantum-encrypted. A transform that cannot be installed
+  now ends the call.
+
+- **Call media had no replay protection.** A replayed frame carries its original
+  counter, header and tag, so AES-256-GCM authenticates it perfectly; anything on
+  the media path could re-inject earlier audio or video. Added a 256-wide sliding
+  replay window per direction and media kind, checked before decryption and
+  committed only after the frame authenticates.
+
+- **Session token claims are now pinned.** `alg: none`, an empty signature
+  segment, a non-`authenticated` role or audience, and an implausible issuer are
+  refused. This is a local integrity control; Postgres row-level security remains
+  the authorization boundary and verifies the signature on every request.
+
+- **Chat attachments are bound to their container.** The per-file AES-256-GCM
+  ciphertext now carries the storage path, conversation and message id as
+  associated data (`aad_version: 1`), so a ciphertext cannot be relocated between
+  objects. Attachments sealed before this release carry no marker and continue to
+  decrypt unchanged.
+
+- **Transport policy.** `QGUARD_TLS_POLICY` selects `strict` (default: minimum
+  TLS 1.3 plus hybrid post-quantum key agreement) or `compat` (TLS 1.2 permitted,
+  for networks behind a TLS-1.2-only inspection proxy). Enforced on Windows
+  through the WebView2 network stack and surfaced as a security gate. On Android
+  the operating system owns the TLS stack, so the gate reports that the app does
+  not enforce it rather than claiming a control it does not have.
+
+### Changed
+
+- A decrypted message whose sender cannot be anchored is recorded as `pending`,
+  never `tampered`. `tampered` is an accusation that the ciphertext or signature
+  failed; an unanchored sender is a proof that is absent, not one that failed,
+  and it can still be obtained later.
+- The ratchet's sending and receiving chains no longer start from the same
+  derived key. Nothing exploited it, and this is not a wire change, but a
+  primitive that hands out the same key in both directions is one refactor away
+  from a reflection bug.
+
+### Migration
+
+Apply `supabase/migrations/034_sender_identity_remains_verifiable.sql`. It lets
+conversation peers read a device row regardless of `trust_state`, because
+retiring a key does not retroactively unsign the messages it signed while it was
+live. Delivery is unchanged: revoked devices remain unaddressable.
+
 ## [1.3.5] — 2026-08-27
 
 Android-only release. The Windows installer, the website download label and

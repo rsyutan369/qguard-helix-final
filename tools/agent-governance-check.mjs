@@ -35,10 +35,17 @@ const check = (n, ok, d = '') => { if (ok) { pass++; console.log('  PASS  ' + n)
 const uuid = () => globalThis.crypto.randomUUID()
 const made = []
 
-async function makePlan(status) {
+/**
+ * `approval` is the attributed decision the approval endpoint writes alongside
+ * the status. It is passed separately because the STATUS alone is not an
+ * approval — `export` and `sandbox` used to produce `status: 'approved'` on a
+ * plan nobody had approved, which is exactly what the gate must not accept.
+ */
+async function makePlan(status, approval = null) {
   const id = uuid()
   const now = new Date().toISOString()
-  const { error } = await admin.from('migration_plans').insert({ id, user_id: userId, status, selected_asset_ids: [], configuration: {}, risk_data: {}, metadata: { name: `approval-gate-probe ${status}` }, created_at: now, updated_at: now })
+  const metadata = { name: `approval-gate-probe ${status}`, ...(approval ? { approval } : {}) }
+  const { error } = await admin.from('migration_plans').insert({ id, user_id: userId, status, selected_asset_ids: [], configuration: {}, risk_data: {}, metadata, created_at: now, updated_at: now })
   if (error) throw new Error('plan insert: ' + error.message)
   const jobId = uuid()
   const { error: jobErr } = await admin.from('migration_jobs').insert({ id: jobId, user_id: userId, name: `approval-gate-probe ${status}`, job_type: 'pqc_migration', status: 'queued', progress: 0, target_algorithm: 'ML-KEM-768 hybrid', metadata: { planId: id, source: 'approval-gate-probe' }, created_at: now, updated_at: now })
@@ -62,9 +69,37 @@ for (const status of ['rejected', 'pending_approval']) {
   check(`the job was NOT queued for the fleet`, job?.status === 'queued', `job status ${job?.status}`)
 }
 
-const approved = await makePlan('approved')
+/*
+ * NEGATIVE CONTROL: a plan that never entered the approval workflow.
+ *
+ * `awaiting_agent` is what the planner's own Start action writes, and it used
+ * to dispatch — the gate asked "is it rejected?" instead of "was it approved?".
+ * Every real plan in the database sat in this state.
+ */
+const neverApproved = await makePlan('awaiting_agent')
+const never = await call(`/api/v1/migration/plans/${neverApproved.id}/action`, { action: 'start_execution' })
+check('a plan that was never approved refuses start_execution', never.status === 409, `got ${never.status} ${JSON.stringify(never.body).slice(0, 140)}`)
+check('and the refusal tells the operator to record an approval', /not been approved/i.test(String(never.body?.error?.message || '')), String(never.body?.error?.message || '').slice(0, 140))
+
+/*
+ * NEGATIVE CONTROL: status says approved, but no decision was ever recorded.
+ *
+ * This is the shape `export` and `sandbox` used to produce. Accepting it would
+ * mean exporting a plan to PDF authorised changing a production host.
+ */
+const statusOnly = await makePlan('approved')
+const bare = await call(`/api/v1/migration/plans/${statusOnly.id}/action`, { action: 'start_execution' })
+check('a bare "approved" STATUS with no decision record is refused', bare.status === 409, `got ${bare.status} ${JSON.stringify(bare.body).slice(0, 140)}`)
+
+/* POSITIVE CONTROL: the shape the approval endpoint actually writes. */
+const approved = await makePlan('approved', {
+  decision: 'approve',
+  decidedBy: 'governance-check@qguard.test',
+  decidedAt: new Date().toISOString(),
+  reason: 'approval-gate probe',
+})
 const ok = await call(`/api/v1/migration/plans/${approved.id}/action`, { action: 'start_execution' })
-check('an APPROVED plan still dispatches (gate is not a blanket block)', ok.status === 200 || ok.status === 201, `got ${ok.status} ${JSON.stringify(ok.body).slice(0, 160)}`)
+check('an APPROVED plan with a recorded decision dispatches (gate is not a blanket block)', ok.status === 200 || ok.status === 201, `got ${ok.status} ${JSON.stringify(ok.body).slice(0, 160)}`)
 
 for (const m of made) {
   await admin.from('migration_jobs').delete().eq('id', m.jobId)

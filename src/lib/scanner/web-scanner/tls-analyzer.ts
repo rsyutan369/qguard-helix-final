@@ -376,6 +376,84 @@ async function probeProtocol(hostname: string, port: number, protocol: tls.Secur
   }
 }
 
+/**
+ * Confirm the NEGATIVE protocol results before they are published.
+ *
+ * WHY THIS EXISTS — the evidence asymmetry
+ * ----------------------------------------
+ * The four version probes run concurrently (with the TLS 1.2 cipher sweep
+ * alongside them), which is a dozen near-simultaneous handshakes to one IP.
+ * CDNs and rate-limiters answer that with a TCP reset — and a genuine protocol
+ * refusal looks EXACTLY the same. Measured against github.com, a real "TLS 1.0
+ * is not supported" arrives as `ECONNRESET`; measured against cloudflare.com
+ * under load, a throttled TLS 1.3 probe arrives as `ECONNRESET` too. Error
+ * signatures cannot separate them, so the scanner published throttling as
+ * "this version is not accepted".
+ *
+ * The observed consequence on /public-scan: cloudflare.com reported
+ * `Accepts: TLSv1, TLSv1.2` on the same panel whose Server Hello row said the
+ * session had just negotiated **TLSv1.3**, and the TLS Configuration category
+ * scored 45 instead of 60 — a self-contradicting report whose headline grade
+ * moved with the weather.
+ *
+ * The asymmetry that fixes it (the same one `probeNamedGroups` already uses):
+ *
+ *   - An ACCEPTANCE is unforgeable. A reset socket cannot complete a handshake
+ *     pinned to one version, so one success is proof and is never re-probed.
+ *   - The NEGOTIATED version is proof by construction. The primary handshake
+ *     spoke it; no probe result may contradict that.
+ *   - Only REFUSALS are falsifiable, and throttling is a property of the
+ *     connection stream rather than of a protocol version. So refusals are
+ *     re-probed ONCE, strictly sequentially, and only a second refusal is
+ *     published.
+ *
+ * The re-probe is skipped when nothing was accepted at all (the endpoint is not
+ * answering — that is a transport failure the caller reports separately) and
+ * when the deadline has passed, so the cost is bounded and normally zero: a
+ * healthy parallel sweep confirms everything on the first pass.
+ */
+async function confirmProtocolNegatives(
+  hostname: string,
+  port: number,
+  connectHost: string,
+  discovered: TlsProtocolProbe[],
+  negotiatedProtocol: string | null,
+  deadline: number,
+): Promise<TlsProtocolProbe[]> {
+  const probes = discovered.map((probe) => ({ ...probe }))
+
+  /* Proof by construction: the primary handshake negotiated this version. */
+  const negotiated = probes.find((probe) => probe.protocol === negotiatedProtocol)
+  if (negotiated && !negotiated.supported) {
+    negotiated.supported = true
+    negotiated.error = undefined
+    negotiated.cipherSuite = negotiated.cipherSuite ?? primaryCipherPlaceholder
+  }
+
+  const refused = probes.filter((probe) => !probe.supported)
+  const accepted = probes.length - refused.length
+  // Nothing answered: the failure is systemic, not per-version. Re-probing would
+  // add four timeouts to a scan that already knows the endpoint is unreachable.
+  if (refused.length === 0 || accepted === 0) return probes
+
+  for (const probe of refused) {
+    if (Date.now() >= deadline) break
+    const retry = await probeProtocol(hostname, port, probe.protocol as tls.SecureVersion, connectHost)
+    if (retry.supported) {
+      probe.supported = true
+      probe.cipherSuite = retry.cipherSuite
+      probe.keyExchange = retry.keyExchange
+      probe.error = undefined
+    }
+  }
+
+  return probes
+}
+
+/** Placeholder recorded when a version is proven by the negotiated handshake
+ *  rather than by its own probe, so the field is never silently null. */
+const primaryCipherPlaceholder = null
+
 async function enumerateTls12CipherSuites(hostname: string, port: number, connectHost = hostname): Promise<CipherSuiteDetail[]> {
   const probes = await Promise.all(
     TLS12_CIPHER_PROBES.map(async (probe) => {
@@ -447,10 +525,19 @@ export async function analyzeTls(
   const primary = primaryConnection.result
   const connectHost = primaryConnection.connectHost
 
-  const [protocolSupport, enumeratedTls12Suites] = await Promise.all([
+  const [discoveredProtocols, enumeratedTls12Suites] = await Promise.all([
     Promise.all(TLS_PROTOCOLS.map((protocol) => probeProtocol(hostname, port, protocol, connectHost))),
     enumerateTls12CipherSuites(hostname, port, connectHost),
   ])
+
+  const protocolSupport = await confirmProtocolNegatives(
+    hostname,
+    port,
+    connectHost,
+    discoveredProtocols,
+    primary.tlsVersion,
+    options.deadline ?? Number.POSITIVE_INFINITY,
+  )
 
   const supportedProtocols = protocolSupport
     .filter((probe) => probe.supported)

@@ -26,93 +26,15 @@ import { cn } from '@/lib/utils';
 import { ACCENT, Panel, SectionLabel } from '@/components/quantum-scan/ui';
 import type { ExposureAssessment, ExposureFinding } from '@/lib/scanner/exposure/types';
 import { layerLabel } from '@/lib/scanner/exposure/correlate';
+import type { AssetRow, StandardRow } from '@/lib/scanner/exposure/panel-model';
+import { evidencePopulation, summariseAssets, summariseStandards } from '@/lib/scanner/exposure/panel-model';
 import { QUANTUM_COLOR, QUANTUM_LABEL } from './shared';
 
 /* ═══════════════════════════════════════════════════ asset inventory (§64) ══ */
 
-interface AssetRow {
-  id: string;
-  name: string;
-  kind: string;
-  /** Live state, taken from the engine ledger rather than guessed. */
-  state: 'scanned' | 'partial' | 'not-assessed';
-  components: number;
-  findings: number;
-  critical: number;
-  quantumVulnerable: number;
-  /** Post-quantum only. Hybrid is counted separately — it is not the same claim. */
-  pqc: number;
-  hybrid: number;
-  detail: string;
-}
-
-/**
- * Derive the asset table from the assessment.
- *
- * "Asset" here is the unit the estate is managed in — a file for source, a
- * manifest for a dependency, a workload for Kubernetes — because that is what a
- * reader can act on. Grouping by algorithm instead produces a table of
- * cryptography with no owner and no next step.
- */
-function deriveAssets(assessment: ExposureAssessment): AssetRow[] {
-  const byAsset = new Map<string, AssetRow>();
-
-  const upsert = (id: string, name: string, kind: string): AssetRow => {
-    const existing = byAsset.get(id);
-    if (existing) return existing;
-    const row: AssetRow = {
-      id, name, kind,
-      state: 'scanned',
-      components: 0, findings: 0, critical: 0, quantumVulnerable: 0, pqc: 0, hybrid: 0,
-      detail: '',
-    };
-    byAsset.set(id, row);
-    return row;
-  };
-
-  for (const finding of assessment.findings) {
-    const evidence = finding.evidence[0];
-    const name = evidence?.file ?? evidence?.reference ?? evidence?.scope ?? layerLabel(finding.layer);
-    const row = upsert(`${finding.layer}|${name}`, name, layerLabel(finding.layer));
-    row.findings += 1;
-    if (finding.severity === 'critical') row.critical += 1;
-    if (finding.quantumStatus === 'vulnerable') row.quantumVulnerable += 1;
-    /* Hybrid is NOT post-quantum. It is a classical primitive still carrying a
-       classical half, deployed alongside a PQC one — substantial migration
-       progress, but the classical half has yet to be retired. Folding it into
-       a column rendered as "pqc" told the reader that work was finished. */
-    if (finding.quantumStatus === 'pqc') row.pqc += 1;
-    if (finding.quantumStatus === 'hybrid') row.hybrid += 1;
-  }
-
-  for (const component of assessment.cbom) {
-    const name = component.file ?? component.evidence[0]?.reference ?? layerLabel(component.layer);
-    const row = upsert(`${component.layer}|${name}`, name, layerLabel(component.layer));
-    row.components += 1;
-  }
-
-  /* Dimensions the scan could NOT read become rows in their own right (§64:
-     never treat Not Scanned as Secure). Without this they vanish from the
-     inventory, and an absent row reads as nothing to worry about. */
-  for (const entry of assessment.task.coverage.notAssessed) {
-    const row = upsert(`not-assessed|${entry.dimension}`, entry.dimension, 'Not assessed');
-    row.state = 'not-assessed';
-    row.detail = entry.reason;
-  }
-
-  for (const run of assessment.task.runs) {
-    if (run.state !== 'failed') continue;
-    const row = upsert(`failed|${run.engineId}`, run.label, 'Engine failure');
-    row.state = 'partial';
-    row.detail = run.detail ?? 'The engine did not complete, so this dimension is incomplete rather than clean.';
-  }
-
-  const stateOrder: Record<AssetRow['state'], number> = { partial: 0, 'not-assessed': 1, scanned: 2 };
-  return [...byAsset.values()].sort((a, b) => {
-    if (a.state !== b.state) return stateOrder[a.state] - stateOrder[b.state];
-    return b.critical - a.critical || b.quantumVulnerable - a.quantumVulnerable || b.findings - a.findings;
-  });
-}
+/* `deriveAssets` lives in `panel-model` so the check tool asserts the SAME
+   derivation the panel renders. It used to live here, which is how it keyed
+   asset rows on `layer|name` for months without a single check noticing. */
 
 const ASSET_STATE_STYLE: Record<AssetRow['state'], { color: string; label: string }> = {
   scanned: { color: ACCENT.emerald, label: 'Scanned' },
@@ -122,20 +44,31 @@ const ASSET_STATE_STYLE: Record<AssetRow['state'], { color: string; label: strin
 
 export function AssetInventory({ assessment }: { assessment: ExposureAssessment }) {
   const [limit, setLimit] = React.useState(25);
-  const assets = React.useMemo(() => deriveAssets(assessment), [assessment]);
+  const { rows: assets, scanned, gaps, filesAnalyzed, clean } = React.useMemo(
+    () => summariseAssets(assessment),
+    [assessment],
+  );
   const visible = assets.slice(0, limit);
-
-  const scanned = assets.filter((asset) => asset.state === 'scanned').length;
-  const gaps = assets.length - scanned;
 
   return (
     <Panel className="overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel>Scanned Assets</SectionLabel>
+        {/* "carrying evidence", not "scanned". The table can only hold an asset
+            that produced a finding or a component, so the row count is not the
+            size of the scanned estate and must not be labelled as if it were. */}
         <span className="font-mono text-[10px] text-slate-500">
-          {scanned} scanned{gaps > 0 ? ` · ${gaps} with gaps` : ''}
+          {scanned} carrying evidence{gaps > 0 ? ` · ${gaps} with gaps` : ''}
         </span>
       </div>
+
+      {clean > 0 && (
+        <p className="border-b border-white/[0.06] px-5 py-2 font-mono text-[10px] leading-relaxed text-slate-500">
+          The scan analysed {filesAnalyzed.toLocaleString()} files; {clean.toLocaleString()} of them yielded no
+          cryptographic component and no finding, so they have no row here. Absence of a row means nothing was observed
+          in that file — not that it was skipped. Anything the scan could not read is listed under Assessment Coverage.
+        </p>
+      )}
 
       {assets.length === 0 ? (
         <p className="px-5 py-8 text-center text-[12px] text-slate-500">
@@ -259,7 +192,16 @@ function layerName(layer: string): string {
  * lexical match alone, and until the layers are visible a reader has to take
  * the confidence score on trust.
  */
+const EVIDENCE_ROW_LIMIT = 30;
+
 export function EvidenceMatrix({ assessment }: { assessment: ExposureAssessment }) {
+  /* The population this table can speak about at all: a finding with no
+     detection layer has nothing to plot. Derived in `panel-model` so the
+     footnote's denominators are the ones the check tool asserts, and kept
+     separate from the rows the cap dropped — they are two different exclusions
+     and collapsing them misreports both. */
+  const { corroborated, unbacked } = React.useMemo(() => evidencePopulation(assessment), [assessment]);
+
   const rows = React.useMemo(() => {
     return assessment.findings
       .map((finding) => {
@@ -280,7 +222,7 @@ export function EvidenceMatrix({ assessment }: { assessment: ExposureAssessment 
       })
       .filter((row) => row.layers.size > 0)
       .sort((a, b) => b.layers.size - a.layers.size || (b.confidenceScore ?? 0) - (a.confidenceScore ?? 0))
-      .slice(0, 30);
+      .slice(0, EVIDENCE_ROW_LIMIT);
   }, [assessment]);
 
   if (rows.length === 0) return null;
@@ -348,9 +290,25 @@ export function EvidenceMatrix({ assessment }: { assessment: ExposureAssessment 
           </tbody>
         </table>
       </div>
-      {assessment.findings.length > rows.length && (
-        <p className="border-t border-white/[0.06] px-5 py-2 font-mono text-[10px] text-slate-500">
-          Showing the {rows.length} best-corroborated of {assessment.findings.length} findings.
+      {/* Two DIFFERENT exclusions, and collapsing them misreports both. A
+          finding is absent from this table either because it carries no
+          detection-layer evidence at all (it cannot be corroborated, so it has
+          no row to show) or because it ranked below the cap. The note used to
+          say only "the N best-corroborated of M findings", which described
+          every absence as a ranking decision — so 16 findings with no layer
+          evidence whatsoever read as merely lower-ranked. */}
+      {(assessment.findings.length > rows.length || unbacked > 0) && (
+        <p className="border-t border-white/[0.06] px-5 py-2 font-mono text-[10px] leading-relaxed text-slate-500">
+          Showing the {rows.length.toLocaleString()} best-corroborated of {corroborated.toLocaleString()} findings that
+          carry detection-layer evidence
+          {unbacked > 0 && (
+            <>
+              . A further {unbacked.toLocaleString()} of the scan&apos;s {assessment.findings.length.toLocaleString()}{' '}
+              findings record no detection layer and cannot be corroborated here — they are absent from this table, not
+              ranked below it
+            </>
+          )}
+          .
         </p>
       )}
     </Panel>
@@ -359,12 +317,9 @@ export function EvidenceMatrix({ assessment }: { assessment: ExposureAssessment 
 
 /* ════════════════════════════════════════════════ standards panel (§75-76) ══ */
 
-interface StandardRow {
-  publication: string;
-  requirementType: string;
-  applicability: string;
-  findings: number;
-}
+/* `StandardRow` is the one in `panel-model`. A local re-declaration shadowed the
+   imported type here, so the panel's own derivation could drift from the one the
+   check tool asserts without TypeScript noticing. */
 
 const OBLIGATION_COLOR: Record<string, string> = {
   REQUIRED: ACCENT.rose,
@@ -385,31 +340,12 @@ const OBLIGATION_COLOR: Record<string, string> = {
  * into an obligation the reader does not have.
  */
 export function StandardsPanel({ assessment }: { assessment: ExposureAssessment }) {
-  const rows = React.useMemo(() => {
-    const byPublication = new Map<string, StandardRow>();
-
-    for (const finding of assessment.findings) {
-      for (const reference of finding.references ?? []) {
-        /* `publication — TYPE, applies to: scope`, written by citeStandard() in
-           the knowledge base so this panel never has to re-derive it. */
-        const match = reference.match(/^(.+?)\s+—\s+([A-Z_]+),\s+applies to:\s+([\s\S]+)$/);
-        if (!match) continue;
-        const existing = byPublication.get(match[1]);
-        if (existing) {
-          existing.findings += 1;
-          continue;
-        }
-        byPublication.set(match[1], {
-          publication: match[1],
-          requirementType: match[2],
-          applicability: match[3],
-          findings: 1,
-        });
-      }
-    }
-
-    return [...byPublication.values()].sort((a, b) => b.findings - a.findings);
-  }, [assessment]);
+  /* Derived in `panel-model`, not here. The tally used to increment once per
+     matching REFERENCE while the column is labelled "N findings", so a finding
+     citing two clauses of the same publication counted twice and the column
+     silently became a citation count. Keeping the derivation in one module is
+     what lets the check tool assert the unit matches the label. */
+  const { rows, cited, uncited, total } = React.useMemo(() => summariseStandards(assessment), [assessment]);
 
   if (rows.length === 0) return null;
 
@@ -417,7 +353,9 @@ export function StandardsPanel({ assessment }: { assessment: ExposureAssessment 
     <Panel className="overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel accent={ACCENT.amber}>Standards Cited</SectionLabel>
-        <span className="font-mono text-[10px] text-slate-500">{rows.length} publications</span>
+        <span className="font-mono text-[10px] text-slate-500">
+          {rows.length} publications · {cited.toLocaleString()} of {total.toLocaleString()} findings
+        </span>
       </div>
       <p className="border-b border-white/[0.06] px-5 py-2.5 text-[11.5px] leading-relaxed text-slate-400">
         Each citation states <strong className="font-bold text-slate-200">who it binds</strong>. A NIST recommendation is
@@ -452,6 +390,18 @@ export function StandardsPanel({ assessment }: { assessment: ExposureAssessment 
           </li>
         ))}
       </ul>
+
+      {/* The findings no publication speaks to. The per-row totals sum to far
+          MORE than the finding count — one finding cites several publications —
+          so the arithmetic can never reveal this gap, and a compliance reader
+          counting rows would read the table as covering the whole scan. */}
+      {uncited > 0 && (
+        <p className="border-t border-white/[0.06] px-5 py-2.5 font-mono text-[10px] leading-relaxed text-slate-500">
+          {uncited.toLocaleString()} of the scan&apos;s {total.toLocaleString()} findings cite no publication and are
+          absent from this table. A finding with no citation carries QGuard&apos;s own judgement, not an external
+          obligation — the rows above never account for it.
+        </p>
+      )}
     </Panel>
   );
 }

@@ -174,6 +174,38 @@ Live probes must handle an unreachable network gracefully and **say which
 assertions they skipped** — a probe that silently drops assertions when offline
 reports false confidence.
 
+### Agent authority + rollback (needs the dev server)
+
+`rollback-live-check.ts` drives the whole audited lifecycle against real rows:
+enrol collector/patcher/operator → claim → snapshot gate → executed event →
+restore → agent acknowledgement → audit. It creates and deletes everything it
+touches, including on failure.
+
+```bash
+npx tsx tools/rollback-check.ts          # 83 offline invariants, no server
+npx tsx tools/rollback-live-check.ts     # 82 live assertions, needs :3000
+npx tsx tools/platform-reset.ts          # dry run; --apply clears all operational data, keeps accounts/billing
+npx tsx tools/rollback-legacy-reconcile.ts   # dry run; --apply to correct legacy rows
+```
+
+Two things it catches that reading the code did not:
+
+- **an agent with no heartbeat is not an executor.** The first live run returned
+  `awaiting-executor` for a correctly-enrolled operator, because the check never
+  made the agent check in. That is the gate working; the check was wrong.
+- **agent-authenticated routes need `x-qguard-agent-id` as well as the bearer
+  token** (`requireAgentAuth`). A bearer-only call returns 401 and looks like a
+  bad token.
+
+Two traps worth remembering for any check of this shape:
+
+- assert the **call site**, not just the helper. The headline defect here was a
+  correct `agentMayWrite(..., 'migration')` with no caller, which every unit test
+  of the helper would have passed.
+- assert that a dashboard builder performs **no writes** by regexing its own
+  function body for `.update(` / `.insert(`. `buildSnapshotDashboard` was
+  rewriting migration jobs on a GET.
+
 ## Evidence ladder
 
 Pick the weakest rung that actually proves the claim:
@@ -192,7 +224,7 @@ auth, no browser — say so plainly instead of implying it was checked.
 
 ## Interpreting a full-repo typecheck
 
-The repository has **15 pre-existing type errors** in `admin/page.tsx`,
+The repository has **~26 pre-existing type errors** in `admin/page.tsx`,
 `harvest-now`, `settings`, `tls-orchestrator`, `vault` and a few components.
 They are unrelated to scanner work. Filter to what you touched:
 

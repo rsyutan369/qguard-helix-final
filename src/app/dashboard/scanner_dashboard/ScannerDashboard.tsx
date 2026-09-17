@@ -2190,7 +2190,30 @@ export default function ScannerDashboard() {
      the next. `latestHistoryEntry` is hoisted here (rather than defined beside
      `buildAssessment` further down) precisely so the headline metrics and the
      assessment resolve the same scan. */
-  const latestHistoryEntry = displayedHistory[0] || history[0] || null;
+  /* ── Only a WEB scan can be this surface's scan-in-view ──────────────────
+     `/scanner/history` returns every session this tenant owns, including the
+     continuous-agent evidence batches written by `agent-scanner.ts`. Those are
+     real evidence, but they carry no targets, no module ledger and no
+     per-target results — so adopting one as the scan-in-view produced a page
+     that contradicted itself: a graded Encryption Score above a Module
+     Execution Flow with nothing in it, a Discovery Coverage of 0% and an
+     Assessment Scope with no targets.
+
+     Agent evidence has its own surface (the Agents tab) and still appears in
+     History. Here the fallback walks to the newest scan that this page can
+     actually describe; if the tenant has none, the assessment falls through to
+     estate scope, which is exactly what estate scope is for. */
+  const isWebScanEntry = useCallback((entry: HistoryEntry | null | undefined) => {
+    if (!entry) return false;
+    /* Sessions written before `scannerMode` existed default to the web scanner
+       in buildHistoryPayload, so an absent mode is a web scan. */
+    return !String(entry.scanType ?? '').startsWith('continuous-agent');
+  }, []);
+
+  const latestHistoryEntry =
+    displayedHistory.find(isWebScanEntry)
+    ?? history.find(isWebScanEntry)
+    ?? null;
   const effectiveSummary = summary ?? latestHistoryEntry?.summary ?? null;
   const effectiveScanFindings = findings.length > 0
     ? findings
@@ -2482,7 +2505,12 @@ export default function ScannerDashboard() {
         totalAssets: intelSummary.totalAssets,
         totalFindings: intelSummary.totalFindings,
         criticalFindings: intelSummary.criticalFindings,
+        /* Real counts, from the same snapshot every other number here reads.
+           Estate scope used to substitute a literal 0 for `high` and to treat
+           every finding as vulnerable. */
+        highFindings: scannerIntel.data.severityCounts.high,
         vulnerableAssets: intelSummary.vulnerableAssets,
+        vulnerableComponents: intelSummary.vulnerableComponents,
         pqcReadiness: intelSummary.pqcReadiness,
         riskScore: intelSummary.riskScore,
       },
@@ -2511,6 +2539,7 @@ export default function ScannerDashboard() {
       targets,
       latestHistoryEntry,
       intelSummary,
+      scannerIntel.data.severityCounts.high,
       intelHasData,
     ],
   );

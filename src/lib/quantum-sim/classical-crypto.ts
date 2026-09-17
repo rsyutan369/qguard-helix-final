@@ -55,7 +55,16 @@ export interface ClassicalPrimitive {
   mechanism: string;
   /** What replaces it, per NIST. Empty when nothing needs replacing. */
   replacement: string;
-  /** NIST IR 8547 status: the year after which it is deprecated / disallowed. */
+  /**
+   * NIST IR 8547 ipd status: the year after which it is deprecated / disallowed.
+   *
+   * IR 8547 scopes these by SECURITY STRENGTH, not by algorithm family. Only the
+   * 112-bit rows (RSA-2048, finite-field DH/MQV-2048, ECDH/ECMQV and ECDSA at
+   * 112-bit strength) are "deprecated after 2030, disallowed after 2035".
+   * Everything at 128-bit strength and above — RSA-3072 and larger, P-256,
+   * P-384, X25519, Ed25519 — is "disallowed after 2035" with NO deprecation
+   * step, so `deprecatedAfter` is null for those. See IR 8547 ipd Tables 2 & 4.
+   */
   transition: { deprecatedAfter: number | null; disallowedAfter: number | null };
   citation: CitationKey;
 }
@@ -94,7 +103,7 @@ export const CLASSICAL_PRIMITIVES: ClassicalPrimitive[] = [
     mechanism:
       "Identical to RSA-2048. Shor's cost grows as roughly n^3 in the modulus size, so a 50% larger modulus costs an attacker about 3.4x more — a rounding error against an exponential defence budget.",
     replacement: 'ML-KEM-1024 (FIPS 203)',
-    transition: { deprecatedAfter: 2030, disallowedAfter: 2035 },
+    transition: { deprecatedAfter: null, disallowedAfter: 2035 },
     citation: 'shor1997',
   },
   {
@@ -107,9 +116,9 @@ export const CLASSICAL_PRIMITIVES: ClassicalPrimitive[] = [
     verdict: 'broken',
     target: 'the private exponent d',
     mechanism:
-      'Doubling the modulus from 2048 to 4096 bits multiplies the classical cost by roughly 2^40 but the quantum cost by only about 8. Key-size escalation is not a defence against Shor.',
+      'Doubling the modulus from 2048 to 4096 bits multiplies the classical cost by roughly 2^40 but the quantum cost by only about 8. Key-size escalation is not a defence against Shor. Note that 152 bits is an interpolation, not a published figure: SP 800-57 tabulates 2048 (112 bits), 3072 (128) and 7680 (192) and does not list 4096.',
     replacement: 'ML-KEM-1024 (FIPS 203)',
-    transition: { deprecatedAfter: 2030, disallowedAfter: 2035 },
+    transition: { deprecatedAfter: null, disallowedAfter: 2035 },
     citation: 'shor1997',
   },
   {
@@ -124,7 +133,7 @@ export const CLASSICAL_PRIMITIVES: ClassicalPrimitive[] = [
     mechanism:
       "Shor's discrete-logarithm variant recovers k directly. Elliptic curves are CHEAPER to break than RSA at equivalent classical strength: about 2,330 logical qubits for P-256 against roughly 6,190 for RSA-2048.",
     replacement: 'X25519MLKEM768 hybrid (IANA 0x11EC) now; ML-KEM-768 alone once hybrids are retired',
-    transition: { deprecatedAfter: 2030, disallowedAfter: 2035 },
+    transition: { deprecatedAfter: null, disallowedAfter: 2035 },
     citation: 'roetteler',
   },
   {
@@ -139,7 +148,7 @@ export const CLASSICAL_PRIMITIVES: ClassicalPrimitive[] = [
     mechanism:
       'Same discrete-log break as ECDH. A recovered signing key lets an attacker forge signatures indistinguishable from real ones — which means code-signing and certificate chains fail silently rather than loudly.',
     replacement: 'ML-DSA-65 / ML-DSA-87 (FIPS 204), or SLH-DSA (FIPS 205) where only hash assumptions are acceptable',
-    transition: { deprecatedAfter: 2030, disallowedAfter: 2035 },
+    transition: { deprecatedAfter: null, disallowedAfter: 2035 },
     citation: 'roetteler',
   },
   {
@@ -153,7 +162,7 @@ export const CLASSICAL_PRIMITIVES: ClassicalPrimitive[] = [
     target: 'the long-term signing key',
     mechanism: 'A 384-bit curve raises the quantum cost by roughly 3.6x over P-256. It does not change the outcome.',
     replacement: 'ML-DSA-87 (FIPS 204)',
-    transition: { deprecatedAfter: 2030, disallowedAfter: 2035 },
+    transition: { deprecatedAfter: null, disallowedAfter: 2035 },
     citation: 'roetteler',
   },
   {

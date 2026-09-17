@@ -11,7 +11,32 @@
  */
 
 /** Runtime version of the lightweight agent bundle. Bump on any agent.ts change. */
-export const AGENT_VERSION = '1.5.2'
+export const AGENT_VERSION = '1.5.4'
+
+/**
+ * First runtime that understands the `rollback` command.
+ *
+ * Checked before a rollback is dispatched, because an older agent answers an
+ * unknown command with "Unsupported command type" — which would settle the
+ * snapshot as a FAILED restore and leave an operator retrying a rollback that
+ * can never run until the host is upgraded. Refusing up front names the real
+ * fix instead.
+ */
+export const AGENT_ROLLBACK_MIN_VERSION = '1.5.3'
+
+/** Semver-ish comparison, tolerant of missing/garbage version strings. */
+export function agentVersionAtLeast(version: string | null | undefined, minimum: string): boolean {
+  const parse = (value: string) => String(value || '').trim().split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const have = parse(version || '')
+  const want = parse(minimum)
+  if (!String(version || '').trim()) return false
+  for (let i = 0; i < Math.max(have.length, want.length); i += 1) {
+    const a = have[i] || 0
+    const b = want[i] || 0
+    if (a !== b) return a > b
+  }
+  return true
+}
 
 /** Minimum Node.js major the bundled runtime requires (uses node: builtins + X509Certificate). */
 export const AGENT_MIN_NODE_MAJOR = 18
@@ -368,7 +393,26 @@ export type AgentEventName = (typeof AGENT_EVENTS)[number]
 /* Commands the control plane may queue for an agent                  */
 /* ------------------------------------------------------------------ */
 
-export type AgentCommandType = 'scan' | 'upgrade' | 'disable' | 'enable' | 'rescan_validation'
+export type AgentCommandType =
+  | 'scan'
+  | 'upgrade'
+  | 'disable'
+  | 'enable'
+  | 'rescan_validation'
+  /**
+   * Restore a configuration the agent itself backed up before it patched.
+   *
+   * Rollback is a WRITE, so it is only ever queued for a `patcher`/`operator`
+   * agent, and only for the agent that holds the backup — the backup file lives
+   * on the host that was changed, so "rolling back via" any other agent would
+   * restore nothing. The payload carries the snapshot id, the recorded
+   * target/backup paths and the pre-change digest; the agent refuses the command
+   * unless the backup still hashes to that digest.
+   */
+  | 'rollback'
+
+/** Command types that modify the host and therefore need a write-capable role. */
+export const MUTATING_COMMAND_TYPES: readonly AgentCommandType[] = ['rollback']
 
 export interface AgentCommand {
   id: string

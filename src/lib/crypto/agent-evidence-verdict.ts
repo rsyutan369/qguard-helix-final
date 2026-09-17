@@ -217,7 +217,18 @@ export function classifyAgentEvidence(input: AgentEvidenceInput): AgentEvidenceV
     )
   }
 
-  const known = findAlgorithm(observed)
+  /*
+   * Composite names are decomposed by the canonical classifier, never looked up
+   * by substring in the knowledge base. The knowledge base's alias scan matched
+   * the PART it recognised: `rsa-sha2-512` (an RSA signature) as "SHA-2,
+   * quantum resistant", and `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256` as "AES,
+   * quantum resistant" — so the fallback below, which reads the key exchange,
+   * was never reached, and an agent validating its own patch could pass a
+   * classical TLS 1.2 suite. Single primitives ("RSA-3072", "RC4", "ML-DSA-65")
+   * still use the knowledge base, which grades classical security.
+   */
+  const COMPOSITE = /_WITH_|^TLS_|-SHA2-|MLKEM|ML-KEM.*X25519|X25519.*ML-?KEM|SNTRUP|@OPENSSH|NISTP\d|DIFFIE-HELLMAN-GROUP|SECP\d+R1MLKEM|\+/i
+  const known = COMPOSITE.test(observed) ? null : findAlgorithm(observed)
 
   if (known) {
     const shorBroken = known.shorBroken === true

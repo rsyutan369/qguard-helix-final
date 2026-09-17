@@ -519,9 +519,18 @@ export function toFindings(controls: ControlState[]): PublicFinding[] {
  * (the control was expected and is absent); `Unknown`, `Not Observable` and
  * `Not Applicable` are all "no verdict" and must never render as a failure.
  */
-const STATUS_TO_SURFACE: Record<string, SurfaceStatus> = {
+/** The ONE control-status -> attack-surface-tone mapping. Exported so the
+ *  verification harness asserts against this table rather than keeping a second
+ *  copy that drifts from it (which is how a missing 'High' key went unnoticed
+ *  on both sides at once). */
+export const STATUS_TO_SURFACE: Record<string, SurfaceStatus> = {
   Healthy: 'pass',
   Warning: 'partial',
+  /* The Attack Surface has only pass/partial/fail, so a HIGH-severity control
+     lands on 'fail' alongside Critical. Omitting this key let the lookup fall
+     through to 'unknown', which painted tls-version and cipher-suite grey on
+     the Attack Surface while the Findings table showed them as failures. */
+  High: 'fail',
   Critical: 'fail',
   'Not Supported': 'fail',
   Unknown: 'unknown',
@@ -853,7 +862,11 @@ export function buildRecommendations(
   const needsAction = (key: string) => {
     const state = findControl(controls, key)
     if (!state) return null
-    return state.status === 'Critical' || state.status === 'Not Supported' || state.status === 'Warning' ? state : null
+    /* 'High' joins the actionable set: it is the tier a CRITICAL-looking
+       control is reconciled to when its severity is HIGH (see reconcileStatus),
+       so omitting it would silently drop those recommendations. */
+    return state.status === 'Critical' || state.status === 'High'
+      || state.status === 'Not Supported' || state.status === 'Warning' ? state : null
   }
 
   const tlsState = needsAction('tls-version')

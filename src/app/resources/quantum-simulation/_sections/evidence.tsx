@@ -223,7 +223,9 @@ function HandshakeEvidencePanel({ crypto }: { crypto: ScenarioCryptoProfile }) {
       <Callout tone="info" title="What this specimen is">
         Encoded here from the RFC 8446 grammar rather than captured from a wire — this page never contacts a network. The record's
         length fields are verified against its own byte count by the offline check tool, and for the hybrid groups the ML-KEM key
-        share is real FIPS 203 key material generated in your browser a moment ago.
+        share is real FIPS 203 key material generated in your browser a moment ago. The classical key shares — x25519 and the ECDH
+        halves of the hybrids — are random bytes of the correct length rather than valid curve points, since it is the field's
+        presence, position and size that the dump exists to show.
       </Callout>
     </div>
   );
@@ -246,7 +248,14 @@ function ArchiveEvidencePanel({ crypto }: { crypto: ScenarioCryptoProfile }) {
           accent={QSR.model}
           note="Scenario assumption"
         />
-        <StatTile label="Bytes per session" value={footprint.record.bytesPerSession.toLocaleString()} unit="B" provenance="published" note="From the group's real share sizes" />
+        <StatTile
+          label="Handshake bytes / session"
+          value={footprint.record.bytesPerSession.toLocaleString()}
+          unit="B"
+          provenance="model"
+          accent={QSR.model}
+          note="Published share sizes plus 512 B assumed framing"
+        />
         <StatTile label={`Archive after ${years} yr`} value={footprint.storageDescription.split(' — ')[0]} provenance="model" accent={QSR.broken} note={footprint.totalSessions.toExponential(2) + ' sessions'} />
       </div>
 
@@ -382,7 +391,9 @@ function KeyScheduleEvidencePanel() {
       <p className="text-[12.5px] leading-relaxed" style={{ color: QSR.inkSoft }}>
         Recovering the shared secret is not the end of the attack — it is the beginning of an entirely deterministic one. The TLS
         1.3 key schedule is HKDF-SHA-256 with fixed labels over a transcript the recorder already holds. Below is that schedule,
-        actually executed in this browser.
+        actually executed in this browser, from a freshly generated shared secret over the SHA-256 transcript of the specimen
+        ClientHello above. RFC 8446 feeds a different transcript to each stage; this walk-through uses the one transcript
+        throughout, so the chain is the real one but the bytes are not any particular session&apos;s traffic keys.
       </p>
 
       <div className="flex flex-wrap items-center gap-3">

@@ -41,6 +41,7 @@ import type {
 import { SEVERITY_ORDER } from '@/lib/scanner/exposure/types';
 import { completenessNote, reconcileExposure, withUnit } from '@/lib/scanner/exposure/exposure-truth';
 import { layerLabel } from '@/lib/scanner/exposure/correlate';
+import { algorithmChipCoverage, summariseCorrelation } from '@/lib/scanner/exposure/panel-model';
 import { CAPABILITY_LABEL, type EngineDescriptor } from '@/lib/scanner/exposure/engine-contract';
 import type { ScanProfile } from '@/lib/scanner/exposure/profiles';
 
@@ -706,6 +707,12 @@ export function ExposureScorecard({ assessment }: { assessment: ExposureAssessme
 
 export function QuantumExposureSummary({ assessment }: { assessment: ExposureAssessment }) {
   const { topAlgorithms } = assessment.intelligence;
+  /* What the chip row does and does not account for, derived in `panel-model`
+     so the check tool asserts the same denominators the note prints. Older
+     stored assessments predate `algorithmGroups`; the derivation falls back to
+     the rendered length there, which makes the note disappear rather than claim
+     a denominator we do not have. */
+  const chips = React.useMemo(() => algorithmChipCoverage(assessment), [assessment]);
   /* Reconciled, and the UNIT is stated. These cells count CBOM components; the
      Findings table below counts findings. Both are correct and they legitimately
      differ — several findings can attach to one component. Saying so is what
@@ -785,7 +792,20 @@ export function QuantumExposureSummary({ assessment }: { assessment: ExposureAss
 
       {topAlgorithms.length > 0 && (
         <div className="border-t border-white/[0.06] px-5 py-3">
-          <p className="font-mono text-[9.5px] font-bold uppercase tracking-[0.16em] text-slate-500">Algorithms observed</p>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <p className="font-mono text-[9.5px] font-bold uppercase tracking-[0.16em] text-slate-500">Algorithms observed</p>
+            {/* The chip row stops at twelve groups. Rendered bare, a reader sums
+                the chips and gets fewer components than the cells above report,
+                and reads the difference as a contradiction. `algorithmGroups`
+                is absent on assessments stored before it was published, so the
+                note degrades to silence rather than to a wrong denominator. */}
+            {chips.truncated && (
+              <p className="font-mono text-[9.5px] text-slate-500">
+                {chips.shown} largest of {chips.groups} groups · {chips.components.toLocaleString()} of{' '}
+                {chips.total.toLocaleString()} components
+              </p>
+            )}
+          </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {topAlgorithms.map((entry) => {
               /* An algorithm group is not homogeneous. ML-KEM is `pqc` standalone
@@ -836,6 +856,16 @@ export function QuantumExposureSummary({ assessment }: { assessment: ExposureAss
 
 /* ────────────────────────────────────────────────────────── findings table ── */
 
+/**
+ * Every quantum status a FINDING can carry.
+ *
+ * Exhaustive on purpose: a status missing from this row is a population no
+ * filter can reach, and one the reader has no way to know exists.
+ */
+const QUANTUM_FILTERS: QuantumStatus[] = [
+  'vulnerable', 'hybrid', 'pqc', 'resistant', 'unknown', 'not-applicable',
+];
+
 /** Findings with the filter set §51 asks for, and the detail panel of §52. */
 export function FindingExplorer({ assessment }: { assessment: ExposureAssessment }) {
   const [severity, setSeverity] = React.useState<Set<FindingSeverity>>(new Set());
@@ -849,6 +879,19 @@ export function FindingExplorer({ assessment }: { assessment: ExposureAssessment
     () => [...new Map(assessment.intelligence.byEngine.map((entry) => [entry.engineId, entry])).values()].filter((entry) => entry.findings > 0),
     [assessment],
   );
+
+  /* Facet counts for the quantum row, read from the reconciler's FINDING tally
+     — the same population this table filters. Deriving them here from a second
+     pass is how a facet count and its filter result come to disagree. */
+  const findingTruth = React.useMemo(() => reconcileExposure(assessment).findings, [assessment]);
+  const quantumFacets: Record<QuantumStatus, number> = {
+    vulnerable: findingTruth.vulnerable,
+    hybrid: findingTruth.hybrid,
+    pqc: findingTruth.pqc,
+    resistant: findingTruth.resistant,
+    unknown: findingTruth.unknown,
+    'not-applicable': findingTruth.notApplicable,
+  };
 
   const filtered = React.useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -905,14 +948,26 @@ export function FindingExplorer({ assessment }: { assessment: ExposureAssessment
               />
             ))}
           </div>
+          {/* Every status a finding can carry, each with the number of findings
+              behind it (the rule §51 asks for: a facet's count is what
+              selecting it returns).
+
+              `not-applicable` was missing from this row while 15 findings on a
+              real Dev scan carried it — unreachable by any filter, and with the
+              row badge suppressed for that status they appeared to have no
+              quantum classification at all. Selecting every chip returned 1101
+              of 1116 findings with nothing on the page to explain the
+              remainder. The counts come from the reconciler, so they cannot
+              drift from the rows the filter actually returns. */}
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="font-mono text-[9px] uppercase tracking-widest text-slate-600">Quantum</span>
-            {(['vulnerable', 'hybrid', 'pqc', 'resistant', 'unknown'] as QuantumStatus[]).map((value) => (
+            {QUANTUM_FILTERS.map((value) => (
               <FilterChip
                 key={value}
                 label={QUANTUM_LABEL[value]}
                 active={quantum.has(value)}
                 color={QUANTUM_COLOR[value]}
+                count={quantumFacets[value]}
                 onClick={() => toggle(quantum, value, setQuantum)}
               />
             ))}
@@ -975,7 +1030,13 @@ export function FindingExplorer({ assessment }: { assessment: ExposureAssessment
                       <span className="text-[12.5px] font-bold text-white">{finding.title}</span>
                       <SeverityBadge severity={finding.severity} />
                       <ConfidenceBadge confidence={finding.confidence} detection={finding.detection} />
-                      {finding.quantumStatus !== 'not-applicable' && <QuantumBadge status={finding.quantumStatus} />}
+                      {/* Rendered for every status, `not-applicable` included.
+                          Suppressing it left those rows looking unclassified
+                          rather than classified as out of scope for a
+                          post-quantum migration — and now that the filter row
+                          offers the status, a selected filter has to be
+                          visible in its results. */}
+                      <QuantumBadge status={finding.quantumStatus} />
                     </span>
                     <span className="mt-1 block truncate text-[11px] text-slate-500">
                       {finding.evidence[0]?.file
@@ -1465,7 +1526,17 @@ const EVIDENCE_LIMIT = 8;
 
 export function CorrelatedExposures({ exposures }: { exposures: CorrelatedExposure[] }) {
   const [open, setOpen] = React.useState<string | null>(null);
-  const multi = exposures.filter((exposure) => exposure.findingIds.length > 1 || (exposure.layers.length > 1));
+  /* Derived in `panel-model` so the check tool asserts the SAME split the panel
+     renders. Re-deriving it here is what let the header report every merged row
+     as "spanning multiple layers" — 30 of them, on a scan whose true
+     cross-layer count was zero. `merged` are the rows worth showing (several
+     findings, or several layers); `crossLayer` and `singletons` are the two
+     claims the header has to keep apart. */
+  const { merged, crossLayer, singletons, total } = React.useMemo(
+    () => summariseCorrelation(exposures),
+    [exposures],
+  );
+  const multi = merged;
 
   if (multi.length === 0) return null;
 
@@ -1473,12 +1544,27 @@ export function CorrelatedExposures({ exposures }: { exposures: CorrelatedExposu
     <Panel className="overflow-hidden">
       <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel accent={ACCENT.violet}>Correlated Exposures</SectionLabel>
-        <span className="font-mono text-[10px] text-slate-500">{multi.length} spanning multiple layers</span>
+        <span className="font-mono text-[10px] text-slate-500">
+          {multi.length} of {total} merged{crossLayer > 0 ? ` · ${crossLayer} across layers` : ' · none across layers'}
+        </span>
       </div>
       <p className="border-b border-white/[0.06] px-5 py-2.5 text-[11.5px] leading-relaxed text-slate-400">
         Findings that describe the same underlying exposure are merged into one row with all of their evidence sources,
         rather than repeated once per engine that saw them.
       </p>
+      {/* The filtered-out population, named. This panel shows only what
+          correlation MERGED, while the status bar, the risk basis and the
+          reconciliation panel all count the full exposure set — so a bare "7"
+          here beside "24 correlated exposures" there read as the platform
+          disagreeing with itself. It was never a truncation note: these rows
+          are excluded by the filter, not dropped by the cap. */}
+      {singletons > 0 && (
+        <p className="border-b border-white/[0.06] px-5 py-2 font-mono text-[10px] leading-relaxed text-slate-500">
+          A further {singletons.toLocaleString()} of the scan&apos;s {total.toLocaleString()} exposures rest on a single
+          finding in a single layer, so there is nothing to merge and no row here. They are counted everywhere else on
+          this page and listed in full under Findings.
+        </p>
+      )}
       <ul className="divide-y divide-white/[0.04]">
         {multi.slice(0, CORRELATED_LIMIT).map((exposure) => {
           const expanded = open === exposure.key;
@@ -1570,7 +1656,7 @@ export function CorrelatedExposures({ exposures }: { exposures: CorrelatedExposu
       <ListTruncationNote
         shown={CORRELATED_LIMIT}
         total={multi.length}
-        noun="exposures spanning multiple layers"
+        noun="merged exposures"
         rank="widest-spanning"
       />
     </Panel>
@@ -1581,6 +1667,13 @@ export function CorrelatedExposures({ exposures }: { exposures: CorrelatedExposu
 
 export function ExposureRecommendations({ assessment }: { assessment: ExposureAssessment }) {
   const { recommendations } = assessment.intelligence;
+  /* The orchestrator caps this list at ten. A capped list rendered with no
+     denominator is read as the whole remediation plan: a real Local scan
+     produced 27 distinct actions and showed 10, so a reader planning off this
+     panel silently dropped 17 of them. Absent on assessments stored before the
+     count was published — then the note stays hidden rather than inventing a
+     denominator. */
+  const candidates = assessment.intelligence.recommendationCandidates ?? recommendations.length;
   if (recommendations.length === 0) return null;
 
   return (
@@ -1608,6 +1701,12 @@ export function ExposureRecommendations({ assessment }: { assessment: ExposureAs
           </li>
         ))}
       </ol>
+      <ListTruncationNote
+        shown={recommendations.length}
+        total={candidates}
+        noun="distinct remediation actions this scan produced"
+        rank="highest-priority"
+      />
     </Panel>
   );
 }
@@ -1671,10 +1770,14 @@ export function AssessmentStatusBar({
           </button>
         )}
       </div>
+      {/* The reason is written by the orchestrator, which is the only place
+          that knows WHICH kind of gap this is. The panel used to append "Scores
+          are computed only from the engines that reported" to every partial
+          status, which is a non-sequitur on a scan whose engines all reported
+          and whose gap was an unreadable dimension. */}
       {partial && task.failureReason && (
         <p className="w-full border-t border-white/[0.06] pt-2.5 text-[11.5px] leading-relaxed text-amber-100/80">
-          <strong className="font-bold">Partial coverage.</strong> {task.failureReason} Scores are computed only from the
-          engines that reported.
+          <strong className="font-bold">Partial coverage.</strong> {task.failureReason}
         </p>
       )}
     </Panel>

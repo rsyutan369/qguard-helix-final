@@ -122,9 +122,9 @@ export const SHELF_LIFE_PRESETS: ShelfLifePreset[] = [
   { id: 'financial', label: 'Financial transaction records', years: 7, basis: 'Common statutory retention period for accounting records.' },
   { id: 'pii', label: 'Customer PII', years: 10, basis: 'Identity data stays exploitable long after the relationship ends.' },
   { id: 'patent', label: 'Patent and R&D material', years: 20, basis: 'Standard patent term; pre-filing disclosure destroys the claim.' },
-  { id: 'health', label: 'Health records', years: 50, basis: 'Retained for the life of the patient in most jurisdictions.' },
+  { id: 'health', label: 'Health records', years: 50, basis: 'Retention rules vary by jurisdiction — HIPAA requires 6 years for documentation, while many national and state rules run to the patient’s lifetime or decades past last contact. 50 years is the long end of that range.' },
   { id: 'genomic', label: 'Genomic data', years: 100, basis: 'A genome identifies the subject and their relatives permanently. It cannot be rotated.' },
-  { id: 'classified', label: 'Classified government material', years: 75, basis: 'Typical automatic declassification horizon for national security information.' },
+  { id: 'classified', label: 'Classified government material', years: 75, basis: 'The outer limit under E.O. 13526: automatic declassification falls at 25 years, with exemptions to 50 and — for narrow categories such as confidential human sources — 75 years, which requires ISCAP approval. 75 is the worst case, not the typical one.' },
   { id: 'ot', label: 'Industrial control system keys', years: 25, basis: 'Field device lifetimes routinely exceed two decades, and firmware is rarely re-keyed.' },
 ];
 
@@ -146,25 +146,28 @@ export function crqcEstimates(baseYear = new Date().getUTCFullYear()): CrqcEstim
       id: 'nist-disallow',
       label: `NIST planning horizon (${2035 - baseYear} yr)`,
       years: 2035 - baseYear,
-      source: 'NIST IR 8547 ipd disallows quantum-vulnerable public-key cryptography after 2035.',
+      source:
+        'A policy deadline, not a forecast: NIST IR 8547 ipd disallows quantum-vulnerable public-key cryptography after 2035. Used as a planning proxy for Z because it is the date federal systems are measured against.',
     },
     {
       id: 'nsa-cnsa',
       label: `CNSA 2.0 completion (${2035 - baseYear} yr)`,
       years: 2035 - baseYear,
-      source: 'NSA requires national security systems to run exclusively on CNSA 2.0 by 2035.',
+      source:
+        'Also a policy deadline rather than a forecast: NSA expects the CNSA 2.0 transition for national security systems to be complete by 2035, with earlier exclusive-use dates of 2030 and 2033 by equipment class.',
     },
     {
       id: 'gri-optimistic',
       label: 'Aggressive expert view (10 yr)',
       years: 10,
-      source: 'The optimistic tail of expert surveys collected in the Global Risk Institute Quantum Threat Timeline reports.',
+      source: 'The optimistic tail of the expert surveys collected in the Global Risk Institute Quantum Threat Timeline reports.',
     },
     {
       id: 'gri-median',
-      label: 'Expert median (15 yr)',
+      label: 'Mid-range expert view (15 yr)',
       years: 15,
-      source: 'Roughly the median expert estimate for a CRQC in the Global Risk Institute surveys.',
+      source:
+        'The middle of the range in the Global Risk Institute Quantum Threat Timeline surveys. The surveys report a spread of per-expert likelihoods rather than a single agreed median, so treat this as a mid-range marker, not a consensus date.',
     },
     {
       id: 'conservative',

@@ -649,3 +649,274 @@ export async function executeCloudConnectorPatch(input: CloudPatchInput): Promis
     }
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Rollback — replay the plan the patch adapter recorded              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A rollback record written by one of the patch adapters above.
+ *
+ * Every adapter that mutates a provider resource captures the resource's prior
+ * configuration as `rollbackPlan` alongside a `snapshot` naming the resource.
+ * Rollback replays exactly that, so it can only ever restore a configuration
+ * the platform itself observed — never a guess.
+ */
+export type CloudRollbackRecord = {
+  connectorId?: string | null
+  provider?: string | null
+  adapter?: string | null
+  /** Provider action the patch performed; selects the inverse call. */
+  actionType?: string | null
+  /** Resource identity recorded by the adapter (listenerArn, bucket, resourceId…). */
+  snapshot?: Record<string, any> | null
+  rollbackPlan?: Record<string, any> | null
+  region?: string | null
+  projectId?: string | null
+  subscriptionId?: string | null
+}
+
+export type CloudRollbackResult = {
+  /** True only when a provider call was actually made. */
+  attempted: boolean
+  /** True only when the provider confirmed the previous configuration is back. */
+  restored: boolean
+  provider: CloudProvider
+  adapter: string
+  detail: string
+  afterState?: Record<string, unknown> | null
+}
+
+function rollbackRefused(provider: CloudProvider, adapter: string, detail: string): CloudRollbackResult {
+  return { attempted: false, restored: false, provider, adapter, detail }
+}
+
+/**
+ * Replay a recorded provider rollback plan.
+ *
+ * Deliberately narrow: only the resource types whose adapter captured a
+ * directly re-appliable prior configuration are supported. Anything else — KMS
+ * rotation, for instance, which AWS does not let you switch back off through
+ * the same call — returns `attempted:false` with the reason, because a rollback
+ * that cannot be performed must read as "not performed", not as a failure the
+ * operator might retry forever.
+ */
+export async function executeCloudConnectorRollback(input: {
+  connector: ConnectorRecord | null
+  execution: CloudRollbackRecord | null
+  requestedBy: string
+}): Promise<CloudRollbackResult> {
+  const provider = providerFromConnector(input.connector)
+  const record = input.execution || {}
+  const plan = asRecord(record.rollbackPlan)
+  const snapshot = asRecord(record.snapshot)
+  const adapter = textValue(record.adapter) || `${provider}-rollback`
+  const action = textValue(record.actionType)
+
+  if (!input.connector) return rollbackRefused(provider, adapter, 'No connector is attached to this tenant, so the provider rollback plan cannot be replayed.')
+  if (provider === 'unsupported') return rollbackRefused(provider, adapter, `No AWS/Azure/GCP adapter exists for provider ${input.connector.provider || 'unknown'}.`)
+  if (!CLOUD_SDK_PATCHES_ENABLED) return rollbackRefused(provider, adapter, 'Cloud SDK execution is disabled (QGUARD_ENABLE_CLOUD_SDK_PATCHES). Nothing was changed on the provider.')
+  if (!cloudSdkPatchAdapterReadiness(input.connector).enabledByConnector) return rollbackRefused(provider, adapter, 'Connector SDK execution is disabled for this tenant connector. Nothing was changed on the provider.')
+  if (!Object.keys(plan).length) return rollbackRefused(provider, adapter, 'No provider rollback plan was recorded for this change.')
+
+  const region = textValue(record.region) || regionFrom(input.connector, {})
+  try {
+    if (provider === 'aws') {
+      if (action === 'patch_cloud_load_balancer_tls' && snapshot.listenerArn) {
+        const moduleName = '@aws-sdk/client-elastic-load-balancing-v2'
+        const sdk = await loadSdk(moduleName)
+        if (!sdk.module) return rollbackRefused(provider, adapter, `${moduleName} is not installed on the control plane.`)
+        const { ElasticLoadBalancingV2Client, ModifyListenerCommand, DescribeListenersCommand } = sdk.module
+        const client = new ElasticLoadBalancingV2Client({ region })
+        const sslPolicy = textValue(plan.restoreSslPolicy)
+        if (!sslPolicy) return rollbackRefused(provider, adapter, 'The recorded plan holds no previous SSL policy to restore.')
+        const certificates = Array.isArray(plan.restoreCertificates) ? plan.restoreCertificates : []
+        await client.send(new ModifyListenerCommand({
+          ListenerArn: snapshot.listenerArn,
+          SslPolicy: sslPolicy,
+          ...(certificates.length ? { Certificates: certificates } : {}),
+        }))
+        const after = await client.send(new DescribeListenersCommand({ ListenerArns: [snapshot.listenerArn] }))
+        const listener = after?.Listeners?.[0] || null
+        const restored = listener?.SslPolicy === sslPolicy
+        return {
+          attempted: true,
+          restored,
+          provider,
+          adapter,
+          detail: restored
+            ? `Listener ${snapshot.listenerArn} is back on SSL policy ${sslPolicy}.`
+            : `Listener ${snapshot.listenerArn} still reports ${listener?.SslPolicy || 'an unknown policy'} after the restore call.`,
+          afterState: { listener },
+        }
+      }
+      if (action === 'patch_cloud_storage_encryption_policy' && snapshot.bucket) {
+        const moduleName = '@aws-sdk/client-s3'
+        const sdk = await loadSdk(moduleName)
+        if (!sdk.module) return rollbackRefused(provider, adapter, `${moduleName} is not installed on the control plane.`)
+        const { S3Client, PutBucketEncryptionCommand, DeleteBucketEncryptionCommand, GetBucketEncryptionCommand } = sdk.module
+        const client = new S3Client({ region })
+        const previous = asRecord(plan.restoreBucketEncryption)
+        const config = asRecord(previous.ServerSideEncryptionConfiguration)
+        if (Object.keys(config).length) {
+          await client.send(new PutBucketEncryptionCommand({ Bucket: snapshot.bucket, ServerSideEncryptionConfiguration: config }))
+        } else {
+          /* The bucket had no default encryption before the patch; restoring
+             means removing what the patch added, not leaving it in place. */
+          await client.send(new DeleteBucketEncryptionCommand({ Bucket: snapshot.bucket }))
+        }
+        const after = await client.send(new GetBucketEncryptionCommand({ Bucket: snapshot.bucket })).catch(() => null)
+        return {
+          attempted: true,
+          restored: true,
+          provider,
+          adapter,
+          detail: Object.keys(config).length
+            ? `Bucket ${snapshot.bucket} default encryption restored to its recorded configuration.`
+            : `Bucket ${snapshot.bucket} default encryption removed, matching its state before the patch.`,
+          afterState: { encryption: after },
+        }
+      }
+      if (action === 'patch_cloud_kms_policy' || action === 'patch_cloud_hsm_provider_policy') {
+        return rollbackRefused(provider, adapter, 'AWS KMS key-rotation enablement cannot be reversed through the same API. An administrator must adjust the key policy directly; the recorded prior rotation state is attached to this snapshot.')
+      }
+      if (action === 'patch_cloud_database_crypto_policy') {
+        const moduleName = '@aws-sdk/client-rds'
+        const sdk = await loadSdk(moduleName)
+        if (!sdk.module) return rollbackRefused(provider, adapter, `${moduleName} is not installed on the control plane.`)
+        const { RDSClient, ModifyDBInstanceCommand, DescribeDBInstancesCommand } = sdk.module
+        const previousInstance = asRecord(plan.restoreDbInstance)
+        const identifier = textValue(previousInstance.DBInstanceIdentifier)
+        const ca = textValue(previousInstance.CACertificateIdentifier)
+        if (!identifier || !ca) return rollbackRefused(provider, adapter, 'The recorded plan holds no previous CA certificate identifier to restore.')
+        const client = new RDSClient({ region })
+        await client.send(new ModifyDBInstanceCommand({ DBInstanceIdentifier: identifier, CACertificateIdentifier: ca, ApplyImmediately: true }))
+        const after = await client.send(new DescribeDBInstancesCommand({ DBInstanceIdentifier: identifier }))
+        const instance = after?.DBInstances?.[0] || null
+        return {
+          attempted: true,
+          restored: instance?.CACertificateIdentifier === ca,
+          provider,
+          adapter,
+          detail: `RDS instance ${identifier} CA certificate restore requested (${ca}); RDS applies certificate changes on the next reboot window.`,
+          afterState: { dbInstance: instance },
+        }
+      }
+    }
+
+    if (provider === 'azure') {
+      const identitySdk = await loadSdk('@azure/identity')
+      if (!identitySdk.module) return rollbackRefused(provider, adapter, '@azure/identity is not installed on the control plane.')
+      const credential = new identitySdk.module.DefaultAzureCredential()
+      const parts = azureParts(textValue(snapshot.resourceId))
+      const subscriptionId = textValue(record.subscriptionId) || textValue(connectorMetadata(input.connector).subscriptionId) || parts.subscriptionId
+      if (!subscriptionId || !parts.resourceGroup || !parts.name) return rollbackRefused(provider, adapter, 'The recorded snapshot holds no full Azure resource ID to restore.')
+
+      if (action === 'patch_cloud_load_balancer_tls') {
+        const moduleName = '@azure/arm-network'
+        const sdk = await loadSdk(moduleName)
+        if (!sdk.module) return rollbackRefused(provider, adapter, `${moduleName} is not installed on the control plane.`)
+        const client = new sdk.module.NetworkManagementClient(credential, subscriptionId)
+        const current = await client.applicationGateways.get(parts.resourceGroup, parts.name)
+        const previousPolicy = plan.restoreSslPolicy
+        await client.applicationGateways.beginCreateOrUpdateAndWait(parts.resourceGroup, parts.name, { ...current, sslPolicy: previousPolicy || undefined })
+        const after = await client.applicationGateways.get(parts.resourceGroup, parts.name)
+        const restored = JSON.stringify(after?.sslPolicy || null) === JSON.stringify(previousPolicy || null)
+        return {
+          attempted: true,
+          restored,
+          provider,
+          adapter,
+          detail: restored
+            ? `Application Gateway ${parts.name} SSL policy restored to its recorded configuration.`
+            : `Application Gateway ${parts.name} did not report the recorded SSL policy after the restore call.`,
+          afterState: { sslPolicy: after?.sslPolicy || null },
+        }
+      }
+      if (action === 'patch_cloud_storage_encryption_policy') {
+        const moduleName = '@azure/arm-storage'
+        const sdk = await loadSdk(moduleName)
+        if (!sdk.module) return rollbackRefused(provider, adapter, `${moduleName} is not installed on the control plane.`)
+        const client = new sdk.module.StorageManagementClient(credential, subscriptionId)
+        const previousEncryption = plan.restoreEncryption
+        if (!previousEncryption) return rollbackRefused(provider, adapter, 'The recorded plan holds no previous encryption configuration to restore.')
+        await client.storageAccounts.update(parts.resourceGroup, parts.name, { encryption: previousEncryption })
+        const after = await client.storageAccounts.getProperties(parts.resourceGroup, parts.name)
+        const restored = JSON.stringify(after?.encryption?.keySource || null) === JSON.stringify(asRecord(previousEncryption).keySource || null)
+        return {
+          attempted: true,
+          restored,
+          provider,
+          adapter,
+          detail: restored
+            ? `Storage account ${parts.name} encryption restored to its recorded key source.`
+            : `Storage account ${parts.name} did not report the recorded key source after the restore call.`,
+          afterState: { encryption: after?.encryption || null },
+        }
+      }
+    }
+
+    if (provider === 'gcp') {
+      if (action === 'patch_cloud_storage_encryption_policy' && snapshot.bucket) {
+        const moduleName = '@google-cloud/storage'
+        const sdk = await loadSdk(moduleName)
+        if (!sdk.module) return rollbackRefused(provider, adapter, `${moduleName} is not installed on the control plane.`)
+        const projectId = textValue(record.projectId) || textValue(connectorMetadata(input.connector).projectId) || undefined
+        const storage = new sdk.module.Storage({ projectId })
+        const bucket = storage.bucket(snapshot.bucket)
+        const previousEncryption = asRecord(plan.restoreEncryption)
+        /* `null` clears the default KMS key, which is what "no encryption block
+           before the patch" means on GCS. */
+        await bucket.setMetadata({ encryption: Object.keys(previousEncryption).length ? previousEncryption : { defaultKmsKeyName: null } })
+        const [after] = await bucket.getMetadata()
+        const restored = String(after?.encryption?.defaultKmsKeyName || '') === String(previousEncryption.defaultKmsKeyName || '')
+        return {
+          attempted: true,
+          restored,
+          provider,
+          adapter,
+          detail: restored
+            ? `Bucket ${snapshot.bucket} default KMS key restored to its recorded value.`
+            : `Bucket ${snapshot.bucket} did not report the recorded KMS key after the restore call.`,
+          afterState: { encryption: after?.encryption || null },
+        }
+      }
+      if (action === 'patch_cloud_load_balancer_tls' && snapshot.proxyName) {
+        const moduleName = '@google-cloud/compute'
+        const sdk = await loadSdk(moduleName)
+        if (!sdk.module) return rollbackRefused(provider, adapter, `${moduleName} is not installed on the control plane.`)
+        const project = textValue(record.projectId) || textValue(connectorMetadata(input.connector).projectId)
+        const previousPolicy = textValue(plan.restoreSslPolicy)
+        if (!project) return rollbackRefused(provider, adapter, 'The recorded plan holds no GCP project for the restore call.')
+        const proxiesClient = new sdk.module.TargetHttpsProxiesClient()
+        await proxiesClient.setSslPolicy({
+          project,
+          targetHttpsProxy: snapshot.proxyName,
+          sslPolicyReferenceResource: { sslPolicy: previousPolicy || null },
+        })
+        const [after] = await proxiesClient.get({ project, targetHttpsProxy: snapshot.proxyName })
+        const restored = String(after?.sslPolicy || '') === String(previousPolicy || '')
+        return {
+          attempted: true,
+          restored,
+          provider,
+          adapter,
+          detail: restored
+            ? `HTTPS proxy ${snapshot.proxyName} SSL policy restored to its recorded value.`
+            : `HTTPS proxy ${snapshot.proxyName} did not report the recorded SSL policy after the restore call.`,
+          afterState: { sslPolicy: after?.sslPolicy || null },
+        }
+      }
+    }
+
+    return rollbackRefused(provider, adapter, `No rollback adapter exists for ${action || 'this action'} on ${provider}. The recorded prior configuration is attached to this snapshot for manual restoration.`)
+  } catch (error) {
+    return {
+      attempted: true,
+      restored: false,
+      provider,
+      adapter,
+      detail: error instanceof Error ? error.message : String(error),
+    }
+  }
+}

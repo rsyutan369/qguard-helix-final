@@ -1,4 +1,4 @@
-import { createHash, X509Certificate } from 'node:crypto'
+import { createHash, createPrivateKey, createPublicKey, X509Certificate } from 'node:crypto'
 import { promises as fs, readFileSync } from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
@@ -52,6 +52,9 @@ type EvidenceType =
   | 'config-reference'
   | 'jwt-algorithm'
   | 'crypto-library'
+  | 'tls-key-exchange'
+  | 'certificate-file'
+  | 'key-file'
 
 interface AgentPolicy {
   enabled: boolean
@@ -269,7 +272,7 @@ const API_URL = (process.env.QGUARD_API_URL || DEFAULT_API_URL).replace(/\/+$/, 
 const AGENT_ID = process.env.QGUARD_AGENT_ID || ''
 const AGENT_TOKEN = process.env.QGUARD_AGENT_TOKEN || ''
 /** Injected at bundle time by tools/build-agent-release.mjs; falls back for `tsx` runs. */
-const AGENT_VERSION = process.env.QGUARD_AGENT_BUILD_VERSION || process.env.QGUARD_AGENT_VERSION || '1.5.2'
+const AGENT_VERSION = process.env.QGUARD_AGENT_BUILD_VERSION || process.env.QGUARD_AGENT_VERSION || '1.5.4'
 const AGENT_ROLE = (process.env.QGUARD_AGENT_ROLE || 'collector').toLowerCase()
 const REMEDIATION_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_REMEDIATION || '')
 const CONFIG_PATCHES_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_CONFIG_PATCHES || '')
@@ -534,6 +537,20 @@ const EMPTY_UPLOAD: UploadOutcome = { attempted: 0, accepted: 0, rejected: 0, ou
  * caller records the outcome, the scan still reaches a terminal state, and the
  * Agent Center shows the real reason rather than a bar frozen mid-flight.
  */
+/**
+ * JSON-safe copy of a value: BigInt becomes its decimal string.
+ *
+ * Node reports an RSA key's public exponent as a BigInt (65537n), and
+ * JSON.stringify throws on BigInt. The TLS handshake scanner put
+ * `asymmetricKeyDetails` straight into its evidence, so for every endpoint
+ * presenting an RSA certificate the WHOLE evidence batch failed to serialise
+ * and the agent uploaded nothing — reporting "control plane accepted 0" while
+ * it had collected everything.
+ */
+function jsonSafe<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value ?? null, (_key, v) => (typeof v === 'bigint' ? v.toString() : v)))
+}
+
 async function publishBatch(
   pathName: string,
   body: Record<string, unknown>,
@@ -543,7 +560,8 @@ async function publishBatch(
   try {
     const payload = await requestJson<{ data?: Record<string, unknown> }>(pathName, {
       method: 'POST',
-      body: JSON.stringify(body),
+      // Defence in depth: no future BigInt anywhere in evidence can sink a batch.
+      body: JSON.stringify(body, (_key, v) => (typeof v === 'bigint' ? v.toString() : v)),
     })
     const data = payload?.data || {}
     const rejected = Number(data.rejectedEventCount ?? data.rejectedEvidenceCount ?? 0) || 0
@@ -719,28 +737,46 @@ function runtimeEventsEnabled(scanTypes: Set<string>) {
   return scanTypes.has('runtime') || DEFAULT_SCAN_TYPES.some((type) => scanTypes.has(type))
 }
 
+/**
+ * The measured key, named exactly.
+ *
+ * This used to bucket: an RSA-3072 key was labelled "RSA-2048" (anything between
+ * the two thresholds fell into it), every EC curve other than P-384/secp256k1 —
+ * P-521 included — became "ECDSA-P256", an unknown modulus was reported as 2048
+ * bits, and Ed448, ML-DSA and SLH-DSA keys fell through unnamed.
+ */
 function normalizeKeyAlgorithm(keyType: string | undefined, details: Record<string, unknown> = {}) {
   const type = String(keyType || '').toLowerCase()
-  const modulusLength = Number(details.modulusLength || 0)
+  const modulusLength = Number(details.modulusLength || 0) || null
   const namedCurve = String(details.namedCurve || '').toLowerCase()
 
   if (type === 'rsa' || type === 'rsa-pss') {
-    if (modulusLength <= 1024) return { algorithm: 'RSA-1024', keySize: modulusLength || 1024 }
-    if (modulusLength >= 4096) return { algorithm: 'RSA-4096', keySize: modulusLength || 4096 }
-    return { algorithm: 'RSA-2048', keySize: modulusLength || 2048 }
+    return { algorithm: modulusLength ? `RSA-${modulusLength}` : 'RSA', keySize: modulusLength }
   }
+  if (type === 'dsa') return { algorithm: modulusLength ? `DSA-${modulusLength}` : 'DSA', keySize: modulusLength }
   if (type === 'ec') {
-    if (namedCurve.includes('384')) return { algorithm: 'ECDSA-P384', keySize: 384 }
-    if (namedCurve.includes('secp256k1')) return { algorithm: 'ECC-secp256k1', keySize: 256 }
-    return { algorithm: 'ECDSA-P256', keySize: 256 }
+    const curve = /secp256k1/.test(namedCurve)
+      ? 'secp256k1'
+      : /384/.test(namedCurve)
+        ? 'P384'
+        : /521/.test(namedCurve)
+          ? 'P521'
+          : /256|prime256v1/.test(namedCurve)
+            ? 'P256'
+            : null
+    const size = curve === 'P384' ? 384 : curve === 'P521' ? 521 : curve ? 256 : null
+    return { algorithm: curve ? `ECDSA-${curve}` : 'ECDSA', keySize: size }
   }
-  if (type.includes('ed25519')) return { algorithm: 'Ed25519', keySize: 256 }
-  if (type.includes('x25519')) return { algorithm: 'X25519', keySize: 256 }
-
+  if (type === 'ed25519') return { algorithm: 'Ed25519', keySize: 256 }
+  if (type === 'ed448') return { algorithm: 'Ed448', keySize: 448 }
+  if (type === 'x25519') return { algorithm: 'X25519', keySize: 256 }
+  if (type === 'x448') return { algorithm: 'X448', keySize: 448 }
+  const postQuantum = type.match(/^(ml-dsa|ml-kem|slh-dsa)-(.+)$/)
+  if (postQuantum) return { algorithm: `${postQuantum[1].toUpperCase()}-${postQuantum[2].toUpperCase()}`, keySize: null }
   return { algorithm: keyType || 'unknown', keySize: null }
 }
 
-async function scanTlsTarget(target: ScanTarget): Promise<ScannerEvidence[]> {
+async function scanTlsHandshake(target: ScanTarget): Promise<ScannerEvidence[]> {
   return new Promise((resolve, reject) => {
     // Discovery probe, not a data channel: this handshake only OBSERVES the
     // endpoint's negotiated protocol/cipher/certificate so the scanner can
@@ -750,7 +786,8 @@ async function scanTlsTarget(target: ScanTarget): Promise<ScannerEvidence[]> {
     const socket = tls.connect({
       host: target.host,
       port: target.port,
-      servername: target.host,
+      // SNI must be a hostname (RFC 6066); an IP literal is deprecated and will be ignored.
+      servername: net.isIP(target.host) ? undefined : target.host,
       rejectUnauthorized: false,
       timeout: 10_000,
     })
@@ -790,7 +827,7 @@ async function scanTlsTarget(target: ScanTarget): Promise<ScannerEvidence[]> {
             validTo: cert.validTo,
             serialNumber: cert.serialNumber,
             publicKeyType: cert.publicKey.asymmetricKeyType,
-            publicKeyDetails: cert.publicKey.asymmetricKeyDetails,
+            publicKeyDetails: jsonSafe(cert.publicKey.asymmetricKeyDetails),
           },
           observedAt,
         })
@@ -808,7 +845,9 @@ async function scanTlsTarget(target: ScanTarget): Promise<ScannerEvidence[]> {
           protocol: protocol || 'TLS',
           observedAlgorithm: protocolAlgorithm,
           confidence: 'high',
-          rawEvidence: { protocol },
+          /* Kept for the key-exchange probe: Node names a classical TLS 1.3
+             group here but returns {} for a hybrid one. */
+          rawEvidence: { protocol, ephemeralKeyInfo: socket.getEphemeralKeyInfo?.() || null },
           observedAt,
         })
       }
@@ -845,6 +884,371 @@ async function scanTlsTarget(target: ScanTarget): Promise<ScannerEvidence[]> {
   })
 }
 
+/**
+ * A TLS endpoint: its handshake (certificate, protocol, cipher) plus the
+ * key-exchange group it accepts.
+ *
+ * The key exchange is THE quantum-relevant fact about a TLS endpoint — it decides
+ * whether recorded traffic can be decrypted later (harvest-now-decrypt-later) —
+ * and the agent never captured it. Node cannot report it for TLS 1.3 (a hybrid
+ * handshake returns an empty getEphemeralKeyInfo()), so it is MEASURED: a
+ * handshake offering exactly one group either completes or is refused.
+ */
+async function scanTlsTarget(target: ScanTarget): Promise<ScannerEvidence[]> {
+  const evidence = await scanTlsHandshake(target)
+  evidence.push(...await scanTlsKeyExchange(target, evidence))
+  return evidence
+}
+
+const HYBRID_TLS_GROUPS = ['X25519MLKEM768', 'SecP256r1MLKEM768', 'SecP384r1MLKEM1024']
+const CLASSICAL_TLS_GROUPS = ['X25519', 'prime256v1', 'secp384r1']
+/** Names the canonical classifier reads as KEY EXCHANGE ("P-256" alone reads as a signature curve). */
+const TLS_GROUP_OBSERVED_NAME: Record<string, string> = {
+  prime256v1: 'ECDHE-P-256',
+  secp384r1: 'ECDHE-P-384',
+}
+
+type GroupVerdict = 'accepted' | 'rejected' | 'untestable'
+
+function probeTlsGroup(target: ScanTarget, group: string, tls13Only: boolean): Promise<GroupVerdict> {
+  return new Promise((resolve) => {
+    let settled = false
+    let socket: tls.TLSSocket | undefined
+    const finish = (verdict: GroupVerdict) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try { socket?.destroy() } catch { /* already closed */ }
+      resolve(verdict)
+    }
+    const timer = setTimeout(() => finish('untestable'), 6_000)
+    try {
+      socket = tls.connect(
+        {
+          host: target.host,
+          port: target.port,
+          servername: net.isIP(target.host) ? undefined : target.host,
+          // nosemgrep: bypass-tls-verification -- assessment probe, not a client.
+          // It asks only "does this endpoint accept group X", sends no data,
+          // and must answer for internal hosts with private or expired chains.
+          rejectUnauthorized: false,
+          ecdhCurve: group,
+          // Hybrid groups exist only in TLS 1.3; pinning the floor stops a 1.2
+          // fallback from reading as post-quantum support.
+          ...(tls13Only ? { minVersion: 'TLSv1.3' as const } : {}),
+          timeout: 6_000,
+        },
+        () => {
+          if (socket?.getProtocol() === 'TLSv1.3') return finish('accepted')
+          const cipher = socket?.getCipher()
+          // TLS 1.2: only an ECDHE suite proves the EC group was used.
+          finish(!tls13Only && /ECDHE/i.test(cipher?.standardName || cipher?.name || '') ? 'accepted' : 'rejected')
+        },
+      )
+    } catch {
+      // This host's OpenSSL cannot offer the group: a limit of the probe, not an answer.
+      clearTimeout(timer)
+      settled = true
+      resolve('untestable')
+      return
+    }
+    socket.on('error', (error: NodeJS.ErrnoException) => {
+      const text = `${error.code || ''} ${error.message || ''}`
+      /* Only a TLS-level refusal is a rejection. A reset, refusal or timeout is a
+         failed measurement, and must never be recorded as "does not support". */
+      finish(/ALERT|HANDSHAKE|NO_SHARED|UNSUPPORTED_PROTOCOL|WRONG_VERSION|VERSION_TOO_LOW/i.test(text) ? 'rejected' : 'untestable')
+    })
+    socket.on('timeout', () => finish('untestable'))
+  })
+}
+
+async function scanTlsKeyExchange(target: ScanTarget, handshake: ScannerEvidence[]): Promise<ScannerEvidence[]> {
+  const probes: Array<{ group: string; verdict: GroupVerdict }> = []
+  let accepted: string | null = null
+  let hybridUntestable = false
+
+  for (const group of HYBRID_TLS_GROUPS) {
+    const verdict = await probeTlsGroup(target, group, true)
+    probes.push({ group, verdict })
+    if (verdict === 'accepted') { accepted = group; break }
+    if (verdict === 'untestable') hybridUntestable = true
+  }
+
+  if (!accepted) {
+    /* A hybrid group that could not be TESTED leaves the answer unknown.
+       Concluding "classical only" from it would publish a harvest-now exposure
+       nobody measured — so nothing is published this cycle. */
+    if (hybridUntestable) return []
+    for (const group of CLASSICAL_TLS_GROUPS) {
+      const verdict = await probeTlsGroup(target, group, false)
+      probes.push({ group, verdict })
+      if (verdict === 'accepted') { accepted = group; break }
+    }
+  }
+  if (!accepted) return []
+
+  const isHybrid = HYBRID_TLS_GROUPS.includes(accepted)
+  const handshakeProtocol = handshake.find((item) => item.evidenceType === 'tls-protocol')
+  return [{
+    evidenceType: 'tls-key-exchange',
+    assetName: target.host,
+    assetType: 'tls_endpoint',
+    target: target.original,
+    host: target.host,
+    port: target.port,
+    protocol: 'TLS',
+    observedAlgorithm: TLS_GROUP_OBSERVED_NAME[accepted] || accepted,
+    confidence: 'high',
+    rawEvidence: {
+      acceptedGroup: accepted,
+      keyExchangeClass: isHybrid ? 'hybrid-post-quantum' : 'classical',
+      method: 'single-group TLS handshake',
+      probes,
+      /* The strongest accepted group is reported. A hybrid endpoint may still
+         accept a classical group for older clients; that fallback is not probed
+         and is not presented as the endpoint's posture. */
+      ephemeralKeyInfo: (handshakeProtocol?.rawEvidence as Record<string, unknown> | undefined)?.ephemeralKeyInfo ?? null,
+    },
+    observedAt: isoNow(),
+  }]
+}
+
+/* ------------------------------------------------------------------ */
+/* Cryptographic material on disk: certificates, key metadata, identity */
+/* ------------------------------------------------------------------ */
+
+const MAX_CRYPTO_FILE_BYTES = 512 * 1024
+/** Files that may hold PEM/DER certificates or keys. `.pub` stays with the SSH key scanner. */
+const CRYPTO_MATERIAL_EXTENSIONS = new Set(['.pem', '.crt', '.cer', '.der', '.cert', '.key', '.ca-bundle', '.chain'])
+
+async function readCryptoFile(filePath: string): Promise<{ buffer: Buffer; mode: number } | null> {
+  const stat = await fs.stat(filePath).catch(() => null)
+  if (!stat || !stat.isFile() || stat.size === 0 || stat.size > MAX_CRYPTO_FILE_BYTES) return null
+  const buffer = await fs.readFile(filePath).catch(() => null)
+  return buffer ? { buffer, mode: stat.mode } : null
+}
+
+function certificateEvidenceFrom(cert: X509Certificate, filePath: string, context: Record<string, unknown>): ScannerEvidence {
+  const keyDetails = normalizeKeyAlgorithm(cert.publicKey.asymmetricKeyType, cert.publicKey.asymmetricKeyDetails as Record<string, unknown>)
+  return {
+    evidenceType: 'certificate-file',
+    assetName: os.hostname(),
+    assetType: 'certificate',
+    filePath,
+    observedAlgorithm: keyDetails.algorithm,
+    keySize: keyDetails.keySize,
+    certificateFingerprint: cert.fingerprint256,
+    confidence: 'high',
+    rawEvidence: {
+      subject: cert.subject,
+      issuer: cert.issuer,
+      validFrom: cert.validFrom,
+      validTo: cert.validTo,
+      serialNumber: cert.serialNumber,
+      signatureAlgorithm: (cert as unknown as { signatureAlgorithm?: string }).signatureAlgorithm || null,
+      isCertificateAuthority: cert.ca,
+      publicKeyType: cert.publicKey.asymmetricKeyType,
+      /* Same measure key files carry, so a private key found on disk can be
+         matched to the certificate it belongs to. */
+      publicKeyFingerprintSha256: createHash('sha256').update(cert.publicKey.export({ type: 'spki', format: 'der' })).digest('hex'),
+      ...context,
+    },
+    observedAt: isoNow(),
+  }
+}
+
+/**
+ * Key METADATA from a PEM block — algorithm, size and the SHA-256 fingerprint of
+ * the PUBLIC key (so a key can be matched to its certificate). Private key
+ * material is parsed in memory only to derive the public half, is never
+ * exported, logged or transmitted, and an encrypted key is recorded as
+ * unreadable rather than guessed.
+ */
+function keyEvidenceFromPem(text: string, filePath: string, mode: number): ScannerEvidence[] {
+  const evidence: ScannerEvidence[] = []
+  const blocks = text.match(/-----BEGIN ([A-Z0-9 ]*?(?:PRIVATE|PUBLIC) KEY)-----[\s\S]+?-----END \1-----/g) || []
+  for (const block of blocks.slice(0, 20)) {
+    const pemType = block.match(/-----BEGIN ([A-Z0-9 ]+)-----/)?.[1] || 'KEY'
+    const isPrivate = /PRIVATE/.test(pemType)
+    const encrypted = /ENCRYPTED/.test(pemType) || /Proc-Type:\s*4,ENCRYPTED/.test(block)
+    let algorithm: string | null = null
+    let keySize: number | null = null
+    let publicKeyFingerprintSha256: string | null = null
+    let readable = false
+    if (!encrypted) {
+      try {
+        const publicKey = isPrivate ? createPublicKey(createPrivateKey(block)) : createPublicKey(block)
+        const details = normalizeKeyAlgorithm(publicKey.asymmetricKeyType, publicKey.asymmetricKeyDetails as Record<string, unknown>)
+        algorithm = details.algorithm
+        keySize = details.keySize
+        publicKeyFingerprintSha256 = createHash('sha256').update(publicKey.export({ type: 'spki', format: 'der' })).digest('hex')
+        readable = true
+      } catch {
+        // Malformed, or a format Node cannot parse (e.g. OPENSSH PRIVATE KEY). Recorded, not guessed.
+      }
+    } else {
+      // A legacy PKCS#1/SEC1 header names the family; PKCS#8 names nothing, and nothing is invented.
+      algorithm = /^RSA /.test(pemType) ? 'RSA' : /^EC /.test(pemType) ? 'ECDSA' : /^DSA /.test(pemType) ? 'DSA' : null
+    }
+    /* Stated, not blank: every evidence row names what was observed, and for an
+       unreadable key that is the fact that it could not be read. The canonical
+       classifier reads this as policy, so it never becomes a finding. */
+    if (!algorithm) algorithm = encrypted ? 'Encrypted private key (algorithm not readable)' : 'Unreadable key'
+    evidence.push({
+      evidenceType: 'key-file',
+      assetName: os.hostname(),
+      assetType: 'key',
+      filePath,
+      observedAlgorithm: algorithm,
+      keySize,
+      confidence: readable ? 'high' : 'low',
+      rawEvidence: {
+        keyKind: isPrivate ? 'private' : 'public',
+        pemType,
+        encrypted,
+        readable,
+        publicKeyFingerprintSha256,
+        keyMaterialTransmitted: false,
+        // POSIX only: a private key readable by every local user is a finding in itself.
+        ...(process.platform !== 'win32' && isPrivate ? { worldReadable: Boolean(mode & 0o004) } : {}),
+      },
+      observedAt: isoNow(),
+    })
+  }
+  return evidence
+}
+
+async function scanCryptoMaterialFile(filePath: string): Promise<ScannerEvidence[]> {
+  const file = await readCryptoFile(filePath)
+  if (!file) return []
+  const evidence: ScannerEvidence[] = []
+  const text = file.buffer.toString('utf8')
+  if (text.includes('-----BEGIN')) {
+    const certificates = text.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) || []
+    certificates.slice(0, 50).forEach((block, index) => {
+      try {
+        evidence.push(certificateEvidenceFrom(new X509Certificate(block), filePath, { encoding: 'PEM', bundleIndex: index, bundleSize: certificates.length }))
+      } catch {
+        // Not a parseable certificate block.
+      }
+    })
+    evidence.push(...keyEvidenceFromPem(text, filePath, file.mode))
+    return evidence
+  }
+  try {
+    evidence.push(certificateEvidenceFrom(new X509Certificate(file.buffer), filePath, { encoding: 'DER' }))
+  } catch {
+    // Binary, but not a DER certificate.
+  }
+  return evidence
+}
+
+/** RSA modulus size from a base64url JWK `n`, ignoring a leading zero octet. */
+function jwkModulusBits(n: unknown): number | null {
+  if (typeof n !== 'string' || !n) return null
+  try {
+    const bytes = Buffer.from(n, 'base64url')
+    let length = bytes.length
+    if (length > 0 && bytes[0] === 0) length -= 1
+    return length ? length * 8 : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Identity signing material: JWKS key sets and SAML metadata.
+ *
+ * These decide how every token and assertion an identity provider issues is
+ * signed, and the agent collected none of it — only stray "RS256" mentions in
+ * config lines. Only public parameters are read; a JWKS that PUBLISHES private
+ * parameters is flagged, and those values are never sent.
+ */
+async function scanIdentityFile(filePath: string): Promise<ScannerEvidence[]> {
+  const file = await readCryptoFile(filePath)
+  if (!file) return []
+  const text = file.buffer.toString('utf8')
+  const extension = path.extname(filePath).toLowerCase()
+  const evidence: ScannerEvidence[] = []
+
+  if (extension === '.json') {
+    let parsed: unknown
+    try { parsed = JSON.parse(text) } catch { return [] }
+    const keys = (parsed as { keys?: unknown })?.keys
+    if (!Array.isArray(keys) || !keys.some((key) => key && typeof key === 'object' && 'kty' in key)) return []
+    for (const raw of keys.slice(0, 50)) {
+      if (!raw || typeof raw !== 'object') continue
+      const jwk = raw as Record<string, unknown>
+      const kty = String(jwk.kty || '')
+      const crv = String(jwk.crv || '')
+      const alg = String(jwk.alg || '')
+      const bits = kty === 'RSA' ? jwkModulusBits(jwk.n) : null
+      const derived = kty === 'RSA'
+        ? (bits ? `RSA-${bits}` : 'RSA')
+        : kty === 'EC'
+          ? (crv === 'P-384' ? 'ECDSA-P384' : crv === 'P-521' ? 'ECDSA-P521' : crv === 'secp256k1' ? 'ECDSA-secp256k1' : 'ECDSA-P256')
+          : kty === 'OKP'
+            ? crv || 'OKP'
+            : null
+      evidence.push({
+        evidenceType: 'jwt-algorithm',
+        assetName: os.hostname(),
+        assetType: 'identity_provider',
+        filePath,
+        observedAlgorithm: alg || derived,
+        keySize: bits || (crv === 'P-384' ? 384 : crv === 'P-521' ? 521 : crv === 'P-256' ? 256 : null),
+        confidence: 'high',
+        rawEvidence: {
+          identity: 'JWKS',
+          kid: jwk.kid ?? null,
+          use: jwk.use ?? null,
+          kty,
+          crv: crv || null,
+          alg: alg || null,
+          containsPrivateParameters: ['d', 'p', 'q', 'dp', 'dq', 'qi', 'k'].some((member) => member in jwk),
+        },
+        observedAt: isoNow(),
+      })
+    }
+    return evidence
+  }
+
+  if (extension === '.xml' && /<(?:\w+:)?EntityDescriptor\b/.test(text)) {
+    const entityId = text.match(/entityID="([^"]+)"/)?.[1] || null
+    const descriptorPattern = /<(?:\w+:)?KeyDescriptor(?:\s+use="(signing|encryption)")?[^>]*>([\s\S]*?)<\/(?:\w+:)?KeyDescriptor>/g
+    let descriptor: RegExpExecArray | null
+    while ((descriptor = descriptorPattern.exec(text)) && evidence.length < 50) {
+      const base64 = descriptor[2].match(/<(?:\w+:)?X509Certificate>([\s\S]*?)<\/(?:\w+:)?X509Certificate>/)?.[1]
+      if (!base64) continue
+      try {
+        const cert = new X509Certificate(Buffer.from(base64.replace(/\s+/g, ''), 'base64'))
+        evidence.push(certificateEvidenceFrom(cert, filePath, { encoding: 'SAML metadata', identity: { protocol: 'SAML', entityId, use: descriptor[1] || 'signing' } }))
+      } catch {
+        // Not a parseable certificate.
+      }
+    }
+    const methods = new Set<string>()
+    for (const match of text.matchAll(/Algorithm="[^"]*#(rsa|ecdsa|dsa)-(sha1|sha256|sha384|sha512)"/gi)) {
+      const primitive = match[1].toLowerCase()
+      const digest = match[2].toUpperCase().replace('SHA', 'SHA-')
+      methods.add(primitive === 'rsa' ? `${match[2]}WithRSAEncryption` : primitive === 'ecdsa' ? `ecdsa-with-${digest.replace('-', '')}` : `dsaWith${match[2].toUpperCase()}`)
+    }
+    for (const method of methods) {
+      evidence.push({
+        evidenceType: 'config-reference',
+        assetName: os.hostname(),
+        assetType: 'identity_provider',
+        filePath,
+        observedAlgorithm: method,
+        confidence: 'high',
+        rawEvidence: { identity: { protocol: 'SAML', entityId }, label: 'SAML signature method' },
+        observedAt: isoNow(),
+      })
+    }
+  }
+  return evidence
+}
+
 function parseNameList(buffer: Buffer, offset: number) {
   if (offset + 4 > buffer.length) return { values: [] as string[], offset: buffer.length }
   const length = buffer.readUInt32BE(offset)
@@ -871,18 +1275,17 @@ function parseSshKexInit(data: Buffer) {
   return { kexAlgorithms: kex.values, hostKeyAlgorithms: hostKey.values }
 }
 
+/**
+ * The OpenSSH method name IS the most precise identifier available, and the
+ * platform's canonical classifier decomposes it.
+ *
+ * This used to relabel it, lossily: `ecdh-sha2-nistp256` (a key EXCHANGE) became
+ * "ECDSA-P256" (a signature), which hides harvest-now exposure because HNDL
+ * analysis keys on key exchange; `sntrup761x25519` (NTRU Prime) became "ML-KEM";
+ * and every RSA host key became "RSA-2048" whatever its real size.
+ */
 function sshAlgorithmToObserved(algorithm: string) {
-  const lower = algorithm.toLowerCase()
-  if (lower.includes('sntrup') || lower.includes('ml-kem') || lower.includes('kyber')) return 'ML-KEM'
-  if (lower.includes('diffie-hellman-group1')) return 'DH-1024'
-  if (lower.includes('diffie-hellman')) return 'DH-2048'
-  if (lower.includes('ecdh') || lower.includes('nistp256')) return 'ECDSA-P256'
-  if (lower.includes('nistp384')) return 'ECDSA-P384'
-  if (lower.includes('curve25519')) return 'X25519'
-  if (lower.includes('ssh-rsa') || lower.includes('rsa')) return 'RSA-2048'
-  if (lower.includes('ssh-dss') || lower.includes('dsa')) return 'DSA-1024'
-  if (lower.includes('ed25519')) return 'Ed25519'
-  return algorithm
+  return String(algorithm || '').trim()
 }
 
 async function scanSshTarget(target: ScanTarget): Promise<ScannerEvidence[]> {
@@ -1186,32 +1589,48 @@ async function scanPackageManifest(filePath: string): Promise<ScannerEvidence[]>
  * configuration was rolled back. A line naming both halves of a hybrid is
  * evidence of the hybrid, not of its classical half.
  */
-const CONFIG_PATTERNS: Array<{ pattern: RegExp; algorithm: string; label: string }> = [
-  { pattern: /\b(X25519MLKEM768|SecP256r1MLKEM768|P256MLKEM768|X25519Kyber768)\b/i, algorithm: 'X25519MLKEM768', label: 'Hybrid PQC key exchange group reference' },
-  { pattern: /\b(mlkem768x25519-sha256|sntrup761x25519-sha512(@openssh\.com)?)\b/i, algorithm: 'X25519MLKEM768', label: 'Hybrid PQC SSH key exchange reference' },
-  { pattern: /\b(ed25519|ssh-ed25519)\b[^\r\n]*\bML[-_ ]?DSA\b|\bML[-_ ]?DSA\b[^\r\n]*\b(ed25519|ssh-ed25519)\b/i, algorithm: 'Ed25519 + ML-DSA-65', label: 'Hybrid PQC signature reference' },
-  { pattern: /\b(ML[-_ ]?KEM|Kyber)\b/i, algorithm: 'ML-KEM-768', label: 'PQC KEM reference' },
-  { pattern: /\b(ML[-_ ]?DSA|Dilithium)\b/i, algorithm: 'ML-DSA-65', label: 'PQC signature reference' },
-  { pattern: /\b(SLH[-_ ]?DSA|SPHINCS)\b/i, algorithm: 'SLH-DSA-SHA2-128s', label: 'PQC stateless-hash signature reference' },
-  { pattern: /\b(OQS|liboqs|oqsprovider|oqs-provider)\b/i, algorithm: 'ML-KEM-768', label: 'PQC provider reference' },
-  { pattern: /\bRSA[-_ ]?(1024|2048|3072|4096)?\b/i, algorithm: 'RSA-2048', label: 'RSA reference' },
-  { pattern: /\bECDSA[-_ ]?(P-?256|P-?384|nistp256|nistp384)?\b/i, algorithm: 'ECDSA-P256', label: 'ECDSA reference' },
-  { pattern: /\b(ECDH|Diffie[-_ ]?Hellman|DHE)\b/i, algorithm: 'DH-2048', label: 'DH/ECDH reference' },
-  { pattern: /\bssh-rsa\b/i, algorithm: 'RSA-2048', label: 'SSH RSA host/user key reference' },
-  { pattern: /\bssh-dss\b/i, algorithm: 'DSA-1024', label: 'SSH DSA key reference' },
+/**
+ * Configuration reference rules. First match per line wins, so specific rules
+ * precede general ones.
+ *
+ * `algorithm` may read the match: a size or curve the line STATES is kept, and
+ * nothing the line does not state is invented. These rules used to emit fixed
+ * labels — "RSA-4096" and "RSA-1024" both became "RSA-2048", RC4 became "3DES",
+ * ECDH became Diffie-Hellman, ES384/ES512 became P-256, a bare ML-KEM mention
+ * became ML-KEM-768, and an OQS *provider* mention was reported as ML-KEM-768 in
+ * use — availability recorded as adoption.
+ */
+type ConfigRule = { pattern: RegExp; algorithm: string | ((match: RegExpMatchArray) => string); label: string }
+
+const CONFIG_PATTERNS: ConfigRule[] = [
+  { pattern: /\b(X25519MLKEM768|SecP256r1MLKEM768|SecP384r1MLKEM1024|X25519Kyber768(?:Draft00)?)\b/i, algorithm: (m) => m[1], label: 'Hybrid PQC key exchange group reference' },
+  { pattern: /\b(mlkem768x25519-sha256|sntrup761x25519-sha512(?:@openssh\.com)?)\b/i, algorithm: (m) => m[1], label: 'Hybrid PQC SSH key exchange reference' },
+  { pattern: /\b(ed25519|ssh-ed25519)\b[^\r\n]*\bML[-_ ]?DSA\b|\bML[-_ ]?DSA\b[^\r\n]*\b(ed25519|ssh-ed25519)\b/i, algorithm: 'Ed25519 + ML-DSA', label: 'Hybrid PQC signature reference' },
+  { pattern: /\b(?:ML[-_ ]?KEM|Kyber)[-_ ]?(512|768|1024)?\b/i, algorithm: (m) => (m[1] ? `ML-KEM-${m[1]}` : 'ML-KEM'), label: 'PQC KEM reference' },
+  { pattern: /\b(?:ML[-_ ]?DSA|Dilithium)[-_ ]?(44|65|87)?\b/i, algorithm: (m) => (m[1] ? `ML-DSA-${m[1]}` : 'ML-DSA'), label: 'PQC signature reference' },
+  { pattern: /\b(SLH[-_ ]?DSA|SPHINCS)\b/i, algorithm: 'SLH-DSA', label: 'PQC stateless-hash signature reference' },
+  { pattern: /\b(OQS|liboqs|oqsprovider|oqs-provider)\b/i, algorithm: 'OQS provider', label: 'PQC provider availability (not proof of use)' },
+  { pattern: /\b(RS|PS)(256|384|512)\b/, algorithm: (m) => `${m[1]}${m[2]}`, label: 'RSA JWT signing reference' },
+  { pattern: /\bES(256K?|384|512)\b/, algorithm: (m) => `ES${m[1]}`, label: 'ECDSA JWT signing reference' },
+  { pattern: /\bRSA[-_ ]?(1024|2048|3072|4096|8192)?\b/i, algorithm: (m) => (m[1] ? `RSA-${m[1]}` : 'RSA'), label: 'RSA reference' },
+  { pattern: /\bECDSA[-_ ]?(P-?256|P-?384|P-?521|nistp256|nistp384|nistp521)?\b/i, algorithm: (m) => (m[1] ? `ECDSA-P${m[1].replace(/\D/g, '')}` : 'ECDSA'), label: 'ECDSA reference' },
+  { pattern: /\bECDHE?\b/i, algorithm: 'ECDH', label: 'ECDH key exchange reference' },
+  { pattern: /\b(DHE|Diffie[-_ ]?Hellman)\b/i, algorithm: 'DH', label: 'Diffie-Hellman key exchange reference' },
+  { pattern: /\bssh-rsa\b/i, algorithm: 'ssh-rsa', label: 'SSH RSA host/user key reference' },
+  { pattern: /\bssh-dss\b/i, algorithm: 'ssh-dss', label: 'SSH DSA key reference' },
   { pattern: /\b(ed25519|ssh-ed25519)\b/i, algorithm: 'Ed25519', label: 'Ed25519 key reference' },
   { pattern: /\b(X25519|curve25519)\b/i, algorithm: 'X25519', label: 'X25519 key exchange reference' },
   { pattern: /\bSHA[-_ ]?1\b/i, algorithm: 'SHA-1', label: 'SHA-1 reference' },
   { pattern: /\bMD5\b/i, algorithm: 'MD5', label: 'MD5 reference' },
-  { pattern: /\b(3DES|DES|RC4)\b/i, algorithm: '3DES', label: 'Weak cipher suite reference' },
+  { pattern: /\bRC4\b/i, algorithm: 'RC4', label: 'RC4 cipher reference' },
+  { pattern: /\b3DES\b|\bDES-EDE3\b/i, algorithm: '3DES', label: 'Triple-DES cipher reference' },
+  { pattern: /\bDES\b/i, algorithm: 'DES', label: 'DES cipher reference' },
   { pattern: /\bAES[-_ ]?128\b/i, algorithm: 'AES-128', label: 'AES-128 reference' },
   { pattern: /\bAES[-_ ]?256\b/i, algorithm: 'AES-256', label: 'AES-256 reference' },
   { pattern: /\bTLSv?1\.0\b/i, algorithm: 'TLS-1.0', label: 'TLS 1.0 reference' },
   { pattern: /\bTLSv?1\.1\b/i, algorithm: 'TLS-1.1', label: 'TLS 1.1 reference' },
   { pattern: /\bTLSv?1\.2\b/i, algorithm: 'TLS-1.2', label: 'TLS 1.2 reference' },
   { pattern: /\bTLSv?1\.3\b/i, algorithm: 'TLS-1.3', label: 'TLS 1.3 reference' },
-  { pattern: /\bRS256|RS384|RS512\b/i, algorithm: 'RSA-2048', label: 'RSA JWT signing reference' },
-  { pattern: /\bES256|ES384|ES512\b/i, algorithm: 'ECDSA-P256', label: 'ECDSA JWT signing reference' },
 ]
 
 function configEvidenceTypeFor(filePath: string, line: string): EvidenceType {
@@ -1271,7 +1690,9 @@ async function scanConfigFile(filePath: string): Promise<ScannerEvidence[]> {
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
     for (const rule of CONFIG_PATTERNS) {
-      if (!rule.pattern.test(line)) continue
+      const match = line.match(rule.pattern)
+      if (!match) continue
+      const observedAlgorithm = typeof rule.algorithm === 'function' ? rule.algorithm(match) : rule.algorithm
       /* A line that already holds the prescribed value is the approved end
          state, not an unremediated finding — see matchesMandatoryConfigValue. */
       const conformant = matchesMandatoryConfigValue(line)
@@ -1280,7 +1701,7 @@ async function scanConfigFile(filePath: string): Promise<ScannerEvidence[]> {
         assetName: path.basename(path.dirname(filePath)) || path.basename(filePath),
         assetType: configAssetTypeFor(filePath, line),
         filePath,
-        observedAlgorithm: rule.algorithm,
+        observedAlgorithm,
         confidence: 'medium',
         rawEvidence: {
           filePath,
@@ -1352,8 +1773,23 @@ async function scanAllowedPath(root: string, scanTypes: Set<string>) {
   const evidence: ScannerEvidence[] = []
   const files = await walkFiles(root)
 
+  const wantsPki = scanTypes.has('certificates') || scanTypes.has('pki')
   for (const filePath of files) {
     const fileName = path.basename(filePath)
+    const extension = path.extname(filePath).toLowerCase()
+    /* A file is read by ONE specialised collector. A JWKS is also valid JSON and
+       SAML metadata valid XML; letting the generic config line scanner read them
+       too recorded the same signing algorithm twice. */
+    let handled = false
+    if (wantsPki && CRYPTO_MATERIAL_EXTENSIONS.has(extension)) {
+      const found = await scanCryptoMaterialFile(filePath)
+      if (found.length) { evidence.push(...found); handled = true }
+    }
+    if (!handled && (wantsPki || scanTypes.has('configs')) && (extension === '.json' || extension === '.xml')) {
+      const found = await scanIdentityFile(filePath)
+      if (found.length) { evidence.push(...found); handled = true }
+    }
+    if (handled) continue
     if ((scanTypes.has('packages') || scanTypes.has('libraries')) && isPackageManifest(fileName)) {
       evidence.push(...await scanPackageManifest(filePath))
     }
@@ -1410,6 +1846,11 @@ function remediationAssetName(job: RemediationJob) {
 }
 
 function adapterForJob(job: RemediationJob) {
+  /* A job that names a local file is a local configuration change, whatever
+     words appear in its path. This used to classify by substring first, so
+     `/etc/app/tls.conf` matched "tls" and routed to the NETWORK adapter —
+     manual only — and a Patcher could never patch the file it was sent. */
+  if (remediationFilePathFromJob(job)) return 'local_configuration'
   const metadata = metadataRecord(job)
   const text = [
     job.adapter,
@@ -1655,6 +2096,83 @@ async function rollbackLocalConfigRemediation(execution: {
   }
 }
 
+/**
+ * Restore a configuration this agent backed up, on operator command.
+ *
+ * Distinct from `rollbackLocalConfigRemediation`, which runs inside a job when
+ * the agent's own post-patch validation fails. This one runs LATER, from a
+ * `rollback` command queued by Migration Snapshot Management, possibly days
+ * after the change — so it re-verifies everything from scratch rather than
+ * trusting in-memory state:
+ *
+ *   1. the agent must be write-capable at all (a collector refuses outright);
+ *   2. the target must still be inside the policy's allowed paths;
+ *   3. the backup must still hash to the digest recorded when the patch ran —
+ *      a backup that has been edited is not a safe restore source;
+ *   4. the file currently on disk is copied aside first, so a rollback that
+ *      turns out to be wrong is itself reversible;
+ *   5. the restored file is re-read and re-hashed, and `verified` is only true
+ *      when it matches. The control plane marks the snapshot `restored` on that
+ *      flag and nothing else.
+ */
+async function executeRollbackCommand(
+  payload: Record<string, unknown>,
+  policy: AgentPolicy,
+): Promise<{ verified: boolean; reason: string; [key: string]: unknown }> {
+  const snapshotId = String(payload.snapshotId || '')
+  const targetPath = String(payload.targetPath || '')
+  const backupPath = String(payload.backupPath || '')
+  const expectedBeforeHash = String(payload.beforeHash || '')
+  const base = { snapshotId, targetPath, backupPath, at: isoNow() }
+
+  if (!REMEDIATION_ENABLED || !CONFIG_PATCHES_ENABLED) {
+    return { ...base, verified: false, reason: `This agent runs in read-only mode (role ${AGENT_ROLE}); it will not write to the host. Roll back from the agent that applied the change, or re-deploy this host's agent with a Patcher/Migration Operator role.` }
+  }
+  if (!targetPath || !backupPath || !expectedBeforeHash) {
+    return { ...base, verified: false, reason: 'The rollback command carried no target path, backup path or pre-change digest.' }
+  }
+  if (!fileAllowedByPolicy(targetPath, policy)) {
+    return { ...base, verified: false, reason: 'The target file is outside this agent policy allowedPaths scope.' }
+  }
+
+  const backup = await fs.readFile(backupPath, 'utf8').catch(() => null)
+  if (backup === null) {
+    return { ...base, verified: false, reason: `The recorded backup ${backupPath} no longer exists on this host, so the previous configuration cannot be restored.` }
+  }
+  const backupHash = sha256Text(backup)
+  if (backupHash !== expectedBeforeHash) {
+    /* Refusing here is the whole point of recording the digest: restoring an
+       edited backup would write an unknown configuration to a production host
+       and report it as "the previous state". */
+    return { ...base, verified: false, reason: 'The backup no longer matches the digest recorded when the change was applied; it has been modified. Restore refused.', backupHash, expectedBeforeHash }
+  }
+
+  const current = await fs.readFile(targetPath, 'utf8').catch(() => null)
+  let preRollbackPath: string | null = null
+  if (current !== null) {
+    preRollbackPath = `${targetPath}.qguard-prerollback-${Date.now()}`
+    await fs.writeFile(preRollbackPath, current, 'utf8')
+  }
+
+  await fs.copyFile(backupPath, targetPath)
+  const restored = await fs.readFile(targetPath, 'utf8').catch(() => '')
+  const restoredHash = sha256Text(restored)
+  const verified = restoredHash === expectedBeforeHash
+
+  return {
+    ...base,
+    verified,
+    reason: verified
+      ? 'Previous configuration restored and re-verified against the recorded pre-change digest.'
+      : 'The file was written but its digest does not match the recorded pre-change digest; the asset is NOT confirmed restored.',
+    restoredHash,
+    expectedBeforeHash,
+    preRollbackPath,
+    replacedHash: current === null ? null : sha256Text(current),
+    policySnapshot: cryptoPolicySnapshot(restored),
+  }
+}
+
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
@@ -1806,7 +2324,7 @@ async function attemptRemediation(job: RemediationJob, policy: AgentPolicy): Pro
   }
 
   const adapter = adapterForJob(job)
-  if (['code_application', 'container', 'kubernetes', 'universal'].includes(adapter)) {
+  if (['local_configuration', 'code_application', 'container', 'kubernetes', 'universal'].includes(adapter)) {
     return applyLocalConfigRemediation(job, policy)
   }
 
@@ -2289,6 +2807,26 @@ async function drainCommands(policy: AgentPolicy): Promise<{ scanned: boolean }>
         case 'enable': {
           await sendHeartbeat('active', { reason: 'operator_enabled', commandId: command.id })
           await acknowledgeCommand(command.id, 'completed', { enabled: true })
+          break
+        }
+        case 'rollback': {
+          const result = await executeRollbackCommand(command.payload || {}, policy)
+          /*
+             The command is only `completed` when the restore VERIFIED. A write
+             that happened but could not be verified is reported as failed, so
+             the snapshot never flips to "restored" on an unproven change.
+          */
+          await acknowledgeCommand(
+            command.id,
+            result.verified ? 'completed' : 'failed',
+            result,
+            result.verified ? undefined : String(result.reason),
+          )
+          console.log(
+            result.verified
+              ? `Rollback ${String(command.payload?.snapshotId || '')} restored ${String(result.targetPath || '')}.`
+              : `Rollback ${String(command.payload?.snapshotId || '')} refused/failed: ${String(result.reason)}`,
+          )
           break
         }
         case 'upgrade': {

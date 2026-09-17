@@ -411,6 +411,12 @@ export function formatCount(value: number): string {
  * Largest publicly reported physical qubit counts, for the "how far away is
  * this" gap bar. These are device announcements, not error-corrected logical
  * qubits — which is exactly the point the bar makes.
+ *
+ * MAINTENANCE: this list is a snapshot and goes stale. Since 2024 the headline
+ * has moved from physical qubit counts to LOGICAL ones — QuEra reported 96
+ * logical qubits from 448 physical atoms in January 2026 — which is the number
+ * that actually closes the gap this bar draws. Re-check before citing the
+ * figures below as current.
  */
 export const REPORTED_DEVICES: Array<{ name: string; qubits: number; year: number; note: string }> = [
   { name: 'IBM Condor', qubits: 1121, year: 2023, note: 'Largest superconducting chip announced by IBM.' },

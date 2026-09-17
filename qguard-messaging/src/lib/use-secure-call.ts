@@ -117,20 +117,25 @@ const callSupported = () =>
 
 // Main-thread fallback: pipe one sender/receiver's encoded frames through the
 // AES-256-GCM transform. Used when RTCRtpScriptTransform is unavailable.
+//
+// FAILS THE CALL rather than the transform. This used to swallow every error
+// with "non-fatal" — but the only thing standing between the media and the
+// relay is this transform, so "it did not install" means the call runs with
+// hop-by-hop DTLS-SRTP alone and no end-to-end encryption at all, while the UI
+// still shows a safety number and says the call is quantum-encrypted. A silent
+// downgrade to a weaker guarantee than the one displayed is worse than a call
+// that refuses to start, so the promise rejects and the caller tears down.
 async function pipeEncodedStreams(
   rtp: RTCRtpSender | RTCRtpReceiver,
   opts: FrameCryptoOptions,
 ): Promise<void> {
   const create = rtp.createEncodedStreams;
-  if (!create) return;
-  try {
-    const streams = create.call(rtp);
-    const transform = await makeFrameTransform(opts);
-    void streams.readable.pipeThrough(transform).pipeTo(streams.writable);
-  } catch {
-    // createEncodedStreams throws if called twice or if the pc wasn't built with
-    // encodedInsertableStreams; non-fatal.
+  if (!create) {
+    throw new Error("This device cannot encrypt call media end-to-end (no encoded-transform support).");
   }
+  const streams = create.call(rtp);
+  const transform = await makeFrameTransform(opts);
+  void streams.readable.pipeThrough(transform).pipeTo(streams.writable);
 }
 
 /**
@@ -240,9 +245,19 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   // encrypted — the exact "loud static audio + no video" symptom. Attaching at
   // the transceiver level (the receiver exists the moment addTrack creates the
   // transceiver) guarantees the decryptor is in place before the first frame.
-  const attachMediaTransforms = useCallback((pc: RTCPeerConnection, setup: CallSetup) => {
+  const attachMediaTransforms = useCallback(async (pc: RTCPeerConnection, setup: CallSetup): Promise<void> => {
     const strategy = detectTransformStrategy();
+    if (strategy === "none") {
+      throw new Error("This device cannot encrypt call media end-to-end (no encoded-transform support).");
+    }
     const w = strategy === "worker" ? worker() : null;
+    // The encoded-streams plumbing must claim every stream SYNCHRONOUSLY, before
+    // any await, for the same reason the transforms are attached at transceiver
+    // level: once the inbound pipeline is wired, a late transform never inserts
+    // and remote frames reach the decoder still encrypted. `pipeEncodedStreams`
+    // runs `createEncodedStreams` before its first await, so starting them all
+    // here and awaiting afterwards preserves that ordering.
+    const pending: Array<Promise<void>> = [];
     for (const transceiver of pc.getTransceivers()) {
       const kind = transceiver.sender.track?.kind;
       if (kind !== "audio" && kind !== "video") continue;
@@ -253,10 +268,12 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
         (transceiver.sender as RTCRtpSender).transform = new RTCRtpScriptTransform(w, encryptOpts);
         (transceiver.receiver as RTCRtpReceiver).transform = new RTCRtpScriptTransform(w, decryptOpts);
       } else {
-        void pipeEncodedStreams(transceiver.sender, encryptOpts);
-        void pipeEncodedStreams(transceiver.receiver, decryptOpts);
+        pending.push(pipeEncodedStreams(transceiver.sender, encryptOpts));
+        pending.push(pipeEncodedStreams(transceiver.receiver, decryptOpts));
       }
     }
+    // Any transform that failed to install takes the call down with it.
+    await Promise.all(pending);
   }, [worker]);
 
   const flushPendingCandidates = useCallback(() => {
@@ -649,7 +666,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       pinVideoCodec(pc);
       // Transforms are attached BEFORE the offer, so no frame can ever leave
       // this device before its E2EE transform is in place.
-      attachMediaTransforms(pc, setup);
+      await attachMediaTransforms(pc, setup);
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await applySenderParams(pc, qualityRef.current);
@@ -789,7 +806,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
       // Same VP8 pinning as the caller side, before the answer is created.
       pinVideoCodec(pc);
-      attachMediaTransforms(pc, setup);
+      await attachMediaTransforms(pc, setup);
       await pc.setRemoteDescription({ type: "offer", sdp: String((offer.payload as { sdp: string }).sdp) });
       flushPendingCandidates();
       const answer = await pc.createAnswer();
@@ -874,6 +891,37 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       return true;
     };
 
+    /**
+     * Is this signal from the device this call is actually with?
+     *
+     * `messaging_call_signals` is readable and writable by EVERY member of the
+     * conversation (migration 023), and only `from_user_id = auth.uid()` is
+     * enforced — `call_id`, `to_device_id` and `from_device_id` are all
+     * attacker-chosen. So a third member of a group conversation, or any other
+     * device of the peer's account, could write an `answer`, `ice`, `offer` or
+     * `hangup` carrying the live `call_id` and this device would act on it:
+     * re-pointing the transport at an endpoint of their choosing, or ending the
+     * call outright. The media stays sealed (its key is encapsulated to the
+     * device that actually answered), but taking over or killing someone's
+     * session is not a thing a bystander may do.
+     *
+     * Binding is the answer, and which device is "the peer" depends on phase:
+     *   - caller, before anyone answers: any device still being rung may speak;
+     *   - caller, after `bindAcceptedDevice`: only the device that answered;
+     *   - callee: only the caller the ring/offer came from.
+     */
+    const isSignalFromCallPeer = (row: CallSignalRow): boolean => {
+      const answered = answeredDeviceRef.current;
+      if (answered) return row.from_device_id === answered;
+      if (roleRef.current === "caller" && ringTargetsRef.current.length > 0) {
+        return ringTargetsRef.current.some(
+          (route) => route.toDeviceId === row.from_device_id && route.toUserId === row.from_user_id,
+        );
+      }
+      const route = routeRef.current;
+      return Boolean(route && route.toDeviceId === row.from_device_id && route.toUserId === row.from_user_id);
+    };
+
     const channel = subscribeCallSignals({
       userId: args.userId, deviceId: args.deviceId,
       onSignal: (row) => {
@@ -897,6 +945,9 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
             // Answering off the ring: `accept()` is already waiting for exactly
             // this row.
             if (forCurrentCall) {
+              // An offer for the call in progress renegotiates live transport,
+              // so it only counts from the peer this call is bound to.
+              if (!isSignalFromCallPeer(row)) return;
               pendingOfferRef.current = row;
               const waiters = offerWaitersRef.current.slice();
               if (waiters.length > 0) {
@@ -936,6 +987,10 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
             break;
           }
           case "answer":
+            // Unbound, an injected answer re-points the media transport at
+            // whatever ICE endpoint the sender chose.
+            if (row.call_id !== callIdRef.current) break;
+            if (!isSignalFromCallPeer(row)) break;
             if (pcRef.current && roleRef.current === "caller") {
               renegotiatingRef.current = false;
               noteIceProgress();
@@ -951,7 +1006,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
             // -- because an outgoing call rings ALL of the peer's devices -- bind
             // the call to whichever one answered. That is what produces the
             // offer; the losing devices are hung up inside bindAcceptedDevice.
-            if (row.call_id === callIdRef.current) {
+            if (row.call_id === callIdRef.current && isSignalFromCallPeer(row)) {
               signalChannelRef.current?.boost();
               if (roleRef.current === "caller") {
                 void bindAcceptedDevice(row.call_id, row.from_device_id);
@@ -961,6 +1016,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
           case "ice": {
             if (!row.payload.candidate) break;
             if (row.call_id !== callIdRef.current) break;
+            if (!isSignalFromCallPeer(row)) break;
             const candidate = row.payload.candidate as RTCIceCandidateInit;
             // The peer is still gathering, so the connection is still advancing:
             // hold the give-up open. This is the other half of the fix for calls
@@ -972,8 +1028,12 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
             break;
           }
           case "reject": case "hangup": case "busy": {
-            // Only the call this device is actually on may be torn down.
+            // Only the call this device is actually on may be torn down...
             if (row.call_id !== callIdRef.current) break;
+            // ...and only by a device that is part of it. Without this, any
+            // other member of the conversation could end anyone's call by
+            // writing one `hangup` row carrying the live call id.
+            if (!isSignalFromCallPeer(row)) break;
             // Caller with a forked ring: a decline (or an automatic `busy`) from
             // ONE of the peer's devices only takes THAT device out of the ring.
             // Ending the whole call on the first one meant a peer whose desktop

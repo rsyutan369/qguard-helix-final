@@ -2004,6 +2004,15 @@ type HndlRemediationCandidate = {
   recommendation: string
   targetAlgorithm: string
   jobType: string
+  /** Where the finding was OBSERVED — the file or endpoint a Patcher must change. */
+  location: {
+    filePath: string | null
+    target: string | null
+    host: string | null
+    port: number | null
+    evidenceType: string | null
+    sourceAgentId: string | null
+  }
 }
 
 function linkedHndlFindingId(job: any) {
@@ -2174,6 +2183,20 @@ function buildHndlRemediationCandidates(scanResults: any[], assets: any[], jobs:
     const priority = hndlPriority(row)
     const targetAlgorithm = replacementForAlgorithm(algorithm, category)
     const assetName = hndlAssetName(row, asset)
+    /* Agent-sourced findings keep the evidence that produced them. Without its
+       location the queued job could not say WHICH file or endpoint to change,
+       so every Harvest Now remediation reached the Patcher as "manual change
+       required" — the agent's patching capability was unreachable from the
+       product flow. */
+    const evidenceRecord = recordOf(metadata.evidenceRecord)
+    const location = {
+      filePath: textValue(evidenceRecord.filePath, '') || null,
+      target: textValue(evidenceRecord.target, '') || null,
+      host: textValue(evidenceRecord.host, '') || null,
+      port: Number.isFinite(Number(evidenceRecord.port)) && Number(evidenceRecord.port) > 0 ? Number(evidenceRecord.port) : null,
+      evidenceType: textValue(evidenceRecord.evidenceType, '') || null,
+      sourceAgentId: textValue(evidenceRecord.agentId, '') || null,
+    }
 
     candidates.push({
       findingId,
@@ -2190,6 +2213,7 @@ function buildHndlRemediationCandidates(scanResults: any[], assets: any[], jobs:
       recommendation: textValue(row?.remediation || metadata.recommendation || raw.recommendation, 'Create a PQC remediation workflow and validate the asset after mitigation.'),
       targetAlgorithm,
       jobType: hndlJobType(row),
+      location,
     })
   }
 
@@ -2249,6 +2273,14 @@ function migrationJobFromHndlCandidate(userId: string, candidate: HndlRemediatio
       category: candidate.category,
       recommendation: candidate.recommendation,
       responseWindowHours: 1,
+      /* The observed location, so the job names exactly what to change. Only
+         set when the finding carried one — never guessed from the asset name. */
+      ...(candidate.location.filePath ? { filePath: candidate.location.filePath } : {}),
+      ...(candidate.location.target ? { target: candidate.location.target } : {}),
+      ...(candidate.location.host ? { host: candidate.location.host } : {}),
+      ...(candidate.location.port ? { port: candidate.location.port } : {}),
+      ...(candidate.location.evidenceType ? { evidenceType: candidate.location.evidenceType } : {}),
+      ...(candidate.location.sourceAgentId ? { sourceAgentId: candidate.location.sourceAgentId } : {}),
     },
   }
 }

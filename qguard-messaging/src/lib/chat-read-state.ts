@@ -57,8 +57,16 @@ export function deriveReadState(
   const markAsRead = isFromPeer && !isUnopenedViewOnceAttachment;
   const nextReadAt = existingReadAt ?? (markAsRead ? readAt : null);
 
+  // "tampered" is an ACCUSATION: it means the ciphertext or the signature did
+  // not hold up. It must never be the label for a message that decrypted and
+  // authenticated perfectly but whose SENDER could not be anchored to a
+  // registered device — that is an absent proof, not a failed one, and the
+  // difference is the whole point of the sender-verification gate. An
+  // unanchored message stays "pending": verification genuinely has not
+  // completed, and it can complete later (the device row reappears, or
+  // migration 034 makes a retired peer device readable again).
   const nextVerification = message.status === "decrypted"
-    ? (message.authenticated ? "valid" : "tampered")
+    ? (message.authenticated ? "valid" : "pending")
     : (existing?.verificationState ?? "pending");
 
   const changed =

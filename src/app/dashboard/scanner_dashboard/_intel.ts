@@ -72,6 +72,41 @@ import type {
 
 const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
 
+/**
+ * The six sub-surfaces an {@link EdgeIntelligence} record always carries when
+ * the collector wrote it completely.
+ */
+const EDGE_SURFACES = ['pqKeyAgreement', 'transport', 'certificate', 'dns', 'http', 'quantum'] as const;
+
+/**
+ * Read a persisted public-edge measurement, or nothing.
+ *
+ * `metadata.edgeIntelligence` is JSONB written by the edge collector and read
+ * back, possibly years later, by this page. Roughly thirty call sites read
+ * `edge.transport.*`, `edge.certificate.*`, `edge.http.*` and so on, and a
+ * record that is missing one of those sub-surfaces — truncated, partially
+ * written, or produced by a build that predates the surface — took the whole
+ * dashboard down with `Cannot read properties of undefined`.
+ *
+ * Rather than scatter thirty guards, the record is validated once here. An
+ * incomplete record is not a partial measurement that can be salvaged: the
+ * panels would have to caption every row with which surface was missing. It is
+ * treated as ABSENT, which every panel already renders honestly as "not
+ * probed" — the platform's standing rule that absence is reported as absence
+ * and never as a measurement.
+ */
+function readEdgeIntelligence(
+  metadata: { edgeIntelligence?: EdgeIntelligence | null } | null | undefined,
+): EdgeIntelligence | null {
+  const edge = metadata?.edgeIntelligence;
+  if (!edge || typeof edge !== 'object') return null;
+  const record = edge as unknown as Record<string, unknown>;
+  for (const surface of EDGE_SURFACES) {
+    if (!record[surface] || typeof record[surface] !== 'object') return null;
+  }
+  return edge;
+}
+
 /* ==================================================================== nodes = */
 
 /**
@@ -807,7 +842,7 @@ export function buildNodeEvidence(
      resolved the real group by offering each named group in isolation, and the
      panels below read THAT rather than printing "Not observed" over evidence
      the scanner holds. */
-  const edge = primary?.metadata?.edgeIntelligence ?? null;
+  const edge = readEdgeIntelligence(primary?.metadata);
   const pq = edge?.pqKeyAgreement ?? null;
   const edgeTransport = edge?.transport ?? null;
   const edgeCert = edge?.certificate ?? null;
@@ -945,7 +980,7 @@ export function buildNodeEvidence(
           value: hybridApplied
             ? `${pq?.primaryGroup} (hybrid)`
             : pureKem
-              ? `${pq?.pureKemGroups.join(', ')} (no classical hedge)`
+              ? `${pq?.pureKemGroups?.join(', ')} (no classical hedge)`
               : tls?.keyExchange || edgeTransport?.keyExchange || 'Not observed',
           tone: hybridApplied || pureKem ? TONE_PQ : TONE_WARN,
           detail: hybridApplied
@@ -1619,7 +1654,7 @@ export function buildNodeEvidence(
          endpoint, exactly as `buildAssessment` already decides for the
          intelligence panel, so the two panels cannot name different targets for
          the same key. */
-      const edgeTargets = edge?.quantum.migrationTargets ?? [];
+      const edgeTargets = edge?.quantum?.migrationTargets ?? [];
       const migration = edgeTargets.length
         ? Array.from(new Map(edgeTargets.map((target) => [target.name, {
             recommendedPQC: target.name,
@@ -1758,7 +1793,25 @@ export interface AssessmentInput {
     totalAssets: number;
     totalFindings: number;
     criticalFindings: number;
+    /**
+     * High-severity findings across the estate.
+     *
+     * This used to be absent from the contract, and estate scope substituted a
+     * literal `0`. The Executive Summary reads it to decide between "N
+     * high-severity findings outstanding" and "No critical or high-severity
+     * cryptographic findings were recorded" — so a tenant with open high
+     * findings and no criticals was told, in writing, that it had neither.
+     * Absence is not good news; the count is carried.
+     */
+    highFindings: number;
     vulnerableAssets: number;
+    /**
+     * Quantum-vulnerable COMPONENTS across the estate — the same population the
+     * CBOM page counts. Estate scope previously used `totalFindings` as the
+     * vulnerable count, which classed every SAFE and INFO finding as vulnerable
+     * and meant a fully PQC estate could still be labelled "Vulnerable".
+     */
+    vulnerableComponents: number;
     pqcReadiness: number;
     riskScore: number;
   };
@@ -1788,12 +1841,22 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
      `estate` — no scan is in view, so the tenant-wide Scanner Intelligence
                 snapshot answers every question instead. */
   const scope: 'scan' | 'estate' = summary ? 'scan' : 'estate';
+  /* COUNTS ARE COUNTS. A summary field that is absent or non-numeric is read as
+     zero rather than allowed to travel as `undefined`, which the panels printed
+     verbatim ("Estate Footprint · assets: undefined") and which poisoned every
+     arithmetic that touched it. The canonical summary shape is enforced at the
+     API boundary (reconcileStoredSummary); this keeps a malformed one from
+     rendering as text. */
+  const count = (value: unknown): number => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
   const scoped = {
-    totalFindings: scope === 'scan' ? summary!.totalFindings : input.estate.totalFindings,
-    critical: scope === 'scan' ? summary!.critical : input.estate.criticalFindings,
-    high: scope === 'scan' ? summary!.high : 0,
-    vulnerable: scope === 'scan' ? summary!.vulnerable : input.estate.totalFindings,
-    assets: scope === 'scan' ? summary!.targetsScanned : input.estate.totalAssets,
+    totalFindings: count(scope === 'scan' ? summary!.totalFindings : input.estate.totalFindings),
+    critical: count(scope === 'scan' ? summary!.critical : input.estate.criticalFindings),
+    high: count(scope === 'scan' ? summary!.high : input.estate.highFindings),
+    vulnerable: count(scope === 'scan' ? summary!.vulnerable : input.estate.vulnerableComponents),
+    assets: count(scope === 'scan' ? summary!.targetsScanned : input.estate.totalAssets),
   };
 
   /* ── Composite score ─────────────────────────────────────────────────────
@@ -1801,7 +1864,24 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
      History tab, the Assets page and the CBOM view already display, so using
      it here is what keeps the scanner's headline in lock-step with the rest of
      the platform rather than introducing a second opinion. */
-  const encryptionScore = summary ? clamp(summary.qScore) : clamp(100 - input.estate.riskScore);
+  /* A SCORE IS A NUMBER OR IT IS ABSENT — it is never NaN.
+     `clamp()` is Math.round-based, so `clamp(undefined)` returns NaN silently
+     (strictNullChecks is off project-wide). A stored summary that carried no
+     `qScore` therefore published NaN as the tenant's encryption score, which
+     `scoreToGrade` floored to "F · Critical" and the timeline printed as
+     "NaN/100". The source of those summaries is fixed at the API boundary; this
+     is the second line of defence, and it degrades to "not scored" rather than
+     to a zero that reads as a measurement. */
+  const finite = (value: unknown): number | null => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const summaryScore = summary ? finite(summary.qScore) : null;
+  const estateScore = finite(input.estate.riskScore);
+  const encryptionScoreValue = summary
+    ? (summaryScore !== null ? clamp(summaryScore) : null)
+    : (estateScore !== null ? clamp(100 - estateScore) : null);
+  const encryptionScore = encryptionScoreValue ?? 0;
   const breakdown = mergeRiskBreakdown(results);
 
   /* The published twelve-category decomposition, merged across targets. This is
@@ -1904,7 +1984,13 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
      only when a run was cut short: grading there produced the "Grade A · 96%"
      on a scan that had run six of twenty-three modules. */
   const runSettled = !live && unreportedModules.length === 0;
-  const gradeable = hasEvidence && runSettled && (Boolean(summary) || input.estate.totalFindings > 0);
+  /* `encryptionScoreValue !== null`: a grade is a statement about a score, so an
+     absent score cannot be graded — it must not fall through to an "F". */
+  const gradeable =
+    hasEvidence
+    && runSettled
+    && encryptionScoreValue !== null
+    && (Boolean(summary) || input.estate.totalFindings > 0);
   const gradeRow = scoreToGrade(encryptionScore);
   const grade = gradeable ? gradeRow.grade : '—';
   const gradeLabel = gradeable
@@ -2006,7 +2092,7 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
   const attackSurface = buildAttackSurface(input, findings);
 
   /* ── Cryptographic intelligence ───────────────────────────────────────── */
-  const edge = results[0]?.metadata?.edgeIntelligence ?? null;
+  const edge = readEdgeIntelligence(results[0]?.metadata);
   const algorithmCensus = buildObservedAlgorithms(results, findings, edge);
   /* The panel shows the first rows; the census total travels with them so the
      panel can declare what it is not showing rather than silently truncating. */
@@ -2027,7 +2113,7 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
   const keyExchangeFindings = findings.filter((finding) =>
     /key exchange|key agreement|kex|ecdhe|dhe|x25519|ml-kem|kyber/i.test(`${finding.category} ${finding.algorithm}`),
   );
-  const keyExchange = edge?.transport.keyExchange && edge.transport.keyExchange !== 'unknown'
+  const keyExchange = edge?.transport?.keyExchange && edge.transport.keyExchange !== 'unknown'
     ? edge.transport.keyExchange
     : negotiatedTls?.keyExchange
       ? negotiatedTls.negotiatedCurve
@@ -2110,7 +2196,7 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
   /* Migration targets: the edge engine's, when it measured the endpoint, because
      those name the primitive actually observed. The Scanner_2 migration engine
      supplies the estate-wide list otherwise. */
-  const rawMigrationTargets = edge?.quantum.migrationTargets.length
+  const rawMigrationTargets = edge?.quantum?.migrationTargets?.length
     ? edge.quantum.migrationTargets.map((target) => ({
         name: target.name,
         standard: target.standard,
@@ -2210,22 +2296,24 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
           : null,
       /* Why it is silent, in the score decomposition's own words. */
       postQuantumReadinessReason: postQuantumReadiness === null ? postQuantumReadinessReason : null,
-      quantumRiskFactors: edge?.quantum.riskFactors ?? [],
+      quantumRiskFactors: edge?.quantum?.riskFactors ?? [],
       migrationTargets,
       confidence,
       scanner2Readiness,
     },
-    timeline: buildTimeline(hndl, encryptionScore, postQuantumReadiness),
+    /* `encryptionScoreValue`, not `encryptionScore`: the timeline must say
+       "Not scored" rather than print the 0 the display value falls back to. */
+    timeline: buildTimeline(hndl, encryptionScoreValue, postQuantumReadiness, postQuantumReadinessReason),
     recommendations: buildRecommendations(
       recommendations,
       findings,
       [
         /* Measured, not assumed: only primitives the named-group probe actually
            accepted on this endpoint. */
-        ...(edge?.pqKeyAgreement.probed ? edge.pqKeyAgreement.kemParameterSets : []),
-        ...(edge?.pqKeyAgreement.probed ? edge.pqKeyAgreement.hybridGroups : []),
+        ...(edge?.pqKeyAgreement?.probed ? edge.pqKeyAgreement.kemParameterSets : []),
+        ...(edge?.pqKeyAgreement?.probed ? edge.pqKeyAgreement.hybridGroups : []),
       ],
-      edge?.quantum.migrationTargets ?? [],
+      edge?.quantum?.migrationTargets ?? [],
     ),
     footprint: {
       metrics: [
@@ -2392,7 +2480,7 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
   const tls = primary?.metadata?.tlsAnalysis ?? null;
   const certificate = primary?.certificateInfo ?? null;
   const api = primary?.metadata?.apiSecurityResult ?? null;
-  const edge = primary?.metadata?.edgeIntelligence ?? null;
+  const edge = readEdgeIntelligence(primary?.metadata);
   const scanner2 = input.scanner2;
   const items: SurfaceItem[] = [];
 
@@ -2454,8 +2542,8 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
      certificate engine parses the subjectAltName extension — so the row states
      the real coverage instead of apologising for a single name. */
   const commonName = certificate?.subject?.CN ?? certificate?.subject?.commonName ?? null;
-  const sans = edge?.certificate.subjectAltNames ?? [];
-  const sanCount = edge?.certificate.sanCount ?? 0;
+  const sans = edge?.certificate?.subjectAltNames ?? [];
+  const sanCount = edge?.certificate?.sanCount ?? 0;
   items.push({
     key: 'names-covered',
     label: 'Names Covered',
@@ -2466,7 +2554,7 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
       : commonName ?? 'Not observed',
     status: sanCount || commonName ? 'info' : 'unknown',
     detail: sanCount
-      ? `Subject alternative names on the leaf certificate${edge?.certificate.isWildcard ? ' (wildcard coverage present)' : ''}.`
+      ? `Subject alternative names on the leaf certificate${edge?.certificate?.isWildcard ? ' (wildcard coverage present)' : ''}.`
       : commonName
         ? 'Common name on the leaf certificate; no subjectAltName extension was parsed from the served chain.'
         : 'No certificate subject was parsed.',
@@ -2477,11 +2565,11 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
             label: `Subject alternative names (${sanCount})`,
             value: sans.length < sanCount ? `${sans.join(', ')} … +${sanCount - sans.length} more` : sans.join(', '),
           },
-          { label: 'Wildcard', value: edge?.certificate.isWildcard ? 'yes' : 'no' },
+          { label: 'Wildcard', value: edge?.certificate?.isWildcard ? 'yes' : 'no' },
           {
             label: 'Hostname match',
             value:
-              edge?.certificate.hostnameMatches === null || edge?.certificate.hostnameMatches === undefined
+              edge?.certificate?.hostnameMatches === null || edge?.certificate?.hostnameMatches === undefined
                 ? 'not evaluated'
                 : edge.certificate.hostnameMatches
                   ? 'the scanned name is covered'
@@ -2546,7 +2634,7 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
      than inferring "fail" from the expiry flag alone. Local flags remain the
      fallback so this row still renders on records predating that engine. */
   const chainExpired = certChain.some((entry) => entry.isExpired);
-  const chainTrusted = edge?.certificate.chainTrusted ?? null;
+  const chainTrusted = edge?.certificate?.chainTrusted ?? null;
   const localTrustFail = Boolean(certificate?.isSelfSigned || chainExpired || certificate?.isExpired);
   items.push({
     key: 'chain-trust',
@@ -2567,7 +2655,7 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
       : chainTrusted === false || localTrustFail
         ? 'fail'
         : 'pass',
-    detail: edge?.certificate.trustError
+    detail: edge?.certificate?.trustError
       ? `Chain validation failed against the public trust store: ${edge.certificate.trustError}`
       : chainTrusted === true
         ? 'Chain validated against the public trust store.'
@@ -2576,7 +2664,7 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
           : certificate?.isSelfSigned
             ? 'The leaf is self-signed and not anchored to a public trust store.'
             : 'Chain validated against the trust store.',
-    evidence: edge?.certificate.probed
+    evidence: edge?.certificate?.probed
       ? [
           { label: 'Trust-store verdict', value: chainTrusted === null ? 'not evaluated' : chainTrusted ? 'trusted' : 'NOT trusted' },
           { label: 'Reason', value: edge.certificate.trustError ?? 'no validation error reported' },
@@ -2589,7 +2677,7 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
      The named-group probe is the only way to learn the TLS 1.3 group — Node
      never exposes it, which is why this row used to read "ECDHE (TLS 1.3
      key_share)" with no group at all on every modern endpoint. */
-  const kexLabel = edge?.transport.keyExchange && edge.transport.keyExchange !== 'unknown'
+  const kexLabel = edge?.transport?.keyExchange && edge.transport.keyExchange !== 'unknown'
     ? edge.transport.keyExchange
     : tls?.keyExchange
       ? tls.negotiatedCurve
@@ -2607,7 +2695,7 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
         : /ecdhe|dhe|x25519/i.test(kexLabel)
           ? 'partial'
           : 'fail',
-    detail: edge?.transport.keyExchange
+    detail: edge?.transport?.keyExchange
       ? 'Key agreement for the session, with the named group confirmed by offering each group in isolation.'
       : 'Key-agreement mechanism negotiated for the session.',
   });
@@ -2651,10 +2739,10 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
      response over a permissive agent, so it is the primary source here and the
      api scanner is the fallback. */
   const headers = api?.securityHeaders ?? [];
-  const edgeHsts = edge?.http.hsts ?? null;
+  const edgeHsts = edge?.http?.hsts ?? null;
   const hstsHeader = headers.find((header) => header.name.toLowerCase() === 'strict-transport-security');
 
-  if (edgeHsts && edge?.http.reachable) {
+  if (edgeHsts && edge?.http?.reachable) {
     const enforced = edgeHsts.status === 'Healthy';
     items.push({
       key: 'hsts',
@@ -2704,7 +2792,7 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
     );
   }
 
-  const edgeTransportHeaders = (edge?.http.headers ?? []).filter(
+  const edgeTransportHeaders = (edge?.http?.headers ?? []).filter(
     (header) => header.name !== 'strict-transport-security' && header.status !== 'Not Applicable',
   );
   const nonHstsHeaders = headers.filter((header) => header.name.toLowerCase() !== 'strict-transport-security');
@@ -2764,7 +2852,7 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
   /* OCSP stapling. `not-advertised` and `unreachable` are different failures
      and are never flattened: one is a certificate that never promised
      revocation checking, the other is one that promised it and cannot deliver. */
-  if (edge?.certificate.probed) {
+  if (edge?.certificate?.probed) {
     const cert = edge.certificate;
     items.push({
       key: 'ocsp-stapling',
@@ -2791,7 +2879,7 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
   }
 
   /* Certificate Transparency. */
-  if (edge?.certificate.probed) {
+  if (edge?.certificate?.probed) {
     const cert = edge.certificate;
     items.push({
       key: 'certificate-transparency',
@@ -2823,7 +2911,7 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
   /* DNS CAA. `caaQueryable` is what separates "no policy published" from "no
      resolver answered" — the distinction UDP/53 blocking used to destroy, which
      is why the DNS engine falls back to DNS-over-HTTPS before reporting either. */
-  if (edge?.dns.caaQueryable) {
+  if (edge?.dns?.caaQueryable) {
     const dns = edge.dns;
     items.push({
       key: 'dns-caa',
@@ -2852,7 +2940,7 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
   /* DNSSEC. Zone signing and resolver validation are separate facts: DNSKEY
      presence proves the zone is signed, the AD bit proves a validating resolver
      actually verified the chain. */
-  if (edge?.dns.dnssecQueryable) {
+  if (edge?.dns?.dnssecQueryable) {
     const dns = edge.dns;
     items.push({
       key: 'dnssec',
@@ -2879,7 +2967,7 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
   /* ALPN. A completed handshake that negotiates no protocol is a MEASURED
      absence (the server declined our offer) and must not read the same as a
      handshake that never happened. */
-  if (edge?.transport.alpnProbed) {
+  if (edge?.transport?.alpnProbed) {
     const transport = edge.transport;
     items.push({
       key: 'alpn',
@@ -3046,11 +3134,26 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
   return items;
 }
 
+/**
+ * @param encryptionScore     0-100, or null when no posture score exists.
+ * @param postQuantumReadiness 0-100, or **null when the published model
+ *        WITHHELD it** (the hybrid named-group probe never settled).
+ *
+ * Both parameters were typed `number` while the caller passes `number | null`.
+ * `strictNullChecks` is off in this project, so the null travelled silently and
+ * the panel rendered `"NaN/100"` and `"NaN% ready"`, captioned "Most of the
+ * controls it scores are not yet deployed" — a confident failure verdict
+ * manufactured from a measurement the model had deliberately declined to make.
+ * A withheld number is rendered as withheld, with the reason.
+ */
 function buildTimeline(
   hndl: ScannerAssessment['hndl'],
-  encryptionScore: number,
-  postQuantumReadiness: number,
+  encryptionScore: number | null,
+  postQuantumReadiness: number | null,
+  postQuantumReadinessReason: string | null,
 ): TimelinePhase[] {
+  const scored = (value: number | null | undefined): value is number =>
+    typeof value === 'number' && Number.isFinite(value);
   const window = hndl.window;
   const harvesting = hndl.immediate + hndl.soon + hndl.planned;
 
@@ -3058,8 +3161,10 @@ function buildTimeline(
     {
       key: 'today',
       title: 'Today — measured posture',
-      horizon: `${encryptionScore}/100`,
-      description: `Current cryptographic posture across the scanned estate, from the scanner's own weighted risk model.`,
+      horizon: scored(encryptionScore) ? `${encryptionScore}/100` : 'Not scored',
+      description: scored(encryptionScore)
+        ? `Current cryptographic posture across the scanned estate, from the scanner's own weighted risk model.`
+        : 'No posture score has been recorded for this view yet. Run an authorized scan to measure it.',
       state: 'now',
     },
     {
@@ -3084,7 +3189,7 @@ function buildTimeline(
     {
       key: 'migration',
       title: 'Post-quantum migration',
-      horizon: `${postQuantumReadiness}% ready`,
+      horizon: scored(postQuantumReadiness) ? `${postQuantumReadiness}% ready` : 'Not measured',
       /* SAY WHAT THE NUMBER MEASURES.
          `postQuantumReadiness` is the published Post-Quantum Readiness CATEGORY
          — a posture score built from hybrid key agreement, PQ signatures, a
@@ -3094,8 +3199,11 @@ function buildTimeline(
          panel two cards below reported 27 of 31 components quantum-vulnerable.
          Both numbers were right; the sentence attached to one described the
          other. */
-      description:
-        postQuantumReadiness >= 60
+      description: !scored(postQuantumReadiness)
+        /* The model's own words for its silence — never a fabricated verdict. */
+        ? postQuantumReadinessReason
+          ?? 'Post-quantum readiness was not scored for this view, so no migration position can be stated yet.'
+        : postQuantumReadiness >= 60
           ? `Measured post-quantum readiness for the scanned endpoint is ${postQuantumReadiness}/100 — the published readiness category, not a share of components. The controls it scores are largely in place; close the remainder through the Migration Planner.`
           : `Measured post-quantum readiness for the scanned endpoint is ${postQuantumReadiness}/100 — the published readiness category, not a share of components. Most of the controls it scores are not yet deployed; plan the migration in the Migration Planner.`,
       state: 'target',

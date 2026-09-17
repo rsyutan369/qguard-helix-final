@@ -233,7 +233,30 @@ function computeCoverage(coverage: ScanCoverage, runs: EngineRun[]): { score: nu
      what fraction of the FILES were read. An engine that failed reduces
      coverage even if every file it would have read was analysed by another. */
   const reported = applicable.filter((run) => run.state === 'completed').length;
-  const engineShare = reported / applicable.length;
+
+  /* An engine that COMPLETED can still have a hole in its remit: `notAssessed`
+     records a dimension it reached for and could not read. Counting completions
+     alone published "Coverage 100%" in emerald on a scan whose own Assessment
+     Coverage panel listed a dimension that was never read, next to a
+     completeness note reading "Absent evidence is not clean evidence". Three
+     surfaces, one scan, two contradictory verdicts — and the reassuring one was
+     the headline.
+
+     A run that reported a gap is therefore not counted as a full reading. The
+     unit stays the ENGINE rather than the dimension entry, deliberately: cloud
+     connectors emit one entry per region, bucket or denied resource type, and a
+     raw entry count would let a dozen unreadable S3 buckets drive coverage
+     below what a wholly unscanned estate would score. */
+  const gapEngines = new Set(
+    coverage.notAssessed
+      .map((entry) => entry.engineId)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0),
+  );
+  const reportedWithGaps = applicable.filter(
+    (run) => run.state === 'completed' && gapEngines.has(run.engineId),
+  ).length;
+  const fullyRead = reported - reportedWithGaps;
+  const engineShare = fullyRead / applicable.length;
 
   const discovered = coverage.filesDiscovered;
   const fileShare = discovered > 0 ? coverage.filesAnalyzed / discovered : 1;
@@ -249,13 +272,20 @@ function computeCoverage(coverage: ScanCoverage, runs: EngineRun[]): { score: nu
   /* Stated, not hidden: a reader comparing "6 of 6 engines" against a catalogue
      of 13 needs to be told the other 7 were excluded because they do not
      apply, or the figure looks like it is quietly ignoring them. */
+  /* Said in the same sentence as the completion count, because "6 of 6 engines
+     completed" and a coverage figure below 100 look like a contradiction until
+     the reader is told which of the six came back with a hole in it. */
+  const gapNote = reportedWithGaps > 0
+    ? ` (${reportedWithGaps} of them reporting a dimension they could not read, so ${fullyRead} covered their remit in full)`
+    : '';
+
   const applicabilityNote = inapplicable > 0
     ? ` ${inapplicable} further engine${inapplicable === 1 ? '' : 's'} did not apply to this target and ${inapplicable === 1 ? 'is' : 'are'} excluded from the ratio.`
     : '';
 
   return {
     score: Math.max(0, Math.min(100, score)),
-    basis: `Coverage ${score}%: ${reported} of ${applicable.length} applicable engines completed and ${coverage.filesAnalyzed} of ${discovered} discovered files were analysed${limitations.length ? `. Limitations: ${limitations.join('; ')}.` : '.'}${applicabilityNote}`,
+    basis: `Coverage ${score}%: ${reported} of ${applicable.length} applicable engines completed${gapNote} and ${coverage.filesAnalyzed} of ${discovered} discovered files were analysed${limitations.length ? `. Limitations: ${limitations.join('; ')}.` : '.'}${applicabilityNote}`,
   };
 }
 

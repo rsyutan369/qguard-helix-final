@@ -100,8 +100,36 @@ interface DecryptedChatEnvelope {
   message_id: string;
   conversation_id: string;
   plaintext: string;
+  /** True only when `sender_verification` is `registered_device`. */
   authenticated: boolean;
   replay_protected: boolean;
+  /**
+   * How the backend proved who sent this message.
+   *
+   * `registered_device` — the envelope's dual signature validated AND its
+   * signing keys are the ones that device published to `messaging_devices`.
+   * `unverified_device` — the signature is self-consistent, but no registered
+   * identity was available to anchor it to, so the sender is unproven.
+   */
+  sender_verification: "registered_device" | "unverified_device";
+}
+
+/**
+ * The sender device's registered identity, as the Rust verifier expects it.
+ *
+ * Supplying this is what turns the envelope's signature into authentication:
+ * without it the backend can only confirm that the envelope is internally
+ * consistent, which anyone able to write to the relay can arrange. See
+ * `verify_sender_identity` in src-tauri/src/commands/messaging.rs.
+ */
+interface SenderIdentityPayload {
+  userId: string;
+  deviceId: string;
+  x25519IdentityPublic: number[];
+  mlkemIdentityPublic: number[];
+  ed25519IdentityPublic: number[];
+  mldsaIdentityPublic: number[];
+  identitySignature: DualSignature;
 }
 
 interface LocalIdentityBundle {
@@ -178,9 +206,32 @@ interface SecureChatAttachment {
   content_type: string;
   key_b64: string;
   iv_b64: string;
+  /**
+   * SHA-256 of the CIPHERTEXT. A transfer checksum, not the integrity control:
+   * authenticity comes from the AES-256-GCM tag (and, since `aad_version` 1,
+   * from the container binding below). Kept because it turns a truncated or
+   * corrupted download into a clear message instead of an opaque AEAD failure.
+   */
   sha256_b64: string;
+  /**
+   * Which associated-data binding sealed this attachment. Absent on anything
+   * sealed before the binding existed — those were encrypted with no AAD and
+   * must be decrypted with none, or every historical attachment breaks.
+   */
+  aad_version?: number;
   duration_ms: number | null;
   created_at: string;
+}
+
+/** Current attachment AAD binding. Bump only alongside `attachmentAad`. */
+const ATTACHMENT_AAD_VERSION = 1;
+
+/**
+ * Associated data binding one attachment ciphertext to the exact object it is
+ * stored as, and to the message that announced it.
+ */
+function attachmentAad(storagePath: string, conversationId: string, clientMessageId: string): Uint8Array {
+  return new TextEncoder().encode(`QGuard-Chat-Attachment-v1|${storagePath}|${conversationId}|${clientMessageId}`);
 }
 
 interface DownloadedAttachmentRecord {
@@ -402,6 +453,7 @@ function parseSecureAttachment(value: unknown): SecureChatAttachment | null {
     key_b64: keyB64,
     iv_b64: ivB64,
     sha256_b64: sha256B64,
+    aad_version: typeof record.aad_version === "number" ? record.aad_version : undefined,
     duration_ms: typeof record.duration_ms === "number" ? record.duration_ms : null,
     created_at: String(record.created_at ?? new Date().toISOString()),
   };
@@ -887,6 +939,58 @@ async function loadTrustedDevicesForUsers(userIds: string[]): Promise<TrustedDev
   }
 
   return rows.map((device) => mapTrustedDeviceRow(device, signedPrekeysByDevice));
+}
+
+/**
+ * Registered identities for the devices that SENT the messages being opened,
+ * keyed by device id.
+ *
+ * Deliberately a separate query from `loadTrustedDevicesForUsers`, for two
+ * reasons:
+ *   - that one filters `trust_state <> 'revoked'`, because it answers "where may
+ *     I send?". This one answers "who signed this?", and retiring a key does not
+ *     retroactively unsign the messages it signed while it was live.
+ *   - it needs no prekeys, so it stays one round trip over a small column set.
+ *
+ * Cached for the session: a device's identity keys are immutable — a re-key
+ * mints a NEW device id rather than rewriting an existing row.
+ */
+const senderIdentityCache = new Map<string, SenderIdentityPayload | null>();
+
+async function primeSenderIdentities(deviceIds: string[]): Promise<void> {
+  const wanted = Array.from(new Set(deviceIds.filter(Boolean))).filter((id) => !senderIdentityCache.has(id));
+  if (wanted.length === 0) return;
+  const { data, error } = await withFetchRetry(() => Promise.resolve(supabase
+    .from("messaging_devices")
+    .select("id,user_id,x25519_identity_public,mlkem_identity_public,ed25519_identity_public,mldsa_identity_public,identity_signature")
+    .in("id", wanted)));
+  // A failed lookup must not be cached as "no such device": that would pin every
+  // message from those senders to `unverified_device` for the rest of the
+  // session over one transient network error.
+  if (error) return;
+  const found = new Set<string>();
+  ((data ?? []) as Array<Record<string, unknown>>).forEach((row) => {
+    const deviceId = String(row.id);
+    const signature = row.identity_signature as DualSignature | null;
+    if (!signature?.ed25519?.length || !signature?.ml_dsa_65?.length) {
+      senderIdentityCache.set(deviceId, null);
+      found.add(deviceId);
+      return;
+    }
+    senderIdentityCache.set(deviceId, {
+      userId: String(row.user_id),
+      deviceId,
+      x25519IdentityPublic: byteaToBytes(row.x25519_identity_public),
+      mlkemIdentityPublic: byteaToBytes(row.mlkem_identity_public),
+      ed25519IdentityPublic: byteaToBytes(row.ed25519_identity_public),
+      mldsaIdentityPublic: byteaToBytes(row.mldsa_identity_public),
+      identitySignature: signature,
+    });
+    found.add(deviceId);
+  });
+  // Devices the query legitimately returned nothing for (deleted rows, or a
+  // peer's revoked device that RLS hides) are cached as "no anchor available".
+  wanted.filter((id) => !found.has(id)).forEach((id) => senderIdentityCache.set(id, null));
 }
 
 function recipientKeyBundle(device: TrustedDevice, oneTimePrekey: SignedPrekeySummary | null) {
@@ -1719,6 +1823,14 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     const controls: Array<SecureControlMessage & { sender_user_id: string; created_at: string }> = [];
     const decryptDeviceId = localDeviceId ?? currentDevice?.device_id ?? null;
 
+    // One batched lookup for every sender in this page of history, so each
+    // decrypt below can hand the backend the identity it must match the
+    // envelope's signing keys against. Best-effort: a failure here degrades
+    // messages to "sender unverified", never to undecryptable.
+    await primeSenderIdentities(
+      rows.filter((row) => !row.deleted_at).map((row) => buildTauriEnvelope(row).sender_device_id),
+    ).catch(() => undefined);
+
     // Controls (edits/reactions) are re-applied on every partial flush; both
     // operations are idempotent per (actor, target), so repeats are safe.
     const applyControlsAndSort = (): ChatMessage[] => {
@@ -1797,8 +1909,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             // clears `messagesLoading` — the "Loading encrypted history..."
             // hang. On timeout the group falls through to the normal decrypt
             // failure path and renders as a failed bubble instead.
+            const tauriEnvelope = buildTauriEnvelope(localRow);
             decryptedPromise = invokeWithTimeout<DecryptedChatEnvelope>("messaging_receive_encrypted_message", {
-              envelope: buildTauriEnvelope(localRow),
+              envelope: tauriEnvelope,
+              senderIdentity: senderIdentityCache.get(tauriEnvelope.sender_device_id) ?? null,
             }, DECRYPT_TIMEOUT_MS);
             decryptInFlightRef.current.set(decryptKey, decryptedPromise);
             decryptedPromise.finally(() => {
@@ -2088,7 +2202,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         conversation_id: activeConversation.id,
         client_message_id: chatMessage.client_message_id,
         first_read_at: viewedAt,
-        verification_state: chatMessage.authenticated ? "valid" : "tampered",
+        // Same rule as deriveReadState: an unanchored sender is "pending"
+        // (proof absent), never "tampered" (proof failed).
+        verification_state: chatMessage.authenticated ? "valid" : "pending",
         threat_score: chatMessage.threat.score,
         threat_flags: chatMessage.threat.flags,
         proof: {
@@ -3077,15 +3193,26 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     const plaintext = new Uint8Array(await source.arrayBuffer());
     const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const encrypted = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: toArrayBuffer(iv) }, key, toArrayBuffer(plaintext)));
-    const rawKey = new Uint8Array(await crypto.subtle.exportKey("raw", key));
     const storagePath = `${userId}/chat-attachments/${activeConversation.id}/${clientMessageId}/${kind}-${Date.now()}.bin`;
+    // Bind the ciphertext to the exact object it is stored as. Without AAD the
+    // blob authenticates on its own merits and nothing ties it to the message
+    // that announced it, so anyone with write access to the bucket could move a
+    // ciphertext between paths. As AAD the path, conversation and message id are
+    // inside the GCM tag: a relocated blob no longer opens.
+    const aad = attachmentAad(storagePath, activeConversation.id, clientMessageId);
+    const encrypted = new Uint8Array(await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: toArrayBuffer(iv), additionalData: toArrayBuffer(aad) },
+      key,
+      toArrayBuffer(plaintext),
+    ));
+    const rawKey = new Uint8Array(await crypto.subtle.exportKey("raw", key));
 
     await uploadChatAttachmentWithRetry(storagePath, new Blob([encrypted], { type: "application/qguard-chat-attachment" }));
 
     return {
       kind,
       storage_path: storagePath,
+      aad_version: ATTACHMENT_AAD_VERSION,
       name: displayName,
       size_bytes: source.size,
       content_type: source.type || "application/octet-stream",
@@ -3099,6 +3226,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
   async function decryptAttachmentBlob(
     attachment: SecureChatAttachment,
+    conversationIdForAttachment: string,
+    messageIdForAttachment: string,
     emitProgress: (stage: string, detail: string, progress: number, statusValue: string) => void,
   ): Promise<Blob> {
     emitProgress("attachment_download", "Downloading ciphertext attachment", 32, "progress");
@@ -3118,7 +3247,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     wipeBytes(attachmentKey);
     emitProgress("aes_gcm_decrypt", "Decrypting attachment locally with AES-256-GCM", 82, "progress");
     const iv = base64ToBytes(attachment.iv_b64);
-    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: toArrayBuffer(iv) }, key, toArrayBuffer(encrypted));
+    // Attachments sealed before the AAD binding carry no `aad_version`, and must
+    // still open — their ciphertext was produced without associated data, so
+    // supplying any would break every one of them.
+    const aadParams = attachment.aad_version === ATTACHMENT_AAD_VERSION
+      ? { additionalData: toArrayBuffer(attachmentAad(attachment.storage_path, conversationIdForAttachment, messageIdForAttachment)) }
+      : {};
+    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: toArrayBuffer(iv), ...aadParams }, key, toArrayBuffer(encrypted));
     wipeBytes(iv);
     wipeBytes(encrypted);
     const plaintextBytes = new Uint8Array(plaintext);
@@ -3167,7 +3302,11 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         status: "started",
         metadata: { conversation_id: chatMessage.conversation_id, client_message_id: chatMessage.client_message_id },
       });
-      const blob = await decryptAttachmentBlob(attachment, (stage, detail, progress, statusValue) => {
+      const blob = await decryptAttachmentBlob(
+        attachment,
+        chatMessage.conversation_id,
+        chatMessage.client_message_id,
+        (stage, detail, progress, statusValue) => {
         stream.emit({
           stage,
           detail,
@@ -3175,7 +3314,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           status: statusValue as "progress" | "verified",
           level: statusValue === "verified" ? "success" : "info",
         });
-      });
+        },
+      );
       const mediaKind = inlineMediaKind(attachment);
       if (mediaKind) {
         // Images, video and audio stay in memory as an object URL and render in
@@ -4109,6 +4249,18 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                       <div className={`mt-2 flex flex-wrap items-center gap-2 text-[11px] ${mine ? "text-violet-100" : "text-ink-400"}`}>
                         <span>{new Date(chatMessage.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
                         {chatMessage.authenticated && <span>Verified</span>}
+                        {/* Decrypted but the sender's signing keys could not be
+                            matched against a registered device, so "who sent
+                            this" is unproven. Saying nothing here would let an
+                            unanchored message read exactly like a verified one. */}
+                        {!chatMessage.authenticated && chatMessage.status === "decrypted" && (
+                          <span
+                            title="This message decrypted, but the sender's device identity could not be checked against the device registry, so the sender is unproven."
+                            className={mine ? "font-bold text-amber-100" : "font-bold text-amber-600"}
+                          >
+                            Sender unverified
+                          </span>
+                        )}
                         {chatMessage.replay_protected && <span>Replay-safe</span>}
                         {chatMessage.edited_at && <span>Edited</span>}
                         {chatMessage.read_once && <span>Read once</span>}

@@ -4,6 +4,7 @@ import { buildScannerIntelligence } from './scanner'
 import { buildSnapshot as buildQuantumReadinessSnapshot } from './quantum-readiness'
 import { dedupeGradedObservations, namesCryptography, observationClass } from '@/lib/scanner/finding-identity'
 import { riskBandFor, riskScoreFromLoad } from '@/lib/migration/asset-intelligence'
+import { isSimulationJob } from '@/lib/migration/job-safety'
 import {
   ENGINE_PIPELINE_STAGES,
   SIMULATION_TYPES,
@@ -286,16 +287,12 @@ function phaseForProgress(progress: number, status: string, meta: Record<string,
   return selected
 }
 
+/* One definition, shared with the agent claim path and Live Migration — see
+   `@/lib/migration/job-safety`. This file's copy and migration.ts's copy had
+   drifted (only this one honoured `metadata.dryRun`), and the agent claim path
+   had none, so a queued dry run was claimable by a real agent. */
 function isSandboxSimulationJob(job: any) {
-  const meta = asRecord(job?.metadata)
-  const executionMode = textMeta(meta, ['executionMode', 'runMode', 'mode']).toLowerCase()
-  const jobType = String(job?.job_type || '').toLowerCase()
-  const name = String(job?.name || '')
-  return boolMeta(meta.sandboxMode)
-    || boolMeta(meta.dryRun)
-    || ['sandbox_simulation', 'dry_run', 'simulation'].includes(executionMode)
-    || /sandbox|simulation|dry_run|dry-run/.test(jobType)
-    || /^\[dry run\]|^sandbox:/i.test(name)
+  return isSimulationJob(job)
 }
 
 function canDeleteSimulationJob(job: any) {

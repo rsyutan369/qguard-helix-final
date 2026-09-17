@@ -8,6 +8,7 @@ import type { ScanModule, ScanFinding, ScanModuleCategory } from '@/types/scanne
 import type { ScanTarget, ScanTargetType, ScannerEvidenceRecord } from '@/types/scanner.types'
 import type { ClassicalAlgorithm, QuantumThreatLevel } from '@/types/quantum.types'
 import { ALGORITHM_PROFILES } from '../crypto-detector'
+import { analyzeCryptoObservation, type SuiteAnatomy } from '../../../crypto/suite-anatomy'
 import { CRYPTO_FINGERPRINTS } from '../fingerprints'
 import { buildEvidenceForTarget, buildRemediationModel } from '../remediation-model'
 import { uuidv4 } from '../uuid'
@@ -919,9 +920,12 @@ function evidenceAssetTypeToTargetType(evidence: ScannerEvidenceRecord): ScanTar
 function moduleForEvidence(evidence: ScannerEvidenceRecord): string {
   switch (evidence.evidenceType) {
     case 'tls-certificate':
+    case 'certificate-file':
+    case 'key-file':
       return 'certificate-authority-trust-scanner'
     case 'tls-protocol':
     case 'tls-cipher':
+    case 'tls-key-exchange':
       return 'tls-cipher-suite-scanner'
     case 'ssh-metadata':
       return 'ssh-security-scanner'
@@ -937,44 +941,111 @@ function moduleForEvidence(evidence: ScannerEvidenceRecord): string {
   }
 }
 
-function normalizeEvidenceAlgorithm(evidence: ScannerEvidenceRecord): ClassicalAlgorithm | null {
-  const raw = `${evidence.observedAlgorithm || ''} ${evidence.packageName || ''} ${JSON.stringify(evidence.rawEvidence || {})}`.toLowerCase()
-  const keySize = evidence.keySize || Number(raw.match(/(?:rsa|dh|aes|p-?|nistp|secp)?[-_ ]?(\d{3,4}|\d{2,3})/i)?.[1])
+/** Evidence that records a dependency: availability of cryptography, never its use. */
+export const LIBRARY_EVIDENCE_TYPES: ReadonlySet<string> = new Set(['package-manifest', 'crypto-library'])
 
-  if (raw.includes('rsa')) {
-    if (keySize && keySize <= 1024) return 'RSA-1024'
-    if (keySize && keySize >= 4096) return 'RSA-4096'
-    return 'RSA-2048'
+/**
+ * The classical severity profile ONE observation maps to — or null.
+ *
+ * Reads STRUCTURED fields only (observedAlgorithm, keySize, protocol) and takes
+ * the quantum posture from the platform's canonical decomposition
+ * (`analyzeCryptoObservation`). It used to substring-match over
+ * `JSON.stringify(rawEvidence)`, which is how, on the agent evidence path:
+ *   • a certificate ISSUER named "…TLS RSA SHA256…CA" filed an ECDSA leaf as RSA,
+ *   • a subject such as "Mersault Ltd" (contains "rsa") filed Ed25519 as RSA,
+ *   • the P-256 curve size parsed as an RSA modulus → "RSA-1024 CRITICAL",
+ *   • the hybrid group X25519MLKEM768 matched `x25519` → classical X25519, and
+ *   • TLS_AES_256_GCM_SHA384 matched `tls` + `1.3` → a medium TLS-1.3 finding.
+ *
+ * Hybrid and post-quantum observations have no classical profile: they return
+ * null and are recorded through the quantum-safe path, so one piece of evidence
+ * is never both "vulnerable" and "PQC-ready". Dependency rows return null: a
+ * manifest proves a library is available, not that any primitive is used.
+ */
+function normalizeEvidenceAlgorithm(evidence: ScannerEvidenceRecord): ClassicalAlgorithm | null {
+  if (LIBRARY_EVIDENCE_TYPES.has(String(evidence.evidenceType))) return null
+  const observed = String(evidence.observedAlgorithm || '').trim()
+  if (!observed) return null
+  const anatomy = analyzeCryptoObservation({ algorithm: observed, name: observed, protocol: evidence.protocol }, true)
+  return classicalProfileFor(anatomy, observed, evidence.keySize ?? null)
+}
+
+/**
+ * Map a canonical decomposition to the severity profile that grades it.
+ *
+ * The profile supplies severity and remediation text only; the inventory keeps
+ * the precise observed name ("RSA-3072", "ECDSA P-521"), so the coarse profile
+ * granularity never rewrites what was actually measured.
+ */
+export function classicalProfileFor(anatomy: SuiteAnatomy, observed: string, keySize: number | null): ClassicalAlgorithm | null {
+  if (anatomy.quantumClass === 'hybrid') return null
+  const value = observed.toUpperCase()
+  const family = String(anatomy.family || '').toUpperCase()
+  const statedBits = Number(value.match(/(?:RSA|DSA)[-_ ]?(\d{3,5})\b/)?.[1]) || null
+
+  switch (anatomy.kind) {
+    case 'protocol': {
+      const match = value.match(/^(TLS|SSL|DTLS)[-_\s]?V?(\d)(?:\.(\d))?/)
+      if (!match) return null
+      if (match[1] === 'SSL') return 'TLS-1.0'
+      const minor = match[3] ?? '0'
+      return minor === '0' ? 'TLS-1.0' : minor === '1' ? 'TLS-1.1' : minor === '2' ? 'TLS-1.2' : minor === '3' ? 'TLS-1.3' : null
+    }
+    case 'key-exchange': {
+      if (anatomy.quantumClass === 'safe') return null // standalone ML-KEM
+      if (/X25519/.test(family)) return 'X25519'
+      if (/P-384|P-521|NISTP384|NISTP521|SECP384|SECP521/.test(`${family} ${value}`)) return 'ECC-P384'
+      if (/ECDH|P-256|NISTP256|SECP256|PRIME256/.test(`${family} ${value}`)) return 'ECC-P256'
+      if (/GROUP1(?!\d)|1024/.test(value)) return 'DH-1024'
+      return 'DH-2048'
+    }
+    case 'signature':
+    case 'certificate': {
+      if (anatomy.quantumClass === 'safe') return null // ML-DSA / SLH-DSA
+      if (/^RSA/.test(family)) {
+        const bits = Number(keySize) || statedBits || Number(family.match(/RSA-(\d+)/)?.[1]) || null
+        if (bits && bits <= 1024) return 'RSA-1024'
+        if (bits && bits >= 4096) return 'RSA-4096'
+        return 'RSA-2048'
+      }
+      if (/SECP256K1/.test(family)) return 'ECC-secp256k1'
+      if (/P-384|P-521/.test(family)) return 'ECDSA-P384'
+      if (/ECDSA/.test(family)) return 'ECDSA-P256'
+      if (/ED25519|ED448|EDDSA/.test(family)) return 'Ed25519'
+      if (/^DSA/.test(family)) return (Number(keySize) || statedBits || 0) >= 2048 ? 'DSA-2048' : 'DSA-1024'
+      return null
+    }
+    case 'symmetric': {
+      const bulk = String(anatomy.bulk || '').toUpperCase()
+      if (bulk.startsWith('AES-256')) return 'AES-256'
+      if (bulk.startsWith('AES-128')) return 'AES-128'
+      if (/3DES|DES|RC4/.test(bulk)) return '3DES'
+      return null
+    }
+    case 'hash': {
+      const mac = String(anatomy.mac || '').toUpperCase()
+      if (/HMAC/.test(family)) return null
+      if (mac === 'SHA-1') return 'SHA-1'
+      if (mac === 'MD5') return 'MD5'
+      if (mac === 'SHA-256') return 'SHA-256'
+      return null
+    }
+    case 'cipher-suite': {
+      if (anatomy.quantumClass === 'vulnerable') {
+        const kex = String(anatomy.keyExchange || '').toUpperCase()
+        if (kex === 'RSA') return 'RSA-2048'
+        if (/ECDH/.test(kex)) return 'ECC-P256'
+        if (/DH/.test(kex)) return 'DH-2048'
+        return null
+      }
+      const bulk = String(anatomy.bulk || '').toUpperCase()
+      if (bulk.startsWith('AES-256')) return 'AES-256'
+      if (bulk.startsWith('AES-128')) return 'AES-128'
+      return null
+    }
+    default:
+      return null
   }
-  if (raw.includes('ecdsa') || raw.includes('secp')) {
-    if (raw.includes('384') || raw.includes('p384')) return 'ECDSA-P384'
-    if (raw.includes('secp256k1')) return 'ECC-secp256k1'
-    return 'ECDSA-P256'
-  }
-  if (raw.includes('ecdh') || raw.includes('p-256') || raw.includes('prime256') || raw.includes('nistp256') || raw.includes('elliptic')) return 'ECC-P256'
-  if (raw.includes('p-384') || raw.includes('nistp384')) return 'ECC-P384'
-  if (raw.includes('x25519') || raw.includes('curve25519')) return 'X25519'
-  if (raw.includes('ed25519')) return 'Ed25519'
-  if (raw.includes('diffie') || raw.includes('dhe') || raw.includes('dh-')) return keySize && keySize <= 1024 ? 'DH-1024' : 'DH-2048'
-  if (raw.includes('tls')) {
-    if (raw.includes('1.0')) return 'TLS-1.0'
-    if (raw.includes('1.1')) return 'TLS-1.1'
-    if (raw.includes('1.2')) return 'TLS-1.2'
-    if (raw.includes('1.3')) return 'TLS-1.3'
-  }
-  if (raw.includes('sha-1') || raw.includes('sha1')) return 'SHA-1'
-  if (raw.includes('sha-256') || raw.includes('sha256')) return 'SHA-256'
-  if (raw.includes('md5')) return 'MD5'
-  if (raw.includes('aes-128') || raw.includes('aes_128')) return 'AES-128'
-  if (raw.includes('aes-256') || raw.includes('aes_256')) return 'AES-256'
-  if (raw.includes('3des') || raw.includes('triple-des')) return '3DES'
-  if (raw.includes('pgp') && raw.includes('rsa')) return 'PGP-RSA'
-  if (raw.includes('pgp') && (raw.includes('ecc') || raw.includes('ec'))) return 'PGP-ECC'
-  if (raw.includes('s/mime') && raw.includes('rsa')) return 'S/MIME-RSA'
-  if (raw.includes('jsonwebtoken') || raw.includes('jwt')) return 'RSA-2048'
-  if (raw.includes('node-forge') || raw.includes('openssl')) return 'RSA-2048'
-  if (raw.includes('crypto-js')) return 'AES-128'
-  return null
 }
 
 /**

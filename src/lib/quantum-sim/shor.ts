@@ -22,8 +22,8 @@
  *
  * It does NOT mean RSA-2048 can be factored here. Simulating m qubits costs
  * 2^m complex amplitudes. RSA-2048 needs about 6,144 logical qubits, so its
- * state vector holds 2^6144 numbers — more than the estimated particle count of
- * the observable universe raised to the 25th power. That impossibility is the
+ * state vector holds 2^6144 ≈ 10^1850 numbers — the estimated atom count of the
+ * observable universe (about 10^80) raised to the 23rd power. That impossibility is the
  * whole point: a classical machine cannot fake this, which is precisely why a
  * real quantum computer would change the situation. `simulationWall()` turns
  * that into a number the UI can show.
@@ -417,12 +417,12 @@ export const SHOR_TARGETS: Array<{ N: number; factors: [number, number]; qubits:
   { N: 21, factors: [3, 7], qubits: 15, note: 'First case where the period can exceed the register width if you shrink t.' },
   { N: 33, factors: [3, 11], qubits: 18, note: 'Six work qubits. State vector crosses 4 MB.' },
   { N: 35, factors: [5, 7], qubits: 18, note: 'Both factors above 3 — no trivial gcd shortcut.' },
-  { N: 39, factors: [3, 13], qubits: 18, note: 'Order of most bases here is 12, giving four clean peaks.' },
+  { N: 39, factors: [3, 13], qubits: 18, note: 'Order of most bases here is 12 (8 of the 23 coprime bases), giving a twelve-tooth comb.' },
   { N: 51, factors: [3, 17], qubits: 18, note: 'Larger prime factor stresses the continued-fraction step.' },
   { N: 55, factors: [5, 11], qubits: 18, note: 'Order 20 for many bases — a dense comb.' },
   { N: 65, factors: [5, 13], qubits: 21, note: 'Seven work qubits. 33 MB of amplitudes.' },
   { N: 77, factors: [7, 11], qubits: 21, note: 'The largest target that stays comfortable in a browser tab.' },
-  { N: 91, factors: [7, 13], qubits: 21, note: 'Order 12 for a = 3. Runs in about a second.' },
+  { N: 91, factors: [7, 13], qubits: 21, note: 'Order 12 for most bases, but only 6 for a = 3 (3^6 = 729 = 8·91 + 1). Runs in about a second.' },
 ];
 
 function pickBase(N: number, random: () => number): number {
@@ -682,7 +682,7 @@ export function runShorUntilSuccess(options: ShorOptions, maxShots = 8): ShorRes
 
 export interface SimulationWall {
   keyBits: number;
-  /** Logical qubits Shor needs for this key size (2n + O(1) for the standard circuit). */
+  /** Logical qubits Shor needs for this key size (3n, per the Gidney & Ekerå circuit). */
   qubits: number;
   /** Complex amplitudes a classical simulation would have to store. */
   amplitudesLog10: number;

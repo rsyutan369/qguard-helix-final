@@ -395,14 +395,14 @@ export function PqcSuite({ active }: { active: boolean }) {
       accent={QSR.quantum}
       eyebrow="The replacement suite"
       title="FIPS 203, 204 and 205 — sizes and speed"
-      subtitle="Published parameter sets on the left, your own machine on the right. The most common objection to migrating is that post-quantum cryptography is too slow; this is what it actually costs here."
+      subtitle="Published parameter sets on the left, your own machine on the right. The most common objection to migrating is that post-quantum cryptography is too slow; this is what it actually costs here. The SLH-DSA table lists the small (s) sets — the benchmark below also runs the fast (f) variant, which trades a much larger signature for quicker signing — and each SLH-DSA row covers both the SHA2 and SHAKE instantiations FIPS 205 defines, since their sizes are identical."
       right={<ProvenanceBadge kind="measured" />}
     >
       <div className="space-y-4">
         <div className="grid gap-3 lg:grid-cols-3">
           <ParameterTable title="ML-KEM · key establishment" sets={ML_KEM_SETS} accent={QSR.quantum} />
           <ParameterTable title="ML-DSA · signatures" sets={ML_DSA_SETS} accent={QSR.live} />
-          <ParameterTable title="SLH-DSA · hash-based signatures" sets={SLH_DSA_SETS.filter((s) => s.id.endsWith('s'))} accent={QSR.safe} />
+          <ParameterTable title="SLH-DSA · hash-based, small (s) sets" sets={SLH_DSA_SETS.filter((s) => s.id.endsWith('s'))} accent={QSR.safe} />
         </div>
 
         <div className="rounded-lg border" style={{ borderColor: tint(QSR.live, 0.2), background: 'rgba(4,7,16,0.55)' }}>

@@ -21,6 +21,7 @@ export function fallbackHardeningStatus(): SecurityHardeningStatus {
     { id: "code_obfuscation", label: "Code Obfuscation", status: releaseBuild ? "active" : "warning", active: releaseBuild, detail: releaseBuild ? "Production web bundle is minified and sourcemaps are disabled" : "Development build keeps readable symbols" },
     { id: "control_flow_flattening", label: "Control-Flow Flattening", status: "warning", active: false, detail: "Dedicated control-flow flattening marker is not configured" },
     { id: "string_encryption", label: "String Encryption", status: "warning", active: false, detail: "Dedicated string encryption marker is not configured" },
+    { id: "tls_transport_policy", label: "Transport Policy (TLS 1.3 + hybrid PQ)", status: "warning", active: false, detail: "Desktop transport policy is unavailable in this context" },
   ];
 
   return {
@@ -50,6 +51,16 @@ export function fallbackHardeningStatus(): SecurityHardeningStatus {
     string_encryption: false,
     signed_build_verification: false,
     integrity_hash_checks: false,
+    // Reported, not assumed: outside the desktop shell there is no way to know
+    // what the network stack was configured with, and claiming "strict" here
+    // would be a posture the app never actually set.
+    tls_policy: {
+      mode: "compat",
+      minimum_version: "unknown",
+      post_quantum_key_agreement: false,
+      enforced_by_app: false,
+      detail: "Desktop transport policy is unavailable in this context",
+    },
   };
 }
 

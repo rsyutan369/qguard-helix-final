@@ -227,10 +227,15 @@ export function buildClientHello(options: ClientHelloOptions): HandshakeEvidence
           keyShare.subarray(mlKemLength),
           `X25519 public key [${classicalLength}]`,
           'classical',
-          'Still present, and still breakable by Shor. It is here so the handshake stays safe if a flaw is found in ML-KEM — the hybrid holds if EITHER half holds.',
+          'Still present, and still breakable by Shor. It is here so the handshake stays safe if a flaw is found in ML-KEM — the hybrid holds if EITHER half holds. These particular bytes are random filler of the correct length rather than a real curve point; the ML-KEM half above is genuine.',
         );
       } else {
-        b.push(keyShare.subarray(0, classicalLength), `ECDH public point [${classicalLength}]`, 'classical', 'Breakable by Shor. Present for defence in depth.');
+        b.push(
+          keyShare.subarray(0, classicalLength),
+          `ECDH public point [${classicalLength}]`,
+          'classical',
+          'Breakable by Shor. Present for defence in depth. Random filler of the correct length in this specimen — only the ML-KEM half that follows is real key material.',
+        );
         b.push(keyShare.subarray(classicalLength), `ML-KEM encapsulation key [${mlKemLength}]`, 'quantum-safe', 'The half that survives a CRQC.');
       }
     } else {
@@ -238,7 +243,7 @@ export function buildClientHello(options: ClientHelloOptions): HandshakeEvidence
         keyShare,
         `${group.name} public key [${keyShare.length}]`,
         'classical',
-        'This is the harvestable field. A recorder stores these bytes today; a CRQC solves the discrete logarithm later and derives the same shared secret the two endpoints derived. Forward secrecy does not help, because the attacker never needed the long-term key.',
+        'This is the harvestable field. A recorder stores these bytes today; a CRQC solves the discrete logarithm later and derives the same shared secret the two endpoints derived. Forward secrecy does not help, because the attacker never needed the long-term key. In this specimen the bytes themselves are random filler of the correct length, not a valid curve point — the field, its position and its size are what the dump is teaching.',
       );
     }
   }
@@ -264,9 +269,16 @@ export function buildClientHello(options: ClientHelloOptions): HandshakeEvidence
    ═══════════════════════════════════════════════════════════════════════════ */
 
 export interface HarvestRecord {
-  /** Bytes an adversary must store per captured session. */
+  /**
+   * Bytes of HANDSHAKE an adversary stores per captured session: both key
+   * shares plus an assumed 512 bytes of surrounding record and extension
+   * framing. Application ciphertext is deliberately NOT priced here — see
+   * `contents` — because its size depends entirely on the payload and would
+   * swamp the point the figure is making, which is that capturing the key
+   * agreement alone is enough and is cheap.
+   */
   bytesPerSession: number;
-  /** What they store. */
+  /** What the handshake capture above actually contains. */
   contents: string[];
   /** What they still cannot read, and what unlocks it. */
   blocked: string;
@@ -277,6 +289,12 @@ export interface HarvestRecord {
  * What a passive recorder actually keeps. Deliberately small numbers: the point
  * is that harvesting is cheap. A handshake is under 2 KB; a year of a
  * mid-sized enterprise's TLS handshakes fits on a single disk.
+ *
+ * The 512-byte constant is an ASSUMPTION for the record and extension framing
+ * around the two key shares, not a published figure — the specimen ClientHello
+ * this module encodes for an X25519 group is 185 bytes, and a real one carrying
+ * ALPN, session tickets and the rest runs larger. The UI badges this MODEL, not
+ * PUBLISHED, for that reason.
  */
 export function harvestFootprint(group: NamedGroup, sessionsPerDay: number, years: number): {
   record: HarvestRecord;
@@ -289,9 +307,9 @@ export function harvestFootprint(group: NamedGroup, sessionsPerDay: number, year
     bytesPerSession: handshakeBytes,
     contents: [
       'ClientHello and ServerHello in full, including both key shares',
-      'The server certificate chain, which is sent before encryption begins in TLS 1.2 and encrypted in TLS 1.3',
-      'Encrypted application records, kept verbatim',
       'SNI, timing, and volume — metadata that is never encrypted',
+      'Record and extension framing around the handshake (assumed 512 B)',
+      'Application ciphertext and the certificate chain are kept too where the payload is the target, but they are not counted in the figure above — their size depends on the session, and the key agreement alone is what has to be stored to unlock them later',
     ],
     blocked: group.quantumBroken
       ? 'The application data, for now. Its AES keys derive from the ECDHE shared secret via HKDF.'
@@ -423,8 +441,15 @@ export interface KeyScheduleResult {
  * session. The AES-256-GCM layer is never attacked, because it never has to be.
  *
  * @param sharedSecret the (EC)DHE or ML-KEM shared secret
- * @param transcript   Transcript-Hash(ClientHello…ServerHello); a real 32-byte
- *                     SHA-256 digest of the captured handshake bytes
+ * @param transcript   A real 32-byte SHA-256 digest of the captured handshake
+ *                     bytes. RFC 8446 uses a DIFFERENT transcript at each stage
+ *                     — ClientHello…ServerHello for the handshake traffic
+ *                     secrets, ClientHello…server Finished for the application
+ *                     ones. This demonstration feeds one captured transcript to
+ *                     every stage, which exercises the identical HKDF chain and
+ *                     keeps the "every input but the shared secret is in the
+ *                     recording" point intact, but the derived bytes are
+ *                     therefore not a specific session's real traffic keys.
  */
 export function tls13KeySchedule(sharedSecret: Uint8Array, transcript: Uint8Array): KeyScheduleResult {
   const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -466,7 +491,7 @@ export function tls13KeySchedule(sharedSecret: Uint8Array, transcript: Uint8Arra
     {
       ordinal: 3,
       name: 'client handshake traffic secret',
-      operation: 'Derive-Secret(Handshake, "c hs traffic", ClientHello…ServerHello)',
+      operation: 'Derive-Secret(Handshake, "c hs traffic", Transcript-Hash(captured handshake))',
       value: clientHandshakeTraffic,
       significance: 'Protects the encrypted extensions, certificate and Finished messages.',
       consumesSharedSecret: false,
@@ -474,7 +499,7 @@ export function tls13KeySchedule(sharedSecret: Uint8Array, transcript: Uint8Arra
     {
       ordinal: 4,
       name: 'server handshake traffic secret',
-      operation: 'Derive-Secret(Handshake, "s hs traffic", ClientHello…ServerHello)',
+      operation: 'Derive-Secret(Handshake, "s hs traffic", Transcript-Hash(captured handshake))',
       value: serverHandshakeTraffic,
       significance: 'Decrypts the server certificate — which in TLS 1.3 is encrypted, and in TLS 1.2 was not.',
       consumesSharedSecret: false,
@@ -490,7 +515,7 @@ export function tls13KeySchedule(sharedSecret: Uint8Array, transcript: Uint8Arra
     {
       ordinal: 6,
       name: 'client application traffic secret',
-      operation: 'Derive-Secret(Master, "c ap traffic", ClientHello…server Finished)',
+      operation: 'Derive-Secret(Master, "c ap traffic", Transcript-Hash(captured handshake))',
       value: clientAppTraffic,
       significance: 'The root of every AEAD key protecting actual application data in this direction.',
       consumesSharedSecret: false,

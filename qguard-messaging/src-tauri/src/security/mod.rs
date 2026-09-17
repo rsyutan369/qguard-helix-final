@@ -37,6 +37,8 @@ pub struct SecurityHardeningStatus {
     pub string_encryption: bool,
     pub signed_build_verification: bool,
     pub integrity_hash_checks: bool,
+    /// Transport posture this launch asked the platform WebView for.
+    pub tls_policy: TlsPolicy,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -48,7 +50,121 @@ pub struct SecurityHardeningCheck {
     pub detail: String,
 }
 
+// ---------------------------------------------------------------------------
+// TLS transport policy
+//
+// Every byte this app sends to Supabase (auth, relay rows, storage, realtime)
+// travels over the embedded WebView's own TLS stack -- this process opens no
+// sockets of its own. So "TLS 1.3 / X25519MLKEM768 preferred / classical
+// fallback controlled by policy" is not something the Rust code can negotiate;
+// it is something it must CONFIGURE, at the one moment it can: before the
+// WebView environment is created.
+//
+// Scope, stated honestly because it differs by platform:
+//   - Windows (WebView2): enforced here, through the browser arguments below.
+//   - Android (system WebView): the OS owns the TLS stack and takes no such
+//     switches. Android 10+ negotiates TLS 1.3 by default and recent Chromium
+//     WebViews offer X25519MLKEM768; neither can be pinned from inside the app,
+//     so `TlsPolicy::enforced_by_app` reports false there rather than claiming
+//     a control that does not exist.
+//
+// The transport is a defence-in-depth layer regardless: message, call and vault
+// payloads are already end-to-end encrypted before they reach it.
+// ---------------------------------------------------------------------------
+
+/// Which transport posture this launch asked the WebView for.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TlsPolicy {
+    /// "strict" (default) or "compat", from `QGUARD_TLS_POLICY`.
+    pub mode: String,
+    /// Strict mode refuses anything below TLS 1.3 outright.
+    pub minimum_version: String,
+    /// Hybrid post-quantum key agreement (X25519MLKEM768) requested.
+    pub post_quantum_key_agreement: bool,
+    /// False where the platform gives the app no way to set this (Android).
+    pub enforced_by_app: bool,
+    pub detail: String,
+}
+
+/// Read the operator's transport policy. `compat` exists because a TLS-1.2-only
+/// inspection proxy would otherwise break every connection with no diagnosable
+/// cause; it is a deliberate, named, visible downgrade rather than a silent one.
+pub fn tls_policy() -> TlsPolicy {
+    let strict = !std::env::var("QGUARD_TLS_POLICY")
+        .map(|value| value.trim().eq_ignore_ascii_case("compat"))
+        .unwrap_or(false);
+    let enforced = cfg!(target_os = "windows");
+    TlsPolicy {
+        mode: if strict { "strict" } else { "compat" }.to_string(),
+        minimum_version: if strict { "TLS 1.3" } else { "TLS 1.2" }.to_string(),
+        post_quantum_key_agreement: true,
+        enforced_by_app: enforced,
+        detail: if !enforced {
+            "The platform WebView owns the TLS stack on this OS; the app cannot pin a minimum version. Application payloads remain end-to-end encrypted independently of the transport.".to_string()
+        } else if strict {
+            "Strict: connections below TLS 1.3 are refused and hybrid post-quantum key agreement (X25519MLKEM768) is requested. Set QGUARD_TLS_POLICY=compat to allow TLS 1.2 where an inspection proxy requires it.".to_string()
+        } else {
+            "Compat: TLS 1.2 is permitted by policy (QGUARD_TLS_POLICY=compat). Hybrid post-quantum key agreement is still requested.".to_string()
+        },
+    }
+}
+
+/// The WebView2 switches that implement [`tls_policy`].
+///
+/// Unrecognised `--enable-features` names are ignored by Chromium, so naming
+/// both the historical and current spellings of the post-quantum feature is
+/// safe across the WebView2 versions this app supports (Chromium 86+).
+pub fn tls_browser_arguments(policy: &TlsPolicy) -> String {
+    let mut args = String::from("--enable-features=PostQuantumKyber,UseMLKEMForTLS");
+    if policy.mode == "strict" {
+        args.push_str(" --ssl-version-min=tls1.3");
+    }
+    args
+}
+
+#[cfg(test)]
+mod tls_policy_tests {
+    use super::*;
+
+    #[test]
+    fn strict_mode_pins_tls13_and_requests_hybrid_pq() {
+        let policy = TlsPolicy {
+            mode: "strict".to_string(),
+            minimum_version: "TLS 1.3".to_string(),
+            post_quantum_key_agreement: true,
+            enforced_by_app: true,
+            detail: String::new(),
+        };
+        let args = tls_browser_arguments(&policy);
+        assert!(args.contains("--ssl-version-min=tls1.3"));
+        assert!(args.contains("PostQuantumKyber"));
+    }
+
+    #[test]
+    fn compat_mode_drops_the_floor_but_keeps_hybrid_pq() {
+        let policy = TlsPolicy {
+            mode: "compat".to_string(),
+            minimum_version: "TLS 1.2".to_string(),
+            post_quantum_key_agreement: true,
+            enforced_by_app: true,
+            detail: String::new(),
+        };
+        let args = tls_browser_arguments(&policy);
+        assert!(!args.contains("ssl-version-min"));
+        assert!(args.contains("UseMLKEMForTLS"));
+    }
+
+    #[test]
+    fn the_default_policy_is_strict() {
+        // Nothing in the process sets it, so this reads the shipped default.
+        if std::env::var("QGUARD_TLS_POLICY").is_err() {
+            assert_eq!(tls_policy().mode, "strict");
+        }
+    }
+}
+
 pub fn hardening_status(audit_chain_valid: bool) -> SecurityHardeningStatus {
+    let transport_policy = tls_policy();
     let debugger_detected = debugger_detected();
     let binary_measurement = current_binary_measurement();
     let binary_hash_available = binary_measurement.sha3.is_some();
@@ -159,6 +275,12 @@ pub fn hardening_status(audit_chain_valid: bool) -> SecurityHardeningStatus {
             "Key material uses zeroize-backed cleanup paths",
         ),
         check(
+            "tls_transport_policy",
+            "Transport Policy (TLS 1.3 + hybrid PQ)",
+            transport_policy.enforced_by_app && transport_policy.mode == "strict",
+            &transport_policy.detail,
+        ),
+        check(
             "tamper_evident_audit_chain",
             "Tamper-Evident Audit Chain",
             audit_chain_valid,
@@ -239,6 +361,7 @@ pub fn hardening_status(audit_chain_valid: bool) -> SecurityHardeningStatus {
         string_encryption,
         signed_build_verification,
         integrity_hash_checks: binary_hash_available,
+        tls_policy: transport_policy,
     }
 }
 

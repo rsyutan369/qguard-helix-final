@@ -1,0 +1,306 @@
+QGuard Helix — Enterprise Agent & Live Migration Production Audit and Implementation Prompt
+
+Please perform a deep technical review, audit, validation, and implementation of the following QGuard Helix modules:
+
+http://localhost:3000/dashboard/scanner?tab=agents
+http://localhost:3000/downloads
+http://localhost:3000/dashboard/live-migration
+
+Use the existing QGuard Helix architecture, backend services, database, authentication/RBAC, agent system, scanners, engines, migration workflows, telemetry, and real user asset data. Do not use mock, fake, placeholder, or hard-coded operational results.
+
+1. Agent Center — Collector, Scanner, Patcher & Migration Operator
+
+Deeply review the complete Agent Center and ensure all four agent types are fully implemented and operational:
+
+Collector — discovers and collects cryptographic assets, configurations, certificates, keys metadata, dependencies, protocols, identities, and other permitted evidence.
+Scanner — analyzes collected evidence and accurately identifies quantum-vulnerable algorithms, cryptographic implementations, certificates, protocols, dependencies, and configurations.
+Patcher — performs only explicitly approved remediation changes on authorized assets and paths.
+Migration Operator — executes only approved migration jobs and live cryptographic migration operations.
+
+Ensure each agent:
+
+Is correctly registered, enrolled, authenticated, authorized, configured, and connected to the correct tenant.
+Runs only the capabilities permitted by its assigned Agent Type, permissions, scope, policy, and RBAC controls.
+Communicates correctly with the QGuard Helix backend/control plane.
+Reports accurate heartbeat, health, status, version, capabilities, jobs, telemetry, errors, and execution results.
+Uses actual tenant/user asset data.
+Correctly feeds its results into the appropriate QGuard Helix modules, dashboards, CBOM, asset inventory, scanner results, migration planner, risk analysis, compliance, telemetry, and audit systems.
+Does not claim successful execution unless the operation was actually completed and verified.
+Handles disconnected agents, failed jobs, expired enrollment, invalid permissions, unavailable assets, version mismatches, and communication failures safely and accurately.
+2. Enforce Safe Change-Control and Approval
+
+No agent must modify, patch, migrate, rotate, replace, or otherwise change a user's asset unless every required authorization and validation step has passed.
+
+Enforce the complete workflow:
+
+DISCOVER → ANALYZE → VALIDATE → PLAN → APPROVE → SNAPSHOT → EXECUTE → VALIDATE → MONITOR → AUDIT → REPORT
+
+Before any modification:
+
+Verify tenant ownership and asset identity.
+Verify agent identity and enrollment.
+Verify agent type and permissions.
+Verify target asset and allowed scope.
+Verify current configuration and cryptographic state.
+Verify migration/remediation compatibility.
+Verify policy and compliance requirements.
+Require explicit approval for change-producing operations.
+Create a verifiable pre-change snapshot.
+Record who/what/when/why for the operation.
+Prevent unauthorized or ambiguous changes.
+
+For failed or partially completed operations, ensure the system enters a safe state and does not falsely report success.
+
+3. Snapshot and Rollback — Live Migration
+
+Deeply audit:
+
+http://localhost:3000/dashboard/live-migration
+
+Ensure SNAPSHOTS and ROLLBACK are fully functional production features, not UI-only controls.
+
+SNAPSHOTS must:
+Capture the required pre-migration/pre-patch state before any destructive or configuration-changing operation.
+Be associated with the correct tenant, asset, migration job, agent, user, timestamp, and operation.
+Record sufficient configuration/state information to support reliable rollback.
+Maintain integrity and prevent unauthorized modification.
+Display accurate snapshot status and metadata.
+Support viewing, restoring, and auditing snapshots where permitted.
+Never report a successful snapshot when creation or persistence failed.
+ROLLBACK must:
+Restore the correct previous state from a verified snapshot.
+Verify snapshot integrity and compatibility before restoration.
+Require appropriate authorization.
+Prevent rollback to an invalid or unrelated asset/state.
+Report real-time rollback progress and results.
+Perform post-rollback validation.
+Clearly distinguish rollback requested, running, successful, failed, partially successful, and unavailable states.
+Create complete audit records for rollback operations.
+Handle rollback failures safely without corrupting the target environment.
+4. Live Migration Operations — Real-Time Accuracy
+
+Audit every button, control, workflow, API, backend action, and state transition on the Live Migration page, including:
+
+Start New Migration
+Retry Failed
+Pause All
+Resume All
+Rollback
+Snapshots
+Export Logs
+Generate Report
+Audit Trail
+View All Jobs
+Job filtering/status tabs
+Real-time telemetry
+Migration logs
+Validation logs
+Error logs
+Compliance logs
+Audit logs
+Agent status
+SSE/WebSocket/Realtime connectivity
+
+Every UI element must be connected to its real backend function.
+
+Do not allow buttons to appear functional while only changing frontend state.
+
+All counters, status cards, job states, telemetry values, logs, timestamps, agent states, migration progress, validation results, and reports must come from actual current system data.
+
+Examples:
+
+Running = actually running migration jobs.
+Completed = actually completed and validated jobs.
+Failed = actual failed jobs.
+Awaiting Agent = actual queued jobs waiting for an eligible agent.
+Offline Agent = actual heartbeat/connectivity state.
+Active Jobs = actual backend jobs.
+TLS handshakes, certificate replacements, key rotations, PQC validations, and compatibility checks = actual recorded operations.
+
+Never display 0, Live, Connected, Completed, Successful, or similar states simply because no backend data was loaded.
+
+When data is unavailable, clearly display Unknown, Unavailable, Disconnected, Loading, or Stale Data as appropriate.
+
+5. Real-Time Synchronization
+
+Ensure the entire Agent Center and Live Migration system stays synchronized across:
+
+Agent → Backend → Database → Scanner/Engine → Migration Engine → Telemetry → Dashboard → Audit → Reports
+
+Use the existing real-time architecture such as SSE, WebSockets, Supabase Realtime, or equivalent mechanisms where appropriate.
+
+Ensure updates propagate without requiring a manual page refresh whenever the architecture supports it.
+
+Detect and clearly indicate:
+
+stale data
+disconnected agents
+failed heartbeats
+delayed telemetry
+authentication failures
+API failures
+database failures
+job execution failures
+incomplete scanner results
+synchronization conflicts
+
+Do not silently hide errors.
+
+6. Accuracy of Security Detection
+
+Verify that the scanners and engines are actually detecting and classifying cryptography correctly.
+
+Validate detection of relevant:
+
+RSA
+ECC/ECDSA
+Diffie-Hellman
+classical TLS key exchange
+legacy signatures
+vulnerable certificates
+cryptographic libraries
+dependencies
+algorithms
+key sizes
+protocol configurations
+PQC/hybrid cryptography
+quantum-vulnerable cryptography
+migration readiness/state
+
+Ensure findings are based on real collected evidence, not assumptions.
+
+Ensure the Scanner correctly distinguishes:
+
+Detected → Normalized → Correlated → Validated → Confirmed → Risk Classified → Migration Candidate
+
+Do not classify an asset as quantum-vulnerable without sufficient evidence.
+
+7. Enterprise Security, Governance & Multi-Tenant Isolation
+
+Verify that the complete agent and migration architecture enforces:
+
+tenant isolation
+RBAC
+least privilege
+agent authentication
+secure enrollment
+scoped permissions
+approved execution paths
+authorization checks
+auditability
+immutable/traceable operation history
+secure secrets handling
+secure communications
+replay protection where applicable
+idempotent operations where appropriate
+safe failure handling
+concurrency protection
+migration job ownership
+asset ownership validation
+
+A user must never be able to control or modify assets outside their authorized tenant, scope, or permissions.
+
+8. Production-Grade UI/UX
+
+Review the UI shown in the Agent Center and Live Migration screens and ensure it communicates operational state clearly.
+
+The interface should feel premium, professional, enterprise-grade, and production-ready, while remaining simple enough for administrators and security teams to understand quickly.
+
+Improve where necessary:
+
+status indicators
+loading states
+empty states
+error states
+stale-data warnings
+confirmation dialogs
+destructive-action protection
+approval workflows
+progress indicators
+migration state visualization
+agent health visualization
+audit information
+tooltips
+validation messages
+success/failure feedback
+
+Maintain the existing QGuard Helix visual language and architecture rather than introducing unnecessary redesigns.
+
+9. Deep Code and Backend Audit
+
+Do not limit the review to the frontend.
+
+Trace the complete implementation from:
+
+UI → hooks → API → authentication → authorization → database → agent service → scanner engine → migration engine → telemetry → audit → UI
+
+Inspect relevant:
+
+React components
+hooks
+API routes
+Express services
+agent services
+scanner engines
+migration engines
+snapshot logic
+rollback logic
+database queries
+Supabase policies/RLS
+realtime subscriptions
+SSE/WebSocket handlers
+job queues
+state management
+validation logic
+error handling
+logging
+audit trails
+installer/download workflows
+
+Identify and fix:
+
+dead code
+mocked data
+hard-coded values
+fake success states
+broken API connections
+incomplete handlers
+race conditions
+permission bypasses
+incorrect status calculations
+stale-state bugs
+missing validations
+broken rollback paths
+UI/backend mismatches
+database synchronization issues
+10. Final Validation
+
+After implementation, perform a complete end-to-end test.
+
+Test at minimum:
+
+Agent Deployment → Enrollment → Verification → Discovery → Scan → Findings → Approval → Snapshot → Patch/Migration → Validation → Monitoring → Rollback → Audit → Report
+
+Verify that every step produces accurate real data and that all related dashboards remain synchronized.
+
+Final Acceptance Criteria
+
+The implementation is complete only when:
+
+All four agent types are operational.
+Agent permissions and capabilities are enforced correctly.
+Scanners and engines use real evidence and return accurate findings.
+No unauthorized asset modification is possible.
+Approval is required before changes.
+Snapshots are created successfully before changes.
+Rollback actually restores the correct previous state.
+Live Migration reflects real-time backend status.
+All buttons and controls perform their actual intended backend actions.
+Logs, telemetry, reports, counters, and audit trails are accurate.
+Tenant/RBAC isolation is enforced.
+Failure and disconnected states are handled correctly.
+No mock, fake, placeholder, or hard-coded operational data remains.
+Frontend and backend states are synchronized.
+The system is stable, secure, observable, auditable, and suitable for enterprise production deployment.
+
+Do not merely report issues. Fix the issues you discover, then re-test the affected workflows end-to-end. Preserve existing QGuard Helix architecture, security controls, workflows, integrations, and working functionality unless a change is required to make the implementation correct, secure, and production-ready.

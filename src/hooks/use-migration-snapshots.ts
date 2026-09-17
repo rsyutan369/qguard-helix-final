@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
-import type { MigrationSnapshot, SnapshotDashboard } from '@/types/migration-snapshot';
+import type { MigrationSnapshot, SnapshotDashboard, SnapshotRestoreResult } from '@/types/migration-snapshot';
 
 /**
  * useMigrationSnapshots — live Migration Snapshot Management™ state.
@@ -20,13 +20,22 @@ export const EMPTY_SNAPSHOT_DASHBOARD: SnapshotDashboard = {
   summary: {
     total: 0, successful: 0, restorable: 0, restored: 0, expired: 0,
     automaticRollbacks: 0, manualRollbacks: 0, storageBytes: 0,
-    latestSnapshotAt: null, integrityVerified: 0, integrityFailed: 0, autoRollbackEnabled: true,
+    latestSnapshotAt: null, integrityVerified: 0, integrityFailed: 0,
+    restoreExecutable: 0, rollbacksInFlight: 0, rollbacksFailed: 0,
+    autoRollbackEnabled: true,
   },
   snapshots: [],
   audit: [],
 };
 
-interface ActionResult { ok: boolean; message?: string; code?: string; snapshot?: MigrationSnapshot }
+interface ActionResult {
+  ok: boolean;
+  message?: string;
+  code?: string;
+  snapshot?: MigrationSnapshot;
+  /** Present for restore: what the request actually resolved to. */
+  restore?: SnapshotRestoreResult;
+}
 
 const REALTIME_TABLES = ['migration_snapshots', 'migration_snapshot_audit'];
 
@@ -133,7 +142,7 @@ export function useMigrationSnapshots(enabled: boolean) {
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) return { ok: false, message: payload?.error?.message || `HTTP ${res.status}`, code: payload?.error?.code };
       await refresh();
-      return { ok: true, snapshot: payload.data };
+      return { ok: true, snapshot: payload.data, restore: payload.data };
     } catch (err) {
       return { ok: false, message: err instanceof Error ? err.message : 'Request failed' };
     } finally {

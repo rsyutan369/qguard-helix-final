@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { posix as posixPath } from 'node:path'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
 import { createAuthClient, getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
 import { scanEvidenceWithModules } from '@/lib/scanner/scanner_2/modules'
@@ -31,7 +32,15 @@ import {
   decideScanTypes,
   type AgentEntitlementRequest,
 } from './agent-entitlement'
+import {
+  dispatchSnapshotRollback,
+  ensureSnapshotForJob,
+  recordSnapshotExecution,
+  settleAgentRollback,
+} from './migration-snapshots'
+import { approvalRefusal, isSimulationJob, jobApproval, jobPlanId } from '@/lib/migration/job-safety'
 import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
+import { LIBRARY_EVIDENCE_TYPES } from '@/lib/scanner/scanner_2/modules'
 import type { ScannerEvidenceRecord, ScanFinding, FindingSeverity } from '@/types/scanner.types'
 
 const router = Router()
@@ -450,8 +459,20 @@ function normalizeEvidence(raw: any, sourceType: ScannerEvidenceRecord['sourceTy
   }
 }
 
+/**
+ * Slash-normalised, `..`-resolved, case-folded — the comparison the agent itself
+ * applies (path.resolve) before it writes. Without resolving `..`,
+ * `/etc/nginx/../shadow` passed this gate while the agent refused it.
+ */
 function normalizePathLike(value: string) {
-  return value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  return posixPath.normalize(value.replace(/\\/g, '/')).replace(/\/+$/, '').toLowerCase()
+}
+
+/** The allowed path itself or something INSIDE it — never a sibling sharing a prefix (`/etc/app` vs `/etc/app-secrets`). */
+function pathWithin(candidate: string, allowed: string) {
+  const inner = normalizePathLike(candidate)
+  const root = normalizePathLike(allowed)
+  return Boolean(root) && (inner === root || inner.startsWith(`${root}/`))
 }
 
 function parsePolicyTarget(value: string) {
@@ -566,8 +587,7 @@ function evidenceAllowedByPolicy(evidence: ScannerEvidenceRecord, policy: Return
   if (allowedTargets.length === 0 && allowedPaths.length === 0) return allowEmptyPolicy
 
   if (evidence.filePath && allowedPaths.length > 0) {
-    const evidencePath = normalizePathLike(evidence.filePath)
-    if (allowedPaths.some((allowedPath) => evidencePath.startsWith(normalizePathLike(allowedPath)))) return true
+    if (allowedPaths.some((allowedPath) => pathWithin(evidence.filePath!, allowedPath))) return true
   }
 
   const evidenceHost = evidence.host?.toLowerCase()
@@ -1089,19 +1109,43 @@ function itemTypeForFinding(finding: ScanFinding) {
   return 'algorithm'
 }
 
-function isPqcReadyEvidence(evidence: ScannerEvidenceRecord) {
-  const value = `${evidence.observedAlgorithm || ''} ${JSON.stringify(evidence.rawEvidence || {})}`.toLowerCase()
-  return (
-    value.includes('ml-kem') ||
-    value.includes('ml-dsa') ||
-    value.includes('kyber') ||
-    value.includes('dilithium') ||
-    value.includes('sphincs') ||
-    value.includes('sntrup') ||
-    value.includes('post-quantum') ||
-    value.includes('pqc') ||
-    value.includes('hybrid')
-  )
+/**
+ * Does this evidence OBSERVE a hybrid or post-quantum primitive?
+ *
+ * Decided by the canonical decomposition of the observed algorithm alone. The
+ * rule it replaces substring-matched "pqc" / "hybrid" / "ml-kem" anywhere in the
+ * raw evidence JSON — which includes the agent's own rule LABEL — so a config
+ * line merely naming an OQS provider ("PQC provider reference") wrote a
+ * quantum-SAFE inventory row. Dependency rows never qualify: a manifest proves a
+ * library is available, not that a primitive is in use.
+ */
+function isPostQuantumEvidence(evidence: ScannerEvidenceRecord) {
+  if (LIBRARY_EVIDENCE_TYPES.has(String(evidence.evidenceType))) return false
+  const observed = String(evidence.observedAlgorithm || '').trim()
+  if (!observed) return false
+  const anatomy = analyzeCryptoObservation({ algorithm: observed, name: observed, protocol: evidence.protocol }, true)
+  return anatomy.quantumClass === 'hybrid' || (anatomy.quantumClass === 'safe' && POST_QUANTUM_FAMILY.test(anatomy.family))
+}
+
+/** Families that are post-quantum primitives, as opposed to classical-safe (AES-256, SHA-256). */
+const POST_QUANTUM_FAMILY = /ML-KEM|ML-DSA|SLH-DSA|FN-DSA|FALCON|SNTRUP|HQC|FRODO|MCELIECE/i
+
+/**
+ * The single quantum verdict for one finding, from the evidence that produced it.
+ *
+ * The inventory used to write `is_quantum_safe: threatLevel === 'safe'`, but no
+ * severity profile is ever `safe` (AES-256 and SHA-256 are `low`), so every
+ * AES-256-GCM component an agent reported was stored as quantum-VULNERABLE with
+ * its own quantum exposure row — inflating every exposure count fed by agents.
+ */
+function findingQuantumVerdict(finding: ScanFinding, evidence: ScannerEvidenceRecord | undefined) {
+  const observed = String(evidence?.observedAlgorithm || finding.detectedAlgorithm || '').trim()
+  const anatomy = analyzeCryptoObservation({ algorithm: observed, name: observed, protocol: evidence?.protocol }, true)
+  const quantumSafe = anatomy.quantumClass === 'safe' || anatomy.quantumClass === 'hybrid'
+  /* A protocol version carries no quantum verdict of its own; a deprecated one
+     (TLS 1.0/1.1) is still a real, classically-exploitable weakness. */
+  const vulnerable = anatomy.quantumClass === 'vulnerable' || (anatomy.quantumClass === 'unknown' && ['critical', 'high'].includes(String(finding.severity)))
+  return { observed: observed || finding.detectedAlgorithm, anatomy, quantumSafe, vulnerable }
 }
 
 async function persistEvidenceFindings(
@@ -1117,15 +1161,58 @@ async function persistEvidenceFindings(
   const linkedCbomIds: string[] = []
   const linkedExposureIds: string[] = []
   const linkedAlertIds: string[] = []
-  const pqcReadyEvidence = evidence.filter(isPqcReadyEvidence)
+  const pqcReadyEvidence = evidence.filter(isPostQuantumEvidence)
+
+  /* Each finding carries the id of the evidence that produced it (target.id).
+     Matching on asset NAME instead handed every finding on a host the FIRST
+     evidence for that host — a cipher row inherited the certificate's key size. */
+  const evidenceFor = (finding: ScanFinding) =>
+    evidence.find((item) => item.id && item.id === finding.target.id) ||
+    evidence.find((item) =>
+      item.assetName === finding.target.name ||
+      item.host === finding.target.metadata?.host ||
+      item.filePath === finding.target.metadata?.filePath)
+  const verdicts = new Map(findings.map((finding) => [finding.id, findingQuantumVerdict(finding, evidenceFor(finding))]))
+
+  /* An asset's risk is its WORST finding in the batch. Writing it per finding
+     let a later low-severity row lower a critical asset back to "low". */
+  const worstRiskByAsset = new Map<string, number>()
+  for (const finding of findings) {
+    const risk = Math.max(0, Math.min(100, Math.round(finding.riskScore / 10)))
+    worstRiskByAsset.set(finding.target.name, Math.max(worstRiskByAsset.get(finding.target.name) ?? 0, risk))
+  }
+
+  /* THE CANONICAL SUMMARY SHAPE.
+     `pqc_scan_sessions.metadata.summary` is read by the Scanner history payload
+     and, through it, by the Web scanner dashboard's executive panels. Those
+     panels compute `clamp(summary.qScore)`; a summary missing `qScore` produced
+     NaN and graded the whole tenant "F · Critical" off an agent evidence batch.
+     Emit every field of the contract — the same eleven the web scanner writes —
+     using the same published exposure formula, so either writer's session
+     grades on one scale. */
+  const criticalCount = findings.filter((item) => item.severity === 'critical').length
+  const highCount = findings.filter((item) => item.severity === 'high').length
+  const mediumCount = findings.filter((item) => item.severity === 'moderate' || item.severity === 'medium').length
+  const lowCount = findings.filter((item) => item.severity === 'low').length
+  const safeCount = findings.filter((item) => verdicts.get(item.id)?.quantumSafe).length + pqcReadyEvidence.length
+  const assetsCovered = new Set(evidence.map((item) => item.assetName)).size
+  const agentRiskScore = Math.min(100, criticalCount * 18 + highCount * 10 + mediumCount * 5 + lowCount * 2)
 
   const sessionSummary = {
+    targetsScanned: assetsCovered,
     totalFindings: findings.length,
-    critical: findings.filter((item) => item.severity === 'critical').length,
-    high: findings.filter((item) => item.severity === 'high').length,
-    medium: findings.filter((item) => item.severity === 'moderate' || item.severity === 'medium').length,
-    low: findings.filter((item) => item.severity === 'low').length,
-    safe: findings.filter((item) => item.severity === 'safe').length + pqcReadyEvidence.length,
+    critical: criticalCount,
+    high: highCount,
+    medium: mediumCount,
+    low: lowCount,
+    safe: safeCount,
+    /* Findings the canonical classifier calls vulnerable. Counted, not assumed. */
+    vulnerable: findings.filter((item) => verdicts.get(item.id)?.vulnerable).length,
+    pqcReady: pqcReadyEvidence.length,
+    riskScore: agentRiskScore,
+    qScore: Math.max(0, 100 - agentRiskScore),
+    /* Retained under its original name so anything already reading it keeps
+       working; `pqcReady` above is the canonical field. */
     pqcReadyEvidence: pqcReadyEvidence.length,
   }
 
@@ -1152,13 +1239,10 @@ async function persistEvidenceFindings(
 
   for (const finding of findings) {
     let assetId: string | null = null
-    const evidenceMatch = evidence.find((item) =>
-      item.assetName === finding.target.name ||
-      item.host === finding.target.metadata?.host ||
-      item.filePath === finding.target.metadata?.filePath
-    )
+    const evidenceMatch = evidenceFor(finding)
+    const verdict = verdicts.get(finding.id)!
     const assetName = finding.target.name
-    const riskScore = Math.max(0, Math.min(100, Math.round(finding.riskScore / 10)))
+    const riskScore = worstRiskByAsset.get(assetName) ?? Math.max(0, Math.min(100, Math.round(finding.riskScore / 10)))
     const assetMetadata = {
       source: sourceLabel,
       evidenceType: evidenceMatch?.evidenceType,
@@ -1212,6 +1296,10 @@ async function persistEvidenceFindings(
       fingerprintId: finding.fingerprintId,
       ruleId: finding.ruleId,
       evidenceRecord: evidenceMatch || null,
+      /* What was graded, and against which profile — traceable, not implied. */
+      severityProfile: finding.detectedAlgorithm,
+      quantumClass: verdict.anatomy.quantumClass,
+      cryptoFamily: verdict.anatomy.family,
     }
 
     if (client) {
@@ -1219,13 +1307,15 @@ async function persistEvidenceFindings(
         user_id: userId,
         asset_id: assetId,
         item_type: itemTypeForFinding(finding),
-        name: `${finding.moduleId}: ${finding.detectedAlgorithm}`,
-        algorithm: finding.detectedAlgorithm,
+        /* The precise observed name ("RSA-3072", "ECDSA-P521"); the severity
+           profile it was graded against stays in metadata. */
+        name: `${finding.moduleId}: ${verdict.observed}`,
+        algorithm: verdict.observed,
         key_size: evidenceMatch?.keySize || null,
         protocol: evidenceMatch?.protocol || null,
-        exposure_level: finding.severity,
-        is_vulnerable: finding.threatLevel !== 'safe',
-        is_quantum_safe: finding.threatLevel === 'safe',
+        exposure_level: verdict.quantumSafe ? 'safe' : finding.severity,
+        is_vulnerable: verdict.vulnerable,
+        is_quantum_safe: verdict.quantumSafe,
         metadata: commonMetadata,
         discovered_at: now,
       }).select('id').single()
@@ -1236,21 +1326,23 @@ async function persistEvidenceFindings(
         scan_session_id: scanSessionId,
         asset_id: assetId,
         finding_type: finding.moduleId,
-        algorithm: finding.detectedAlgorithm,
-        threat_level: finding.severity,
+        algorithm: verdict.observed,
+        threat_level: verdict.quantumSafe ? 'safe' : finding.severity,
         description: finding.description,
         remediation: finding.recommendation,
         metadata: commonMetadata,
       })
 
-      if (finding.threatLevel !== 'safe') {
+      /* Exposures and alerts only for what the canonical verdict calls
+         vulnerable — never for AES-256 or SHA-256. */
+      if (verdict.vulnerable) {
         const { data: exposure } = await client.from('crypto_exposures').insert({
           user_id: userId,
           asset_id: assetId,
           exposure_type: finding.quantumThreat,
           severity: finding.severity === 'medium' ? 'moderate' : finding.severity,
           description: finding.description,
-          detected_value: finding.detectedAlgorithm,
+          detected_value: verdict.observed,
           metadata: commonMetadata,
         }).select('id').single()
         if (exposure?.id) linkedExposureIds.push(exposure.id)
@@ -1263,7 +1355,7 @@ async function persistEvidenceFindings(
             evidence_id: evidenceMatch?.id || null,
             severity: finding.severity,
             category: finding.moduleId,
-            title: `${finding.detectedAlgorithm} detected on ${assetName}`,
+            title: `${verdict.observed} detected on ${assetName}`,
             message: finding.description,
             recommendation: finding.recommendation,
             status: 'open',
@@ -1486,7 +1578,9 @@ async function persistCertificateEvidence(
   sourceLabel: string,
 ) {
   const certificateEvidence = evidence.filter(
-    (item) => item.evidenceType === 'tls-certificate' && item.certificateFingerprint,
+    /* A certificate is a certificate whether it was presented in a handshake or
+       read from a PEM on disk; both feed the Certificate and PKI dashboards. */
+    (item) => (item.evidenceType === 'tls-certificate' || item.evidenceType === 'certificate-file') && item.certificateFingerprint,
   )
   if (!client || certificateEvidence.length === 0) return { inserted: 0, updated: 0 }
 
@@ -1680,6 +1774,64 @@ function migrationJobIsAgentExecutable(job: any) {
   return /post-quantum|pqc|migration-planner|ml-kem|ml-dsa|hybrid|certificate|cert|key_rotation|key rotation|protocol_upgrade|encryption_upgrade|signature_transition/.test(text)
 }
 
+/**
+ * Which WRITE role a queued job needs — and therefore which agents may take it.
+ *
+ * The platform publishes four agent roles and tells the customer that Migration
+ * Operator "executes approved Live Migration cutovers" while Patcher applies
+ * "cryptographic remediation on allowed configuration paths". Nothing enforced
+ * that: the job queue asked only for `agentMayWrite(..., 'remediation')`, which
+ * a Patcher satisfies, so a Patcher agent claimed and executed live migration
+ * cutovers. `agentMayWrite(..., 'migration')` — written for exactly this — had
+ * no call site at all.
+ *
+ * The discriminator is ownership by a migration plan (Live Migration work is
+ * always planned) plus the cutover job types. HNDL mitigation is remediation
+ * regardless of wording, because it is a config patch.
+ */
+const MIGRATION_CUTOVER_JOB_TYPES = [
+  /* The planner writes `cert_transition` (plannerJobType); this list was missing
+     it, so an unplanned certificate cutover classified as remediation. */
+  'cert_transition',
+  'certificate_replacement',
+  'key_rotation',
+  'protocol_upgrade',
+  'encryption_upgrade',
+  'signature_transition',
+  'algorithm_migration',
+  'pqc_migration',
+]
+
+export function jobExecutionClass(job: any): 'migration' | 'remediation' {
+  if (remediationJobIsHndl(job)) return 'remediation'
+  const metadata = remediationJobMetadata(job)
+  if (cleanString(metadata.planId || metadata.plan_id, 120)) return 'migration'
+  const text = [
+    job?.job_type,
+    metadata.workflow,
+    metadata.workflowType,
+    metadata.migrationType,
+    metadata.planAction,
+    metadata.source,
+  ].filter(Boolean).join(' ').toLowerCase()
+  if (/migration-planner|live-migration|live migration|cutover/.test(text)) return 'migration'
+  if (MIGRATION_CUTOVER_JOB_TYPES.some((type) => text.includes(type))) return 'migration'
+  return 'remediation'
+}
+
+/** Human-readable refusal for a job an agent's role may not execute. */
+function roleRefusalMessage(jobClass: 'migration' | 'remediation', reason: string): string {
+  const required = jobClass === 'migration' ? 'Migration Operator' : 'Patcher'
+  if (reason === 'agent_role_not_migration_operator') {
+    return `This is a Live Migration cutover and requires a Migration Operator agent. The claiming agent holds a different role.`
+  }
+  if (reason === 'agent_role_read_only') return `This agent holds a read-only role and cannot execute ${jobClass} work.`
+  if (reason === 'agent_role_unresolved') return 'This agent has no server-resolved role, so no host-modifying work is dispatched to it.'
+  if (reason === 'entitlement_unavailable') return 'The subscription behind this agent could not be verified, so no host-modifying work was dispatched.'
+  if (reason === 'subscription_inactive') return `The subscription behind this agent is not active, so ${required} work is not dispatched.`
+  return `Your plan does not include the ${required} role, so this job was not dispatched.`
+}
+
 function remediationTarget(job: any) {
   const metadata = remediationJobMetadata(job)
   return cleanString(
@@ -1702,6 +1854,8 @@ function remediationFilePath(job: any) {
 }
 
 function remediationAdapter(job: any) {
+  // Mirrors the agent: a job naming a local file is a local configuration change.
+  if (remediationFilePath(job)) return 'local_configuration'
   const metadata = remediationJobMetadata(job)
   const text = [
     job?.name,
@@ -1779,53 +1933,65 @@ function remediationProbeEvidence(job: any, agent: any): ScannerEvidenceRecord |
   }, 'local-agent', agent)
 }
 
-/** The migration plan a queued job belongs to, when it declares one. */
-function planIdForJob(job: any) {
-  const metadata = remediationJobMetadata(job)
-  return cleanString(metadata.planId || metadata.plan_id, 120) || ''
-}
-
 /**
- * Plan ids among these jobs whose approval decision forbids execution.
+ * The plans these jobs declare, loaded once per poll for approval verdicts.
  *
- * Reads the governance state written by POST /migration-planner/plans/:id/
- * approval. A read failure returns an EMPTY set rather than blocking the whole
- * fleet: a database hiccup must not look like a mass revocation, and the
- * dispatch-time gate in migration.ts has already applied the same rule.
+ * This is the last gate before a host is changed, so it FAILS CLOSED on a read
+ * error: `degraded: true` withholds every PLANNED job. An earlier version
+ * returned an empty set so a database hiccup could not look like a mass
+ * revocation — but that trade's cost fell on the customer's hosts, because an
+ * unreadable approval table meant unapproved work was dispatched. A job that
+ * runs a minute later is recoverable; a change nobody approved is not.
+ *
+ * Unplanned jobs (Harvest Now remediation) carry their approval on the job
+ * itself and do not depend on this read.
  */
-async function rejectedPlanIdsFor(client: any, userId: string, jobs: any[]): Promise<Set<string>> {
-  const planIds = Array.from(new Set(jobs.map(planIdForJob).filter(Boolean)))
-  if (planIds.length === 0) return new Set()
+async function plansForJobs(client: any, userId: string, jobs: any[]): Promise<{ plans: Map<string, any>; degraded: boolean }> {
+  const planIds = Array.from(new Set(jobs.map((job) => jobPlanId(job)).filter(Boolean)))
+  if (planIds.length === 0) return { plans: new Map(), degraded: false }
   try {
     const { data, error } = await client
       .from('migration_plans')
-      .select('id, status')
+      .select('id, status, metadata')
       .eq('user_id', userId)
       .in('id', planIds)
     if (error) {
-      console.warn('[agent-remediation] Plan approval re-check skipped:', error.message)
-      return new Set()
+      console.warn('[agent-remediation] Plan approval read failed; withholding planned work:', error.message)
+      return { plans: new Map(), degraded: true }
     }
-    return new Set(
-      ((data as any[]) || [])
-        .filter((row) => ['rejected', 'pending_approval'].includes(String(row.status || '').toLowerCase()))
-        .map((row) => String(row.id))
-    )
+    return { plans: new Map(((data as any[]) || []).map((row) => [String(row.id), row])), degraded: false }
   } catch (error: any) {
-    console.warn('[agent-remediation] Plan approval re-check failed:', error?.message || error)
-    return new Set()
+    console.warn('[agent-remediation] Plan approval read threw; withholding planned work:', error?.message || error)
+    return { plans: new Map(), degraded: true }
   }
 }
 
-function remediationJobAllowedForAgent(job: any, policy: ReturnType<typeof normalizePolicy>, agent: any) {
+/**
+ * Is this WRITE job inside the agent's authorised scope — and if not, why not?
+ *
+ * Fails closed. It used to answer yes for an agent with an EMPTY policy
+ * (`allowEmptyPolicy = true`), and for a job naming no target at all whenever
+ * the policy listed any scan type. The agent's own check (fileAllowedByPolicy)
+ * still refused to write, so nothing outside scope was ever changed — but the
+ * platform claimed the job, took a snapshot and showed it "running" on an agent
+ * that could not touch it.
+ */
+function remediationJobScope(job: any, policy: ReturnType<typeof normalizePolicy>, agent: any): { allowed: boolean; reason: string } {
   const probe = remediationProbeEvidence(job, agent)
   if (!probe) {
-    if (!migrationJobIsAgentExecutable(job)) return policy.allowedTargets.length === 0 && policy.allowedPaths.length === 0
-    const scanTypes = new Set(policy.scanTypes.map((item: string) => String(item).toLowerCase()))
-    const migrationAllowed = DEFAULT_AGENT_SCAN_TYPES.some((type) => scanTypes.has(type))
-    return migrationAllowed || (policy.allowedTargets.length === 0 && policy.allowedPaths.length === 0)
+    return { allowed: false, reason: 'This job names no configuration file or endpoint, so there is nothing an agent is authorised to change. Add the target to the job.' }
   }
-  return evidenceAllowedByPolicy(probe, policy, true)
+  if (policy.allowedTargets.length === 0 && policy.allowedPaths.length === 0) {
+    return { allowed: false, reason: "This agent's policy authorises no paths or targets, so it may not change anything. Add the target to the agent policy first." }
+  }
+  if (!evidenceAllowedByPolicy(probe, policy, false)) {
+    return { allowed: false, reason: `The job's target (${probe.filePath || probe.target || probe.host || 'unknown'}) is outside this agent's authorised paths and targets.` }
+  }
+  return { allowed: true, reason: '' }
+}
+
+function remediationJobAllowedForAgent(job: any, policy: ReturnType<typeof normalizePolicy>, agent: any) {
+  return remediationJobScope(job, policy, agent).allowed
 }
 
 function remediationJobPayload(job: any) {
@@ -3833,6 +3999,25 @@ router.post('/agent/commands/:id/ack', requireAgentAuth, async (req: AgentReques
     })
   }
 
+  /*
+   * A rollback acknowledgement is the ONLY event that may mark a snapshot
+   * `restored`, because it is the only point at which an executor has reported
+   * that it wrote the previous configuration back and re-hashed the result.
+   */
+  if (command.type === 'rollback' && settled && client) {
+    const rollbackSnapshotId = cleanString(asRecord(command.payload).snapshotId, 120)
+    if (rollbackSnapshotId) {
+      await settleAgentRollback(client, agent.user_id, {
+        snapshotId: rollbackSnapshotId,
+        commandId,
+        status: status as 'completed' | 'failed',
+        result,
+        error: errorMessage,
+        actor: `agent:${agent.name || agent.id}`,
+      }).catch((error: Error) => console.warn('[agent-scanner] rollback settlement failed:', error.message))
+    }
+  }
+
   const eventName: AgentEventName =
     command.type === 'upgrade'
       ? status === 'completed'
@@ -4100,9 +4285,19 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
    * before a host is changed, and because it is the check a downgrade, a
    * lapsed card or a revocation all have to pass through.
    */
-  const writeAccess = await agentMayWrite(client, agent, 'remediation')
-  if (!writeAccess.allowed) {
-    res.json({ data: { jobs: [], observedAt: new Date().toISOString(), reason: writeAccess.reason } })
+  /*
+   * Two independent gates, because the fleet holds two different write roles.
+   * A Patcher may apply configuration remediation; only a Migration Operator
+   * may execute a Live Migration cutover. Resolved once per poll and applied
+   * per job below, so a mixed queue hands each job to the right role instead of
+   * handing everything to whoever polled first.
+   */
+  const [remediationAccess, migrationAccess] = await Promise.all([
+    agentMayWrite(client, agent, 'remediation'),
+    agentMayWrite(client, agent, 'migration'),
+  ])
+  if (!remediationAccess.allowed && !migrationAccess.allowed) {
+    res.json({ data: { jobs: [], observedAt: new Date().toISOString(), reason: remediationAccess.reason } })
     return
   }
 
@@ -4129,22 +4324,143 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
    * work to stop, and nothing was reading that decision here. Only plans in an
    * explicit governance state block; a job with no owning plan is unaffected.
    */
-  const blockedPlanIds = await rejectedPlanIdsFor(client, agent.user_id, jobs || [])
+  /*
+   * Simulations are not agent work, whatever else is true of them. The sandbox
+   * engine runs them against a digital twin; the claim path had no exclusion, so
+   * a queued `[DRY RUN]` job whose target algorithm matched the PQC regex below
+   * could be claimed by a real Patcher and executed on a real host. Removed
+   * before every other check, and not reported as a refusal — they were never
+   * this fleet's to refuse.
+   */
+  const realJobs = (jobs || []).filter((job: any) => !isSimulationJob(job))
+  const loadedPlans = await plansForJobs(client, agent.user_id, realJobs)
 
-  const claimable = (jobs || [])
+  /* Jobs this agent's ROLE is not entitled to execute are reported back rather
+     than silently dropped: an operator watching an idle Patcher next to a queued
+     cutover needs to be told it is a role boundary, not a stuck queue. */
+  const refused: Array<{ jobId: string; name: string; requires: string; reason: string }> = []
+
+  const claimable = realJobs
     .filter((job: any) => migrationJobIsAgentExecutable(job))
     .filter((job: any) => {
       const metadata = remediationJobMetadata(job)
       const assignedAgentId = cleanString(metadata.assignedAgentId || metadata.assigned_agent_id, 120)
       return !assignedAgentId || assignedAgentId === agent.id
     })
-    .filter((job: any) => !blockedPlanIds.has(planIdForJob(job)))
-    .filter((job: any) => remediationJobAllowedForAgent(job, policy, agent))
+    .filter((job: any) => {
+      /*
+       * APPROVAL — a named person must have approved this work. The decision
+       * lives on the plan for planned migrations and on the job for unplanned
+       * remediation; `jobApproval` is the single predicate for both, shared with
+       * the dispatch routes and the Live Migration UI.
+       */
+      const planId = jobPlanId(job)
+      if (planId && loadedPlans.degraded) {
+        refused.push({
+          jobId: String(job.id),
+          name: String(job.name || job.id),
+          requires: 'approval',
+          reason: 'The approval record for this job\'s migration plan could not be read, so it was withheld rather than dispatched unapproved. It runs once the record is readable again.',
+        })
+        return false
+      }
+      const verdict = jobApproval(job, planId ? loadedPlans.plans.get(planId) || null : null)
+      if (verdict.approved) return true
+      refused.push({
+        jobId: String(job.id),
+        name: String(job.name || job.id),
+        requires: 'approval',
+        reason: approvalRefusal(verdict),
+      })
+      return false
+    })
+    .filter((job: any) => {
+      const jobClass = jobExecutionClass(job)
+      const access = jobClass === 'migration' ? migrationAccess : remediationAccess
+      if (access.allowed) return true
+      refused.push({
+        jobId: String(job.id),
+        name: String(job.name || job.id),
+        requires: jobClass === 'migration' ? 'operator' : 'patcher',
+        reason: roleRefusalMessage(jobClass, access.reason),
+      })
+      return false
+    })
+    .filter((job: any) => {
+      /* Scope refusals are reported like role and approval refusals: an agent
+         idling next to a queued job must say the job is outside its policy. */
+      const scope = remediationJobScope(job, policy, agent)
+      if (scope.allowed) return true
+      refused.push({ jobId: String(job.id), name: String(job.name || job.id), requires: 'scope', reason: scope.reason })
+      return false
+    })
     .slice(0, 5)
 
+  /*
+   * A job nobody may execute must SAY so.
+   *
+   * Without this it sits at "Queued / Awaiting Agent" forever while agents poll
+   * past it, which reads as a stuck queue rather than the role boundary it
+   * actually is. Written on the job so Live Migration can render the reason
+   * next to the job it belongs to, and only when it CHANGES, so the 30-60s poll
+   * of every agent in the fleet does not rewrite the same row continuously.
+   */
+  for (const entry of refused) {
+    const blockedJob = (jobs || []).find((item: any) => String(item.id) === entry.jobId)
+    if (!blockedJob) continue
+    const blockedMetadata = remediationJobMetadata(blockedJob)
+    if (asRecord(blockedMetadata.dispatchBlock).reason === entry.reason) continue
+    const { error: blockError } = await client.from('migration_jobs').update({
+      metadata: {
+        ...blockedMetadata,
+        dispatchBlock: {
+        kind: entry.requires === 'approval' ? 'not-approved' : entry.requires === 'scope' ? 'out-of-scope' : 'agent-role',
+        requires: entry.requires,
+        reason: entry.reason,
+        at: now,
+      },
+      },
+      updated_at: now,
+    }).eq('id', blockedJob.id).eq('user_id', agent.user_id)
+    if (blockError && !isMissingRuntimeTable(blockError)) {
+      console.warn('[agent-remediation] dispatch-block note failed:', blockError.message)
+    }
+  }
+
   const claimedJobs: any[] = []
+  const snapshotBlocked: Array<{ jobId: string; name: string; reason: string }> = []
   for (const job of claimable) {
     const metadata = remediationJobMetadata(job)
+
+    /*
+     * SNAPSHOT GATE — nothing is handed to an executor without a verified
+     * pre-change snapshot.
+     *
+     * Pre-migration snapshots used to be created as a side effect of building
+     * the Snapshots dashboard, which meant a tenant who never opened that panel
+     * had their hosts patched with no restore point at all. The gate belongs
+     * here, at the last moment before the work leaves the control plane.
+     */
+    const snapshot = await ensureSnapshotForJob(client, agent.user_id, job, `agent:${agent.name || agent.id}`)
+    if (!snapshot.ok) {
+      snapshotBlocked.push({ jobId: String(job.id), name: String(job.name || job.id), reason: snapshot.message })
+      await client.from('migration_jobs').update({
+        metadata: { ...metadata, dispatchBlock: { kind: 'no-snapshot', requires: 'snapshot', reason: snapshot.message, at: now } },
+        updated_at: now,
+      }).eq('id', job.id).eq('user_id', agent.user_id)
+      await client.from('migration_events').insert({
+        user_id: agent.user_id,
+        migration_id: job.id,
+        event_type: 'snapshot-gate-blocked',
+        severity: 'error',
+        message: `Execution withheld: no pre-change snapshot could be created for ${job.name || job.id}.`,
+        metadata: { agentId: agent.id, reason: snapshot.message, schemaMissing: snapshot.schemaMissing },
+        created_at: new Date().toISOString(),
+      }).then(({ error }: any) => {
+        if (error && !isMissingRuntimeTable(error)) console.warn('[agent-remediation] snapshot gate event insert failed:', error.message)
+      })
+      continue
+    }
     const claimedAt = cleanString(metadata.claimedAt || metadata.claimed_at, 80) || now
     const nextMetadata = {
       ...metadata,
@@ -4156,12 +4472,17 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
       executorMode: 'guarded-agent',
       executorAdapter: remediationAdapter(job),
       executorVersion: agent.version || null,
+      executionClass: jobExecutionClass(job),
+      preChangeSnapshotId: snapshot.snapshotId,
+      /* Claimed — whatever was blocking it no longer is. */
+      dispatchBlock: null,
       execution: {
         ...asRecord(metadata.execution),
         agentRequired: true,
         agentDispatchStatus: 'claimed',
         sequenceState: 'agent_executing',
         claimedAt,
+        preChangeSnapshotId: snapshot.snapshotId,
       },
     }
 
@@ -4261,6 +4582,8 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
       claimedJobs: claimedJobs.length,
       hndlCandidates: (jobs || []).filter((job: any) => remediationJobIsHndl(job)).length,
       pqcCandidates: (jobs || []).filter((job: any) => migrationJobIsAgentExecutable(job)).length,
+      refusedByRole: refused.length,
+      withheldWithoutSnapshot: snapshotBlocked.length,
     },
     observed_at: now,
   })
@@ -4269,6 +4592,15 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
     data: {
       jobs: claimedJobs.map(remediationJobPayload),
       observedAt: now,
+      /* Stated, never implied: an empty job list can mean "no work", "not your
+         role" or "no snapshot could be taken", and those are three different
+         operator actions. */
+      refusedByRole: refused,
+      withheldWithoutSnapshot: snapshotBlocked,
+      roleAccess: {
+        remediation: { allowed: remediationAccess.allowed, reason: remediationAccess.reason || null },
+        migration: { allowed: migrationAccess.allowed, reason: migrationAccess.reason || null },
+      },
     },
   })
 })
@@ -4298,17 +4630,60 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
     return
   }
 
+  /*
+   * Role gate — this endpoint MOVES A JOB TO `completed`.
+   *
+   * It had no capability check at all, so a valid token from a read-only
+   * Collector agent could drive a live migration job to completed (and, with
+   * it, every counter, report and compliance record downstream). The claim path
+   * checked the role; the path that declares the work finished did not.
+   */
+  const jobClass = jobExecutionClass(job)
+  const eventAccess = await agentMayWrite(client, agent, jobClass === 'migration' ? 'migration' : 'remediation')
+  if (!eventAccess.allowed) {
+    jsonError(
+      res,
+      403,
+      'AGENT_ROLE_NOT_PERMITTED',
+      roleRefusalMessage(jobClass, eventAccess.reason),
+      { jobClass, requiredRole: jobClass === 'migration' ? 'operator' : 'patcher', reason: eventAccess.reason },
+    )
+    return
+  }
+
   const policy = await activePolicyForAgent(client, agent)
   if (!policy.enabled || !remediationJobAllowedForAgent(job, policy, agent)) {
     jsonError(res, 403, 'REMEDIATION_OUT_OF_POLICY', 'This remediation job is outside the agent policy scope')
     return
   }
 
+  if (isSimulationJob(job)) {
+    jsonError(res, 409, 'SIMULATION_NOT_AGENT_WORK', 'This is a sandbox simulation. It is executed by the sandbox engine and never reported on by an agent.')
+    return
+  }
+
   const now = new Date().toISOString()
   const currentMetadata = remediationJobMetadata(job)
   const assignedAgentId = cleanString(currentMetadata.assignedAgentId || currentMetadata.assigned_agent_id, 120)
-  if (assignedAgentId && assignedAgentId !== agent.id) {
-    jsonError(res, 403, 'REMEDIATION_JOB_ASSIGNED', 'This remediation job is assigned to a different agent')
+  /*
+   * CLAIM IS THE ONLY DOOR.
+   *
+   * The approval gate and the pre-change snapshot gate both live in the job
+   * poll's claim path. This check used to be `assignedAgentId && ...`, so a job
+   * nobody had claimed was open to ANY write-capable agent — it could post
+   * "completed" (with evidence) for work that was never approved, never
+   * snapshotted, and never dispatched to it. The agent runtime only ever reports
+   * on jobs it claimed, so requiring the claim costs the real flow nothing.
+   */
+  if (assignedAgentId !== agent.id) {
+    jsonError(
+      res,
+      403,
+      assignedAgentId ? 'REMEDIATION_JOB_ASSIGNED' : 'REMEDIATION_JOB_NOT_CLAIMED',
+      assignedAgentId
+        ? 'This remediation job is assigned to a different agent'
+        : 'This job has not been claimed by this agent. Jobs are claimed through the job queue, which enforces approval and takes the pre-change snapshot.',
+    )
     return
   }
 
@@ -4437,6 +4812,60 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
   if (updateError) {
     jsonError(res, 500, 'REMEDIATION_JOB_UPDATE_FAILED', updateError.message)
     return
+  }
+
+  /*
+   * Persist the agent's own configuration backup onto the job's pre-change
+   * snapshot, so a later operator-initiated rollback has something real to act
+   * on. The agent has always posted this in `metadata.snapshot`; the event
+   * handler summarised events into `executorEvents` (type/status/progress only)
+   * and discarded it, which is why the platform could offer a Restore button it
+   * had no way to honour.
+   */
+  const executorSnapshot = asRecord(eventMetadata.snapshot)
+  if (executorSnapshot.targetPath && executorSnapshot.backupPath && executorSnapshot.beforeHash) {
+    await recordSnapshotExecution(client, agent.user_id, String(job.id), {
+      kind: 'agent-config',
+      agentId: agent.id,
+      agentName: agent.name || agent.hostname || agent.id,
+      targetPath: cleanString(executorSnapshot.targetPath, 1000),
+      backupPath: cleanString(executorSnapshot.backupPath, 1000),
+      beforeHash: cleanString(executorSnapshot.beforeHash, 200),
+      afterHash: cleanString(executorSnapshot.afterHash, 200),
+      recordedAt: now,
+    }).catch((error: Error) => console.warn('[agent-remediation] snapshot execution record failed:', error.message))
+  }
+
+  /*
+   * Automatic rollback on validation failure (§ "rollback: automaticOnValidation
+   * Failure"). The agent already restores its own patch in-process when its
+   * post-change probe fails; this covers the case the agent cannot — it died
+   * mid-job, or a connector applied the change. It DISPATCHES a real rollback
+   * and reports the disposition; it never writes "rolled back" on its own.
+   */
+  if (nextStatus === 'failed' && !currentMetadata.rollbackRequestedAt) {
+    let snapRow: any = null
+    try {
+      const { data: snapRows } = await client
+        .from('migration_snapshots')
+        .select('*')
+        .eq('user_id', agent.user_id)
+        .eq('migration_job_id', job.id)
+        .eq('trigger', 'pre_migration')
+        .order('created_at', { ascending: false })
+        .limit(1)
+      snapRow = Array.isArray(snapRows) ? snapRows[0] : null
+    } catch {
+      snapRow = null
+    }
+    if (snapRow) {
+      await dispatchSnapshotRollback(client, agent.user_id, {
+        snapshotRow: snapRow,
+        reason: `Automatic rollback: ${job.name || job.id} failed validation (${message}).`,
+        requestedBy: `agent:${agent.name || agent.id}`,
+        origin: 'auto',
+      }).catch((error: Error) => console.warn('[agent-remediation] auto-rollback dispatch failed:', error.message))
+    }
   }
 
   await persistMigrationExecution(client, agent, job, {

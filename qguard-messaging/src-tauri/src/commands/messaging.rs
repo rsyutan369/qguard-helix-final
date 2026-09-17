@@ -64,13 +64,37 @@ pub struct RecipientKeyBundle {
     pub one_time_prekey: Option<RecipientPrekeyBundle>,
 }
 
+/// How thoroughly the sender of an inbound envelope was proven.
+///
+/// The distinction is the whole point. Verifying an envelope's dual signature
+/// against the public keys CARRIED IN THAT ENVELOPE proves only that the
+/// envelope is internally consistent -- anyone who can write to the relay can
+/// mint a keypair, sign whatever they like with it, and attach the matching
+/// public keys. It is `RegisteredDevice` that turns the signature into
+/// authentication, by requiring those keys to be the ones the named device
+/// actually published to `messaging_devices`.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SenderVerification {
+    /// The signature validates AND its keys are the sender device's registered
+    /// identity keys. This is the only state that means "authenticated".
+    RegisteredDevice,
+    /// The signature validates against the keys inside the envelope, but no
+    /// registered identity was supplied for the sender device (it was never
+    /// registered, or its row is gone), so the keys are anchored to nothing.
+    /// Self-consistent, NOT authenticated.
+    UnverifiedDevice,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct DecryptedMessage {
     pub message_id: String,
     pub conversation_id: String,
     pub plaintext: String,
+    /// True only for `SenderVerification::RegisteredDevice`.
     pub authenticated: bool,
     pub replay_protected: bool,
+    pub sender_verification: SenderVerification,
 }
 
 // Send/receive are `async` so Tauri runs them on the runtime thread pool
@@ -252,10 +276,116 @@ fn verify_recipient_prekey(
     )
 }
 
+/// Anchor an inbound envelope's signing keys to the sender device's REGISTERED
+/// identity.
+///
+/// ---------------------------------------------------------------------------
+/// WHY A SIGNATURE CHECK ALONE IS NOT AUTHENTICATION
+/// ---------------------------------------------------------------------------
+/// `dual_verify` is handed `envelope.sender_ed25519_public` and
+/// `envelope.sender_mldsa_public` -- both of which travel INSIDE the envelope
+/// being checked. That proves self-consistency and nothing else. Anyone able to
+/// place a row in `messaging_message_envelopes` (the relay itself, a
+/// compromised service role, a co-member of a group conversation) could:
+///   1. generate their own Ed25519 + ML-DSA-65 keypair,
+///   2. encapsulate to the victim's PUBLISHED prekey bundle (public by design),
+///   3. stamp any `sender_device_id` they like on the envelope,
+///   4. sign it with their own key and attach their own public keys,
+/// and every check in the old receive path passed. The message rendered with a
+/// "Verified" badge under the impersonated sender's name. That also made
+/// out-of-band safety-number verification decorative for messages: a user could
+/// confirm a peer's fingerprint and still be shown forgeries signed by a key
+/// that fingerprint never covered.
+///
+/// This closes it. The registered bundle is verified first (so a relay cannot
+/// hand us a made-up row), then the envelope's signing keys must be EXACTLY the
+/// registered ones. A mismatch is an active forgery signal, so it fails closed
+/// rather than downgrading to "unverified" -- a downgrade would let an attacker
+/// pick their own verification level.
+fn verify_sender_identity(
+    envelope: &EncryptedMessageEnvelope,
+    sender: Option<&RecipientIdentityBundle>,
+) -> Result<SenderVerification> {
+    // No registry row supplied: the caller could not find the sender device.
+    // The honest answer is "unanchored", never "verified".
+    let Some(sender) = sender else {
+        return Ok(SenderVerification::UnverifiedDevice);
+    };
+
+    if sender.user_id != envelope.sender_user_id || sender.device_id != envelope.sender_device_id {
+        return Err(QGuardError::Trust(format!(
+            "sender identity bundle is for device {} of user {}, but the envelope claims device {} of user {}",
+            sender.device_id, sender.user_id, envelope.sender_device_id, envelope.sender_user_id,
+        )));
+    }
+
+    // Proves the bundle binds these signing keys to this (user_id, device_id).
+    // Without it a relay could publish a row containing the very keys it used to
+    // sign the forgery.
+    verify_identity_bundle(
+        &sender.user_id,
+        &sender.device_id,
+        &sender.x25519_identity_public,
+        &sender.mlkem_identity_public,
+        &sender.ed25519_identity_public,
+        &sender.mldsa_identity_public,
+        &sender.identity_signature,
+    )
+    .map_err(|_| {
+        QGuardError::Trust(format!(
+            "registered identity for sender device {} failed its own signature check; refusing to trust it",
+            sender.device_id
+        ))
+    })?;
+
+    if sender.ed25519_identity_public != envelope.sender_ed25519_public
+        || sender.mldsa_identity_public != envelope.sender_mldsa_public
+    {
+        return Err(QGuardError::Trust(format!(
+            "message claims to come from device {} but is signed by a key that device never registered; refusing it",
+            envelope.sender_device_id
+        )));
+    }
+
+    Ok(SenderVerification::RegisteredDevice)
+}
+
+/// Recompute the AAD from the envelope's own fields and require it to equal the
+/// AAD the ciphertext was actually sealed under.
+///
+/// `decrypt_message` passes `envelope.aad` through verbatim, so without this the
+/// bytes bound into the AES-GCM tag and the fields the UI renders are two
+/// independent things that merely usually agree. Pinning them together means a
+/// message can never display one sender / conversation / counter while having
+/// been sealed under another.
+fn verify_aad_matches_envelope(envelope: &EncryptedMessageEnvelope) -> Result<()> {
+    let expected = crate::message_crypto::message_aad(
+        &envelope.message_id,
+        &envelope.conversation_id,
+        &envelope.sender_user_id,
+        &envelope.recipient_user_id,
+        &envelope.sender_device_id,
+        &envelope.recipient_device_id,
+        envelope.counter,
+    );
+    if expected != envelope.aad {
+        return Err(QGuardError::Trust(
+            "message metadata does not match the associated data it was sealed under; refusing it"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+// `sender_identity` is the sender device's row from `messaging_devices`, when
+// this client could find one. Optional so a missing row degrades to an honest
+// "unverified" rather than an unreadable message -- but a row that IS present
+// and does not match fails the whole call.
 #[tauri::command]
 pub async fn messaging_receive_encrypted_message(
     state: State<'_, AppState>,
     envelope: EncryptedMessageEnvelope,
+    sender_identity: Option<RecipientIdentityBundle>,
 ) -> Result<DecryptedMessage> {
     let session_user_id = envelope.recipient_user_id.clone();
     state.require_user_auth(&session_user_id)?;
@@ -270,6 +400,8 @@ pub async fn messaging_receive_encrypted_message(
         &message_signable(&envelope),
         &envelope.message_signature,
     )?;
+    verify_aad_matches_envelope(&envelope)?;
+    let sender_verification = verify_sender_identity(&envelope, sender_identity.as_ref())?;
 
     let cache_key = format!(
         "{}:{}:{}:{}",
@@ -289,8 +421,9 @@ pub async fn messaging_receive_encrypted_message(
             message_id: envelope.message_id,
             conversation_id: envelope.conversation_id,
             plaintext,
-            authenticated: true,
+            authenticated: sender_verification == SenderVerification::RegisteredDevice,
             replay_protected: true,
+            sender_verification,
         });
     }
 
@@ -406,8 +539,9 @@ pub async fn messaging_receive_encrypted_message(
                         message_id: envelope.message_id,
                         conversation_id: envelope.conversation_id,
                         plaintext,
-                        authenticated: true,
+                        authenticated: sender_verification == SenderVerification::RegisteredDevice,
                         replay_protected: true,
+                        sender_verification,
                     });
                 }
                 return Err(QGuardError::Replay(format!(
@@ -448,8 +582,9 @@ pub async fn messaging_receive_encrypted_message(
         message_id: envelope.message_id,
         conversation_id: envelope.conversation_id,
         plaintext,
-        authenticated: true,
+        authenticated: sender_verification == SenderVerification::RegisteredDevice,
         replay_protected: true,
+        sender_verification,
     })
 }
 
@@ -466,3 +601,158 @@ pub fn messaging_delete_encrypted_message(
     Ok(true)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::hybrid_kex::LocalKemKeypair;
+    use crate::crypto::{AlgorithmSuite, HybridCiphertext};
+    use crate::identity::LocalIdentity;
+    use crate::message_crypto::{encrypt_message, MessageKind, MessageSigningContext};
+    use crate::ratchet::RatchetSession;
+
+    /// Build a real, correctly signed envelope from `sender` to the named peer.
+    fn envelope_from(
+        sender: &LocalIdentity,
+        sender_user_id: &str,
+        recipient_user_id: &str,
+        recipient_device_id: &str,
+    ) -> EncryptedMessageEnvelope {
+        let mut ratchet = RatchetSession::new("t", [4u8; 32]).unwrap();
+        encrypt_message(
+            &mut ratchet,
+            "conv-1",
+            sender_user_id,
+            recipient_user_id,
+            &sender.device_id,
+            recipient_device_id,
+            HybridCiphertext {
+                x25519_ephemeral_public: vec![1; 32],
+                ml_kem_ciphertext: vec![2; 1568],
+                suite: AlgorithmSuite::default(),
+            },
+            "prekey-1",
+            "signed_prekey",
+            MessageKind::Text,
+            b"hello",
+            MessageSigningContext {
+                ed25519_secret: &sender.signing.ed25519_secret,
+                mldsa_secret: &sender.signing.mldsa_secret,
+                ed25519_public: &sender.signing.ed25519_public,
+                mldsa_public: &sender.signing.mldsa_public,
+            },
+        )
+        .unwrap()
+    }
+
+    fn registry_row(identity: &LocalIdentity) -> RecipientIdentityBundle {
+        let bundle = identity.public_bundle().unwrap();
+        RecipientIdentityBundle {
+            user_id: bundle.user_id,
+            device_id: bundle.device_id,
+            x25519_identity_public: bundle.x25519_identity_public,
+            mlkem_identity_public: bundle.mlkem_identity_public,
+            ed25519_identity_public: bundle.ed25519_identity_public,
+            mldsa_identity_public: bundle.mldsa_identity_public,
+            identity_signature: bundle.signature,
+            suite: Some(bundle.suite),
+        }
+    }
+
+    #[test]
+    fn sender_is_authenticated_only_against_its_registered_identity() {
+        let sender = LocalIdentity::generate("user-a", "Desktop").unwrap();
+        let envelope = envelope_from(&sender, "user-a", "user-b", "device-b");
+        // The envelope's own signature verifies -- that part was never in doubt.
+        dual_verify(
+            &envelope.sender_ed25519_public,
+            &envelope.sender_mldsa_public,
+            &message_signable(&envelope),
+            &envelope.message_signature,
+        )
+        .unwrap();
+        assert_eq!(
+            verify_sender_identity(&envelope, Some(&registry_row(&sender))).unwrap(),
+            SenderVerification::RegisteredDevice
+        );
+    }
+
+    #[test]
+    fn a_forged_sender_is_refused_even_though_its_signature_verifies() {
+        // The forgery: an attacker mints their own keypair, signs an envelope
+        // with it, and stamps the VICTIM's device id on the result. Before the
+        // registry check this decrypted and rendered as "Verified".
+        let victim = LocalIdentity::generate("user-a", "Desktop").unwrap();
+        let mut attacker = LocalIdentity::generate("user-a", "Desktop").unwrap();
+        attacker.device_id = victim.device_id.clone();
+        let forged = envelope_from(&attacker, "user-a", "user-b", "device-b");
+
+        // Self-consistency still passes: that is exactly why it is not enough.
+        dual_verify(
+            &forged.sender_ed25519_public,
+            &forged.sender_mldsa_public,
+            &message_signable(&forged),
+            &forged.message_signature,
+        )
+        .unwrap();
+
+        let error = verify_sender_identity(&forged, Some(&registry_row(&victim))).unwrap_err();
+        assert!(
+            format!("{error:?}").contains("never registered"),
+            "expected a registered-key rejection, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_registry_row_that_fails_its_own_signature_is_refused() {
+        let sender = LocalIdentity::generate("user-a", "Desktop").unwrap();
+        let envelope = envelope_from(&sender, "user-a", "user-b", "device-b");
+        let mut row = registry_row(&sender);
+        // A relay swapping the KEM keys in the published row keeps the signing
+        // keys (so the envelope still matches) but breaks the bundle signature.
+        let swapped = LocalKemKeypair::generate();
+        row.x25519_identity_public = swapped.x25519_public.clone();
+        row.mlkem_identity_public = swapped.mlkem_public.clone();
+        let error = verify_sender_identity(&envelope, Some(&row)).unwrap_err();
+        assert!(
+            format!("{error:?}").contains("failed its own signature check"),
+            "expected a bundle rejection, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_registry_row_is_unverified_not_authenticated() {
+        let sender = LocalIdentity::generate("user-a", "Desktop").unwrap();
+        let envelope = envelope_from(&sender, "user-a", "user-b", "device-b");
+        assert_eq!(
+            verify_sender_identity(&envelope, None).unwrap(),
+            SenderVerification::UnverifiedDevice
+        );
+    }
+
+    #[test]
+    fn a_bundle_for_a_different_device_is_refused() {
+        let sender = LocalIdentity::generate("user-a", "Desktop").unwrap();
+        let other = LocalIdentity::generate("user-a", "Desktop").unwrap();
+        let envelope = envelope_from(&sender, "user-a", "user-b", "device-b");
+        let error = verify_sender_identity(&envelope, Some(&registry_row(&other))).unwrap_err();
+        assert!(
+            format!("{error:?}").contains("but the envelope claims device"),
+            "expected a device-mismatch rejection, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn aad_must_match_the_envelope_it_is_attached_to() {
+        let sender = LocalIdentity::generate("user-a", "Desktop").unwrap();
+        let mut envelope = envelope_from(&sender, "user-a", "user-b", "device-b");
+        verify_aad_matches_envelope(&envelope).unwrap();
+        // Re-point the rendered sender without re-sealing: the AAD still carries
+        // the original, so the two no longer agree.
+        envelope.sender_user_id = "user-c".to_string();
+        let error = verify_aad_matches_envelope(&envelope).unwrap_err();
+        assert!(
+            format!("{error:?}").contains("does not match the associated data"),
+            "expected an AAD mismatch, got {error:?}"
+        );
+    }
+}

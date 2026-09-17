@@ -80,10 +80,25 @@ export const CITATIONS = {
     url: 'https://doi.org/10.6028/NIST.SP.800-131Ar2',
   },
   cnsa2: {
-    label: 'CNSA 2.0',
-    title: 'Commercial National Security Algorithm Suite 2.0 (NSA)',
-    published: '2022-09-07',
-    url: 'https://www.nsa.gov/Press-Room/Press-Releases-Statements/Press-Release-View/Article/3148990/',
+    label: 'CNSA 2.0 FAQ',
+    title: 'Commercial National Security Algorithm Suite 2.0 FAQ (NSA), December 2024 Ver. 2.1',
+    published: '2024-12-01',
+    // The transition timeline lives in the FAQ, not in the September 2022 press
+    // release — and the FAQ has been revised twice since (April 2024, December
+    // 2024). Cite the current revision, since that is what the dates come from.
+    url: 'https://media.defense.gov/2022/Sep/07/2003071836/-1/-1/0/CSI_CNSA_2.0_FAQ_.PDF',
+  },
+  sp800208: {
+    label: 'SP 800-208',
+    title: 'Recommendation for Stateful Hash-Based Signature Schemes',
+    published: '2020-10-29',
+    url: 'https://doi.org/10.6028/NIST.SP.800-208',
+  },
+  fips206: {
+    label: 'NIST PQC Project',
+    title: 'Post-Quantum Cryptography Project — FN-DSA (draft FIPS 206) status',
+    published: '2026-01-01',
+    url: 'https://csrc.nist.gov/projects/post-quantum-cryptography',
   },
   nsm10: {
     label: 'NSM-10',
@@ -174,7 +189,12 @@ export type PqcRole = 'kem' | 'signature';
 export type StandardStatus = 'final' | 'draft' | 'selected-not-drafted';
 
 export interface PqcParameterSet {
-  /** Exact name as it appears in the standard. */
+  /**
+   * Name as it appears in the standard. ML-KEM and ML-DSA ids are exact; the
+   * SLH-DSA ids are the short form shared by that set's two instantiations —
+   * FIPS 205 names them SLH-DSA-SHA2-<n><s|f> and SLH-DSA-SHAKE-<n><s|f>, and
+   * both have identical key and signature sizes, so one row covers the pair.
+   */
   id: string;
   family: PqcFamily;
   role: PqcRole;
@@ -278,7 +298,9 @@ export const ML_DSA_SETS: PqcParameterSet[] = [
 
 /**
  * FIPS 205 — SLH-DSA. Sizes are FIPS 205 Table 2 and are identical for the
- * SHA2 and SHAKE instantiations of each parameter set.
+ * SHA2 and SHAKE instantiations of each parameter set, so `SLH-DSA-128s` below
+ * stands for both SLH-DSA-SHA2-128s and SLH-DSA-SHAKE-128s. The live benchmark
+ * in `pqc-live.ts` runs the SHA2 instantiation.
  * `s` = small signature / slow signing. `f` = fast signing / large signature.
  */
 export const SLH_DSA_SETS: PqcParameterSet[] = [
@@ -288,9 +310,10 @@ export const SLH_DSA_SETS: PqcParameterSet[] = [
     role: 'signature',
     category: 1,
     sizes: { publicKey: 32, secretKey: 64, ciphertext: null, signature: 7856, sharedSecret: null },
-    hardness: 'Second-preimage resistance of the underlying hash function only',
+    hardness: 'Hash-function security only — second-preimage and target-collision resistance of the tweakable hash',
     citation: 'fips205',
     status: 'final',
+    note: 'FIPS 205 names this pair SLH-DSA-SHA2-128s and SLH-DSA-SHAKE-128s; both have these exact sizes.',
   },
   {
     id: 'SLH-DSA-128f',
@@ -298,7 +321,7 @@ export const SLH_DSA_SETS: PqcParameterSet[] = [
     role: 'signature',
     category: 1,
     sizes: { publicKey: 32, secretKey: 64, ciphertext: null, signature: 17088, sharedSecret: null },
-    hardness: 'Second-preimage resistance of the underlying hash function only',
+    hardness: 'Hash-function security only — second-preimage and target-collision resistance of the tweakable hash',
     citation: 'fips205',
     status: 'final',
   },
@@ -308,7 +331,7 @@ export const SLH_DSA_SETS: PqcParameterSet[] = [
     role: 'signature',
     category: 3,
     sizes: { publicKey: 48, secretKey: 96, ciphertext: null, signature: 16224, sharedSecret: null },
-    hardness: 'Second-preimage resistance of the underlying hash function only',
+    hardness: 'Hash-function security only — second-preimage and target-collision resistance of the tweakable hash',
     citation: 'fips205',
     status: 'final',
   },
@@ -318,7 +341,7 @@ export const SLH_DSA_SETS: PqcParameterSet[] = [
     role: 'signature',
     category: 3,
     sizes: { publicKey: 48, secretKey: 96, ciphertext: null, signature: 35664, sharedSecret: null },
-    hardness: 'Second-preimage resistance of the underlying hash function only',
+    hardness: 'Hash-function security only — second-preimage and target-collision resistance of the tweakable hash',
     citation: 'fips205',
     status: 'final',
   },
@@ -328,7 +351,7 @@ export const SLH_DSA_SETS: PqcParameterSet[] = [
     role: 'signature',
     category: 5,
     sizes: { publicKey: 64, secretKey: 128, ciphertext: null, signature: 29792, sharedSecret: null },
-    hardness: 'Second-preimage resistance of the underlying hash function only',
+    hardness: 'Hash-function security only — second-preimage and target-collision resistance of the tweakable hash',
     citation: 'fips205',
     status: 'final',
   },
@@ -338,7 +361,7 @@ export const SLH_DSA_SETS: PqcParameterSet[] = [
     role: 'signature',
     category: 5,
     sizes: { publicKey: 64, secretKey: 128, ciphertext: null, signature: 49856, sharedSecret: null },
-    hardness: 'Second-preimage resistance of the underlying hash function only',
+    hardness: 'Hash-function security only — second-preimage and target-collision resistance of the tweakable hash',
     citation: 'fips205',
     status: 'final',
     note: 'Largest signature in the suite. Chosen when the only assumption you will accept is a hash function.',
@@ -370,16 +393,16 @@ export const PENDING_STANDARDS: PendingStandard[] = [
     role: 'signature',
     status: 'draft',
     summary:
-      'NTRU-lattice signature scheme selected in 2022 for the smallest signatures of the finalists. Draft FIPS 206 has not been published; its floating-point Gaussian sampler makes constant-time implementation the hard part.',
-    citation: 'fips204',
+      'NTRU-lattice signature scheme selected in 2022 for the smallest signatures of the finalists. Draft FIPS 206 has still not been published — NIST reported it as under development in January 2026 — and its floating-point Gaussian sampler makes constant-time implementation the hard part.',
+    citation: 'fips206',
   },
   {
     id: 'LMS / XMSS (SP 800-208)',
     role: 'signature',
     status: 'final',
     summary:
-      'Stateful hash-based signatures, already approved and already required by CNSA 2.0 for software and firmware signing. Stateful: reusing a one-time key destroys security, so they are only safe where signing state can be guaranteed.',
-    citation: 'cnsa2',
+      'Stateful hash-based signatures, specified by SP 800-208 and already required by CNSA 2.0 for software and firmware signing. Stateful: reusing a one-time key destroys security, so they are only safe where signing state can be guaranteed.',
+    citation: 'sp800208',
   },
 ];
 
@@ -404,8 +427,14 @@ export interface TransitionMilestone {
  * Real, published dates. The hero countdown ticks against these — it does not
  * count down to an invented "Q-Day", because nobody has published one.
  *
- * Milestones whose date is a year boundary use 1 January of the following year,
- * because the source text says "after 2030" / "by 2035".
+ * Milestones worded "AFTER <year>" use 1 January of the following year, because
+ * the restriction bites once that year is over: IR 8547's "deprecated after
+ * 2030" is 2031-01-01 and its "disallowed after 2035" is 2036-01-01.
+ * Milestones worded "BY <year>" use 1 January of the year itself, which is the
+ * conservative reading: CNSA 2.0's exclusive-use dates and NSM-10's 2035 target
+ * are encoded that way. The timeline prints the stored year, so an "after"
+ * milestone shows one year later than the figure quoted in its source text —
+ * the detail line on each entry carries the source's own wording.
  */
 export const TRANSITION_MILESTONES: TransitionMilestone[] = [
   {
@@ -449,9 +478,9 @@ export const TRANSITION_MILESTONES: TransitionMilestone[] = [
     id: 'ir8547-deprecate',
     date: '2031-01-01',
     authority: 'NIST',
-    title: 'RSA-2048, ECDSA P-256, ECDH and finite-field DH deprecated',
+    title: '112-bit-strength RSA, ECDSA, ECDH and finite-field DH deprecated',
     detail:
-      'NIST IR 8547 ipd deprecates all 112-bit-classical-strength public-key algorithms after 2030. Deprecated means: still permitted, but the user accepts the risk in writing.',
+      'NIST IR 8547 ipd deprecates public-key algorithms at the 112-bit classical security strength after 2030 — RSA-2048, finite-field DH/MQV-2048, and ECDH/ECDSA on 224-bit curves. Deprecated means: still permitted, but the user accepts the risk in writing. Algorithms at 128-bit strength and above (RSA-3072 and larger, P-256, P-384, X25519, Ed25519) get no deprecation step — they are disallowed outright after 2035.',
     severity: 'deadline',
     citation: 'ir8547',
   },

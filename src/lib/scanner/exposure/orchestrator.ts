@@ -517,7 +517,24 @@ export async function runExposureScan(options: OrchestratorOptions): Promise<Exp
     task.failureReason = 'The scan was cancelled or exceeded its time budget; the results below cover only the engines that completed.';
   } else if (failures.length > 0) {
     task.status = 'partial';
-    task.failureReason = `${failures.length} engine${failures.length === 1 ? '' : 's'} did not complete: ${failures.join(' · ')}`;
+    task.failureReason = `${failures.length} engine${failures.length === 1 ? '' : 's'} did not complete: ${failures.join(' · ')} Scores are computed only from the engines that reported.`;
+  } else if (task.coverage.notAssessed.length > 0) {
+    /* Every engine came back, and part of the estate still went unread. The
+       status used to be `completed` here, so the status bar showed a green
+       "Assessment complete" directly above an Assessment Coverage panel listing
+       the dimensions nothing reached and a completeness note reading "Absent
+       evidence is not clean evidence" — the page contradicting itself, with the
+       reassuring verdict in the largest type.
+
+       A scan with a hole in it is partial however cleanly its engines exited
+       (§64: never treat Not Scanned as Secure). `exposure-persistence` already
+       records `partial` as a completed run, so this changes what the reader is
+       told, not whether the assessment is kept. */
+    task.status = 'partial';
+    const dimensions = task.coverage.notAssessed.map((entry) => entry.dimension);
+    task.failureReason =
+      `Every selected engine completed, but ${dimensions.length} dimension${dimensions.length === 1 ? '' : 's'} could not be read: ${dimensions.join(' · ')}. ` +
+      'Those dimensions are reported as unassessed, never as a passing control.';
   } else {
     task.status = 'completed';
   }
@@ -659,7 +676,7 @@ export function buildIntelligence(input: {
      actions and "SSL (legacy) is broken by classical cryptanalysis" four
      times, splitting one piece of work across rows and pushing everything
      else off the list. */
-  const recommendations = mergeRecommendations(
+  const mergedMigration = mergeRecommendations(
     prioritiseMigration(exposures).map((entry) => ({
       title: entry.exposure.recommendation ?? `Address ${entry.exposure.title}`,
       detail: `${entry.priority} — ${entry.drivers.join(', ')}. ${entry.exposure.evidence.length} evidence source${entry.exposure.evidence.length === 1 ? '' : 's'} across ${entry.exposure.layers.map(layerLabel).join(' → ')}.`,
@@ -667,7 +684,8 @@ export function buildIntelligence(input: {
       effort: (entry.exposure.migration?.complexity ?? 'medium') as 'low' | 'medium' | 'high',
       findingIds: entry.exposure.findingIds,
     })),
-  ).slice(0, 8);
+  );
+  const recommendations = mergedMigration.slice(0, 8);
 
   /* Urgent work that migration advice does not cover, so a committed private
      key is not buried under algorithm advice.
@@ -680,7 +698,7 @@ export function buildIntelligence(input: {
      by a migration recommendation" states the real intent and cannot be
      defeated by a status the finding was never going to carry. */
   const citedByMigration = new Set(recommendations.flatMap((entry) => entry.findingIds));
-  const urgentNonCrypto = mergeRecommendations(
+  const mergedUrgent = mergeRecommendations(
     findings
       .filter(
         (finding) =>
@@ -696,7 +714,15 @@ export function buildIntelligence(input: {
         effort: 'low' as const,
         findingIds: [finding.id],
       })),
-  ).slice(0, 4);
+  );
+  const urgentNonCrypto = mergedUrgent.slice(0, 4);
+
+  /* The denominator for the panel's truncation note: every DISTINCT action the
+     scan produced, counted after merging (so it is a count of work, not of
+     duplicate phrasings) and before the three caps above. Without it the panel
+     renders its own cap as the total and the reader plans against a list that
+     dropped more than it showed. */
+  const recommendationCandidates = mergedMigration.length + mergedUrgent.length;
 
   const facts: Array<{ label: string; value: string; detail?: string }> = [];
   const meta = workspace.meta as Record<string, any>;
@@ -731,11 +757,17 @@ export function buildIntelligence(input: {
       .sort((a, b) => b.findings - a.findings),
     byEngine: runs.map((run) => ({ engineId: run.engineId, label: run.label, findings: run.findingCount, state: run.state })),
     topAlgorithms: cbomSummary.byAlgorithm.slice(0, 12),
+    /* The denominator the "Algorithms observed" chip row needs. The chips stop
+       at twelve groups; on a real scan that is 12 of 19, covering 487 of 515
+       components, and with no denominator a reader sums the chips and gets a
+       component total that contradicts the CBOM panel directly above it. */
+    algorithmGroups: cbomSummary.byAlgorithm.length,
     languages: (meta.languages as Array<{ language: string; files: number }> | undefined) ?? [],
     frameworks: (meta.frameworks as string[] | undefined) ?? [],
     dependencies: (meta.dependencies as ExposureIntelligence['dependencies'] | undefined) ?? [],
     secrets,
     facts,
     recommendations: [...urgentNonCrypto, ...recommendations].slice(0, 10),
+    recommendationCandidates,
   };
 }

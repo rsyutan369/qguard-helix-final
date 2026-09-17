@@ -99,7 +99,8 @@ async function main() {
     results: [record], scanner2, targets: [result.target], completedAt: record.completedAt,
     estate: {
       totalAssets: 1, totalFindings: findings.length, criticalFindings: summary.critical,
-      vulnerableAssets: 1, pqcReadiness: 0, riskScore: result.overallRiskScore,
+      highFindings: summary.high, vulnerableAssets: 1, vulnerableComponents: summary.vulnerable,
+      pqcReadiness: 0, riskScore: result.overallRiskScore,
     },
     linked: { cbom: 0, assets: 1, exposures: 0 }, provenance: 'Live scan evidence',
   })
@@ -107,8 +108,11 @@ async function main() {
   console.log('\n================== COMPOSITE ==================')
   console.log('grade           :', assessment.executive?.grade, '| encryptionScore:', assessment.executive?.encryptionScore)
   console.log('postQuantumReadiness:', JSON.stringify(assessment.executive?.postQuantumReadiness))
-  console.log('quantumVulnerability:', assessment.executive?.quantumVulnerability)
-  console.log('forwardSecrecy  :', assessment.executive?.forwardSecrecy)
+  /* These live on `intelligence`, not `executive`; reading them off the wrong
+     branch printed "undefined" in this tool's own header while the panels
+     below rendered them correctly. */
+  console.log('quantumVulnerability:', assessment.intelligence?.quantumVulnerability)
+  console.log('forwardSecrecy  :', assessment.intelligence?.forwardSecrecy)
   console.log('\nscoreComponents:')
   for (const c of assessment.scoreComponents) {
     console.log(`   ${String(c.key).padEnd(26)} score=${String(c.score).padStart(5)} weight=${String(c.weight).padStart(3)}  ${c.label}`)

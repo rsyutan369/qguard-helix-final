@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { importAesGcmKey, sealFrame, openFrame } from "@/lib/call-frame-crypto";
+import { importAesGcmKey, sealFrame, openFrame, frameCounter, FrameReplayWindow } from "@/lib/call-frame-crypto";
 
 const ctx = new Uint8Array([1, 2, 3, 4]);
 function bytes(s: string) { return new TextEncoder().encode(s); }
@@ -61,4 +61,52 @@ test("a frame sealed for the other media kind cannot be opened", async () => {
   const videoCtx = new Uint8Array([2, 0, 0, 0]);
   const sealed = new Uint8Array(await sealFrame(key, audioCtx, 6n, 0, bytes("voice")));
   await expect(openFrame(key, videoCtx, 0, sealed)).rejects.toBeTruthy();
+});
+
+// ---------------------------------------------------------------------------
+// Anti-replay
+//
+// A replayed frame is a VALID frame: same key, same counter, same tag, so it
+// decrypts perfectly. Only the window can tell it is arriving a second time.
+// ---------------------------------------------------------------------------
+
+test("a replayed frame authenticates but is refused by the window", async () => {
+  const key = await importAesGcmKey(new Uint8Array(32).fill(23));
+  const sealed = new Uint8Array(await sealFrame(key, ctx, 40n, 0, bytes("live audio")));
+  // The replay is byte-identical, so AES-GCM has no objection at all.
+  expect(new Uint8Array(await openFrame(key, ctx, 0, sealed)).length).toBeGreaterThan(0);
+
+  const window = new FrameReplayWindow();
+  const seq = frameCounter(sealed);
+  expect(window.check(seq)).toBe(true);
+  window.commit(seq);
+  expect(window.check(seq)).toBe(false);
+});
+
+test("out-of-order frames inside the window are accepted exactly once", () => {
+  const window = new FrameReplayWindow();
+  for (const seq of [10n, 13n, 11n, 12n]) {
+    expect(window.check(seq)).toBe(true);
+    window.commit(seq);
+  }
+  for (const seq of [10n, 11n, 12n, 13n]) expect(window.check(seq)).toBe(false);
+  // Still moving forward normally.
+  expect(window.check(14n)).toBe(true);
+});
+
+test("frames older than the window are refused rather than guessed at", () => {
+  const window = new FrameReplayWindow();
+  window.commit(0n);
+  window.commit(5000n);
+  expect(window.check(4999n)).toBe(true);   // just behind the mark
+  expect(window.check(4000n)).toBe(false);  // far behind: indistinguishable from a replay
+  expect(window.check(5001n)).toBe(true);
+});
+
+test("a large forward jump does not resurrect old counters", () => {
+  const window = new FrameReplayWindow();
+  window.commit(1n);
+  window.commit(100000n);
+  expect(window.check(1n)).toBe(false);
+  expect(window.check(99999n)).toBe(true);
 });

@@ -10,6 +10,9 @@
  *
  * This ONLY touches the listed emails. Everyone else is unaffected and still
  * requires a real subscription.
+ *
+ * On a Supabase project created after 2026-05-30 run supabase/data-api-grants.sql
+ * first — without it even the service-role key gets `42501 permission denied`.
  */
 import 'dotenv/config'
 import { createClient } from '@supabase/supabase-js'
@@ -22,12 +25,18 @@ if (!URL || !SERVICE_KEY) {
   process.exit(1)
 }
 
-const ACCOUNTS: Array<{ email: string; plan: 'Starter' | 'Basic' | 'Pro' | 'Elite' }> = [
+const ACCOUNTS: Array<{ email: string; plan: 'Starter' | 'Basic' | 'Pro' | 'Elite'; owner?: boolean }> = [
   { email: 'cybersniper26@gmail.com', plan: 'Starter' },
   { email: 'threathunter369@gmail.com', plan: 'Basic' },
   { email: 'teslagreat101@gmail.com', plan: 'Pro' },
-  { email: 'zachmatthew369@gmail.com', plan: 'Elite' }, // owner (also auto-Elite via admin-access)
+  { email: 'zachmatthew369@gmail.com', plan: 'Elite', owner: true }, // also auto-Elite via admin-access
 ]
+
+// The web gate only reads `status`, but the QGuard Messaging paywall also locks
+// once current_period_end is 72h in the past (qguard_has_messaging_access() in
+// migration 030 and qguard-messaging/src/lib/subscription.ts). A 30-day period
+// silently locked the QA accounts out of Messaging a month after every seed.
+const TEST_PERIOD_DAYS = 365
 
 const admin = createClient(URL, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
 
@@ -46,15 +55,31 @@ async function findUserId(email: string): Promise<string | null> {
 }
 
 async function seed() {
+  const { error: grantError } = await admin.from('billing_subscriptions').select('user_id').limit(1)
+  if (grantError?.code === '42501') {
+    console.error(
+      '\nThe service-role key cannot read billing_subscriptions (42501 permission denied).\n' +
+        'This project has no Data API grants. Run supabase/data-api-grants.sql in the\n' +
+        'Supabase SQL Editor, then re-run this script.',
+    )
+    // Not process.exit(): with fetch sockets still open it aborts on Windows
+    // (libuv "UV_HANDLE_CLOSING" assertion) instead of exiting with 1.
+    process.exitCode = 1
+    return
+  }
+
   const now = new Date()
-  const periodEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
+  const periodEnd = new Date(now.getTime() + TEST_PERIOD_DAYS * 24 * 60 * 60 * 1000)
   const results: string[] = []
 
-  for (const { email, plan } of ACCOUNTS) {
+  for (const { email, plan, owner } of ACCOUNTS) {
     try {
       const userId = await findUserId(email)
       if (!userId) {
-        results.push(`SKIP   ${email.padEnd(28)} -> not registered yet (no auth.users row)`)
+        // /register refuses owner emails (EMAIL_NOT_ALLOWED), so the owner has
+        // to be created from the Supabase dashboard instead.
+        const how = owner ? 'create it in Supabase > Authentication > Users > Add user' : 'register it first'
+        results.push(`SKIP   ${email.padEnd(28)} -> not registered yet (no auth.users row; ${how})`)
         continue
       }
 

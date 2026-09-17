@@ -7,13 +7,40 @@ import {
   mandatoryPqcStackMetadata,
   mandatoryPqcTargetForContext,
 } from '@/lib/crypto/mandatory-pqc-stack'
+import { HEARTBEAT_ONLINE_WINDOW_MS } from '@/lib/agent-installer/agent-release'
+import {
+  approvalRecord,
+  approvalRefusal,
+  isSimulationJob,
+  jobApproval,
+  jobPlanId,
+  planApproval,
+  type ApprovalVerdict,
+} from '@/lib/migration/job-safety'
+import { dispatchSnapshotRollback } from './migration-snapshots'
 
 type AuthenticatedRequest = Request & {
   user?: { id: string; email?: string | null }
   token?: string
 }
 
-type LiveMigrationStatus = 'running' | 'completed' | 'failed' | 'queued' | 'paused' | 'cancelled'
+/**
+ * Rollback is its own pair of states, not a flavour of "paused".
+ *
+ * `rollback_requested` and `rolled_back` used to normalise to `paused`, so an
+ * operator could not tell a job somebody had paused from one whose change was
+ * being reverted, or from one that had already been reverted — and the paused
+ * counter silently included both.
+ */
+type LiveMigrationStatus =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'queued'
+  | 'paused'
+  | 'cancelled'
+  | 'rolling_back'
+  | 'rolled_back'
 
 type LiveMigrationEvent = {
   id: string
@@ -36,7 +63,16 @@ type LiveMigrationJob = {
   fromAlgo: string
   toAlgo: string
   migrationType: string
+  /** Raw `job_type` — the operation class is decided from this, never from display text. */
+  jobType: string
   status: LiveMigrationStatus
+  /** Why this job is not being executed, when something is blocking it. */
+  dispatchBlock: { kind: string; requires: string; reason: string; at: string } | null
+  /**
+   * The same approval verdict the agent poll enforces, so the board can never
+   * show a job as ready that the fleet will refuse — or hide who approved it.
+   */
+  approval: ApprovalVerdict
   rawStatus: string
   progress: number
   eta: string
@@ -237,12 +273,15 @@ function pickString(record: Record<string, unknown>, keys: string[]) {
 function normalizeStatus(status: unknown): LiveMigrationStatus {
   const value = String(status || 'pending').toLowerCase().replace(/\s+/g, '_')
   if (['completed', 'complete', 'done', 'success', 'successful'].includes(value)) return 'completed'
-  if (['failed', 'error', 'errored'].includes(value)) return 'failed'
+  // A failed rollback is a FAILURE that needs an operator, not a rolled-back job.
+  if (['failed', 'error', 'errored', 'rollback_failed', 'validation_failed'].includes(value)) return 'failed'
   if (['running', 'in_progress', 'migrating', 'executing'].includes(value)) return 'running'
   // Cancelled is its own terminal state — folding it into "paused" made an
   // operator-cancelled job look resumable and skewed the paused count.
   if (['cancelled', 'canceled'].includes(value)) return 'cancelled'
-  if (['paused', 'rollback_requested', 'rolled_back'].includes(value)) return 'paused'
+  if (['rollback_requested', 'rolling_back'].includes(value)) return 'rolling_back'
+  if (['rolled_back', 'restored'].includes(value)) return 'rolled_back'
+  if (value === 'paused') return 'paused'
   return 'queued'
 }
 
@@ -272,6 +311,7 @@ function normalizePlanTag(value: unknown) {
 
 function clampProgress(value: unknown, status: LiveMigrationStatus) {
   if (status === 'completed') return 100
+  if (status === 'rolled_back') return 0
   if (status === 'queued') return 0
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return status === 'failed' ? 0 : 0
@@ -356,6 +396,8 @@ function deriveEta(row: any, status: LiveMigrationStatus, progress: number, meta
   if (status === 'completed') return 'Done'
   if (status === 'failed') return 'Failed'
   if (status === 'paused') return 'Paused'
+  if (status === 'rolling_back') return 'Rolling back'
+  if (status === 'rolled_back') return 'Rolled back'
   if (status === 'queued') return 'Pending'
   if (!row?.started_at || progress <= 0) return 'Calculating'
 
@@ -577,7 +619,7 @@ async function fetchAuditRows(client: any, userId: string, planId?: string | nul
 async function fetchAgentRows(client: any, userId: string) {
   return liveRows('scanner_agents', () => client
     .from('scanner_agents')
-    .select('id, name, hostname, status, version, last_seen_at, metadata')
+    .select('id, name, hostname, status, version, last_seen_at, revoked_at, metadata')
     .eq('user_id', userId)
     .limit(500))
 }
@@ -627,13 +669,10 @@ function groupRowsByMigration(rows: any[], key = 'migration_id') {
 // Sandbox simulations are executed by the qguard-sandbox-orchestrator engine,
 // not by tenant agents. They must surface with their real engine progress on
 // the live migration view instead of appearing stuck "waiting for agent".
+/* Delegates to the shared predicate. This copy had drifted from sandbox.ts's —
+   it ignored `metadata.dryRun`, so a dry run could render as real work here. */
 function isSandboxSimulationRow(row: any, metadata: Record<string, unknown>) {
-  const executionMode = pickString(metadata, ['executionMode', 'runMode', 'mode']).toLowerCase()
-  const jobType = String(row?.job_type || '').toLowerCase()
-  return metadata.sandboxMode === true
-    || ['sandbox_simulation', 'dry_run', 'simulation'].includes(executionMode)
-    || /sandbox|simulation|dry_run|dry-run/.test(jobType)
-    || /^\[dry run\]|^sandbox:/i.test(String(row?.name || ''))
+  return isSimulationJob({ job_type: row?.job_type, name: row?.name, metadata })
 }
 
 function executionEvidenceInMetadata(metadata: Record<string, unknown>) {
@@ -646,6 +685,20 @@ function executionEvidenceInMetadata(metadata: Record<string, unknown>) {
     Object.keys(lastExecutorEvent).length ||
     (Array.isArray(metadata.executorEvents) && metadata.executorEvents.length > 0),
   )
+}
+
+/**
+ * Did a validation actually PASS?
+ *
+ * Exact tokens only. The counters used `/pass|success|valid/`, and `/valid/`
+ * also matches "invalid", "validation_failed" and "unvalidated" — so a failed
+ * validation was counted as Verified, and `validationSeverity` rendered
+ * "invalid" in the success colour.
+ */
+export function isPassingValidation(status: unknown): boolean {
+  const value = String(status || '').toLowerCase().trim()
+  if (!value || /fail|invalid|error|pending|unvalid|unverif|\bnot\b|blocked/.test(value)) return false
+  return ['passed', 'pass', 'success', 'successful', 'validated', 'valid', 'verified'].includes(value)
 }
 
 function validationStatusFromRows(rows: any[], metadata: Record<string, unknown>) {
@@ -668,26 +721,64 @@ function telemetrySeverity(row: any) {
 
 function validationSeverity(row: any) {
   const status = String(row?.status || '').toLowerCase()
-  if (/fail|error|blocked/.test(status)) return 'error'
-  if (/pass|success|valid/.test(status)) return 'success'
+  if (/fail|error|blocked|invalid/.test(status)) return 'error'
+  if (isPassingValidation(status)) return 'success'
   return 'info'
 }
 
-function buildLiveTelemetry(jobs: LiveMigrationJob[], telemetryRows: any[] = [], validationRows: any[] = [], auditRows: any[] = []) {
+/**
+ * The operation a job performs, from its recorded `job_type`. One class per job.
+ *
+ * `hndl_*` remediation patches the TLS key-exchange groups, so it is transport.
+ */
+const OPERATION_CLASS_BY_JOB_TYPE: Record<string, 'tls' | 'certificate' | 'key' | 'encryption' | 'pqc'> = {
+  protocol_upgrade: 'tls',
+  hndl_remediation: 'tls',
+  hndl_mitigation: 'tls',
+  cert_transition: 'certificate',
+  certificate_replacement: 'certificate',
+  signature_transition: 'certificate',
+  key_rotation: 'key',
+  encryption_upgrade: 'encryption',
+  pqc_migration: 'pqc',
+}
+
+/** Telemetry events that record intent or progress, not an operation outcome. */
+const NON_OUTCOME_EVENTS = new Set(['agent-job-claimed', 'agent-remediation-started', 'agent-remediation-precheck', 'agent-remediation-manual-required'])
+
+export function buildLiveTelemetry(jobs: LiveMigrationJob[], telemetryRows: any[] = [], validationRows: any[] = [], auditRows: any[] = []) {
   const telemetryText = telemetryRows.map((row) => `${row.event_type || ''} ${row.metric_type || ''} ${row.message || ''}`.toLowerCase())
   const logText = jobs.flatMap((job) => job.logs.map((log) => `${log.eventType} ${log.message}`.toLowerCase()))
   const countTelemetry = (pattern: RegExp) => telemetryText.filter((text) => pattern.test(text)).length
   const countLogs = (pattern: RegExp) => logText.filter((text) => pattern.test(text)).length
-  const validationEvents = validationRows.length + countTelemetry(/validat|pqc|quantum-safe|readiness/)
-  const compatibilityEvents = countTelemetry(/compatib|handshake|fallback|interoperab/)
+
+  /*
+   * OPERATIONS THAT HAPPENED — counted per job, once, from its recorded type,
+   * and only when the job completed with a PASSING validation.
+   *
+   * These used to regex every telemetry row's text, so one row could count
+   * toward several operations and a CLAIM counted as the operation itself:
+   * claiming an ML-KEM job matched /kem/ and incremented Key Rotations, and
+   * claiming a certificate job incremented Certificate Replacements before
+   * anything had changed on the host.
+   */
+  const validatedOperations = jobs.filter((job) => !job.isSandbox && job.status === 'completed' && isPassingValidation(job.validationStatus))
+  const countOperations = (kind: string) => validatedOperations.filter((job) => OPERATION_CLASS_BY_JOB_TYPE[job.jobType] === kind).length
+  /* A validation OUTCOME was recorded for the job — passed or failed, not pending. */
+  const validationEvents = Math.max(validationRows.length, jobs.filter((job) => !job.isSandbox && job.validationStatus && job.validationStatus !== 'pending').length)
+  /* Classified once at write time; claims and progress rows excluded. */
+  const compatibilityEvents = telemetryRows.filter((row) =>
+    String(row?.metric_type || '') === 'compatibility_check' && !NON_OUTCOME_EVENTS.has(String(row?.event_type || ''))).length
   const failed = jobs.filter((job) => job.status === 'failed').length
   const running = jobs.filter((job) => job.status === 'running').length
   const waiting = jobs.filter((job) => job.status === 'queued' && !job.executionBacked).length
 
   return {
-    tlsHandshakeEvents: countTelemetry(/tls|handshake|cipher|session/),
-    certificateReplacements: countTelemetry(/cert|certificate|issuer|chain/),
-    keyRotations: countTelemetry(/key|rotation|kem|envelope/),
+    /* Field names kept for API and report compatibility; each now counts
+       validated operations of that class. */
+    tlsHandshakeEvents: countOperations('tls'),
+    certificateReplacements: countOperations('certificate'),
+    keyRotations: countOperations('key'),
     pqcValidationEvents: validationEvents,
     compatibilityChecks: compatibilityEvents,
     systemHealth: failed > 0 ? 'Degraded' : running > 0 ? 'Executing' : waiting > 0 ? 'Awaiting Agent' : jobs.length > 0 ? 'Ready' : 'No active migrations',
@@ -703,6 +794,10 @@ function buildLiveTelemetry(jobs: LiveMigrationJob[], telemetryRows: any[] = [],
 
 async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: string | null) {
   const jobRows = await fetchJobs(client, userId, planId)
+  /* One bounded read for every plan the board's jobs declare. If it fails, a
+     planned job's verdict is "not approved" — the board must not claim an
+     approval it could not read. */
+  const approvalPlans = await loadPlansForJobs(client, userId, jobRows)
   const migrationIds = jobRows
     .map((row: any) => row.id)
     .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
@@ -774,6 +869,10 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     if (!executionBacked && rowStatus === 'completed' && validationStatusFromRows(jobValidationRows, metadata) === 'pending') status = 'queued'
     if (rowStatus === 'failed') status = 'failed'
     if (rowStatus === 'paused') status = 'paused'
+    /* A rollback decision is recorded on the job row and must win over whatever
+       the execution row last reported, exactly like a cancellation. */
+    if (rowStatus === 'rolling_back') status = 'rolling_back'
+    if (rowStatus === 'rolled_back') status = 'rolled_back'
     // An operator cancellation is a decision recorded on the job row itself, so
     // it must win over whatever the agent/execution row last reported —
     // otherwise a cancelled job keeps displaying as queued.
@@ -839,6 +938,7 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
       fromAlgo,
       toAlgo,
       migrationType: String(pickString(metadata, ['migrationType', 'migration_type']) || strategy || prettify(row.job_type, 'PQC Migration')),
+      jobType: String(row.job_type || '').toLowerCase(),
       status,
       rawStatus: String(row.status || status),
       progress,
@@ -849,6 +949,19 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
       updatedAt: row.updated_at || row.completed_at || row.started_at || row.created_at || new Date().toISOString(),
       executionStatus,
       executionBacked,
+      /* Stated rather than implied: a queued job that no agent may execute
+         reads as a stuck queue unless the reason travels with it. */
+      approval: approvalFor(row, approvalPlans),
+      dispatchBlock: (() => {
+        const block = asRecord(metadata.dispatchBlock)
+        if (!block.reason || ['completed', 'cancelled', 'rolled_back'].includes(status)) return null
+        return {
+          kind: String(block.kind || 'unknown'),
+          requires: String(block.requires || ''),
+          reason: String(block.reason),
+          at: String(block.at || ''),
+        }
+      })(),
       isSandbox,
       runMode: isSandbox ? (metadata.dryRun === true ? 'dry_run' : 'sandbox_simulation') : 'migration_workflow',
       agentId: agentId || null,
@@ -894,12 +1007,36 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     queued: jobs.filter((job) => job.status === 'queued').length,
     paused: jobs.filter((job) => job.status === 'paused').length,
     cancelled: jobs.filter((job) => job.status === 'cancelled').length,
+    rollingBack: jobs.filter((job) => job.status === 'rolling_back').length,
+    rolledBack: jobs.filter((job) => job.status === 'rolled_back').length,
+    /* Work that exists, has not run, and that no agent will take until a named
+       person approves it. Counted, not inferred from an empty queue. */
+    awaitingApproval: jobs.filter((job) =>
+      job.approval.required && !job.approval.approved && ['queued', 'paused'].includes(job.status)).length,
     completionRate: total ? Math.round((jobs.filter((job) => job.status === 'completed').length / total) * 100) : 0,
     waitingForAgent: jobs.filter((job) => job.status === 'queued' && !job.executionBacked && !job.isSandbox).length,
     agentBacked: jobs.filter((job) => job.executionBacked).length,
     sandboxSimulations: jobs.filter((job) => job.isSandbox).length,
-    verified: jobs.filter((job) => /pass|success|valid/.test(job.validationStatus)).length,
-    agentsOnline: agentRows.filter((agent: any) => ['active', 'online', 'telemetry'].includes(String(agent?.status || '').toLowerCase())).length,
+    verified: jobs.filter((job) => !job.isSandbox && isPassingValidation(job.validationStatus)).length,
+    /*
+     * Online is a HEARTBEAT fact, not a status column.
+     *
+     * `scanner_agents.status` stays 'active' until somebody revokes the agent,
+     * so counting it meant an agent that stopped checking in weeks ago still
+     * displayed as online next to a queue that was never going to move. The
+     * window is the same one the Agent Center uses, so both pages agree.
+     */
+    agentsOnline: agentRows.filter((agent: any) => {
+      if (agent?.revoked_at || String(agent?.status || '').toLowerCase() === 'revoked') return false
+      const seen = agent?.last_seen_at ? Date.parse(String(agent.last_seen_at)) : 0
+      return Boolean(seen) && Date.now() - seen <= HEARTBEAT_ONLINE_WINDOW_MS
+    }).length,
+    agentsEnrolled: agentRows.length,
+    agentsStale: agentRows.filter((agent: any) => {
+      if (agent?.revoked_at || String(agent?.status || '').toLowerCase() === 'revoked') return false
+      const seen = agent?.last_seen_at ? Date.parse(String(agent.last_seen_at)) : 0
+      return !seen || Date.now() - seen > HEARTBEAT_ONLINE_WINDOW_MS
+    }).length,
     totalAssets,
     findings,
     criticalExposures,
@@ -1644,7 +1781,15 @@ function plannerAction(raw: unknown): PlannerAction {
 function planStatusForAction(action: PlannerAction) {
   if (action === 'schedule') return 'scheduled'
   if (action === 'start') return 'awaiting_agent'
-  if (action === 'export' || action === 'sandbox') return 'approved'
+  /*
+   * Exporting a plan to PDF, or pushing it into the sandbox, used to set the
+   * status to `approved` — so a plan nobody had approved satisfied any gate
+   * that trusted the status column. Neither action is an authorisation to
+   * change a customer's asset; they get their own terminal states, and
+   * approval is carried by `metadata.approval` alone.
+   */
+  if (action === 'export') return 'exported'
+  if (action === 'sandbox') return 'sandbox'
   return 'draft'
 }
 
@@ -1701,9 +1846,12 @@ function buildPlanPayload({
   snapshot,
   jobs,
   now,
+  approvedBy,
 }: {
   planId: string
   action: PlannerAction
+  /** Operator identity, recorded on the approval a `start` writes. */
+  approvedBy?: string
   selectedAssets: any[]
   configuration: Record<string, unknown>
   snapshot: Awaited<ReturnType<typeof buildMigrationPlannerSnapshot>>
@@ -1742,6 +1890,15 @@ function buildPlanPayload({
       createdAt: now,
       status,
       action,
+      /*
+       * Starting a migration is a change-producing decision, so it is RECORDED
+       * as an approval with the operator's identity rather than inferred from
+       * the plan's status. `save`, `schedule`, `export` and `sandbox` produce
+       * no approval — none of them may dispatch work to an agent.
+       */
+      ...(action === 'start'
+        ? { approval: approvalRecord(String(approvedBy || ''), now, 'planner-start', 'Approved by the operator who started this migration from the Migration Planner.') }
+        : {}),
       estimatedDuration: estimatePlanDuration(selectedAssets.length, String(configuration.deploymentStrategy || '')),
       expectedDowntime: estimateDowntime(String(configuration.deploymentStrategy || ''), controls),
       rollbackAvailable: controls.rollback !== false,
@@ -1812,7 +1969,10 @@ async function persistMigrationPlan(client: any, userId: string, plan: Migration
     metadata: plan.migrationMetadata,
     created_at: plan.createdAt,
     updated_at: plan.updatedAt,
-    approved_at: ['start', 'export', 'sandbox'].includes(plan.action) ? plan.updatedAt : null,
+    /* `approved_at` is only stamped when an approval decision actually exists —
+       previously `export` and `sandbox` stamped it too, which put an approval
+       timestamp on plans nobody had approved. */
+    approved_at: planApproval({ status: plan.status, metadata: plan.migrationMetadata }).approved ? plan.updatedAt : null,
     scheduled_at: pickString(plan.configuration, ['scheduleAt']) || null,
   }
   const { error } = await client.from('migration_plans').upsert(row)
@@ -2101,7 +2261,10 @@ async function loadMigrationPlan(client: any, userId: string, planId: string): P
 
   return {
     id: planId,
-    status: String(planRow?.status || migrationMetadata.status || firstMetadata.planStatus || 'approved'),
+    /* Unknown, not approved. This fallback used to be 'approved', so a plan
+       whose row could not be read displayed as approved everywhere it was
+       rendered. The dispatch gate never trusted it, but the UI did. */
+    status: String(planRow?.status || migrationMetadata.status || firstMetadata.planStatus || 'unknown'),
     action: plannerAction(migrationMetadata.action || firstMetadata.planAction || 'start'),
     selectedAssets,
     configuration,
@@ -2170,6 +2333,10 @@ function orchestrationActionUpdate(action: string, metadata: Record<string, unkn
   return actionUpdate(action, nextMetadata)
 }
 
+/* Approval and simulation predicates live in `@/lib/migration/job-safety` —
+   one definition shared with the agent job poll, the sandbox engine and the
+   Live Migration UI. See that module for why each rule exists. */
+
 function actionUpdate(action: string, metadata: Record<string, unknown>, nextStatus?: string) {
   const now = new Date().toISOString()
   const nextMetadata: Record<string, unknown> = {
@@ -2208,10 +2375,100 @@ function actionMessage(action: string, jobName: string) {
   if (action === 'cancel') return `Operator cancelled migration job ${jobName}; it was withdrawn from the execution queue.`
   if (action === 'remove') return `Operator removed migration job ${jobName} from the migration queue.`
   if (action === 'approve_next_phase') return `Operator approved the next migration phase for agent execution on ${jobName}.`
+  if (action === 'approve') return `Operator approved remediation job ${jobName} for agent execution and queued it.`
   return `Operator action ${action} recorded for migration job ${jobName}.`
 }
 
-async function insertActionEvents(client: any, userId: string, jobs: any[], action: string) {
+/**
+ * Load the plans a set of jobs declares, for approval verdicts.
+ *
+ * `degraded: true` means the plan table could not be read. Callers must treat
+ * every PLANNED job as unapproved in that case — an approval that cannot be read
+ * cannot be relied on — while unplanned jobs still resolve from their own record.
+ */
+async function loadPlansForJobs(client: any, userId: string, jobs: any[]): Promise<{ plans: Map<string, any>; degraded: boolean }> {
+  const planIds = Array.from(new Set(jobs.map((job) => jobPlanId(job)).filter(Boolean))).slice(0, 500)
+  if (!planIds.length) return { plans: new Map(), degraded: false }
+  try {
+    const { data, error } = await client
+      .from('migration_plans')
+      .select('id, status, metadata')
+      .eq('user_id', userId)
+      .in('id', planIds)
+    if (error) {
+      if (!isMissingTable(error)) console.warn('[migration-live] plan approval read failed:', error.message)
+      return { plans: new Map(), degraded: true }
+    }
+    return { plans: new Map(((data as any[]) || []).map((row) => [String(row.id), row])), degraded: false }
+  } catch (error: any) {
+    console.warn('[migration-live] plan approval read threw:', error?.message || error)
+    return { plans: new Map(), degraded: true }
+  }
+}
+
+/** Approval verdict for a job, given the plans loaded for its batch. */
+function approvalFor(job: any, loaded: { plans: Map<string, any> }): ApprovalVerdict {
+  const planId = jobPlanId(job)
+  return jobApproval(job, planId ? loaded.plans.get(planId) || null : null)
+}
+
+/**
+ * Why an operator action may not proceed on this job, or null when it may.
+ *
+ * `resume` and `retry` put a job back in front of the agent fleet, so they need
+ * the same approval the agent poll re-checks. Refusing here gives the operator
+ * the reason immediately, instead of a job that reads "Queued" forever while
+ * every agent polls past it. Simulations are exempt: the sandbox engine runs
+ * them against a digital twin and they never reach an agent.
+ */
+function actionApprovalBlock(action: string, job: any, loaded: { plans: Map<string, any>; degraded: boolean }): string | null {
+  if (!['resume', 'retry'].includes(action)) return null
+  if (isSimulationJob(job)) return null
+  const verdict = approvalFor(job, loaded)
+  if (verdict.approved) return null
+  if (loaded.degraded && verdict.source === 'plan') {
+    return 'The approval record for this job\'s migration plan could not be read, so it was not queued. Retry in a moment.'
+  }
+  return approvalRefusal(verdict)
+}
+
+/**
+ * Why a job may not be approved AT THE JOB LEVEL, or null when it may.
+ *
+ * Job-level approval exists for unplanned remediation (Harvest Now creates one
+ * job per finding, with no plan). A planned job is approved through its plan —
+ * allowing a job-level record there would let one job of a rejected plan run.
+ */
+function jobApprovalBlock(job: any): string | null {
+  if (isSimulationJob(job)) return 'Sandbox simulations run against a digital twin and are never dispatched to an agent, so they cannot be approved for execution.'
+  const planId = jobPlanId(job)
+  if (planId) return `This job belongs to migration plan ${planId}. Approval is recorded on the plan — approve it in the Migration Planner.`
+  const status = normalizeStatus(job.status)
+  if (['completed', 'cancelled', 'rolled_back', 'rolling_back', 'running'].includes(status)) {
+    return `A ${status.replace('_', ' ')} job cannot be approved for execution.`
+  }
+  return null
+}
+
+/** The update an explicit job-level approval writes: attributed record + queue for an agent. */
+function approveUpdate(metadata: Record<string, unknown>, record: ReturnType<typeof approvalRecord>) {
+  const now = record.decidedAt
+  return {
+    status: 'queued',
+    updated_at: now,
+    metadata: {
+      ...metadata,
+      approval: record,
+      lastOperatorAction: 'approve',
+      lastOperatorActionAt: now,
+      /* A stale "not approved" note would contradict the approval just written. */
+      dispatchBlock: null,
+      execution: { ...asRecord(metadata.execution), agentDispatchStatus: 'queued_for_agent', sequenceState: 'waiting_for_agent' },
+    },
+  }
+}
+
+async function insertActionEvents(client: any, userId: string, jobs: any[], action: string, extra: Record<string, unknown> = {}) {
   if (!jobs.length) return
   const now = new Date().toISOString()
   const rows = jobs.map((job) => ({
@@ -2220,7 +2477,9 @@ async function insertActionEvents(client: any, userId: string, jobs: any[], acti
     event_type: `operator-${action}`,
     severity: action === 'rollback' ? 'warning' : 'info',
     message: actionMessage(action, job.name || job.id),
-    metadata: { action },
+    /* `extra` carries the approval record for an approve — who, when, why — so
+       the event stream is a complete audit of the decision, not just its name. */
+    metadata: { action, ...extra },
     created_at: now,
   }))
   const { error } = await client.from('migration_events').insert(rows)
@@ -2261,7 +2520,9 @@ async function ensureDispatchPlanRow(client: any, userId: string, plan: Migratio
 }
 
 async function persistExecutionDispatch(client: any, userId: string, plan: MigrationPlanPayload, jobs: any[], action: string, phaseToStart: number | null | undefined, now: string) {
-  if (!['start', 'start_execution', 'resume', 'retry', 'approve_next_phase'].includes(action) || jobs.length === 0) return
+  /* 'approve' queues an unplanned remediation job exactly as resume does, so it
+     writes the same dispatch bookkeeping; the action name is recorded as-is. */
+  if (!['start', 'start_execution', 'resume', 'retry', 'approve_next_phase', 'approve'].includes(action) || jobs.length === 0) return
   const controls = asRecord(plan.configuration.controls)
   const packageRows: any[] = []
   const orchestrationRows: any[] = []
@@ -2560,6 +2821,7 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
     snapshot,
     jobs: reusedJobs,
     now,
+    approvedBy: req.user!.email || req.user!.id,
   })
 
   const rows = candidates.map((asset: any) => {
@@ -2663,6 +2925,7 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
     snapshot,
     jobs: allJobs,
     now,
+    approvedBy: req.user!.email || req.user!.id,
   })
 
   let sandboxJobs: any[] = []
@@ -3150,15 +3413,13 @@ router.post('/plans/:planId/action', requireAuth, async (req: AuthenticatedReque
    * governance states block; plans that never entered the approval workflow
    * keep their existing behaviour.
    */
-  const approvalState = String(plan.status || '').toLowerCase()
-  if ((action === 'start_execution' || action === 'approve_next_phase') && (approvalState === 'rejected' || approvalState === 'pending_approval')) {
+  const approval = planApproval(plan)
+  if ((action === 'start_execution' || action === 'approve_next_phase') && !approval.approved) {
     return res.status(409).json({
       error: {
         code: 'PLAN_NOT_APPROVED',
-        message: approvalState === 'rejected'
-          ? 'This migration plan was rejected. Agent execution cannot be dispatched against a rejected plan.'
-          : 'This migration plan is still awaiting approval. Record an approval decision before dispatching agent execution.',
-        details: { planId, planStatus: approvalState },
+        message: approvalRefusal(approval),
+        details: { planId, planStatus: String(plan.status || ''), approvalState: approval.state },
       },
     })
   }
@@ -3367,7 +3628,7 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
 
   const action = String(req.body?.action || '').toLowerCase()
-  if (!['pause', 'resume', 'retry', 'rollback', 'cancel'].includes(action)) {
+  if (!['pause', 'resume', 'retry', 'rollback', 'cancel', 'approve'].includes(action)) {
     return res.status(400).json({ error: { code: 'INVALID_ACTION', message: 'Unsupported migration action' } })
   }
 
@@ -3388,6 +3649,96 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
     return res.status(409).json({
       error: { code: 'JOB_ALREADY_COMPLETED', message: 'This migration already completed and cannot be cancelled. Use rollback to revert the change.' },
     })
+  }
+
+  /*
+   * Rollback is not a status change.
+   *
+   * It used to be: `actionUpdate` wrote `status: 'rollback_requested'` and
+   * nothing anywhere read that state — no poller, no agent, no connector — so
+   * the control sat in the UI looking functional while parking the job forever.
+   * It now goes through Migration Snapshot Management, which resolves the
+   * executor that actually holds the undo information and reports exactly what
+   * happened.
+   */
+  if (action === 'rollback') {
+    const { data: snapRows, error: snapError } = await client
+      .from('migration_snapshots')
+      .select('*')
+      .eq('user_id', req.user!.id)
+      .eq('migration_job_id', job.id)
+      .eq('trigger', 'pre_migration')
+      .order('created_at', { ascending: false })
+      .limit(1)
+    if (snapError && !isMissingTable(snapError)) {
+      return res.status(500).json({ error: { code: 'SNAPSHOT_READ_FAILED', message: snapError.message } })
+    }
+    const snapshotRow = Array.isArray(snapRows) ? snapRows[0] : null
+    if (!snapshotRow) {
+      return res.status(409).json({
+        error: {
+          code: 'NO_PRE_CHANGE_SNAPSHOT',
+          message: 'No pre-change snapshot exists for this job, so there is no recorded state to restore. Nothing was changed.',
+        },
+      })
+    }
+    const result = await dispatchSnapshotRollback(client, req.user!.id, {
+      snapshotRow,
+      reason: String(req.body?.reason || 'Operator rollback from Live Migration Operations').slice(0, 1000),
+      requestedBy: req.user!.email || req.user!.id,
+      origin: 'operator',
+    })
+    await insertActionEvents(client, req.user!.id, [job], 'rollback')
+    const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id)
+    return res.json({ data: { action, jobId: job.id, rollback: result, snapshot } })
+  }
+
+  /*
+   * Explicit, attributed approval of an unplanned remediation job (audit §2:
+   * "require explicit approval for change-producing operations"). Approving
+   * queues the job; the agent poll then re-checks this record, takes a verified
+   * pre-change snapshot, and only then hands the job to a Patcher.
+   */
+  if (action === 'approve') {
+    const blocked = jobApprovalBlock(job)
+    if (blocked) {
+      return res.status(409).json({ error: { code: 'JOB_NOT_APPROVABLE', message: blocked } })
+    }
+    const current = jobApproval(job, null)
+    if (current.approved) {
+      const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id)
+      return res.json({ data: { action, jobId: job.id, alreadyApproved: true, approval: current, snapshot } })
+    }
+    const now = new Date().toISOString()
+    const record = approvalRecord(
+      req.user!.email || req.user!.id,
+      now,
+      'live-migration',
+      String(req.body?.reason || '').trim().slice(0, 1000) || 'Approved for agent execution from Live Migration Operations.',
+    )
+    const { error: approveError } = await client
+      .from('migration_jobs')
+      .update(approveUpdate(asRecord(job.metadata), record))
+      .eq('id', job.id)
+      .eq('user_id', req.user!.id)
+    if (approveError) {
+      return res.status(500).json({ error: { code: 'APPROVAL_FAILED', message: 'Failed to record the approval decision' } })
+    }
+    await insertActionEvents(client, req.user!.id, [job], 'approve', { approval: record })
+    const dispatchPlan = dispatchPlanFromJob(job, now)
+    if (dispatchPlan) await persistExecutionDispatch(client, req.user!.id, dispatchPlan, [job], 'approve', null, now)
+    const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id)
+    return res.json({ data: { action, jobId: job.id, approval: jobApproval({ ...job, metadata: { ...asRecord(job.metadata), approval: record } }, null), snapshot } })
+  }
+
+  /* Resume and retry put the job back in front of the fleet — same approval the
+     agent poll enforces, refused here so the operator sees why immediately. */
+  if (['resume', 'retry'].includes(action)) {
+    const loaded = await loadPlansForJobs(client, req.user!.id, [job])
+    const blocked = actionApprovalBlock(action, job, loaded)
+    if (blocked) {
+      return res.status(409).json({ error: { code: 'JOB_NOT_APPROVED', message: blocked, details: { jobId: job.id } } })
+    }
   }
 
   const { error: updateError } = await client
@@ -3422,6 +3773,8 @@ router.post('/jobs/actions', requireAuth, async (req: AuthenticatedRequest, res)
     // Cancel withdraws everything not yet executed. Completed jobs are excluded:
     // they record a cryptographic change that actually happened.
     cancel: ['pending', 'queued', 'PLANNED', 'paused', 'running', 'in_progress', 'IN_PROGRESS', 'failed', 'FAILED'],
+    // Approval is only meaningful for work that has not executed yet.
+    approve: ['pending', 'queued', 'PLANNED', 'paused'],
   }
 
   if (!scopes[action]) {
@@ -3449,14 +3802,39 @@ router.post('/jobs/actions', requireAuth, async (req: AuthenticatedRequest, res)
   if (selectedIds && !selectedIds.length) {
     return res.status(400).json({ error: { code: 'NO_SELECTION', message: 'Select at least one migration job.' } })
   }
+  /* Approval is a per-job decision. "Approve everything in scope" would be a
+     rubber stamp on work nobody looked at, so bulk approve needs an explicit
+     selection of the jobs being approved. */
+  if (action === 'approve' && !(selectedIds && selectedIds.length)) {
+    return res.status(400).json({ error: { code: 'SELECTION_REQUIRED', message: 'Approval is recorded per job. Select the jobs you are approving.' } })
+  }
 
-  const scopedJobs = (jobs || []).filter((job: any) => matchesPlanId(job, planId))
+  const inScope = (jobs || []).filter((job: any) => matchesPlanId(job, planId))
+
+  /* Resume, retry and approve each have jobs they must NOT act on. Those are
+     reported back with the reason rather than silently skipped, so "Resume All
+     updated 3 of 10" tells the operator which 7 need approval first. */
+  const loaded = ['resume', 'retry'].includes(action) ? await loadPlansForJobs(client, req.user!.id, inScope) : { plans: new Map(), degraded: false }
+  const blocked: Array<{ jobId: string; name: string; reason: string }> = []
+  const scopedJobs = inScope.filter((job: any) => {
+    const reason = action === 'approve'
+      ? jobApprovalBlock(job) || (jobApproval(job, null).approved ? 'Already approved.' : null)
+      : actionApprovalBlock(action, job, loaded)
+    if (!reason) return true
+    blocked.push({ jobId: String(job.id), name: String(job.name || job.id), reason })
+    return false
+  })
   const ids = scopedJobs.map((job: any) => job.id)
   if (ids.length > 0) {
+    const now = new Date().toISOString()
+    const decidedBy = req.user!.email || req.user!.id
     for (const job of scopedJobs) {
+      const update = action === 'approve'
+        ? approveUpdate(asRecord(job.metadata), approvalRecord(decidedBy, now, 'live-migration-bulk', 'Approved for agent execution from Live Migration Operations (selected jobs).'))
+        : actionUpdate(action, asRecord(job.metadata))
       const { error: updateError } = await client
         .from('migration_jobs')
-        .update(actionUpdate(action, asRecord(job.metadata)))
+        .update(update)
         .eq('id', job.id)
         .eq('user_id', req.user!.id)
 
@@ -3464,9 +3842,14 @@ router.post('/jobs/actions', requireAuth, async (req: AuthenticatedRequest, res)
         return res.status(500).json({ error: { code: 'UPDATE_FAILED', message: 'Failed to update migration jobs' } })
       }
     }
-    await insertActionEvents(client, req.user!.id, scopedJobs, action)
-    if (['resume', 'retry'].includes(action)) {
-      const now = new Date().toISOString()
+    await insertActionEvents(
+      client,
+      req.user!.id,
+      scopedJobs,
+      action,
+      action === 'approve' ? { approval: approvalRecord(decidedBy, now, 'live-migration-bulk') } : {},
+    )
+    if (['resume', 'retry', 'approve'].includes(action)) {
       for (const job of scopedJobs) {
         const dispatchPlan = dispatchPlanFromJob(job, now)
         if (dispatchPlan) await persistExecutionDispatch(client, req.user!.id, dispatchPlan, [job], action, null, now)
@@ -3475,7 +3858,7 @@ router.post('/jobs/actions', requireAuth, async (req: AuthenticatedRequest, res)
   }
 
   const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id)
-  return res.json({ data: { action, affected: ids.length, snapshot } })
+  return res.json({ data: { action, affected: ids.length, blocked, snapshot } })
 })
 
 /* ------------------------------------------------------------------ */
@@ -3577,9 +3960,11 @@ router.post('/jobs/remove', requireAuth, async (req: AuthenticatedRequest, res) 
   }
 
   const scopeStatuses: Record<string, LiveMigrationStatus[]> = {
-    all: ['queued', 'paused', 'failed', 'cancelled', 'completed'],
+    all: ['queued', 'paused', 'failed', 'cancelled', 'completed', 'rolling_back', 'rolled_back'],
     queued: ['queued'],
     paused: ['paused'],
+    rolling_back: ['rolling_back'],
+    rolled_back: ['rolled_back'],
     failed: ['failed'],
     cancelled: ['cancelled'],
     completed: ['completed'],

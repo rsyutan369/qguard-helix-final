@@ -36,7 +36,13 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
 import { mandatoryPqcStackMetadata } from '@/lib/crypto/mandatory-pqc-stack';
-import { AGENT_PLATFORMS, type AgentPlatform } from '@/lib/agent-installer/agent-release';
+import {
+  AGENT_PLATFORMS,
+  AGENT_ROLLBACK_MIN_VERSION,
+  agentRole,
+  agentVersionAtLeast,
+  type AgentPlatform,
+} from '@/lib/agent-installer/agent-release';
 import {
   agentDisplayStatus,
   agentHealthScore,
@@ -112,6 +118,39 @@ function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-bold ${map[status] || 'border-white/10 bg-white/[0.04] text-white/55'}`}>
       {status}
+    </span>
+  );
+}
+
+/**
+ * The agent's server-resolved role and what it is therefore allowed to do.
+ *
+ * The role is the single most consequential property of an agent — it decides
+ * whether the thing running on a customer's host can WRITE to it — and the
+ * fleet table did not show it at all. It is read from `metadata.role`, which is
+ * written by the backend at enrolment (never from caller-supplied JSON), so
+ * what is displayed here is the authority actually in force.
+ */
+function RoleChip({ agent }: { agent: CollectorAgent }) {
+  const resolved = typeof agent.metadata?.role === 'string' ? (agent.metadata.role as string) : '';
+  const role = agentRole(resolved);
+  const unresolved = !resolved;
+  const tone = unresolved
+    ? 'border-white/12 bg-white/[0.04] text-white/45'
+    : role.mutatesTargets
+      ? 'border-amber-400/35 bg-amber-400/10 text-amber-200'
+      : 'border-cyan-400/30 bg-cyan-400/10 text-cyan-200';
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold ${tone}`}
+      title={unresolved
+        ? 'This agent has no server-resolved role, so no host-modifying work is dispatched to it.'
+        : `${role.authority}${role.mutatesTargets ? '' : ' It is never handed remediation or migration work.'}`}
+    >
+      {unresolved ? 'Role unresolved' : role.label}
+      {!unresolved && (
+        <span className="text-[9px] font-black uppercase opacity-70">{role.mutatesTargets ? 'writes' : 'read-only'}</span>
+      )}
     </span>
   );
 }
@@ -769,10 +808,11 @@ function CollectorsSection({ collector, onView }: { collector: CollectorApi; onV
   return (
     <div className={`${PANEL} overflow-hidden`}>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[860px] text-left text-sm">
+        <table className="w-full min-w-[980px] text-left text-sm">
           <thead>
             <tr className="border-b border-white/8 text-[10px] uppercase tracking-[0.12em] text-white/40">
               <th className="px-5 py-3 font-black">Collector</th>
+              <th className="px-4 py-3 font-black">Agent Type</th>
               <th className="px-4 py-3 font-black">Environment</th>
               <th className="px-4 py-3 font-black">Status</th>
               <th className="px-4 py-3 font-black">Version</th>
@@ -794,9 +834,23 @@ function CollectorsSection({ collector, onView }: { collector: CollectorApi; onV
                       {agent.name}
                     </button>
                   </td>
+                  <td className="px-4 py-3"><RoleChip agent={agent} /></td>
                   <td className="px-4 py-3 capitalize text-white/60">{String(agent.metadata?.environment || '—')}</td>
                   <td className="px-4 py-3"><StatusBadge status={agentDisplayStatus(agent)} /></td>
-                  <td className="px-4 py-3 font-mono text-white/55">{agent.version || '—'}</td>
+                  <td className="px-4 py-3 font-mono text-white/55">
+                    <span className="whitespace-nowrap">{agent.version || '—'}</span>
+                    {/* Rollback needs a runtime that understands the command; an
+                        older host is told so here rather than at the moment an
+                        operator needs the rollback to work. */}
+                    {agent.version && !agentVersionAtLeast(agent.version, AGENT_ROLLBACK_MIN_VERSION) && (
+                      <span
+                        className="ml-1.5 inline-block whitespace-nowrap rounded border border-amber-400/30 bg-amber-400/10 px-1 py-0.5 font-sans text-[9px] font-bold text-amber-200"
+                        title={`Rollback execution requires agent ${AGENT_ROLLBACK_MIN_VERSION} or later. Upgrade this host to make snapshot restore available on it.`}
+                      >
+                        no rollback
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-white/55">{relTime(agent.last_seen_at)}</td>
                   <td className="px-4 py-3 tabular-nums text-white/70">{assetsForAgent}</td>
                   <td className={`px-4 py-3 font-bold tabular-nums ${healthColor}`}>{health}/100</td>

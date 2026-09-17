@@ -76,6 +76,12 @@ export type ScannerEvidenceType =
   | 'config-reference'
   | 'jwt-algorithm'
   | 'crypto-library'
+  /** The negotiated / supported TLS key-exchange group — the HNDL-deciding fact. */
+  | 'tls-key-exchange'
+  /** An X.509 certificate read from disk (PEM/DER, bundles, SAML metadata). */
+  | 'certificate-file'
+  /** Key-file METADATA only: algorithm, size, public-key fingerprint. Never key material. */
+  | 'key-file'
 
 export interface ScannerEvidenceRecord {
   id?: string

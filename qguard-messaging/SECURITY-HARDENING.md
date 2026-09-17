@@ -66,3 +66,62 @@ set the env var without performing the transform.
   originals, so cryptographic domain separation is unchanged.
 * `src-tauri/examples/release_integrity.rs` - keygen / pubkey / sign tool used by
   the release script to produce the signed integrity manifest.
+## Transport policy (TLS)
+
+Every server-bound byte this app sends — auth, relay rows, storage, realtime —
+travels over the embedded WebView's own TLS stack. This process opens no sockets
+of its own, so the TLS posture is something the backend **configures** at the one
+moment it can (before the WebView environment is created), not something it
+negotiates.
+
+`security::tls_policy()` / `security::tls_browser_arguments()`:
+
+| `QGUARD_TLS_POLICY` | Minimum version | PQ key agreement |
+|---|---|---|
+| unset / `strict` (default) | TLS 1.3 (`--ssl-version-min=tls1.3`) | requested |
+| `compat` | TLS 1.2 | requested |
+
+`compat` exists so a TLS-1.2-only inspection proxy is a **named, visible**
+downgrade rather than an undiagnosable connection failure. The live value is
+published on `SecurityHardeningStatus.tls_policy` and rendered as the
+**Transport Policy (TLS 1.3 + hybrid PQ)** gate.
+
+**Platform scope, stated honestly:**
+
+* **Windows (WebView2)** — enforced by the app through the browser arguments.
+* **Android (system WebView)** — the OS owns the TLS stack and accepts no such
+  switches. Android 10+ negotiates TLS 1.3 by default and recent Chromium
+  WebViews offer X25519MLKEM768, but the app cannot pin either, so
+  `enforced_by_app` reports **false** rather than claiming a control it does not
+  have.
+
+The transport is defence in depth in both cases: message, call and vault
+payloads are end-to-end encrypted *before* they reach it.
+
+## Sender authentication (messages)
+
+`messaging_receive_encrypted_message` verifies an envelope's dual signature and
+then requires the signing keys to be the ones the named device published to
+`messaging_devices` (`verify_sender_identity`). A signature checked only against
+the keys carried inside the same envelope proves self-consistency, not identity.
+
+* keys match the registered device → `sender_verification: "registered_device"`,
+  `authenticated: true`, UI shows **Verified**;
+* no registry row available → `"unverified_device"`, `authenticated: false`, UI
+  shows **Sender unverified**;
+* registry row present but keys differ → **hard error**, the message is refused.
+
+Requires migration `034_sender_identity_remains_verifiable.sql` so a peer's
+*retired* device row stays readable — a retired key does not retroactively unsign
+what it signed while it was live.
+
+## Session-token claim gate
+
+`commands::auth::validate_token_claims` cannot verify a GoTrue HS256 signature
+(that key is server-side only), so it refuses the shapes that advertise no
+signature at all (`alg: none`, empty signature segment) and pins every remaining
+claim: `sub` matches the session user, `aud`/`role` are `authenticated`, `iss` is
+an https (or localhost) auth endpoint, `exp` is in the future.
+
+This is a **local integrity control, not the authorization boundary**. The
+boundary is Postgres RLS, which verifies the signature on every request.

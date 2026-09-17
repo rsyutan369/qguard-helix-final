@@ -8,6 +8,18 @@ use crate::error::{QGuardError, Result};
 
 const MAX_SKIPPED_KEYS: usize = 128;
 
+fn sending_chain_info() -> Vec<u8> {
+    let mut info = crate::security::obf::ratchet_chain();
+    info.extend_from_slice(b":send");
+    info
+}
+
+fn receiving_chain_info() -> Vec<u8> {
+    let mut info = crate::security::obf::ratchet_chain();
+    info.extend_from_slice(b":recv");
+    info
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MessageKey {
     pub counter: u64,
@@ -49,8 +61,22 @@ impl RatchetSession {
         Ok(Self {
             session_id: session_id.into(),
             root_key: derive_32(&shared_secret, &crate::security::obf::ratchet_root_key())?,
-            sending_chain_key: derive_32(&shared_secret, &crate::security::obf::ratchet_chain())?,
-            receiving_chain_key: derive_32(&shared_secret, &crate::security::obf::ratchet_chain())?,
+            // The two chains MUST derive from different info strings. They used
+            // to share one, which made them byte-identical: the key protecting
+            // counter N outbound was the same key that would open counter N
+            // inbound. Nothing exploited it -- every session here is seeded from
+            // a fresh per-message encapsulation and the AAD binds sender and
+            // recipient device ids, so a reflected message fails anyway -- but a
+            // primitive that hands out the same key in both directions is one
+            // stateful-session refactor away from being a real reflection bug.
+            //
+            // Not a wire change: the live protocol re-derives both chains in
+            // `rotate_root` (which already separated them) and the receive path
+            // explicitly re-points `receiving_chain_key` at the sending chain
+            // for its single-message sessions. Nothing on the wire reads these
+            // initial values.
+            sending_chain_key: derive_32(&shared_secret, &sending_chain_info())?,
+            receiving_chain_key: derive_32(&shared_secret, &receiving_chain_info())?,
             send_counter: 0,
             receive_counter: 0,
             skipped_message_keys: HashMap::new(),
@@ -117,6 +143,19 @@ impl RatchetSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_two_chains_never_start_from_the_same_key() {
+        let s = RatchetSession::new("a", [3u8; 32]).unwrap();
+        assert_ne!(
+            s.sending_chain_key, s.receiving_chain_key,
+            "a chain shared between directions hands out the same key twice"
+        );
+        // rotate_root, which the live protocol always applies, must keep them apart.
+        let mut rotated = RatchetSession::new("a", [3u8; 32]).unwrap();
+        rotated.rotate_root(b"dh output").unwrap();
+        assert_ne!(rotated.sending_chain_key, rotated.receiving_chain_key);
+    }
 
     #[test]
     fn rotates_keys_and_rejects_replay() {

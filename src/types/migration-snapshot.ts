@@ -7,8 +7,74 @@
  * payload; only metadata is stored (never plaintext secrets/keys).
  */
 
-export type SnapshotStatus = 'restorable' | 'restored' | 'expired' | 'deleted';
+/**
+ * Snapshot lifecycle.
+ *
+ * `restored` asserts the ASSET now matches this snapshot, so it is only ever
+ * written after an executor confirmed the restore. A rollback that has been
+ * dispatched but not confirmed is `restoring`; one that came back failed is
+ * `restore_failed` and — importantly — remains restorable, because the recorded
+ * state is still valid, only the attempt failed.
+ */
+export type SnapshotStatus =
+  | 'restorable'
+  | 'restoring'
+  | 'restored'
+  | 'restore_failed'
+  | 'expired'
+  | 'deleted';
 export type SnapshotTrigger = 'pre_migration' | 'manual' | 'scheduled';
+
+/** What a rollback request resolved to. Never inferred — always reported. */
+export type RollbackDisposition =
+  | 'dispatched'        // handed to a live executor, awaiting confirmation
+  | 'restored'          // executor confirmed the asset was restored
+  | 'failed'            // executor tried and could not restore
+  | 'awaiting-executor' // recorded, nothing changed on the asset
+  | 'not-applicable';   // nothing was ever changed, so nothing to roll back
+
+/**
+ * The executor-side record of a change that can actually be undone.
+ *
+ * Written by the agent when it patches a file (target/backup/digests) or by a
+ * cloud connector when it changes a managed resource (the provider rollback
+ * plan). Without one of these a snapshot documents state but cannot restore it,
+ * and the UI must say so rather than offering a Restore button that does
+ * nothing.
+ */
+export interface SnapshotExecutionRecord {
+  kind: 'agent-config' | 'cloud-connector';
+  /** Agent that applied the change — the ONLY agent able to undo it. */
+  agentId?: string | null;
+  agentName?: string | null;
+  targetPath?: string | null;
+  backupPath?: string | null;
+  /** SHA-256 of the file as it was BEFORE the patch (what rollback restores to). */
+  beforeHash?: string | null;
+  afterHash?: string | null;
+  connectorId?: string | null;
+  provider?: string | null;
+  adapter?: string | null;
+  /** Provider-specific restore payload recorded by the cloud adapter. */
+  rollbackPlan?: Record<string, unknown> | null;
+  recordedAt: string;
+}
+
+/** Outcome of the last rollback attempt against a snapshot. */
+export interface SnapshotRollbackState {
+  disposition: RollbackDisposition;
+  requestedAt: string;
+  requestedBy: string;
+  reason: string;
+  executorKind: 'agent' | 'connector' | null;
+  executorId: string | null;
+  executorLabel: string | null;
+  commandId: string | null;
+  settledAt: string | null;
+  /** Verified post-restore digest, when the executor could measure one. */
+  verifiedHash?: string | null;
+  message: string;
+}
 
 /** Captured cryptographic + configuration state (metadata only). */
 export interface SnapshotCryptoState {
@@ -32,6 +98,19 @@ export interface SnapshotCryptoState {
   componentCount: number;
 }
 
+/** Result of a restore request, as returned by POST /:snapshotId/restore. */
+export interface SnapshotRestoreResult {
+  snapshotId: string;
+  disposition: RollbackDisposition;
+  jobId: string | null;
+  assetId: string | null;
+  executor: { kind: 'agent' | 'connector'; id: string; label: string } | null;
+  commandId: string | null;
+  /** True ONLY when the asset was actually changed back. */
+  applied: boolean;
+  message: string;
+}
+
 export interface MigrationSnapshot {
   id: string;
   snapshotId: string;
@@ -51,8 +130,21 @@ export interface MigrationSnapshot {
   expiresAt: string | null;
   integrityHash: string;
   integrityAlgorithm: string;
+  /**
+   * Result of RE-COMPUTING the SHA3-256 over the stored crypto state, not the
+   * boolean written at creation time. An unverifiable snapshot must never read
+   * as verified.
+   */
   integrityVerified: boolean;
   restoredAt: string | null;
+  /** Present only when an executor recorded an undoable change. */
+  execution: SnapshotExecutionRecord | null;
+  /** Last rollback attempt, when there has been one. */
+  rollback: SnapshotRollbackState | null;
+  /** True when this snapshot has an executor able to restore it right now. */
+  restoreExecutable: boolean;
+  /** Why it is not executable, when it is not. Shown instead of a dead button. */
+  restoreBlockedReason: string | null;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -88,6 +180,12 @@ export interface SnapshotDashboard {
     latestSnapshotAt: string | null;
     integrityVerified: number;
     integrityFailed: number;
+    /** Snapshots with a live executor able to restore them right now. */
+    restoreExecutable: number;
+    /** Rollbacks dispatched and not yet confirmed. */
+    rollbacksInFlight: number;
+    /** Rollbacks the executor reported as failed. */
+    rollbacksFailed: number;
     autoRollbackEnabled: boolean;
   };
   snapshots: MigrationSnapshot[];

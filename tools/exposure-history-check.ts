@@ -198,6 +198,7 @@ function sampleAssessment(): ExposureAssessment {
     byLayer: [],
     byEngine: [],
     topAlgorithms: [],
+    algorithmGroups: 0,
     languages: [{ language: 'TypeScript', files: 1_204 }, { language: 'Python', files: 302 }],
     frameworks: ['Express', 'React'],
     dependencies: [
@@ -210,6 +211,7 @@ function sampleAssessment(): ExposureAssessment {
       { label: 'Files analysed', value: '1610 of 1842' },
     ],
     recommendations: [],
+    recommendationCandidates: 0,
   };
 
   return {

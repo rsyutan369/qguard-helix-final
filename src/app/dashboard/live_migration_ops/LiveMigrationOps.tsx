@@ -42,8 +42,19 @@ import { ReportExportMenu } from '../_components/InventoryExportMenu'
 import { buildMigrationReport } from '@/services/reporting/MigrationReport'
 import OrchestrationPanel from './_orchestration'
 import { Archive } from 'lucide-react'
+import type { ApprovalVerdict } from '@/lib/migration/job-safety'
 
-type LiveMigrationStatus = 'running' | 'completed' | 'failed' | 'queued' | 'paused' | 'cancelled'
+type LiveMigrationStatus =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'queued'
+  | 'paused'
+  | 'cancelled'
+  /** Rollback dispatched to an executor; the asset has NOT changed back yet. */
+  | 'rolling_back'
+  /** An executor confirmed the previous configuration is back on the asset. */
+  | 'rolled_back'
 
 type LiveMigrationEvent = {
   id: string
@@ -66,6 +77,8 @@ type LiveMigrationJob = {
   fromAlgo: string
   toAlgo: string
   migrationType: string
+  /** Raw job_type; the operation class is decided from this server-side. */
+  jobType: string
   status: LiveMigrationStatus
   rawStatus: string
   progress: number
@@ -76,6 +89,10 @@ type LiveMigrationJob = {
   updatedAt: string
   executionStatus: string
   executionBacked: boolean
+  /** Why nothing is executing this job, when something is blocking it. */
+  dispatchBlock: { kind: string; requires: string; reason: string; at: string } | null
+  /** Same verdict the agent poll enforces — who approved this, or why nobody has. */
+  approval: ApprovalVerdict
   isSandbox?: boolean
   runMode?: string
   agentId: string | null
@@ -137,11 +154,16 @@ type LiveMigrationSnapshot = {
     queued: number
     paused: number
     cancelled: number
+    rollingBack: number
+    rolledBack: number
+    awaitingApproval: number
     completionRate: number
     waitingForAgent: number
     agentBacked: number
     verified: number
     agentsOnline: number
+    agentsEnrolled: number
+    agentsStale: number
     totalAssets: number
     findings: number
     criticalExposures: number
@@ -180,11 +202,16 @@ const EMPTY_SNAPSHOT: LiveMigrationSnapshot = {
     queued: 0,
     paused: 0,
     cancelled: 0,
+    rollingBack: 0,
+    rolledBack: 0,
+    awaitingApproval: 0,
     completionRate: 0,
     waitingForAgent: 0,
     agentBacked: 0,
     verified: 0,
     agentsOnline: 0,
+    agentsEnrolled: 0,
+    agentsStale: 0,
     totalAssets: 0,
     findings: 0,
     criticalExposures: 0,
@@ -332,6 +359,10 @@ function statusConfig(status: LiveMigrationStatus) {
       return { icon: Pause, color: 'text-[#22d3ee]', ring: 'border-[#22d3ee]', bar: 'from-[#22d3ee] to-[#ffb84d]', label: 'PAUSED' }
     case 'cancelled':
       return { icon: Ban, color: 'text-white/45', ring: 'border-white/30', bar: 'from-white/35 to-white/15', label: 'CANCELLED' }
+    case 'rolling_back':
+      return { icon: RotateCcw, color: 'text-[#fbbf24]', ring: 'border-[#fbbf24]', bar: 'from-[#fbbf24] to-[#ffd98a]', label: 'ROLLING BACK' }
+    case 'rolled_back':
+      return { icon: RotateCcw, color: 'text-[#a78bfa]', ring: 'border-[#a78bfa]', bar: 'from-[#a78bfa] to-[#d3c4ff]', label: 'ROLLED BACK' }
     case 'queued':
     default:
       return { icon: Clock3, color: 'text-white/45', ring: 'border-white/35', bar: 'from-white/50 to-white/25', label: 'QUEUED' }
@@ -449,7 +480,7 @@ export default function LiveMigrationOperations() {
   // queued by mistake. Removal is destructive, so it always goes through an
   // explicit confirmation that names exactly what will be deleted.
   const [selectedIds, setSelectedIds] = useState<string[]>([])
-  const [confirm, setConfirm] = useState<null | { mode: 'cancel' | 'remove'; ids: string[]; includeCompleted: boolean }>(null)
+  const [confirm, setConfirm] = useState<null | { mode: 'cancel' | 'remove' | 'rollback' | 'approve'; ids: string[]; includeCompleted: boolean }>(null)
   const [now, setNow] = useState(new Date())
   const [snapshotsOpen, setSnapshotsOpen] = useState(false)
   const [snapshotFocusAsset, setSnapshotFocusAsset] = useState<string | null>(null)
@@ -604,6 +635,27 @@ export default function LiveMigrationOperations() {
     })
   }, [filteredJobs])
 
+  /**
+   * How old the data on screen is.
+   *
+   * Recomputed from `now` (which ticks every second) rather than from a render,
+   * so a page left open with a dead stream visibly ages instead of freezing at
+   * whatever it last said.
+   */
+  const snapshotAgeSeconds = useMemo(() => {
+    const generated = Date.parse(String(snapshot.generatedAt || ''))
+    if (!Number.isFinite(generated) || generated <= 0) return Number.POSITIVE_INFINITY
+    return Math.max(0, Math.round((now.getTime() - generated) / 1000))
+  }, [snapshot.generatedAt, now])
+
+  const snapshotAgeLabel = useMemo(() => {
+    if (!Number.isFinite(snapshotAgeSeconds)) return 'never'
+    if (snapshotAgeSeconds < 5) return 'just now'
+    if (snapshotAgeSeconds < 90) return `${snapshotAgeSeconds}s ago`
+    const minutes = Math.round(snapshotAgeSeconds / 60)
+    return minutes < 90 ? `${minutes}m ago` : `${Math.round(minutes / 60)}h ago`
+  }, [snapshotAgeSeconds])
+
   const statSparklines = useMemo(() => ({
     running: snapshot.timeline.map((point) => point.running),
     completed: snapshot.timeline.map((point) => point.completed),
@@ -611,7 +663,7 @@ export default function LiveMigrationOperations() {
     total: snapshot.timeline.map((point) => point.running + point.completed + point.failed),
   }), [snapshot.timeline])
 
-  const runJobAction = useCallback(async (jobId: string, action: 'pause' | 'resume' | 'retry' | 'rollback' | 'cancel') => {
+  const runJobAction = useCallback(async (jobId: string, action: 'pause' | 'resume' | 'retry' | 'rollback' | 'cancel' | 'approve') => {
     if (!token) return
     setActionPending(`${jobId}:${action}`)
     setNotice('')
@@ -624,7 +676,11 @@ export default function LiveMigrationOperations() {
       const json = await res.json()
       if (!res.ok) throw new Error(json?.error?.message || `HTTP ${res.status}`)
       applySnapshot(json.data?.snapshot)
-      setNotice(`Migration action recorded: ${action}.`)
+      /* A rollback resolves to one of four dispositions and the server states
+         which. Echoing "action recorded" would hide the difference between a
+         rollback that was executed and one that nothing could act on. */
+      const rollback = json.data?.rollback as { disposition?: string; message?: string } | undefined
+      setNotice(rollback?.message || `Migration action recorded: ${action}.`)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Migration action failed.')
     } finally {
@@ -645,7 +701,14 @@ export default function LiveMigrationOperations() {
       const json = await res.json()
       if (!res.ok) throw new Error(json?.error?.message || `HTTP ${res.status}`)
       applySnapshot(json.data?.snapshot)
-      setNotice(`${numberFmt(json.data?.affected || 0)} migration job(s) updated.`)
+      /* Say what did NOT happen as well as what did: "Resume All" that moved 3
+         of 10 jobs must name why the other 7 stayed put. */
+      const blocked = (json.data?.blocked || []) as Array<{ name: string; reason: string }>
+      setNotice(
+        blocked.length
+          ? `${numberFmt(json.data?.affected || 0)} migration job(s) updated. ${numberFmt(blocked.length)} not updated — ${blocked[0].reason}`
+          : `${numberFmt(json.data?.affected || 0)} migration job(s) updated.`,
+      )
       if (jobIds?.length) setSelectedIds([])
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Bulk migration action failed.')
@@ -842,22 +905,54 @@ export default function LiveMigrationOperations() {
       ],
     }
 
+    /*
+     * Every tile counts one measured thing, and says which.
+     *
+     * Corrected here:
+     *  • Success rate read 100% with nothing completed or failed — a success
+     *    claim made from no data at all. It is now "—" until an outcome exists.
+     *  • "Assets Protected — Validated" fell back to `completed`, so unvalidated
+     *    completions were reported as validated.
+     *  • "Critical Systems Protected" was `completed − failed`, which has nothing
+     *    to do with criticality. It now counts validated completions on assets
+     *    whose recorded criticality is critical or high.
+     *  • Quantum Readiness, Audit Readiness and Compliance were the SAME number
+     *    presented as three independent measurements. The duplicates are replaced
+     *    by two counters this page genuinely owns.
+     */
+    const validatedCompleted = snapshot.jobs.filter((job) => !job.isSandbox && job.status === 'completed' && /^(passed|pass|success|successful|validated|valid|verified)$/.test(String(job.validationStatus || '').toLowerCase()))
+    const outcomes = s.completed + s.failed
     const kpis: LiveMigrationEnhancementsProps['kpis'] = [
-      { label: 'Assets Protected', value: numberFmt(s.verified || s.completed), hint: 'Validated quantum-safe', tone: GREEN },
-      { label: 'Vulnerabilities Eliminated', value: numberFmt(s.completed), hint: 'Upgraded to PQC', tone: CYAN },
-      { label: 'Migration Success Rate', value: `${s.completed + s.failed > 0 ? Math.round((s.completed / (s.completed + s.failed)) * 100) : 100}%`, hint: 'Completed vs failed', tone: GREEN },
+      { label: 'Assets Protected', value: numberFmt(s.verified), hint: 'Migrations with a passing validation', tone: GREEN },
+      { label: 'Validated Migrations', value: numberFmt(validatedCompleted.length), hint: 'Completed and re-scan validated', tone: CYAN },
+      {
+        label: 'Migration Success Rate',
+        value: outcomes > 0 ? `${Math.round((s.completed / outcomes) * 100)}%` : '—',
+        hint: outcomes > 0 ? `${numberFmt(s.completed)} completed · ${numberFmt(s.failed)} failed` : 'No completed or failed migrations yet',
+        tone: outcomes > 0 ? GREEN : '#94a3b8',
+      },
       { label: 'Quantum Readiness', value: `${certReadiness}%`, hint: 'Toward certification', tone: certColor },
-      { label: 'Critical Systems Protected', value: numberFmt(Math.max(0, s.completed - s.failed)), hint: 'High-priority done', tone: '#a78bfa' },
-      { label: 'Certificates Upgraded', value: numberFmt(t.certificateReplacements), hint: 'Replaced with PQC', tone: '#38bdf8' },
-      { label: 'Key Rotations', value: numberFmt(t.keyRotations), hint: 'Re-keyed under PQC', tone: '#f59e0b' },
-      { label: 'Audit Readiness', value: certEligible ? 'Ready' : `${certReadiness}%`, hint: 'Evidence & compliance', tone: certEligible ? GREEN : '#f59e0b' },
-      { label: 'Compliance', value: `${Math.round(certReadiness)}%`, hint: 'NIST PQC alignment', tone: GREEN },
+      {
+        label: 'Critical Systems Protected',
+        value: numberFmt(validatedCompleted.filter((job) => ['critical', 'high'].includes(String(job.criticality || '').toLowerCase())).length),
+        hint: 'Validated on critical / high assets',
+        tone: '#a78bfa',
+      },
+      { label: 'Certificates Upgraded', value: numberFmt(t.certificateReplacements), hint: 'Validated certificate migrations', tone: '#38bdf8' },
+      { label: 'Key Rotations', value: numberFmt(t.keyRotations), hint: 'Validated key rotations', tone: '#f59e0b' },
+      {
+        label: 'Awaiting Approval',
+        value: numberFmt(s.awaitingApproval),
+        hint: 'No agent takes these until approved',
+        tone: s.awaitingApproval > 0 ? '#fbbf24' : '#94a3b8',
+      },
+      { label: 'Rolled Back', value: numberFmt(s.rolledBack), hint: 'Executor-confirmed restores', tone: '#a78bfa' },
       { label: 'Active Migrations', value: numberFmt(s.running), hint: 'In progress now', tone: CYAN },
     ]
 
     const success: LiveMigrationEnhancementsProps['success'] = {
       show: pct >= 100 && s.total > 0 && certEligible,
-      assetsProtected: s.verified || s.completed,
+      assetsProtected: s.verified,
       highlights: ['TLS Updated', 'Certificates Migrated', 'Keys Rotated', 'PKI Modernized', 'Validation Passed'],
     }
 
@@ -915,9 +1010,35 @@ export default function LiveMigrationOperations() {
         </div>
 
         <div className="flex items-center justify-end gap-3">
-          <div className={cn(INNER, 'flex items-center gap-2 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-[#34d399]')}>
-            <span className={cn('h-2 w-2 rounded-full bg-[#34d399]', streamConnected && 'animate-pulse shadow-[0_0_10px_rgba(48,209,88,0.85)]')} />
-            {streamConnected ? 'Live' : 'Syncing'}
+          {/*
+            The dot used to be hard-coded green, so a dropped stream rendered a
+            healthy green light beside the word "Syncing". A disconnected feed
+            reads amber, and the age of the data on screen is stated rather than
+            implied — a page that stopped updating at 09:14 must not look live at
+            11:00.
+          */}
+          <div
+            className={cn(
+              INNER,
+              'flex items-center gap-2 px-4 py-2 text-[10px] font-black uppercase tracking-wider',
+              streamConnected ? 'text-[#34d399]' : snapshotAgeSeconds > 120 ? 'text-[#f87171]' : 'text-[#fbbf24]',
+            )}
+            title={
+              streamConnected
+                ? `Live stream connected. Data generated ${snapshotAgeLabel}.`
+                : `The live stream is not connected, so this view is not updating on its own. Data on screen was generated ${snapshotAgeLabel}.`
+            }
+          >
+            <span
+              className={cn(
+                'h-2 w-2 rounded-full',
+                streamConnected
+                  ? 'animate-pulse bg-[#34d399] shadow-[0_0_10px_rgba(48,209,88,0.85)]'
+                  : snapshotAgeSeconds > 120 ? 'bg-[#f87171]' : 'bg-[#fbbf24]',
+              )}
+            />
+            {streamConnected ? 'Live' : snapshotAgeSeconds > 120 ? 'Stale' : 'Reconnecting'}
+            <span className="font-mono normal-case tracking-normal opacity-70">{snapshotAgeLabel}</span>
           </div>
           <div className="text-right font-mono">
             <div className="flex items-center justify-end gap-2 text-xs font-black text-white">
@@ -1020,10 +1141,12 @@ export default function LiveMigrationOperations() {
           </div>
           <div className="relative z-10 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
             {[
-              ['TLS Handshakes', snapshot.telemetry.tlsHandshakeEvents],
-              ['Certificate Replacements', snapshot.telemetry.certificateReplacements],
-              ['Key Rotations', snapshot.telemetry.keyRotations],
-              ['PQC Validations', snapshot.telemetry.pqcValidationEvents],
+              /* Operations that happened: completed with a passing validation,
+                 one per job, classified by recorded job type. */
+              ['TLS Upgrades Validated', snapshot.telemetry.tlsHandshakeEvents],
+              ['Certificates Replaced', snapshot.telemetry.certificateReplacements],
+              ['Keys Rotated', snapshot.telemetry.keyRotations],
+              ['Validations Recorded', snapshot.telemetry.pqcValidationEvents],
               ['Compatibility Checks', snapshot.telemetry.compatibilityChecks],
             ].map(([label, value]) => (
               <div key={String(label)} className={cn(INNER, 'min-h-[76px] px-3 py-2.5')}>
@@ -1077,6 +1200,8 @@ export default function LiveMigrationOperations() {
                 ['failed', 'Failed', snapshot.summary.failed],
                 ['queued', 'Queued', snapshot.summary.queued],
                 ['paused', 'Paused', snapshot.summary.paused],
+                ['rolling_back', 'Rolling Back', snapshot.summary.rollingBack],
+                ['rolled_back', 'Rolled Back', snapshot.summary.rolledBack],
                 ['cancelled', 'Cancelled', snapshot.summary.cancelled],
               ].map(([key, label, count]) => (
                 <button
@@ -1258,6 +1383,82 @@ export default function LiveMigrationOperations() {
                       <span className="truncate">{selectedJob.toAlgo}</span>
                     </div>
                   </div>
+                  {/*
+                    A queued job that no agent may claim is not a slow queue —
+                    it is a role boundary or a missing snapshot, and the operator
+                    can only act on it if they are told which.
+                  */}
+                  {/*
+                    Approval, stated from the same verdict the agent poll
+                    enforces. An unapproved job is not "queued and slow" — no
+                    agent will take it until a named person approves it.
+                  */}
+                  {selectedJob.approval.required && !selectedJob.approval.approved && ['queued', 'paused', 'failed'].includes(selectedJob.status) && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#fbbf24]/35 bg-[#fbbf24]/[0.08] px-3 py-2 text-[11px] leading-relaxed text-white/80">
+                      <div className="min-w-0 flex-1">
+                        <span className="font-black uppercase tracking-wider text-[#fbbf24]">
+                          {selectedJob.approval.state === 'rejected' ? 'Rejected' : 'Awaiting approval'}
+                        </span>
+                        <span className="ml-2">
+                          {selectedJob.approval.source === 'plan'
+                            ? 'Approval for this job is recorded on its migration plan. No agent will change this asset until the plan is approved.'
+                            : 'No agent will change this asset until this remediation job is approved.'}
+                        </span>
+                      </div>
+                      {selectedJob.approval.source === 'job' && selectedJob.approval.state !== 'rejected' ? (
+                        <button
+                          type="button"
+                          disabled={actionPending === `${selectedJob.id}:approve`}
+                          onClick={() => setConfirm({ mode: 'approve', ids: [selectedJob.id], includeCompleted: false })}
+                          className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-[#34d399]/45 bg-[#34d399]/12 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-[#34d399] transition hover:bg-[#34d399]/20 disabled:opacity-50"
+                        >
+                          <BadgeCheck className="h-3.5 w-3.5" />
+                          Approve &amp; queue
+                        </button>
+                      ) : selectedJob.approval.source === 'plan' ? (
+                        <a
+                          href="/dashboard/migration-planner"
+                          className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-[#22d3ee]/35 bg-[#22d3ee]/10 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-[#22d3ee] transition hover:bg-[#22d3ee]/18"
+                        >
+                          Review plan approval
+                        </a>
+                      ) : null}
+                    </div>
+                  )}
+                  {selectedJob.approval.required && selectedJob.approval.approved && (
+                    <div className="flex items-center gap-1.5 text-[10px] text-white/50">
+                      <BadgeCheck className="h-3.5 w-3.5 text-[#34d399]" />
+                      Approved by <span className="font-bold text-white/75">{selectedJob.approval.approvedBy || 'unknown'}</span>
+                      {selectedJob.approval.approvedAt ? <span>· {formatShortDate(selectedJob.approval.approvedAt)}</span> : null}
+                      <span className="text-white/35">· {selectedJob.approval.source === 'plan' ? 'via migration plan' : 'job-level approval'}</span>
+                    </div>
+                  )}
+                  {!selectedJob.approval.required && (
+                    <div className="text-[10px] text-white/45">
+                      Sandbox simulation — executed by the sandbox engine against a digital twin. Never dispatched to an agent.
+                    </div>
+                  )}
+                  {/*
+                    A queued job that no agent may claim is not a slow queue — it
+                    is a role boundary, a missing approval or a missing snapshot,
+                    and the operator can only act on it if told which.
+                  */}
+                  {selectedJob.dispatchBlock && (
+                    <div className="rounded-lg border border-[#fbbf24]/30 bg-[#fbbf24]/[0.07] px-3 py-2 text-[11px] leading-relaxed text-white/75">
+                      <span className="font-black uppercase tracking-wider text-[#fbbf24]">
+                        {selectedJob.dispatchBlock.kind === 'agent-role'
+                          ? 'Not dispatched — agent type'
+                          : selectedJob.dispatchBlock.kind === 'not-approved'
+                            ? 'Not dispatched — approval'
+                            : selectedJob.dispatchBlock.kind === 'out-of-scope'
+                              ? 'Not dispatched — outside agent scope'
+                            : selectedJob.dispatchBlock.kind === 'no-snapshot'
+                              ? 'Not dispatched — no snapshot'
+                              : 'Not dispatched'}
+                      </span>
+                      <span className="ml-2">{selectedJob.dispatchBlock.reason}</span>
+                    </div>
+                  )}
                   <div className="flex flex-wrap gap-2">
                     {selectedJob.status === 'running' && (
                       <button
@@ -1270,7 +1471,7 @@ export default function LiveMigrationOperations() {
                         Pause
                       </button>
                     )}
-                    {(selectedJob.status === 'paused' || selectedJob.status === 'queued') && (
+                    {(selectedJob.status === 'paused' || selectedJob.status === 'queued') && (!selectedJob.approval.required || selectedJob.approval.approved) && (
                       <button
                         type="button"
                         disabled={actionPending === `${selectedJob.id}:resume`}
@@ -1281,7 +1482,7 @@ export default function LiveMigrationOperations() {
                         Resume
                       </button>
                     )}
-                    {selectedJob.status === 'failed' && (
+                    {selectedJob.status === 'failed' && (!selectedJob.approval.required || selectedJob.approval.approved) && (
                       <button
                         type="button"
                         disabled={actionPending === `${selectedJob.id}:retry`}
@@ -1290,6 +1491,25 @@ export default function LiveMigrationOperations() {
                       >
                         <RefreshCcw className="h-3.5 w-3.5" />
                         Retry
+                      </button>
+                    )}
+                    {/*
+                       Rollback goes through Migration Snapshot Management: it
+                       resolves the executor that holds the recorded undo
+                       information and reports what actually happened. Offered on
+                       jobs that have executed something — a queued job has
+                       nothing to undo.
+                    */}
+                    {(selectedJob.status === 'completed' || selectedJob.status === 'failed' || selectedJob.status === 'paused') && (
+                      <button
+                        type="button"
+                        disabled={actionPending === `${selectedJob.id}:rollback`}
+                        title="Restore this asset from its pre-change snapshot"
+                        onClick={() => setConfirm({ mode: 'rollback', ids: [selectedJob.id], includeCompleted: false })}
+                        className="inline-flex items-center gap-2 rounded-lg border border-[#fbbf24]/45 bg-[#fbbf24]/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#fbbf24] transition hover:bg-[#fbbf24]/18 disabled:opacity-50"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                        Rollback
                       </button>
                     )}
                     {/* Cancel withdraws this job from execution but keeps it on
@@ -1570,7 +1790,27 @@ export default function LiveMigrationOperations() {
           <div className="ml-auto flex min-w-[220px] flex-wrap justify-end gap-3 text-[10px] text-white/38">
             <span className="flex items-center gap-1.5"><Activity className="h-3.5 w-3.5 text-[#22d3ee]" />SSE {streamConnected ? 'connected' : 'reconnecting'}</span>
             <span className="flex items-center gap-1.5"><Radio className="h-3.5 w-3.5 text-[#22d3ee]" />Realtime {realtimeStatus}</span>
-            <span className="flex items-center gap-1.5"><Server className="h-3.5 w-3.5 text-[#22d3ee]" />Agents {numberFmt(snapshot.summary.agentsOnline)}</span>
+            {/* Online is heartbeat-measured; an enrolled agent that stopped
+                checking in is shown as stale rather than counted as online. */}
+            <span
+              className="flex items-center gap-1.5"
+              title={`${snapshot.summary.agentsOnline} of ${snapshot.summary.agentsEnrolled} enrolled agent(s) sent a heartbeat in the last 10 minutes.`}
+            >
+              <Server className="h-3.5 w-3.5 text-[#22d3ee]" />
+              Agents {numberFmt(snapshot.summary.agentsOnline)}/{numberFmt(snapshot.summary.agentsEnrolled)} online
+              {snapshot.summary.agentsStale > 0 && (
+                <span className="text-[#fbbf24]"> · {numberFmt(snapshot.summary.agentsStale)} stale</span>
+              )}
+            </span>
+            {snapshot.summary.awaitingApproval > 0 && (
+              <span
+                className="flex items-center gap-1.5 text-[#fbbf24]"
+                title="Jobs that exist and have not run, which no agent will take until a named person approves them."
+              >
+                <BadgeCheck className="h-3.5 w-3.5" />
+                Awaiting approval {numberFmt(snapshot.summary.awaitingApproval)}
+              </span>
+            )}
             <span className="flex items-center gap-1.5"><ShieldCheck className="h-3.5 w-3.5 text-[#22d3ee]" />Verified {numberFmt(snapshot.summary.verified)}</span>
             <span className="flex items-center gap-1.5"><AlertTriangle className="h-3.5 w-3.5 text-[#22d3ee]" />Findings {numberFmt(snapshot.summary.findings)}</span>
           </div>
@@ -1588,26 +1828,40 @@ export default function LiveMigrationOperations() {
           className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
-          aria-label={confirm.mode === 'remove' ? 'Confirm job removal' : 'Confirm job cancellation'}
+          aria-label={confirm.mode === 'remove' ? 'Confirm job removal' : confirm.mode === 'rollback' ? 'Confirm rollback' : confirm.mode === 'approve' ? 'Confirm approval' : 'Confirm job cancellation'}
           onClick={() => setConfirm(null)}
         >
           <div className={cn(GLASS, 'w-full max-w-lg p-5')} onClick={(event) => event.stopPropagation()}>
             <div className="relative z-10">
               <div className="flex items-center gap-3">
                 <div className={cn('grid h-10 w-10 shrink-0 place-items-center rounded-full border-2 bg-black/30',
-                  confirm.mode === 'remove' ? 'border-[#f87171]' : 'border-white/35')}>
+                  confirm.mode === 'remove' ? 'border-[#f87171]' : confirm.mode === 'rollback' ? 'border-[#fbbf24]' : confirm.mode === 'approve' ? 'border-[#34d399]' : 'border-white/35')}>
                   {confirm.mode === 'remove'
                     ? <Trash2 className="h-5 w-5 text-[#f87171]" />
-                    : <Ban className="h-5 w-5 text-white/70" />}
+                    : confirm.mode === 'rollback'
+                      ? <RotateCcw className="h-5 w-5 text-[#fbbf24]" />
+                      : confirm.mode === 'approve'
+                        ? <BadgeCheck className="h-5 w-5 text-[#34d399]" />
+                        : <Ban className="h-5 w-5 text-white/70" />}
                 </div>
                 <div>
                   <h2 className="text-sm font-black uppercase tracking-[0.14em] text-white">
-                    {confirm.mode === 'remove' ? 'Remove from migration queue' : 'Cancel migration job'}
+                    {confirm.mode === 'remove'
+                      ? 'Remove from migration queue'
+                      : confirm.mode === 'rollback'
+                        ? 'Roll back cryptographic change'
+                        : confirm.mode === 'approve'
+                          ? 'Approve change for agent execution'
+                          : 'Cancel migration job'}
                   </h2>
                   <p className="mt-0.5 text-[11px] text-white/50">
                     {confirm.mode === 'remove'
                       ? 'Deletes the job and its dispatch records. The removal itself is written to the audit trail.'
-                      : 'Withdraws the job from execution. The job stays on the record and can be reviewed later.'}
+                      : confirm.mode === 'rollback'
+                        ? 'Restores the asset from its pre-change snapshot. The executor that applied the change verifies the backup digest before writing it back; the job is only marked rolled back once that is confirmed.'
+                        : confirm.mode === 'approve'
+                          ? 'Authorises a Patcher agent to change this asset. Your identity and the time are recorded on the job as the approval, and written to the audit trail.'
+                          : 'Withdraws the job from execution. The job stays on the record and can be reviewed later.'}
                   </p>
                 </div>
               </div>
@@ -1642,6 +1896,22 @@ export default function LiveMigrationOperations() {
                   Running jobs in this selection will be kept — pause or cancel them first.
                 </p>
               )}
+              {confirm.mode === 'approve' && (
+                <div className="mt-3 space-y-1.5 rounded-lg border border-[#34d399]/25 bg-[#34d399]/[0.06] p-3 text-[11px] leading-relaxed text-white/70">
+                  <div className="font-bold text-[#34d399]">What happens after you approve</div>
+                  <div>1. The job is queued. Only a Patcher agent whose policy covers this asset may claim it.</div>
+                  <div>2. Before anything changes, a verified pre-change snapshot is taken. If it cannot be taken, the job is withheld.</div>
+                  <div>3. The agent backs up the configuration, applies the change, and re-scans to validate it.</div>
+                  <div>4. If validation fails, the agent restores the backup automatically. You can also roll back from Snapshots.</div>
+                </div>
+              )}
+              {confirm.mode === 'rollback' && (
+                <p className="mt-3 rounded-lg border border-[#fbbf24]/25 bg-[#fbbf24]/[0.07] p-3 text-[11px] leading-relaxed text-white/70">
+                  If no executor can reach the recorded backup — the agent that applied the change is offline, revoked or read-only,
+                  or the asset was never modified — the request is recorded and <span className="font-bold text-[#fbbf24]">nothing on the
+                  asset changes</span>. The result message says which happened.
+                </p>
+              )}
 
               <div className="mt-4 flex flex-wrap justify-end gap-2">
                 <button
@@ -1649,26 +1919,36 @@ export default function LiveMigrationOperations() {
                   onClick={() => setConfirm(null)}
                   className="rounded-lg border border-white/12 bg-white/[0.04] px-4 py-2 text-[10px] font-black uppercase tracking-wider text-white/60 transition hover:border-white/30 hover:text-white"
                 >
-                  Keep jobs
+                  {confirm.mode === 'rollback' ? 'Keep current state' : confirm.mode === 'approve' ? 'Not yet' : 'Keep jobs'}
                 </button>
                 <button
                   type="button"
                   disabled={actionPending.startsWith('remove:') || actionPending.startsWith('bulk:')}
                   onClick={() => {
                     if (confirm.mode === 'remove') void removeJobs(confirm.ids, confirm.includeCompleted)
+                    else if (confirm.mode === 'rollback') { void runJobAction(confirm.ids[0], 'rollback'); setConfirm(null) }
+                    else if (confirm.mode === 'approve') { void runJobAction(confirm.ids[0], 'approve'); setConfirm(null) }
                     else { void runBulkAction('cancel', confirm.ids); setConfirm(null) }
                   }}
                   className={cn(
                     'inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-[10px] font-black uppercase tracking-wider transition disabled:opacity-50',
                     confirm.mode === 'remove'
                       ? 'border-[#f87171]/55 bg-[#f87171]/15 text-[#f87171] hover:bg-[#f87171]/25'
-                      : 'border-white/25 bg-white/[0.06] text-white hover:bg-white/[0.12]',
+                      : confirm.mode === 'rollback'
+                        ? 'border-[#fbbf24]/55 bg-[#fbbf24]/15 text-[#fbbf24] hover:bg-[#fbbf24]/25'
+                        : confirm.mode === 'approve'
+                          ? 'border-[#34d399]/55 bg-[#34d399]/15 text-[#34d399] hover:bg-[#34d399]/25'
+                          : 'border-white/25 bg-white/[0.06] text-white hover:bg-white/[0.12]',
                   )}
                 >
-                  {confirm.mode === 'remove' ? <Trash2 className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />}
+                  {confirm.mode === 'remove' ? <Trash2 className="h-3.5 w-3.5" /> : confirm.mode === 'rollback' ? <RotateCcw className="h-3.5 w-3.5" /> : confirm.mode === 'approve' ? <BadgeCheck className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />}
                   {confirm.mode === 'remove'
                     ? `Remove ${numberFmt(confirm.ids.length)} job${confirm.ids.length === 1 ? '' : 's'}`
-                    : `Cancel ${numberFmt(confirm.ids.length)} job${confirm.ids.length === 1 ? '' : 's'}`}
+                    : confirm.mode === 'rollback'
+                      ? 'Roll back this change'
+                      : confirm.mode === 'approve'
+                        ? 'Approve & queue'
+                        : `Cancel ${numberFmt(confirm.ids.length)} job${confirm.ids.length === 1 ? '' : 's'}`}
                 </button>
               </div>
             </div>

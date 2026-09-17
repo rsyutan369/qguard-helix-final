@@ -77,7 +77,27 @@ const upper = (value: unknown) => String(value ?? '').trim().toUpperCase()
 
 const EPHEMERAL_KEX = /^(ECDHE|DHE|EECDH|EDH)$/
 const PQ_KEX = /ML-?KEM|KYBER/
-const HYBRID_KEX = /^X25519MLKEM768$|^SECP256R1MLKEM768$|X25519.*ML-?KEM|ML-?KEM.*X25519/
+/**
+ * Hybrid key agreement: a classical and a post-quantum KEM combined, so the
+ * session stays confidential while EITHER half holds.
+ *
+ * Covers the IANA TLS groups (X25519MLKEM768, SecP256r1MLKEM768,
+ * SecP384r1MLKEM1024) and both OpenSSH methods (mlkem768x25519-sha256,
+ * sntrup761x25519-sha512). Only the first two used to match: SecP384r1MLKEM1024
+ * fell through to the pure-KEM branch and read as standalone ML-KEM, and
+ * sntrup761x25519 — OpenSSH's default key exchange since 9.0 — matched nothing
+ * and was published as an unclassified policy row.
+ */
+const HYBRID_KEX = /^X25519MLKEM768$|^SECP(256|384|521)R1MLKEM(512|768|1024)$|X25519.*ML-?KEM|ML-?KEM.*X25519|SNTRUP\d+X25519|X25519.*SNTRUP/
+
+/** "P-384 + ML-KEM-1024 (hybrid)" — both halves named, from the name itself. */
+function hybridKexFamily(value: string): string {
+  const kem = value.match(/ML-?KEM-?(512|768|1024)/)?.[1]
+  const sntrup = value.match(/SNTRUP(\d+)/)?.[1]
+  const pq = sntrup ? `sntrup${sntrup}` : kem ? `ML-KEM-${kem}` : 'ML-KEM'
+  const classical = /SECP384R1/.test(value) ? 'P-384' : /SECP256R1/.test(value) ? 'P-256' : /SECP521R1/.test(value) ? 'P-521' : 'X25519'
+  return `${classical} + ${pq} (hybrid)`
+}
 
 /** Bulk ciphers, longest-first so AES_256_GCM wins over AES_256. */
 const BULK_CIPHERS: Array<[RegExp, string]> = [
@@ -240,6 +260,26 @@ export function analyzeCryptoObservation(input: ObservationInput, isCryptography
   const suite = parseSuite(value)
   if (suite) return suite
 
+  /* JOSE / JWS algorithm identifiers (RFC 7518) name a signature or MAC exactly.
+     They were unrecognised — `RS256` read as an unclassified policy row — so a
+     JWKS or OIDC configuration contributed nothing to identity posture.
+     Exact whole-token match, so the tokens cannot hijack longer names. */
+  const jose = value.match(/^(RS|PS|ES|HS)(256|384|512)(K?)$|^EDDSA$/)
+  if (jose) {
+    const [, family, bits, koblitz] = jose
+    if (!family) {
+      return { ...policy, kind: 'signature', authentication: algorithm, family: 'EdDSA', quantumClass: 'vulnerable' }
+    }
+    if (family === 'HS') {
+      return { ...policy, kind: 'hash', mac: `SHA-${bits}`, family: `HMAC-SHA-${bits}`, quantumClass: 'safe' }
+    }
+    if (family === 'ES') {
+      const curve = koblitz ? 'secp256k1' : bits === '384' ? 'P-384' : bits === '512' ? 'P-521' : 'P-256'
+      return { ...policy, kind: 'signature', authentication: algorithm, mac: `SHA-${bits}`, family: `ECDSA ${curve}`, quantumClass: 'vulnerable' }
+    }
+    return { ...policy, kind: 'signature', authentication: algorithm, mac: `SHA-${bits}`, family: `RSA (${value})`, quantumClass: 'vulnerable' }
+  }
+
   // Hybrid / post-quantum key agreement, named directly.
   if (HYBRID_KEX.test(value)) {
     return {
@@ -249,7 +289,7 @@ export function analyzeCryptoObservation(input: ObservationInput, isCryptography
       bulk: null,
       mac: null,
       forwardSecrecy: true,
-      family: 'X25519 + ML-KEM-768 (hybrid)',
+      family: hybridKexFamily(value),
       quantumClass: 'hybrid',
     }
   }
@@ -289,6 +329,38 @@ export function analyzeCryptoObservation(input: ObservationInput, isCryptography
       quantumClass: 'vulnerable',
     }
   }
+  /* OpenSSH key exchange method names. Every SSH key exchange is ephemeral — a
+     fresh secret per connection — so these carry forward secrecy. The generic
+     branch below models STATIC TLS (EC)DH, and used to file
+     `ecdh-sha2-nistp256` as "Static Diffie-Hellman" without it. */
+  const sshEcdh = value.match(/^ECDH-SHA2-NISTP(256|384|521)$/)
+  if (sshEcdh) {
+    return {
+      kind: 'key-exchange',
+      keyExchange: algorithm,
+      authentication: null,
+      bulk: null,
+      mac: 'SHA-2',
+      forwardSecrecy: true,
+      family: `ECDH P-${sshEcdh[1]} (classical)`,
+      quantumClass: 'vulnerable',
+    }
+  }
+  const sshDh = value.match(/^DIFFIE-HELLMAN-GROUP(\d+|-EXCHANGE)/)
+  if (sshDh) {
+    const group = sshDh[1]
+    const size = group === '1' ? '1024-bit' : group === '14' ? '2048-bit' : group === '16' ? '4096-bit' : group === '18' ? '8192-bit' : null
+    return {
+      kind: 'key-exchange',
+      keyExchange: algorithm,
+      authentication: null,
+      bulk: null,
+      mac: matchFirst(value, MACS),
+      forwardSecrecy: true,
+      family: group === '-EXCHANGE' ? 'Diffie-Hellman group exchange (classical)' : `Diffie-Hellman group${group}${size ? ` (${size})` : ''} (classical)`,
+      quantumClass: 'vulnerable',
+    }
+  }
   if (/^ECDH\b|^DH\b|DIFFIE/.test(value)) {
     return {
       kind: 'key-exchange',
@@ -303,6 +375,21 @@ export function analyzeCryptoObservation(input: ObservationInput, isCryptography
   }
 
   // Signature / certificate primitives.
+  /* Composite / hybrid signatures ("Ed25519 + ML-DSA-65", id-MLDSA65-RSA3072…)
+     carry a classical AND a post-quantum signature. They matched the ML-DSA
+     branch and read as pure post-quantum, overstating the migration. */
+  if (/ML-?DSA|DILITHIUM|SLH-?DSA|SPHINCS/.test(value) && /ED25519|ED448|ECDSA|RSA|\bP-?(256|384|521)\b|SECP/.test(value)) {
+    const level = value.match(/ML-?DSA-?(44|65|87)/)?.[1]
+    const pq = /SLH-?DSA|SPHINCS/.test(value) ? 'SLH-DSA' : level ? `ML-DSA-${level}` : 'ML-DSA'
+    const classical = /ED448/.test(value)
+      ? 'Ed448'
+      : /ED25519/.test(value)
+        ? 'Ed25519'
+        : /ECDSA|\bP-?(256|384|521)\b|SECP/.test(value)
+          ? 'ECDSA'
+          : 'RSA'
+    return { ...policy, kind: 'signature', authentication: algorithm, family: `${classical} + ${pq} (hybrid)`, quantumClass: 'hybrid' }
+  }
   if (/ML-?DSA|DILITHIUM/.test(value)) {
     return { ...policy, kind: 'signature', authentication: algorithm, family: 'ML-DSA', quantumClass: 'safe' }
   }
@@ -310,7 +397,7 @@ export function analyzeCryptoObservation(input: ObservationInput, isCryptography
     return { ...policy, kind: 'signature', authentication: algorithm, family: 'SLH-DSA', quantumClass: 'safe' }
   }
   if (/ECDSA|SECP\d|\bP-?(256|384|521)\b/.test(value)) {
-    const curve = /384/.test(value) ? 'P-384' : /521/.test(value) ? 'P-521' : 'P-256'
+    const curve = /256K1/.test(value) ? 'secp256k1' : /384/.test(value) ? 'P-384' : /521/.test(value) ? 'P-521' : 'P-256'
     return {
       ...policy,
       kind: itemType === 'certificate' ? 'certificate' : 'signature',
@@ -321,7 +408,10 @@ export function analyzeCryptoObservation(input: ObservationInput, isCryptography
     }
   }
   if (/ED25519|ED448/.test(value)) {
-    return { ...policy, kind: 'signature', authentication: algorithm, family: 'Ed25519', quantumClass: 'vulnerable' }
+    return { ...policy, kind: 'signature', authentication: algorithm, family: /ED448/.test(value) ? 'Ed448' : 'Ed25519', quantumClass: 'vulnerable' }
+  }
+  if (value === 'SSH-DSS') {
+    return { ...policy, kind: 'signature', authentication: algorithm, family: 'DSA', quantumClass: 'vulnerable' }
   }
   /* Composite signature names carry BOTH primitives, and only one of them
      bears the quantum risk.
@@ -393,7 +483,9 @@ export function analyzeCryptoObservation(input: ObservationInput, isCryptography
   }
 
   // Protocol version.
-  if (/^(TLS|SSL|DTLS)\s?V?\d/.test(value)) {
+  /* `TLS-1.3` (the form the agent emits) as well as `TLSv1.3`: the hyphenated
+     form used to miss this branch and read as a policy row. */
+  if (/^(TLS|SSL|DTLS)[-_\s]?V?\d/.test(value)) {
     return {
       kind: 'protocol',
       keyExchange: null,

@@ -63,12 +63,24 @@ function fullDate(value: string | null) {
 
 const STATUS_TONE: Record<string, string> = {
   restorable: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300',
+  restoring: 'border-amber-400/40 bg-amber-400/12 text-amber-200',
   restored: 'border-cyan-400/30 bg-cyan-400/10 text-cyan-300',
+  restore_failed: 'border-red-400/35 bg-red-400/10 text-red-300',
   expired: 'border-amber-400/30 bg-amber-400/10 text-amber-200',
   deleted: 'border-white/10 bg-white/[0.04] text-white/40',
 }
 
-type StatusFilter = 'all' | 'restorable' | 'restored' | 'expired'
+/** Rollback lifecycle labels. `restoring` is dispatched-but-unconfirmed. */
+const STATUS_LABEL: Record<string, string> = {
+  restorable: 'Restorable',
+  restoring: 'Rollback in flight',
+  restored: 'Restored',
+  restore_failed: 'Rollback failed',
+  expired: 'Expired',
+  deleted: 'Deleted',
+}
+
+type StatusFilter = 'all' | 'restorable' | 'restoring' | 'restored' | 'restore_failed' | 'expired'
 
 export function SnapshotManager({ open, onOpenChange, focusAssetName, enabled }: { open: boolean; onOpenChange: (v: boolean) => void; focusAssetName?: string | null; enabled: boolean }) {
   const snap = useMigrationSnapshots(enabled)
@@ -137,11 +149,12 @@ export function SnapshotManager({ open, onOpenChange, focusAssetName, enabled }:
       showToast('bad', r.message || 'Restore failed')
       return
     }
-    const result = r.snapshot as unknown as { applied?: boolean; message?: string } | undefined
-    showToast(
-      result?.applied ? 'ok' : 'warn',
-      result?.message || `Restore of ${id} recorded.`,
-    )
+    const result = r.restore
+    /* Four dispositions, three tones. `dispatched` is deliberately a WARNING
+       tone, not a success: the work has been handed to an executor and the
+       asset has not changed yet. */
+    const tone = result?.disposition === 'restored' ? 'ok' : result?.disposition === 'failed' ? 'bad' : 'warn'
+    showToast(tone, result?.message || `Restore of ${id} recorded.`)
   }
 
   const s = snap.data.summary
@@ -177,16 +190,21 @@ export function SnapshotManager({ open, onOpenChange, focusAssetName, enabled }:
         ) : (
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {[
-              { label: 'Total Snapshots', value: fmt(s.total), tone: CYAN },
-              { label: 'Restorable', value: fmt(s.restorable), tone: EMERALD },
-              { label: 'Auto Rollbacks', value: fmt(s.automaticRollbacks), tone: '#f59e0b' },
-              { label: 'Manual Rollbacks', value: fmt(s.manualRollbacks), tone: '#a78bfa' },
-              { label: 'Storage Used', value: bytes(s.storageBytes), tone: '#38bdf8' },
-              { label: 'Integrity Verified', value: `${s.integrityVerified}/${s.total}`, tone: s.integrityFailed ? '#f87171' : EMERALD },
-              { label: 'Latest Snapshot', value: rel(s.latestSnapshotAt), tone: '#22d3ee' },
-              { label: 'Restored', value: fmt(s.restored), tone: '#94a3b8' },
+              { label: 'Total Snapshots', value: fmt(s.total), tone: CYAN, hint: 'Pre-change, manual and scheduled snapshots held for this tenant.' },
+              { label: 'Restorable', value: fmt(s.restorable), tone: EMERALD, hint: 'Snapshots inside retention whose integrity digest still matches.' },
+              {
+                label: 'Executable Rollback',
+                value: `${s.restoreExecutable}/${s.restorable}`,
+                tone: s.restoreExecutable ? EMERALD : '#94a3b8',
+                hint: 'Snapshots with a live executor — the agent that applied the change, or a connected cloud connector — able to restore them right now. A snapshot without one records state but cannot put it back.',
+              },
+              { label: 'Rollbacks In Flight', value: fmt(s.rollbacksInFlight), tone: s.rollbacksInFlight ? '#fbbf24' : '#94a3b8', hint: 'Dispatched to an executor and awaiting confirmation. The asset has not changed back yet.' },
+              { label: 'Rollbacks Failed', value: fmt(s.rollbacksFailed), tone: s.rollbacksFailed ? '#f87171' : '#94a3b8', hint: 'The executor tried and could not restore. The snapshot is still a valid restore source.' },
+              { label: 'Confirmed Restores', value: fmt(s.restored), tone: '#a78bfa', hint: 'An executor confirmed the asset matches the snapshot again.' },
+              { label: 'Integrity Verified', value: `${s.integrityVerified}/${s.total}`, tone: s.integrityFailed ? '#f87171' : EMERALD, hint: 'Re-computed SHA3-256 over the stored state on every read — not the flag written at creation.' },
+              { label: 'Storage Used', value: bytes(s.storageBytes), tone: '#38bdf8', hint: 'Canonical payload size of every retained snapshot.' },
             ].map((c) => (
-              <div key={c.label} className={`${INNER} p-3`}>
+              <div key={c.label} className={`${INNER} p-3`} title={c.hint}>
                 <div className="text-xl font-black tabular-nums" style={{ color: c.tone }}>{c.value}</div>
                 <div className="mt-0.5 text-[10px] font-bold uppercase tracking-wide text-white/45">{c.label}</div>
               </div>
@@ -210,6 +228,20 @@ export function SnapshotManager({ open, onOpenChange, focusAssetName, enabled }:
               <div>
                 <h3 className="flex items-center gap-2 text-lg font-black"><Archive className="h-5 w-5 text-cyan-300" /> Snapshot Management</h3>
                 <p className="mt-0.5 text-[11px] text-white/45">Pre-migration backups of cryptographic &amp; configuration state — restore any asset to its exact prior state.</p>
+                {/*
+                  The panel subscribes to an SSE stream and to Supabase realtime
+                  but showed neither, so a drawer whose feed had died looked
+                  identical to a live one. State is disclosed, not assumed.
+                */}
+                <p className="mt-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide">
+                  <span className={`h-1.5 w-1.5 rounded-full ${snap.sseConnected ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                  <span className={snap.sseConnected ? 'text-emerald-300/80' : 'text-amber-300/90'}>
+                    {snap.sseConnected ? 'Live' : 'Not streaming — values may be stale'}
+                  </span>
+                  <span className="font-mono normal-case tracking-normal text-white/35">
+                    {snap.data.generatedAt ? `generated ${rel(snap.data.generatedAt)}` : 'not loaded'}
+                  </span>
+                </p>
               </div>
               <button ref={closeRef} type="button" onClick={() => onOpenChange(false)} className="rounded-lg border border-white/12 bg-white/[0.04] p-2 text-white/60 transition hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400" aria-label="Close"><X className="h-4 w-4" /></button>
             </div>
@@ -229,7 +261,9 @@ export function SnapshotManager({ open, onOpenChange, focusAssetName, enabled }:
                   <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} className="rounded-lg border border-white/12 bg-white/[0.03] px-2.5 py-1.5 text-xs text-white outline-none focus:border-cyan-400/50">
                     <option value="all" className="bg-[#0b1120]">All</option>
                     <option value="restorable" className="bg-[#0b1120]">Restorable</option>
+                    <option value="restoring" className="bg-[#0b1120]">Rollback in flight</option>
                     <option value="restored" className="bg-[#0b1120]">Restored</option>
+                    <option value="restore_failed" className="bg-[#0b1120]">Rollback failed</option>
                     <option value="expired" className="bg-[#0b1120]">Expired</option>
                   </select>
                   <button type="button" onClick={() => { setCompareMode((v) => !v); setCompareIds([]) }} className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition ${compareMode ? 'border-violet-400/40 bg-violet-400/10 text-violet-200' : 'border-white/12 bg-white/[0.04] text-white/60'}`}><GitCompare className="h-3.5 w-3.5" /> Compare</button>
@@ -264,7 +298,7 @@ export function SnapshotManager({ open, onOpenChange, focusAssetName, enabled }:
                               {compareMode ? <span className={`grid h-4 w-4 shrink-0 place-items-center rounded border ${checked ? 'border-cyan-400 bg-cyan-400/30' : 'border-white/25'}`}>{checked ? <CheckCircle2 className="h-3 w-3 text-cyan-200" /> : null}</span> : <Server className="h-3.5 w-3.5 shrink-0 text-white/40" />}
                               <span className="truncate text-sm font-bold text-white/85">{sn.assetName}</span>
                             </span>
-                            <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold ${STATUS_TONE[sn.status] || STATUS_TONE.deleted}`}>{sn.status}</span>
+                            <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-bold ${STATUS_TONE[sn.status] || STATUS_TONE.deleted}`}>{STATUS_LABEL[sn.status] || sn.status}</span>
                           </div>
                           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-white/40">
                             <span className="font-mono">{sn.snapshotId}</span>
@@ -318,9 +352,66 @@ export function SnapshotManager({ open, onOpenChange, focusAssetName, enabled }:
                             <div><span className="text-white/40">Certificates:</span> {selected.cryptoState.certificates.length} · <span className="text-white/40">Keys:</span> {selected.cryptoState.keys.length} · <span className="text-white/40">Components:</span> {selected.cryptoState.componentCount}</div>
                           </div>
                         </div>
+                        {/* What can actually be undone, and by whom */}
+                        <div>
+                          <div className="mb-1 text-[10px] font-black uppercase tracking-wide text-white/40">Restore source</div>
+                          {selected.execution ? (
+                            <div className="space-y-1 rounded-lg border border-white/8 bg-white/[0.02] px-2.5 py-2 text-[11px] text-white/65">
+                              {selected.execution.kind === 'agent-config' ? (
+                                <>
+                                  <div><span className="text-white/40">Applied by:</span> {selected.execution.agentName || selected.execution.agentId || 'agent'}</div>
+                                  <div className="truncate" title={selected.execution.targetPath || ''}><span className="text-white/40">Target:</span> <span className="font-mono">{selected.execution.targetPath || '—'}</span></div>
+                                  <div className="truncate" title={selected.execution.backupPath || ''}><span className="text-white/40">Backup:</span> <span className="font-mono">{selected.execution.backupPath || '—'}</span></div>
+                                  <div><span className="text-white/40">Pre-change digest:</span> <span className="font-mono">{(selected.execution.beforeHash || '').slice(0, 16) || '—'}…</span></div>
+                                </>
+                              ) : (
+                                <>
+                                  <div><span className="text-white/40">Applied by:</span> {selected.execution.provider || 'cloud'} connector</div>
+                                  <div><span className="text-white/40">Adapter:</span> {selected.execution.adapter || '—'}</div>
+                                  <div><span className="text-white/40">Provider rollback plan:</span> {selected.execution.rollbackPlan ? 'recorded' : 'not recorded'}</div>
+                                </>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="rounded-lg border border-white/8 bg-white/[0.02] px-2.5 py-2 text-[11px] leading-relaxed text-white/50">
+                              No executor has recorded a change to this asset. This snapshot documents the captured state; there is
+                              nothing to undo until an agent patch or a connector change is applied against it.
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Last rollback attempt */}
+                        {selected.rollback ? (
+                          <div className={`rounded-lg border px-2.5 py-2 text-[11px] leading-relaxed ${
+                            selected.rollback.disposition === 'restored' ? 'border-emerald-400/25 bg-emerald-400/[0.06] text-emerald-100'
+                              : selected.rollback.disposition === 'failed' ? 'border-red-400/25 bg-red-400/[0.06] text-red-100'
+                                : 'border-amber-400/25 bg-amber-400/[0.06] text-amber-100'}`}>
+                            <div className="font-black uppercase tracking-wide">Rollback {selected.rollback.disposition.replace('-', ' ')}</div>
+                            <div className="mt-0.5">{selected.rollback.message}</div>
+                            <div className="mt-1 text-white/45">
+                              Requested {fullDate(selected.rollback.requestedAt)} by {selected.rollback.requestedBy || 'operator'}
+                              {selected.rollback.executorLabel ? ` · executor ${selected.rollback.executorLabel}` : ''}
+                              {selected.rollback.settledAt ? ` · settled ${rel(selected.rollback.settledAt)}` : ' · awaiting executor confirmation'}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {/*
+                          Why Restore is not offered, on its own full-width row
+                          rather than wedged into the button strip — it is a
+                          sentence, not a control.
+                        */}
+                        {!selected.restoreExecutable && (selected.status === 'restorable' || selected.status === 'restore_failed') ? (
+                          <div className="rounded-lg border border-white/10 bg-white/[0.03] px-2.5 py-2 text-[11px] leading-relaxed text-white/50">
+                            <span className="font-bold text-white/70">Restore unavailable.</span> {selected.restoreBlockedReason}
+                          </div>
+                        ) : null}
+
                         {/* Actions */}
-                        <div className="flex flex-wrap gap-1.5 border-t border-white/8 pt-3">
-                          {selected.status === 'restorable' ? (
+                        <div className="flex flex-wrap items-center gap-1.5 border-t border-white/8 pt-3">
+                          {/* Enabled only when the server says a live executor can
+                              honour it; the reason is stated above when it cannot. */}
+                          {selected.restoreExecutable ? (
                             <button type="button" onClick={() => setConfirmRestore(selected.snapshotId)} disabled={snap.busy} className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/40 bg-emerald-400/10 px-3 py-2 text-xs font-black text-emerald-200 transition hover:bg-emerald-400/20 disabled:opacity-50"><RotateCcw className="h-3.5 w-3.5" /> Restore</button>
                           ) : null}
                           <button type="button" onClick={async () => { const r = await snap.verifySnapshot(selected.snapshotId); showToast(r.ok ? 'ok' : 'bad', r.ok ? 'Integrity re-verified.' : r.message || 'Verify failed') }} disabled={snap.busy} className="inline-flex items-center gap-1.5 rounded-lg border border-white/12 bg-white/[0.04] px-3 py-2 text-xs font-bold text-white/75 transition hover:border-cyan-400/40 disabled:opacity-50"><ShieldCheck className="h-3.5 w-3.5" /> Verify</button>
@@ -332,11 +423,14 @@ export function SnapshotManager({ open, onOpenChange, focusAssetName, enabled }:
                           <div className="rounded-xl border border-emerald-400/30 bg-emerald-400/[0.08] p-3">
                             <div className="text-[12px] font-bold text-emerald-100">Restore {selected.assetName} to this snapshot?</div>
                             <p className="mt-1 text-[11px] font-medium leading-relaxed text-white/55">
-                              Applying a snapshot to the asset requires an enrolled collector agent or a cloud connector with write
-                              scope. Without one, the rollback is recorded and the migration plan is marked rolled back, but nothing
-                              on the asset changes.
+                              {selected.execution?.kind === 'cloud-connector'
+                                ? 'The recorded provider rollback plan is replayed against the cloud resource now. The snapshot is marked restored only if the provider reports the previous configuration is back.'
+                                : `The rollback is queued for ${selected.execution?.agentName || 'the agent that applied the change'}. That agent re-verifies the backup against its recorded pre-change digest, restores it, and re-hashes the result. The snapshot is marked restored only on that confirmation.`}
                             </p>
-                            <p className="mt-1 text-[11px] text-white/55">The linked migration job will roll back to the captured pre-migration state. Integrity is re-verified before restoring.</p>
+                            <p className="mt-1 text-[11px] text-white/55">
+                              Snapshot integrity is re-verified before dispatch. The file currently on the host is copied aside first,
+                              so the rollback is itself reversible.
+                            </p>
                             <div className="mt-2 flex gap-2">
                               <button type="button" onClick={() => void doRestore(selected.snapshotId)} disabled={snap.busy} className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-400/40 bg-emerald-400/15 px-3 py-1.5 text-xs font-black text-emerald-200 disabled:opacity-50">{snap.busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />} Confirm Restore</button>
                               <button type="button" onClick={() => setConfirmRestore(null)} className="rounded-lg border border-white/12 bg-white/[0.04] px-3 py-1.5 text-xs font-bold text-white/60">Cancel</button>

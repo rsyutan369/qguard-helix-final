@@ -275,10 +275,12 @@ export function buildMigrationReport(input: MigrationReportInput): InventoryRepo
       title: 'Migration Telemetry',
       columns: ['Signal', 'Count'],
       rows: [
-        ['TLS handshake events', String(num(t.tlsHandshakeEvents))],
-        ['Certificate replacements', String(num(t.certificateReplacements))],
-        ['Key rotations', String(num(t.keyRotations))],
-        ['PQC validation events', String(num(t.pqcValidationEvents))],
+        /* Same measurements as the Live Migration page: operations completed
+           with a passing validation, one per job. */
+        ['TLS upgrades validated', String(num(t.tlsHandshakeEvents))],
+        ['Certificates replaced (validated)', String(num(t.certificateReplacements))],
+        ['Keys rotated (validated)', String(num(t.keyRotations))],
+        ['Validations recorded', String(num(t.pqcValidationEvents))],
         ['Compatibility checks', String(num(t.compatibilityChecks))],
         ['Migration logs', String(num(t.activityFeed.migrationLogs))],
         ['Validation logs', String(num(t.activityFeed.validationLogs))],

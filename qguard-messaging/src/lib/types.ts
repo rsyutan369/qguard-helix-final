@@ -171,6 +171,21 @@ export interface SecurityHardeningCheck {
   detail: string;
 }
 
+/**
+ * The TLS posture the desktop backend requested of the WebView network stack.
+ *
+ * `enforced_by_app` is false on platforms where the OS owns the TLS stack
+ * (Android), so the UI can say "platform default" instead of implying a control
+ * the app does not have.
+ */
+export interface TlsPolicy {
+  mode: "strict" | "compat";
+  minimum_version: string;
+  post_quantum_key_agreement: boolean;
+  enforced_by_app: boolean;
+  detail: string;
+}
+
 export interface SecurityHardeningStatus {
   checks: SecurityHardeningCheck[];
   debugger_detected: boolean;
@@ -198,6 +213,8 @@ export interface SecurityHardeningStatus {
   string_encryption: boolean;
   signed_build_verification: boolean;
   integrity_hash_checks: boolean;
+  /** Transport posture this launch asked the platform WebView for. */
+  tls_policy: TlsPolicy;
 }
 
 export interface DashboardData {

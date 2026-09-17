@@ -93,3 +93,61 @@ export async function openFrame(
   out.set(pt, headerLength);
   return out.buffer;
 }
+
+/** Read the frame counter a sealed frame carries in its trailing 8 bytes. */
+export function frameCounter(frame: Uint8Array): bigint {
+  if (frame.length < 8) throw new Error("frame too short");
+  return new DataView(frame.buffer, frame.byteOffset + frame.length - 8, 8).getBigUint64(0, false);
+}
+
+/**
+ * Anti-replay window over the per-direction frame counter (RFC 3711 / 4303
+ * style: a highest-seen mark plus a bitmap of the frames behind it).
+ *
+ * AES-GCM proves a frame was produced by the key holder. It does NOT prove the
+ * frame is arriving for the first time — a replayed frame carries its original
+ * counter, header and tag, so it decrypts perfectly. On a media path that means
+ * anything sitting between the peers (a TURN relay, a hostile network) can
+ * re-inject earlier audio or video and the decoder will play it. That is
+ * tampering with a call without ever breaking its encryption.
+ *
+ * RTP is genuinely unordered and lossy, so the window has to tolerate
+ * reordering: anything newer than the mark is accepted, anything within
+ * WINDOW_SIZE frames behind it is accepted exactly once, and anything older is
+ * too stale to distinguish from a replay and is refused.
+ */
+export class FrameReplayWindow {
+  private static readonly WINDOW_SIZE = 256n;
+  private highest = -1n;
+  /** Bit i set == counter (highest - i) has already been accepted. */
+  private seen = 0n;
+
+  /** May this counter be accepted? Does not record it — see `commit`. */
+  check(counter: bigint): boolean {
+    if (counter < 0n) return false;
+    if (this.highest < 0n) return true;
+    if (counter > this.highest) return true;
+    const behind = this.highest - counter;
+    if (behind >= FrameReplayWindow.WINDOW_SIZE) return false;
+    return ((this.seen >> behind) & 1n) === 0n;
+  }
+
+  /**
+   * Record an accepted counter. Called only AFTER the frame authenticates, so
+   * forged counters cannot consume window slots or drag the mark forward.
+   */
+  commit(counter: bigint): void {
+    if (counter > this.highest) {
+      const shift = this.highest < 0n ? counter + 1n : counter - this.highest;
+      this.seen = shift >= FrameReplayWindow.WINDOW_SIZE ? 1n : ((this.seen << shift) | 1n);
+      this.highest = counter;
+      // Keep the bitmap bounded; bits that fall off are older than the window
+      // and are refused by `check` anyway.
+      const mask = (1n << FrameReplayWindow.WINDOW_SIZE) - 1n;
+      this.seen &= mask;
+      return;
+    }
+    const behind = this.highest - counter;
+    if (behind < FrameReplayWindow.WINDOW_SIZE) this.seen |= 1n << behind;
+  }
+}

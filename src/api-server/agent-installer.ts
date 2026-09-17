@@ -19,7 +19,7 @@
  */
 
 import { Router, type NextFunction, type Request, type Response } from 'express'
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -32,18 +32,16 @@ import {
   HEARTBEAT_GRACE_WINDOW_MS,
   HEARTBEAT_ONLINE_WINDOW_MS,
   INSTALL_PHASES,
-  MAX_COMMAND_HISTORY,
-  MAX_QUEUED_COMMANDS,
   RELEASE_CHANNEL,
   agentPlatform,
   agentRole,
-  type AgentCommand,
   type AgentCommandType,
   type AgentEventName,
   type AgentPlatform,
   type AgentRole,
   type ConnectionState,
 } from '@/lib/agent-installer/agent-release'
+import { commandHistory, commandQueue, enqueueAgentCommand } from './agent-command-queue'
 import { generateInstaller, installQuickCommand } from '@/lib/agent-installer/installer-templates'
 import {
   describeControlPlaneFailure,
@@ -343,35 +341,8 @@ export function connectionStateFor(agent: any): ConnectionState {
   return 'Offline'
 }
 
-function commandQueue(agent: any): AgentCommand[] {
-  const raw = agent?.metadata?.commandQueue
-  return Array.isArray(raw) ? (raw as AgentCommand[]) : []
-}
-
-function commandHistory(agent: any): AgentCommand[] {
-  const raw = agent?.metadata?.commandHistory
-  return Array.isArray(raw) ? (raw as AgentCommand[]) : []
-}
-
-async function persistCommandState(
-  client: SupabaseClient | null,
-  agentId: string,
-  agent: any,
-  queue: AgentCommand[],
-  history: AgentCommand[],
-) {
-  if (!client) return
-  const metadata = {
-    ...(agent.metadata || {}),
-    commandQueue: queue.slice(0, MAX_QUEUED_COMMANDS),
-    commandHistory: history.slice(0, MAX_COMMAND_HISTORY),
-  }
-  const { error } = await client
-    .from('scanner_agents')
-    .update({ metadata, updated_at: new Date().toISOString() })
-    .eq('id', agentId)
-  if (error && !isMissingRuntimeTable(error)) throw new Error(error.message)
-}
+/* Queue helpers live in ./agent-command-queue so the snapshot rollback
+   dispatcher shares one implementation of the bounded queue. */
 
 /* ------------------------------------------------------------------ */
 /* GET /releases — what is published (spec §25 GET /agent-releases)    */
@@ -792,8 +763,6 @@ router.get('/self', requireAgentAuth, async (req: AgentRequest, res) => {
 /* Command queue (spec §25 jobs / scan / upgrade / enable / disable)   */
 /* ------------------------------------------------------------------ */
 
-const COMMAND_TYPES = new Set<AgentCommandType>(['scan', 'upgrade', 'disable', 'enable', 'rescan_validation'])
-
 async function enqueueCommand(
   req: AuthedRequest,
   res: Response,
@@ -815,35 +784,12 @@ async function enqueueCommand(
     return jsonError(res, 409, 'AGENT_REVOKED', 'Revoked agents cannot accept commands')
   }
 
-  const queue = commandQueue(agent)
-  if (queue.filter((item) => item.status === 'queued' || item.status === 'delivered').length >= MAX_QUEUED_COMMANDS) {
-    return jsonError(res, 429, 'COMMAND_QUEUE_FULL', 'This agent already has the maximum number of pending commands')
+  const outcome = await enqueueAgentCommand(client, agent, type, { payload, requestedBy: user.id })
+  if (!outcome.ok) return jsonError(res, outcome.status, outcome.code, outcome.message)
+  if (outcome.deduplicated) {
+    return res.json({ data: { command: outcome.command, deduplicated: true } })
   }
-  // One pending command of a given type is enough — re-queuing "scan" five times
-  // would just make the agent scan five times in a row.
-  const duplicate = queue.find((item) => item.type === type && (item.status === 'queued' || item.status === 'delivered'))
-  if (duplicate) {
-    return res.json({ data: { command: duplicate, deduplicated: true } })
-  }
-
-  const command: AgentCommand = {
-    id: randomUUID(),
-    type,
-    queuedAt: new Date().toISOString(),
-    requestedBy: user.id,
-    payload,
-    status: 'queued',
-    deliveredAt: null,
-    completedAt: null,
-    result: null,
-    error: null,
-  }
-
-  try {
-    await persistCommandState(client, agent.id, agent, [command, ...queue], commandHistory(agent))
-  } catch (error) {
-    return jsonError(res, 500, 'COMMAND_QUEUE_FAILED', (error as Error).message)
-  }
+  const command = outcome.command!
 
   await writeAgentEvent(client, agent, `command:${type}`, { commandId: command.id, type, payload }, req.ip)
   await recordAudit(client, {

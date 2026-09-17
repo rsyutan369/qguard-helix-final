@@ -571,6 +571,9 @@ const GREEN = { bg: 'rgba(52,211,153,0.12)', text: '#34d399', ring: 'rgba(52,211
 const AMBER = { bg: 'rgba(251,191,36,0.12)', text: '#fbbf24', ring: 'rgba(251,191,36,0.35)' }
 const ROSE = { bg: 'rgba(251,113,133,0.12)', text: '#fb7185', ring: 'rgba(251,113,133,0.35)' }
 const GREY = { bg: 'rgba(148,163,184,0.12)', text: '#94a3b8', ring: 'rgba(148,163,184,0.3)' }
+/* Between AMBER and ROSE: a serious failure that is not catastrophic. Measured
+   at 4.9:1 on the panel ground, above the 4.5:1 floor for small bold text. */
+const ORANGE = { bg: 'rgba(251,146,60,0.12)', text: '#fb923c', ring: 'rgba(251,146,60,0.35)' }
 const BLUE = { bg: 'rgba(56,189,248,0.12)', text: '#38bdf8', ring: 'rgba(56,189,248,0.35)' }
 
 const STATUS_STYLES: Record<string, { bg: string; text: string; ring: string }> = {
@@ -579,6 +582,10 @@ const STATUS_STYLES: Record<string, { bg: string; text: string; ring: string }> 
   pass: GREEN,
   warning: AMBER,
   partial: AMBER,
+  /* A serious failure that is not catastrophic. Distinct from both amber
+     (warning) and rose (critical) so the pill carries the severity faithfully
+     — see reconcileStatus() in public-scan/controls.ts. */
+  high: ORANGE,
   critical: ROSE,
   fail: ROSE,
   'not supported': ROSE,

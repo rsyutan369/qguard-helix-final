@@ -21,7 +21,7 @@
  */
 
 import { hybridProbeSettled } from '../web-scanner/edge-intelligence-model'
-import type { ControlState, PublicScanEvidence } from './types'
+import type { ControlState, ControlStatus, PublicScanEvidence } from './types'
 
 /** Scored dimensions and their weights. Must sum to 100. */
 export const CONTROL_WEIGHTS = {
@@ -112,9 +112,36 @@ export function symmetricStrength(cipherSuite: string | undefined): number | nul
 
 type Draft = Omit<ControlState, 'weight'> & { weight?: number }
 
+/**
+ * ONE RISK VOCABULARY.
+ *
+ * Every control carries two risk fields: `status` (the seven-state control
+ * verdict the Public Findings table renders as a coloured pill) and `severity`
+ * (the ladder every AGGREGATE counts — the critical tally in the Executive
+ * Summary, the business-risk escalation, the findings sort, Sophia's narrative).
+ *
+ * They were written as two independent ternaries per control off the same
+ * condition, and they disagreed. `tls-version` and `cipher-suite` both resolved
+ * to `status: 'Critical'` with `severity: 'HIGH'`, so a scan of cloudflare.com
+ * rendered THREE rose "Critical" pills in the findings table directly beneath
+ * an Executive Summary reading "1 critical edge exposure requires immediate
+ * action". Both numbers were computed correctly; they were counting different
+ * columns, and the page published the disagreement.
+ *
+ * The invariant, enforced here rather than trusted at 20-odd call sites:
+ * **`status` is 'Critical' if and only if `severity` is 'CRITICAL'.** A
+ * HIGH-severity control renders the dedicated 'High' tier — a real failure, and
+ * visually distinct from a warning, so no signal is lost in the reconciliation.
+ */
+function reconcileStatus(status: ControlStatus, severity: Draft['severity']): ControlStatus {
+  if (status === 'Critical' && severity !== 'CRITICAL') return 'High'
+  if (status === 'High' && severity === 'CRITICAL') return 'Critical'
+  return status
+}
+
 function control(draft: Draft): ControlState {
   const weight = draft.weight ?? CONTROL_WEIGHTS[draft.key as keyof typeof CONTROL_WEIGHTS] ?? 0
-  return { ...draft, weight }
+  return { ...draft, status: reconcileStatus(draft.status, draft.severity), weight }
 }
 
 /**
@@ -510,7 +537,14 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
       control: 'Forward Secrecy',
       shortLabel: 'Key Exchange',
       status: !tls ? 'Unknown' : fs.enabled ? (staticRsa ? 'Warning' : 'Healthy') : 'Critical',
-      severity: !tls ? 'LOW' : fs.enabled ? 'SAFE' : 'HIGH',
+      /* The static-RSA caveat has to reach BOTH fields. `status` already
+         downgraded to Warning when key-transport suites are accepted, but
+         `severity` branched only on `fs.enabled` and stayed SAFE — so a row
+         rendering an amber "Partial" pill was simultaneously counted in the
+         report's SAFE census and ignored by the business-risk escalation.
+         Sessions forced onto a static-RSA suite have no forward secrecy at all;
+         that is a real, measured weakness, not a pass. */
+      severity: !tls ? 'LOW' : fs.enabled ? (staticRsa ? 'MEDIUM' : 'SAFE') : 'HIGH',
       /* `resolveKeyExchange` returns the literal lowercase 'unknown' when nothing
          was observed, which rendered as a lowercase "unknown" in a column of
          capitalised "Unknown" rows — reading as a value rather than as the absence
@@ -568,7 +602,29 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
      rule the dashboard's verdict, the detection rules and the orchestrator's
      finding text now share. */
   const hybridAnswered = hybridProbeSettled(evidence.engines?.tls?.data)
-  const undetermined = !keyAgreement.probed || (!hybrid.length && !pureKem.length && !hybridAnswered)
+  /**
+   * A DEFINITIVE negative beats "not measured".
+   *
+   * Hybrid ML-KEM groups are defined only in the TLS 1.3 `key_share`, so an
+   * endpoint that provably does not negotiate TLS 1.3 cannot offer one. That is
+   * a measured answer — "Not Supported", with the protocol as the reason — and
+   * this control already carried the sentence explaining it.
+   *
+   * It never printed. `undetermined` was evaluated first and swallowed the case:
+   * the group probe is deliberately SKIPPED when there is no TLS 1.3
+   * (`hybridProbed: supportsTls13`), which left `hybridAnswered` false, which
+   * made the row read "Hybrid group probe did not settle — not measured" on
+   * expired.badssl.com. The endpoint's own protocol list settles it, and
+   * reporting a known negative as an unknown understates real exposure.
+   *
+   * The test is the measured protocol list rather than the `hybridProbed` flag,
+   * so a run that never completed a handshake (empty list) still reports Unknown
+   * instead of claiming a refusal it never observed.
+   */
+  const protocolsMeasured = protocols.length > 0
+  const hybridUnreachable = protocolsMeasured && !protocols.includes('TLSv1.3')
+  const undetermined =
+    !hybridUnreachable && (!keyAgreement.probed || (!hybrid.length && !pureKem.length && !hybridAnswered))
   states.push(
     control({
       key: 'pq-key-agreement',
@@ -577,15 +633,17 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
       status: undetermined ? 'Unknown' : hybrid.length ? 'Healthy' : 'Not Supported',
       severity: undetermined ? 'LOW' : hybrid.length ? 'SAFE' : 'HIGH',
       value: undetermined ? 'Unknown' : hybrid.length ? 'Pass' : 'Fail',
-      finding: !keyAgreement.probed
-        ? 'Could not be determined'
-        : hybrid.length
-          ? hybrid.join(', ')
-          : pureKem.length
-            ? `Standalone ${pureKem.join(', ')} only — no hybrid group`
-            : hybridAnswered
-              ? 'No hybrid PQ group accepted'
-              : 'Hybrid group probe did not settle — not measured',
+      finding: hybrid.length
+        ? hybrid.join(', ')
+        : pureKem.length
+          ? `Standalone ${pureKem.join(', ')} only — no hybrid group`
+          : hybridUnreachable
+            ? 'Not offered — the endpoint does not negotiate TLS 1.3'
+            : !keyAgreement.probed
+              ? 'Could not be determined'
+              : hybridAnswered
+                ? 'No hybrid PQ group accepted'
+                : 'Hybrid group probe did not settle — not measured',
       // When the endpoint has no TLS 1.3, hybrid ML-KEM is not merely absent —
       // it is unreachable, because those groups exist only in the TLS 1.3
       // key_share. Saying so is far more useful than "no group accepted".
@@ -1173,8 +1231,15 @@ function engineControls(evidence: PublicScanEvidence): ControlState[] {
       key: 'alpn',
       control: 'ALPN Negotiation',
       shortLabel: 'ALPN',
-      status: !tls.handshake ? 'Unknown' : tls.alpn ? 'Healthy' : 'Not Supported',
-      severity: 'SAFE',
+      /* ALPN absence is a MODERNITY gap, not a security failure — this control's
+         own copy says it "carries no key material" and that the endpoint simply
+         "falls back to HTTP/1.1". It nonetheless rendered the rose
+         'Not Supported' pill (the tier reserved for an expected control that is
+         missing) on a row the report simultaneously counted as SAFE. Amber with
+         a LOW severity states the same fact without borrowing the vocabulary of
+         a failed security control, and the two columns now agree. */
+      status: !tls.handshake ? 'Unknown' : tls.alpn ? 'Healthy' : 'Warning',
+      severity: !tls.handshake ? 'LOW' : tls.alpn ? 'SAFE' : 'LOW',
       value: tls.alpn ?? (tls.handshake ? 'Not negotiated' : 'Unknown'),
       finding: tls.alpn ? `${tls.alpn} negotiated` : tls.handshake ? 'No ALPN protocol selected' : 'Could not be determined',
       evidence: `Offered ${tls.alpnOffered.join(', ')} · selected ${tls.alpn ?? 'none'}`,

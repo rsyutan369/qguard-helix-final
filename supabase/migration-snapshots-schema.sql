@@ -17,7 +17,11 @@ create table if not exists public.migration_snapshots (
   environment text not null default 'unknown',
   migration_job_id text,
   plan_id text,
-  status text not null default 'restorable',            -- restorable | restored | expired | deleted
+  -- restorable | restoring | restored | restore_failed | expired | deleted
+  --   restoring      = rollback dispatched to an executor, NOT yet confirmed
+  --   restored       = an executor confirmed the asset matches this snapshot
+  --   restore_failed = the executor tried and could not; still a valid source
+  status text not null default 'restorable',
   trigger text not null default 'pre_migration',        -- pre_migration | manual | scheduled
   crypto_state jsonb not null default '{}'::jsonb,       -- algorithms/tls/pki/certificates/keys/config (metadata only)
   configuration_version text,
@@ -40,7 +44,7 @@ create table if not exists public.migration_snapshot_audit (
   user_id uuid not null,
   snapshot_id text,
   migration_job_id text,
-  action text not null,                                  -- created | restored | auto_rollback | deleted | verified
+  action text not null,                                  -- created | execution_recorded | restore_requested | restored | rollback_failed | auto_rollback | deleted | verified
   actor text,
   reason text,
   detail text,

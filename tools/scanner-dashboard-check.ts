@@ -195,7 +195,7 @@ const MODULES: ModuleState[] = [
   moduleState('risk-scoring-engine', 'Risk scoring engine', 'Completed', 5),
 ]
 
-const ESTATE = { totalAssets: 2, totalFindings: 5, criticalFindings: 1, vulnerableAssets: 2, pqcReadiness: 20, riskScore: 49 }
+const ESTATE = { totalAssets: 2, totalFindings: 5, criticalFindings: 1, highFindings: 2, vulnerableAssets: 2, vulnerableComponents: 4, pqcReadiness: 20, riskScore: 49 }
 
 const POPULATED: AssessmentInput = {
   status: 'completed',
@@ -222,7 +222,7 @@ const EMPTY: AssessmentInput = {
   scanner2: null,
   targets: [],
   completedAt: null,
-  estate: { totalAssets: 0, totalFindings: 0, criticalFindings: 0, vulnerableAssets: 0, pqcReadiness: 0, riskScore: 0 },
+  estate: { totalAssets: 0, totalFindings: 0, criticalFindings: 0, highFindings: 0, vulnerableAssets: 0, vulnerableComponents: 0, pqcReadiness: 0, riskScore: 0 },
   linked: { cbom: 0, assets: 0, exposures: 0 },
   provenance: 'No evidence yet',
 }
@@ -485,7 +485,7 @@ function verifySingleSourceOfTruth() {
     summary: null,
     results: [],
     modules: [],
-    estate: { totalAssets: 6, totalFindings: 174, criticalFindings: 106, vulnerableAssets: 6, pqcReadiness: 12, riskScore: 61 },
+    estate: { totalAssets: 6, totalFindings: 174, criticalFindings: 106, highFindings: 41, vulnerableAssets: 6, vulnerableComponents: 120, pqcReadiness: 12, riskScore: 61 },
   })
   const estateFootprint = (key: string) => estateOnly.footprint.metrics.find((metric) => metric.key === key)?.value
   /* Estate scope holds totals, not rows — there is nothing to classify, so the

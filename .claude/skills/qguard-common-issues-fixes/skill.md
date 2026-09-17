@@ -1281,6 +1281,585 @@ Result: **66.7s → 8.4s**, four `unavailable` stages, every score withheld.
 
 ---
 
+## 27. A rollback "completes" and the asset was never touched
+
+**Problem**
+
+The Snapshots panel on `/dashboard/live-migration` showed restored snapshots and
+`rolled_back` migration jobs, with an audit line reading *"Restored
+<asset> from MSNAP-…"* and `restoration_status: 'completed'`. Nothing had run on
+the asset. A tenant with zero agents could produce these records simply by
+opening the page.
+
+**Root Cause**
+
+Four separate holes, all with the same shape — a database write standing in for
+an operation:
+
+1. `autoRollbackFailedJobs()` (migration-snapshots.ts) flipped every FAILED job
+   to `rolled_back` and its snapshot to `restored`, with no executor at all. It
+   was called from `buildSnapshotDashboard()`, i.e. from **GET /** and from the
+   20-second SSE tick, so opening a dashboard mutated tenant state.
+2. `POST /:snapshotId/restore` wrote `status: executor ? 'restored' : 'restorable'`.
+   `executor` meant *an active agent row exists for this tenant* — not that
+   anything was dispatched, and nothing was. The audit said "dispatched…
+   awaiting confirmation" while the row said restored.
+3. The agent's own config backup (`targetPath`/`backupPath`/`beforeHash`,
+   produced by `applyLocalConfigRemediation`) was posted in the event
+   `metadata.snapshot` and **discarded** — `executorEvents` keeps only
+   type/status/progress. The platform could not roll anything back even in
+   principle while still offering a Restore button.
+4. `rollback_requested` (written by `/migration/jobs/:id/action` and
+   `/plans/:id/action`) had no consumer anywhere. The job parked forever.
+
+**Solution**
+
+- Rollback is a real command. `AgentCommandType` gained `'rollback'`; the agent
+  runtime implements it in `drainCommands` (`executeRollbackCommand`): refuses
+  unless write-capable, re-verifies the backup against the recorded digest,
+  copies the current file aside first (`.qguard-prerollback-*`), restores,
+  re-hashes, and acks `completed` **only if verified**.
+- `settleAgentRollback()` is now the only writer of `status: 'restored'`, and it
+  keys on the executor's `verified` flag. Unverified → `restore_failed`, which
+  stays restorable so it can be retried.
+- `resolveRollbackExecutor()` dispatches only to the agent that *made* the change
+  (the backup lives on that host), and only when it is connected, write-capable,
+  entitled, and running ≥ `AGENT_ROLLBACK_MIN_VERSION`.
+- `recordSnapshotExecution()` persists the agent's backup descriptor (and the
+  cloud adapters' `rollbackPlan`) onto the snapshot, so restore has a real target.
+- `executeCloudConnectorRollback()` replays the recorded provider rollback plan
+  for AWS ELB/S3/RDS, Azure App Gateway/Storage, GCS/GCP HTTPS LB.
+- `buildSnapshotDashboard` is read-only. Snapshot creation moved to
+  `ensureSnapshotForJob()`, a **gate** in the agent claim path.
+- Four honest dispositions, never collapsed: `dispatched`, `restored`, `failed`,
+  `awaiting-executor`.
+
+Verified live: `npx tsx tools/rollback-live-check.ts` — 59 assertions against the
+running server and the real database.
+
+**Prevention Checklist**
+
+- [ ] A status that asserts something about the CUSTOMER'S asset may only be
+      written by the code path that received an executor's confirmation. Grep for
+      every write of that literal and count them; two is auditable, six is not.
+- [ ] "An executor EXISTS" is not "an executor RAN". `agents.length ? 'restored'
+      : 'restorable'` is this bug in one line.
+- [ ] A GET handler and an SSE tick must not write. Put `.update(`/`.insert(` in
+      a regression check over the dashboard-builder body (`tools/rollback-check.ts`
+      section 2 does exactly this).
+- [ ] A guard that is created lazily by a dashboard is not a guard. If the rule is
+      "never change an asset without a snapshot", the snapshot belongs in the
+      dispatch path, not in a panel nobody may open.
+- [ ] Before offering a destructive control, ask what would physically perform it.
+      If the answer is "nothing", render the reason instead of the button —
+      `restoreExecutable` + `restoreBlockedReason`.
+- [ ] A backup is only a restore source while it still hashes to the digest
+      recorded when it was taken. Verify before writing it back, never after.
+- [ ] Make the rollback itself reversible (copy the current file aside first).
+- [ ] A new agent command needs a MINIMUM RUNTIME VERSION check. An older agent
+      answers "Unsupported command type", which settles as a failed restore and
+      hides the real fix (upgrade the host).
+- [ ] Records written by the broken path are still in the customer's database.
+      Correct them with an appended audit row (`tools/rollback-legacy-reconcile.ts`),
+      never by deleting history.
+
+---
+
+## 28. A Patcher agent executes a Live Migration cutover
+
+**Problem**
+
+The platform publishes four agent types and tells the customer that Migration
+Operator "executes approved Live Migration cutovers" while Patcher applies
+"remediation on allowed configuration paths". A Patcher claimed and executed
+cutovers. A **Collector** — a read-only agent — could drive a migration job to
+`completed` with a single POST.
+
+**Root Cause**
+
+`agentMayWrite(client, agent, 'migration')` in `agent-entitlement.ts` was written
+for exactly this and had **no call site**. The only caller
+(`GET /agent/remediation/jobs`) asked for `'remediation'`, which patcher *and*
+operator both satisfy. `requireAgentRoleTier` was likewise exported and unused.
+
+Separately, `POST /agent/remediation/jobs/:id/event` — the endpoint that moves a
+job to `completed` — had **no capability check at all**. The claim path checked
+the role; the path that declares the work finished did not.
+
+**Solution**
+
+- `jobExecutionClass(job)` in `agent-scanner.ts` classifies a job as `migration`
+  (owned by a migration plan, or a cutover job type) or `remediation` (HNDL /
+  config patch). One classifier, used by both the claim path and the event path.
+- The job poll resolves BOTH capabilities once and applies them per job.
+- The event endpoint re-checks the matching capability and returns 403.
+- Refusals are returned as `refusedByRole` and written to the job as
+  `metadata.dispatchBlock`, so Live Migration renders *why* rather than leaving
+  the job at "Awaiting Agent" forever.
+
+**Prevention Checklist**
+
+- [ ] An exported enforcement helper with no call site is a defect, not dead code.
+      `grep -c` the helper name; 1 means it is only defined.
+- [ ] Enforce at EVERY state transition that matters, not just the first. Claiming
+      work and declaring it finished are two different authorisations.
+- [ ] If the UI states an authority boundary ("executes only…"), there must be a
+      test that a wrongly-typed actor is refused. `tools/rollback-live-check.ts`
+      section 2 enrols a real patcher and asserts it cannot take a cutover.
+- [ ] A refusal must be reported, never silently filtered. An empty job list can
+      mean "no work", "not your role" or "no snapshot" — three different operator
+      actions.
+- [ ] `agentsOnline` counted `status='active'`, a column that stays active until
+      revocation. Liveness is a HEARTBEAT fact; use `HEARTBEAT_ONLINE_WINDOW_MS`.
+
+---
+
+## 29. Harvest Now jobs "queue" forever — or run with nobody's approval
+
+**Problem**
+
+Audit §2 requires explicit approval before any change to a customer asset. The
+dispatch gate blocked only `rejected` and `pending_approval` plans, so every
+other state dispatched unapproved: the planner's own `awaiting_agent` default,
+plans whose `status` was `approved` because they had been EXPORTED to PDF or
+pushed to the sandbox, and every Harvest Now remediation job — which has no plan
+at all and reached the fleet via a plain Resume. The first attempt at a positive
+gate ("no plan → block") fixed the approval hole and silently stranded every
+Harvest Now job, because nothing could approve a planless job.
+
+Two neighbours of the same defect:
+
+- The agent claim path had **no sandbox exclusion**. A queued `[DRY RUN]` job
+  whose target algorithm matched the PQC regex could be claimed by a real Patcher.
+  `sandbox.ts` and `migration.ts` each had a private simulation predicate, and
+  they had drifted (only one honoured `metadata.dryRun`).
+- `POST /agent/remediation/jobs/:id/event` accepted any job with NO assigned
+  agent, so a write-capable agent could post `completed` for work that was never
+  claimed — bypassing both the approval gate and the snapshot gate, which live in
+  the claim path.
+
+**Root Cause**
+
+Approval was modelled as the absence of a rejection, on one unit (the plan),
+while work arrives in two shapes (planned migrations, per-finding remediation).
+`planStatusForAction()` returned `'approved'` for `export`/`sandbox`, and
+`loadMigrationPlan()` defaulted a missing row's status to `'approved'`.
+`planApproval()` also read only one of the two shapes a plan travels in
+(`metadata` on the raw row, `migrationMetadata` on the mapped payload), so the
+positive control failed while every negative control passed.
+
+**Solution**
+
+`src/lib/migration/job-safety.ts` — one isomorphic module read by the dispatch
+routes, the agent poll + event endpoint, the sandbox engine and the UI:
+
+- `isSimulationJob()` — the UNION of every writer's markers; sandbox.ts and
+  migration.ts delegate to it; the claim path filters on it first.
+- `jobApproval(job, plan)` — planned job → the plan's recorded decision; planless
+  job → the job's own `metadata.approval`; a job record cannot override a
+  rejected plan; a planned job whose plan cannot be read is NOT approved.
+- `approvalRecord()` — attributed (`decidedBy`, `decidedAt`, `reason`, `via`).
+- New `approve` action on `/migration/jobs/:id/action` (bulk only with an
+  explicit selection); Resume/Retry refuse unapproved work with the reason;
+  Live Migration shows **Approve & queue** behind a confirmation, and hides
+  Resume until approved.
+- Event endpoint: `if (assignedAgentId !== agent.id)` — the claim is the only door.
+
+Proven by `tools/agent-governance-check.mjs` (10 — now includes a never-approved
+plan AND a bare `status:'approved'` as negative controls) and
+`tools/rollback-live-check.ts` §2a/§2b.
+
+**Prevention Checklist**
+
+- [ ] An authorisation gate asks the POSITIVE question ("who approved this?"),
+      never the negative one ("was it rejected?"). A negative gate admits every
+      state nobody thought to list.
+- [ ] A `status` string is not an approval. Approval is a record with a name.
+- [ ] Before adding a precondition, enumerate EVERY producer of the thing being
+      gated (`grep` for inserts, including multi-line `.from(t)\n.insert(`). A
+      gate that one producer can never satisfy is an outage, not a control.
+- [ ] Include a negative control that is the SYSTEM'S OWN DEFAULT state, not just
+      the obviously-bad states. `awaiting_agent` was the one that mattered.
+- [ ] A predicate over a record that travels in two shapes must read both — and
+      the positive control is what catches it when it doesn't.
+- [ ] Gates that live in a "claim" step are bypassed by any endpoint that acts
+      on unclaimed work. Every state-changing endpoint re-checks the claim.
+- [ ] One predicate per concept. Two copies of "is this a simulation?" had
+      already drifted; the third call site had none.
+
+---
+
+## 30. "Key Rotations: 3" when no key was ever rotated
+
+**Problem**
+
+Live Migration reported certificate replacements, key rotations and TLS
+handshakes before any change had happened, a 100% migration success rate with
+nothing completed or failed, "Critical Systems Protected" equal to
+`completed − failed`, and the same readiness number as three separate tiles
+(Quantum Readiness, Audit Readiness, Compliance). Failed validations were counted
+as Verified.
+
+**Root Cause**
+
+- Counters regexed free text over every telemetry row:
+  `countTelemetry(/key|rotation|kem|envelope/)`. The claim row for an ML-KEM job
+  contains "kem", so CLAIMING a job counted as a key rotation, and one row could
+  count toward several operations.
+- `/pass|success|valid/` matches "invalid" and "validation_failed".
+- `completed + failed > 0 ? rate : 100` — success from no data.
+
+**Solution**
+
+`buildLiveTelemetry()` (exported, pure) counts operations **per job, once**,
+classified by the recorded `job_type` via `OPERATION_CLASS_BY_JOB_TYPE`, and only
+when the job completed with a passing validation. `isPassingValidation()` uses
+exact tokens. UI tiles state what they count; the report reads the same fields
+with matching labels.
+
+**Prevention Checklist**
+
+- [ ] Count OUTCOMES from structured fields, never mentions in free text.
+      `tools/rollback-check.ts` §10 asserts a claim row is not a rotation.
+- [ ] A status regex containing `valid` also matches `invalid`. Use exact tokens.
+- [ ] A ratio with a zero denominator is "—", not 100%.
+- [ ] If two tiles show the same variable, they must show the same LABEL.
+- [ ] Classify an operation once, at the job, by its type — the substring trap
+      from #22/`dhe`/`ecdh` recurs in every counter built on regex.
+
+---
+
+## 31. Agents report ECDSA as "RSA-1024 CRITICAL" and hybrid ML-KEM as classical X25519
+
+**Problem**
+
+On the agent evidence path: an ECDSA P-256 certificate issued by a CA named
+"...TLS RSA SHA256...CA" was stored as RSA-1024 critical; an Ed25519 certificate
+whose subject contained "rsa" ("Mersault Ltd") likewise; the hybrid groups
+X25519MLKEM768 / mlkem768x25519-sha256 were stored as classical X25519; every
+AES-256-GCM component was stored `is_quantum_safe: false` WITH a quantum exposure
+row; and a config line merely naming an OQS provider wrote a quantum-SAFE row.
+The agent's own labels were lossy too (`ecdh-sha2-nistp256` -> "ECDSA-P256", a key
+exchange filed as a signature; RSA-3072 -> "RSA-2048"; RC4 -> "3DES").
+
+**Root Cause**
+
+- `normalizeEvidenceAlgorithm` (scanner_2/modules) substring-matched `rsa`,
+  `x25519`, `tls` over `JSON.stringify(rawEvidence)` - issuer and subject names
+  decided the key algorithm, and `P-256`'s "256" was parsed as an RSA modulus.
+- `isPqcReadyEvidence` matched "pqc"/"hybrid" anywhere in the JSON (including the
+  agent's own rule LABEL).
+- `is_quantum_safe: finding.threatLevel === 'safe'` - no severity profile is ever
+  `safe`, so it was always false.
+- `evidenceMatch` found the FIRST evidence on the host, not the one that produced
+  the finding.
+- `classifyAgentEvidence` asked the knowledge base first; its alias scan matched
+  the part it knew (`rsa-sha2-512` -> SHA-2, `TLS_ECDHE_RSA_...` -> AES).
+- The canonical classifier itself missed sntrup761x25519, SecP384r1MLKEM1024,
+  hybrid signatures, JOSE algorithms and hyphenated `TLS-1.3`.
+- `scanEvidenceWithModules` had NO test.
+
+**Solution**
+
+One classifier: `analyzeCryptoObservation` decides quantum posture everywhere;
+`classicalProfileFor()` maps its decomposition to a severity profile from
+structured fields only; the inventory keeps the precise observed name; exposures
+only for `vulnerable`; dependencies never become algorithm findings. Proven by
+`tools/agent-evidence-classification-check.ts` (67) with a negative control
+(restoring the old module fails exactly on the traps above).
+
+**Prevention Checklist**
+
+- [ ] Never classify from `JSON.stringify(record)`. Read the structured field.
+- [ ] A predicate over a severity LEVEL must be checked against the levels that
+      exist. `=== 'safe'` against a table with no `safe` entry is always false.
+- [ ] Match a finding to its source by id, never by a shared attribute.
+- [ ] Composite names (suites, SSH methods, hybrid groups) go to the decomposer,
+      not a substring lookup.
+- [ ] Every production path that writes a verdict needs a test whose fixtures are
+      the traps - issuer names, subjects, curve sizes, hybrid groups.
+
+---
+
+## 32. The agent collects everything and uploads nothing ("control plane accepted 0")
+
+**Problem**
+
+`QGuard agent scan complete. Collected 31 evidence record(s) ... control plane
+accepted 0; 2 publish error(s): Do not know how to serialize a BigInt`.
+
+**Root Cause**
+
+The TLS handshake scanner put `cert.publicKey.asymmetricKeyDetails` into
+`rawEvidence`. For an RSA certificate Node reports `publicExponent` as a BigInt
+(65537n); `JSON.stringify` throws; the WHOLE batch fails. Every agent scanning an
+endpoint with an RSA certificate - the commonest kind - uploaded nothing. The
+lifecycle e2e passed because its TLS target presents an ECDSA certificate.
+
+**Solution**
+
+`jsonSafe()` at the source, and a BigInt replacer in `publishBatch` as defence in
+depth. Caught by `tools/agent-collector-offline-check.ts`, which runs the SHIPPED
+bundle against a real lab (RSA/ECDSA/ML-DSA certs, keys, JWKS, SAML, live hybrid
+and classical TLS servers) with a local recording control plane - no database.
+
+**Prevention Checklist**
+
+- [ ] Never put a Node crypto object's details into a payload without a JSON-safe
+      copy: `asymmetricKeyDetails` carries BigInt.
+- [ ] Test the uploader with an RSA certificate specifically.
+- [ ] "accepted 0" after collecting N is a failure, not a quiet scan. Read the
+      agent's own summary line in every live test.
+- [ ] An assertion like "every certificate has X" passes on ZERO certificates.
+      Require the collection to be non-empty.
+
+---
+
+## 33. A Patcher never patches a real Harvest Now job
+
+**Problem**
+
+Approved Harvest Now remediation jobs always ended "manual change required".
+Separately, the Collector never read certificates or keys from disk, never
+collected identity signing material, and never measured the TLS key-exchange
+group - the one HNDL-deciding fact about a TLS endpoint.
+
+**Root Cause**
+
+- `buildHndlRemediationCandidates` dropped the finding's `evidenceRecord`, so the
+  queued job never named the file to change.
+- Both `adapterForJob` (agent) and `remediationAdapter` (server) classified by
+  substring before checking for a file: `/etc/app/tls.conf` matched "tls" and
+  routed to the NETWORK adapter, which is manual only.
+- `scanAllowedPath` handled manifests, configs and SSH public keys only; the
+  `certificates`/`pki` scan types had no filesystem implementation.
+
+**Solution**
+
+The candidate carries `location` (filePath/target/host/port/sourceAgentId) into
+job metadata; a job naming a local file is `local_configuration` first. New agent
+collectors: `scanTlsKeyExchange` (single-group handshakes; untestable is not
+rejected), `scanCryptoMaterialFile` (PEM/DER/bundles plus key METADATA and
+public-key fingerprint, never material), `scanIdentityFile` (JWKS, SAML metadata).
+The server claim scope fails closed and resolves `..` with a path boundary.
+
+**Prevention Checklist**
+
+- [ ] Follow a capability end-to-end from the button the customer presses to the
+      host being changed. A capability no product flow can reach is not a feature.
+- [ ] Classify by the most specific structured fact first (a file path), then by
+      words.
+- [ ] A declared scan type with no collector behind it must fail a check.
+
+---
+
+## 34. New Supabase project: test accounts "lose" their plans and every table says `42501 permission denied`
+
+**Problem**
+
+After moving `.env` to a Supabase project created after 2026-05-30 and applying
+every `supabase/*.sql` + messaging migration, users sign in but land on
+`<UpgradeRequired variant="no-subscription">`, dashboards are empty, and
+`tools/seed-test-subscriptions.ts` cannot write — even with the service-role key.
+Separately, QA accounts that WERE seeded kept falling out of QGuard Messaging
+about a month after each seed.
+
+**Root Cause**
+
+- Supabase no longer grants `anon` / `authenticated` / `service_role` on tables
+  created in `public` (changelog discussion #45329). The tables exist, but
+  PostgREST answers `42501 permission denied for table X` before RLS runs — for
+  all 152 tables and all three roles, including the service key. A non-existent
+  table answers `PGRST205` instead, which is how to tell the two apart.
+- `use-subscription.ts` ignores the query error, so the gate renders "no
+  subscription" instead of an error; `subscriptionGateway` catches the throw and
+  fails OPEN, so the API let every signed-in account through to Elite routes.
+- The seed set a 30-day `current_period_end`. The web gate reads `status` only,
+  but `qguard_has_messaging_access()` (migration 030) and
+  `qguard-messaging/src/lib/subscription.ts` lock 72h after period end.
+
+**Solution**
+
+Run `supabase/data-api-grants.sql` in the SQL Editor (idempotent). It grants
+`service_role` on everything, and `anon`/`authenticated` only on tables whose
+LIVE `pg_class.relrowsecurity` is on (and `security_invoker` views). 8 tables in
+`supabase/schema.sql` never enable RLS in the migrations, yet on
+`xsbdlahuecadzfajlvis` all 8 had RLS on — the migration text is not the database,
+which is why the script reads the catalog instead of a list. Then
+`npx tsx tools/seed-test-subscriptions.ts`
+(now 365-day periods, and it stops with a grants hint on 42501). The owner
+`zachmatthew369@gmail.com` must be created in Supabase > Authentication > Users —
+`/register` refuses owner emails.
+
+**Prevention Checklist**
+
+- [ ] On any project swap, probe one table with the service key BEFORE seeding:
+      `42501` = grants missing, `PGRST205` = migration missing.
+- [ ] Re-run `supabase/data-api-grants.sql` after applying any new migration —
+      default privileges only cover `service_role` for new tables.
+- [ ] Never "fix" 42501 with a blanket `grant all ... to anon`: a table without
+      RLS becomes readable and writable by anyone holding the public anon key.
+- [ ] A seeded or comp subscription needs a `current_period_end` far enough out
+      for the messaging paywall, not just an `active` status.
+- [ ] Check live RLS without SQL access and without writing: anon `POST
+      /rest/v1/<table>` with body `{}`. "violates row-level security" = RLS on;
+      `23502` not-null = RLS off (anon reached the row). RLS WITH CHECK runs
+      before NOT NULL; calibrate on `billing_subscriptions` first.
+- [ ] Grants do not cover functions: SECURITY DEFINER RPCs keep EXECUTE for
+      PUBLIC. `get_dashboard_summary`, `get_exposure_map`,
+      `get_profile_security_snapshot` (+ 2 more) take any user id and answered
+      200 to anon — a cross-tenant read independent of table grants.
+
+---
+
+## 35. Anyone with the anon key reads another tenant's profile; Crypto Agility shows no policy exceptions
+
+**Problem**
+
+Two defects that surface once a project's tables are reachable (entry #34):
+
+- `POST /rest/v1/rpc/get_profile_security_snapshot {"p_user_id": "<any id>"}`
+  with only the PUBLIC anon key returns that user's profile, preferences and
+  security settings. Same for `get_dashboard_summary`, `get_exposure_map`,
+  `get_recent_security_events`, `calculate_quantum_risk_score`. User ids are
+  not secret: public avatar URLs are `avatars/<user_id>/...`.
+- Crypto Agility always reports zero policy exceptions, whatever the tenant has
+  recorded.
+
+Also seen while provisioning: `qkms-command-center-schema.sql` fails with
+`42P01 relation "public.qkms_keys" does not exist` if it runs before
+`qkms-lifecycle-schema.sql`, which creates that table.
+
+**Root Cause**
+
+- The five functions (`dashboard-schema.sql`, `profile-security-schema.sql`) are
+  SECURITY DEFINER, take the user id as an ARGUMENT and never compare it with
+  `auth.uid()`. Definer rights bypass RLS inside them, and Postgres grants
+  EXECUTE on every new function to PUBLIC. Table grants (#34) do not touch
+  functions. No application code calls them.
+- `schema.sql` creates `quantum_governance_*` without RLS or policies. On the
+  new project RLS came up enabled anyway, with no policy. `crypto-agility.ts`
+  reads `quantum_governance_exceptions` through `createAuthClient(token)` (the
+  user's JWT), so RLS returns zero rows and `safeRows` passes on an empty list
+  ("absent tenants degrade to no exceptions"). The old project had RLS off, so
+  it worked there and was cross-tenant readable too.
+- The `.from('table')` grep that audits table usage misses helpers taking the
+  table name as an argument: `safeRows(client, 'quantum_governance_exceptions', …)`.
+
+**Solution**
+
+`supabase/rpc-and-rls-hardening.sql` (idempotent, independent of the order with
+`data-api-grants.sql`):
+- Revokes EXECUTE on the five functions from PUBLIC/anon/authenticated and
+  grants it to service_role.
+- Enables RLS on all 8 `schema.sql` tables.
+- Adds `<table>_user_isolation` (`FOR ALL TO authenticated`, `user_id = (select
+  auth.uid())`) on the four `quantum_governance_*` tables. `migrations`,
+  `migration_logs`, `risk_scores` and `telemetry` stay service-role only.
+
+Proven on PGlite (Postgres 17) with the full bundle, Supabase stubs (roles,
+`auth.uid()/email()/jwt()`, `storage.objects/foldername`, `supabase_realtime`)
+and both script orders:
+- **Positive control:** anon reads another user's snapshot before the fix.
+- **Negative control:** with RLS on and no policy, the owner reads 0 of their own
+  exceptions.
+- **After the fix:**
+  - The five RPCs are denied to anon and to other tenants.
+  - `vault_folder_path_array`, `get_or_create_vault_profile`,
+    `verify_share_link_access` (anon) and `qguard_is_owner` still work.
+  - The exact Crypto Agility query returns the owner's row, and nothing to others.
+
+Working SQL order for a fresh project:
+1. `schema.sql`
+2. `dashboard-schema.sql`
+3. `profile-security-schema.sql`
+4. `billing-subscription-schema.sql`
+5. `admin-dashboard-schema.sql`
+6. `paypal-subscription-migration.sql`
+7. `play-billing-migration.sql`
+8. `quantum-vault-production-schema.sql`
+9. `vault-complete-migration.sql`
+10. `vault-files-migration.sql`
+11. `vault-profile-rls-recursion-fix.sql`
+12. `vault-security-hardening.sql`
+13. `generated-keys-schema.sql`
+14. `governance-schema.sql`
+15. `migration-cost-assumptions-schema.sql`
+16. `migration-snapshots-schema.sql`
+17. `external-trust-schema.sql`
+18. `pqauth-identity-schema.sql`
+19. `qkms-lifecycle-schema.sql`
+20. `qkms-command-center-schema.sql`
+21. `quantum-certification-schema.sql`
+22. `sophia-copilot-schema.sql`
+23. `quantum-readiness-realtime.sql`
+24. `scale-indexes.sql`
+25. `data-api-grants.sql`
+26. `rpc-and-rls-hardening.sql`
+
+(`vault-schema.sql` is superseded by the production vault schema.)
+
+**Prevention Checklist**
+
+- [ ] A SECURITY DEFINER function that takes a user/tenant id must either check
+      it against `auth.uid()` or be REVOKEd from PUBLIC. Audit with:
+      `select oid::regprocedure, has_function_privilege('anon', oid, 'EXECUTE')
+      from pg_proc where pronamespace = 'public'::regnamespace and prosecdef`.
+- [ ] Probe an RPC leak without reading real data: call it as anon with a random
+      UUID. 200 = executable, 42501 = closed.
+- [ ] RLS without a policy is not "secure by default" for code that reads with
+      the user's token — it is an always-empty list. Grep the user-token client
+      (`createAuthClient`) callers for every table they read, including helper
+      arguments, and give each an owner policy.
+- [ ] Audit table usage with `rg "['\"\`]<table>['\"\`]"`, not only `.from(`.
+- [ ] Dry-run a migration bundle on PGlite with Supabase stubs before applying it
+      to a real project. The whole bundle applies in ~7s and catches file-order
+      dependencies (`qkms_keys`) and policy defects with behavioural checks.
+
+---
+
+## 35. QGuard Messaging desktop: "Couldn't reach the secure sign-in service" on a machine that is online
+
+**Problem**
+
+The installed desktop app (or `dist` served by Tauri) refuses every sign-in with
+`AUTH_UNREACHABLE_MESSAGE` from `qguard-messaging/src/lib/auth-context.tsx`,
+while the web platform signs in fine. Seen 2026-08-12 and 2026-09-17.
+
+**Root Cause**
+
+Vite inlines `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` into the bundle at
+build time, and Tauri embeds that bundle in the exe. After a Supabase project
+switch, an installer built earlier still calls the old project. When that project
+has been deleted its hostname is NXDOMAIN, `fetch` throws "Failed to fetch",
+`isTransientAuthError` matches, and three retries end in the "check your
+connection" text — which points away from the real cause. (A restricted but live
+project returns an HTTP error instead.)
+
+**Solution**
+
+Compare `grep -rhoE '[a-z]{20}\.supabase\.co' qguard-messaging/dist/assets | sort -u`
+with `VITE_SUPABASE_URL` in `qguard-messaging/.env.local`, and resolve the baked
+host (`nslookup <ref>.supabase.co 1.1.1.1`). Then rebuild with
+`qguard-messaging/tools/release.ps1 -Version <x.y.z>`; it re-inlines the env, signs
+the updater artifacts, and re-syncs `sizeMb` + `sha256` in
+`src/app/qguard-messaging/_shared.tsx`. Reinstall from `public/downloads`.
+Android: `qguard-messaging/docs/BUILD_NATIVE.md` path B (CLI build → copy `.so`
+into `jniLibs` → `gradlew assembleArm64Release bundleArm64Release -x
+rustBuildArm64Release`), then `node tools/verify-android-release.mjs
+--forbid-asset <old entry js>`. The CLI's failed symlink DELETES the old `.so`
+from `jniLibs`, so the copy step is mandatory, not optional.
+
+**Prevention Checklist**
+
+- [ ] Every Supabase project switch is also a desktop AND Android rebuild — the
+      apps carry the project address inside the binary.
+- [ ] The Tauri CSP (`https://*.supabase.co`) is not the cause; don't edit it.
+- [ ] Don't grep the exe for the ref: embedded assets are brotli-compressed.
+      Check `dist/assets` and that dist, exe and `.sig` share one build time.
+
+---
+
 ## Adding an entry
 
 Use exactly this shape — Problem, Root Cause, Solution, Prevention Checklist.

@@ -236,7 +236,7 @@ export default function QuantumSimulationPage() {
             index="07"
             eyebrow="The published clock"
             title="Dates you will be audited against"
-            lede="NIST IR 8547 deprecates RSA-2048 and ECDSA P-256 after 2030 and disallows them entirely after 2035. CNSA 2.0 sets earlier exclusive-use dates for national security systems. These are the deadlines a programme plan has to work backwards from."
+            lede="NIST IR 8547 ipd deprecates 112-bit-strength public-key algorithms — RSA-2048 and finite-field DH among them — after 2030, and disallows every quantum-vulnerable public-key algorithm, at every key size, after 2035. CNSA 2.0 sets earlier exclusive-use dates for national security systems. These are the deadlines a programme plan has to work backwards from."
             accent={QSR.live}
           />
           <StandardsTimeline now={now} />
@@ -289,7 +289,8 @@ export default function QuantumSimulationPage() {
           <div className="mt-2.5 grid gap-3 text-[11.5px] leading-relaxed md:grid-cols-3" style={{ color: QSR.inkFaint }}>
             <p>
               <strong style={{ color: QSR.inkSoft }}>Published values</strong> are transcribed from FIPS 203, 204 and 205, NIST
-              IR 8547 ipd, the CNSA 2.0 announcement and the IANA TLS registry. Each carries a link to its source.
+              IR 8547 ipd, the CNSA 2.0 FAQ (December 2024, Ver. 2.1) and the IANA TLS registry. Each carries a link to its
+              source.
             </p>
             <p>
               <strong style={{ color: QSR.inkSoft }}>Modelled values</strong> come from Gidney &amp; Ekerå (2021), Gidney (2025)

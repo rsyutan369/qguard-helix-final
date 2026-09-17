@@ -80,9 +80,25 @@ describe("deriveReadState", () => {
     expect(decision.nextVerification).toBe("valid");
   });
 
-  it("flags a decrypted-but-unauthenticated peer message as tampered", () => {
+  it("does not brand an unanchored sender as tampered", () => {
+    // `authenticated: false` now means "the sender's device identity could not
+    // be checked", not "the ciphertext failed". A message that decrypted and
+    // whose signature verified must never be persisted as tampered — that is an
+    // accusation of forgery, and it would be recorded permanently against a
+    // message that is simply missing a proof it can still acquire later.
     const decision = deriveReadState(peerText({ authenticated: false }), undefined, ME, READ_AT);
-    expect(decision.nextVerification).toBe("tampered");
+    expect(decision.nextVerification).toBe("pending");
     expect(decision.newRead).toBe(true);
+  });
+
+  it("only a real integrity failure is left un-upgraded from pending", () => {
+    // A stub that never decrypted keeps whatever verdict it already had.
+    const decision = deriveReadState(
+      peerText({ authenticated: false, status: "failed" }),
+      { firstReadAt: null, verificationState: "tampered", threatScore: 0 },
+      ME,
+      READ_AT,
+    );
+    expect(decision.nextVerification).toBe("tampered");
   });
 });

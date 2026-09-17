@@ -28,6 +28,17 @@
 export type ControlStatus =
   | 'Healthy'
   | 'Warning'
+  /**
+   * A serious failure that is not yet catastrophic.
+   *
+   * This tier exists because the Public Findings table renders `status` while
+   * every aggregate (business risk, the critical count, sorting, Sophia) counts
+   * `severity`. Without it, a HIGH-severity control had to borrow the 'Critical'
+   * pill, so a reader counted three rose "Critical" badges under an Executive
+   * Summary that said "1 critical edge exposure". `control()` now enforces that
+   * 'Critical' is used if and only if the severity is CRITICAL.
+   */
+  | 'High'
   | 'Critical'
   | 'Unknown'
   | 'Not Observable'
@@ -38,6 +49,7 @@ export type ControlStatus =
 export const MEASURED_STATUSES: ReadonlySet<ControlStatus> = new Set<ControlStatus>([
   'Healthy',
   'Warning',
+  'High',
   'Critical',
   'Not Supported',
 ])

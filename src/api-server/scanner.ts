@@ -1580,6 +1580,84 @@ function normalizeStoredHistoryFindings(sessionResults: any[], metadata: any): D
   return sessionResults.map((row, index) => normalizeStoredFinding(row, index))
 }
 
+/**
+ * Complete a stored `metadata.summary` into the canonical {@link ScanSummary}.
+ *
+ * WHY THIS EXISTS
+ * ---------------
+ * `metadata.summary` has two writers with two different shapes. The web scanner
+ * writes the full eleven-field summary; the agent collector
+ * (`agent-scanner.ts`) writes only the severity census plus `pqcReadyEvidence`
+ * — no `targetsScanned`, `vulnerable`, `pqcReady`, `riskScore` or `qScore`.
+ *
+ * The reader used to accept whichever object was TRUTHY
+ * (`metadata.summary || buildSummaryFromStoredFindings(...)`), so a partial
+ * agent summary short-circuited the canonical builder and travelled downstream
+ * as if it were a web-scan summary. The dashboard then computed
+ * `clamp(summary.qScore)` over `undefined` and published **NaN** as the
+ * tenant's encryption score — which graded the estate "F · Critical" and
+ * rendered "NaN/100" and "NaN% ready" in the Quantum Exposure Timeline.
+ *
+ * Nothing here is invented. Every field that the stored summary does not carry
+ * is derived from the session's own persisted `pqc_scan_results` rows by the
+ * same function, and the same formula, the web path already uses. A field the
+ * stored summary DOES carry is preserved exactly, so web-scan history is
+ * byte-for-byte unchanged.
+ */
+export function reconcileStoredSummary(
+  stored: unknown,
+  findings: DefensiveFinding[],
+  /** The session row itself, whose `scanned_assets`/`total_assets` columns are
+   *  a better answer for `targetsScanned` than "1 if there are findings". */
+  session?: { scanned_assets?: number | null; total_assets?: number | null } | null,
+): ReturnType<typeof buildSummary> {
+  const sessionAssets = [session?.scanned_assets, session?.total_assets]
+    .map((value) => Number(value))
+    .find((value) => Number.isFinite(value) && value > 0)
+  const derived = {
+    ...buildSummaryFromStoredFindings(findings),
+    ...(sessionAssets !== undefined ? { targetsScanned: sessionAssets } : {}),
+  }
+  if (!stored || typeof stored !== 'object') return derived
+
+  const raw = stored as Record<string, unknown>
+  const num = (key: string): number | null => {
+    const value = Number(raw[key])
+    return Number.isFinite(value) ? value : null
+  }
+
+  const critical = num('critical') ?? derived.critical
+  const high = num('high') ?? derived.high
+  const medium = num('medium') ?? derived.medium
+  const low = num('low') ?? derived.low
+  const safe = num('safe') ?? derived.safe
+  const totalFindings = num('totalFindings') ?? derived.totalFindings
+
+  /* The published exposure formula, applied to whichever severity census we
+     ended up with, so a summary that never stored a score still reports a score
+     that can be reproduced from the severities printed beside it. */
+  const storedRisk = num('riskScore')
+  const storedQ = num('qScore')
+  const riskScore = storedRisk
+    ?? (storedQ !== null ? Math.max(0, 100 - storedQ) : null)
+    ?? Math.min(100, critical * 18 + high * 10 + medium * 5 + low * 2)
+
+  return {
+    targetsScanned: num('targetsScanned') ?? derived.targetsScanned,
+    totalFindings,
+    critical,
+    high,
+    medium,
+    low,
+    safe,
+    vulnerable: num('vulnerable') ?? derived.vulnerable,
+    /* The agent writer names this `pqcReadyEvidence`; it is the same count. */
+    pqcReady: num('pqcReady') ?? num('pqcReadyEvidence') ?? derived.pqcReady,
+    riskScore,
+    qScore: storedQ ?? Math.max(0, 100 - riskScore),
+  }
+}
+
 function buildSummaryFromStoredFindings(findings: DefensiveFinding[]): ReturnType<typeof buildSummary> {
   const critical = findings.filter((finding) => finding.threatLevel === 'CRITICAL').length
   const high = findings.filter((finding) => finding.threatLevel === 'HIGH').length
@@ -3178,14 +3256,17 @@ function buildExposurePayload(assets: any[], inventory: any[], exposures: any[],
   return { mode, nodes, distribution }
 }
 
-function buildHistoryPayload(sessions: any[], results: any[], mode: PersistenceMode) {
+export function buildHistoryPayload(sessions: any[], results: any[], mode: PersistenceMode) {
   const history = sessions.map((session: any) => {
     const sessionResults = results.filter((result: any) => result.scan_session_id === session.id)
     const metadata = session.metadata || {}
     const started = session.started_at || session.created_at
     const completed = session.completed_at || metadata.completedAt || null
     const storedFindings = normalizeStoredHistoryFindings(sessionResults, metadata)
-    const storedSummary = metadata.summary || buildSummaryFromStoredFindings(storedFindings)
+    /* One canonical summary shape, whichever writer produced the session.
+       See reconcileStoredSummary(): a partial summary is COMPLETED from this
+       session's own persisted findings, never passed through with holes in it. */
+    const storedSummary = reconcileStoredSummary(metadata.summary, storedFindings, session)
     const detectedComponents = Number.isFinite(Number(storedSummary?.totalFindings))
       ? Number(storedSummary.totalFindings)
       : storedFindings.length
