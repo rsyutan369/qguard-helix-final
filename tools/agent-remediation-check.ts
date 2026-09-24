@@ -205,7 +205,9 @@ for (const [line, detected] of unpatched) {
 
 section('9. SSH directives receive SSH syntax, not TLS group syntax')
 
-check('SSH KexAlgorithms is not the TLS group list', MANDATORY_PQC_CONFIG_VALUES.sshKexAlgorithms === MANDATORY_PQC_CONFIG_VALUES.tlsGroups, false)
+// String(): the constants are literal types, so tsc rejects comparing them directly;
+// the runtime assertion still guards against the two lists ever being made equal.
+check('SSH KexAlgorithms is not the TLS group list', String(MANDATORY_PQC_CONFIG_VALUES.sshKexAlgorithms) === String(MANDATORY_PQC_CONFIG_VALUES.tlsGroups), false)
 check('SSH KexAlgorithms names an OpenSSH hybrid kex', /mlkem768x25519-sha256|sntrup761x25519/.test(MANDATORY_PQC_CONFIG_VALUES.sshKexAlgorithms), true)
 check('SSH KexAlgorithms is comma-separated, not colon-separated', MANDATORY_PQC_CONFIG_VALUES.sshKexAlgorithms.includes(':'), false)
 check('the SSH host-key residual is stated, not hidden', MANDATORY_PQC_STACK.ssh.hostKeyResidual.length > 40, true)

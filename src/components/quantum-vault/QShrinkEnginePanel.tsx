@@ -18,7 +18,8 @@ interface QShrinkFileLike {
   original_size: number | null
   size: number
   is_locked: boolean
-  envelope_meta: Record<string, unknown> | null
+  /** Absent on rows that were never Q-Shrink processed. */
+  envelope_meta?: Record<string, unknown> | null
 }
 
 interface QShrinkEnginePanelProps {

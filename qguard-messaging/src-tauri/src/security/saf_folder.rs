@@ -35,11 +35,9 @@ pub use stubs::{create_document_in_tree, delete_document, describe_folder, pick_
 mod android {
     use std::time::{Duration, Instant};
 
-    use jni::objects::{JObject, JString, JValue};
-    use jni::JNIEnv;
-
     use super::FolderChoice;
     use crate::error::{QGuardError, Result};
+    use crate::security::android_bridge::{call_static_string, in_band};
 
     const PICKER_CLASS: &str = "com.qguard.messaging.VaultFolderPicker";
     /// The user is choosing a folder by hand — allow a generous window, but
@@ -51,108 +49,20 @@ mod android {
         QGuardError::Storage(format!("vault folder picker {context}: {detail}"))
     }
 
-    fn with_env<T>(f: impl FnOnce(&mut JNIEnv, &JObject) -> Result<T>) -> Result<T> {
-        let ctx = ndk_context::android_context();
-        let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
-            .map_err(|e| picker_err("attach JavaVM", e))?;
-        let mut env = vm
-            .attach_current_thread()
-            .map_err(|e| picker_err("attach JNI thread", e))?;
-        // ndk-context owns this global ref; JObject does not delete on drop.
-        let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
-        let result = f(&mut env, &activity);
-        // A pending Java exception aborts the process on the next JNI call.
-        if result.is_err() && env.exception_check().unwrap_or(false) {
-            let _ = env.exception_clear();
-        }
-        result
-    }
-
-    /// Loads the picker class through the APP class loader — `find_class` on a
-    /// native (non-Java) thread only ever sees system classes.
-    fn load_class<'a>(env: &mut JNIEnv<'a>, activity: &JObject) -> Result<jni::objects::JClass<'a>> {
-        let loader = env
-            .call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
-            .and_then(|v| v.l())
-            .map_err(|e| picker_err("getClassLoader", e))?;
-        let name = env
-            .new_string(PICKER_CLASS)
-            .map_err(|e| picker_err("alloc class name", e))?;
-        let class = env
-            .call_method(
-                &loader,
-                "loadClass",
-                "(Ljava/lang/String;)Ljava/lang/Class;",
-                &[JValue::Object(&name)],
-            )
-            .and_then(|v| v.l())
-            .map_err(|e| picker_err("loadClass(VaultFolderPicker)", e))?;
-        Ok(jni::objects::JClass::from(class))
-    }
-
-    fn read_string(env: &mut JNIEnv, value: JObject) -> Result<String> {
-        if value.is_null() {
-            return Ok(String::new());
-        }
-        let jstr = JString::from(value);
-        let text = env
-            .get_string(&jstr)
-            .map_err(|e| picker_err("read result string", e))?;
-        Ok(text.into())
-    }
-
     /// Static method taking (Context) and returning String.
     fn call_context_string(method: &str) -> Result<String> {
-        with_env(|env, activity| {
-            let class = load_class(env, activity)?;
-            let value = env
-                .call_static_method(
-                    &class,
-                    method,
-                    "(Landroid/content/Context;)Ljava/lang/String;",
-                    &[JValue::Object(activity)],
-                )
-                .and_then(|v| v.l())
-                .map_err(|e| picker_err(method, e))?;
-            read_string(env, value)
-        })
+        call_static_string(PICKER_CLASS, method, &[]).map_err(|e| picker_err(method, e))
     }
 
     /// Static method taking (Context, String...) and returning String.
     fn call_context_args_string(method: &str, args: &[&str]) -> Result<String> {
-        with_env(|env, activity| {
-            let class = load_class(env, activity)?;
-            let mut locals = Vec::with_capacity(args.len());
-            for arg in args {
-                locals.push(
-                    env.new_string(*arg)
-                        .map_err(|e| picker_err("alloc argument", e))?,
-                );
-            }
-            let mut values = vec![JValue::Object(activity)];
-            for local in &locals {
-                values.push(JValue::Object(local));
-            }
-            let signature = match args.len() {
-                1 => "(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;",
-                2 => "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
-                _ => return Err(picker_err(method, "unsupported argument count")),
-            };
-            let value = env
-                .call_static_method(&class, method, signature, &values)
-                .and_then(|v| v.l())
-                .map_err(|e| picker_err(method, e))?;
-            read_string(env, value)
-        })
+        call_static_string(PICKER_CLASS, method, args).map_err(|e| picker_err(method, e))
     }
 
     /// Kotlin returns `error:<reason>` in-band so a failed call never needs an
     /// exception round trip.
     fn unwrap_result(value: String, context: &str) -> Result<String> {
-        match value.strip_prefix("error:") {
-            Some(reason) => Err(picker_err(context, reason)),
-            None => Ok(value),
-        }
+        in_band(value).map_err(|reason| picker_err(context, reason))
     }
 
     /// Blocking: open the folder picker and wait for the user's choice.

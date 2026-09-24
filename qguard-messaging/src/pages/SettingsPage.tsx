@@ -22,6 +22,7 @@ import { invalidateAvatar } from "@/lib/avatars";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import { guardNativeFileInput } from "@/lib/native-dialog-guard";
+import { describeSavedFile, saveFileToDevice } from "@/lib/save-file";
 import { createEphemeralSupabaseClient, supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
 import { listTrustedDevices, revokeTrustedDevice, type TrustedDeviceRow } from "@/lib/trusted-devices";
@@ -594,19 +595,20 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
     });
   }
 
-  function downloadRecoveryCodes() {
+  async function downloadRecoveryCodes() {
     if (recoveryCodes.length === 0) return;
     const blob = new Blob([`QGuard recovery codes\n\n${recoveryCodes.join("\n")}\n`], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "qguard-recovery-codes.txt";
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
-    void audit("mfa_recovery_codes_downloaded", "warning", { recovery_codes_exported: recoveryCodes.length });
-    void recordSettingsTelemetry("settings_recovery_codes_downloaded", "Recovery codes downloaded locally", 100, "complete");
+    try {
+      // Audited only once the file really exists: on Android the old anchor
+      // click wrote nothing while this line still recorded a download.
+      const saved = await saveFileToDevice("qguard-recovery-codes.txt", blob);
+      setError(null);
+      setStatus(describeSavedFile(saved));
+      void audit("mfa_recovery_codes_downloaded", "warning", { recovery_codes_exported: recoveryCodes.length });
+      void recordSettingsTelemetry("settings_recovery_codes_downloaded", "Recovery codes downloaded locally", 100, "complete");
+    } catch (err) {
+      setError(`Recovery codes were not saved: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   function toggleThemeWithAudit() {
@@ -896,7 +898,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
             {recoveryCodes.length > 0 && (
               <div className="mt-4 grid gap-2">
                 {recoveryCodes.map((code) => <div key={code} className="rounded-lg bg-canvas px-3 py-2 font-mono text-sm text-ink-700">{code}</div>)}
-                <button onClick={downloadRecoveryCodes} className="rounded-lg bg-ink-950 px-4 py-2 text-sm font-bold text-white">
+                <button onClick={() => void downloadRecoveryCodes()} className="rounded-lg bg-ink-950 px-4 py-2 text-sm font-bold text-white">
                   Download Codes
                 </button>
               </div>

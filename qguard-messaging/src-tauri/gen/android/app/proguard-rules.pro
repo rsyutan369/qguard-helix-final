@@ -37,6 +37,13 @@
 # stripped, choosing a destination folder would fail only in release builds.
 -keep class com.qguard.messaging.VaultFolderPicker { *; }
 
+# Same contract for saving files into the public Downloads collection:
+# src-tauri/src/security/public_downloads.rs loads `com.qguard.messaging.DownloadsStore`
+# and calls begin / finish / abort by STRING NAME. Stripped by R8, every
+# "save to device" action (chat attachments, recovery codes, vault recovery key,
+# audit export) would fail only in release builds.
+-keep class com.qguard.messaging.DownloadsStore { *; }
+
 # Tauri plugin classes are constructed/invoked reflectively by the Tauri plugin
 # manager (getPluginManager); keep them so a release build can't strip a plugin
 # the app loads at runtime (shell/dialog, and future plugins).

@@ -1,0 +1,450 @@
+/**
+ * Runtime-agnostic billing logic for the `billing` Edge Function.
+ *
+ * No Deno globals and no remote imports, so the same file runs inside the
+ * Supabase Edge Runtime AND under Node (tools/billing-edge-check.ts), which is
+ * how the rules below are tested without a Deno toolchain.
+ *
+ * Mirrors src/api-server/paypal.ts (tiers, plan-id env names, status mapping):
+ * the Express router remains the implementation for a self-hosted API, and
+ * both read the same PAYPAL_* configuration.
+ */
+
+export type Tier = "Starter" | "Basic" | "Pro" | "Elite";
+export type Cycle = "monthly" | "yearly";
+export type DbCycle = "monthly" | "annual";
+export type DbStatus =
+  | "active"
+  | "trial"
+  | "expired"
+  | "suspended"
+  | "pending_renewal"
+  | "cancelled"
+  | "past_due"
+  | "incomplete";
+
+export type EnvGetter = (key: string) => string | undefined;
+
+export const TIERS: Tier[] = ["Starter", "Basic", "Pro", "Elite"];
+export const CYCLES: Cycle[] = ["monthly", "yearly"];
+
+/** Public site: PayPal return/cancel pages live here. A constant, never a request header. */
+export const DEFAULT_APP_ORIGIN = "https://qguardhelix.com";
+
+/** Statuses in which a PayPal subscription can be revised in place. */
+export const REVISABLE_STATUSES = new Set(["active", "past_due", "suspended", "pending_renewal"]);
+
+export function normalizeTier(value: unknown): Tier | null {
+  const text = String(value ?? "").trim().toLowerCase();
+  return TIERS.find((tier) => tier.toLowerCase() === text) ?? null;
+}
+
+export function normalizeCycle(value: unknown): Cycle {
+  const text = String(value ?? "").trim().toLowerCase();
+  return text.startsWith("year") || text === "annual" ? "yearly" : "monthly";
+}
+
+export function toDbCycle(cycle: Cycle): DbCycle {
+  return cycle === "yearly" ? "annual" : "monthly";
+}
+
+export function planEnvKey(tier: Tier, cycle: Cycle): string {
+  return `PAYPAL_PLAN_${tier.toUpperCase()}_${cycle.toUpperCase()}`;
+}
+
+export function planIdFor(env: EnvGetter, tier: Tier, cycle: Cycle): string | null {
+  const value = env(planEnvKey(tier, cycle))?.trim();
+  return value ? value : null;
+}
+
+export function planInfoFromId(env: EnvGetter, planId: unknown): { tier: Tier; cycle: Cycle } | null {
+  if (typeof planId !== "string" || !planId) return null;
+  for (const tier of TIERS) {
+    for (const cycle of CYCLES) {
+      if (planIdFor(env, tier, cycle) === planId) return { tier, cycle };
+    }
+  }
+  return null;
+}
+
+export function paypalApiBase(env: EnvGetter): string {
+  return String(env("PAYPAL_ENV") ?? "live").trim().toLowerCase() === "sandbox"
+    ? "https://api-m.sandbox.paypal.com"
+    : "https://api-m.paypal.com";
+}
+
+export function paypalSecret(env: EnvGetter): string {
+  return (env("PAYPAL_SECRET_KEY") || env("PAYPAL_CLIENT_SECRET") || "").trim();
+}
+
+export function isPaypalConfigured(env: EnvGetter): boolean {
+  return Boolean((env("PAYPAL_CLIENT_ID") ?? "").trim() && paypalSecret(env));
+}
+
+export function appOrigin(env: EnvGetter): string {
+  const configured = (env("APP_ORIGIN") ?? "").trim();
+  return (configured || DEFAULT_APP_ORIGIN).replace(/\/+$/, "");
+}
+
+/** Booleans only — safe to publish from the unauthenticated health route. */
+export function configurationReport(env: EnvGetter) {
+  const plans: Record<string, boolean> = {};
+  for (const tier of TIERS) {
+    for (const cycle of CYCLES) plans[`${tier.toLowerCase()}_${cycle}`] = Boolean(planIdFor(env, tier, cycle));
+  }
+  return {
+    configured: isPaypalConfigured(env),
+    webhookConfigured: Boolean((env("PAYPAL_WEBHOOK_ID") ?? "").trim()),
+    env: paypalApiBase(env).includes("sandbox") ? "sandbox" : "live",
+    plans,
+  };
+}
+
+/**
+ * The route below the function mount. The runtime may present the path with or
+ * without the `/functions/v1` gateway prefix; both reduce to the same route, and
+ * the client keeps the `/api/v1/...` paths the Express API uses, so pointing the
+ * app back at a self-hosted API is only an origin change.
+ */
+export function routeOf(pathname: string): string {
+  const route = pathname.replace(/^\/functions\/v1(?=\/)/, "").replace(/^\/billing(?=\/|$)/, "");
+  const trimmed = route.replace(/\/+$/, "");
+  return trimmed || "/";
+}
+
+export function mapPaypalStatus(status: unknown): DbStatus | null {
+  switch (String(status ?? "").toUpperCase()) {
+    case "ACTIVE":
+      return "active";
+    case "SUSPENDED":
+      return "suspended";
+    case "CANCELLED":
+      return "cancelled";
+    case "EXPIRED":
+      return "expired";
+    case "APPROVAL_PENDING":
+    case "APPROVED":
+      return "incomplete";
+    default:
+      return null;
+  }
+}
+
+/** PayPal subscription ids look like `I-BW452GLLEP1G`. */
+export function isPaypalSubscriptionId(value: unknown): value is string {
+  return typeof value === "string" && /^I-[A-Z0-9]{6,32}$/.test(value);
+}
+
+export function isUuid(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+/** Bearer token from an Authorization header — header only, never a query parameter. */
+export function bearerToken(header: string | null): string | null {
+  if (!header || !header.startsWith("Bearer ")) return null;
+  const token = header.slice(7).trim();
+  return token || null;
+}
+
+/**
+ * Body for PayPal's verify-webhook-signature call, built around the RAW event
+ * text. PayPal verifies the signature over the event exactly as it was sent;
+ * re-serialising a parsed object can reorder keys or reformat numbers and turn
+ * a genuine delivery into a verification failure.
+ */
+export function webhookVerificationBody(
+  headers: { get(name: string): string | null },
+  webhookId: string,
+  rawEvent: string,
+): string {
+  const field = (name: string) => JSON.stringify(headers.get(name) ?? "");
+  return `{"auth_algo":${field("paypal-auth-algo")},"cert_url":${field("paypal-cert-url")},`
+    + `"transmission_id":${field("paypal-transmission-id")},"transmission_sig":${field("paypal-transmission-sig")},`
+    + `"transmission_time":${field("paypal-transmission-time")},"webhook_id":${JSON.stringify(webhookId)},`
+    + `"webhook_event":${rawEvent}}`;
+}
+
+/** The approval link from a PayPal create/revise response, if any. */
+export function approvalLink(response: unknown): string | null {
+  const links = (response as { links?: Array<{ rel?: string; href?: string }> } | null)?.links;
+  if (!Array.isArray(links)) return null;
+  const approve = links.find((link) => link?.rel === "approve" && typeof link.href === "string");
+  return approve?.href ?? null;
+}
+
+/**
+ * Row written when PayPal reports a subscription ACTIVE — by the webhook or by
+ * the confirm route. Both paths write the identical row, so whichever arrives
+ * first wins and the second is a no-op re-statement of the same facts.
+ */
+export function activationRow(
+  env: EnvGetter,
+  resource: Record<string, any>,
+  nowIso: string,
+): { userId: string; tier: Tier; row: Record<string, unknown> } | null {
+  const userId = resource?.custom_id;
+  if (!isUuid(userId)) return null;
+  const info = planInfoFromId(env, resource?.plan_id);
+  if (!info) return null;
+  const providerSubId: string | null = typeof resource?.id === "string" ? resource.id : null;
+  const nextBilling: string | null = resource?.billing_info?.next_billing_time ?? null;
+  return {
+    userId,
+    tier: info.tier,
+    row: {
+      user_id: userId,
+      subscription_id: providerSubId ?? `paypal_${nowIso}`,
+      provider: "paypal",
+      provider_subscription_id: providerSubId,
+      plan: info.tier,
+      status: "active",
+      billing_cycle: toDbCycle(info.cycle),
+      auto_renew: true,
+      cancel_at_period_end: false,
+      current_period_start: resource?.start_time ?? nowIso,
+      current_period_end: nextBilling,
+      renewal_date: nextBilling,
+      cancelled_at: null,
+      metadata: {
+        paypalPlanId: resource?.plan_id ?? null,
+        payerEmail: resource?.subscriber?.email_address ?? null,
+      },
+      updated_at: nowIso,
+    },
+  };
+}
+
+/** Invoice row for a completed PayPal sale. */
+export function invoiceRow(
+  resource: Record<string, any>,
+  subscription: { user_id: string; plan: string },
+  nowIso: string,
+): Record<string, unknown> {
+  const amount = resource?.amount ?? {};
+  const gross = amount?.total ?? amount?.value ?? "0";
+  const currency = String(amount?.currency ?? amount?.currency_code ?? "USD").toUpperCase();
+  const saleId: string | null = typeof resource?.id === "string" ? resource.id : null;
+  return {
+    user_id: subscription.user_id,
+    invoice_id: saleId ?? `paypal_${nowIso}`,
+    provider_invoice_id: saleId,
+    transaction_id: saleId,
+    amount_paid_cents: Math.round(Number(gross) * 100) || 0,
+    tax_cents: 0,
+    currency,
+    status: "paid",
+    payment_method_summary: "PayPal",
+    subscription_plan: subscription.plan,
+    payment_date: resource?.create_time ?? nowIso,
+    metadata: { paypalSaleId: saleId, subscriptionId: resource?.billing_agreement_id ?? null },
+  };
+}
+
+// ---- Billing audit vocabulary + lifecycle transitions ----------------------
+//
+// These strings are the audit trail's contract. Revenue Intelligence counts
+// upgrades/downgrades by EXACT action name (src/lib/billing/revenue-model.ts
+// PLAN_CHANGE_ACTIONS); tools/revenue-intelligence-check.ts asserts the two
+// modules agree, so a renamed action cannot silently zero a dashboard.
+
+export const BILLING_AUDIT = {
+  activated: "subscription.activated",
+  upgraded: "subscription.upgraded",
+  downgraded: "subscription.downgraded",
+  cycleChanged: "subscription.cycle_changed",
+  statusChanged: "subscription.status_changed",
+  cancelled: "subscription.cancelled",
+  suspended: "subscription.suspended",
+  expired: "subscription.expired",
+  pastDue: "subscription.past_due",
+  paymentSucceeded: "payment.succeeded",
+  paymentFailed: "payment.failed",
+  paymentRefunded: "payment.refunded",
+} as const;
+
+export type BillingAuditAction = (typeof BILLING_AUDIT)[keyof typeof BILLING_AUDIT];
+
+const ACCESS_GRANTING = new Set(["active", "trial", "pending_renewal"]);
+
+export function isAccessGranting(status: unknown): boolean {
+  return ACCESS_GRANTING.has(String(status ?? "").toLowerCase());
+}
+
+export function tierRank(value: unknown): number {
+  const tier = normalizeTier(value);
+  return tier ? TIERS.indexOf(tier) + 1 : 0;
+}
+
+/** Upgrade / downgrade between two plans, or null when the tier did not move. */
+export function planChangeAction(fromPlan: unknown, toPlan: unknown): BillingAuditAction | null {
+  const from = tierRank(fromPlan);
+  const to = tierRank(toPlan);
+  if (!from || !to || from === to) return null;
+  return to > from ? BILLING_AUDIT.upgraded : BILLING_AUDIT.downgraded;
+}
+
+export function statusAuditAction(status: "cancelled" | "suspended" | "expired" | "past_due"): BillingAuditAction {
+  if (status === "cancelled") return BILLING_AUDIT.cancelled;
+  if (status === "suspended") return BILLING_AUDIT.suspended;
+  if (status === "expired") return BILLING_AUDIT.expired;
+  return BILLING_AUDIT.pastDue;
+}
+
+/**
+ * What an ACTIVE-subscription statement changes, given the row we already
+ * hold. The webhook and the confirm route both activate the same
+ * subscription, so the second arrival must be a no-op for the audit trail and
+ * the customer's notifications — not a second "activated" event.
+ */
+export function activationAuditAction(
+  previous: { plan?: string | null; status?: string | null; provider_subscription_id?: string | null } | null,
+  next: { plan: string; providerSubscriptionId: string | null },
+): BillingAuditAction | null {
+  if (!previous) return BILLING_AUDIT.activated;
+  const wasGranting = isAccessGranting(previous.status);
+  const sameSubscription = Boolean(next.providerSubscriptionId) && previous.provider_subscription_id === next.providerSubscriptionId;
+  if (sameSubscription && wasGranting) return planChangeAction(previous.plan, next.plan);
+  if (wasGranting) return planChangeAction(previous.plan, next.plan) ?? BILLING_AUDIT.activated;
+  return BILLING_AUDIT.activated;
+}
+
+function centsFromAmount(amount: unknown): number {
+  const record = (amount ?? {}) as { total?: unknown; value?: unknown };
+  const value = Number(record.total ?? record.value ?? 0);
+  return Number.isFinite(value) ? Math.max(0, Math.round(value * 100)) : 0;
+}
+
+function currencyFromAmount(amount: unknown): string {
+  const record = (amount ?? {}) as { currency?: unknown; currency_code?: unknown };
+  return String(record.currency ?? record.currency_code ?? "USD").toUpperCase();
+}
+
+/**
+ * Invoice row for a FAILED recurring charge (BILLING.SUBSCRIPTION.PAYMENT.FAILED
+ * carries the subscription; the attempt is in billing_info.last_failed_payment).
+ * `amount_paid_cents` holds the ATTEMPTED amount — nothing was collected, and
+ * revenue totals only ever sum paid/refunded rows. The reference is derived from
+ * the subscription and the attempt time, so a redelivery maps to the same row.
+ */
+export function failedPaymentInvoiceRow(
+  resource: Record<string, any>,
+  subscription: { user_id: string; plan: string },
+  nowIso: string,
+): Record<string, unknown> | null {
+  const subscriptionId = typeof resource?.id === "string" ? resource.id : null;
+  if (!subscriptionId) return null;
+  const last = resource?.billing_info?.last_failed_payment ?? {};
+  const amount = last?.amount ?? resource?.billing_info?.outstanding_balance ?? null;
+  const attemptedAt = typeof last?.time === "string" && last.time ? last.time : nowIso;
+  const reference = `failed:${subscriptionId}:${attemptedAt}`;
+  const attemptedCents = centsFromAmount(amount);
+  return {
+    user_id: subscription.user_id,
+    invoice_id: reference,
+    provider_invoice_id: reference,
+    transaction_id: null,
+    amount_paid_cents: attemptedCents,
+    tax_cents: 0,
+    currency: currencyFromAmount(amount),
+    status: "failed",
+    payment_method_summary: "PayPal",
+    subscription_plan: subscription.plan,
+    payment_date: attemptedAt,
+    metadata: {
+      failedPayment: true,
+      attemptedCents,
+      reasonCode: last?.reason_code ?? null,
+      subscriptionId,
+      note: "amount_paid_cents is the attempted charge; nothing was collected",
+    },
+  };
+}
+
+/**
+ * Patch for an invoice PayPal reports refunded (PAYMENT.SALE.REFUNDED: the
+ * resource is the refund and its amount is what was refunded) or reversed
+ * (PAYMENT.SALE.REVERSED: the resource is the sale itself). Refunds accumulate
+ * by id, so a redelivered refund is not counted twice and a second partial
+ * refund adds to the first.
+ */
+export function refundInvoicePatch(
+  invoice: { amount_paid_cents?: unknown; metadata?: Record<string, unknown> | null },
+  resource: Record<string, any>,
+  eventType: string,
+  nowIso: string,
+): { patch: Record<string, unknown>; refundId: string; refundCents: number; isNew: boolean } {
+  const amountPaid = Math.max(0, Math.round(Number(invoice.amount_paid_cents) || 0));
+  const reversal = eventType === "PAYMENT.SALE.REVERSED";
+  const refundId = String(resource?.id ?? `refund:${nowIso}`);
+  const refundCents = reversal ? amountPaid : (centsFromAmount(resource?.amount) || amountPaid);
+  const at = typeof resource?.create_time === "string" && resource.create_time ? resource.create_time : nowIso;
+  const metadata = invoice.metadata && typeof invoice.metadata === "object" ? invoice.metadata : {};
+  const prior = Array.isArray(metadata.refunds) ? (metadata.refunds as Array<{ id?: string; amountCents?: number; at?: string }>) : [];
+  const isNew = !prior.some((entry) => entry?.id === refundId);
+  const refunds = isNew ? [...prior, { id: refundId, amountCents: refundCents, at, type: reversal ? "reversal" : "refund" }] : prior;
+  const total = refunds.reduce((sum, entry) => sum + (Number(entry?.amountCents) || 0), 0);
+  const latest = refunds.map((entry) => String(entry?.at ?? "")).sort().pop() || at;
+  return {
+    refundId,
+    refundCents,
+    isNew,
+    patch: {
+      status: "refunded",
+      updated_at: nowIso,
+      metadata: { ...metadata, refunds, refundedCents: amountPaid ? Math.min(amountPaid, total) : total, refundedAt: latest },
+    },
+  };
+}
+
+// ---- Cancellation: access until the end of the paid period -------------------
+//
+// A customer who cancels keeps what they already paid for. Provider billing
+// stops immediately (PayPal cancels on its side), but the row stays in its
+// access-granting status with cancel_at_period_end = true until
+// current_period_end; the scheduled database function
+// public.qguard_expire_cancelled_subscriptions() then moves it to 'cancelled'
+// (supabase/subscription-period-end-cancellation.sql). With no paid period left
+// — or no known period end — access ends immediately.
+
+export function cancellationPatch(
+  row: { status?: string | null; current_period_end?: string | null } | null,
+  nowIso: string,
+): { patch: Record<string, unknown>; accessUntil: string | null } {
+  const periodEnd = row?.current_period_end ? Date.parse(row.current_period_end) : Number.NaN;
+  const keepsAccess = Boolean(row) && isAccessGranting(row?.status) && Number.isFinite(periodEnd) && periodEnd > Date.parse(nowIso);
+  const base = { auto_renew: false, cancel_at_period_end: true, cancelled_at: nowIso, updated_at: nowIso };
+  return keepsAccess
+    ? { patch: base, accessUntil: row!.current_period_end! }
+    : { patch: { ...base, status: "cancelled" }, accessUntil: null };
+}
+
+/** A cancellation already recorded (redelivery / second click) changes nothing. */
+export function isCancellationRecorded(row: { status?: string | null; cancel_at_period_end?: boolean | null; cancelled_at?: string | null } | null): boolean {
+  if (!row) return false;
+  if (String(row.status ?? "").toLowerCase() === "cancelled") return true;
+  return Boolean(row.cancel_at_period_end && row.cancelled_at);
+}
+
+// ---- Webhook idempotency ----------------------------------------------------
+//
+// A delivery is CLAIMED before any side effect runs (paypal_webhook_events has
+// a unique event_id). A concurrent redelivery sees the claim and backs off; a
+// claim left behind by a crashed run is stale after WEBHOOK_CLAIM_STALE_MS and
+// may run again; a finished event is a duplicate. A failure marks the claim
+// failed so PayPal's retry runs it again — nothing is lost, and nothing runs
+// twice at the same time.
+
+export const WEBHOOK_CLAIM_STALE_MS = 2 * 60_000;
+
+export function webhookClaimDecision(
+  existing: { status?: string | null; claimed_at?: string | null; processed_at?: string | null } | null,
+  nowMs: number,
+): "run" | "duplicate" | "in-progress" {
+  if (!existing) return "run";
+  const status = String(existing.status ?? "processed").toLowerCase();
+  if (status === "processed") return "duplicate";
+  if (status === "failed") return "run";
+  const claimedAt = Date.parse(String(existing.claimed_at ?? existing.processed_at ?? ""));
+  if (!Number.isFinite(claimedAt)) return "run";
+  return nowMs - claimedAt > WEBHOOK_CLAIM_STALE_MS ? "run" : "in-progress";
+}

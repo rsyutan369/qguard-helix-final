@@ -26,7 +26,6 @@ import type {
   HistoryProvenance,
 } from '@/lib/scanner/exposure/history';
 import type { ExposureAssessment } from '@/lib/scanner/exposure/types';
-import { DEMO_ACCESS_TOKEN, isDemoSessionActive } from '@/lib/demo-account';
 
 export interface ExposureHistoryDetail {
   entry: ExposureHistoryEntry;
@@ -72,13 +71,6 @@ export interface UseExposureHistoryResult {
  * hooks have no import-time dependency on one another.
  */
 function accessToken(): string | null {
-  /* The demo identity deliberately exists OUTSIDE Supabase (see
-     tasks/demo-account.md), so it has no `sb-*-auth-token` to find by shape.
-     Without this branch the History tab is the one surface a demo session
-     cannot open. `isDemoSessionActive` is false unless the build flag is on,
-     so this adds no path in a real deployment. */
-  if (isDemoSessionActive()) return DEMO_ACCESS_TOKEN;
-
   try {
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);

@@ -4,9 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::crypto::kdf::sha3_hex;
 
+pub mod android_bridge;
 pub mod content_uri;
 pub mod keystore;
 pub mod obf;
+pub mod public_downloads;
 pub mod saf_folder;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -70,6 +72,11 @@ pub struct SecurityHardeningCheck {
 //
 // The transport is a defence-in-depth layer regardless: message, call and vault
 // payloads are already end-to-end encrypted before they reach it.
+//
+// This struct records what was CONFIGURED. The dashboard gate is decided in the
+// frontend from what was NEGOTIATED (src/lib/transport-evidence.ts measures the
+// live backend connection), so Android passes on a measured TLS 1.3 + hybrid
+// ML-KEM connection and Windows fails if its runtime ignored the request.
 // ---------------------------------------------------------------------------
 
 /// Which transport posture this launch asked the WebView for.

@@ -1,7 +1,6 @@
 import { createClient, SupabaseClient, User } from '@supabase/supabase-js'
 import type { Request } from 'express'
 import { supabaseFetch } from './supabase-fetch'
-import { createDemoUser, isDemoToken } from './demo-account'
 
 type SupabaseSource = 'primary' | 'fallback'
 
@@ -285,26 +284,83 @@ function pruneVerificationCache(now: number) {
   }
 }
 
+// --- Admin token revocation ---------------------------------------------
+//
+// Access tokens are verified LOCALLY (above), so ending a user's Supabase Auth
+// sessions (Owner Admin "Sign out everywhere" / suspend / disable) only stops
+// NEW access tokens being minted — one already issued would keep working until
+// its exp (default 1h). The admin API records the revocation instant here and
+// every verification rejects that user's tokens issued (iat) before it. The
+// map is hydrated from public.admin_session_revocations on first use, so a
+// server restart does not reopen the window. Entries outlive any access token.
+const TOKEN_REVOCATION_TTL_MS = 24 * 60 * 60_000
+const tokenRevocations = new Map<string, number>()
+let tokenRevocationsHydrated = false
+
+export function revokeUserTokensIssuedBefore(userId: string, revokedAtMs = Date.now()) {
+  if (!userId) return
+  const current = tokenRevocations.get(userId) || 0
+  if (revokedAtMs > current) tokenRevocations.set(userId, revokedAtMs)
+}
+
+function isTokenRevoked(userId: string, token: string): boolean {
+  const revokedAt = tokenRevocations.get(userId)
+  if (!revokedAt) return false
+  if (Date.now() - revokedAt > TOKEN_REVOCATION_TTL_MS) {
+    tokenRevocations.delete(userId)
+    return false
+  }
+  const iat = jwtPayload(token)?.iat
+  // A Supabase access token always carries iat; one without it is not trusted.
+  return typeof iat !== 'number' || iat * 1000 < revokedAt
+}
+
+async function hydrateTokenRevocations() {
+  const db = getServiceClient()
+  if (!db) return
+  try {
+    const since = new Date(Date.now() - TOKEN_REVOCATION_TTL_MS).toISOString()
+    const { data, error } = await db
+      .from('admin_session_revocations')
+      .select('user_id,created_at')
+      .gte('created_at', since)
+      .order('created_at', { ascending: false })
+      .limit(1000)
+    if (error) {
+      console.error('[auth] token revocations not hydrated:', error.message)
+      return
+    }
+    for (const row of data || []) {
+      const at = Date.parse(String(row.created_at))
+      if (row.user_id && Number.isFinite(at)) revokeUserTokensIssuedBefore(String(row.user_id), at)
+    }
+  } catch (err) {
+    console.error('[auth] token revocations not hydrated:', err instanceof Error ? err.message : err)
+  }
+}
+
 /**
  * Validate a Supabase JWT token and return the user.
  *
  * Fast path (default): verifies the token's ES256 signature LOCALLY against the
  * cached project JWKS — no network round-trip — with a short-TTL result cache
  * and single-flight dedup so a burst of concurrent requests validates once.
+ * Tokens issued before an admin revocation of the user are rejected.
  *
  * @param options.full  Skip the cache/local path and fetch the complete user
  *   record from the auth server (needed only for created_at / last_sign_in_at).
  */
 export async function getServerUser(token: string, options?: { full?: boolean }): Promise<User | null> {
   if (!token) return null
+  if (!tokenRevocationsHydrated) {
+    tokenRevocationsHydrated = true
+    void hydrateTokenRevocations()
+  }
+  const user = await verifyServerUser(token, options)
+  return user && isTokenRevoked(user.id, token) ? null : user
+}
 
-  /* Demo account — see src/lib/demo-account.ts. Answered before any signature
-     work: the demo token is not a JWT, and the auth server it would be verified
-     against is exactly the one that is unavailable. `isDemoToken` is false
-     unless VITE_DEMO_ACCOUNT/DEMO_ACCOUNT is 'true' in this process, so with
-     the flag off this token verifies as nothing and the caller gets a 401. */
-  if (isDemoToken(token)) return createDemoUser()
-
+async function verifyServerUser(token: string, options?: { full?: boolean }): Promise<User | null> {
   if (options?.full) {
     return fetchServerUserFromNetwork(token)
   }

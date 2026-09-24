@@ -1,8 +1,9 @@
 import { Router, Request, Response, NextFunction } from 'express'
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHmac, timingSafeEqual } from 'node:crypto'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
 import { createAuthClient, getServerUser, getServiceClient } from '@/lib/supabase-server'
 import { createSubscription, reviseSubscription, cancelSubscription, resolveOrigin, isPaypalConfigured } from './paypal'
+import { cancellationPatch, isCancellationRecorded } from '../../supabase/functions/billing/logic'
 
 type AuthedRequest = Request & {
   user?: User
@@ -187,12 +188,6 @@ function periodStart(subscription: any) {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString()
 }
 
-function nextMonthlyRenewal() {
-  const date = new Date()
-  date.setUTCMonth(date.getUTCMonth() + 1)
-  return date.toISOString()
-}
-
 function cents(value: unknown) {
   return Math.max(0, Math.round(toNumber(value, 0)))
 }
@@ -332,9 +327,6 @@ async function ensureSubscription(client: SupabaseClient, user: User) {
     .eq('id', user.id)
     .maybeSingle()
 
-  const plan = normalizePlan(profile?.tier)
-  const accountCreatedAt = toIso(profile?.created_at || user.created_at) || new Date().toISOString()
-
   const { data, error } = await client
     .from('billing_subscriptions')
     .select('*')
@@ -349,36 +341,12 @@ async function ensureSubscription(client: SupabaseClient, user: User) {
     throw missing
   }
   if (error) throw error
-  if (data) return { subscription: data, profile }
-
-  const now = new Date().toISOString()
-  const subscriptionId = `qgsub_${randomBytes(10).toString('hex')}`
-  const defaults = {
-    user_id: user.id,
-    subscription_id: subscriptionId,
-    plan,
-    status: 'active',
-    billing_cycle: 'monthly',
-    auto_renew: plan !== 'Starter',
-    renewal_date: plan === 'Starter' ? null : nextMonthlyRenewal(),
-    account_created_at: accountCreatedAt,
-    provider: null,
-    metadata: { source: 'qguard_account_bootstrap', profileTier: profile?.tier || null },
-  }
-
-  const result = await client
-    .from('billing_subscriptions')
-    .insert(defaults)
-    .select('*')
-    .single()
-
-  if (result.error && isMissingTable(result.error)) {
-    const missing = new Error('Billing database schema is not installed')
-    ;(missing as any).code = 'BILLING_SCHEMA_NOT_READY'
-    throw missing
-  }
-  if (result.error || !result.data) throw result.error || new Error('Failed to initialize billing subscription')
-  return { subscription: result.data, profile }
+  // No row means no subscription. This used to INSERT an ACTIVE row whose
+  // plan came from profiles.tier — a column the user can write — so opening
+  // Settings > Billing granted a free subscription (and Revenue Intelligence
+  // counted it). Entitlement rows are written only by the payment webhooks,
+  // Play verification and the owner Admin console.
+  return { subscription: data || null, profile }
 }
 
 async function ensureNotificationSettings(client: SupabaseClient, userId: string) {
@@ -418,7 +386,8 @@ function normalizeSubscription(row: any, user: User) {
     providerCustomerId: row?.provider_customer_id || null,
     providerSubscriptionId: row?.provider_subscription_id || null,
     currentPlan: plan,
-    status: row?.status || 'active',
+    status: row ? (row.status || 'incomplete') : 'incomplete',
+    hasSubscription: Boolean(row),
     billingCycle: cycle,
     renewalDate: toIso(row?.renewal_date || row?.current_period_end),
     trialExpirationDate: toIso(row?.trial_expires_at),
@@ -760,10 +729,18 @@ async function recordBillingAudit(
     user_agent: getUserAgent(req),
     metadata,
   }
+  // billing_audit_events has NO insert policy for users (an audit trail the
+  // subject can write is not an audit trail), so the row is written by the
+  // server's service client. The user-token insert this replaced was rejected
+  // by RLS on every call, and — because supabase-js reports that in `{ error }`
+  // rather than throwing — nothing noticed that no user action was ever audited.
+  const auditClient = getServiceClient() || client
   try {
-    await client.from('billing_audit_events').insert(payload)
-  } catch {
-    // Audit logging must not block billing operations.
+    const { error } = await auditClient.from('billing_audit_events').insert(payload)
+    if (error) console.error(`[billing] audit ${action} not recorded:`, error.message)
+  } catch (err) {
+    // Audit logging must not block billing operations — but it is never silent.
+    console.error(`[billing] audit ${action} not recorded:`, err instanceof Error ? err.message : err)
   }
   try {
     await client.from('user_security_events').insert({
@@ -1108,8 +1085,6 @@ router.get('/', async (req: AuthedRequest, res: Response) => {
 
 router.post('/subscription/actions', async (req: AuthedRequest, res: Response) => {
   const action = String(req.body?.action || '') as SubscriptionAction
-  const targetPlan = normalizePlan(req.body?.plan)
-  const targetCycle = normalizeCycle(req.body?.billingCycle)
   const validActions: SubscriptionAction[] = ['upgrade', 'downgrade', 'renew', 'cancel', 'reactivate', 'switch-cycle', 'enable-auto-renew', 'disable-auto-renew']
   if (!validActions.includes(action)) return jsonError(res, 400, 'INVALID_ACTION', 'Unsupported billing action')
 
@@ -1139,7 +1114,10 @@ router.post('/subscription/actions', async (req: AuthedRequest, res: Response) =
       const cancelUrl = `${origin}/dashboard/settings?tab=billing&billing=cancelled`
       // Change an existing PayPal subscription in place (prorated, same id) when
       // one is live; otherwise create a fresh subscription.
+      // A subscription cancelled at period end is already cancelled at PayPal
+      // and cannot be revised; a new plan needs a fresh checkout.
       const existingPaypalSub = subscription?.provider === 'paypal'
+        && !subscription?.cancel_at_period_end
         && ['active', 'past_due', 'suspended', 'pending_renewal'].includes(String(subscription?.status || '').toLowerCase())
         && subscription?.provider_subscription_id
         ? String(subscription.provider_subscription_id)
@@ -1153,7 +1131,11 @@ router.post('/subscription/actions', async (req: AuthedRequest, res: Response) =
             returnUrl,
             cancelUrl,
           })
-          await recordBillingAudit(client, user.id, req, action, `PayPal subscription revised to ${desiredPlan} ${desiredCycle}`, {
+          // A REQUEST, not a completed change: the plan only changes when
+          // PayPal confirms (BILLING.SUBSCRIPTION.UPDATED -> subscription.upgraded
+          // / downgraded), so this must not use the completed-change vocabulary.
+          await recordBillingAudit(client, user.id, req, 'paypal.subscription.revise_requested', `PayPal subscription revision to ${desiredPlan} ${desiredCycle} requested`, {
+            requestedAction: action,
             plan: desiredPlan,
             billingCycle: desiredCycle,
             providerSubscriptionId: existingPaypalSub,
@@ -1173,7 +1155,8 @@ router.post('/subscription/actions', async (req: AuthedRequest, res: Response) =
           returnUrl,
           cancelUrl,
         })
-        await recordBillingAudit(client, user.id, req, action, `PayPal subscription checkout created for ${desiredPlan} ${desiredCycle}`, {
+        await recordBillingAudit(client, user.id, req, 'paypal.subscription.checkout_created', `PayPal subscription checkout created for ${desiredPlan} ${desiredCycle}`, {
+          requestedAction: action,
           plan: desiredPlan,
           billingCycle: desiredCycle,
           providerSubscriptionId: result.subscriptionId,
@@ -1185,45 +1168,62 @@ router.post('/subscription/actions', async (req: AuthedRequest, res: Response) =
       }
     }
 
-    const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
+    // Everything below changes an EXISTING row, so there must be one.
+    if (!subscription) {
+      return jsonError(res, 409, 'NO_SUBSCRIPTION', 'This account has no subscription to change — choose a plan to subscribe')
+    }
+    // Users have no write policy on billing_subscriptions (a self-editable
+    // entitlement row is a free upgrade). The server writes on their behalf,
+    // pinned to the verified user id, and only the fields each action owns.
+    const db = getServiceClient()
+    if (!db) return jsonError(res, 503, 'CONFIG_ERROR', 'Billing storage is not configured')
+
+    const provider = String(subscription.provider || '').toLowerCase()
+    const providerBilled = provider === 'paypal' || provider === 'google_play'
+    let updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
+    let accessUntil: string | null = null
+
+    if (action === 'cancel' && isCancellationRecorded(subscription)) {
+      return res.json({ data: { action, status: 'completed', accessUntil: subscription.cancel_at_period_end ? subscription.current_period_end : null, subscription: normalizeSubscription(subscription, user) } })
+    }
     if (action === 'cancel') {
-      // Cancel the live PayPal subscription first, then record the state change.
-      if (subscription?.provider === 'paypal' && subscription?.provider_subscription_id) {
+      // Stop the provider billing FIRST. If PayPal refuses, the local record
+      // must not claim the subscription is cancelled while PayPal keeps
+      // charging the customer.
+      if (provider === 'paypal' && subscription.provider_subscription_id) {
         try {
           await cancelSubscription(subscription.provider_subscription_id, 'Customer cancelled from billing settings')
-        } catch (err) {
-          console.warn('[billing] PayPal cancellation failed:', err)
+        } catch (err: any) {
+          // 422 UNPROCESSABLE_ENTITY: PayPal already considers it cancelled.
+          if (err?.status !== 422) {
+            console.error('[billing] PayPal cancellation failed:', err?.message || err)
+            return jsonError(res, 502, 'PROVIDER_CANCEL_FAILED', 'PayPal did not confirm the cancellation, so nothing was changed. Retry, or cancel from your PayPal account.')
+          }
         }
+      } else if (provider === 'google_play') {
+        return jsonError(res, 409, 'PROVIDER_MANAGED', 'Google Play subscriptions are cancelled from the Play Store app (Payments & subscriptions).')
       }
-      updates.status = 'cancelled'
-      updates.auto_renew = false
-      updates.cancel_at_period_end = true
-      updates.cancelled_at = new Date().toISOString()
+      // The customer keeps the period already paid for; the scheduled expiry
+      // (public.qguard_expire_cancelled_subscriptions) ends access at
+      // current_period_end. Same rule as the billing Edge Function.
+      const cancellation = cancellationPatch(subscription, new Date().toISOString())
+      updates = cancellation.patch
+      accessUntil = cancellation.accessUntil
     }
-    if (action === 'reactivate' || action === 'renew') {
-      updates.status = 'active'
-      updates.auto_renew = true
-      updates.cancel_at_period_end = false
-      updates.cancelled_at = null
-      updates.renewal_date = subscription?.renewal_date || nextMonthlyRenewal()
-    }
-    if (action === 'enable-auto-renew') updates.auto_renew = true
-    if (action === 'disable-auto-renew') updates.auto_renew = false
-    if (action === 'switch-cycle') {
-      updates.billing_cycle = targetCycle
-      updates.renewal_date = targetCycle === 'annual'
-        ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
-        : nextMonthlyRenewal()
-    }
-    if (action === 'downgrade') {
-      updates.plan = targetPlan
-      updates.billing_cycle = targetCycle
-      updates.auto_renew = targetPlan !== 'Starter'
-      updates.renewal_date = targetPlan === 'Starter' ? null : nextMonthlyRenewal()
-      await client.from('profiles').update({ tier: targetPlan.toLowerCase(), updated_at: new Date().toISOString() }).eq('id', user.id)
+    if (action === 'enable-auto-renew' || action === 'disable-auto-renew') {
+      // Renewal of a provider-billed subscription is decided by the provider,
+      // not by this flag. Flipping it locally would tell the customer renewal
+      // is off while PayPal/Play keep charging.
+      if (providerBilled) {
+        return jsonError(res, 409, 'PROVIDER_MANAGED', provider === 'paypal'
+          ? 'PayPal subscriptions renew until cancelled. Use Cancel subscription to stop future charges.'
+          : 'Google Play renewal is managed from the Play Store app (Payments & subscriptions).')
+      }
+      updates.auto_renew = action === 'enable-auto-renew'
     }
 
-    const { data, error } = await client
+    const previous = { status: subscription.status, auto_renew: subscription.auto_renew }
+    const { data, error } = await db
       .from('billing_subscriptions')
       .update(updates)
       .eq('id', subscription.id)
@@ -1231,9 +1231,23 @@ router.post('/subscription/actions', async (req: AuthedRequest, res: Response) =
       .select('*')
       .single()
 
-    if (error || !data) return jsonError(res, 500, 'BILLING_UPDATE_FAILED', 'Failed to update subscription state')
-    await recordBillingAudit(client, user.id, req, action, `Subscription action completed: ${action}`, { plan: targetPlan, billingCycle: targetCycle })
-    return res.json({ data: { action, status: 'completed', subscription: normalizeSubscription(data, user) } })
+    if (error || !data) {
+      console.error('[billing] subscription action write failed:', error?.message)
+      return jsonError(res, 500, 'BILLING_UPDATE_FAILED', 'Failed to update subscription state')
+    }
+    const auditAction = action === 'cancel' ? 'subscription.cancelled' : `subscription.${action.replace(/-/g, '_')}`
+    // Same customer-facing wording as the deployed billing Edge Function.
+    const ACTION_LABEL: Record<string, string> = { cancel: 'Subscription cancelled', 'enable-auto-renew': 'Auto-renew enabled', 'disable-auto-renew': 'Auto-renew disabled' }
+    await recordBillingAudit(client, user.id, req, auditAction, `${ACTION_LABEL[action] || `Subscription ${action.replace(/-/g, ' ')}`} by the customer${accessUntil ? `; access until ${accessUntil}` : ''}`, {
+      accessUntil,
+      plan: subscription.plan,
+      provider: subscription.provider,
+      fromStatus: previous.status,
+      toStatus: data.status,
+      autoRenew: data.auto_renew,
+      source: 'customer',
+    })
+    return res.json({ data: { action, status: 'completed', accessUntil, subscription: normalizeSubscription(data, user) } })
   } catch (err) {
     console.error('Billing action error:', err)
     return jsonError(res, 500, 'BILLING_ACTION_FAILED', 'Failed to process billing action')

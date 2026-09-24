@@ -8,6 +8,7 @@ import type { ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import { AlertTriangle, ArrowDownRight, ArrowUpRight, CheckCircle2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import type { OperationalWorkflowDetail } from '@/lib/migration/operational-workflow'
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TYPES — core simulation model
@@ -54,9 +55,18 @@ export type Simulation = {
   updatedAt: string
   createdAt: string
   eventCount: number
+  /** Newest first. */
   recentEvents: SimEvent[]
   metadata: Record<string, unknown>
+  /**
+   * Where an operational (agent-executed) job stands: approval, dispatch,
+   * executor availability and the next action. Null for sandbox simulations;
+   * absent on snapshots from a server that predates it.
+   */
+  operational?: OperationalWorkflowDetail | null
 }
+
+export type { OperationalWorkflowDetail }
 
 export type RiskFactor = {
   label: string
@@ -573,6 +583,23 @@ export function progressBarColor(v: number, status: string) {
 
 export function canDeleteSimulationStatus(status: string) {
   return ['completed', 'failed', 'stopped', 'rolled_back'].includes(status)
+}
+
+/**
+ * The live record for a job id, from whichever list holds it.
+ *
+ * The Details dialog is opened from sandbox simulations AND from the
+ * operational queue, and those live in different lists (`simulations` is the
+ * sandbox subset of `workflows`). Resolving only against `simulations` closed
+ * the dialog the instant it opened for every operational job.
+ */
+export function findJobRecord(id: string | null, ...lists: Array<Simulation[] | undefined>): Simulation | null {
+  if (!id) return null
+  for (const list of lists) {
+    const match = list?.find((item) => item.id === id)
+    if (match) return match
+  }
+  return null
 }
 
 export function heatColor(status: HeatStatus) {

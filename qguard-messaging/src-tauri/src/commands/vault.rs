@@ -1200,7 +1200,7 @@ pub async fn vault_prepare_dest(
 
 /// File name that is safe to create in any destination: no path separators, no
 /// NULs, never empty.
-fn sanitize_dest_name(file_name: &str) -> String {
+pub(crate) fn sanitize_dest_name(file_name: &str) -> String {
     let cleaned = file_name
         .replace(['/', '\\', '\0'], "_")
         .trim()

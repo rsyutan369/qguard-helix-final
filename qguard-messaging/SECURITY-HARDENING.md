@@ -95,6 +95,28 @@ published on `SecurityHardeningStatus.tls_policy` and rendered as the
   `enforced_by_app` reports **false** rather than claiming a control it does not
   have.
 
+**Verified, not just configured (2026-09-21).** Configuration is not evidence:
+WebView2 silently ignores an unknown `--enable-features` name, and Android could
+only ever report "cannot pin" — which held a fully working phone at 8/9 runtime
+checks and "Review coverage" even though every connection it made was TLS 1.3 +
+X25519MLKEM768. The frontend now measures the negotiated parameters of the live
+backend connection (`src/lib/transport-evidence.ts`): the Supabase edge answers
+`/cdn-cgi/trace` with `tls=` and `kex=` for the very connection the request
+arrived on, fetched through the WebView's own TLS stack. The gate is:
+
+| Platform | Measured TLS 1.3 + ML-KEM hybrid | Measured classical, Kyber draft, or < TLS 1.3 | Not measurable |
+|---|---|---|---|
+| Windows strict | active ("enforced and verified") | **warning** (runtime ignored the request) | active (configured) |
+| Windows compat | warning (policy permits TLS 1.2) | warning | warning |
+| Android | active ("verified on the live connection") | **warning** (update Android System WebView) | warning |
+
+Only ML-KEM (FIPS 203) groups pass. The pre-standard `X25519Kyber768Draft00`
+is reported by name as "not ML-KEM" and fails with an update instruction: it
+is post-quantum in intent but it is not the approved standard.
+
+Only `tls`, `kex` and `http` are read from the trace; the IP and location it also
+echoes are discarded and never stored or sent anywhere.
+
 The transport is defence in depth in both cases: message, call and vault
 payloads are end-to-end encrypted *before* they reach it.
 

@@ -17,6 +17,7 @@ import {
   planApproval,
   type ApprovalVerdict,
 } from '@/lib/migration/job-safety'
+import { dispatchBlockFor } from '@/lib/migration/operational-workflow'
 import { dispatchSnapshotRollback } from './migration-snapshots'
 
 type AuthenticatedRequest = Request & {
@@ -952,16 +953,9 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
       /* Stated rather than implied: a queued job that no agent may execute
          reads as a stuck queue unless the reason travels with it. */
       approval: approvalFor(row, approvalPlans),
-      dispatchBlock: (() => {
-        const block = asRecord(metadata.dispatchBlock)
-        if (!block.reason || ['completed', 'cancelled', 'rolled_back'].includes(status)) return null
-        return {
-          kind: String(block.kind || 'unknown'),
-          requires: String(block.requires || ''),
-          reason: String(block.reason),
-          at: String(block.at || ''),
-        }
-      })(),
+      // Shared with the Migration Sandbox's operational details, so both pages
+      // show the same refusal for the same job.
+      dispatchBlock: dispatchBlockFor(metadata, status),
       isSandbox,
       runMode: isSandbox ? (metadata.dryRun === true ? 'dry_run' : 'sandbox_simulation') : 'migration_workflow',
       agentId: agentId || null,

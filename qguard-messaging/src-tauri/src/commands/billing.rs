@@ -42,13 +42,15 @@ pub async fn billing_open_checkout(app: tauri::AppHandle, url: String) -> Result
         return Err(QGuardError::InvalidInput("checkout URL must be https".to_string()));
     }
     let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    // PayPal approval pages, Google Play subscription management, and the
+    // public site PayPal returns the buyer to. (qguard.dev was listed here but
+    // never existed; the site is qguardhelix.com.)
     let allowed = host == "www.paypal.com"
         || host == "paypal.com"
         || host == "www.sandbox.paypal.com"
         || host == "play.google.com"
-        || host == "api.qguard.dev"
-        || host == "qguard.dev"
-        || host.ends_with(".qguard.dev");
+        || host == "qguardhelix.com"
+        || host == "www.qguardhelix.com";
     if !allowed {
         return Err(QGuardError::InvalidInput(format!(
             "checkout host not allowed: {host}"

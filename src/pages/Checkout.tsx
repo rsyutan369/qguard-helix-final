@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/contexts/auth-context';
+import { billingApiUrl } from '@/lib/billing/billing-api';
 
 /**
  * Auth-gated checkout bridge. Reached from the landing pricing buttons
@@ -68,13 +69,16 @@ export default function Checkout() {
 
     (async () => {
       try {
-        const response = await fetch('/api/v1/paypal/subscribe', {
+        // The billing Edge Function, not a same-origin route: the static site has no /api.
+        const response = await fetch(billingApiUrl('/api/v1/paypal/subscribe'), {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${session.access_token}`,
           },
           body: JSON.stringify({ plan, cycle }),
+        }).catch(() => {
+          throw new Error("Can't reach the billing service. Check your connection and try again.");
         });
         const payload = await response.json().catch(() => ({}));
         const approvalUrl = payload?.data?.approvalUrl;

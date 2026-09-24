@@ -336,28 +336,60 @@ async function applyPlaySubscription(
   // Invoice from the latest order (amounts from our own catalog — Google does
   // not return the charged amount on subscriptionsv2).
   const orderId = resource?.latestOrderId ? String(resource.latestOrderId) : null
+  // Select-then-insert, never upsert: provider_invoice_id's only unique index is
+  // PARTIAL (WHERE provider_invoice_id IS NOT NULL), which Postgres rejects as an
+  // ON CONFLICT target (42P10). The upsert this replaced failed on EVERY call and
+  // bestEffort swallowed it, so no Google Play payment ever reached
+  // billing_invoices or Revenue Intelligence. An order already recorded is left
+  // untouched — re-verifying ("Restore purchases") must not move its payment
+  // date into the current month.
   if (orderId && mapped.entitled) {
     const pricing = PLAN_PRICING[tier]
     const amountCents = Math.round((cycle === 'annual' ? pricing.yearlyPerMonth * 12 : pricing.monthly) * 100)
-    await bestEffort(() =>
-      db.from('billing_invoices').upsert(
-        {
-          user_id: userId,
-          invoice_id: orderId,
-          provider_invoice_id: orderId,
-          transaction_id: orderId,
-          amount_paid_cents: amountCents,
-          tax_cents: 0,
-          currency: 'USD',
-          status: 'paid',
-          payment_method_summary: 'Google Play',
-          subscription_plan: tier,
-          payment_date: nowIso,
-          metadata: { playOrderId: orderId, purchaseTokenHash: tokenHash },
+    const { data: existingInvoice, error: lookupError } = await db
+      .from('billing_invoices')
+      .select('id')
+      .eq('provider_invoice_id', orderId)
+      .maybeSingle()
+    if (lookupError) throw new Error(`play invoice lookup failed: ${lookupError.message}`)
+    if (!existingInvoice) {
+      const { error: insertError } = await db.from('billing_invoices').insert({
+        user_id: userId,
+        invoice_id: orderId,
+        provider_invoice_id: orderId,
+        transaction_id: orderId,
+        amount_paid_cents: amountCents,
+        tax_cents: 0,
+        currency: 'USD',
+        status: 'paid',
+        payment_method_summary: 'Google Play',
+        subscription_plan: tier,
+        // subscriptionsv2 carries no per-order charge time; the verify/RTDN call
+        // that first sees an order is the closest recorded moment of payment.
+        payment_date: nowIso,
+        metadata: {
+          playOrderId: orderId,
+          purchaseTokenHash: tokenHash,
+          // Google does not return the charged amount on subscriptionsv2.
+          amountSource: 'catalog_list_price',
         },
-        { onConflict: 'provider_invoice_id' },
-      ),
-    )
+      })
+      // 23505: a concurrent verify recorded the same order first.
+      if (insertError && (insertError as { code?: string }).code !== '23505') {
+        throw new Error(`play invoice recording failed: ${insertError.message}`)
+      }
+      if (!insertError) {
+        await bestEffort(async () => {
+          const { error } = await db.from('billing_audit_events').insert({
+            user_id: userId,
+            action: 'payment.succeeded',
+            message: `Google Play payment recorded: ${tier} ${cycle} (${(amountCents / 100).toFixed(2)} USD list price)`,
+            metadata: { orderId, purchaseTokenHash: tokenHash, amountCents, amountSource: 'catalog_list_price', source: 'google_play.verify' },
+          })
+          if (error) throw new Error(error.message)
+        })
+      }
+    }
   }
 
   // Acknowledge within Google's 3-day window or the purchase auto-refunds.

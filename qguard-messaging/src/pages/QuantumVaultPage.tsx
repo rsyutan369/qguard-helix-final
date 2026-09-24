@@ -33,6 +33,7 @@ import { open as openDialog } from "@/lib/tauri-dialog";
 import { withNativeDialog } from "@/lib/native-dialog-guard";
 import { isAndroidRuntime, isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import { loadAccountRecovery, publishAccountRecovery, type AccountRecoveryRecord } from "@/lib/account-recovery";
+import { describeSavedFile, saveFileToDevice } from "@/lib/save-file";
 import PortableIdentityPanel from "@/components/vault/PortableIdentityPanel";
 import { supabase } from "@/lib/supabase";
 import type { QuantumSecurityReport, TelemetryEvent } from "@/lib/types";
@@ -1184,34 +1185,35 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
       .catch(() => setRecoveryNotice("Could not copy automatically — select and copy it manually."));
   }
 
-  function downloadTextFile(name: string, body: string) {
-    const blob = new Blob([body], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = name;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
+  /**
+   * Save recovery material and tick "I have saved it" ONLY once the file really
+   * exists. On Android the old anchor click wrote nothing while still ticking
+   * the box — the user was told a recovery key was stored that never was.
+   */
+  async function saveRecoveryFile(name: string, body: string) {
+    try {
+      const saved = await saveFileToDevice(name, new Blob([body], { type: "text/plain" }));
+      setRecoverySaved(true);
+      setRecoveryNotice(`${describeSavedFile(saved)}. Move it somewhere offline — anyone holding it can decrypt your vault.`);
+    } catch (error) {
+      setRecoveryNotice(`The recovery file was NOT saved: ${describeError(error)}. Copy the key instead.`);
+    }
   }
 
   function downloadGeneratedRecoveryKey() {
     if (!generatedRecoveryKey) return;
-    downloadTextFile(
+    void saveRecoveryFile(
       "qguard-vault-recovery-key.txt",
       `QGuard Quantum Vault — Recovery Key\n\nKeep this safe and OFFLINE. Anyone who has this key can decrypt your vault\nfiles, and QGuard cannot recover it for you if it is lost. Store it in a\npassword manager or print it and lock it away.\n\nRecovery key:\n${generatedRecoveryKey}\n`,
     );
-    setRecoverySaved(true);
   }
 
   function downloadGeneratedEnterpriseKey() {
     if (!generatedEnterpriseKey) return;
-    downloadTextFile(
+    void saveRecoveryFile(
       "qguard-vault-enterprise-recovery-key.txt",
       `QGuard Quantum Vault — Enterprise Recovery Key (ML-KEM-1024)\n\nThis is the enterprise recovery PRIVATE key. Store it offline under enterprise\nadmin control. Anyone with this key (and, for hybrid, the recovery key) can\nrecover protected vault material. QGuard never receives or stores it.\n\nEnterprise recovery key:\n${generatedEnterpriseKey}\n`,
     );
-    setRecoverySaved(true);
   }
 
   async function recoverDecryptFile() {

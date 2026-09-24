@@ -2,6 +2,18 @@ import { Router, Request, Response } from 'express'
 import { timingSafeEqual } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getServerUser, getServiceClient } from '@/lib/supabase-server'
+import {
+  activationAuditAction,
+  BILLING_AUDIT,
+  cancellationPatch,
+  isCancellationRecorded,
+  failedPaymentInvoiceRow,
+  invoiceRow,
+  planChangeAction,
+  refundInvoicePatch,
+  statusAuditAction,
+  webhookClaimDecision,
+} from '../../supabase/functions/billing/logic'
 
 /**
  * PayPal recurring-subscription provider.
@@ -378,29 +390,51 @@ async function verifyWebhook(req: Request): Promise<boolean> {
   }
 }
 
-async function alreadyProcessed(db: SupabaseClient, eventId: string): Promise<boolean> {
-  if (!eventId) return false
-  try {
-    const { data } = await db.from('paypal_webhook_events').select('event_id').eq('event_id', eventId).maybeSingle()
-    return Boolean(data)
-  } catch {
-    return false
-  }
-}
+/**
+ * Claim a delivery BEFORE any side effect runs — the same protocol as the
+ * `billing` Edge Function (webhookClaimDecision in logic.ts). The unique
+ * event_id makes the first insert the claim; a redelivery skips (processed),
+ * backs off (running) or re-claims with a compare-and-set (failed or stale).
+ */
+async function claimWebhookEvent(
+  db: SupabaseClient,
+  eventId: string,
+  eventType: string,
+  resource: any,
+  raw: unknown,
+): Promise<'run' | 'duplicate' | 'in-progress'> {
+  const nowIso = new Date().toISOString()
+  const { error } = await db.from('paypal_webhook_events').insert({
+    event_id: eventId,
+    event_type: eventType,
+    resource_id: resource?.id || resource?.billing_agreement_id || null,
+    user_id: isUuid(resource?.custom_id) ? resource.custom_id : null,
+    raw,
+    status: 'processing',
+    claimed_at: nowIso,
+    attempts: 1,
+  })
+  if (!error) return 'run'
+  if ((error as { code?: string }).code !== '23505') throw new Error(`webhook claim failed: ${error.message}`)
 
-async function markProcessed(db: SupabaseClient, eventId: string, eventType: string, resourceId: string | null, userId: string | null, raw: unknown) {
-  if (!eventId) return
-  try {
-    await db.from('paypal_webhook_events').insert({
-      event_id: eventId,
-      event_type: eventType,
-      resource_id: resourceId,
-      user_id: userId,
-      raw,
-    })
-  } catch {
-    // Table not installed or duplicate — safe to ignore.
-  }
+  const { data: existing, error: readError } = await db
+    .from('paypal_webhook_events')
+    .select('status, claimed_at, processed_at, attempts')
+    .eq('event_id', eventId)
+    .maybeSingle()
+  if (readError) throw new Error(`webhook claim read failed: ${readError.message}`)
+  const decision = webhookClaimDecision(existing, Date.now())
+  if (decision !== 'run' || !existing) return decision
+
+  let reclaim = db
+    .from('paypal_webhook_events')
+    .update({ status: 'processing', claimed_at: nowIso, attempts: (Number(existing.attempts) || 0) + 1 })
+    .eq('event_id', eventId)
+    .eq('status', existing.status)
+  reclaim = existing.claimed_at ? reclaim.eq('claimed_at', existing.claimed_at) : reclaim.is('claimed_at', null)
+  const { data: reclaimed, error: reclaimError } = await reclaim.select('event_id')
+  if (reclaimError) throw new Error(`webhook re-claim failed: ${reclaimError.message}`)
+  return reclaimed && reclaimed.length > 0 ? 'run' : 'in-progress'
 }
 
 async function bestEffort(operation: () => any): Promise<void> {
@@ -409,6 +443,21 @@ async function bestEffort(operation: () => any): Promise<void> {
   } catch (err) {
     console.error('[paypal] webhook side-effect failed:', err)
   }
+}
+
+/** Audit rows never fail the delivery, but a failed write is LOGGED, not swallowed. */
+async function audit(db: SupabaseClient, userId: string, action: string, message: string, metadata: Record<string, unknown>) {
+  await bestEffort(async () => {
+    const { error } = await db.from('billing_audit_events').insert({ user_id: userId, action, message, metadata })
+    if (error) throw new Error(`${action}: ${error.message}`)
+  })
+}
+
+async function notify(db: SupabaseClient, userId: string, type: string, severity: string, title: string, message: string) {
+  await bestEffort(async () => {
+    const { error } = await db.from('billing_notifications').insert({ user_id: userId, type, severity, title, message })
+    if (error) throw new Error(error.message)
+  })
 }
 
 type DbStatus = 'active' | 'trial' | 'expired' | 'suspended' | 'pending_renewal' | 'cancelled' | 'past_due' | 'incomplete'
@@ -446,6 +495,38 @@ function mapPaypalStatus(status?: string): DbStatus | null {
   }
 }
 
+/** Select-then-insert by provider_invoice_id (the partial unique index rejects ON CONFLICT, 42P10). */
+async function insertInvoiceOnce(db: SupabaseClient, row: Record<string, unknown>, label: string): Promise<boolean> {
+  const reference = row.provider_invoice_id as string | null
+  if (reference) {
+    const { data: existing, error } = await db.from('billing_invoices').select('id').eq('provider_invoice_id', reference).maybeSingle()
+    if (error) throw new Error(`${label} lookup failed: ${error.message}`)
+    if (existing?.id) return false
+  }
+  const { error } = await db.from('billing_invoices').insert(row)
+  // 23505: a concurrent delivery recorded the same row first.
+  if (error && (error as { code?: string }).code === '23505') return false
+  if (error) throw new Error(`${label} failed: ${error.message}`)
+  return true
+}
+
+async function subscriptionByProviderId(db: SupabaseClient, providerSubscriptionId: string) {
+  const { data } = await db
+    .from('billing_subscriptions')
+    .select('user_id, plan, status, billing_cycle, current_period_end, cancel_at_period_end, cancelled_at')
+    .eq('provider_subscription_id', providerSubscriptionId)
+    .maybeSingle()
+  return data as {
+    user_id: string
+    plan: string
+    status: string
+    billing_cycle: string | null
+    current_period_end: string | null
+    cancel_at_period_end: boolean | null
+    cancelled_at: string | null
+  } | null
+}
+
 async function activateSubscription(db: SupabaseClient, resource: any): Promise<void> {
   const userId = resource?.custom_id
   if (!isUuid(userId)) return
@@ -457,16 +538,17 @@ async function activateSubscription(db: SupabaseClient, resource: any): Promise<
   const nextBilling = resource?.billing_info?.next_billing_time || null
   const nowIso = new Date().toISOString()
 
+  const { data: previous } = await db
+    .from('billing_subscriptions')
+    .select('plan, status, provider, provider_subscription_id')
+    .eq('user_id', userId)
+    .maybeSingle()
+
   // Cancel a prior PayPal subscription that this one supersedes (plan change),
   // to avoid double-billing the customer.
   await bestEffort(async () => {
-    const { data: existing } = await db
-      .from('billing_subscriptions')
-      .select('provider, provider_subscription_id')
-      .eq('user_id', userId)
-      .maybeSingle()
-    const prior = existing?.provider_subscription_id
-    if (existing?.provider === 'paypal' && prior && providerSubId && prior !== providerSubId) {
+    const prior = previous?.provider_subscription_id
+    if (previous?.provider === 'paypal' && prior && providerSubId && prior !== providerSubId) {
       await cancelSubscription(prior, 'Superseded by a new QGuard subscription').catch(() => undefined)
     }
   })
@@ -500,62 +582,41 @@ async function activateSubscription(db: SupabaseClient, resource: any): Promise<
     'profile tier activation',
   )
 
-  await bestEffort(() =>
-    db.from('billing_notifications').insert({
-      user_id: userId,
-      type: 'subscription',
-      severity: 'success',
-      title: 'Subscription activated',
-      message: `Your ${info.tier} (${dbCycle}) subscription is now active via PayPal.`,
-    }),
-  )
-
-  await bestEffort(() =>
-    db.from('billing_audit_events').insert({
-      user_id: userId,
-      action: 'paypal.subscription.activated',
-      message: `PayPal subscription activated: ${info.tier} ${dbCycle}`,
-      metadata: { providerSubscriptionId: providerSubId, planId: resource?.plan_id || null },
-    }),
-  )
+  // Audit + notify only on a real transition — a redelivered ACTIVATED for the
+  // subscription we already hold active is a re-statement, not an event.
+  const action = activationAuditAction(previous, { plan: info.tier, providerSubscriptionId: providerSubId })
+  if (!action) return
+  const verb = action === BILLING_AUDIT.upgraded ? 'upgrade is active' : action === BILLING_AUDIT.downgraded ? 'plan change is active' : 'is now active'
+  await notify(db, userId, 'subscription', 'success', action === BILLING_AUDIT.activated ? 'Subscription activated' : 'Plan changed', `Your ${info.tier} (${dbCycle}) subscription ${verb} via PayPal.`)
+  await audit(db, userId, action, `PayPal subscription ${action.split('.')[1]}: ${previous?.plan && previous.plan !== info.tier ? `${previous.plan} → ` : ''}${info.tier} ${dbCycle}`, {
+    providerSubscriptionId: providerSubId,
+    planId: resource?.plan_id || null,
+    fromPlan: previous?.plan ?? null,
+    toPlan: info.tier,
+    source: 'paypal.webhook',
+  })
 }
 
 async function recordPayment(db: SupabaseClient, resource: any): Promise<void> {
   const subId: string | null = resource?.billing_agreement_id || null
   if (!subId) return
 
-  const { data: sub } = await db
-    .from('billing_subscriptions')
-    .select('user_id, plan')
-    .eq('provider_subscription_id', subId)
-    .maybeSingle()
+  const sub = await subscriptionByProviderId(db, subId)
   if (!sub?.user_id) return
 
-  const amount = resource?.amount || {}
-  const gross = amount?.total ?? amount?.value ?? '0'
-  const currency = amount?.currency ?? amount?.currency_code ?? 'USD'
-  const paidCents = Math.round(Number(gross) * 100) || 0
-
-  await mustSucceed(
-    db.from('billing_invoices').upsert(
-      {
-        user_id: sub.user_id,
-        invoice_id: resource?.id || `paypal_${Date.now()}`,
-        provider_invoice_id: resource?.id || null,
-        transaction_id: resource?.id || null,
-        amount_paid_cents: paidCents,
-        tax_cents: 0,
-        currency: String(currency).toUpperCase(),
-        status: 'paid',
-        payment_method_summary: 'PayPal',
-        subscription_plan: sub.plan,
-        payment_date: resource?.create_time || new Date().toISOString(),
-        metadata: { paypalSaleId: resource?.id || null, subscriptionId: subId },
-      },
-      { onConflict: 'provider_invoice_id' },
-    ),
-    'invoice recording',
-  )
+  // A redelivered PAYMENT.SALE.COMPLETED must never overwrite the row — it
+  // would flip an already-refunded invoice back to "paid".
+  const invoice = invoiceRow(resource, sub, new Date().toISOString())
+  const inserted = await insertInvoiceOnce(db, invoice, 'invoice recording')
+  if (inserted) {
+    await audit(db, sub.user_id, BILLING_AUDIT.paymentSucceeded, `Payment received: ${sub.plan} ${(Number(invoice.amount_paid_cents) / 100).toFixed(2)} ${invoice.currency}`, {
+      saleId: invoice.provider_invoice_id,
+      amountCents: invoice.amount_paid_cents,
+      currency: invoice.currency,
+      providerSubscriptionId: subId,
+      source: 'paypal.webhook',
+    })
+  }
 
   // Refresh the renewal date from PayPal after a successful recurring payment.
   await bestEffort(async () => {
@@ -578,19 +639,49 @@ async function updateSubscriptionStatus(
   const subId: string | null = resource?.id || null
   if (!subId) return
   const nowIso = new Date().toISOString()
+  const sub = await subscriptionByProviderId(db, subId)
 
-  const { data: sub } = await db
-    .from('billing_subscriptions')
-    .select('user_id, plan')
-    .eq('provider_subscription_id', subId)
-    .maybeSingle()
+  // Every failed attempt is its own payment record (PayPal retries a failed
+  // charge several times while the subscription stays past_due).
+  if (status === 'past_due' && sub?.user_id) {
+    const failedRow = failedPaymentInvoiceRow(resource, sub, nowIso)
+    if (failedRow && await insertInvoiceOnce(db, failedRow, 'failed payment recording')) {
+      await audit(db, sub.user_id, BILLING_AUDIT.paymentFailed, `Payment failed: ${sub.plan} ${(Number(failedRow.amount_paid_cents) / 100).toFixed(2)} ${failedRow.currency}`, {
+        reference: failedRow.provider_invoice_id,
+        attemptedCents: failedRow.amount_paid_cents,
+        providerSubscriptionId: subId,
+        source: 'paypal.webhook',
+      })
+    }
+  }
+
+  if (status === 'cancelled') {
+    // PayPal has stopped billing; the customer keeps the period already paid
+    // for and the scheduled expiry ends access at current_period_end.
+    if (isCancellationRecorded(sub)) return
+    const { patch: cancelPatch, accessUntil } = cancellationPatch(sub, nowIso)
+    await mustSucceed(db.from('billing_subscriptions').update(cancelPatch).eq('provider_subscription_id', subId), 'subscription cancellation')
+    if (sub?.user_id) {
+      await notify(db, sub.user_id, 'subscription', 'warning', 'Subscription cancelled', accessUntil
+        ? `Your ${sub.plan} subscription is cancelled and will not renew. You keep access until ${accessUntil.slice(0, 10)}.`
+        : `Your ${sub.plan} subscription is now cancelled.`)
+      await audit(db, sub.user_id, BILLING_AUDIT.cancelled, accessUntil ? `PayPal subscription cancelled; access until ${accessUntil}` : 'PayPal subscription cancelled', {
+        fromStatus: sub.status,
+        toStatus: accessUntil ? sub.status : 'cancelled',
+        accessUntil,
+        plan: sub.plan,
+        providerSubscriptionId: subId,
+        source: 'paypal.webhook',
+      })
+    }
+    return
+  }
+
+  // A redelivered status the row already holds changes nothing.
+  if (sub && String(sub.status).toLowerCase() === status) return
 
   const patch: Record<string, unknown> = { status, updated_at: nowIso }
-  if (status === 'cancelled') {
-    patch.auto_renew = false
-    patch.cancel_at_period_end = true
-    patch.cancelled_at = nowIso
-  } else if (status === 'suspended' || status === 'expired') {
+  if (status === 'suspended' || status === 'expired') {
     patch.auto_renew = false
   }
   // past_due keeps auto_renew — PayPal continues its own dunning/retry cycle.
@@ -601,60 +692,57 @@ async function updateSubscriptionStatus(
   )
 
   if (sub?.user_id) {
-    await bestEffort(() =>
-      db.from('billing_notifications').insert({
-        user_id: sub.user_id,
-        type: 'subscription',
-        severity: status === 'cancelled' ? 'warning' : 'critical',
-        title: `Subscription ${status.replace('_', ' ')}`,
-        message: status === 'past_due'
-          ? `A payment for your ${sub.plan} subscription failed. Please update your PayPal payment method to avoid interruption.`
-          : `Your ${sub.plan} subscription is now ${status}.`,
-      }),
+    await notify(
+      db,
+      sub.user_id,
+      'subscription',
+      'critical',
+      `Subscription ${status.replace('_', ' ')}`,
+      status === 'past_due'
+        ? `A payment for your ${sub.plan} subscription failed. Please update your PayPal payment method to avoid interruption.`
+        : `Your ${sub.plan} subscription is now ${status}.`,
     )
+    await audit(db, sub.user_id, statusAuditAction(status), `PayPal subscription ${status.replace('_', ' ')}`, {
+      fromStatus: sub.status,
+      toStatus: status,
+      plan: sub.plan,
+      providerSubscriptionId: subId,
+      source: 'paypal.webhook',
+    })
   }
 }
 
-async function recordRefund(db: SupabaseClient, resource: any): Promise<void> {
-  const subId: string | null = resource?.billing_agreement_id || null
+async function recordRefund(db: SupabaseClient, resource: any, eventType: string): Promise<void> {
   const saleId: string | null = resource?.sale_id || resource?.id || null
-
-  if (saleId) {
-    await mustSucceed(
-      db.from('billing_invoices').update({ status: 'refunded', updated_at: new Date().toISOString() }).eq('provider_invoice_id', saleId),
-      'invoice refund',
-    )
+  if (!saleId) return
+  const { data: invoice, error } = await db
+    .from('billing_invoices')
+    .select('id, user_id, amount_paid_cents, currency, subscription_plan, metadata')
+    .eq('provider_invoice_id', saleId)
+    .maybeSingle()
+  if (error) throw new Error(`refund invoice lookup failed: ${error.message}`)
+  if (!invoice) {
+    console.warn(`[paypal] ${eventType} for unknown sale ${saleId} — no invoice to refund`)
+    return
   }
-
-  if (subId) {
-    const { data: sub } = await db
-      .from('billing_subscriptions')
-      .select('user_id, plan')
-      .eq('provider_subscription_id', subId)
-      .maybeSingle()
-    if (sub?.user_id) {
-      await bestEffort(() =>
-        db.from('billing_notifications').insert({
-          user_id: sub.user_id,
-          type: 'billing',
-          severity: 'warning',
-          title: 'Payment refunded',
-          message: `A payment for your ${sub.plan} subscription was refunded.`,
-        }),
-      )
-    }
-  }
+  const refund = refundInvoicePatch(invoice, resource, eventType, new Date().toISOString())
+  if (!refund.isNew) return
+  await mustSucceed(db.from('billing_invoices').update(refund.patch).eq('id', invoice.id), 'invoice refund')
+  await notify(db, invoice.user_id, 'billing', 'warning', 'Payment refunded', `${(refund.refundCents / 100).toFixed(2)} ${invoice.currency} of a ${invoice.subscription_plan} payment was refunded.`)
+  await audit(db, invoice.user_id, BILLING_AUDIT.paymentRefunded, `Refund recorded: ${(refund.refundCents / 100).toFixed(2)} ${invoice.currency}`, {
+    saleId,
+    refundId: refund.refundId,
+    refundCents: refund.refundCents,
+    reversal: eventType === 'PAYMENT.SALE.REVERSED',
+    source: 'paypal.webhook',
+  })
 }
 
 async function syncSubscriptionUpdate(db: SupabaseClient, resource: any): Promise<void> {
   const subId: string | null = resource?.id || null
   if (!subId) return
 
-  const { data: sub } = await db
-    .from('billing_subscriptions')
-    .select('user_id, plan')
-    .eq('provider_subscription_id', subId)
-    .maybeSingle()
+  const sub = await subscriptionByProviderId(db, subId)
   if (!sub) return // unknown subscription — nothing to sync (not a failure)
 
   const info = planInfoFromId(resource?.plan_id)
@@ -677,18 +765,29 @@ async function syncSubscriptionUpdate(db: SupabaseClient, resource: any): Promis
     'subscription update sync',
   )
 
-  if (info && sub.user_id && info.tier !== sub.plan) {
+  const base = { providerSubscriptionId: subId, source: 'paypal.webhook' }
+  const planAction = info ? planChangeAction(sub.plan, info.tier) : null
+  if (info && planAction) {
     await mustSucceed(
       db.from('profiles').update({ tier: info.tier.toLowerCase(), updated_at: new Date().toISOString() }).eq('id', sub.user_id),
       'profile tier sync',
     )
+    await notify(db, sub.user_id, 'subscription', 'success', 'Plan changed', `Your subscription is now ${info.tier}.`)
+    await audit(db, sub.user_id, planAction, `Plan changed: ${sub.plan} → ${info.tier}`, { ...base, fromPlan: sub.plan, toPlan: info.tier })
+  }
+  const nextCycle = info ? (info.cycle === 'yearly' ? 'annual' : 'monthly') : null
+  if (nextCycle && sub.billing_cycle && nextCycle !== sub.billing_cycle) {
+    await audit(db, sub.user_id, BILLING_AUDIT.cycleChanged, `Billing cycle changed: ${sub.billing_cycle} → ${nextCycle}`, { ...base, fromCycle: sub.billing_cycle, toCycle: nextCycle })
+  }
+  if (mapped && mapped !== String(sub.status).toLowerCase()) {
+    await audit(db, sub.user_id, BILLING_AUDIT.statusChanged, `Subscription status: ${sub.status} → ${mapped}`, { ...base, fromStatus: sub.status, toStatus: mapped })
   }
 }
 
 router.post('/webhook', async (req: Request, res: Response) => {
-  // A verified event whose side-effects FAIL returns 5xx (below) so PayPal
-  // redelivers it — activation/records are never silently dropped. The event is
-  // marked processed only after successful handling, so a retry re-runs it.
+  // A verified event is CLAIMED first, handled, then marked processed. A failed
+  // handler marks the claim failed and returns 5xx so PayPal redelivers it —
+  // activation/records are never silently dropped, and never run twice at once.
   const verified = await verifyWebhook(req)
   if (!verified) {
     console.warn('[paypal] webhook not verified (is PAYPAL_WEBHOOK_ID set?) — ignoring side effects')
@@ -705,10 +804,17 @@ router.post('/webhook', async (req: Request, res: Response) => {
   const eventId = String(event.id || '')
   const type = String(event.event_type || '')
   const resource = event.resource || {}
+  if (!eventId) return res.status(400).json({ received: false, error: 'missing_event_id' })
 
-  if (await alreadyProcessed(db, eventId)) {
-    return res.status(200).json({ received: true, duplicate: true })
+  let claim: 'run' | 'duplicate' | 'in-progress'
+  try {
+    claim = await claimWebhookEvent(db, eventId, type, resource, event)
+  } catch (err) {
+    console.error('[paypal] webhook ledger unavailable:', err)
+    return res.status(503).json({ received: false, error: 'webhook_ledger_unavailable' })
   }
+  if (claim === 'duplicate') return res.status(200).json({ received: true, duplicate: true })
+  if (claim === 'in-progress') return res.status(409).json({ received: false, error: 'event_in_progress' })
 
   try {
     switch (type) {
@@ -723,7 +829,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
         break
       case 'PAYMENT.SALE.REFUNDED':
       case 'PAYMENT.SALE.REVERSED':
-        await recordRefund(db, resource)
+        await recordRefund(db, resource, type)
         break
       case 'BILLING.SUBSCRIPTION.PAYMENT.FAILED':
         await updateSubscriptionStatus(db, resource, 'past_due')
@@ -741,15 +847,22 @@ router.post('/webhook', async (req: Request, res: Response) => {
         break
     }
   } catch (err) {
-    // A critical write failed — do NOT mark processed; return 5xx so PayPal
-    // redelivers and we get another chance to persist it.
-    console.error(`[paypal] webhook handling failed for ${type} (${eventId}), asking PayPal to retry:`, err)
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`[paypal] webhook handling failed for ${type} (${eventId}), asking PayPal to retry:`, message)
+    await bestEffort(async () => {
+      const { error } = await db.from('paypal_webhook_events').update({ status: 'failed', last_error: message.slice(0, 500) }).eq('event_id', eventId)
+      if (error) throw new Error(error.message)
+    })
     return res.status(500).json({ received: false, error: 'processing_failed' })
   }
 
-  const resourceId = resource?.id || resource?.billing_agreement_id || null
-  const userId = isUuid(resource?.custom_id) ? resource.custom_id : null
-  await markProcessed(db, eventId, type, resourceId, userId, event)
+  await bestEffort(async () => {
+    const { error } = await db
+      .from('paypal_webhook_events')
+      .update({ status: 'processed', processed_at: new Date().toISOString(), last_error: null })
+      .eq('event_id', eventId)
+    if (error) throw new Error(error.message)
+  })
 
   return res.status(200).json({ received: true, verified: true })
 })

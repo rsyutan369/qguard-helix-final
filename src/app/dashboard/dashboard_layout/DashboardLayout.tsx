@@ -301,7 +301,10 @@ export default function DashboardLayout() {
   // tier. No plan (not even Elite) unlocks it; only the platform owner. This
   // mirrors the backend `requireOwner` guard on /api/v1/admin. Non-owners who
   // deep-link here are bounced back to their own dashboard.
-  const isAdminRoute = location.pathname === '/dashboard/admin' || location.pathname.startsWith('/dashboard/admin/');
+  const isAdminRoute = location.pathname === '/dashboard/admin' || location.pathname.startsWith('/dashboard/admin/')
+    // Revenue Intelligence is owner-only too; its layout redirects as well,
+    // this keeps the rule in one place for every owner-only surface.
+    || location.pathname === '/dashboard/revenue-intelligence' || location.pathname.startsWith('/dashboard/revenue-intelligence/');
   const adminForbidden = isAdminRoute && !isOwner;
 
   // Direct navigation to a module above the plan renders the upgrade screen

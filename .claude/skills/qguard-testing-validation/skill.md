@@ -57,6 +57,13 @@ tools/scanner-finding-identity-check.ts  finding de-duplication identity (the fo
 tools/sandbox-twin-check.ts            twin/graph/predictions/benchmark/Sophia/
                                        approval gate + null-not-zero rollback
                                        figures and covered/detail agreement
+tools/sandbox-details-check.tsx        Details dialog: resolves operational AND
+                                       sandbox rows (old lookup as negative
+                                       control), every operational stage incl.
+                                       unreadable-≠-no, role table vs
+                                       agentMayWrite source, 409 guard on engine
+                                       actions, and renderToStaticMarkup of both
+                                       dialog kinds (wrap Link users in MemoryRouter)
 tools/sandbox-latency-probe.ts         LIVE sandbox: cross-engine reconciliation,
                                        cold-vs-warm build cost, and the cache
                                        contract (single-flight via a shared
@@ -196,6 +203,97 @@ Two things it catches that reading the code did not:
 - **agent-authenticated routes need `x-qguard-agent-id` as well as the bearer
   token** (`requireAgentAuth`). A bearer-only call returns 401 and looks like a
   bad token.
+
+### Revenue Intelligence + billing integrity (needs the dev server for --live)
+
+```bash
+npx tsx tools/revenue-intelligence-check.ts                  # 25 offline: model fixture, negative controls, webhook rules, CSV injection
+npx tsx tools/revenue-intelligence-check.ts --live           # +13: owner gate + audit rows, exports, SSE, RLS exploit probes, Admin MRR == Revenue MRR
+npx tsx tools/revenue-intelligence-check.ts --live --mutate  # +5: Admin -> DB -> User UI -> Revenue on a QA row (restored), provider guard
+npx tsx tools/revenue-intelligence-render-check.ts           # 40 static renders: 6 pages x loading/error/stale/empty/QA/populated
+npx tsx tools/billing-edge-check.ts                          # Edge Function pure logic
+```
+
+What these caught that reading the code did not:
+
+- **`fetch().text()` strips a UTF-8 BOM.** The export check failed "missing BOM"
+  on a correct export. Assert the first three BYTES (`arrayBuffer()`).
+- **A 33-day-old subscription gives a real 0% churn.** A negative control that
+  expected `null` was wrong; the fixture had to be younger than the 30-day window.
+- **Page components import the browser Supabase client** (via the dashboard
+  primitives), which reads `import.meta.env` and crashes under plain tsx. The
+  render check loads its cases through `vite.createServer().ssrLoadModule()` —
+  the dev server's own transform — instead of patching `src/lib/supabase.ts`.
+- **Deno Edge Functions can be type-checked without Deno:** a throwaway
+  tsconfig with `paths: { "jsr:@supabase/supabase-js@2": ["node_modules/@supabase/supabase-js"] }`
+  and a `declare const Deno` shim. Prove it with a negative control (inject a
+  type error into a copy — it must fail).
+
+### Owner Admin > Users (needs the dev server for --live)
+
+```bash
+npx tsx tools/admin-users-check.ts                    # 20 offline: directory model fixture (status drift, NULL role filter, entitlement, unmeasured = null, CSV injection)
+npx tsx tools/admin-users-check.ts --live             # +10: API vs an independent read of auth (RPC) + billing; Overview/Security tabs == Users tab
+npx tsx tools/admin-users-check.ts --live --mutate    # +18: every action on a DISPOSABLE account it creates and deletes
+npx tsx tools/admin-users-sse-probe.ts                # stream: idle ticks keep one version, a write pushes a new one (~0.4s)
+```
+
+What these caught that reading the code did not:
+
+- **An admin plan grant on a user with no billing row failed** on
+  `billing_subscriptions.subscription_id NOT NULL` — the old "Approve Pro"
+  button never worked for such users. Only the `--mutate` run exercises it.
+- **Sign-out must be proven with the OLD token.** The check calls
+  `/api/v1/profile` with the pre-revocation access token (expects 401) and
+  `refreshSession` with the old refresh token (expects an error). Sleep ~1.1s
+  before minting the next token: `iat` is whole seconds.
+- **Supabase's built-in mailer rate-limits** reset emails (429); the check
+  accepts "sent" or a clear provider error, never a silent success.
+- A heavy `npm run build` on this machine (~1.5 GB free RAM) starves the dev
+  server for minutes: a failing live probe right after a build is not a code
+  regression — re-measure `curl -w %{time_total}` on a 401 first.
+
+### Owner Admin > Roles, Tenants, Plans & Billing, Security, Governance, History
+
+```bash
+npx tsx tools/admin-console-check.ts                    # 25 offline: the six pure models (true permission counts, no invented domain/region, MRR rule, measured controls, policy verification, SHA3 tamper detection, history categories/past tense)
+npx tsx tools/admin-console-check.ts --live             # +10: API vs an independent read of Supabase; Admin MRR == Revenue MRR; no fabricated threat/compliance text
+npx tsx tools/admin-console-check.ts --live --mutate    # +12: every action on DISPOSABLE role/tenant/user/policy/evidence it creates and removes
+npx tsx tools/admin-console-sse-probe.ts                # every console frame: delivered, version stable while idle, new version <1s after a write
+```
+
+What these caught that reading the code did not:
+
+- **Creating a tenant without a storage quota 500'd** (NOT NULL column, the API
+  wrote NULL). The form had promised "Empty = unlimited". Only `--mutate` hit it.
+- **Edits audited unchanged fields** — the no-op PATCH assertion
+  (`NO_CHANGES`, `changes` keys) caught it.
+- **The revenue check leaked 3 live sessions per run** — found by querying
+  `auth.sessions` for `user_agent = 'node'` after the probes. After any live
+  check, that count for the run window must be 0.
+- **Mobile blowout on Security only** — measure `main.scrollWidth` vs
+  `clientWidth` per tab at 375px (document width alone stays 375 because `main`
+  clips), then list elements whose right edge exceeds the viewport outside an
+  `overflow-x: auto` ancestor.
+
+### Database security changes (live project)
+
+```bash
+npx tsx tools/security-definer-check.ts   # anon / member / outsider probes through the Data API
+```
+
+- **`verifyOtp` signs in the client it runs on.** Minting sessions on the shared
+  "anon" client silently turned every later anon probe into an authenticated
+  call; a revoked-for-anon function looked still callable. Use a throwaway
+  client per sign-in.
+- **Dry-run RLS / function changes on the real schema** with
+  `BEGIN; snapshot; <migration>; snapshot; DO $$ ... RAISE EXCEPTION '<report>' $$`
+  — the exception rolls everything back and carries the report out. Snapshot
+  per (user x table) row counts by `SET LOCAL ROLE authenticated` +
+  `set_config('request.jwt.claims', ...)`, and record `insufficient_privilege`
+  as a value (-1) instead of letting it abort the run.
+- **pg_cron / scheduled SQL**: test the function in the same rollback pattern
+  with a throwaway row whose period already ended AND one that has not.
 
 Two traps worth remembering for any check of this shape:
 

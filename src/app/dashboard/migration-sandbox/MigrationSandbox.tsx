@@ -53,7 +53,6 @@ import {
   ThumbsUp,
   Trash2,
   Upload,
-  X,
   Zap,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
@@ -77,7 +76,7 @@ import {
   ScoreGauge,
   SectionHead,
   canDeleteSimulationStatus,
-  downloadJson,
+  findJobRecord,
   fmt,
   heatColor,
   historyDateMatches,
@@ -105,6 +104,7 @@ import {
 } from './_shared'
 import { DependencyGraphTab, DigitalTwinTab, useTwinDetail } from './TwinPanels'
 import { ReportsTab, SimulationBuilderTab, ValidationTab } from './OpsPanels'
+import { SimulationDetailsModal, StageRail, type ApprovalHandler } from './SimulationDetails'
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TYPES + EMPTY STATE
@@ -124,8 +124,6 @@ type TerminalLine = {
   command: string
   detail?: string
 }
-
-type ApprovalHandler = (jobId: string, decision: 'approve' | 'reject' | 'request_review', note?: string) => void | Promise<void>
 
 // Fallback pipeline definition until the first snapshot arrives.
 const DEFAULT_PIPELINE: PipelineStage[] = [
@@ -344,7 +342,8 @@ function buildHandoffTerminalLines(planId: string, simulations: Simulation[], re
       })
     }
 
-    sim.recentEvents.slice(-4).forEach((event) => {
+    // recentEvents is newest-first; the terminal re-sorts lines by time below.
+    sim.recentEvents.slice(0, 4).forEach((event) => {
       const severity = String(event.severity || '').toLowerCase()
       lines.push({
         id: `event-${sim.id}-${event.id}`,
@@ -750,61 +749,6 @@ function HandoffTerminalConsole({
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   ENTERPRISE PIPELINE STAGE RAIL (per-simulation)
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-function StageRail({ sim, pipeline }: { sim: Simulation; pipeline: PipelineStage[] }) {
-  const meta = objectRecord(sim.metadata)
-  const isEnterprise = Number(meta.pipelineVersion) >= 2 || typeof meta.simulationType === 'string'
-  const stages = isEnterprise
-    ? pipeline.filter((stage) => !stage.gate)
-    : [
-        { id: 'preparation', label: 'Preparation', at: 0 },
-        { id: 'assessment', label: 'Risk Assessment', at: 22 },
-        { id: 'execution', label: 'Sandbox Execution', at: 48 },
-        { id: 'verification', label: 'Verification', at: 74 },
-        { id: 'finalization', label: 'Finalization', at: 94 },
-      ] as PipelineStage[]
-  const stageHistory = Array.isArray(meta.stageHistory) ? meta.stageHistory as Array<Record<string, unknown>> : []
-  const enteredAt = new Map(stageHistory.map((entry) => [String(entry.id || ''), String(entry.enteredAt || '')]))
-  const terminal = ['failed', 'stopped', 'rolled_back', 'rollback_requested'].includes(sim.status)
-
-  return (
-    <div className="overflow-x-auto pb-1">
-      <div className="flex min-w-max items-start gap-0">
-        {stages.map((stage, index) => {
-          const done = sim.status === 'completed' || (sim.progress > stage.at && sim.phaseId !== stage.id)
-          const current = !terminal && sim.status !== 'completed' && sim.phaseId === stage.id
-          const at = enteredAt.get(stage.id)
-          return (
-            <div key={stage.id} className="flex items-start">
-              <div className="flex w-[92px] flex-col items-center text-center">
-                <div className={cn('flex h-7 w-7 items-center justify-center rounded-full border text-[10px] font-black transition',
-                  done ? 'border-emerald-500/50 bg-emerald-500/20 text-emerald-300'
-                  : current ? 'border-gold/60 bg-gold/15 text-gold shadow-[0_0_12px_rgba(251,191,36,0.4)]'
-                  : terminal ? 'border-red-500/25 bg-red-500/[0.06] text-red-300/60'
-                  : 'border-white/12 bg-white/[0.03] text-white/30')}>
-                  {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : index + 1}
-                </div>
-                <div className={cn('mt-1.5 text-[8px] font-bold uppercase leading-tight tracking-wide',
-                  done ? 'text-emerald-300/80' : current ? 'text-gold' : 'text-white/30')}>
-                  {stage.label}
-                </div>
-                {at && <div className="mt-0.5 font-mono text-[7px] text-white/25">{timeStr(at)}</div>}
-                {current && <div className="mt-0.5 font-mono text-[8px] font-black text-gold">{sim.progress}%</div>}
-              </div>
-              {index < stages.length - 1 && (
-                <div className={cn('mt-3.5 h-px w-4', done ? 'bg-emerald-500/40' : 'bg-white/10')} />
-              )}
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
    PRODUCTION APPROVAL GATE BANNER
    ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -1106,206 +1050,6 @@ function SophiaPanel({ sophia, pendingAction }: { sophia: SophiaPayload; pending
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   SIMULATION DETAILS MODAL
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-function SimulationDetailsModal({
-  simulation,
-  onClose,
-  onAction,
-  onApproval,
-  pendingAction,
-  pipeline,
-}: {
-  simulation: Simulation | null
-  onClose: () => void
-  onAction: SandboxActionHandler
-  onApproval: ApprovalHandler
-  pendingAction: string | null
-  pipeline: PipelineStage[]
-}) {
-  if (!simulation) return null
-  const sc = statusColor(simulation.status)
-  const snapshots = Array.isArray(simulation.metadata?.snapshots) ? simulation.metadata.snapshots as Array<Record<string, unknown>> : []
-  const busy = (action: string) => pendingAction === `${simulation.id}:${action}`
-  const deleteAllowed = simulation.isSandbox && canDeleteSimulationStatus(simulation.status)
-  const approval = objectRecord(simulation.metadata?.approval)
-  const approvalDecision = String(approval.decision || '')
-  const canDecide = simulation.isSandbox && simulation.status === 'completed'
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div className="max-h-[88vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-gold/25 bg-[#0A1525]/95 shadow-2xl backdrop-blur-xl" onClick={(event) => event.stopPropagation()}>
-        <div className="flex items-start justify-between gap-4 border-b border-white/10 p-5">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="truncate text-lg font-black text-white">{simulation.name}</h3>
-              <Pill className={cn(sc.bg, sc.border, sc.text)}>{simulation.status.replace(/_/g, ' ')}</Pill>
-              <Pill className={modeBadge(simulation.runMode)}>{simModeLabel(simulation)}</Pill>
-              <Pill className={riskBadge(simulation.riskLevel)}>{simulation.riskLevel}</Pill>
-              {approvalDecision && (
-                <Pill className={approvalDecision === 'approve' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : approvalDecision === 'reject' ? 'border-red-500/30 bg-red-500/10 text-red-300' : 'border-sky-500/25 bg-sky-500/10 text-sky-300'}>
-                  {approvalDecision === 'approve' ? 'approved' : approvalDecision === 'reject' ? 'rejected' : 'review requested'}
-                </Pill>
-              )}
-            </div>
-            <p className="mt-1 text-xs text-white/45">{simulation.assetName} | {simulation.environment} | {simulation.owner}</p>
-          </div>
-          <button type="button" onClick={onClose} className="rounded-lg p-1.5 text-white/40 hover:bg-white/10 hover:text-white">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="max-h-[calc(88vh-82px)] overflow-y-auto p-5">
-          <div className="mb-5 rounded-xl border border-white/8 bg-white/[0.02] p-4">
-            <div className="mb-3 text-xs font-black uppercase tracking-wider text-white/55">Enterprise Migration Pipeline</div>
-            <StageRail sim={simulation} pipeline={pipeline} />
-          </div>
-
-          <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {[
-              ['Source', simulation.fromAlgo],
-              ['Target', simulation.toAlgo],
-              ['Phase', simulation.phase],
-              ['ETA', simulation.eta || '--'],
-              ['Mode', simModeLabel(simulation)],
-              ['Engine', simulation.engineStatus || '--'],
-              ['Progress', `${simulation.progress}%`],
-              ['Asset Type', simulation.assetType],
-              ['Scenario', String(objectRecord(simulation.metadata).simulationTypeLabel || simulation.migrationType || '--')],
-              ['Criticality', simulation.criticality],
-              ['Started', simulation.startedAt ? timeStr(simulation.startedAt) : '--'],
-              ['Updated', relTime(simulation.updatedAt)],
-            ].map(([label, value]) => (
-              <div key={label} className="rounded-lg border border-white/8 bg-white/[0.025] p-3">
-                <div className="text-[9px] font-bold uppercase tracking-wider text-white/30">{label}</div>
-                <div className="mt-1 truncate text-xs font-bold text-white/75">{value}</div>
-              </div>
-            ))}
-          </div>
-
-          <div className="mb-5">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-xs font-black uppercase tracking-wider text-white/55">Execution Progress</span>
-              <span className="font-mono text-xs font-bold text-white/55">{simulation.progress}%</span>
-            </div>
-            <ProgressBar value={simulation.progress} color={progressBarColor(simulation.progress, simulation.status)} height="h-2.5" />
-            <div className="mt-2 rounded-lg border border-white/6 bg-white/[0.02] px-3 py-2 text-[11px] text-white/45">
-              {simulation.phaseDetail || simulation.queuedReason || 'Workflow metadata is synchronized from migration telemetry.'}
-            </div>
-          </div>
-
-          {canDecide && (
-            <div className="mb-5 rounded-xl border border-gold/20 bg-gold/[0.03] p-4">
-              <div className="mb-2 text-xs font-black uppercase tracking-wider text-gold">Production Approval Gate</div>
-              <p className="mb-3 text-[11px] leading-relaxed text-white/45">
-                Record a governed decision for this completed simulation. Approval never modifies production — it produces
-                audit evidence consumed by the operational migration workflow.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <ActionBtn icon={ThumbsUp} label={busy('approval:approve') ? 'Approving…' : 'Approve for Production'} variant="success"
-                  onClick={() => { if (window.confirm(`Approve "${simulation.name}" for production planning?`)) void onApproval(simulation.id, 'approve') }}
-                  disabled={pendingAction !== null} />
-                <ActionBtn icon={ThumbsDown} label={busy('approval:reject') ? 'Rejecting…' : 'Reject'} variant="danger"
-                  onClick={() => { if (window.confirm(`Reject "${simulation.name}"?`)) void onApproval(simulation.id, 'reject') }}
-                  disabled={pendingAction !== null} />
-                <ActionBtn icon={Eye} label={busy('approval:request_review') ? 'Requesting…' : 'Request Review'}
-                  onClick={() => void onApproval(simulation.id, 'request_review')}
-                  disabled={pendingAction !== null} />
-              </div>
-              {approvalDecision && (
-                <div className="mt-2 text-[10px] font-semibold text-white/40">
-                  Last decision: <span className="font-black text-white/70">{approvalDecision.replace(/_/g, ' ')}</span> by {String(approval.decidedBy || 'operator')} · {relTime(String(approval.decidedAt || '') || null)}
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="rounded-xl border border-white/8 bg-white/[0.02] p-4">
-              <div className="mb-3 text-xs font-black uppercase tracking-wider text-white/55">Recent Events</div>
-              {simulation.recentEvents.length === 0 ? (
-                <EmptyBlock label="No event entries are attached to this simulation yet." />
-              ) : (
-                <div className="space-y-2">
-                  {simulation.recentEvents.map((event) => (
-                    <div key={event.id} className="grid grid-cols-[18px_1fr_auto] items-center gap-2 rounded-lg bg-white/[0.025] px-3 py-2 text-[11px]">
-                      {severityIcon(event.severity)}
-                      <span className="truncate text-white/60">{event.message}</span>
-                      <span className="font-mono text-white/25">{timeStr(event.timestamp)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="rounded-xl border border-white/8 bg-white/[0.02] p-4">
-              <div className="mb-3 text-xs font-black uppercase tracking-wider text-white/55">Recovery Snapshots</div>
-              {snapshots.length === 0 ? (
-                <EmptyBlock label="No recovery snapshots captured yet." />
-              ) : (
-                <div className="space-y-2">
-                  {snapshots.length > 6 ? (
-                    <div className="text-[10px] text-white/35">
-                      Showing the 6 most recent of {snapshots.length} recovery snapshots.
-                    </div>
-                  ) : null}
-                  {snapshots.slice().reverse().slice(0, 6).map((snap, index) => {
-                    const simulationState = objectRecord(snap.simulationState)
-                    const riskState = objectRecord(snap.riskState)
-                    const complianceState = objectRecord(snap.complianceState)
-                    const snapshotId = String(snap.id || `snapshot-${index + 1}`)
-                    return (
-                    <div key={snapshotId} className="rounded-lg border border-white/6 bg-white/[0.025] px-3 py-2 text-[11px]">
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="font-mono font-bold text-gold">{snapshotId}</span>
-                        <span className="text-white/35">{relTime(String(snap.at || ''))}</span>
-                      </div>
-                      <div className="mt-1 grid gap-1 text-white/45 sm:grid-cols-2">
-                        <span>Snapshot: {String(snap.status || simulationState.status || '--')} | {String(snap.progress ?? simulationState.progress ?? '--')}%</span>
-                        <span>Current: {simulation.status} | {simulation.progress}%</span>
-                        <span>Risk score: {String(riskState.riskScore ?? '--')}</span>
-                        <span>Compliance: {String(complianceState.score ?? '--')}</span>
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-2">
-                        <ActionBtn
-                          icon={Upload}
-                          label={busy('restore_snapshot') ? 'Restoring' : 'Restore'}
-                          onClick={() => onAction(simulation.id, 'restore_snapshot', { snapshotId })}
-                          disabled={busy('restore_snapshot')}
-                          small
-                        />
-                        <ActionBtn
-                          icon={Download}
-                          label="Export"
-                          onClick={() => downloadJson(`qguard-snapshot-${snapshotId}.json`, { simulationId: simulation.id, simulationName: simulation.name, snapshot: snap })}
-                          small
-                        />
-                      </div>
-                    </div>
-                  )})}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="mt-5 flex flex-wrap justify-end gap-2">
-            {simulation.isSandbox && simulation.status === 'running' && <ActionBtn icon={Pause} label={busy('pause') ? 'Pausing' : 'Pause'} onClick={() => onAction(simulation.id, 'pause')} disabled={busy('pause')} />}
-            {simulation.isSandbox && simulation.status === 'paused' && <ActionBtn icon={Play} label={busy('resume') ? 'Resuming' : 'Resume'} onClick={() => onAction(simulation.id, 'resume')} disabled={busy('resume')} variant="success" />}
-            {simulation.isSandbox && simulation.status === 'failed' && <ActionBtn icon={RefreshCw} label={busy('retry') ? 'Retrying' : 'Retry'} onClick={() => onAction(simulation.id, 'retry')} disabled={busy('retry')} variant="gold" />}
-            {simulation.isSandbox && simulation.status === 'running' && <ActionBtn icon={Square} label={busy('stop') ? 'Stopping' : 'Stop'} onClick={() => onAction(simulation.id, 'stop')} disabled={busy('stop')} variant="danger" />}
-            {['running', 'paused', 'completed'].includes(simulation.status) && <ActionBtn icon={RotateCcw} label={busy('rollback') ? 'Rolling Back' : 'Rollback'} onClick={() => onAction(simulation.id, 'rollback')} disabled={busy('rollback')} variant="danger" />}
-            <ActionBtn icon={Save} label={busy('snapshot') ? 'Capturing' : 'Snapshot'} onClick={() => onAction(simulation.id, 'snapshot')} disabled={busy('snapshot')} />
-            {snapshots.length > 0 && <ActionBtn icon={Upload} label={busy('restore_snapshot') ? 'Restoring' : 'Restore Snapshot'} onClick={() => onAction(simulation.id, 'restore_snapshot', { snapshotId: String(snapshots[snapshots.length - 1]?.id || '') })} disabled={busy('restore_snapshot')} />}
-            {deleteAllowed && <ActionBtn icon={Trash2} label={busy('delete') ? 'Deleting' : 'Delete Simulation'} onClick={() => { if (window.confirm('Delete this completed simulation and purge its execution artifacts? Audit and security records will remain.')) onAction(simulation.id, 'delete') }} disabled={busy('delete')} variant="danger" />}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
    SIMULATION ROW (Expandable) + WORKFLOW ROWS
    ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -1523,7 +1267,7 @@ export default function MigrationSandbox() {
   const [tab, setTab] = useState<ActiveTab>(() => plannerHandoffPlanId ? 'pipeline' : 'overview')
   // Roadmap handed off from the AI Migration Advisor™ (localStorage payload).
   const [advisorHandoff, setAdvisorHandoff] = useState<MigrationHandoff | null>(() => readMigrationHandoff())
-  const [selectedSimulation, setSelectedSimulation] = useState<Simulation | null>(null)
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const [logFilter, setLogFilter] = useState('')
   const [historyStatus, setHistoryStatus] = useState('all')
   const [historyAlgorithm, setHistoryAlgorithm] = useState('all')
@@ -1613,12 +1357,21 @@ export default function MigrationSandbox() {
     })
   }, [data.history, historyStatus, historyAlgorithm, historyDateRange, historyAssetType, historyRisk])
 
+  // The Details dialog tracks a job ID and renders that job's record from the
+  // latest snapshot. It used to hold a copy of the row plus an effect that
+  // re-found it in `data.simulations` — the sandbox subset — so opening Details
+  // on an operational queue row closed the dialog on the very next render.
+  const selectedSimulation = useMemo(
+    () => findJobRecord(selectedJobId, data.workflows, data.simulations),
+    [selectedJobId, data.workflows, data.simulations],
+  )
+  const openDetails = useCallback((sim: Simulation) => setSelectedJobId(sim.id), [])
+  const closeDetails = useCallback(() => setSelectedJobId(null), [])
   useEffect(() => {
-    if (!selectedSimulation) return
-    const refreshed = data.simulations.find((sim) => sim.id === selectedSimulation.id)
-    if (refreshed) setSelectedSimulation(refreshed)
-    else setSelectedSimulation(null)
-  }, [data.simulations, selectedSimulation])
+    // A deleted job leaves no record behind; drop the stale ID so the dialog
+    // cannot reappear if a later snapshot lists the ID again.
+    if (selectedJobId && !selectedSimulation) setSelectedJobId(null)
+  }, [selectedJobId, selectedSimulation])
 
   const handleBuilderStart = useCallback(async (params: Record<string, unknown>) => {
     const result = await startSimulation(params)
@@ -1767,7 +1520,7 @@ export default function MigrationSandbox() {
           fill: var(--qg-dashboard-text-soft) !important;
         }
       `}</style>
-      <SimulationDetailsModal simulation={selectedSimulation} onClose={() => setSelectedSimulation(null)} onAction={doAction} onApproval={approveSimulation} pendingAction={pendingAction} pipeline={pipeline} />
+      <SimulationDetailsModal simulation={selectedSimulation} onClose={closeDetails} onAction={doAction} onApproval={approveSimulation} pendingAction={pendingAction} pipeline={pipeline} />
       {notice && (
         <div className={cn(
           'fixed right-4 top-4 z-[60] max-w-sm rounded-xl border px-4 py-3 text-sm font-bold shadow-2xl backdrop-blur-xl',
@@ -1922,7 +1675,7 @@ export default function MigrationSandbox() {
                         <div className="mt-3 flex items-center gap-3">
                           <div className="min-w-0 flex-1"><ProgressBar value={sim.progress} color={progressBarColor(sim.progress, sim.status)} /></div>
                           <span className="w-10 text-right font-mono text-[11px] font-black text-white/55">{sim.progress}%</span>
-                          <ActionBtn icon={Eye} label="Details" onClick={() => setSelectedSimulation(sim)} small />
+                          <ActionBtn icon={Eye} label="Details" onClick={() => openDetails(sim)} small />
                         </div>
                       </div>
                     )
@@ -2065,7 +1818,7 @@ export default function MigrationSandbox() {
                   <div className="space-y-2">
                     {data.simulations.slice(0, 5).map((sim) => (
                       <div key={sim.id}>
-                        <SimulationRow sim={sim} onAction={doAction} onDetails={setSelectedSimulation} pendingAction={pendingAction} pipeline={pipeline} />
+                        <SimulationRow sim={sim} onAction={doAction} onDetails={openDetails} pendingAction={pendingAction} pipeline={pipeline} />
                       </div>
                     ))}
                     {data.simulations.length > 5 && (
@@ -2121,7 +1874,7 @@ export default function MigrationSandbox() {
                 <div className="space-y-2">
                   {operationalWorkflows.slice(0, 6).map((workflow) => (
                     <div key={workflow.id}>
-                      <WorkflowQueueRow workflow={workflow} onAction={doAction} onDetails={setSelectedSimulation} pendingAction={pendingAction} />
+                      <WorkflowQueueRow workflow={workflow} onAction={doAction} onDetails={openDetails} pendingAction={pendingAction} />
                     </div>
                   ))}
                   {operationalWorkflows.length > 6 && (
@@ -2213,7 +1966,7 @@ export default function MigrationSandbox() {
                 <div className="space-y-2">
                   {visibleSimulations.map((sim) => (
                     <div key={sim.id}>
-                      <SimulationRow sim={sim} onAction={doAction} onDetails={setSelectedSimulation} pendingAction={pendingAction} pipeline={pipeline} />
+                      <SimulationRow sim={sim} onAction={doAction} onDetails={openDetails} pendingAction={pendingAction} pipeline={pipeline} />
                     </div>
                   ))}
                 </div>
@@ -2580,7 +2333,7 @@ export default function MigrationSandbox() {
                             </div>
                           </div>
                           <div className="flex flex-wrap gap-2">
-                            <ActionBtn icon={Eye} label="View Details" onClick={() => sim && setSelectedSimulation(sim)} disabled={!sim} small />
+                            <ActionBtn icon={Eye} label="View Details" onClick={() => sim && openDetails(sim)} disabled={!sim} small />
                             <ActionBtn icon={RefreshCw} label={pendingAction === 'simulate' ? 'Queued' : 'Re-Run'} onClick={() => startSimulation({ fromAlgo: row.sourceAlgorithm, toAlgo: row.targetAlgorithm, migrationType: 'history_rerun', dryRun: row.runMode === 'dry_run' })} disabled={pendingAction === 'simulate'} variant="gold" small />
                             <ActionBtn icon={Download} label={pendingAction === `${row.id}:export:json` ? 'Exporting' : 'Export Report'} onClick={() => exportSimulation(row.id, 'json')} disabled={pendingAction === `${row.id}:export:json`} small />
                             <ActionBtn icon={Upload} label={pendingAction === `${row.id}:restore_snapshot` ? 'Restoring' : 'Restore Snapshot'} onClick={() => doAction(row.id, 'restore_snapshot')} disabled={row.snapshots < 1 || pendingAction === `${row.id}:restore_snapshot`} small />

@@ -4,7 +4,9 @@ import { buildScannerIntelligence } from './scanner'
 import { buildSnapshot as buildQuantumReadinessSnapshot } from './quantum-readiness'
 import { dedupeGradedObservations, namesCryptography, observationClass } from '@/lib/scanner/finding-identity'
 import { riskBandFor, riskScoreFromLoad } from '@/lib/migration/asset-intelligence'
-import { isSimulationJob } from '@/lib/migration/job-safety'
+import { isSimulationJob, jobPlanId } from '@/lib/migration/job-safety'
+import { describeOperationalWorkflow, type OperationalAgent } from '@/lib/migration/operational-workflow'
+import { jobExecutionClass } from './agent-scanner'
 import {
   ENGINE_PIPELINE_STAGES,
   SIMULATION_TYPES,
@@ -125,7 +127,9 @@ function pickStr(rec: Record<string, unknown>, keys: string[]): string {
 function normalizeStatus(s: unknown): string {
   const v = String(s || '').toLowerCase().replace(/\s+/g, '_')
   if (['completed', 'complete', 'done', 'success'].includes(v)) return 'completed'
-  if (['failed', 'error', 'errored'].includes(v)) return 'failed'
+  // A failed rollback or validation needs an operator — Live Migration reads
+  // both as failed. Falling through to 'queued' showed them as waiting to run.
+  if (['failed', 'error', 'errored', 'rollback_failed', 'validation_failed'].includes(v)) return 'failed'
   if (['running', 'in_progress', 'executing', 'migrating'].includes(v)) return 'running'
   if (['rollback_requested', 'rollback', 'rolling_back'].includes(v)) return 'rollback_requested'
   if (['rolled_back', 'rollback_complete'].includes(v)) return 'rolled_back'
@@ -179,6 +183,23 @@ function boolMeta(value: unknown) {
   return value === true || value === 'true' || value === 1 || value === '1'
 }
 
+/**
+ * An asset's migration risk, from its OWN exposure evidence — the rule the
+ * Simulation Builder ranks targets by. Workflow rows use it too: they used to
+ * take `quantumRisk(sourceAlgorithm)` alone, which matches only literal "rsa" /
+ * "ecdsa" / "dh " and so published "low" for sources recorded as "TLSv1" or
+ * "Classical crypto" — a planner cutover on an asset carrying critical
+ * exposures read "low" in its Details header, and a simulation the builder had
+ * started as critical was listed as low.
+ */
+function evidenceRiskLevel(invItems: any[], expItems: any[], fallbackAlgorithm: string): 'critical' | 'high' | 'medium' | 'low' {
+  const severity = (exposure: any) => String(exposure?.severity || '').toLowerCase()
+  if (expItems.some((exposure) => severity(exposure) === 'critical')) return 'critical'
+  if (expItems.some((exposure) => severity(exposure) === 'high')) return 'high'
+  if (invItems.some((item) => item?.is_vulnerable || item?.is_quantum_safe === false)) return 'medium'
+  return quantumRisk(fallbackAlgorithm)
+}
+
 // Derives the real cryptographic seed for simulating one tenant asset:
 // source algorithm comes from scanned crypto inventory / exposures, never
 // from hardcoded defaults, so the simulation reflects what the scanner found.
@@ -201,7 +222,6 @@ function assetSimulationSeed(asset: any, invItems: any[], expItems: any[]) {
   const context = `${observationClass(seedRow?.name)} ${seedRow?.item_type || ''} ${seedRow?.protocol || ''} ${asset?.type || ''}`
   const targetAlgorithm = pqcAlgoRec(sourceAlgorithm, context)
   const criticalExposures = expItems.filter((e: any) => String(e.severity || '').toLowerCase() === 'critical').length
-  const highExposures = expItems.filter((e: any) => String(e.severity || '').toLowerCase() === 'high').length
 
   return {
     sourceAlgorithm,
@@ -212,10 +232,7 @@ function assetSimulationSeed(asset: any, invItems: any[], expItems: any[]) {
     // because `quantumRisk()` matches the literal "tls 1.2" and the scanner
     // records "TLSv1.2" — and that level drives the Simulation Builder's risk
     // filter, so the asset was invisible to a "critical/high" selection.
-    riskLevel: criticalExposures > 0 ? 'critical' as const
-      : highExposures > 0 ? 'high' as const
-        : vulnerableItems.length > 0 ? 'medium' as const
-          : quantumRisk(sourceAlgorithm),
+    riskLevel: evidenceRiskLevel(invItems, expItems, sourceAlgorithm),
     inventoryItems: invItems.length,
     vulnerableItems: vulnerableItems.length,
     exposures: expItems.length,
@@ -607,7 +624,13 @@ function buildSnapshotState(job: any, meta: Record<string, unknown>, context?: a
     },
     riskState: {
       riskLevel: current.riskLevel || quantumRisk(sourceAlgorithm),
-      riskScore: Number(summary.riskScore ?? context?.riskScore ?? meta.riskScore ?? 0),
+      // The tenant's canonical quantum risk at capture (0–100, LOWER is better)
+      // — the value the Overview shows. This used to read `summary.riskScore`,
+      // a field the summary no longer carries, so every capture recorded 0 (a
+      // perfect score on a lower-better scale) or fell through to whatever
+      // `riskScore` the job's metadata happened to hold. Null = not assessed.
+      quantumRiskScore: typeof summary.quantumRiskScore === 'number' ? summary.quantumRiskScore : null,
+      quantumRiskSource: String(summary.quantumRiskSource || 'not-assessed'),
       criticalExposures: Number(summary.criticalExposures ?? 0),
       highExposures: Number(summary.highExposures ?? 0),
       runtimeSignals: Number((context?.riskFactors || []).find((f: any) => f?.label === 'Runtime Crypto Risk Signals')?.count || 0),
@@ -664,6 +687,23 @@ function snapshotEntry(job: any, action: string, now: string, meta: Record<strin
     ...state,
   })
   return { snapshotId, snapshots: snapshots.slice(-25), state }
+}
+
+/**
+ * Controls that drive the SANDBOX ENGINE, which only ever runs simulations.
+ *
+ * On an operational job (a planner cutover, a Harvest Now remediation) they
+ * would write engine state onto a real migration record: `resume` / `retry`
+ * set `running` with no executor behind it and skip the approval re-check Live
+ * Migration applies, and `restore_snapshot` wrote `rolled_back` plus "rollback
+ * posture validated" although nothing ran on the asset. Operational jobs are
+ * executed, paused and rolled back through Live Migration Operations.
+ */
+const SANDBOX_ENGINE_ONLY_ACTIONS = ['pause', 'resume', 'retry', 'stop', 'restore_snapshot']
+
+function sandboxEngineActionRefusal(job: any, action: string): string | null {
+  if (!SANDBOX_ENGINE_ONLY_ACTIONS.includes(action) || isSandboxSimulationJob(job)) return null
+  return `"${job?.name || 'This job'}" is an operational migration job, not a sandbox simulation. Its execution, approval and rollback are managed in Live Migration Operations; the sandbox engine never changes it.`
 }
 
 function actionUpdate(job: any, action: string, now: string, options: { snapshotId?: string; context?: any } = {}) {
@@ -807,6 +847,66 @@ async function safeCount(client: any, table: string, userId: string, apply?: (q:
     if (error) return 0
     return count || 0
   } catch { return 0 }
+}
+
+/**
+ * Approval records for the plans operational jobs declare.
+ *
+ * Projects only what `planApproval` reads — a plan's metadata blob is large and
+ * this runs on every snapshot. Tolerant on purpose: a failed read must not
+ * abort the whole sandbox snapshot, and it must not read as "not approved"
+ * either — `queried` lets each job tell "plan read, no approval" apart from
+ * "plan never read".
+ */
+async function loadPlanApprovals(client: any, userId: string, jobs: any[]) {
+  const planIds = Array.from(new Set(jobs.map((job) => jobPlanId(job)).filter(Boolean))).slice(0, 200)
+  const empty = { plans: new Map<string, { status: unknown; metadata: { approval: unknown } }>(), queried: new Set<string>() }
+  if (planIds.length === 0) return empty
+  try {
+    const { data, error } = await client
+      .from('migration_plans')
+      .select('id, status, approval:metadata->approval')
+      .eq('user_id', userId)
+      .in('id', planIds)
+    if (error) {
+      if (!isMissingTable(error)) console.warn('[sandbox] plan approval read failed:', error.message)
+      return empty
+    }
+    return {
+      plans: new Map(((data as any[]) || []).map((row) => [String(row.id), { status: row.status, metadata: { approval: row.approval } }])),
+      queried: new Set(planIds),
+    }
+  } catch (error: any) {
+    console.warn('[sandbox] plan approval read threw:', error?.message || error)
+    return empty
+  }
+}
+
+/** The tenant's enrolled agents, or null when they could not be read (never "none"). */
+async function loadAgentFleet(client: any, userId: string): Promise<OperationalAgent[] | null> {
+  try {
+    const { data, error } = await client
+      .from('scanner_agents')
+      .select('id, name, hostname, status, last_seen_at, revoked_at, role:metadata->>role')
+      .eq('user_id', userId)
+      .limit(500)
+    if (error) {
+      // No agent table provisioned means no agent can exist — a measured "none".
+      if (isMissingTable(error)) return []
+      console.warn('[sandbox] agent fleet read failed:', error.message)
+      return null
+    }
+    return ((data as any[]) || []).map((row) => ({
+      id: String(row.id),
+      name: row.name || row.hostname || null,
+      role: row.role || null,
+      lastSeenAt: row.last_seen_at || null,
+      revoked: Boolean(row.revoked_at) || String(row.status || '').toLowerCase() === 'revoked',
+    }))
+  } catch (error: any) {
+    console.warn('[sandbox] agent fleet read threw:', error?.message || error)
+    return null
+  }
 }
 
 async function safeDeleteRelatedRows(client: any, table: string, userId: string, jobId: string, columns: string[]) {
@@ -1047,6 +1147,18 @@ async function buildSandboxPayload(client: any, userId: string, token?: string |
     eventsByJob.set(ev.migration_id, list)
   }
 
+  // Operational (agent-executed) jobs are described by what decides whether
+  // they move — the approval on their plan, refusals the agent poll recorded,
+  // and whether an agent that may execute them exists — never by the sandbox
+  // engine's own queue copy. Both reads are bounded, tolerant, and skipped when
+  // the tenant has no operational jobs.
+  const operationalJobRows = (jobs || []).filter((job: any) => !isSandboxSimulationJob(job))
+  const hasOperationalJobs = operationalJobRows.length > 0
+  const [planApprovals, agentFleet] = await Promise.all([
+    hasOperationalJobs ? loadPlanApprovals(client, userId, operationalJobRows) : Promise.resolve(null),
+    hasOperationalJobs ? loadAgentFleet(client, userId) : Promise.resolve(null),
+  ])
+
   // Active workflows are tenant migration records. Sandbox simulations are a
   // safe subset; remediation and production migration rows remain operational
   // queue records and are not auto-completed by the sandbox engine.
@@ -1067,7 +1179,20 @@ async function buildSandboxPayload(client: any, userId: string, token?: string |
       || String(meta.algorithm || '')
       || 'Classical'
     const toAlgo = job.target_algorithm || pickStr(meta, ['targetAlgorithm', 'target_algorithm', 'toAlgo']) || pqcAlgoRec(fromAlgo, job.job_type || '')
-    const riskLevel = quantumRisk(fromAlgo)
+    // Same evidence rule as the Simulation Builder, over the snapshot's
+    // bounded (most recent 500) inventory/exposure rows. A job with no known
+    // asset has only its source algorithm to go on.
+    const riskLevel = assetMap.has(job.asset_id) ? evidenceRiskLevel(invItems, expItems, fromAlgo) : quantumRisk(fromAlgo)
+    const planId = jobPlanId(job)
+    const operational = isSandbox ? null : describeOperationalWorkflow({
+      job,
+      status,
+      progress,
+      plan: planId ? planApprovals?.plans.get(planId) || null : null,
+      planReadable: !planId || Boolean(planApprovals?.queried.has(planId)),
+      executionClass: jobExecutionClass(job),
+      agents: agentFleet,
+    })
 
     return {
       id: job.id,
@@ -1087,8 +1212,11 @@ async function buildSandboxPayload(client: any, userId: string, token?: string |
       isActualMigration: !isSandbox,
       executionScope: isSandbox ? 'sandbox' : textMeta(meta, ['executionScope', 'environment'], asset.environment || 'tenant'),
       engineStatus: isSandbox ? textMeta(meta, ['engine'], ENGINE_NAME) : textMeta(meta, ['executor', 'connector', 'approval_mode'], 'awaiting approved executor'),
+      // For an operational job the queue reason is where it really stands —
+      // `phaseForProgress` would say "Awaiting sandbox executor capacity.",
+      // and no sandbox executor will ever run it.
       queuedReason: status === 'queued'
-        ? textMeta(meta, ['queueReason', 'eta'], isSandbox ? 'Awaiting sandbox executor' : 'Awaiting operator approval or connector execution')
+        ? operational?.headline || textMeta(meta, ['queueReason', 'eta'], 'Awaiting sandbox executor')
         : null,
       eta: engineEta(job, status, progress, meta),
       status,
@@ -1096,15 +1224,20 @@ async function buildSandboxPayload(client: any, userId: string, token?: string |
       riskLevel,
       phase: phase.label,
       phaseId: phase.id,
-      phaseDetail: status === 'rollback_requested' && !isSandbox
-        ? textMeta(meta, ['phaseDetail'], 'Rollback request recorded; awaiting an approved executor to restore the previous cryptographic posture.')
+      phaseDetail: operational
+        // While an agent runs it, the step it reports is the better detail.
+        ? status === 'running' ? textMeta(meta, ['phaseDetail'], operational.headline) : operational.headline
         : textMeta(meta, ['phaseDetail'], phase.detail),
+      operational,
       startedAt: job.started_at || null,
       completedAt: job.completed_at || null,
       updatedAt: job.updated_at || job.created_at,
       createdAt: job.created_at,
       eventCount: jobEvents.length,
-      recentEvents: jobEvents.slice(-5).map((ev: any) => ({
+      // `events` is loaded newest-first, so the head of the list is the recent
+      // end. This took `.slice(-5)` — the five OLDEST events in the window —
+      // under the heading "Recent Events".
+      recentEvents: jobEvents.slice(0, 5).map((ev: any) => ({
         id: ev.id,
         type: ev.event_type || 'event',
         message: ev.message || '',
@@ -1848,6 +1981,11 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
     return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Simulation job not found' } })
   }
 
+  const refusal = sandboxEngineActionRefusal(job, action)
+  if (refusal) {
+    return res.status(409).json({ error: { code: 'OPERATIONAL_JOB', message: refusal } })
+  }
+
   const now = new Date().toISOString()
 
   if (action === 'delete') {
@@ -2286,7 +2424,8 @@ router.post('/bulk-action', requireAuth, async (req: AuthenticatedRequest, res) 
   const now = new Date().toISOString()
   let affected = 0
   const affectedJobs: any[] = []
-  const eligibleJobs = (jobs || []).filter((job: any) => scope === 'all' || isSandboxSimulationJob(job))
+  const eligibleJobs = (jobs || []).filter((job: any) =>
+    (scope === 'all' || isSandboxSimulationJob(job)) && !sandboxEngineActionRefusal(job, action))
   for (const job of eligibleJobs) {
     const update = actionUpdate(job, action, now)
 

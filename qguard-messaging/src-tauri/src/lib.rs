@@ -20,6 +20,7 @@ use commands::auth::*;
 use commands::applock::*;
 use commands::billing::*;
 use commands::devices::*;
+use commands::downloads::*;
 use commands::keys::*;
 use commands::messaging::*;
 use commands::security::*;
@@ -275,7 +276,11 @@ pub fn run() {
             billing_state,
             billing_launch_purchase,
             billing_refresh_purchases,
-            billing_open_checkout
+            billing_open_checkout,
+            downloads_save_begin,
+            downloads_save_chunk,
+            downloads_save_commit,
+            downloads_save_abort
         ])
         .run(tauri::generate_context!())
         .expect("error running QGuard Messaging");

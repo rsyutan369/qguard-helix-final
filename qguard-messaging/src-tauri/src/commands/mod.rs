@@ -3,6 +3,7 @@ pub mod auth;
 pub mod billing;
 pub mod calls;
 pub mod devices;
+pub mod downloads;
 pub mod keys;
 pub mod messaging;
 pub mod security;

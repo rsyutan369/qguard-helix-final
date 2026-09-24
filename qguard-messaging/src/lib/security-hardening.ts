@@ -1,5 +1,7 @@
 import { verifyRuntimeAssetIntegrity, type RuntimeAssetIntegrity } from "@/lib/runtime-integrity";
+import { supabaseUrl } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
+import { measureTransport, mergeTransportEvidence } from "@/lib/transport-evidence";
 import type { SecurityHardeningCheck, SecurityHardeningStatus } from "@/lib/types";
 
 const hardeningCacheTtlMs = 60_000;
@@ -111,9 +113,12 @@ export async function loadSecurityHardeningStatus(): Promise<SecurityHardeningSt
   hardeningStatusPromise = Promise.all([
     safeInvoke<SecurityHardeningStatus>("security_hardening_status", {}, fallbackHardeningStatus()),
     verifyRuntimeAssetIntegrity(),
+    // What the backend connection actually negotiated, measured through the
+    // WebView's own TLS stack. See transport-evidence.ts.
+    measureTransport(supabaseUrl),
   ])
-    .then(([hardening, assetIntegrity]) => {
-      const status = mergeRuntimeAssetIntegrity(hardening, assetIntegrity);
+    .then(([hardening, assetIntegrity, transport]) => {
+      const status = mergeTransportEvidence(mergeRuntimeAssetIntegrity(hardening, assetIntegrity), transport);
       cachedHardeningStatus = { loadedAt: Date.now(), status };
       return status;
     })

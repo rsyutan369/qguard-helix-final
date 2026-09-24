@@ -111,11 +111,18 @@ export const ROLE_LABELS: Record<CopilotRole, string> = {
 }
 
 /**
- * Normalize a profiles.role value to a copilot role. QGuard tenants are
- * single-account today, so the account holder defaults to Infrastructure
- * Administrator of their own tenant; explicit restricted roles are honored
- * when set on the profile (org/seat models can extend this without changing
- * the enforcement path).
+ * Least privilege: an account with no role (profiles.role NULL — every
+ * self-registered user) or an unrecognised one is a read-only Security Analyst.
+ * Operate / audit / executive tools require an explicit role assigned by the
+ * owner in Admin > Users.
+ */
+export const DEFAULT_COPILOT_ROLE: CopilotRole = 'security_analyst'
+
+/**
+ * Normalize a profiles.role value to a copilot role. The owner email is always
+ * `owner`; explicit roles are honored when set on the profile (org/seat models
+ * can extend this without changing the enforcement path); anything else falls
+ * back to DEFAULT_COPILOT_ROLE.
  */
 export function normalizeRole(value: unknown, isOwner: boolean): CopilotRole {
   if (isOwner) return 'owner'
@@ -124,7 +131,7 @@ export function normalizeRole(value: unknown, isOwner: boolean): CopilotRole {
   if (v.includes('exec') || v.includes('ciso') || v.includes('cio')) return 'executive'
   if (v.includes('analyst') || v.includes('soc')) return 'security_analyst'
   if (v.includes('admin') || v.includes('infra') || v.includes('platform')) return 'infrastructure_admin'
-  return 'infrastructure_admin'
+  return DEFAULT_COPILOT_ROLE
 }
 
 /* ------------------------------------------------------------------ */

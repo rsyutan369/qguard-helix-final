@@ -1860,6 +1860,375 @@ from `jniLibs`, so the copy step is mandatory, not optional.
 
 ---
 
+## 36. "Details" does nothing on an Operational Migration Queue row
+
+**Problem**
+
+`/dashboard/migration-sandbox` → Overview → Operational Migration Queue → a row
+such as *PQC Migration: expired.badssl.com · Migration Workflow · queued ·
+"Awaiting sandbox executor capacity."* → **Details** opens nothing. Details on a
+sandbox simulation row works.
+
+**Root Cause**
+
+The page kept a COPY of the clicked row in `selectedSimulation` plus an effect
+that re-found it on every snapshot — in `data.simulations`, and closed the dialog
+when it was missing. `simulations` is only the sandbox subset of `workflows`, so
+every operational job was "missing": the dialog mounted and was set back to null
+on the same commit. Nothing errored and nothing was logged.
+
+Opening the dialog then exposed that it had only ever been built for simulations:
+
+- the queue copy "Awaiting sandbox executor capacity." came from
+  `phaseForProgress()` for EVERY queued job — the job was actually approved and
+  waiting for a Migration Operator agent, and the tenant had none enrolled;
+- the header read **low** risk (`quantumRisk("Classical crypto")` matches only
+  literal "rsa" / "ecdsa" / "dh ") for an asset with 9 critical exposure rows;
+- **Restore** / **Restore Snapshot** called the sandbox engine, which wrote
+  `rolled_back` + "rollback posture validated" onto the REAL job with nothing run
+  (entry #27's defect, reachable again through the sandbox);
+- "Recent Events" was `.slice(-5)` of a newest-first list — the five OLDEST;
+- snapshot cards read `riskState.riskScore`, written from `summary.riskScore`,
+  a field the summary no longer carries — every capture recorded 0.
+
+**Solution**
+
+- The page stores `selectedJobId` and derives the record with
+  `findJobRecord(id, data.workflows, data.simulations)` (`_shared.tsx`).
+- `src/lib/migration/operational-workflow.ts` (pure, isomorphic):
+  `describeOperationalWorkflow()` reads the shared `jobApproval` verdict, the
+  recorded `dispatchBlock`, and the agent fleet by role
+  (`AGENT_ROLES_FOR_EXECUTION`, mirrored from `agentMayWrite`) into a stage,
+  headline, next action, four gates and deep links. `dispatchBlockFor()` is now
+  the one refusal rule — Live Migration uses it too.
+- `sandbox.ts` loads plan approvals (`approval:metadata->approval` projection)
+  and `scanner_agents` (`role:metadata->>role`) only when operational jobs exist,
+  tolerantly: an unread plan is `approval-unreadable`, an unread fleet is
+  `unknown` — never "not approved" / "no agents".
+- `SimulationDetails.tsx` renders the operational panel (Execution Readiness
+  gates, next action, Live Migration / Agent Center links) and never offers
+  engine controls on an operational job. `/jobs/:id/action` returns
+  **409 OPERATIONAL_JOB** for pause/resume/retry/stop/restore_snapshot on one,
+  and `/bulk-action` filters them out.
+- Row risk uses `evidenceRiskLevel()` — the same function the Simulation
+  Builder ranks targets by.
+
+**Prevention Checklist**
+
+- [ ] A dialog/drawer holds an ID, not a copy of the row, and resolves it from
+      EVERY list it can be opened from. An effect that "refreshes" a copy from a
+      narrower list silently closes it.
+- [ ] Before reusing a detail view for a second kind of record, list which of
+      its controls act on that kind. A button that was unreachable becomes a
+      live write the moment the view opens.
+- [ ] `.slice(-n)` means "latest" only on an oldest-first list. Check the
+      query's `order()` before naming it "recent".
+- [ ] After renaming a summary field, grep for readers of the OLD name —
+      `summary.riskScore` kept being read (as 0) for months.
+- [ ] Unreadable ≠ no. Approval and fleet reads that fail must surface as
+      unknown, with the rest of the snapshot still served.
+- [ ] Run `npx tsx tools/sandbox-details-check.tsx` (98 checks: selection,
+      every operational stage with negative controls, role-table drift against
+      `agentMayWrite`, the 409 guard, and static renders of both dialog kinds).
+
+---
+
+## 37. Revenue Intelligence shows $39 MRR with no payments — and any user can make themselves Elite
+
+**Problem**
+
+`/dashboard/revenue-intelligence` reported **MRR $39.00, ARR $468, Health 75**
+and a forecast of **$468 ARR** for a database with **zero invoices** — the
+only subscriptions were three `provider: 'manual_test'` QA seeds. Separately, a
+signed-in user could `PATCH /rest/v1/billing_subscriptions` their own row to
+`plan: 'Elite', status: 'active'` (probe answered `ALLOWED rows=1`), and opening
+Settings > Billing on an account with no subscription created an ACTIVE one.
+
+**Root Cause**
+
+Eleven defects, in four groups:
+
+1. **Entitlement writable by its subject.** `billing_subscriptions` carried
+   `*_insert_own` / `*_update_own` policies; `profiles_update_own` let a user
+   change `tier`; and `billing.ts ensureSubscription()` INSERTED an `active` row
+   whose plan came from that user-writable `profiles.tier`. Three routes to free
+   Elite, each also fabricating MRR.
+2. **Revenue from rows no provider ever charged.** MRR summed every
+   access-granting row × catalog price — QA seeds, comps, admin grants.
+3. **Silent under-measurement.** `.limit(5000)` returns at most PostgREST's
+   `max_rows` (1000); Play invoices used `upsert(onConflict: provider_invoice_id)`
+   on a PARTIAL unique index (42P10 — the same trap the PayPal webhook hit) inside
+   `bestEffort`, so no Play payment was ever recorded; failed PayPal payments
+   never became invoices (success rate could not fall below 100%); user audit
+   inserts ran on the user's token against a table with no insert policy; admin
+   status writes (`approved`, `inactive`, `canceled`) violated the CHECK
+   constraint, so Approve/Deactivate/Cancel failed on every click.
+4. **Models that could not be right.** Windows in server-local time vs a UTC
+   timeline; USD and EUR summed together; partial refunds counted as full and
+   dated at the payment; health score filling unmeasured inputs with 0/100;
+   forecast regressing over the partial current month and compounding a
+   partial-month growth ratio; Admin's MRR computed by a second formula
+   (latest-invoice fallback, different active rule) — two MRRs.
+
+**Solution**
+
+- `src/lib/billing/revenue-model.ts` — ONE pure model (classification
+  provider/manual/complimentary, MRR rule, refund-at-refund-time, UTC calendar,
+  per-currency, null-not-zero, weight redistribution, completed-month forecast
+  with measured/derived/assumption inputs, backtest, and ten reconciliation
+  invariants computed on every build). `revenue.ts`, `admin.ts` and the UI all
+  read it; the frontend imports its types.
+- `supabase/billing-integrity-hardening.sql` (applied): drops the two policies,
+  adds `trg_profiles_protect_managed_columns`, the webhook claim ledger columns,
+  `billing_notifications` to realtime, and paged-read indexes.
+- `billing.ts`: no insert on read; service-client writes pinned to `user.id`;
+  PayPal cancel fails closed; provider-billed auto-renew toggles refused.
+- Webhooks (`supabase/functions/billing` + Express twin via shared `logic.ts`):
+  claim-before-side-effects idempotency, failed-payment invoices, cumulative
+  refunds, one audit vocabulary (`BILLING_AUDIT`), no overwrite of recorded sales.
+- `admin.ts`: DB status vocabulary, provider-managed guard (409), customer
+  billing trail + notification on every admin change, shared MRR.
+
+**Prevention Checklist**
+
+- [ ] An entitlement table has NO user write policy. Probe it: a user-token
+      `update().select()` must return `[]`, an insert must error.
+- [ ] A GET handler never creates an access-granting row.
+- [ ] MRR counts only rows a payment provider bills; test/comp/manual rows are
+      counted and disclosed separately.
+- [ ] Never `.limit(N > 1000)` against PostgREST; page with `.range()` and report
+      a ceiling hit.
+- [ ] Never `upsert(onConflict)` on a partial unique index — select-then-insert.
+- [ ] An audit write must be checked for `{ error }`; try/catch alone never fires.
+- [ ] Every status an app writes must be in the column's CHECK constraint —
+      compare against `pg_get_constraintdef`, not the migration file.
+- [ ] Two screens showing "MRR" must call one function; assert equality live.
+- [ ] Run `tools/revenue-intelligence-check.ts --live` and
+      `tools/revenue-intelligence-render-check.ts`.
+
+---
+
+## 38. Advisor: "28 SECURITY DEFINER functions executable by anon" — and revoking them would break messaging
+
+**Problem**
+
+The Supabase security advisor listed 28 `SECURITY DEFINER` functions callable
+by `anon`, 45 by `authenticated`, and 19 with a mutable `search_path`. Three
+were real holes: `ensure_messaging_defaults(p_user_id)` let anyone (even anon)
+reset another user's messaging modules; `log_qguard_profile_security_event` let
+anon plant events in any user's security log; `qguard_has_messaging_access(uid)`
+told any user whether someone else is a paying messaging customer. The
+predicates behind messaging RLS were also membership/contact oracles.
+
+**Root Cause**
+
+Postgres grants EXECUTE to PUBLIC on every new function, definer rights bypass
+RLS inside the function, and the functions trusted a user-id ARGUMENT instead of
+`auth.uid()`. The obvious fix — `REVOKE ... FROM anon, authenticated` — is wrong
+for the predicates: RLS policies (`TO public`, including `storage.objects`) call
+them AS THE QUERYING ROLE, so revoking turns an empty result into
+`permission denied` (already true before the fix: anon querying
+`messaging_devices` errored because anon lacked EXECUTE on
+`shares_messaging_conversation`).
+
+**Solution** (`supabase/security-definer-hardening.sql`)
+
+- Predicates stay executable but **guard inside**:
+  `COALESCE(auth.role(),'') NOT IN ('anon','authenticated') OR <caller is a party>`.
+  Inside a SECURITY DEFINER body `current_user` is the OWNER — use `auth.role()`
+  / `auth.uid()` (JWT claims), never `current_user`, to know who called.
+- "Caller is a party" had to be derived from EVERY call site:
+  `messaging_envelopes_sender_insert` checks the RECIPIENT's membership, so
+  `is_messaging_conversation_member` also answers when the caller is a member of
+  that conversation; `can_view_messaging_profile` and
+  `claim_messaging_one_time_prekey` call `is_messaging_contact` with the caller in
+  either position.
+- Trigger / event-trigger functions: REVOKE freely — Postgres does not check
+  EXECUTE when a trigger fires (verified live as `authenticated`).
+- Check column defaults before revoking: `vault_shared_links.token` defaults to
+  `generate_secure_token(32)`, which runs as the inserting user.
+- `search_path = public, extensions` (pgcrypto lives in `extensions`).
+- Proven by a rolled-back dry run on the live schema that snapshots row counts
+  per (user x table) before/after (70 cells, 0 changes), then
+  `tools/security-definer-check.ts` (7 live Data API probes).
+
+**Prevention Checklist**
+
+- [ ] Before revoking EXECUTE, list callers in THREE places: `pg_policies`
+      (incl. `storage`), column defaults, and other function bodies — plus app
+      `rpc()` calls.
+- [ ] A definer function taking a user id must compare it to `auth.uid()` (or be
+      service-role only). Probe with anon + a random UUID.
+- [ ] A guard on an RLS helper must accept every argument shape its policies
+      pass — read each policy expression; one policy checked the recipient.
+- [ ] Prove RLS changes with a before/after visibility snapshot inside
+      `BEGIN ... RAISE EXCEPTION` (auto-rollback), not by reading policies.
+- [ ] In check tools, never call `verifyOtp` on the client you use as "anon" —
+      it signs that client in (see `qguard-testing-validation`).
+
+---
+
+## 39. Admin > Users: every user shows "0 active / 0 idle / 0 devices", MFA and roles look wrong, and "Force logout" does nothing
+
+**Problem**
+
+`/dashboard/admin` → Users showed 0 sessions and "IP: unknown" for every account
+while Supabase Auth held 41 live sessions; the MFA column/KPI counted the
+`mfa_required` policy flag (0 users ever enrolled); the owner rendered as role
+"USER", plan "FREE / none"; the "User" role filter returned 0 rows although every
+row displayed "User"; "Showing 1–N of <all users>" ignored filters. Actions:
+Force logout revoked rows in an empty table; Suspend left live sessions and
+unexpired tokens working; "Approve Pro subscription" failed for any user with no
+billing row; Reset password rendered a clickable account-takeover link (and
+stored it in the audit log); Delete removed the profile before the auth user and
+deleted PayPal-billed subscription rows without cancelling at PayPal; PATCH's
+owner guard checked the REQUEST BODY's email. Every SSE tick (10s) triggered ~11
+client refetches, and typing in the search box reloaded all seven panels.
+
+**Root Cause**
+
+1. `public.user_sessions` / `user_devices` are written only when a user opens
+   Settings (`profile.ts touchDeviceAndSession`). They are not a session store.
+   The real store is `auth.sessions` (+ `auth.refresh_tokens`, `auth.mfa_factors`),
+   which PostgREST does not expose — so the console never read it.
+2. `profiles.role` is NULL for self-registered users (the protect trigger sets it);
+   `.eq('role','user')` never matches NULL. Role/plan were displayed from
+   different fields than the filters queried.
+3. `billing_subscriptions.subscription_id` is NOT NULL; every other writer mints
+   one (`paypal_…`, `gp_…`, `test-sub-…`) — the admin upsert did not.
+4. Access tokens are verified locally (ES256), so deleting sessions stops refresh
+   but an issued token keeps working until `exp`.
+5. `refreshAll` depended on every filter-bound refresher, and each SSE frame
+   handler called a refetch regardless of change.
+
+**Solution**
+
+- `supabase/admin-user-directory.sql` (applied): `admin_user_auth_directory()`,
+  `admin_user_auth_sessions(uuid)`, `admin_revoke_user_sessions(uuid)` — SECURITY
+  DEFINER, `search_path=''`, EXECUTE revoked from public/anon/authenticated,
+  granted to service_role only.
+- `src/lib/admin/user-directory.ts` — ONE pure model (status = profile × auth ban
+  × email confirmation with drift reasons; plan = `entitlementFromRecords`, the
+  gateway's rule, now shared in `subscription-access.ts`; billing class via
+  `classifySubscription`; sessions/MFA null when unmeasured; 7 integrity checks;
+  change `version`). API, KPIs, filters, CSV export, Overview "Total Users" and
+  Security-tab MFA coverage all read it (5s single-flight cache).
+- `supabase-server.ts revokeUserTokensIssuedBefore()` — getServerUser rejects a
+  user's tokens with `iat` < an admin revocation; hydrated from
+  `admin_session_revocations`.
+- Actions rewritten in `admin.ts` (ban → profile with rollback → end sessions;
+  owner protection by the TARGET's email; delete = typed-email confirmation,
+  409 on an active provider subscription, auth-first cascade; recovery link never
+  audited; reset email or one-time link → new `/reset-password` page).
+- Hook: filter changes refresh only their list (value-compared, StrictMode-safe),
+  stale responses dropped by sequence number; SSE `admin-users` frame carries
+  KPIs + version and the table refetches only on a version change; a write pushes
+  a frame to every open console at once (~0.4s); one shared 8s stream bundle.
+
+**Prevention Checklist**
+
+- [ ] Before displaying "sessions", "last login IP" or "MFA", name the store.
+      `user_sessions` is Settings telemetry; Supabase Auth is the truth.
+- [ ] A filter must query the SAME derived field the row displays (NULL role →
+      "User" must be filterable as "User").
+- [ ] A "sign out"/"suspend" control must defeat (a) refresh tokens AND (b)
+      already-issued access tokens when verification is local.
+- [ ] An owner/self guard reads the target record, never the request body.
+- [ ] Never render a recovery/magic link as `<a href>` in an admin console, and
+      strip it before any audit write.
+- [ ] Deleting an account with an active provider subscription must fail closed.
+- [ ] Every writer of a NOT NULL column without a default mints it — grep the
+      other writers (`subscription_id:`) before adding an upsert path.
+- [ ] SSE frames carry a change version; clients refetch on change only.
+- [ ] Run `npx tsx tools/admin-users-check.ts --live --mutate` and
+      `tools/admin-users-sse-probe.ts` after touching `/api/v1/admin/users*`.
+
+---
+
+## 40. Admin > Roles / Tenants / Billing / Security / Governance / History show invented figures and dead buttons
+
+**Problem**
+
+The six non-Users tabs of `/dashboard/admin` were largely fabricated or unwired:
+role permission counts of 64/128/256 and holder counts not tied to any user;
+every tenant shown with domain `<slug>.qguard.app` and region `us-east-1`;
+"Upcoming invoices" listing complimentary QA seeds; Security showing
+"Brute Force Login … SSH, RDP, VPN" threat narratives, "0/5 GB" sensors and
+"SOC 2 Type II / PCI DSS / ISO 27001" compliance tiles with no evidence behind
+them; Governance "Compliant" badges for policies nothing checked; History
+reconstructed from the CURRENT state of records ("Subscription active", "Role
+active") and every unknown audit action — including Revenue Intelligence page
+views — categorised as "security". Upgrade/Downgrade buttons wrote plan changes
+around the one subscription writer; tenant quotas were never enforced.
+
+Found while verifying the rebuild: creating a tenant without a storage quota
+500'd (`organizations.quota_storage_gb` / `quota_users` / `plan` are NOT NULL with
+defaults 5/5/'free' — the API wrote explicit NULL, and the form promised "Empty =
+unlimited"); edit forms PATCHed every field so the audit trail claimed every field
+changed; the Security grids blew out to 722px on a 375px phone; and
+`tools/revenue-intelligence-check.ts` leaked 3 live Supabase sessions per run,
+inflating the very "session sprawl" control the Security tab measures.
+
+**Root Cause**
+
+1. No models: each panel computed (or hard-coded) its own figures in the route or
+   the component, so nothing could be reconciled and nothing was traceable.
+2. History read domain tables, not the audit trail, so it showed state, not
+   actions. `admin_audit_events` is the only record of who did what.
+3. Roles have no per-request enforcement in this platform — their only real
+   effect is the Sophia copilot capability mapping (`normalizeRole` /
+   `ROLE_CAPABILITIES` in `src/api-server/copilot-knowledge.ts`), and
+   `normalizeRole` falls back to `infrastructure_admin` (read+operate+audit+
+   executive) for any account WITHOUT a role. The console never said so.
+4. Unset optional inputs were written as NULL into NOT NULL columns.
+
+**Solution**
+
+- Pure isomorphic models in `src/lib/admin/`: `role-catalog.ts`,
+  `tenant-directory.ts`, `billing-console.ts` (revenue-model rules, same MRR as
+  Revenue Intelligence), `security-posture.ts` (8 measured controls, each naming
+  the accounts/findings it is about; findings name their asset via
+  `assets.name`), `governance.ts` (policy verification states met / not_met /
+  enforced_by_platform / attested — never "Compliant"; evidence packages are
+  SHA3-256 over `canonicalJson(snapshot)`, re-verified on read),
+  `admin-history.ts` (audit rows only; view actions hidden by default;
+  `revenue.*` categorised; final verb rendered past tense). Shared helpers in
+  `model-utils.ts` (`canonicalJson`, `modelVersion`, `toCsv`, `paginate`).
+- `src/api-server/admin.ts`: one 5s `cachedConsoleModel` per tab shared by route,
+  SSE frame and export; `invalidateAdminModels()` after every write pushes new
+  frames (<1s); `sameStoredValue()` drops no-op PATCH fields before auditing;
+  tenant create omits unset quotas (schema defaults), edit refuses clearing one
+  (`QUOTA_REQUIRED`); `assertTenantCapacity` enforces the user quota; plan
+  changes go only through Manage plan (`applyAdminSubscription`).
+- Frontend: `src/app/dashboard/admin/_{roles,tenants,billing,security,governance,history}/`
+  on `_shared/console.tsx` + `src/hooks/use-console-resource.ts` (lazy load,
+  debounced value-compared queries, stale-response guard, refetch on SSE version
+  change only). Grids use `grid-cols-[minmax(0,1fr)]`; tables scroll in their own
+  `overflow-x-auto`.
+
+**Prevention Checklist**
+
+- [ ] A console tab reads ONE model from `src/lib/admin/*`; its route, SSE frame
+      and export all call the same cached loader.
+- [ ] "History" = the audit trail. Never synthesise history from current state.
+- [ ] Before labelling a role, say what it actually changes (today: Sophia
+      capabilities only). Do not display permission counts that nothing enforces
+      as if they were enforced.
+- [ ] No compliance framework status without evidence; unverifiable policies are
+      "Attested", not "Compliant".
+- [ ] Unset optional inputs are OMITTED from inserts (let schema defaults apply);
+      check `information_schema.columns.is_nullable` before promising "blank =
+      unlimited" in a form.
+- [ ] PATCH routes compare against the stored row and audit only real changes.
+- [ ] Test tools that mint sessions (`verifyOtp`) must `signOut({scope:'local'})`
+      every client they create — leaked sessions pollute live security metrics.
+- [ ] A check that writes rows directly (as a webhook would) must allow for the
+      5s admin model cache — it bypasses `invalidateAdminModels()`.
+- [ ] Run `tools/admin-console-check.ts --live --mutate` and
+      `tools/admin-console-sse-probe.ts` after touching `/api/v1/admin/*`.
+
+---
+
 ## Adding an entry
 
 Use exactly this shape — Problem, Root Cause, Solution, Prevention Checklist.

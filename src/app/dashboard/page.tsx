@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { useDashboard } from '@/hooks/use-dashboard'
 import { useAuth } from '@/contexts/auth-context'
+import { isOwnerEmail } from '@/lib/admin-access'
 import { ExposureWorkflowGraph } from '@/components/exposure/ExposureWorkflowGraph'
 import { ESTATE_LENSES } from '@/lib/dashboard/estate-workflow'
 import SecurityEventsPanel from './security_events_panel/SecurityEventsPanel'
@@ -244,7 +245,8 @@ export default function Dashboard() {
       {/* Business Impact + Asset Inventory */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <div>
-          <SectionLabel href="/dashboard/revenue-intelligence"><Briefcase className="h-4 w-4 text-cyan-300" /> Business Impact</SectionLabel>
+          {/* Revenue Intelligence is owner-only; for everyone else the link would bounce straight back here. */}
+          <SectionLabel href={isOwnerEmail(user?.email) ? '/dashboard/revenue-intelligence' : undefined}><Briefcase className="h-4 w-4 text-cyan-300" /> Business Impact</SectionLabel>
           <div className="mt-2"><BusinessImpact data={executive?.businessImpact} loading={execLoading} /></div>
         </div>
         <div>

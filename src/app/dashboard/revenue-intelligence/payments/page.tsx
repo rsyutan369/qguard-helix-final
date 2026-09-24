@@ -1,134 +1,150 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Download, RefreshCw, Search } from 'lucide-react';
+import { CheckCircle2, Clock, Gauge, ReceiptText, RotateCcw, XCircle } from 'lucide-react';
+import { AMBER, CYAN, EMERALD, RED, SLATE, VIOLET, Donut, EmptyState, Panel, SectionTitle } from '@/app/dashboard/quantum-readiness/_shared';
 import {
-  AMBER, BLUE, CYAN, EMERALD, GREEN, RED, SLATE, VIOLET,
-  BarList, Donut, EmptyState, HeaderButton, MetricCard, Panel, SectionTitle,
-} from '@/app/dashboard/quantum-readiness/_shared';
-import {
-  DataGapsPanel, DataTable, RevenueShell, StatusPill, dateFmt, moneyFmt, timeAgo, useRevenueIntelligence,
+  DataGapsPanel, DataTable, Kpi, LedgerLimitNote, MoneyBars, RevenuePage, SearchBox, SelectBox, StatusPill,
+  countFmt, dateTimeFmt, moneyFmt, providerColor, timeAgo, useRevenue,
+  type InvoiceLedgerRow,
 } from '../_shared';
 
-/** Payment Analytics — provider aggregation, success rates, and the payment ledger. */
+const STATUS_OPTIONS = [
+  { value: 'all', label: 'All outcomes' },
+  { value: 'paid', label: 'Paid' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'refunded', label: 'Refunded' },
+  { value: 'pending', label: 'Pending' },
+];
+
+/** Payment Analytics — outcomes, success rate, refunds and the payment ledger. */
 export default function PaymentAnalyticsPage() {
-  const { snapshot, state, sseConnected, refresh, exportReport } = useRevenueIntelligence();
-  const payments = snapshot.paymentAnalytics;
+  const { openCustomer } = useRevenue();
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-
-  const filtered = useMemo(() => {
-    const text = query.trim().toLowerCase();
-    return snapshot.invoices.filter((invoice) => {
-      if (statusFilter !== 'all' && invoice.status !== statusFilter) return false;
-      if (!text) return true;
-      return [invoice.email, invoice.invoiceId, invoice.plan, invoice.method].some((field) => String(field || '').toLowerCase().includes(text));
-    });
-  }, [snapshot.invoices, query, statusFilter]);
+  const [methodFilter, setMethodFilter] = useState('all');
 
   return (
-    <RevenueShell
+    <RevenuePage
       title="Payment Analytics"
-      subtitle="Every charge across PayPal, Google Play, and manual billing — success rates, failures, refunds, and the full payment ledger."
-      sseConnected={sseConnected}
-      state={state}
-      snapshot={snapshot}
-      actions={
-        <>
-          <HeaderButton icon={RefreshCw} onClick={() => void refresh()}>Refresh</HeaderButton>
-          <HeaderButton icon={Download} onClick={() => exportReport('payments', 'csv')}>Export CSV</HeaderButton>
-        </>
-      }
+      subtitle="Every recorded charge across PayPal and Google Play — collected, failed, refunded and pending — with webhook-verified outcomes and the full payment ledger."
+      report="payments"
     >
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-        <MetricCard label="Successful" value={String(payments.successful)} detail="completed payments" color={EMERALD} />
-        <MetricCard label="Failed" value={String(payments.failed)} detail="declined / errored" color={payments.failed > 0 ? RED : SLATE} />
-        <MetricCard label="Refunds" value={String(payments.refunds)} detail={moneyFmt(payments.refundedCents)} color={AMBER} />
-        <MetricCard label="Pending" value={String(payments.pending)} detail="awaiting settlement" color={CYAN} />
-        <MetricCard label="Success Rate" value={payments.successRatePct === null ? '—' : `${payments.successRatePct}%`} detail="of attempted charges" color={payments.successRatePct !== null && payments.successRatePct < 90 ? AMBER : EMERALD} ring={payments.successRatePct ?? undefined} />
-        <MetricCard label="Avg Payment" value={moneyFmt(payments.averagePaymentCents)} detail={`${payments.totalPayments} total records`} color={VIOLET} />
-      </div>
-
-      <div className="grid gap-3 xl:grid-cols-3">
-        <Panel className="p-4">
-          <SectionTitle>Payment Outcomes</SectionTitle>
-          {payments.totalPayments > 0 ? (
-            <Donut
-              segments={[
-                { label: 'Successful', value: payments.successful, color: EMERALD },
-                { label: 'Failed', value: payments.failed, color: RED },
-                { label: 'Refunded', value: payments.refunds, color: AMBER },
-                { label: 'Pending', value: payments.pending, color: SLATE },
-              ].filter((segment) => segment.value > 0)}
-              centerValue={String(payments.totalPayments)}
-              centerLabel="payments"
-              centerColor={EMERALD}
-            />
-          ) : (
-            <EmptyState label="No payments recorded yet." />
-          )}
-        </Panel>
-        <Panel className="p-4">
-          <SectionTitle>Providers by Revenue</SectionTitle>
-          <BarList
-            rows={snapshot.revenueByProvider.map((provider) => ({ label: provider.label, value: Math.round(provider.cents / 100) }))}
-            colorFor={(row) => (row.label === 'PayPal' ? BLUE : row.label === 'Google Play' ? GREEN : SLATE)}
-            unit=" USD"
-          />
-          <p className="mt-3 text-[10px] leading-relaxed text-white/35">
-            Providers appear as soon as they process a real payment. PayPal settles via verified webhooks; Google Play via server-verified purchase tokens + RTDN.
-          </p>
-        </Panel>
-        <DataGapsPanel gaps={snapshot.dataGaps.filter((gap) => gap.metric.includes('Stripe'))} />
-      </div>
-
-      <Panel className="p-4">
-        <SectionTitle
-          suffix={
-            <div className="flex items-center gap-2">
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/30" />
-                <input
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="Search invoice / email / plan"
-                  className="h-8 w-56 rounded-md border border-white/10 bg-black/30 pl-8 pr-2 text-[11px] text-white/85 outline-none placeholder:text-white/25 focus:border-emerald-400/50"
-                />
-              </div>
-              <select
-                value={statusFilter}
-                onChange={(event) => setStatusFilter(event.target.value)}
-                className="h-8 rounded-md border border-white/10 bg-black/30 px-2 text-[11px] text-white/75 outline-none focus:border-emerald-400/50"
-              >
-                {['all', 'paid', 'failed', 'refunded', 'pending'].map((status) => (
-                  <option key={status} value={status} className="bg-[#0B1526]">{status === 'all' ? 'All statuses' : status}</option>
-                ))}
-              </select>
+      {(snapshot) => {
+        const payments = snapshot.paymentAnalytics;
+        const methods = Array.from(new Set(snapshot.invoices.map((row) => row.method || 'Other'))).sort();
+        return (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+              <Kpi label="Collected" value={countFmt(payments.successful)} detail={`${moneyFmt(snapshot.kpis.grossRevenueCents)} gross`} color={EMERALD} icon={CheckCircle2} />
+              <Kpi label="Failed" value={countFmt(payments.failed)} detail={payments.failed ? `${moneyFmt(payments.failedAttemptCents)} attempted, not collected` : 'declined or errored charges'} color={payments.failed > 0 ? RED : SLATE} icon={XCircle} />
+              <Kpi label="Refunded" value={countFmt(payments.refunds)} detail={moneyFmt(payments.refundedCents)} color={AMBER} icon={RotateCcw} />
+              <Kpi label="Pending" value={countFmt(payments.pending)} detail="awaiting settlement" color={CYAN} icon={Clock} />
+              <Kpi label="Success Rate" value={payments.successRatePct === null ? '—' : `${payments.successRatePct}%`} detail={`collected ÷ ${countFmt(payments.attempted)} attempts`} color={payments.successRatePct !== null && payments.successRatePct < 90 ? AMBER : EMERALD} icon={Gauge}
+                unmeasured={payments.successRatePct === null ? 'No payment attempt recorded yet' : null} />
+              <Kpi label="Average Payment" value={moneyFmt(payments.averagePaymentCents)} detail={`${countFmt(payments.totalRecords)} payment records`} color={VIOLET} icon={ReceiptText}
+                unmeasured={payments.averagePaymentCents === null ? 'No collected payment yet' : null} />
             </div>
-          }
-        >
-          Payment Ledger ({filtered.length})
-        </SectionTitle>
-        <DataTable
-          headers={['When', 'Invoice', 'Customer', 'Plan', 'Method', 'Amount', 'Status']}
-          rows={filtered.map((invoice) => [
-            <div key="w">
-              <div className="text-white/80">{dateFmt(invoice.at)}</div>
-              <div className="text-[10px] text-white/35">{timeAgo(invoice.at)}</div>
-            </div>,
-            <span key="i" className="font-mono text-[10px] text-white/55">{invoice.invoiceId.slice(0, 22)}</span>,
-            <span key="c" className="font-semibold text-white/85">{invoice.email ?? invoice.userId.slice(0, 8)}</span>,
-            <span key="p">{invoice.plan}</span>,
-            <span key="m">{invoice.method ?? '—'}</span>,
-            <span key="a" className="font-mono font-bold" style={{ color: invoice.status === 'paid' ? EMERALD : invoice.status === 'refunded' ? AMBER : invoice.status === 'failed' ? RED : undefined }}>
-              {moneyFmt(invoice.amountCents)} {invoice.currency !== 'USD' ? invoice.currency : ''}
-            </span>,
-            <StatusPill value={invoice.status} />,
-          ])}
-          empty="No payments in the ledger yet — rows appear with the first real charge."
-        />
-        {snapshot.invoices.length >= 200 ? <p className="mt-2 text-[10px] text-white/35">Showing the 200 most recent payment records.</p> : null}
-      </Panel>
-    </RevenueShell>
+
+            <div className="grid gap-3 xl:grid-cols-3">
+              <Panel className="p-4">
+                <SectionTitle>Payment Outcomes</SectionTitle>
+                {payments.totalRecords > 0 ? (
+                  <Donut
+                    segments={[
+                      { label: 'Paid', value: payments.successful, color: EMERALD },
+                      { label: 'Failed', value: payments.failed, color: RED },
+                      { label: 'Refunded', value: payments.refunds, color: AMBER },
+                      { label: 'Pending', value: payments.pending, color: SLATE },
+                    ].filter((segment) => segment.value > 0)}
+                    centerValue={countFmt(payments.totalRecords)}
+                    centerLabel="payment records"
+                    centerColor={EMERALD}
+                  />
+                ) : (
+                  <EmptyState label="No payments recorded yet." hint="PayPal PAYMENT.SALE.* and BILLING.SUBSCRIPTION.PAYMENT.FAILED webhooks write this ledger." />
+                )}
+              </Panel>
+              <Panel className="p-4">
+                <SectionTitle>Collected Revenue by Provider</SectionTitle>
+                <MoneyBars rows={snapshot.revenueByProvider.map((row) => ({ label: row.label, cents: row.cents, sub: `${countFmt(row.count)} payments` }))} colorFor={providerColor} empty="No provider has collected a payment yet." />
+                <p className="mt-3 text-[10px] leading-relaxed text-white/35">
+                  PayPal outcomes arrive by signature-verified webhook, claimed once per event id (duplicates and concurrent redeliveries are ignored). Google Play purchases are verified server-side with the Play Developer API.
+                </p>
+              </Panel>
+              <DataGapsPanel title="Payment data not captured" gaps={snapshot.dataGaps.filter((gap) => /Stripe|Google Play|tax/i.test(gap.metric))} />
+            </div>
+
+            <PaymentLedger rows={snapshot.invoices} total={snapshot.ledgerTotals.invoices} methods={methods} query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} methodFilter={methodFilter} setMethodFilter={setMethodFilter} openCustomer={openCustomer} />
+          </>
+        );
+      }}
+    </RevenuePage>
+  );
+}
+
+function PaymentLedger({
+  rows, total, methods, query, setQuery, statusFilter, setStatusFilter, methodFilter, setMethodFilter, openCustomer,
+}: {
+  rows: InvoiceLedgerRow[];
+  total: number;
+  methods: string[];
+  query: string; setQuery: (value: string) => void;
+  statusFilter: string; setStatusFilter: (value: string) => void;
+  methodFilter: string; setMethodFilter: (value: string) => void;
+  openCustomer: (userId: string) => void;
+}) {
+  const filtered = useMemo(() => {
+    const text = query.trim().toLowerCase();
+    return rows.filter((row) => {
+      if (statusFilter !== 'all' && row.status !== statusFilter) return false;
+      if (methodFilter !== 'all' && (row.method || 'Other') !== methodFilter) return false;
+      if (!text) return true;
+      return [row.email, row.invoiceId, row.transactionId, row.plan, row.method].some((field) => String(field || '').toLowerCase().includes(text));
+    });
+  }, [rows, query, statusFilter, methodFilter]);
+
+  return (
+    <Panel className="p-4">
+      <SectionTitle
+        suffix={
+          <div className="flex flex-wrap items-center gap-2">
+            <SearchBox value={query} onChange={setQuery} placeholder="Search invoice, transaction, email" label="Search payments" />
+            <SelectBox value={statusFilter} onChange={setStatusFilter} label="Filter by outcome" options={STATUS_OPTIONS} />
+            <SelectBox value={methodFilter} onChange={setMethodFilter} label="Filter by provider" options={[{ value: 'all', label: 'All providers' }, ...methods.map((method) => ({ value: method, label: method }))]} />
+          </div>
+        }
+      >
+        Payment Ledger ({countFmt(filtered.length)})
+      </SectionTitle>
+      <DataTable<InvoiceLedgerRow>
+        rows={filtered}
+        rowKey={(row) => row.id}
+        empty={rows.length ? 'No payment matches these filters.' : 'No payments in the ledger yet — rows appear with the first real charge.'}
+        initialSort={{ key: 'when', direction: 'desc' }}
+        onRowClick={(row) => openCustomer(row.userId)}
+        rowLabel={(row) => `Open customer for invoice ${row.invoiceId}`}
+        columns={[
+          { key: 'when', header: 'When (UTC)', sortValue: (row) => row.paidAt, render: (row) => (<div><div className="whitespace-nowrap text-white/80">{dateTimeFmt(row.paidAt)}</div><div className="text-[10px] text-white/35">{timeAgo(row.paidAt)}</div></div>) },
+          { key: 'invoice', header: 'Invoice', sortValue: (row) => row.invoiceId, render: (row) => <span className="font-mono text-[10px] text-white/55" title={row.transactionId || row.invoiceId}>{row.invoiceId.length > 26 ? `${row.invoiceId.slice(0, 26)}…` : row.invoiceId}</span> },
+          { key: 'customer', header: 'Customer', sortValue: (row) => row.email || row.userId, render: (row) => <span className="font-semibold text-white/85">{row.email ?? row.userId.slice(0, 8)}</span> },
+          { key: 'plan', header: 'Plan', sortValue: (row) => row.plan, render: (row) => row.plan || '—' },
+          { key: 'method', header: 'Provider', sortValue: (row) => row.method, render: (row) => row.method || '—' },
+          {
+            key: 'amount', header: 'Amount', align: 'right', sortValue: (row) => row.amountCents,
+            render: (row) => (
+              <span className="whitespace-nowrap font-mono font-bold" style={{ color: row.status === 'paid' ? EMERALD : row.status === 'refunded' ? AMBER : row.status === 'failed' ? RED : undefined }}>
+                {moneyFmt(row.amountCents, row.currency)}
+                {row.refundedCents > 0 ? <span className="ml-1 text-[10px] text-amber-300">(−{moneyFmt(row.refundedCents, row.currency)})</span> : null}
+                {!row.inReportingCurrency ? <span className="ml-1 text-[10px] text-amber-300">not in USD totals</span> : null}
+              </span>
+            ),
+          },
+          { key: 'status', header: 'Outcome', sortValue: (row) => row.status, render: (row) => <StatusPill value={row.status} /> },
+        ]}
+      />
+      <LedgerLimitNote shown={rows.length} total={total} noun="payment records" report="payments" />
+      <p className="mt-2 text-[10px] text-white/30">A failed row shows the amount PayPal attempted to charge; nothing was collected and it is excluded from every revenue total.</p>
+    </Panel>
   );
 }

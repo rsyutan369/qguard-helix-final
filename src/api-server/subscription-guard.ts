@@ -1,14 +1,12 @@
 import type { NextFunction, Request, Response } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { isOwnerEmail } from '@/lib/admin-access'
-import { DEMO_ACCOUNT_TIER, isDemoModeEnabled, isDemoUserId } from '@/lib/demo-account'
 import {
   TIER_RANK,
   TIER_LABEL,
-  normalizeTier,
-  isAccessGrantingStatus,
+  entitlementFromRecords,
   tierMeets,
-  type AccessTier,
+  type EntitlementRecord,
   type PlanTier,
 } from '@/lib/subscription-access'
 
@@ -136,12 +134,7 @@ function requiredTierForPath(path: string): PlanTier | null {
   return best ? best.tier : null
 }
 
-export interface Entitlement {
-  tier: AccessTier
-  status: string | null
-  isActive: boolean
-  isOwner: boolean
-}
+export type Entitlement = EntitlementRecord
 
 /**
  * Authoritative server-side entitlement for the caller. Reads the caller's own
@@ -153,15 +146,7 @@ export interface Entitlement {
  */
 export async function resolveEntitlement(userId: string, email: string | null | undefined, token: string): Promise<Entitlement> {
   if (isOwnerEmail(email)) {
-    return { tier: 'elite', status: 'active', isActive: true, isOwner: true }
-  }
-  /* Demo account — see src/lib/demo-account.ts. A constant entitlement, because
-     the billing table it would otherwise read lives in the project that is
-     unavailable. `isOwner` stays FALSE: this grants the Elite subscription
-     tier, not platform ownership, so `requireOwner` on /api/v1/admin and the
-     Revenue Intelligence routes still refuse it. */
-  if (isDemoModeEnabled() && isDemoUserId(userId)) {
-    return { tier: DEMO_ACCOUNT_TIER, status: 'active', isActive: true, isOwner: false }
+    return entitlementFromRecords({ isOwner: true, subscription: null })
   }
   const client = createAuthClient(token)
   if (!client) throw new Error('subscription: no supabase auth client')
@@ -174,17 +159,9 @@ export async function resolveEntitlement(userId: string, email: string | null | 
     .limit(1)
     .maybeSingle()
   if (subError) throw subError
-  if (sub) {
-    return {
-      tier: normalizeTier(sub.plan),
-      status: sub.status ?? null,
-      isActive: isAccessGrantingStatus(sub.status),
-      isOwner: false,
-    }
-  }
+  if (sub) return entitlementFromRecords({ isOwner: false, subscription: sub })
   const { data: profile } = await client.from('profiles').select('tier').eq('id', userId).maybeSingle()
-  const tier = normalizeTier(profile?.tier)
-  return { tier, status: tier === 'none' ? null : 'incomplete', isActive: false, isOwner: false }
+  return entitlementFromRecords({ isOwner: false, subscription: null, profileTier: profile?.tier })
 }
 
 function deny(res: Response, required: PlanTier, ent: Entitlement) {

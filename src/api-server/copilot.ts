@@ -68,9 +68,8 @@ async function requireAuth(req: Request, res: Response, next: NextFunction) {
   authed.user = user
   authed.token = token
 
-  // Role: owner bypass, else profiles.role (single-account tenants default to
-  // infrastructure_admin of their OWN tenant — same authority the rest of the
-  // platform already grants them; restricted roles are honored when present).
+  // Role: owner bypass, else profiles.role; no role / unknown role = read-only
+  // security_analyst (DEFAULT_COPILOT_ROLE). Elevated roles are assigned by the owner.
   const owner = isOwnerEmail(user.email)
   let profileRole: unknown = null
   try {

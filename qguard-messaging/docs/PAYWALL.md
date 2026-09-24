@@ -9,19 +9,36 @@ flows, and streamed to every logged-in session in real time.
 
 ---
 
+> **Billing endpoint (2026-09-21).** The apps used to call `https://api.qguard.dev`,
+> which never existed (NXDOMAIN), and the Express billing router was never
+> deployed publicly — so desktop "Upgrade" failed with *Failed to fetch* and no
+> PayPal webhook was registered. Billing now runs as the **`billing` Supabase
+> Edge Function** (`supabase/functions/billing` in the platform repo) at
+> `https://<project>.supabase.co/functions/v1/billing`, with the same
+> `/api/v1/...` paths. The app derives that origin from `VITE_SUPABASE_URL`
+> (`src/lib/billing-api.ts`); `VITE_BILLING_API_ORIGIN` still overrides it for a
+> self-hosted Express API (add its host to the CSP `connect-src` too).
+> Google Play verification is NOT in the Edge Function yet (`/play-billing/verify`
+> answers 501); it needs the Play service account described below. Until the
+> function's `/health` reports `"playVerification": true`, the Android app does
+> not launch Google Play purchases at all and uses PayPal checkout instead
+> (`billingSupportsPlayVerification()`), so nobody can be charged by Play for a
+> purchase the service cannot verify.
+
 ## Architecture
 
 ```
 Android app ──► Google Play Billing ──► purchase token
                                           │
                                           ▼
-                    POST api.qguard.dev/api/v1/play-billing/verify   (Bearer session)
+                    POST <billing origin>/api/v1/play-billing/verify   (Bearer session)
                     — Google Play Developer API (subscriptionsv2)
                     — obfuscatedExternalAccountId == user id  (account binding)
                     — token-reuse rejection (one token = one account)
                     — acknowledge                                     │
 Desktop app ──► POST /api/v1/paypal/subscribe ─► PayPal approval URL │
-                (existing verified-webhook flow)                      │
+                then POST /api/v1/paypal/confirm (polled)             │
+                + verified webhook (whichever lands first)            │
                                           ┌───────────────────────────┘
                                           ▼
                      public.billing_subscriptions (+ invoices, audit, notifications)
@@ -32,7 +49,14 @@ Desktop app ──► POST /api/v1/paypal/subscribe ─► PayPal approval URL �
 ```
 
 Ongoing lifecycle sync:
-- **PayPal** → existing `/api/v1/paypal/webhook` (verified, idempotent, retried).
+- **PayPal** → `/api/v1/paypal/webhook` on the billing Edge Function
+  (signature-verified against `PAYPAL_WEBHOOK_ID`, idempotent via
+  `paypal_webhook_events`, 5xx on failure so PayPal redelivers). Registered with
+  `npx tsx tools/paypal-webhook-setup.ts` (platform repo).
+- **PayPal confirm** → right after checkout the app polls
+  `/api/v1/paypal/confirm`; the function reads the subscription from PayPal and
+  activates it only if PayPal says ACTIVE and `custom_id` is the caller. Same
+  row as the webhook writes, so activation never depends on webhook delivery.
 - **Google Play** → `/api/v1/play-billing/rtdn` (Pub/Sub push): RENEWED /
   RECOVERED / CANCELED / ON_HOLD / GRACE / PAUSED / REVOKED / EXPIRED. Every
   RTDN re-fetches the authoritative state from Google before writing.
@@ -96,9 +120,10 @@ Access-granting statuses: `active`, `trial`, `pending_renewal` — identical in
    **Manage orders** access in Play Console → API access.
 3. Monetization setup → Real-time developer notifications: create a Pub/Sub
    topic, add a **push** subscription to
-   `https://api.qguard.dev/api/v1/play-billing/rtdn?token=<PLAY_RTDN_TOKEN>`.
+   `<billing origin>/api/v1/play-billing/rtdn?token=<PLAY_RTDN_TOKEN>` (once
+   Play verification is deployed — see the note at the top).
 
-### 3. API server env (api.qguard.dev deployment)
+### 3. Billing service configuration
 ```
 GOOGLE_PLAY_PACKAGE_NAME=com.qguard.messaging
 GOOGLE_PLAY_SERVICE_ACCOUNT_JSON={"client_email":"...","private_key":"..."}   # or GOOGLE_PLAY_SA_EMAIL + GOOGLE_PLAY_SA_PRIVATE_KEY
@@ -106,12 +131,18 @@ PLAY_RTDN_TOKEN=<long random secret>
 # optional product-id overrides (default qguard_<tier>):
 # PLAY_PRODUCT_STARTER=... PLAY_PRODUCT_BASIC=... PLAY_PRODUCT_PRO=... PLAY_PRODUCT_ELITE=...
 ```
-PayPal env (`PAYPAL_CLIENT_ID`, `PAYPAL_SECRET_KEY`, `PAYPAL_WEBHOOK_ID`,
-`PAYPAL_PLAN_*`, `APP_ORIGIN`) is unchanged from the existing pricing flow.
+PayPal configuration (`PAYPAL_CLIENT_ID`, `PAYPAL_SECRET_KEY`, `PAYPAL_ENV`,
+`PAYPAL_WEBHOOK_ID`, `PAYPAL_PLAN_*`, `APP_ORIGIN`) lives in the platform `.env`
+and is copied into the Edge Function's secrets with
+`npx tsx tools/billing-secrets-push.ts` (needs `npx supabase login` once; never
+prints a value). Check it with `GET /functions/v1/billing/health` — booleans
+only — and `npx tsx tools/billing-edge-check.ts --live`.
 
 ### 4. Messaging app env (optional)
 ```
-VITE_BILLING_API_ORIGIN=https://api.qguard.dev   # default; override for staging
+# Default: ${VITE_SUPABASE_URL}/functions/v1/billing. Override only for a
+# self-hosted Express billing API (and add it to the CSP connect-src):
+VITE_BILLING_API_ORIGIN=https://billing.example.com
 ```
 
 ## User flows

@@ -56,6 +56,45 @@ export function normalizeTier(value: string | null | undefined): AccessTier {
   return 'none';
 }
 
+export interface EntitlementRecord {
+  tier: AccessTier;
+  status: string | null;
+  isActive: boolean;
+  isOwner: boolean;
+  /** Where the entitlement came from: the owner bypass, a billing row, or nothing. */
+  source: 'owner' | 'subscription' | 'none';
+}
+
+/**
+ * THE entitlement rule, as pure data -> data. The API gateway
+ * (subscription-guard `resolveEntitlement`) and the Owner Admin Users console
+ * both call it, so "what plan does this user actually have" has one answer:
+ * owner -> Elite; a billing_subscriptions row -> its plan, granting access only
+ * while its status is access-granting; otherwise nothing. `profiles.tier` alone
+ * never grants access (it is a mirror, not an entitlement).
+ */
+export function entitlementFromRecords(input: {
+  isOwner: boolean;
+  subscription: { plan?: string | null; status?: string | null } | null | undefined;
+  profileTier?: string | null;
+}): EntitlementRecord {
+  if (input.isOwner) {
+    return { tier: 'elite', status: 'active', isActive: true, isOwner: true, source: 'owner' };
+  }
+  if (input.subscription) {
+    const status = input.subscription.status ?? null;
+    return {
+      tier: normalizeTier(input.subscription.plan),
+      status,
+      isActive: isAccessGrantingStatus(status),
+      isOwner: false,
+      source: 'subscription',
+    };
+  }
+  const tier = normalizeTier(input.profileTier);
+  return { tier, status: tier === 'none' ? null : 'incomplete', isActive: false, isOwner: false, source: 'none' };
+}
+
 /** True when `tier` sits at or above `required` on the ladder. */
 export function tierMeets(tier: AccessTier, required: AccessTier): boolean {
   return TIER_RANK[tier] >= TIER_RANK[required];

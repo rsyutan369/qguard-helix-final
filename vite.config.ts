@@ -93,12 +93,6 @@ export default defineConfig(({mode}) => {
     'SUPABASE_FALLBACK_SERVICE_ROLE_KEY',
     'VITE_SUPABASE_USE_FALLBACK',
     'SUPABASE_USE_FALLBACK',
-    // Demo/test account (src/lib/demo-account.ts). The BROWSER reads this
-    // straight off import.meta.env, but the Vite-mounted API server is a Node
-    // process that only sees process.env — without this line the flag would be
-    // on in the UI and off in the API, and every demo request would 401.
-    'VITE_DEMO_ACCOUNT',
-    'DEMO_ACCOUNT',
   ]) {
     if (env[key] && !process.env[key]) {
       process.env[key] = env[key];

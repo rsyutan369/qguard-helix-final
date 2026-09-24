@@ -2,7 +2,8 @@
 //
 // The subscription belongs to the ACCOUNT: public.billing_subscriptions in
 // Supabase is the single source of truth, written only by the verified payment
-// backends (PayPal webhook, Google Play verification/RTDN at api.qguard.dev)
+// backends (the billing Edge Function's PayPal webhook + confirm route; see
+// src/lib/billing-api.ts)
 // and mirrored here read-only. Client access checks are PRESENTATION — the
 // database enforces the same rule server-side via qguard_has_messaging_access()
 // (migration 030) on every message/conversation/call-signal insert.
@@ -133,12 +134,6 @@ export const PLAN_CATALOG: PlanInfo[] = [
     highlights: ["Everything in Pro", "QKMS key management", "Governance & compliance", "Priority support"],
   },
 ];
-
-/** Backend origin hosting /api/v1/paypal, /api/v1/billing, /api/v1/play-billing. */
-export function billingApiOrigin(): string {
-  const configured = import.meta.env.VITE_BILLING_API_ORIGIN as string | undefined;
-  return (configured || "https://api.qguard.dev").replace(/\/$/, "");
-}
 
 /** Google Play product id convention (mirrors the backend's productIdFor). */
 export function playProductIdFor(tier: PlanTier): string {

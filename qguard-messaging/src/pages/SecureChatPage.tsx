@@ -17,6 +17,7 @@ import { deriveReadState } from "@/lib/chat-read-state";
 import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import { parseMessageAad } from "@/lib/message-envelope-identity";
 import { guardNativeFileInput } from "@/lib/native-dialog-guard";
+import { describeSavedFile, saveFileToDevice } from "@/lib/save-file";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke, invokeWithTimeout } from "@/lib/tauri";
 import type { ContactSummary, ConversationSummary, DualSignature, SignedPrekeySummary, TrustedDevice, UserSearchResult } from "@/lib/types";
@@ -416,15 +417,6 @@ async function sha256Base64(bytes: Uint8Array): Promise<string> {
 function safeAttachmentFileName(name: string): string {
   const cleaned = name.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "");
   return cleaned.slice(0, 96) || "attachment";
-}
-
-function downloadBlob(name: string, blob: Blob): void {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  URL.revokeObjectURL(url);
 }
 
 function parseJsonPayload(value: string): Record<string, unknown> | null {
@@ -3317,6 +3309,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         },
       );
       const mediaKind = inlineMediaKind(attachment);
+      let savedLine: string | null = null;
       if (mediaKind) {
         // Images, video and audio stay in memory as an object URL and render in
         // the conversation. They are NOT written to disk automatically: this is a
@@ -3334,12 +3327,14 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         // followed ("listen once"), now applied to images and video too.
         await markViewOnceAttachmentOpened(chatMessage);
       } else {
-        downloadBlob(attachment.name, blob);
+        // Written to the device BEFORE the view-once burn: if the save fails,
+        // the throw below leaves the message intact to try again.
+        savedLine = describeSavedFile(await saveFileToDevice(attachment.name, blob));
         await markViewOnceAttachmentOpened(chatMessage);
       }
       stream.emit({
         stage: "attachment_decrypt_completed",
-        detail: mediaKind ? "Decrypted locally - now visible in the conversation" : "Attachment restored locally",
+        detail: mediaKind ? "Decrypted locally - now visible in the conversation" : `Decrypted locally - ${savedLine}`,
         progress: 100,
         status: "complete",
         level: "success",
@@ -3354,7 +3349,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         status: "complete",
         metadata: { conversation_id: chatMessage.conversation_id, client_message_id: chatMessage.client_message_id },
       });
-      setStatus(mediaKind ? "Attachment decrypted - shown in the conversation" : "Attachment decrypted locally");
+      setStatus(mediaKind ? "Attachment decrypted - shown in the conversation" : `Attachment decrypted - ${savedLine}`);
     } catch (error) {
       const message = normalizeDecryptionError(error);
       stream.emit({
@@ -3381,8 +3376,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     if (!previewUrl || !chatMessage.attachment) return;
     try {
       const response = await fetch(previewUrl);
-      downloadBlob(chatMessage.attachment.name, await response.blob());
-      setStatus("Attachment saved");
+      const saved = await saveFileToDevice(chatMessage.attachment.name, await response.blob());
+      setStatus(describeSavedFile(saved));
     } catch (error) {
       setMessageAction(describeMessageError(error));
     }

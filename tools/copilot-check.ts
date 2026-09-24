@@ -267,7 +267,11 @@ async function main() {
   assert(normalizeRole('Security Analyst', false) === 'security_analyst', 'profile "Security Analyst" → analyst')
   assert(normalizeRole('CISO', false) === 'executive', 'CISO → executive')
   assert(normalizeRole('auditor', false) === 'auditor', 'auditor → auditor')
-  assert(normalizeRole(null, false) === 'infrastructure_admin', 'account holder defaults to infra admin of own tenant')
+  assert(normalizeRole(null, false) === 'security_analyst', 'no role → read-only Security Analyst (least privilege)')
+  assert(normalizeRole('user', false) === 'security_analyst', 'unrecognised role → read-only Security Analyst')
+  assert(!ROLE_CAPABILITIES[normalizeRole(null, false)].operate, 'default role cannot operate (approve/rollback/restore)')
+  assert(!toolAllowedForRole(TOOL_REGISTRY.approveRemediation, normalizeRole(null, false)), 'default role cannot approve remediation')
+  assert(normalizeRole('infrastructure_admin', false) === 'infrastructure_admin', 'explicit admin role still honoured')
   assert(ROLE_CAPABILITIES.auditor.audit && !ROLE_CAPABILITIES.auditor.operate, 'auditor: audit yes, operate no')
 
   console.log('\n[7] Prompt-injection sanitizer')

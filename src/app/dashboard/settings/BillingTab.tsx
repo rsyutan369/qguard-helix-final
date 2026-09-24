@@ -361,6 +361,9 @@ function SubscriptionOverview({ billing, openAction, onCompare, onUpgrade }: { b
               {statusLabel(subscription.status)}
             </span>
             <Badge tone={subscription.autoRenew ? 'green' : 'yellow'}>{subscription.autoRenew ? 'Auto Renew On' : 'Auto Renew Off'}</Badge>
+            {subscription.cancelAtPeriodEnd && subscription.status !== 'cancelled' && subscription.currentPeriodEnd ? (
+              <Badge tone="yellow">Cancelled — access until {formatDate(subscription.currentPeriodEnd)}</Badge>
+            ) : null}
           </div>
           <h2 className="text-2xl font-black text-white">Billing & Subscription</h2>
           <p className="mt-1 max-w-3xl text-sm text-white/45">
@@ -435,10 +438,10 @@ function SubscriptionOverview({ billing, openAction, onCompare, onUpgrade }: { b
         <button type="button" className={ghostButtonClass} disabled={!billing.permissions.canManageBilling} onClick={() => openAction({ action: 'renew', plan: subscription.currentPlan, billingCycle: subscription.billingCycle, title: 'Renew Subscription', description: 'Renewal keeps paid modules available and may create a provider checkout session when required.' })}>Renew</button>
         <button type="button" className={ghostButtonClass} disabled={!billing.permissions.canManageBilling} onClick={() => openAction({ action: 'switch-cycle', billingCycle: cycleTarget, title: `Switch to ${cycleTarget} billing`, description: 'Billing cycle changes are synchronized through the subscription API and provider hooks when configured.' })}>Switch to {cycleTarget}</button>
         <button type="button" className={ghostButtonClass} disabled={!billing.permissions.canManageBilling} onClick={() => openAction({ action: subscription.autoRenew ? 'disable-auto-renew' : 'enable-auto-renew', title: subscription.autoRenew ? 'Disable Auto-Renew' : 'Enable Auto-Renew', description: 'Auto-renew changes are applied to the tenant subscription state and reflected by live telemetry.' })}>{subscription.autoRenew ? 'Disable' : 'Enable'} Auto-Renew</button>
-        {subscription.status === 'cancelled' ? (
+        {subscription.status === 'cancelled' || subscription.cancelAtPeriodEnd ? (
           <button type="button" className={primaryButtonClass} disabled={!billing.permissions.canManageBilling} onClick={() => openAction({ action: 'reactivate', title: 'Reactivate Subscription', description: 'Reactivation restores active subscription status for the current plan.' })}>Reactivate</button>
         ) : (
-          <button type="button" className={dangerButtonClass} disabled={!billing.permissions.canManageBilling} onClick={() => openAction({ action: 'cancel', title: 'Cancel Subscription', description: 'Cancellation disables auto-renew and marks the subscription for cancellation.', danger: true })}>Cancel Subscription</button>
+          <button type="button" className={dangerButtonClass} disabled={!billing.permissions.canManageBilling} onClick={() => openAction({ action: 'cancel', title: 'Cancel Subscription', description: subscription.currentPeriodEnd ? `Future charges stop now. You keep ${subscription.currentPlan} until ${formatDate(subscription.currentPeriodEnd)}; access ends automatically after that.` : 'Future charges stop now and access ends immediately.', danger: true })}>Cancel Subscription</button>
         )}
       </div>
     </Panel>

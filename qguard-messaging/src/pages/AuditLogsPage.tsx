@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import { useIsAdmin } from "@/lib/admin";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
+import { describeSavedFile, saveFileToDevice } from "@/lib/save-file";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
 import type { SecurityEvent, TelemetryEvent } from "@/lib/types";
@@ -311,21 +312,17 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
       const desktopReport = await safeInvoke<Record<string, unknown> | null>("security_export_report", undefined, null);
       const report = buildAuditReport(reportId, desktopReport);
       const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `qguard-security-report-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
+      const saved = await saveFileToDevice(
+        `qguard-security-report-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
+        blob,
+      );
       await logAuditSecurityEvent("audit_report_exported", "info", {
         report_id: reportId,
         rows: rows.length,
         desktop_report: Boolean(desktopReport),
       });
       await recordAuditTelemetry("audit_export_complete", `Exported ${rows.length} audit rows`, 100, "complete");
-      setStatus({ tone: "success", message: desktopReport ? "Security report exported with desktop attestation." : "Security report exported from current live audit state." });
+      setStatus({ tone: "success", message: `${desktopReport ? "Security report exported with desktop attestation." : "Security report exported from current live audit state."} ${describeSavedFile(saved)}.` });
       await Promise.resolve(onRefresh());
     } catch (error) {
       const message = describeDataError(error);

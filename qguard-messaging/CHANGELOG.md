@@ -8,6 +8,38 @@ website download label in `../src/app/qguard-messaging/_shared.tsx` — all thre
 are kept in lock-step by `tools/release.ps1`, because a mismatch silently breaks
 auto-update.
 
+## [1.3.9] — 2026-09-21
+
+Desktop and Android. Built locally; not yet published.
+
+### Fixed
+
+- **Android: "Save" / "Decrypt" never wrote a file.** Every save in the app —
+  decrypted chat attachments, MFA recovery codes, the Quantum Vault recovery
+  key and the audit export — was an `<a download>` click on a blob URL. Android's
+  system WebView drops those silently, so the app reported "decrypted locally"
+  (and ticked "I saved my recovery key") while nothing reached the device. Saves
+  on Android now go through a native MediaStore bridge into
+  **`Download/QGuard/`** (no storage permission needed on Android 10+), the
+  status line names the exact file written, and a failed save leaves view-once
+  messages unburned and the recovery checkbox unticked. Desktop keeps the
+  WebView download manager.
+- **Desktop: "Upgrade" failed with "Failed to fetch".** Billing requests went
+  to `api.qguard.dev`, which does not exist. They now go to the `billing`
+  Supabase Edge Function on the app's own project; network failures name the
+  host instead of the browser's generic text, and a paid checkout is confirmed
+  directly from PayPal so activation no longer depends on webhook delivery.
+  Android uses the same PayPal checkout until the billing service can verify
+  Google Play purchases, so Play can never charge for a plan it cannot grant.
+- **Runtime layer stuck at 8/9 on Android ("Review coverage", 96%).** The
+  Transport Policy check reported only what the app could *configure*, which on
+  Android is nothing, so it always failed. It now measures what the live backend
+  connection actually negotiated: TLS 1.3 with an ML-KEM (FIPS 203) group
+  passes on any platform; a classical group, the pre-standard Kyber draft, or
+  older TLS fails with the specific fix; and
+  a Windows runtime that ignored the post-quantum request now fails instead of
+  passing on configuration alone.
+
 ## [1.3.8] — 2026-09-16
 
 Security release. Desktop and Android. Every item below was found by a full

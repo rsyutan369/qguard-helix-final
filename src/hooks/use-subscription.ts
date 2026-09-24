@@ -6,7 +6,6 @@ import {
   isAccessGrantingStatus,
   type AccessTier,
 } from '@/lib/subscription-access';
-import { DEMO_ACCOUNT_TIER, isDemoModeEnabled, isDemoUserId } from '@/lib/demo-account';
 
 // Lightweight entitlement read for route/nav gating. Reads the caller's own
 // billing_subscriptions row (RLS-scoped) with a profiles.tier fallback, and
@@ -60,22 +59,6 @@ export function useSubscription(): SubscriptionState & { refresh: () => Promise<
     if (!userId) {
       resolvedFor.current = null;
       setState({ ...EMPTY, loading: false });
-      return;
-    }
-    /* Demo account (src/lib/demo-account.ts): entitlement is a constant, not a
-       billing row — there is no reachable database to read one from. Mirrors
-       `resolveEntitlement`'s demo branch in src/api-server/subscription-guard.ts
-       so the UI gate and the API gate cannot disagree. */
-    if (isDemoModeEnabled() && isDemoUserId(userId)) {
-      resolvedFor.current = userId;
-      setState({
-        ...EMPTY,
-        tier: DEMO_ACCOUNT_TIER,
-        status: 'active',
-        isActive: true,
-        provider: 'demo',
-        loading: false,
-      });
       return;
     }
     try {
@@ -142,9 +125,6 @@ export function useSubscription(): SubscriptionState & { refresh: () => Promise<
   // Live updates when the subscription changes (activation, cancel, switch).
   useEffect(() => {
     if (!userId) return;
-    // The demo account has no billing row to watch, and opening a realtime
-    // socket to a restricted project just produces a reconnect loop.
-    if (isDemoModeEnabled() && isDemoUserId(userId)) return;
     // Topic must be unique PER HOOK INSTANCE: supabase.channel() returns the
     // existing channel for a duplicate topic, and .on() after .subscribe()
     // throws — two components using this hook on one page (DashboardLayout +

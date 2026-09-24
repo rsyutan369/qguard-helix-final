@@ -1,11 +1,11 @@
 {
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSazhTOEN6bmJEb2hkb0JleHNkMkdFOGtZNVlzUnFhWHNTV2lnNDd1T1BVc28xQlBTWVhHNE1iMHRueklQWmVvbmh6VHphejJlc1V4ZDkwaEI4UDRsdGNRUWdaQWNsZ3dNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5NjMzMjYwCWZpbGU6UUd1YXJkIE1lc3NhZ2luZ18xLjMuOF94NjQtc2V0dXAuZXhlCnIyNExnNC9OQzNxWS8rUDVWektJazFDbXMrM1hIcE5maXhseFZheEFuTjVKc1RNdXlJSEJnSUpOZFlFdUlQQllpWHFtWGgvMnlRL2hSU2ttU1dhckN3PT0K",
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSazhTOEN6bmJEb2s3SFRBMzEyVWxTUlBuVWRBVDNxd0pWMEF2bDhSanBXS2FTa3JXdE5ZZFlhZFFTWkdrQUtEYmFCWHZGMk16YTR2VlM5eGVxRlhqS242TkxtRGs3RmdvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5OTkzNTM2CWZpbGU6UUd1YXJkIE1lc3NhZ2luZ18xLjMuOV94NjQtc2V0dXAuZXhlCjdMT0pLRTRiSjl3S2ZMQTJhOXhKYmp2Qkh6KzNxY2dJMEpXYU0wQ3dvSUdSdXBPc2c1ZGIvN2NRUzM5blcxRGlFSlN5NGtqNlR6VU5VYkRKOXhneER3PT0K",
                                              "url":  "https://api.qguard.dev/downloads/QGuard-Messaging-Setup.exe"
                                          }
                   },
-    "pub_date":  "2026-09-17T08:21:04Z",
-    "version":  "1.3.8",
-    "notes":  "Message sender authentication against the registered device identity, call session binding, enforced end-to-end call media encryption, and media frame replay protection."
+    "pub_date":  "2026-09-21T12:25:37Z",
+    "version":  "1.3.9",
+    "notes":  "Android saves now reach Download/QGuard, desktop subscription upgrades reach the billing service, and the transport check measures the live connection."
 }

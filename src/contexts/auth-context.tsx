@@ -4,14 +4,6 @@ import {
   getSupabaseClient,
   switchToFallbackSupabase,
 } from '../lib/supabase';
-import {
-  clearDemoSession,
-  createDemoSession,
-  isDemoCredential,
-  isDemoModeEnabled,
-  isDemoSessionActive,
-  markDemoSessionActive,
-} from '../lib/demo-account';
 import type { User, Session } from '@supabase/supabase-js';
 
 const AUTH_TIMEOUT_MS = 12000;
@@ -94,19 +86,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let unsubscribe: (() => void) | null = null;
 
     const attachAuthClient = async () => {
-      /* Demo session (see src/lib/demo-account.ts) — restored BEFORE any
-         Supabase call, because the whole point of the demo account is to work
-         while the Supabase project is unreachable. `isDemoSessionActive` is
-         false unless the env flag is on AND this browser signed in as demo. */
-      if (isDemoSessionActive()) {
-        const demoSession = createDemoSession();
-        if (!mounted) return;
-        setSession(demoSession);
-        setUser(demoSession.user);
-        setLoading(false);
-        return;
-      }
-
       let client = getSupabaseClient();
       let session: Session | null = null;
       let error: Error | null = null;
@@ -157,18 +136,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signIn = async (email: string, password: string) => {
-    /* Demo credentials never touch Supabase — they are the escape hatch for
-       when Supabase itself is what is broken. Flag-gated; with the flag off
-       these are just wrong credentials and fall through to the real sign-in. */
-    if (isDemoModeEnabled() && isDemoCredential(email, password)) {
-      const demoSession = createDemoSession();
-      markDemoSessionActive();
-      setSession(demoSession);
-      setUser(demoSession.user);
-      setLoading(false);
-      return { error: null };
-    }
-
     let client = getSupabaseClient();
     let { data, error } = await withAuthTimeout(
       client.auth.signInWithPassword({ email, password }),
@@ -300,16 +267,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
-    /* A demo sign-out must not await Supabase: there is no server session to
-       revoke, and on a restricted project the call is a guaranteed failure that
-       would leave the user stuck on a dashboard they asked to leave. */
-    if (isDemoSessionActive()) {
-      clearDemoSession();
-      setSession(null);
-      setUser(null);
-      return;
-    }
-    clearDemoSession();
     await getSupabaseClient().auth.signOut();
     setSession(null);
     setUser(null);

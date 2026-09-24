@@ -71,12 +71,14 @@ const LANGUAGES = [
   { value: 'ja', label: 'Japanese' },
 ]
 
-type ProfileDraft = Pick<UserProfileSettings, 'fullName' | 'username' | 'role' | 'company' | 'phone' | 'location' | 'department' | 'jobTitle'>
+// `role` is NOT part of the editable draft: profiles.role is the access role
+// that Copilot and the Admin console authorise with, so its holder may only
+// read it. The free-text position belongs in Job title.
+type ProfileDraft = Pick<UserProfileSettings, 'fullName' | 'username' | 'company' | 'phone' | 'location' | 'department' | 'jobTitle'>
 
 const PROFILE_FIELD_LIMITS: Record<keyof ProfileDraft, number> = {
   fullName: 200,
   username: 60,
-  role: 200,
   company: 200,
   phone: 40,
   location: 200,
@@ -88,7 +90,6 @@ function createProfileDraft(profile?: UserProfileSettings | null): ProfileDraft 
   return {
     fullName: profile?.fullName || '',
     username: profile?.username || '',
-    role: profile?.role || '',
     company: profile?.company || '',
     phone: profile?.phone || '',
     location: profile?.location || '',
@@ -334,7 +335,11 @@ function ProfileTab({
           <div className="grid gap-4 md:grid-cols-2">
             <TextField label="Full name" value={draft.fullName} maxLength={PROFILE_FIELD_LIMITS.fullName} autoComplete="name" onChange={(value) => update('fullName', value)} />
             <TextField label="Username" value={draft.username} maxLength={PROFILE_FIELD_LIMITS.username} autoComplete="username" onChange={(value) => update('username', value)} />
-            <TextField label="Role" value={draft.role} maxLength={PROFILE_FIELD_LIMITS.role} onChange={(value) => update('role', value)} />
+            <label>
+              <span className={labelClass}>Access role</span>
+              <input className={`${inputClass} cursor-not-allowed opacity-70`} value={profile?.role ? profile.role.replace(/_/g, ' ') : 'Account holder'} readOnly aria-readonly="true" aria-describedby="access-role-hint" />
+              <span id="access-role-hint" className="mt-1 block text-[11px] text-slate-500">Assigned by your administrator; it controls what you can do in Copilot and admin tools.</span>
+            </label>
             <TextField label="Job title" value={draft.jobTitle} maxLength={PROFILE_FIELD_LIMITS.jobTitle} autoComplete="organization-title" onChange={(value) => update('jobTitle', value)} />
             <TextField label="Company" value={draft.company} maxLength={PROFILE_FIELD_LIMITS.company} autoComplete="organization" onChange={(value) => update('company', value)} />
             <TextField label="Department" value={draft.department} maxLength={PROFILE_FIELD_LIMITS.department} onChange={(value) => update('department', value)} />
@@ -1101,9 +1106,9 @@ export default function ProfileSettingsPage() {
           saving={saving}
           validationError={profileValidationError}
           onSave={() => showNotice(saveProfileDraft, 'Profile updated.')}
-          onUpload={(kind, file) => showNotice(() => uploadMedia(kind, file), kind === 'avatar' ? 'Avatar updated.' : 'Banner updated.')}
-          onRemove={(kind) => showNotice(() => removeMedia(kind), kind === 'avatar' ? 'Avatar removed.' : 'Banner removed.')}
-          onChangeEmail={(email, password) => showNotice(() => changeEmail(email, password), 'Verification email requested.')}
+          onUpload={async (kind, file) => { await showNotice(() => uploadMedia(kind, file), kind === 'avatar' ? 'Avatar updated.' : 'Banner updated.') }}
+          onRemove={async (kind) => { await showNotice(() => removeMedia(kind), kind === 'avatar' ? 'Avatar removed.' : 'Banner removed.') }}
+          onChangeEmail={async (email, password) => { await showNotice(() => changeEmail(email, password), 'Verification email requested.') }}
         />
       )}
 

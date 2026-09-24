@@ -97,8 +97,11 @@ construction, not by convention.
 
 ## RBAC — role capability matrix
 
-Roles resolve from `profiles.role` (owner email → `owner`; single-account
-tenants default to `infrastructure_admin` of their own tenant). Capabilities:
+Roles resolve from `profiles.role` (owner email → `owner`). An account with no
+role, or an unrecognised one, is a read-only `security_analyst`
+(`DEFAULT_COPILOT_ROLE`, least privilege — changed 2026-09-24 from
+`infrastructure_admin`); operate / audit / executive tools need an explicit role
+assigned by the owner in Admin → Users. Capabilities:
 
 | Role | read | operate | audit | executive |
 |------|:----:|:-------:|:-----:|:---------:|

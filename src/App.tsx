@@ -1,6 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/auth-context';
-import DemoModeBadge from './components/DemoModeBadge';
 import { ThemeProvider } from './contexts/theme-context';
 import Landing from './pages/Landing';
 import SubscriptionThankYou from './pages/SubscriptionThankYou';
@@ -18,6 +17,7 @@ import QguardHelixFeatures from './pages/QguardHelixFeatures';
 import Auth from './app/authentication/Auth';
 import LoginPage from './app/authentication/login/page';
 import RegisterPage from './app/authentication/register/page';
+import ResetPasswordPage from './app/authentication/reset-password/page';
 import DocsPage from './app/docs/page';
 import PqcChecklistPage from './app/resources/pqc-checklist/page';
 import QuantumSimulationPage from './app/resources/quantum-simulation/page';
@@ -44,6 +44,7 @@ import ProfileSettingsPage from './app/dashboard/settings/page';
 import AdminDashboardPage from './app/dashboard/admin/page';
 
 // Revenue Intelligence™ (owner-only)
+import { RevenueIntelligenceLayout } from './app/dashboard/revenue-intelligence/_shared';
 import RevenueOverviewPage from './app/dashboard/revenue-intelligence/page';
 import RevenueAnalyticsPage from './app/dashboard/revenue-intelligence/revenue/page';
 import RevenueSubscriptionsPage from './app/dashboard/revenue-intelligence/subscriptions/page';
@@ -131,6 +132,8 @@ export default function App() {
           <Route path="/authentication/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/authentication/register" element={<RegisterPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
+          <Route path="/authentication/reset-password" element={<ResetPasswordPage />} />
           <Route path="/docs" element={<DocsPage />} />
           <Route path="/qguard-messaging" element={<QguardMessagingOverview />} />
           <Route path="/qguard-messaging/secure-chat" element={<QguardMessagingSecureChat />} />
@@ -213,12 +216,14 @@ export default function App() {
           <Route path="admin" element={<AdminDashboardPage />} />
 
           {/* Revenue Intelligence™ — owner-only (shell + API both enforce) */}
-          <Route path="revenue-intelligence" element={<RevenueOverviewPage />} />
-          <Route path="revenue-intelligence/revenue" element={<RevenueAnalyticsPage />} />
-          <Route path="revenue-intelligence/subscriptions" element={<RevenueSubscriptionsPage />} />
-          <Route path="revenue-intelligence/customers" element={<RevenueCustomersPage />} />
-          <Route path="revenue-intelligence/payments" element={<RevenuePaymentsPage />} />
-          <Route path="revenue-intelligence/forecast" element={<RevenueForecastPage />} />
+          <Route path="revenue-intelligence" element={<RevenueIntelligenceLayout />}>
+            <Route index element={<RevenueOverviewPage />} />
+            <Route path="revenue" element={<RevenueAnalyticsPage />} />
+            <Route path="subscriptions" element={<RevenueSubscriptionsPage />} />
+            <Route path="customers" element={<RevenueCustomersPage />} />
+            <Route path="payments" element={<RevenuePaymentsPage />} />
+            <Route path="forecast" element={<RevenueForecastPage />} />
+          </Route>
 
           <Route path="scanner" element={<ScannerDashboard />} />
           <Route path="scanner_dashboard" element={<ScannerDashboard />} />
@@ -320,9 +325,6 @@ export default function App() {
           </Route>
         </Routes>
       </Router>
-      {/* Visible marker while the temporary demo identity is signed in.
-          Renders null for every real session. See src/lib/demo-account.ts. */}
-      <DemoModeBadge />
       </AuthProvider>
     </ThemeProvider>
   );

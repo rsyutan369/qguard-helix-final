@@ -10,9 +10,9 @@ import {
   Smartphone,
   XCircle,
 } from "lucide-react";
+import { billingSupportsPlayVerification, postBilling } from "@/lib/billing-api";
 import { safeInvoke } from "@/lib/tauri";
 import {
-  billingApiOrigin,
   formatMoney,
   PLAN_CATALOG,
   playBasePlanFor,
@@ -41,18 +41,9 @@ interface PlayState {
   purchases?: PlayPurchase[];
 }
 
-async function apiPost(path: string, accessToken: string, body: unknown): Promise<any> {
-  const response = await fetch(`${billingApiOrigin()}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-    body: JSON.stringify(body),
-  });
-  const json = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(json?.error?.message || `Request failed (HTTP ${response.status})`);
-  }
-  return json?.data;
-}
+/** How long to keep asking PayPal whether a just-approved checkout is paid. */
+const ACTIVATION_WATCH_MS = 15 * 60_000;
+const ACTIVATION_POLL_MS = 8_000;
 
 const statusTone: Record<string, string> = {
   active: "bg-emerald-50 text-emerald-700 ring-emerald-200",
@@ -109,6 +100,19 @@ export default function SubscriptionPage(props: {
   const currentPlan = (subscription?.plan as PlanTier | undefined) ?? null;
   const provider = subscription?.provider ?? null;
 
+  // The watcher outlives renders, so it reads the latest session token here
+  // rather than capturing the one from the render that started it.
+  const accessTokenRef = useRef(props.accessToken);
+  useEffect(() => {
+    accessTokenRef.current = props.accessToken;
+  }, [props.accessToken]);
+  const activationRef = useRef<number | undefined>(undefined);
+  const stopActivationWatch = useCallback(() => {
+    if (activationRef.current !== undefined) window.clearInterval(activationRef.current);
+    activationRef.current = undefined;
+  }, []);
+  useEffect(() => stopActivationWatch, [stopActivationWatch]);
+
   const say = (message: string) => {
     setNotice(message);
     setProblem(null);
@@ -123,7 +127,7 @@ export default function SubscriptionPage(props: {
     async (purchaseToken: string): Promise<boolean> => {
       if (!props.accessToken) return false;
       try {
-        const data = await apiPost("/api/v1/play-billing/verify", props.accessToken, { purchaseToken });
+        const data = await postBilling("/api/v1/play-billing/verify", props.accessToken, { purchaseToken });
         if (data?.entitled) {
           say(`Your ${data.plan} plan is active. Welcome to QGuard.`);
           await refresh();
@@ -190,16 +194,79 @@ export default function SubscriptionPage(props: {
     [cycle, props.userId, provider, verifyPlayToken],
   );
 
+  /**
+   * After the buyer approves in the browser, ask the billing service to confirm
+   * the checkout straight from PayPal. The webhook normally activates the
+   * account first; this makes activation independent of webhook delivery, and
+   * both paths write the same row, so whichever lands first wins.
+   */
+  const watchActivation = useCallback(
+    (subscriptionId: string) => {
+      stopActivationWatch();
+      const startedAt = Date.now();
+      let inFlight = false;
+      activationRef.current = window.setInterval(async () => {
+        const token = accessTokenRef.current;
+        if (!token || Date.now() - startedAt > ACTIVATION_WATCH_MS) {
+          stopActivationWatch();
+          return;
+        }
+        if (inFlight) return;
+        inFlight = true;
+        try {
+          const data = await postBilling<{ activated?: boolean; status?: string; plan?: string }>(
+            "/api/v1/paypal/confirm",
+            token,
+            { subscriptionId },
+          );
+          if (data?.activated) {
+            stopActivationWatch();
+            say(`Payment confirmed — your ${data.plan ?? ""} plan is active.`);
+            await refresh();
+          } else if (data?.status && ["cancelled", "expired", "suspended"].includes(data.status)) {
+            stopActivationWatch();
+          }
+        } catch {
+          // Offline or PayPal busy: keep watching until the deadline.
+        } finally {
+          inFlight = false;
+        }
+      }, ACTIVATION_POLL_MS);
+    },
+    [refresh, stopActivationWatch],
+  );
+
+  /** Open a PayPal page in the system browser, failing loudly if it cannot. */
+  const openCheckout = useCallback(async (url: string) => {
+    try {
+      await safeInvoke("billing_open_checkout", { url });
+    } catch (e) {
+      throw new Error(`Couldn't open PayPal checkout: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, []);
+
   /** PayPal purchase: server builds the checkout, system browser approves it. */
   const purchaseWithPaypal = useCallback(
     async (tier: PlanTier) => {
       if (!props.accessToken) throw new Error("Session expired — sign in again.");
-      const data = await apiPost("/api/v1/paypal/subscribe", props.accessToken, { plan: tier, cycle });
+      const data = await postBilling<{ approvalUrl?: string | null; subscriptionId?: string; mode?: string }>(
+        "/api/v1/paypal/subscribe",
+        props.accessToken,
+        { plan: tier, cycle },
+      );
+      if (data?.mode === "revise" && !data.approvalUrl) {
+        // PayPal applied the change to the existing subscription without a new
+        // approval; its UPDATED event syncs the record.
+        say("PayPal accepted the plan change — it will show here as soon as PayPal confirms it.");
+        await refresh();
+        return;
+      }
       if (!data?.approvalUrl) throw new Error("PayPal did not return a checkout link");
-      await safeInvoke("billing_open_checkout", { url: String(data.approvalUrl) }, null);
+      await openCheckout(String(data.approvalUrl));
       say("Approve the subscription in the browser window — this app unlocks automatically after payment.");
+      if (data.mode !== "revise" && data.subscriptionId) watchActivation(data.subscriptionId);
     },
-    [cycle, props.accessToken],
+    [cycle, openCheckout, props.accessToken, refresh, watchActivation],
   );
 
   const subscribe = useCallback(
@@ -209,7 +276,9 @@ export default function SubscriptionPage(props: {
       try {
         if (platform === "android") {
           const state = await safeInvoke<PlayState>("billing_state", undefined, { available: false });
-          if (state.available) {
+          // Only charge through Google Play when the billing service can verify
+          // the purchase; otherwise the buyer would pay and receive nothing.
+          if (state.available && (await billingSupportsPlayVerification())) {
             await purchaseWithPlay(tier);
             return; // busyPlan cleared by the poll
           }
@@ -268,7 +337,7 @@ export default function SubscriptionPage(props: {
         say("Manage or cancel the subscription in Google Play — changes sync automatically.");
       } else {
         if (!props.accessToken) throw new Error("Session expired — sign in again.");
-        await apiPost("/api/v1/billing/subscription/actions", props.accessToken, { action: "cancel" });
+        await postBilling("/api/v1/billing/subscription/actions", props.accessToken, { action: "cancel" });
         await refresh();
         say("Subscription cancelled. You keep access until the end of the paid period.");
       }
@@ -284,10 +353,15 @@ export default function SubscriptionPage(props: {
     setProblem(null);
     try {
       if (!props.accessToken) throw new Error("Session expired — sign in again.");
-      const data = await apiPost("/api/v1/billing/subscription/actions", props.accessToken, { action: "reactivate" });
+      const data = await postBilling<{ redirectUrl?: string; subscriptionId?: string }>(
+        "/api/v1/billing/subscription/actions",
+        props.accessToken,
+        { action: "reactivate" },
+      );
       if (data?.redirectUrl) {
-        await safeInvoke("billing_open_checkout", { url: String(data.redirectUrl) }, null);
+        await openCheckout(String(data.redirectUrl));
         say("Approve the renewal in the browser — this app updates automatically.");
+        if (data.subscriptionId) watchActivation(data.subscriptionId);
       } else {
         await refresh();
         say("Subscription reactivated.");
@@ -297,7 +371,7 @@ export default function SubscriptionPage(props: {
     } finally {
       setBusyAction(null);
     }
-  }, [props.accessToken, refresh]);
+  }, [openCheckout, props.accessToken, refresh, watchActivation]);
 
   const status = String(subscription?.status ?? "").toLowerCase();
   const tone = statusTone[status] ?? "bg-ink-100 text-ink-600 ring-ink-200";

@@ -1,127 +1,163 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Download, RefreshCw, Search } from 'lucide-react';
+import { Crown, Gem, UserCheck, UserPlus, Users, Wallet } from 'lucide-react';
+import { AMBER, BLUE, CYAN, EMERALD, GOLD, RED, SLATE, VIOLET, EmptyState, Panel, SectionTitle } from '@/app/dashboard/quantum-readiness/_shared';
 import {
-  AMBER, BLUE, CYAN, EMERALD, GOLD, RED, SLATE, VIOLET,
-  EmptyState, HeaderButton, MetricCard, Panel, SectionTitle,
-} from '@/app/dashboard/quantum-readiness/_shared';
-import {
-  Chart, DataGapsPanel, DataTable, PLAN_COLORS, RevenueShell, StatusPill,
-  dateFmt, growthBarsOption, moneyFmt, pctFmt, useRevenueIntelligence,
+  Chart, ClassPill, DataGapsPanel, DataTable, Kpi, LedgerLimitNote, PLAN_COLORS, RevenuePage, SearchBox, SelectBox, StatusPill,
+  countFmt, dateFmt, growthBarsOption, moneyFmt, pctFmt, providerLabel, useRevenue,
+  type CustomerRow,
 } from '../_shared';
 
-/** Customer Analytics — acquisition, value, retention, and the customer ledger. */
-export default function CustomerAnalyticsPage() {
-  const { snapshot, state, sseConnected, refresh, exportReport } = useRevenueIntelligence();
-  const customers = snapshot.customerAnalytics;
-  const [query, setQuery] = useState('');
+const SEGMENTS = [
+  { value: 'all', label: 'All customers' },
+  { value: 'paying', label: 'Paying now' },
+  { value: 'lapsed', label: 'Lapsed / cancelled' },
+  { value: 'unbilled', label: 'Unbilled access (manual / comp)' },
+];
 
-  const filtered = useMemo(() => {
-    const text = query.trim().toLowerCase();
-    if (!text) return snapshot.customers;
-    return snapshot.customers.filter((customer) =>
-      [customer.email, customer.name, customer.plan].some((field) => String(field || '').toLowerCase().includes(text)),
-    );
-  }, [snapshot.customers, query]);
+/** Customer Analytics — who pays, what they are worth, and the customer ledger. */
+export default function CustomerAnalyticsPage() {
+  const { openCustomer } = useRevenue();
+  const [query, setQuery] = useState('');
+  const [segment, setSegment] = useState('all');
 
   return (
-    <RevenueShell
+    <RevenuePage
       title="Customer Analytics"
-      subtitle="Who pays, what they are worth, and how the customer base is growing — every figure from real accounts and invoices."
-      sseConnected={sseConnected}
-      state={state}
-      snapshot={snapshot}
-      actions={
-        <>
-          <HeaderButton icon={RefreshCw} onClick={() => void refresh()}>Refresh</HeaderButton>
-          <HeaderButton icon={Download} onClick={() => exportReport('customers', 'csv')}>Export CSV</HeaderButton>
-        </>
-      }
+      subtitle="Registered accounts, paying customers and customer value — every figure from real accounts, subscriptions and invoices. Select a customer for their full billing record."
+      report="customers"
     >
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-        <MetricCard label="Total Users" value={String(customers.totalUsers)} detail="registered accounts" color={BLUE} />
-        <MetricCard label="Customers" value={String(customers.totalCustomers)} detail="with billing history" color={CYAN} />
-        <MetricCard label="Active Customers" value={String(customers.activeCustomers)} detail={`${customers.inactiveCustomers} inactive`} color={EMERALD} />
-        <MetricCard label="New (30d)" value={String(customers.newCustomers30d)} detail={customers.customerGrowthPct === null ? 'recent signups' : `${pctFmt(customers.customerGrowthPct)} MoM`} color={GOLD} />
-        <MetricCard label="ARPU" value={moneyFmt(customers.arpuCents)} detail="avg revenue / active customer" color={VIOLET} />
-        <MetricCard label="LTV" value={moneyFmt(customers.ltvCents)} detail={customers.ltvCents === null ? 'needs churn history' : 'ARPU ÷ monthly churn'} color={CYAN} />
-      </div>
+      {(snapshot) => {
+        const customers = snapshot.customerAnalytics;
+        const hasGrowth = snapshot.timeline.some((bucket) => bucket.newSignups > 0 || bucket.newSubscriptions > 0 || bucket.churnedSubscriptions > 0);
+        return (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+              <Kpi label="Registered Users" value={countFmt(customers.registeredUsers)} detail="accounts on the platform" color={BLUE} icon={Users} />
+              <Kpi label="Paying Customers" value={countFmt(customers.payingCustomers)} detail={`${countFmt(customers.customersWithBilling)} ever billed · ${countFmt(customers.lapsedCustomers)} lapsed`} color={EMERALD} icon={UserCheck} />
+              <Kpi label="New Sign-ups (30d)" value={countFmt(customers.newSignups30d)} detail={customers.signupGrowthPct === null ? 'no prior 30-day baseline' : `${pctFmt(customers.signupGrowthPct)} vs prior 30 days`} color={GOLD} icon={UserPlus} />
+              <Kpi label="ARPU" value={moneyFmt(customers.arpuCents)} detail="MRR ÷ paying customers" color={VIOLET} icon={Wallet}
+                unmeasured={customers.arpuCents === null ? 'No paying customers yet' : null} />
+              <Kpi label="LTV" value={moneyFmt(customers.ltvCents)} detail="ARPU ÷ monthly churn" color={CYAN} icon={Gem}
+                unmeasured={customers.ltvCents === null ? (snapshot.kpis.churnPct === 0 ? 'Zero churn measured — LTV is unbounded' : 'Needs a measured churn rate') : null} />
+              <Kpi label="Avg Lifetime Value" value={moneyFmt(customers.averageLifetimeValueCents)} detail="net revenue ÷ customers who paid" color={AMBER} icon={Crown}
+                unmeasured={customers.averageLifetimeValueCents === null ? 'No customer has paid yet' : null} />
+            </div>
 
-      <div className="grid gap-3 xl:grid-cols-[1.5fr_1fr]">
-        <Panel className="p-4">
-          <SectionTitle>Customer & Subscription Growth — last 12 months</SectionTitle>
-          {snapshot.timeline.some((bucket) => bucket.newCustomers > 0 || bucket.newSubscriptions > 0)
-            ? <Chart option={growthBarsOption(snapshot.timeline)} height={270} />
-            : <EmptyState label="No signups recorded in the last 12 months." />}
-        </Panel>
-        <div className="grid content-start gap-3">
-          <Panel className="p-4">
-            <SectionTitle>Customer Segments</SectionTitle>
-            <div className="space-y-1.5">
-              {[
-                { label: 'Trial users', value: customers.trialUsers, color: CYAN },
-                { label: 'Enterprise (Elite)', value: customers.enterpriseCustomers, color: GOLD },
-                { label: 'Individual (Starter–Pro)', value: Math.max(0, customers.activeCustomers - customers.enterpriseCustomers), color: BLUE },
-                { label: 'Cancelled / expired', value: customers.cancelledCustomers, color: SLATE },
-              ].map((segment) => (
-                <div key={segment.label} className="flex items-center justify-between rounded-md border border-white/6 bg-white/[0.02] px-3 py-2 text-[11px]">
-                  <span className="inline-flex items-center gap-2 text-white/65">
-                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: segment.color }} />
-                    {segment.label}
-                  </span>
-                  <span className="font-mono font-bold text-white/90">{segment.value}</span>
-                </div>
-              ))}
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <div className="rounded-md border border-white/8 bg-white/[0.02] px-2.5 py-2 text-center">
-                <div className="text-sm font-semibold text-white">{customers.churnPct !== null || snapshot.kpis.retentionPct !== null ? `${snapshot.kpis.retentionPct ?? '—'}%` : '—'}</div>
-                <div className="mt-0.5 text-[10px] font-bold" style={{ color: EMERALD }}>Retention</div>
+            <div className="grid gap-3 xl:grid-cols-[1.5fr_1fr]">
+              <Panel className="p-4">
+                <SectionTitle>Sign-ups, New Billed Subscriptions & Churn — last 12 months</SectionTitle>
+                {hasGrowth
+                  ? <Chart label="Monthly new sign-ups, new billed subscriptions and churned subscriptions" option={growthBarsOption(snapshot.timeline)} height={270} />
+                  : <EmptyState label="No sign-ups or subscriptions in the last 12 months." />}
+              </Panel>
+              <div className="grid content-start gap-3">
+                <Panel className="p-4">
+                  <SectionTitle>Customer Segments</SectionTitle>
+                  <dl className="space-y-1.5">
+                    {[
+                      { label: 'Paying customers', value: customers.payingCustomers, color: EMERALD },
+                      { label: 'Enterprise (paying Elite)', value: customers.enterpriseCustomers, color: GOLD },
+                      { label: 'Trial users', value: customers.trialUsers, color: CYAN },
+                      { label: 'Lapsed (billed before, not now)', value: customers.lapsedCustomers, color: RED },
+                      { label: 'Cancelled / expired (billed)', value: customers.cancelledCustomers, color: SLATE },
+                      { label: 'Manually managed access', value: customers.manualAccounts, color: AMBER },
+                      { label: 'Complimentary / test access', value: customers.complimentaryAccounts, color: VIOLET },
+                    ].map((row) => (
+                      <div key={row.label} className="flex items-center justify-between rounded-md border border-white/6 bg-white/[0.02] px-3 py-2 text-[11px]">
+                        <dt className="inline-flex items-center gap-2 text-white/65">
+                          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: row.color }} aria-hidden="true" />
+                          {row.label}
+                        </dt>
+                        <dd className="font-mono font-bold text-white/90">{countFmt(row.value)}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-center">
+                    <div className="rounded-md border border-white/8 bg-white/[0.02] px-2.5 py-2" title={snapshot.kpis.retentionPct === null ? 'Needs billed subscriptions older than 30 days' : undefined}>
+                      <div className="text-sm font-semibold text-white">{snapshot.kpis.retentionPct === null ? '—' : `${snapshot.kpis.retentionPct}%`}</div>
+                      <div className="mt-0.5 text-[10px] font-bold" style={{ color: EMERALD }}>30-day retention</div>
+                    </div>
+                    <div className="rounded-md border border-white/8 bg-white/[0.02] px-2.5 py-2">
+                      <div className="text-sm font-semibold text-white">{moneyFmt(snapshot.kpis.netRevenueCents)}</div>
+                      <div className="mt-0.5 text-[10px] font-bold" style={{ color: AMBER }}>Lifetime net revenue</div>
+                    </div>
+                  </div>
+                </Panel>
+                <DataGapsPanel title="Customer dimensions not measured" gaps={snapshot.dataGaps.filter((gap) => /DAU|CAC|Country/.test(gap.metric))} />
               </div>
-              <div className="rounded-md border border-white/8 bg-white/[0.02] px-2.5 py-2 text-center">
-                <div className="text-sm font-semibold text-white">{moneyFmt(customers.averageCustomerValueCents)}</div>
-                <div className="mt-0.5 text-[10px] font-bold" style={{ color: AMBER }}>Avg lifetime value paid</div>
-              </div>
             </div>
-          </Panel>
-          <DataGapsPanel gaps={snapshot.dataGaps.filter((gap) => gap.metric.includes('DAU') || gap.metric.includes('CAC'))} />
-        </div>
-      </div>
 
-      <Panel className="p-4">
-        <SectionTitle
-          suffix={
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/30" />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search customers"
-                className="h-8 w-56 rounded-md border border-white/10 bg-black/30 pl-8 pr-2 text-[11px] text-white/85 outline-none placeholder:text-white/25 focus:border-emerald-400/50"
-              />
-            </div>
-          }
-        >
-          Customers by Lifetime Revenue ({filtered.length})
-        </SectionTitle>
-        <DataTable
-          headers={['Customer', 'Plan', 'Status', 'Provider', 'Customer Since', 'Renews / Ends', 'Lifetime Revenue']}
-          rows={filtered.map((customer) => [
-            <div key="c" className="min-w-0">
-              <div className="truncate font-semibold text-white/85">{customer.email ?? customer.userId.slice(0, 8)}</div>
-              {customer.name ? <div className="truncate text-[10px] text-white/40">{customer.name}</div> : null}
-            </div>,
-            customer.plan ? <span key="p" className="font-bold" style={{ color: PLAN_COLORS[customer.plan] ?? SLATE }}>{customer.plan}</span> : <span key="p" className="text-white/35">—</span>,
-            <StatusPill value={customer.status} />,
-            <span key="pr">{customer.provider === 'google_play' ? 'Google Play' : customer.provider === 'paypal' ? 'PayPal' : customer.provider ?? '—'}</span>,
-            <span key="d">{dateFmt(customer.since)}</span>,
-            <span key="r">{dateFmt(customer.renewalDate)}</span>,
-            <span key="v" className="font-mono font-bold" style={{ color: customer.lifetimeCents > 0 ? EMERALD : customer.lifetimeCents < 0 ? RED : undefined }}>{moneyFmt(customer.lifetimeCents)}</span>,
-          ])}
-          empty="No customers with billing history yet."
-        />
-      </Panel>
-    </RevenueShell>
+            <CustomerLedger rows={snapshot.customers} total={snapshot.ledgerTotals.customers} query={query} setQuery={setQuery} segment={segment} setSegment={setSegment} openCustomer={openCustomer} />
+          </>
+        );
+      }}
+    </RevenuePage>
+  );
+}
+
+function CustomerLedger({
+  rows, total, query, setQuery, segment, setSegment, openCustomer,
+}: {
+  rows: CustomerRow[];
+  total: number;
+  query: string; setQuery: (value: string) => void;
+  segment: string; setSegment: (value: string) => void;
+  openCustomer: (userId: string) => void;
+}) {
+  const filtered = useMemo(() => {
+    const text = query.trim().toLowerCase();
+    return rows.filter((row) => {
+      if (segment === 'paying' && row.mrrCents <= 0) return false;
+      if (segment === 'lapsed' && (row.mrrCents > 0 || (row.paidInvoices === 0 && row.revenueClass !== 'provider'))) return false;
+      if (segment === 'unbilled' && row.revenueClass !== 'manual' && row.revenueClass !== 'complimentary') return false;
+      if (!text) return true;
+      return [row.email, row.name, row.plan, row.userId].some((field) => String(field || '').toLowerCase().includes(text));
+    });
+  }, [rows, query, segment]);
+
+  return (
+    <Panel className="p-4">
+      <SectionTitle
+        suffix={
+          <div className="flex flex-wrap items-center gap-2">
+            <SearchBox value={query} onChange={setQuery} placeholder="Search email, name, plan" label="Search customers" />
+            <SelectBox value={segment} onChange={setSegment} label="Customer segment" options={SEGMENTS} />
+          </div>
+        }
+      >
+        Customer Ledger ({countFmt(filtered.length)})
+      </SectionTitle>
+      <DataTable<CustomerRow>
+        rows={filtered}
+        rowKey={(row) => row.userId}
+        empty={rows.length ? 'No customer matches these filters.' : 'No customers with a subscription or payment yet.'}
+        initialSort={{ key: 'lifetime', direction: 'desc' }}
+        onRowClick={(row) => openCustomer(row.userId)}
+        rowLabel={(row) => `Open customer ${row.email || row.userId}`}
+        columns={[
+          {
+            key: 'customer', header: 'Customer', sortValue: (row) => row.email || row.userId,
+            render: (row) => (
+              <div className="min-w-0">
+                <div className="truncate font-semibold text-white/85">{row.email ?? row.userId.slice(0, 8)}</div>
+                {row.name ? <div className="truncate text-[10px] text-white/40">{row.name}</div> : null}
+              </div>
+            ),
+          },
+          { key: 'plan', header: 'Plan', render: (row) => (row.plan ? <span className="font-bold" style={{ color: PLAN_COLORS[row.plan] ?? SLATE }}>{row.plan}</span> : <span className="text-white/35">—</span>), sortValue: (row) => row.plan },
+          { key: 'status', header: 'Status', render: (row) => <StatusPill value={row.status} />, sortValue: (row) => row.status },
+          { key: 'class', header: 'Revenue', render: (row) => <ClassPill value={row.revenueClass} />, sortValue: (row) => row.revenueClass },
+          { key: 'provider', header: 'Provider', render: (row) => (row.provider ? providerLabel(row.provider) : '—'), sortValue: (row) => row.provider },
+          { key: 'since', header: 'Customer Since', render: (row) => dateFmt(row.since), sortValue: (row) => row.since },
+          { key: 'last', header: 'Last Payment', render: (row) => dateFmt(row.lastPaymentAt), sortValue: (row) => row.lastPaymentAt },
+          { key: 'failed', header: 'Failed', align: 'right', render: (row) => <span style={{ color: row.failedPayments > 0 ? RED : undefined }}>{countFmt(row.failedPayments)}</span>, sortValue: (row) => row.failedPayments },
+          { key: 'mrr', header: 'MRR', align: 'right', render: (row) => <span className="font-mono">{row.mrrCents > 0 ? moneyFmt(row.mrrCents) : '—'}</span>, sortValue: (row) => row.mrrCents },
+          { key: 'lifetime', header: 'Lifetime Net', align: 'right', render: (row) => <span className="font-mono font-bold" style={{ color: row.lifetimeNetCents > 0 ? EMERALD : row.lifetimeNetCents < 0 ? RED : undefined }}>{moneyFmt(row.lifetimeNetCents)}</span>, sortValue: (row) => row.lifetimeNetCents },
+        ]}
+      />
+      <LedgerLimitNote shown={rows.length} total={total} noun="customers" report="customers" />
+    </Panel>
   );
 }

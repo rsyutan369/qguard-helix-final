@@ -644,7 +644,9 @@ router.put('/', async (req: AuthedRequest, res: Response) => {
     const allowed: Record<string, string> = {
       fullName: 'full_name',
       username: 'username',
-      role: 'role',
+      // `role` is deliberately absent: profiles.role is the access role that
+      // Copilot and the Admin console authorise with. Only the Admin console
+      // (service role) changes it; the database trigger enforces the same.
       company: 'company',
       phone: 'phone',
       location: 'location',

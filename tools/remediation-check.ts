@@ -69,6 +69,7 @@ const VULNERABLE: CriteriaMeasures = {
   expiredCertificates: 2,
   validationPass: true,
   runtimeMeasured: false,
+  runtimeFresh: false,
 }
 
 const CERTIFIED: CriteriaMeasures = {
@@ -89,6 +90,7 @@ const CERTIFIED: CriteriaMeasures = {
   expiredCertificates: 0,
   validationPass: true,
   runtimeMeasured: true,
+  runtimeFresh: true,
 }
 
 function eligibilityStub(eligible: boolean): EligibilityResult {
