@@ -1,17 +1,23 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
+  Cpu,
   Download,
   FileTerminal,
   KeyRound,
   Loader2,
   Lock,
+  Radar,
   RefreshCw,
+  ScanSearch,
   ShieldCheck,
   Sparkles,
+  Workflow,
+  Wrench,
+  type LucideIcon,
 } from 'lucide-react';
 import {
   AGENT_ROLES,
@@ -20,14 +26,32 @@ import {
   type AgentRole,
 } from '@/lib/agent-installer/agent-release';
 import {
+  AGENT_SCAN_PRESETS,
+  matchScanPreset,
+  planAgentScope,
+  presetForLocalProfile,
+  resolveScanPreset,
+} from '@/lib/agent-installer/agent-scope';
+import {
   digestOfPackage,
   downloadGeneratedPackage,
   type CreateAgentInput,
+  type EnrolledAgentRecord,
   type GeneratedPackage,
   type useAgentInstaller,
 } from '@/hooks/use-agent-installer';
 import { agentRolePlanCopy, useAgentEntitlement } from '@/hooks/use-agent-entitlement';
 import { CopyButton, StatusChip, fmtBytes, relTime } from './primitives';
+import {
+  AppliedConfigurationCheck,
+  ModuleScopeGrid,
+  PathPreviewList,
+  ScanPresetRail,
+  ScopeContractPanel,
+  TargetPreviewList,
+  WriteAuthorityBadges,
+  type RequestedConfiguration,
+} from './ScopeContract';
 
 /**
  * Deployment wizard — Agent Type → Platform → Scope → Permissions → Enrollment →
@@ -46,39 +70,46 @@ type StepIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 const ENVIRONMENTS = ['production', 'staging', 'development', 'dr', 'lab'];
 
-const SCAN_TYPE_GROUPS: Array<{ group: string; types: Array<{ id: string; label: string }> }> = [
-  {
-    group: 'Transport & PKI',
-    types: [
-      { id: 'tls', label: 'TLS endpoints' },
-      { id: 'certificates', label: 'Certificates' },
-      { id: 'pki', label: 'PKI metadata' },
-      { id: 'ssh', label: 'SSH key exchange' },
-    ],
+/**
+ * How each agent type is presented at the choice. The authority statements
+ * restate what the control plane enforces — role ceiling, write authority,
+ * approval gates — so the card never promises more than the server allows.
+ */
+const ROLE_PRESENTATION: Record<AgentRole, { icon: LucideIcon; bestFor: string; does: string[]; never: string[] }> = {
+  collector: {
+    icon: Radar,
+    bestFor: 'Continuous cryptographic inventory and CBOM evidence',
+    does: ['Inventories TLS, certificates, keys, SSH, configs and dependencies in scope', 'Observes runtime crypto on its own host'],
+    never: ['Writes to the host'],
   },
-  {
-    group: 'Host & application',
-    types: [
-      { id: 'configs', label: 'Config files' },
-      { id: 'packages', label: 'Package manifests' },
-      { id: 'libraries', label: 'Crypto libraries' },
-      { id: 'runtime', label: 'Runtime crypto' },
-    ],
+  scanner: {
+    icon: ScanSearch,
+    bestFor: 'Targeted quantum-vulnerability assessment',
+    does: ['Probes endpoints and reads files in scope', 'Classifies against FIPS 203 / 204 / 205'],
+    never: ['Runs process or certificate-store collectors', 'Writes to the host'],
   },
-  {
-    group: 'Platform surfaces',
-    types: [
-      { id: 'kubernetes', label: 'Kubernetes' },
-      { id: 'container', label: 'Containers' },
-      { id: 'service_mesh', label: 'Service mesh' },
-      { id: 'api_gateway', label: 'API gateway' },
-      { id: 'load_balancer', label: 'Load balancer' },
-      { id: 'vpn', label: 'VPN profiles' },
-      { id: 'database', label: 'Database crypto' },
-      { id: 'hsm', label: 'HSM integration' },
-    ],
+  patcher: {
+    icon: Wrench,
+    bestFor: 'Approved PQC configuration remediation',
+    does: ['Applies approved changes inside allowed paths only', 'Snapshots first, validates after, rolls back on failure'],
+    never: ['Writes unless you authorise it below', 'Executes Live Migration cutovers'],
   },
-];
+  operator: {
+    icon: Workflow,
+    bestFor: 'Executing approved Live Migration cutovers',
+    does: ['Claims approved migration jobs matching its asset and scope', 'Everything an authorised Patcher can do'],
+    never: ['Claims unapproved or simulated jobs', 'Writes unless you authorise it below'],
+  },
+};
+
+export interface DeployWizardInitial {
+  /** Pre-selected agent type (still subject to the plan). */
+  role?: AgentRole | null;
+  /** Where the operator came from, e.g. `local-assessment`. */
+  source?: string | null;
+  /** Local assessment scan profile id, mapped to an agent scan preset. */
+  localProfile?: string | null;
+}
 
 function StepRail({ step, reached }: { step: StepIndex; reached: number }) {
   return (
@@ -125,10 +156,12 @@ export function DeployWizard({
   installer,
   onClose,
   onOpenAgent,
+  initial,
 }: {
   installer: Installer;
   onClose: () => void;
   onOpenAgent: (agentId: string) => void;
+  initial?: DeployWizardInitial;
 }) {
   const [step, setStep] = useState<StepIndex>(0);
   const [reached, setReached] = useState(0);
@@ -137,7 +170,12 @@ export function DeployWizard({
      so every mount of the wizard gets the same answer without each caller
      having to remember to thread it through. */
   const entitlement = useAgentEntitlement();
-  const [role, setRole] = useState<AgentRole>('collector');
+  const fromLocalAssessment = initial?.source === 'local-assessment';
+  const [role, setRole] = useState<AgentRole>(initial?.role || 'collector');
+  /* The Local assessment profile the operator already chose becomes the
+     starting scan preset; the preset is re-resolved for each role and plan. */
+  const carriedPreset = presetForLocalProfile(initial?.localProfile);
+  const [presetId, setPresetId] = useState<string>(carriedPreset || 'role-default');
   const [platform, setPlatform] = useState<AgentPlatform>('linux');
   const [name, setName] = useState('');
   const [environment, setEnvironment] = useState('production');
@@ -153,6 +191,10 @@ export function DeployWizard({
   const [migrationAuthorized, setMigrationAuthorized] = useState(false);
 
   const [agentId, setAgentId] = useState<string | null>(null);
+  /* What was requested and what the control plane stored, side by side on the
+     Enrollment step — the proof that every selection was applied. */
+  const [requestedConfig, setRequestedConfig] = useState<RequestedConfiguration | null>(null);
+  const [storedAgent, setStoredAgent] = useState<EnrolledAgentRecord | null>(null);
   const [pkg, setPkg] = useState<GeneratedPackage | null>(null);
   const [localDigest, setLocalDigest] = useState<string | null>(null);
   const [downloaded, setDownloaded] = useState(false);
@@ -170,20 +212,43 @@ export function DeployWizard({
   );
   const oneTimeToken = installer.oneTimeToken?.agentId === agentId ? installer.oneTimeToken : null;
 
-  // Selecting a role resets scope to that role's module set — a Scanner should
-  // not silently inherit an Operator's surface list. The list is then narrowed
-  // to the modules this PLAN includes, so the wizard never offers a scope the
-  // API will strip out on enrolment.
+  const planPermitted = entitlement.scanTypes.length ? entitlement.scanTypes : null;
+
+  // Selecting a role re-resolves the chosen preset for THAT role — a Scanner
+  // must not silently inherit an Operator's module list — narrowed to what the
+  // PLAN includes, so the wizard never offers a scope the API will strip out.
+  // A hand-built (custom) selection falls back to the role's default.
   useEffect(() => {
-    const permitted = entitlement.scanTypes;
-    setScanTypes(
-      permitted.length ? roleDefinition.scanTypes.filter((type) => permitted.includes(type)) : roleDefinition.scanTypes,
-    );
+    setScanTypes(resolveScanPreset(presetId === 'custom' ? 'role-default' : presetId, roleDefinition.id, planPermitted).modules);
     if (!roleDefinition.mutatesTargets) {
       setRemediationAuthorized(false);
       setMigrationAuthorized(false);
     }
+    if (roleDefinition.id !== 'operator') setMigrationAuthorized(false);
+    // presetId is deliberately absent: choosing a preset applies it directly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roleDefinition, entitlement.scanTypes]);
+
+  const applyPreset = useCallback(
+    (id: string) => {
+      setPresetId(id);
+      setScanTypes(resolveScanPreset(id, roleDefinition.id, planPermitted).modules);
+    },
+    [roleDefinition.id, planPermitted],
+  );
+
+  /* A requested type the plan does not include is refused visibly, not
+     swapped silently — the fallback below picks a type the plan does include,
+     and this says why. */
+  const initialRoleRefused = useRef(false);
+  useEffect(() => {
+    if (entitlement.loading || initialRoleRefused.current || !initial?.role) return;
+    initialRoleRefused.current = true;
+    const access = entitlement.byRole[initial.role];
+    if (access && !access.allowed) {
+      setMessage(`${access.message} ${agentRolePlanCopy(initial.role)}. Choose an agent type your plan includes.`);
+    }
+  }, [entitlement.loading, entitlement.byRole, initial?.role]);
 
   /* A role the plan no longer includes must not stay selected — for instance
      when a Pro subscription lapses while the wizard is open. Falls back to the
@@ -202,23 +267,57 @@ export function DeployWizard({
     setMessage(null);
   }, []);
 
-  const toggleScanType = (id: string) =>
+  const toggleScanType = (id: string) => {
+    setPresetId('custom');
     setScanTypes((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  };
 
   const parsedTargets = useMemo(
-    () => targetsText.split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
+    () => [...new Set(targetsText.split(/[\n,]/).map((item) => item.trim()).filter(Boolean))],
     [targetsText],
   );
   const parsedPaths = useMemo(
-    () => pathsText.split(/\n/).map((item) => item.trim()).filter(Boolean),
+    () => [...new Set(pathsText.split(/\n/).map((item) => item.trim()).filter(Boolean))],
     [pathsText],
   );
 
-  const canCreate = name.trim().length >= 2 && scanTypes.length > 0;
+  /* The scope contract — the same pure function the drawer runs over the
+     persisted policy, re-evaluated on every keystroke here. */
+  const scopePlan = useMemo(
+    () =>
+      planAgentScope({
+        role,
+        scanTypes,
+        allowedTargets: parsedTargets,
+        allowedPaths: parsedPaths,
+        planPermitted,
+        remediationAuthorized,
+        migrationAuthorized,
+      }),
+    [role, scanTypes, parsedTargets, parsedPaths, planPermitted, remediationAuthorized, migrationAuthorized],
+  );
+  const shownPreset = presetId === 'custom' ? matchScanPreset(scanTypes, role, planPermitted) : presetId;
+  const carriedLabel = carriedPreset && shownPreset === carriedPreset && initial?.localProfile
+    ? initial.localProfile.replace(/-/g, ' ')
+    : null;
+
+  const canCreate = name.trim().length >= 2 && scanTypes.length > 0 && scopePlan.blockers.length === 0;
 
   const handleCreate = useCallback(async () => {
     setWorking(true);
     setMessage(null);
+    const requested: RequestedConfiguration = {
+      role,
+      scanTypes: [...scanTypes],
+      allowedTargets: parsedTargets,
+      allowedPaths: parsedPaths,
+      intervalSeconds,
+      alertThreshold,
+      remediationAuthorized: scopePlan.authority.remediation,
+      migrationAuthorized: scopePlan.authority.migration,
+      assetId,
+      assetName: assetName.trim() || null,
+    };
     const input: CreateAgentInput = {
       name: name.trim(),
       role,
@@ -231,8 +330,10 @@ export function DeployWizard({
       scanTypes,
       intervalSeconds,
       alertThreshold,
-      remediationAuthorized,
-      migrationAuthorized,
+      remediationAuthorized: scopePlan.authority.remediation,
+      migrationAuthorized: scopePlan.authority.migration,
+      source: fromLocalAssessment ? 'local-assessment' : 'agent-center',
+      scanPreset: shownPreset,
     };
     const result = await installer.createAgent(input);
     setWorking(false);
@@ -241,10 +342,12 @@ export function DeployWizard({
       return;
     }
     setAgentId(result.data.agentId);
+    setRequestedConfig(requested);
+    setStoredAgent(result.data.agent);
     go(4);
   }, [
     installer, name, role, environment, description, assetName, assetId, parsedTargets, parsedPaths,
-    scanTypes, intervalSeconds, alertThreshold, remediationAuthorized, migrationAuthorized, go,
+    scanTypes, intervalSeconds, alertThreshold, scopePlan.authority, fromLocalAssessment, shownPreset, go,
   ]);
 
   const handleGenerate = useCallback(async () => {
@@ -321,19 +424,39 @@ export function DeployWizard({
         {/* ---------------- Step 0 — Agent type ---------------- */}
         {step === 0 ? (
           <div className="space-y-4">
+            {fromLocalAssessment ? (
+              <div className="flex flex-wrap items-start gap-3 rounded-xl border border-violet-400/25 bg-violet-400/[0.06] px-4 py-3">
+                <Cpu aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-violet-200" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-black text-violet-50">Continuing from Local Assessment</div>
+                  <p className="mt-1 text-[11.5px] leading-relaxed text-violet-100/70">
+                    The browser assessment reads one folder you pick, once. A Local Agent runs on the host itself — on a
+                    schedule — and reaches what the browser cannot: the system certificate store, running processes, live
+                    TLS and SSH endpoints and protected configuration paths. Choose the agent type for this host.
+                    {carriedPreset ? ' Your assessment profile has been carried over as the starting scan preset.' : ''}
+                  </p>
+                </div>
+              </div>
+            ) : null}
+
             {/* Roles are shown in FULL, with the ones this plan does not include
                 marked and unselectable. Hiding them would make the wizard
                 silently shorter on Basic, which reads as a missing feature
                 rather than a plan boundary and teaches the operator nothing
                 about what Pro adds. */}
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Agent type">
               {AGENT_ROLES.map((item) => {
                 const roleAccess = entitlement.byRole[item.id];
                 const locked = !entitlement.loading && roleAccess && !roleAccess.allowed;
+                const presentation = ROLE_PRESENTATION[item.id];
+                const RoleIcon = presentation.icon;
+                const selected = role === item.id;
                 return (
                   <button
                     key={item.id}
                     type="button"
+                    role="radio"
+                    aria-checked={selected}
                     disabled={Boolean(locked)}
                     aria-disabled={Boolean(locked)}
                     title={locked ? roleAccess.message : item.tagline}
@@ -341,28 +464,60 @@ export function DeployWizard({
                     className={`rounded-xl border p-4 text-left transition ${
                       locked
                         ? 'cursor-not-allowed border-white/[0.07] bg-white/[0.01] opacity-60'
-                        : role === item.id
-                          ? 'border-cyan-400/40 bg-cyan-400/[0.07]'
+                        : selected
+                          ? 'border-cyan-400/45 bg-cyan-400/[0.07] shadow-[0_0_0_1px_rgba(34,211,238,0.15)]'
                           : 'border-white/10 bg-white/[0.02] hover:border-white/20'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="flex items-center gap-1.5 text-sm font-black text-white">
-                        {item.label}
-                        {locked ? <Lock aria-hidden className="h-3 w-3 text-amber-300/80" /> : null}
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="flex min-w-0 items-center gap-2.5">
+                        <span
+                          className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg border ${
+                            selected ? 'border-cyan-400/40 bg-cyan-400/10 text-cyan-200' : 'border-white/10 bg-white/[0.03] text-white/55'
+                          }`}
+                        >
+                          <RoleIcon aria-hidden className="h-4 w-4" />
+                        </span>
+                        <span className="min-w-0">
+                          <span className="flex items-center gap-1.5 text-sm font-black text-white">
+                            {item.label}
+                            {locked ? <Lock aria-hidden className="h-3 w-3 text-amber-300/80" /> : null}
+                          </span>
+                          <span className="block truncate text-[11px] text-white/40">{presentation.bestFor}</span>
+                        </span>
                       </span>
-                      {item.mutatesTargets ? (
-                        <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-black uppercase text-amber-200">
-                          Can change config
-                        </span>
-                      ) : (
-                        <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-black uppercase text-emerald-200">
-                          Read-only
-                        </span>
-                      )}
+                      <span className="flex shrink-0 flex-col items-end gap-1">
+                        {item.mutatesTargets ? (
+                          <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-black uppercase text-amber-200">
+                            Can change config
+                          </span>
+                        ) : (
+                          <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-black uppercase text-emerald-200">
+                            Read-only
+                          </span>
+                        )}
+                        {fromLocalAssessment && item.id === 'collector' ? (
+                          <span className="rounded-full border border-violet-400/30 bg-violet-400/10 px-2 py-0.5 text-[10px] font-black uppercase text-violet-200">
+                            Recommended
+                          </span>
+                        ) : null}
+                      </span>
                     </div>
-                    <p className="mt-1.5 text-xs leading-relaxed text-white/55">{item.tagline}</p>
-                    <p className="mt-2 text-[11px] leading-relaxed text-white/35">{item.authority}</p>
+                    <p className="mt-2 text-xs leading-relaxed text-white/55">{item.tagline}</p>
+                    <ul className="mt-2 space-y-0.5">
+                      {presentation.does.map((line) => (
+                        <li key={line} className="flex gap-1.5 text-[11px] leading-snug text-white/55">
+                          <CheckCircle2 aria-hidden className="mt-0.5 h-3 w-3 shrink-0 text-emerald-400/80" />
+                          {line}
+                        </li>
+                      ))}
+                      {presentation.never.map((line) => (
+                        <li key={line} className="flex gap-1.5 text-[11px] leading-snug text-white/40">
+                          <span aria-hidden className="mt-[3px] grid h-2.5 w-2.5 shrink-0 place-items-center rounded-full border border-white/25 text-[7px] leading-none">×</span>
+                          Never: {line.charAt(0).toLowerCase() + line.slice(1)}
+                        </li>
+                      ))}
+                    </ul>
                     {locked ? (
                       <p className="mt-2 rounded-lg border border-amber-400/25 bg-amber-400/[0.06] px-2 py-1.5 text-[11px] leading-relaxed text-amber-100/85">
                         {roleAccess.message} {agentRolePlanCopy(item.id)}.
@@ -479,58 +634,63 @@ export function DeployWizard({
               </Field>
             </div>
 
-            <Field label="Allowed targets" hint="One per line or comma separated: host:port, https://host, ssh://host:22. The agent scans nothing outside this list.">
-              <textarea
-                className={`${inputClass} min-h-[84px] font-mono text-xs`}
-                value={targetsText}
-                onChange={(event) => setTargetsText(event.target.value)}
-                placeholder={'api.example.com:443\nssh://build-01.internal:22'}
-              />
-            </Field>
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
+              <div className="min-w-0 space-y-4">
+                <Field label="Allowed targets" hint="One per line or comma separated: host:port, https://host, ssh://host:22. The agent contacts nothing outside this list.">
+                  <textarea
+                    className={`${inputClass} min-h-[84px] font-mono text-xs`}
+                    value={targetsText}
+                    onChange={(event) => setTargetsText(event.target.value)}
+                    placeholder={'api.example.com:443\nssh://build-01.internal:22'}
+                  />
+                </Field>
+                <TargetPreviewList plan={scopePlan} />
 
-            <Field label="Allowed paths" hint="One per line. The agent reads configuration and manifests only inside these roots — and, for a Patcher, may only write inside them.">
-              <textarea
-                className={`${inputClass} min-h-[84px] font-mono text-xs`}
-                value={pathsText}
-                onChange={(event) => setPathsText(event.target.value)}
-                placeholder={'/etc/nginx\n/opt/app/config'}
-              />
-            </Field>
+                <Field label="Allowed paths" hint="Absolute paths, one per line. The agent reads configuration and manifests only inside these roots — and a Patcher may only write inside them.">
+                  <textarea
+                    className={`${inputClass} min-h-[84px] font-mono text-xs`}
+                    value={pathsText}
+                    onChange={(event) => setPathsText(event.target.value)}
+                    placeholder={platform === 'windows' || platform === 'powershell' ? 'C:\\ProgramData\\nginx\\conf\nC:\\inetpub\\app\\config' : '/etc/nginx\n/opt/app/config'}
+                  />
+                </Field>
+                <PathPreviewList plan={scopePlan} />
 
-            <div>
-              <span className="text-[11px] font-bold uppercase tracking-wide text-white/50">Discovery scope</span>
-              <div className="mt-2 space-y-3">
-                {SCAN_TYPE_GROUPS.map((group) => (
-                  <div key={group.group}>
-                    <div className="text-[10px] font-bold uppercase tracking-wide text-white/30">{group.group}</div>
-                    <div className="mt-1.5 flex flex-wrap gap-1.5">
-                      {group.types.map((type) => {
-                        const active = scanTypes.includes(type.id);
-                        return (
-                          <button
-                            key={type.id}
-                            type="button"
-                            onClick={() => toggleScanType(type.id)}
-                            className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold transition ${
-                              active
-                                ? 'border-cyan-400/40 bg-cyan-400/10 text-cyan-200'
-                                : 'border-white/10 bg-white/[0.02] text-white/45 hover:text-white/75'
-                            }`}
-                          >
-                            {type.label}
-                          </button>
-                        );
-                      })}
-                    </div>
+                <div>
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <span className="text-[11px] font-bold uppercase tracking-wide text-white/50">Scan preset</span>
+                    <span className="font-mono text-[10px] text-white/35">
+                      {scanTypes.length} module{scanTypes.length === 1 ? '' : 's'} selected
+                    </span>
                   </div>
-                ))}
+                  <div className="mt-2">
+                    <ScanPresetRail current={shownPreset} onSelect={applyPreset} carriedFrom={carriedLabel} />
+                  </div>
+                </div>
+
+                <div>
+                  <span className="text-[11px] font-bold uppercase tracking-wide text-white/50">Scan modules</span>
+                  <p className="mt-0.5 text-[11px] text-white/35">
+                    Hover a module to see exactly what the agent does with it. Modules outside your plan or this role are shown,
+                    not hidden.
+                  </p>
+                  <div className="mt-2">
+                    <ModuleScopeGrid plan={scopePlan} onToggle={toggleScanType} />
+                  </div>
+                </div>
               </div>
-              {scanTypes.length === 0 ? (
-                <p className="mt-2 text-[11px] text-rose-300">Select at least one discovery scope.</p>
-              ) : null}
+
+              <div className="min-w-0 xl:sticky xl:top-4 xl:self-start">
+                <ScopeContractPanel plan={scopePlan} role={role} />
+              </div>
             </div>
 
-            <StepNav onBack={() => go(1)} onNext={() => go(3)} nextDisabled={scanTypes.length === 0 || name.trim().length < 2} />
+            <StepNav
+              onBack={() => go(1)}
+              onNext={() => go(3)}
+              nextDisabled={name.trim().length < 2 || scanTypes.length === 0 || scopePlan.collectsNothing}
+            />
+            {name.trim().length < 2 ? <p className="text-right text-[11px] text-white/40">Name the agent to continue.</p> : null}
           </div>
         ) : null}
 
@@ -555,7 +715,11 @@ export function DeployWizard({
                   <input
                     type="checkbox"
                     checked={remediationAuthorized}
-                    onChange={(event) => setRemediationAuthorized(event.target.checked)}
+                    onChange={(event) => {
+                      setRemediationAuthorized(event.target.checked);
+                      // A cutover is a configuration change: no remediation, no migration.
+                      if (!event.target.checked) setMigrationAuthorized(false);
+                    }}
                     className="mt-0.5 h-4 w-4 accent-amber-400"
                   />
                   <span>
@@ -569,10 +733,15 @@ export function DeployWizard({
                 </label>
 
                 {role === 'operator' ? (
-                  <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-rose-400/25 bg-rose-400/[0.05] p-4">
+                  <label
+                    className={`flex items-start gap-3 rounded-xl border border-rose-400/25 bg-rose-400/[0.05] p-4 ${
+                      remediationAuthorized ? 'cursor-pointer' : 'cursor-not-allowed opacity-55'
+                    }`}
+                  >
                     <input
                       type="checkbox"
                       checked={migrationAuthorized}
+                      disabled={!remediationAuthorized}
                       onChange={(event) => setMigrationAuthorized(event.target.checked)}
                       className="mt-0.5 h-4 w-4 accent-rose-400"
                     />
@@ -581,10 +750,17 @@ export function DeployWizard({
                       <span className="mt-1 block text-[11px] leading-relaxed text-rose-100/65">
                         The agent may claim approved migration jobs whose target asset, capability, policy and allowed paths all
                         match. It never executes a job merely because one exists.
+                        {!remediationAuthorized ? ' Requires configuration remediation above — a cutover is a configuration change.' : ''}
                       </span>
                     </span>
                   </label>
                 ) : null}
+
+                <p className="text-[11px] leading-relaxed text-white/40">
+                  Leave both unticked and this {roleDefinition.label} is deployed read-only: the control plane hands it no
+                  remediation or migration jobs and its installer ships with host writes switched off. You can grant or revoke
+                  this later from the agent’s Capabilities tab.
+                </p>
               </div>
             ) : (
               <div className="rounded-xl border border-emerald-400/25 bg-emerald-400/[0.05] p-4">
@@ -609,6 +785,42 @@ export function DeployWizard({
             <Field label="Description" hint="Optional operator note stored with the agent record.">
               <input className={inputClass} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Edge TLS + certificate inventory for the public API tier" />
             </Field>
+
+            {/* ---- Review: exactly what will be created ---- */}
+            <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.03]">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/8 px-4 py-2.5">
+                <span className="text-[11px] font-black uppercase tracking-[0.14em] text-cyan-100/80">Review before creating</span>
+                <WriteAuthorityBadges
+                  remediation={scopePlan.authority.remediation}
+                  migration={scopePlan.authority.migration}
+                  mutates={roleDefinition.mutatesTargets}
+                  operator={role === 'operator'}
+                />
+              </div>
+              <dl className="grid gap-x-4 gap-y-2 px-4 py-3 text-[11.5px] sm:grid-cols-2 lg:grid-cols-4">
+                {[
+                  ['Agent', name.trim() || '—'],
+                  ['Type', roleDefinition.label],
+                  ['Platform', platformInfo?.label || platform],
+                  ['Environment', environment],
+                  ['Scan preset', shownPreset === 'custom' ? 'Custom' : AGENT_SCAN_PRESETS.find((preset) => preset.id === shownPreset)?.label || '—'],
+                  ['Modules', `${scopePlan.activeModules} active · ${scopePlan.idleModules} idle`],
+                  ['Targets', `${scopePlan.tlsTargets} TLS · ${scopePlan.sshTargets} SSH`],
+                  ['Paths', String(scopePlan.paths.length)],
+                  ['Interval', `${intervalSeconds}s`],
+                  ['Alert threshold', alertThreshold],
+                  ['Asset', assetName || 'Not linked'],
+                ].map(([label, value]) => (
+                  <div key={label} className="min-w-0">
+                    <dt className="text-[10px] font-bold uppercase tracking-wide text-white/35">{label}</dt>
+                    <dd className="truncate font-mono text-white/80">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+              <div className="border-t border-white/8 p-3">
+                <ScopeContractPanel plan={scopePlan} role={role} compact />
+              </div>
+            </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3">
               <BackButton onClick={() => go(2)} />
@@ -678,6 +890,8 @@ export function DeployWizard({
                 </div>
               ))}
             </dl>
+
+            {requestedConfig ? <AppliedConfigurationCheck requested={requestedConfig} agent={storedAgent} /> : null}
 
             <StepNav onBack={() => go(3)} onNext={() => go(5)} nextDisabled={!oneTimeToken} nextLabel="Generate installer" />
           </div>
@@ -925,11 +1139,16 @@ function VerifyPanel({
 }) {
   const [activity, setActivity] = useState<Array<{ id: string; at: string; status: string; phase: string | null; message: string | null }>>([]);
 
+  /* Depends on the loader, never on `installer` itself: the hook returns a new
+     object every render and every load toggles its `busy` state, so an effect
+     keyed on the object re-ran on its own result — an unbounded request loop
+     instead of a 5-second poll. */
+  const { loadActivity } = installer;
   useEffect(() => {
     if (!agentId) return;
     let cancelled = false;
     const load = async () => {
-      const result = await installer.loadActivity(agentId);
+      const result = await loadActivity(agentId);
       if (!cancelled && result.ok && result.data) setActivity(result.data.activity);
     };
     void load();
@@ -938,7 +1157,7 @@ function VerifyPanel({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [agentId, installer]);
+  }, [agentId, loadActivity]);
 
   const phaseSeen = useMemo(() => {
     const seen = new Set<string>();

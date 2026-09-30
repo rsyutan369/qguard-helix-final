@@ -103,6 +103,10 @@ async function enrol(token: string, role: string, name: string) {
       hostname: `${name}.qguard.test`,
       platform: 'linux x64',
       version: '1.5.3',
+      /* Write roles are read-only until the operator authorises them, so the
+         write-path assertions below enrol with explicit authority. */
+      remediationAuthorized: role === 'patcher' || role === 'operator',
+      migrationAuthorized: role === 'operator',
       metadata: { role, environment: 'test' },
       policy: { enabled: true, scanTypes: ['tls', 'certificates', 'configs'], allowedPaths: ['/etc/qguard-test'], allowedTargets: [] },
     }),
@@ -585,7 +589,7 @@ async function main() {
   const restore2 = await api(`/api/v1/migration-snapshots/${encodeURIComponent(snap.snapshot_id)}/restore`, token, {
     method: 'POST', body: JSON.stringify({ reason: 'rbchk retry after fixing the backup' }),
   })
-  check('a failed rollback can be retried', restore2.body?.data?.disposition === 'dispatched', JSON.stringify(restore2.body).slice(0, 200))
+  check('a failed rollback can be retried', restore2.body?.data?.disposition === 'dispatched', JSON.stringify(restore2.body).slice(0, 900))
   const commandId2 = restore2.body?.data?.commandId
   await agentApi('/api/v1/agent-scanner/agent/policy', operatorId, operatorToken) // deliver it
   const okAck = await agentApi(`/api/v1/agent-scanner/agent/commands/${commandId2}/ack`, operatorId, operatorToken, {

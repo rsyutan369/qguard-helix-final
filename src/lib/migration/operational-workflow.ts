@@ -77,6 +77,13 @@ export interface OperationalAgent {
   role?: string | null
   lastSeenAt?: string | null
   revoked?: boolean
+  /**
+   * The agent's recorded write authority (`resolveWriteAuthority`). A write
+   * role is a ceiling, not a grant: a Patcher nobody authorised never claims
+   * a job, so counting it as "capable" would promise a claim that cannot come.
+   * Absent = not read (older callers); only then is the role alone trusted.
+   */
+  writeAuthority?: { remediation: boolean; migration: boolean } | null
 }
 
 export interface OperationalWorkflowInput {
@@ -219,7 +226,10 @@ export function describeOperationalWorkflow(input: OperationalWorkflowInput): Op
   const plans = plansIncludingAgentRole(primaryRole).map((plan) => TIER_LABEL[plan])
 
   const liveAgents = input.agents ? input.agents.filter((agent) => !agent.revoked) : null
-  const capableAgents = liveAgents ? liveAgents.filter((agent) => roleIds.includes(String(agent.role || '') as AgentRoleId)) : null
+  const roleAgents = liveAgents ? liveAgents.filter((agent) => roleIds.includes(String(agent.role || '') as AgentRoleId)) : null
+  const capableAgents = roleAgents
+    ? roleAgents.filter((agent) => !agent.writeAuthority || agent.writeAuthority[input.executionClass] === true)
+    : null
   const capableOnline = capableAgents
     ? capableAgents.filter((agent) => {
         const seen = agent.lastSeenAt ? Date.parse(agent.lastSeenAt) : 0
@@ -302,6 +312,10 @@ export function describeOperationalWorkflow(input: OperationalWorkflowInput): Op
     stage = 'dispatch-blocked'
     headline = `Approved — not dispatched: ${block.reason}`
     nextAction = block.requires ? `${block.reason} Requires: ${block.requires}.` : block.reason
+  } else if (capableAgents && capableAgents.length === 0 && roleAgents && roleAgents.length > 0) {
+    stage = 'no-capable-agent'
+    headline = `Approved — ${plural(roleAgents.length, `${roleLabel} agent`)} enrolled, none authorised to change hosts.`
+    nextAction = `Grant ${input.executionClass} authority to one of them in the Agent Center (agent → Capabilities → Write authority). A write role without that authorisation stays read-only and never claims this job.`
   } else if (capableAgents && capableAgents.length === 0) {
     stage = 'no-capable-agent'
     headline = `Approved — no ${roleLabel} agent is enrolled to execute it.`

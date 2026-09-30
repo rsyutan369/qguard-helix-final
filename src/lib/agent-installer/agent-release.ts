@@ -11,7 +11,7 @@
  */
 
 /** Runtime version of the lightweight agent bundle. Bump on any agent.ts change. */
-export const AGENT_VERSION = '1.5.4'
+export const AGENT_VERSION = '1.5.5'
 
 /**
  * First runtime that understands the `rollback` command.

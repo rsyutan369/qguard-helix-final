@@ -152,11 +152,17 @@ export default function AgentSettingsConsole() {
     if (form.scanTypes.length === 0 || (form.enabled && scopeCount === 0)) { showToast('bad', 'Add at least one scan scope and one authorized target or path.'); return; }
     setSavingAll(true);
     let ok = 0;
+    let adjustedNote: string | null = null;
     for (const agent of targets) {
       const result = await collector.updatePolicy(agent.id, form);
       if (result.ok) ok += 1;
+      if (result.ok && result.adjusted && !adjustedNote) adjustedNote = result.message || null;
     }
     setSavingAll(false);
+    if (ok === targets.length && adjustedNote) {
+      showToast('bad', `Applied to ${ok} collector${ok === 1 ? '' : 's'}, with changes. ${adjustedNote}`);
+      return;
+    }
     showToast(ok === targets.length ? 'ok' : 'bad', ok === targets.length ? `Policy applied to ${ok} collector${ok === 1 ? '' : 's'}.` : `Applied to ${ok}/${targets.length} — some failed.`);
   }, [applyMode, manageableAgents, selectedAgent, form, scopeCount, collector, showToast]);
 

@@ -127,7 +127,13 @@ export type CreateCollectorInput = {
 
 export type LoadState = 'loading' | 'success' | 'error';
 
-type ActionResult = { ok: boolean; message?: string; token?: OneTimeAgentToken };
+type ActionResult = {
+  ok: boolean;
+  message?: string;
+  token?: OneTimeAgentToken;
+  /** True when the server stored less than was requested (e.g. modules clamped to the plan). */
+  adjusted?: boolean;
+};
 
 const API = '/api/v1/agent-scanner';
 
@@ -348,7 +354,42 @@ export function useAgentCollector(enabled: boolean) {
 
   const revokeCollector = useCallback((id: string) => request(`/agents/${id}/revoke`, { method: 'POST' }, 'Collector revoked.'), [request]);
   const deleteCollector = useCallback((id: string) => request(`/agents/${id}`, { method: 'DELETE' }, 'Collector deleted.'), [request]);
-  const updatePolicy = useCallback((id: string, policy: AgentPolicyInput) => request(`/agents/${id}/policy`, { method: 'PUT', body: JSON.stringify(policy) }, 'Policy updated.'), [request]);
+  /* The server clamps modules to the agent's role and the tenant's plan and
+     returns what it removed. That is reported, not swallowed — "Policy
+     updated" over a silently narrowed scope is how a dimension goes
+     unassessed without anyone deciding it should. */
+  const updatePolicy = useCallback(
+    async (id: string, policy: AgentPolicyInput): Promise<ActionResult> => {
+      const headers = authHeaders();
+      if (!headers) return { ok: false, message: 'Sign in first.' };
+      setBusy(true);
+      setError(null);
+      try {
+        const res = await fetch(`${API}/agents/${id}/policy`, {
+          method: 'PUT',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify(policy),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json?.error?.message || `Request failed (${res.status})`);
+        await fetchAll();
+        const deniedPlan: string[] = json?.data?.denied?.plan || [];
+        const deniedRole: string[] = json?.data?.denied?.role || [];
+        const removed = [
+          deniedPlan.length ? `not in your plan: ${deniedPlan.join(', ')}` : '',
+          deniedRole.length ? `not part of this agent's role: ${deniedRole.join(', ')}` : '',
+        ].filter(Boolean).join('; ');
+        return { ok: true, message: removed ? `Policy updated. Removed — ${removed}.` : 'Policy updated.', token: undefined, adjusted: Boolean(removed) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Request failed';
+        setError(message);
+        return { ok: false, message };
+      } finally {
+        setBusy(false);
+      }
+    },
+    [authHeaders, fetchAll],
+  );
   const createConnector = useCallback((body: Record<string, unknown>) => request('/connectors', { method: 'POST', body: JSON.stringify(body) }, 'Cloud connection registered.'), [request]);
   const createOperatorAction = useCallback((body: Record<string, unknown>) => request('/remediation/operator-actions', { method: 'POST', body: JSON.stringify(body) }, 'Remediation action created.'), [request]);
   const setOperatorStatus = useCallback((id: string, status: string, extra?: Record<string, unknown>) => request(`/remediation/operator-actions/${id}/status`, { method: 'POST', body: JSON.stringify({ status, ...(extra || {}) }) }, `Action ${status}.`), [request]);

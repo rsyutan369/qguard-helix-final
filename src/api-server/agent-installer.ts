@@ -43,6 +43,7 @@ import {
 } from '@/lib/agent-installer/agent-release'
 import { commandHistory, commandQueue, enqueueAgentCommand } from './agent-command-queue'
 import { generateInstaller, installQuickCommand } from '@/lib/agent-installer/installer-templates'
+import { clampAgentScanTypes, resolveWriteAuthority } from '@/lib/agent-installer/agent-scope'
 import {
   describeControlPlaneFailure,
   readAgentEnvironment,
@@ -535,7 +536,10 @@ router.post('/package', requireUserAuth, async (req: AuthedRequest, res) => {
   const role = (cleanString(agent.metadata?.role, 40) || 'collector') as AgentRole
   const roleDefinition = agentRole(role)
   const policy = agent.policy || {}
-  const capabilities = agent.capabilities || {}
+  /* The host-side write switches are baked from the agent's RECORDED write
+     authority — never from the role alone. A Patcher the operator did not
+     authorise ships with QGUARD_ENABLE_REMEDIATION=false. */
+  const writeAuthority = resolveWriteAuthority(role, agent.capabilities, agent.metadata)
 
   /*
    * Re-check the plan at PACKAGE time, not only at enrolment.
@@ -556,7 +560,8 @@ router.post('/package', requireUserAuth, async (req: AuthedRequest, res) => {
   const requestedScanTypes = Array.isArray(policy.scanTypes) && policy.scanTypes.length
     ? policy.scanTypes.map(String)
     : roleDefinition.scanTypes
-  const scanTypeDecision = await decideScanTypes(req as AgentEntitlementRequest, requestedScanTypes)
+  const planClamp = await decideScanTypes(req as AgentEntitlementRequest, requestedScanTypes)
+  const scanTypeDecision = { ...planClamp, allowed: clampAgentScanTypes(role, planClamp.allowed, null).allowed }
 
   const apiUrl = resolveApiUrl(req)
   const controlPlane = assertControlPlane(apiUrl)
@@ -583,8 +588,8 @@ router.post('/package', requireUserAuth, async (req: AuthedRequest, res) => {
         scanTypes: scanTypeDecision.allowed,
         alertThreshold: String(policy.alertThreshold || 'moderate'),
       },
-      remediationEnabled: roleDefinition.mutatesTargets && capabilities.remediation === true,
-      migrationEnabled: role === 'operator' && capabilities.migration === true,
+      remediationEnabled: writeAuthority.remediation,
+      migrationEnabled: writeAuthority.migration,
       generatedAt: new Date().toISOString(),
       generatedBy: user.id,
     })

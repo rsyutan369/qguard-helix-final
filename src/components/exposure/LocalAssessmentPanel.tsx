@@ -14,11 +14,14 @@
  */
 
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import {
-  AlertTriangle, ChevronDown, FolderOpen, HardDrive, Loader2, Lock, MonitorSmartphone,
+  AlertTriangle, ArrowUpRight, ChevronDown, Cpu, FolderOpen, HardDrive, Loader2, Lock, MonitorSmartphone,
   Play, RotateCcw, Settings2, ShieldCheck,
 } from 'lucide-react';
+import { AGENT_ROLES } from '@/lib/agent-installer/agent-release';
+import { AGENT_ROLE_MIN_TIER, TIER_LABEL } from '@/lib/subscription-access';
 import { cn } from '@/lib/utils';
 import { ACCENT, Panel, SectionLabel } from '@/components/quantum-scan/ui';
 import { useLocalScan } from '@/hooks/use-local-scan';
@@ -219,6 +222,24 @@ export function LocalAssessmentPanel({ onSync, upsellSlot }: LocalAssessmentPane
                   >
                     <HardDrive className="h-4 w-4" /> Select files
                   </button>
+
+                  {/* The browser reads one folder, once. An agent runs on the host
+                      itself — continuously, and against what the browser sandbox
+                      cannot reach. Deploying one starts in the Agent Center with
+                      the agent-type choice open. */}
+                  <Link
+                    to={localAgentHref(profileId)}
+                    aria-disabled={busy}
+                    onClick={(event) => { if (busy) event.preventDefault(); }}
+                    title="Deploy a Collector, Scanner, Patcher or Migration Operator agent from the Agent Center"
+                    className={cn(
+                      'inline-flex items-center gap-2 rounded-lg border border-violet-400/35 bg-violet-400/[0.08] px-4 py-2.5 text-[13px] font-bold text-violet-100 no-underline transition-colors',
+                      'hover:border-violet-300/60 hover:bg-violet-400/[0.14]',
+                      busy && 'pointer-events-none opacity-50',
+                    )}
+                  >
+                    <Cpu className="h-4 w-4" /> Local Agent
+                  </Link>
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -261,6 +282,10 @@ export function LocalAssessmentPanel({ onSync, upsellSlot }: LocalAssessmentPane
                 )}
               </>
             )}
+
+            {/* Shown whether or not this browser can read folders — when it
+                cannot, the agent is the way to assess this machine at all. */}
+            {!scan.collection && <LocalAgentOption profileId={profileId} />}
 
             {/* ── project fingerprint (§7) ─────────────────────────────── */}
             {scan.fingerprint && (
@@ -555,6 +580,65 @@ export function LocalAssessmentPanel({ onSync, upsellSlot }: LocalAssessmentPane
 }
 
 /* ──────────────────────────────────────────────────────────────── fragments ── */
+
+/**
+ * Where the Local Agent option lands: the Agent Center, with the deployment
+ * wizard open on the agent-type step. The selected scan profile travels with
+ * it so the wizard can pre-select the matching agent scan preset — the operator
+ * does not have to express the same intent twice.
+ */
+function localAgentHref(profileId: string, role?: string): string {
+  const params = new URLSearchParams({ deploy: '1', source: 'local-assessment', profile: profileId });
+  if (role) params.set('role', role);
+  return `/downloads?${params.toString()}`;
+}
+
+/**
+ * The four agent types, each a direct entry into the wizard with that type
+ * pre-selected. Plan labels are the static policy matrix; the Agent Center
+ * re-checks the tenant's actual plan and refuses a type it does not include.
+ */
+function LocalAgentOption({ profileId }: { profileId: string }) {
+  return (
+    <div className="mt-4 overflow-hidden rounded-xl border border-violet-400/20 bg-gradient-to-br from-violet-500/[0.07] via-transparent to-cyan-400/[0.04]">
+      <div className="flex flex-wrap items-start gap-3 px-4 py-3.5">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-violet-400/30 bg-violet-400/[0.1] text-violet-200">
+          <Cpu className="h-4.5 w-4.5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="flex flex-wrap items-center gap-2">
+            <span className="text-[13.5px] font-black text-white">Local Agent</span>
+            <span className="rounded-full border border-violet-400/30 bg-violet-400/10 px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.14em] text-violet-200">
+              Continuous · on-host
+            </span>
+          </p>
+          <p className="mt-1 text-[12px] leading-relaxed text-slate-400">
+            Install a Qguard agent on this machine or a server to assess what a browser cannot reach — system certificate
+            stores, running processes, live TLS and SSH endpoints and protected configuration paths — on a schedule, not once.
+            Choose the agent type next.
+          </p>
+        </div>
+      </div>
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-1.5 border-t border-white/[0.06] px-4 py-3 sm:grid-cols-2">
+        {AGENT_ROLES.map((role) => (
+          <Link
+            key={role.id}
+            to={localAgentHref(profileId, role.id)}
+            className="group flex min-w-0 items-center justify-between gap-2 rounded-lg border border-white/[0.08] bg-white/[0.02] px-3 py-2 no-underline transition-colors hover:border-violet-400/40 hover:bg-violet-400/[0.06]"
+          >
+            <span className="min-w-0">
+              <span className="block truncate text-[12px] font-bold text-slate-100">{role.label}</span>
+              <span className="block truncate text-[10.5px] text-slate-500">
+                {role.mutatesTargets ? 'Can change config' : 'Read-only'} · {TIER_LABEL[AGENT_ROLE_MIN_TIER[role.id]]}+
+              </span>
+            </span>
+            <ArrowUpRight aria-hidden className="h-3.5 w-3.5 shrink-0 text-slate-500 transition-colors group-hover:text-violet-200" />
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (

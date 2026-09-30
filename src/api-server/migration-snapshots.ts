@@ -544,7 +544,7 @@ async function resolveRollbackExecutor(
     const agentId = str(execution.agentId)
     if (!agentId) return noExecutor('The recorded change does not name the agent that applied it.')
     const agents = await rows(client, 'scanner_agents', (q) =>
-      q.select('id, name, hostname, status, version, last_seen_at, revoked_at, metadata, user_id').eq('user_id', userId).eq('id', agentId).limit(1))
+      q.select('id, name, hostname, status, version, last_seen_at, revoked_at, metadata, capabilities, user_id').eq('user_id', userId).eq('id', agentId).limit(1))
     const agent = agents[0]
     if (!agent) return noExecutor('The agent that applied this change is no longer enrolled, so its backup cannot be reached.')
     if (agent.revoked_at || str(agent.status) === 'revoked') {
@@ -556,13 +556,19 @@ async function resolveRollbackExecutor(
     }
     /* Same write gate the remediation queue applies: an agent whose tenant has
        downgraded keeps its row but stops being handed host-modifying work. */
-    const write = await agentMayWrite(client, agent as { user_id: string; metadata?: Record<string, unknown> }, 'remediation')
+    const write = await agentMayWrite(
+      client,
+      agent as { user_id: string; metadata?: Record<string, unknown>; capabilities?: Record<string, unknown> },
+      'remediation',
+    )
     if (!write.allowed) {
       const role = str(rec(agent.metadata).role) as AgentRole
       return noExecutor(
         write.reason === 'agent_role_read_only' || write.reason === 'agent_role_unresolved'
           ? `Agent ${str(agent.name) || agentId} holds the read-only ${role || 'collector'} role and cannot write to the host.`
-          : write.reason === 'entitlement_unavailable'
+          : write.reason === 'remediation_not_authorized'
+            ? `Agent ${str(agent.name) || agentId} is not authorised to write to its host. Grant remediation authority in the Agent Center to roll back through it.`
+            : write.reason === 'entitlement_unavailable'
             ? 'The subscription behind this agent could not be verified, so no host-modifying work was dispatched.'
             : 'Your plan no longer includes host-modifying agents, so rollback was not dispatched.',
       )

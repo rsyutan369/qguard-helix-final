@@ -15,7 +15,9 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { CAPABILITY_LABELS, type AgentPlatform } from '@/lib/agent-installer/agent-release';
+import { CAPABILITY_LABELS, agentRole, type AgentPlatform } from '@/lib/agent-installer/agent-release';
+import { clampAgentScanTypes, planAgentScope, resolveWriteAuthority } from '@/lib/agent-installer/agent-scope';
+import { ModuleScopeGrid, ScopeContractPanel, WriteAuthorityBadges } from './ScopeContract';
 import {
   digestOfPackage,
   downloadGeneratedPackage,
@@ -82,20 +84,26 @@ export function AgentDetailDrawer({
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  /* Keyed on the stable loader functions, never on `installer`: the hook
+     returns a new object every render and each load toggles its `busy`
+     state, so a callback keyed on the object re-created itself on every
+     result and the effect below re-fired forever — hundreds of health /
+     activity / findings / scans requests a minute for one open drawer. */
+  const { loadHealth, loadActivity, loadFindings, loadScans } = installer;
   const reload = useCallback(async () => {
     setLoadError(null);
     const [healthResult, activityResult, findingsResult, scansResult] = await Promise.all([
-      installer.loadHealth(agent.id),
-      installer.loadActivity(agent.id),
-      installer.loadFindings(agent.id),
-      installer.loadScans(agent.id),
+      loadHealth(agent.id),
+      loadActivity(agent.id),
+      loadFindings(agent.id),
+      loadScans(agent.id),
     ]);
     if (healthResult.ok && healthResult.data) setHealth(healthResult.data);
     else if (healthResult.message) setLoadError(healthResult.message);
     if (activityResult.ok && activityResult.data) setActivity(activityResult.data.activity);
     if (findingsResult.ok && findingsResult.data) setFindings(findingsResult.data);
     if (scansResult.ok && scansResult.data) setScans(scansResult.data.scans);
-  }, [agent.id, installer]);
+  }, [agent.id, loadHealth, loadActivity, loadFindings, loadScans]);
 
   useEffect(() => {
     void reload();
@@ -114,7 +122,7 @@ export function AgentDetailDrawer({
       const result = await run();
       setWorking(false);
       const delivery = (result.data as { delivery?: string } | undefined)?.delivery;
-      setNotice(result.ok ? delivery || `${label} requested.` : result.message || `${label} failed.`);
+      setNotice(result.ok ? delivery || result.message || `${label} requested.` : result.message || `${label} failed.`);
       if (result.ok) void reload();
     },
     [reload],
@@ -149,6 +157,29 @@ export function AgentDetailDrawer({
   const policy = (agent.policy || {}) as Record<string, unknown>;
   const allowedTargets = Array.isArray(policy.allowedTargets) ? (policy.allowedTargets as string[]) : [];
   const allowedPaths = Array.isArray(policy.allowedPaths) ? (policy.allowedPaths as string[]) : [];
+  const metadata = (agent.metadata || {}) as Record<string, unknown>;
+  const deniedByPlan = Array.isArray(metadata.scanTypesDeniedByPlan) ? (metadata.scanTypesDeniedByPlan as string[]) : [];
+  const deniedByRole = Array.isArray(metadata.scanTypesDeniedByRole) ? (metadata.scanTypesDeniedByRole as string[]) : [];
+  /* The role ceiling applied exactly as the agent receives it at its policy
+     poll, so this panel shows the modules the host will actually run. */
+  const enforcedTypes = useMemo(
+    () => clampAgentScanTypes(agent.role, Array.isArray(policy.scanTypes) ? (policy.scanTypes as string[]) : [], null).allowed,
+    [agent.role, policy.scanTypes],
+  );
+  const authority = resolveWriteAuthority(agent.role, agent.capabilities, metadata);
+  const storedScope = useMemo(
+    () =>
+      planAgentScope({
+        role: agent.role,
+        scanTypes: enforcedTypes,
+        allowedTargets,
+        allowedPaths,
+        remediationAuthorized: authority.remediation,
+        migrationAuthorized: authority.migration,
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [agent.role, enforcedTypes, policy.allowedTargets, policy.allowedPaths, authority.remediation, authority.migration],
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/70 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={`Agent ${agent.name}`}>
@@ -217,6 +248,33 @@ export function AgentDetailDrawer({
 
           {tab === 'capabilities' ? (
             <div className="space-y-4">
+              <WriteAuthorityCard
+                agent={agent}
+                health={health}
+                working={working}
+                revoked={revoked}
+                onChange={(change, label) => void act(label, () => installer.setWriteAuthority(agent.id, change))}
+              />
+
+              <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-[11px] font-bold uppercase tracking-wide text-white/45">Scan modules enforced</div>
+                  <span className="font-mono text-[10px] text-white/35">{enforcedTypes.length} enforced</span>
+                </div>
+                <div className="mt-3">
+                  <ModuleScopeGrid plan={storedScope} />
+                </div>
+                {deniedByPlan.length || deniedByRole.length ? (
+                  <p className="mt-3 rounded-lg border border-amber-400/20 bg-amber-400/[0.05] px-3 py-2 text-[11px] leading-relaxed text-amber-100/80">
+                    {deniedByPlan.length ? `Requested but not in your plan: ${deniedByPlan.join(', ')}. ` : ''}
+                    {deniedByRole.length ? `Requested but not part of this role: ${deniedByRole.join(', ')}.` : ''} These dimensions are
+                    not assessed by this agent.
+                  </p>
+                ) : null}
+              </div>
+
+              <ScopeContractPanel plan={storedScope} role={agent.role} />
+
               <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
                 <div className="text-[11px] font-bold uppercase tracking-wide text-white/45">Granted capabilities</div>
                 {capabilities.length === 0 ? (
@@ -407,6 +465,161 @@ export function AgentDetailDrawer({
           )}
         </footer>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Write authority, stated from both ends.
+ *
+ * Control plane: the recorded authorisation `agentMayWrite` reads before every
+ * job is handed out — grant and revoke act on it directly. Host: the switch the
+ * installer wrote (`QGUARD_ENABLE_REMEDIATION`), as the agent last reported it.
+ * Both must be on for a change to happen; the card says which one is not.
+ */
+function WriteAuthorityCard({
+  agent,
+  health,
+  working,
+  revoked,
+  onChange,
+}: {
+  agent: DeployedAgent;
+  health: AgentHealth | null;
+  working: boolean;
+  revoked: boolean;
+  onChange: (change: { remediation?: boolean; migration?: boolean }, label: string) => void;
+}) {
+  const definition = agentRole(agent.role);
+  const authority = resolveWriteAuthority(agent.role, agent.capabilities, agent.metadata);
+  const hostReport = health?.telemetryAvailable ? (health.capabilities as Record<string, unknown> | null) : null;
+  const hostWrites = hostReport ? hostReport.remediation === true && hostReport.configPatches === true : null;
+  const [confirm, setConfirm] = useState<null | 'remediation' | 'migration'>(null);
+
+  if (!definition.mutatesTargets) {
+    return (
+      <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.04] p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-[11px] font-bold uppercase tracking-wide text-white/45">Write authority</div>
+          <WriteAuthorityBadges remediation={false} migration={false} mutates={false} operator={false} />
+        </div>
+        <p className="mt-2 text-[11.5px] leading-relaxed text-white/55">
+          A {definition.label} is read-only by role. The control plane never hands it remediation or migration work, whatever its
+          policy says. To change configuration on this host, deploy a Patcher or Migration Operator.
+        </p>
+      </div>
+    );
+  }
+
+  const grant = (kind: 'remediation' | 'migration') =>
+    onChange(kind === 'remediation' ? { remediation: true } : { migration: true }, kind === 'remediation' ? 'Remediation authority' : 'Migration authority');
+
+  return (
+    <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.03] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[11px] font-bold uppercase tracking-wide text-white/45">Write authority</div>
+        <WriteAuthorityBadges remediation={authority.remediation} migration={authority.migration} mutates operator={agent.role === 'operator'} />
+      </div>
+
+      <dl className="mt-3 grid gap-2 text-[11.5px] sm:grid-cols-2">
+        <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+          <dt className="text-[10px] font-bold uppercase tracking-wide text-white/35">Control plane</dt>
+          <dd className="mt-0.5 text-white/75">
+            {authority.remediation
+              ? authority.migration
+                ? 'Hands it approved remediation and migration jobs'
+                : 'Hands it approved remediation jobs'
+              : 'Hands it no write jobs'}
+          </dd>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-black/20 px-3 py-2">
+          <dt className="text-[10px] font-bold uppercase tracking-wide text-white/35">Host switch (installer)</dt>
+          <dd className="mt-0.5 text-white/75">
+            {hostWrites === null ? 'Not reported yet' : hostWrites ? 'Writes enabled on the host' : 'Writes disabled on the host'}
+          </dd>
+        </div>
+      </dl>
+
+      {authority.remediation && hostWrites === false ? (
+        <p className="mt-2 text-[11px] leading-relaxed text-amber-100/75">
+          Authorised here, but this host was installed with writes switched off, so it will refuse the work it is handed.
+          Regenerate the installer from the Installer tab and re-run it on the host.
+        </p>
+      ) : null}
+
+      {confirm ? (
+        <div className="mt-3 rounded-lg border border-amber-400/35 bg-amber-400/[0.08] p-3">
+          <p className="text-[11.5px] leading-relaxed text-amber-50">
+            {confirm === 'remediation'
+              ? 'Allow this agent to apply approved PQC configuration changes inside its allowed paths? Every change is snapshotted, validated and rolled back on failure.'
+              : 'Allow this agent to execute approved Live Migration cutovers that match its asset, policy and allowed paths?'}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={working}
+              onClick={() => {
+                grant(confirm);
+                setConfirm(null);
+              }}
+              className="rounded-lg border border-amber-400/45 bg-amber-400/15 px-3 py-1.5 text-[11px] font-black text-amber-50 transition hover:bg-amber-400/25 disabled:opacity-40"
+            >
+              Grant
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirm(null)}
+              className="rounded-lg border border-white/12 bg-white/[0.04] px-3 py-1.5 text-[11px] font-bold text-white/65 transition hover:text-white"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {authority.remediation ? (
+            <button
+              type="button"
+              disabled={working || revoked}
+              onClick={() => onChange({ remediation: false }, 'Write authority revoked')}
+              className="rounded-lg border border-white/15 bg-white/[0.04] px-3 py-1.5 text-[11px] font-bold text-white/75 transition hover:border-rose-400/40 hover:text-rose-100 disabled:opacity-40"
+            >
+              Revoke all write authority
+            </button>
+          ) : (
+            <button
+              type="button"
+              disabled={working || revoked || (Array.isArray((agent.policy as Record<string, unknown> | undefined)?.allowedPaths) ? ((agent.policy as Record<string, unknown>).allowedPaths as unknown[]).length === 0 : true)}
+              title="Write authority is scoped to allowed paths — the agent needs at least one."
+              onClick={() => setConfirm('remediation')}
+              className="rounded-lg border border-amber-400/35 bg-amber-400/10 px-3 py-1.5 text-[11px] font-bold text-amber-100 transition hover:bg-amber-400/20 disabled:opacity-40"
+            >
+              Authorise remediation
+            </button>
+          )}
+          {agent.role === 'operator' && authority.remediation ? (
+            authority.migration ? (
+              <button
+                type="button"
+                disabled={working || revoked}
+                onClick={() => onChange({ migration: false }, 'Migration authority revoked')}
+                className="rounded-lg border border-white/15 bg-white/[0.04] px-3 py-1.5 text-[11px] font-bold text-white/75 transition hover:border-rose-400/40 hover:text-rose-100 disabled:opacity-40"
+              >
+                Revoke migration only
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={working || revoked}
+                onClick={() => setConfirm('migration')}
+                className="rounded-lg border border-rose-400/35 bg-rose-400/10 px-3 py-1.5 text-[11px] font-bold text-rose-100 transition hover:bg-rose-400/20 disabled:opacity-40"
+              >
+                Authorise Live Migration
+              </button>
+            )
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
