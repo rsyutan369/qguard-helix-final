@@ -3,7 +3,7 @@
 import { motion, useReducedMotion } from 'framer-motion'
 import { Sparkles, ArrowRight, ShieldCheck, Gauge } from 'lucide-react'
 import type { ExecutiveSnapshot } from '@/hooks/use-dashboard'
-import { PANEL, TONE, cx, type Tone } from './primitives'
+import { PANEL, TONE, cx, relativeTime, type Tone } from './primitives'
 
 interface Props {
   narrative: ExecutiveSnapshot['narrative'] | undefined
@@ -18,8 +18,11 @@ function greeting(): string {
   return 'Good evening'
 }
 
+/* Keyed by the platform's readiness bands (`levelFromReadiness`). The old keys
+   ("Early", "Strong", "Moderate") matched none of them, so every posture
+   rendered in the neutral tone whatever its band. */
 const POSTURE_TONE: Record<string, Tone> = {
-  Advanced: 'good', Strong: 'good', Moderate: 'warning', Developing: 'warning', Early: 'critical', Critical: 'critical',
+  'Quantum-Ready': 'good', Advanced: 'good', Developing: 'warning', 'Early Stage': 'warning', Initial: 'critical', 'Not Started': 'neutral',
 }
 
 export default function ExecutiveSummary({ narrative, userName, loading }: Props) {
@@ -103,24 +106,38 @@ export default function ExecutiveSummary({ narrative, userName, loading }: Props
       <div className="relative z-10 mt-6 grid grid-cols-2 gap-3 border-t border-white/8 pt-5 sm:grid-cols-3 md:grid-cols-6">
         {(n?.facts || []).map((f, i) => {
           const tone = TONE[(f.tone === 'good' ? 'good' : f.tone === 'critical' ? 'critical' : f.tone === 'warning' ? 'warning' : 'neutral') as Tone]
+          const value = f.format === 'relative-time' ? (typeof f.value === 'string' && f.value !== 'Never' ? relativeTime(f.value) : 'Never') : f.value
           return (
             <motion.div
               key={f.id}
+              title={f.hint}
               initial={reduce ? false : { opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.1 + i * 0.05 }}
             >
-              <div className="text-[9px] font-bold uppercase tracking-wide text-white/40">{f.label}</div>
-              <div className={cx('mt-1 text-base font-black tracking-tight', tone.text)}>{f.value}</div>
+              <div className="flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-wide text-white/40">
+                {f.label}
+                {f.modeled && <span className="rounded bg-white/5 px-1 py-px text-[7px] font-black tracking-wide text-white/35">model</span>}
+              </div>
+              <div className={cx('mt-1 text-base font-black tracking-tight', tone.text)}>{value}</div>
+              {f.hint && <div className="mt-0.5 truncate text-[9px] text-white/30">{f.hint}</div>}
             </motion.div>
           )
         })}
       </div>
 
       {n && (
-        <div className="relative z-10 mt-4 flex items-center gap-2 text-[9px] font-bold uppercase tracking-widest text-white/30">
+        <div className="relative z-10 mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-[9px] font-bold uppercase tracking-widest text-white/30">
           <span className="h-1 w-1 rounded-full bg-violet-400" />
-          AI confidence {n.confidence}% · generated from tenant telemetry only
+          <span>
+            Evidence coverage {n.evidenceCoverage.present} of {n.evidenceCoverage.total} sources
+          </span>
+          {n.evidenceCoverage.missing.length > 0 && (
+            <span className="normal-case tracking-normal text-white/25">
+              · missing {n.evidenceCoverage.missing.join(', ')}
+            </span>
+          )}
+          <span>· generated from tenant telemetry only</span>
         </div>
       )}
     </motion.div>

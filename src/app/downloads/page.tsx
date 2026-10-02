@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { Link, Navigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, Navigate, useLocation, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
   Check,
@@ -21,7 +21,7 @@ import { isOwnerEmail } from '@/lib/admin-access';
 import { tierMeets } from '@/lib/subscription-access';
 import { useAgentInstaller, type DeployedAgent } from '@/hooks/use-agent-installer';
 import { DeployWizard } from '@/components/agent-installer/DeployWizard';
-import { AGENT_ROLES } from '@/lib/agent-installer/agent-release';
+import { AGENT_ROLES, type AgentRole } from '@/lib/agent-installer/agent-release';
 import { agentRolePlanCopy, useAgentEntitlement } from '@/hooks/use-agent-entitlement';
 import { AgentDetailDrawer } from '@/components/agent-installer/AgentDetailDrawer';
 import {
@@ -66,9 +66,37 @@ export default function DownloadsPage() {
   const gateReady = !authLoading && !subscription.loading;
 
   const installer = useAgentInstaller(Boolean(user) && entitled);
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  const [wizardOpen, setWizardOpen] = useState(false);
+  /* Deep link from elsewhere in the platform — the Local Assessment "Local
+     Agent" option sends ?deploy=1&source=local-assessment&profile=<id>[&role=<id>].
+     Read once into state: the wizard owns the choice from then on, and the
+     `deploy` flag is dropped from the URL so a refresh does not reopen it. */
+  const [deployIntent] = useState(() => {
+    const requestedRole = searchParams.get('role');
+    return {
+      open: searchParams.get('deploy') === '1',
+      role: AGENT_ROLES.some((item) => item.id === requestedRole) ? (requestedRole as AgentRole) : null,
+      source: searchParams.get('source'),
+      profile: searchParams.get('profile'),
+    };
+  });
+
+  const [wizardOpen, setWizardOpen] = useState(deployIntent.open);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const wizardRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!deployIntent.open || !entitled || !gateReady) return;
+    wizardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (searchParams.has('deploy')) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('deploy');
+      setSearchParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deployIntent.open, entitled, gateReady]);
   const [filter, setFilter] = useState<'all' | 'connected' | 'offline' | 'waiting' | 'updates'>('all');
 
   const selected = useMemo(
@@ -101,7 +129,10 @@ export default function DownloadsPage() {
     );
   }
 
-  if (!user) return <Navigate to="/login?redirect=/downloads" replace />;
+  /* The login page reads `next` (not `redirect`, which it ignored — signed-out
+     visitors landed on /dashboard). The query string is kept so a deep link
+     into the deployment wizard survives the sign-in. */
+  if (!user) return <Navigate to={`/login?next=${encodeURIComponent(`/downloads${location.search}`)}`} replace />;
 
   if (!entitled) {
     return (
@@ -242,9 +273,10 @@ export default function DownloadsPage() {
       </div>
 
       {wizardOpen ? (
-        <div className="mb-6">
+        <div ref={wizardRef} className="mb-6 scroll-mt-6">
           <DeployWizard
             installer={installer}
+            initial={{ role: deployIntent.role, source: deployIntent.source, localProfile: deployIntent.profile }}
             onClose={() => setWizardOpen(false)}
             onOpenAgent={(agentId) => {
               setSelectedId(agentId);

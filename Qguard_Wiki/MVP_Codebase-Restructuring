@@ -1,0 +1,906 @@
+You are acting as a Principal Software Architect, DevSecOps Engineer, Cloud Infrastructure Engineer, and Senior Full-Stack Engineer.
+
+We need to prepare the current Qguard Helix codebase for its Phase 1 MVP Production Deployment.
+
+IMPORTANT:
+Do NOT blindly rewrite, replace, delete, or restructure the application.
+
+The primary objective is to reorganize and harden the existing codebase so that it can be deployed reliably to production while preserving all existing functionality, features, business logic, security controls, data flows, API contracts, UI flows, authentication, database behavior, and integrations.
+
+The architecture must also provide a clean foundation for future enterprise-scale enhancements.
+
+==================================================
+1. MVP PRODUCTION TARGET ARCHITECTURE
+==================================================
+
+Our current MVP deployment direction is approximately:
+
+Frontend / Application:
+- Vercel Pro — ~$20/month
+
+Database / Backend Services:
+- Supabase Pro — ~$25/month
+
+DNS / CDN / Edge:
+- Cloudflare Free — $0/month
+
+Container / Compute Infrastructure:
+- DigitalOcean Kubernetes
+- Initial target: 2 × Basic Nodes — approximately $24/month
+
+Networking:
+- DigitalOcean Load Balancer — approximately $12/month
+
+Storage:
+- DigitalOcean Block Storage — approximately $10/month / 100 GB
+
+Caching:
+- DigitalOcean Managed Redis — approximately $15/month depending on configuration
+
+Source Control:
+- GitHub Free — $0/month
+
+CI/CD:
+- GitHub Actions — Free/light usage initially
+
+Approximate MVP infrastructure budget:
+~$106/month, depending on Redis and storage requirements.
+
+IMPORTANT:
+These numbers are planning estimates only.
+Do not hardcode infrastructure assumptions into the application.
+Validate the actual architecture and determine which services are genuinely required for Phase 1 versus which should remain optional/future infrastructure.
+
+==================================================
+2. FIRST: PERFORM A DEEP CODEBASE AUDIT
+==================================================
+
+Before making structural changes, thoroughly inspect the ENTIRE repository.
+
+Do not begin by moving files.
+
+First understand:
+
+- Frontend architecture
+- Backend/API architecture
+- Authentication
+- Authorization
+- Database access
+- Supabase integration
+- Storage
+- Realtime functionality
+- API routes
+- Server-side services
+- Background jobs
+- WebSockets/SSE
+- External integrations
+- Environment variables
+- Secrets
+- Configuration
+- Build system
+- Vite configuration
+- Express configuration
+- Deployment configuration
+- Package dependencies
+- TypeScript configuration
+- Database migrations
+- RLS policies
+- Middleware
+- Error handling
+- Logging
+- Monitoring
+- Security controls
+- File uploads
+- Report generation
+- AI integrations
+- Scanner engines
+- Quantum security engines
+- Migration engines
+- Dashboard data pipelines
+- Any scheduled/background processing
+- Any local-development-only functionality
+- Any mock/demo/test data
+- Any hardcoded production assumptions
+
+Identify how the application currently works before changing its structure.
+
+==================================================
+3. CREATE A CURRENT-STATE ARCHITECTURE MAP
+==================================================
+
+Before modifying the repository, document:
+
+A. Frontend
+B. API/backend
+C. Database
+D. Authentication
+E. Storage
+F. Realtime
+G. External services
+H. Infrastructure
+I. CI/CD
+J. Environment configuration
+K. Security boundaries
+L. Data flows
+M. Critical dependencies
+
+Create a clear dependency and request-flow model such as:
+
+Browser
+   ↓
+Cloudflare
+   ↓
+Vercel / Application
+   ↓
+Express API
+   ↓
+Supabase
+   ├── PostgreSQL
+   ├── Auth
+   ├── Storage
+   └── Realtime
+
+And where applicable:
+
+Application
+   ↓
+DigitalOcean Services
+   ├── Kubernetes
+   ├── Redis
+   ├── Load Balancer
+   └── Block Storage
+
+Do NOT introduce unnecessary infrastructure merely because it is available.
+
+==================================================
+4. DEFINE THE PRODUCTION BOUNDARIES
+==================================================
+
+Clearly determine which responsibilities belong to:
+
+- Vercel
+- Cloudflare
+- Supabase
+- DigitalOcean Kubernetes
+- Redis
+- GitHub
+- GitHub Actions
+
+Avoid duplicated responsibilities.
+
+For every service, document:
+
+- Purpose
+- Why it is required
+- What data it handles
+- Security boundary
+- Network exposure
+- Authentication requirements
+- Failure behavior
+- Scaling strategy
+- Backup/recovery strategy
+- Cost implications
+- Whether it is MVP-required or future-ready
+
+If a service is unnecessary for the MVP, do not force it into the architecture.
+
+==================================================
+5. RESTRUCTURE THE CODEBASE SAFELY
+==================================================
+
+After the audit, propose a clean production-oriented repository structure.
+
+The structure should:
+
+- Separate frontend concerns from backend concerns
+- Separate API routes/controllers from business logic
+- Separate business logic from infrastructure
+- Separate database access from application services
+- Centralize configuration
+- Centralize environment validation
+- Separate reusable libraries/services
+- Make testing easier
+- Make deployment easier
+- Make future microservices possible without prematurely converting everything into microservices
+- Avoid circular dependencies
+- Avoid duplicated business logic
+- Avoid duplicated API implementations
+- Avoid legacy/dead code
+- Make ownership boundaries obvious
+
+Do NOT over-engineer the MVP.
+
+Use a modular monolith architecture where appropriate.
+
+The architecture should be capable of evolving into:
+
+Modular Monolith
+        ↓
+Service Extraction
+        ↓
+Selective Microservices
+
+without requiring a complete rewrite.
+
+==================================================
+6. PRESERVE ALL EXISTING FUNCTIONALITY
+==================================================
+
+This is a HARD REQUIREMENT.
+
+During restructuring, preserve:
+
+- Existing UI
+- Existing routes
+- Existing APIs
+- Existing authentication
+- Existing authorization
+- Existing database behavior
+- Existing RLS policies
+- Existing Supabase integration
+- Existing storage
+- Existing realtime functionality
+- Existing scanner functionality
+- Existing quantum-readiness functionality
+- Existing reports
+- Existing dashboards
+- Existing migration workflows
+- Existing AI functionality
+- Existing business rules
+- Existing data models
+- Existing user flows
+- Existing subscription behavior
+- Existing payment functionality
+- Existing security controls
+
+Do not remove functionality simply because it is inconvenient to deploy.
+
+If something is obsolete, prove it is unused before removing it.
+
+==================================================
+7. NO FAKE OR MOCK PRODUCTION DATA
+==================================================
+
+This is especially important for Qguard Helix.
+
+Do NOT introduce:
+
+- Fake telemetry
+- Random metrics
+- Hardcoded security scores
+- Fake scanner results
+- Fake vulnerability counts
+- Mock production infrastructure data
+- Random quantum-risk values
+- Artificial asset counts
+- Placeholder compliance results
+
+Production dashboards must use real sources of truth.
+
+If real data is unavailable, explicitly represent the state as:
+
+- Unknown
+- Not scanned
+- Not configured
+- Pending
+- Insufficient data
+- Not applicable
+
+Never fabricate security intelligence.
+
+==================================================
+8. ENVIRONMENT CONFIGURATION
+==================================================
+
+Create a robust environment strategy:
+
+Development
+Staging
+Production
+
+Audit every environment variable.
+
+Classify them as:
+
+- Public
+- Server-only
+- Secret
+- Build-time
+- Runtime
+- Optional
+- Required
+
+Ensure secrets are NEVER committed to Git.
+
+Implement environment validation so the application fails safely and clearly when required production configuration is missing.
+
+Do not expose server secrets through Vite/client bundles.
+
+==================================================
+9. API AND BACKEND HARDENING
+==================================================
+
+Review all APIs for:
+
+- Authentication
+- Authorization
+- Input validation
+- Schema validation
+- Rate limiting
+- Request size limits
+- CORS
+- CSRF where applicable
+- Security headers
+- Error handling
+- Logging
+- Audit logging
+- Sensitive-data exposure
+- SQL injection
+- SSRF
+- IDOR
+- Broken access control
+- Privilege escalation
+- Improper error disclosure
+- Token handling
+- Session handling
+- File upload security
+
+Ensure all sensitive operations are server-side.
+
+Ensure Supabase access follows the intended authenticated-user/RLS model.
+
+==================================================
+10. DATABASE AND SUPABASE REVIEW
+==================================================
+
+Perform a deep review of:
+
+- Database schema
+- Foreign keys
+- Indexes
+- Constraints
+- RLS policies
+- Authentication relationships
+- Storage policies
+- Realtime configuration
+- Database migrations
+- Query performance
+- N+1 queries
+- Duplicate queries
+- Data ownership
+- Tenant isolation
+- Soft deletion where appropriate
+- Audit fields
+- Created/updated timestamps
+- Transaction boundaries
+
+Verify that production deployment cannot accidentally expose one customer's data to another customer.
+
+==================================================
+11. REDIS REVIEW
+==================================================
+
+Determine exactly where Redis provides value.
+
+Possible uses may include:
+
+- Caching
+- Rate limiting
+- Distributed locks
+- Background job coordination
+- Session-related infrastructure where appropriate
+- Temporary computation state
+
+Do NOT use Redis as a source of truth for persistent business data.
+
+Document:
+
+- TTL strategy
+- Cache invalidation
+- Failure behavior
+- Security
+- Connection handling
+- Production configuration
+
+If Redis is not required for MVP functionality, keep the integration optional rather than creating unnecessary operational complexity.
+
+==================================================
+12. KUBERNETES REVIEW
+==================================================
+
+Determine which workloads actually belong in DigitalOcean Kubernetes.
+
+Do not move everything into Kubernetes automatically.
+
+Identify workloads such as:
+
+- Long-running services
+- Background workers
+- Scanner engines
+- Heavy processing
+- Scheduled jobs
+- AI processing
+- Report generation
+- Future asynchronous workloads
+
+For every proposed Kubernetes workload define:
+
+- Deployment
+- Service
+- ConfigMap
+- Secret references
+- Resource requests
+- Resource limits
+- Health checks
+- Readiness probes
+- Liveness probes
+- Autoscaling strategy
+- Pod disruption considerations
+- Logging
+- Monitoring
+- Network exposure
+
+Prefer private/internal communication wherever possible.
+
+==================================================
+13. CONTAINERIZATION
+==================================================
+
+Audit or create production-grade Dockerfiles.
+
+Requirements:
+
+- Multi-stage builds
+- Minimal production images
+- Non-root execution
+- No unnecessary packages
+- Locked dependencies where appropriate
+- Health checks
+- Proper signal handling
+- Graceful shutdown
+- Secure environment handling
+
+Also create an appropriate .dockerignore.
+
+==================================================
+14. CI/CD
+==================================================
+
+Design a production CI/CD pipeline using GitHub Actions.
+
+Recommended lifecycle:
+
+Pull Request
+   ↓
+Lint
+   ↓
+Type Check
+   ↓
+Unit Tests
+   ↓
+Integration Tests
+   ↓
+Security Checks
+   ↓
+Dependency Audit
+   ↓
+Build
+   ↓
+Deployment Validation
+   ↓
+Staging
+   ↓
+Production
+
+Production deployment must not occur if critical validation fails.
+
+Implement:
+
+- Build verification
+- Type checking
+- Tests
+- Dependency/security scanning
+- Secret detection
+- Migration validation
+- Docker build validation
+- Deployment checks
+
+Where practical, use environment protection and approval for production.
+
+==================================================
+15. ZERO-DOWNTIME / SAFE DEPLOYMENT
+==================================================
+
+Design deployments so that application updates do not unnecessarily cause downtime.
+
+Consider:
+
+- Rolling deployments
+- Backward-compatible database migrations
+- Expand/contract migration strategy
+- Health checks
+- Readiness checks
+- Graceful shutdown
+- Connection draining
+- Rollback strategy
+- Versioned APIs where appropriate
+
+Database migrations must be safe for the currently running application version.
+
+==================================================
+16. OBSERVABILITY
+==================================================
+
+Prepare the MVP for enterprise-grade observability.
+
+At minimum establish:
+
+- Structured application logs
+- Error logging
+- Request correlation IDs
+- Deployment/version identifiers
+- Health endpoints
+- Readiness endpoints
+- Basic metrics
+- Infrastructure monitoring
+- Database monitoring
+- Redis monitoring where applicable
+- Alerting strategy
+
+Avoid logging:
+
+- Passwords
+- Access tokens
+- API keys
+- Encryption keys
+- Private user information
+- Sensitive security findings unnecessarily
+
+==================================================
+17. BACKUP AND DISASTER RECOVERY
+==================================================
+
+Define:
+
+- Database backup strategy
+- Storage backup strategy
+- Recovery procedures
+- Recovery Point Objective (RPO)
+- Recovery Time Objective (RTO)
+- Disaster scenarios
+- Rollback procedures
+- Data restoration procedures
+
+Document how the system behaves if:
+
+- Vercel is unavailable
+- Supabase is unavailable
+- Redis is unavailable
+- Kubernetes node fails
+- Cloudflare is unavailable
+- A deployment fails
+- A database migration fails
+- An external API becomes unavailable
+
+==================================================
+18. SECURITY / DEVSECOPS
+==================================================
+
+Perform a production security audit.
+
+Check for:
+
+- Secrets committed to Git
+- Vulnerable dependencies
+- Excessive permissions
+- Unsafe environment variables
+- Insecure API endpoints
+- Weak authentication boundaries
+- Missing authorization checks
+- Unsafe file uploads
+- SSRF
+- XSS
+- CSRF
+- SQL injection
+- Command injection
+- Path traversal
+- Insecure deserialization
+- Dependency vulnerabilities
+- Container vulnerabilities
+- Kubernetes misconfiguration
+- Cloud misconfiguration
+- Excessive network exposure
+
+Implement appropriate security gates in CI/CD.
+
+==================================================
+19. PERFORMANCE AND SCALABILITY
+==================================================
+
+Identify potential bottlenecks before production deployment.
+
+Review:
+
+- API latency
+- Database queries
+- Large payloads
+- Dashboard loading
+- Scanner execution
+- Report generation
+- Realtime connections
+- Concurrent users
+- File uploads
+- AI requests
+- Long-running tasks
+- Memory usage
+- CPU usage
+
+Do not prematurely optimize everything.
+
+Identify:
+
+MVP optimization requirements
+versus
+Future scaling opportunities.
+
+==================================================
+20. FUTURE ENTERPRISE SCALABILITY
+==================================================
+
+The architecture must leave room for future capabilities such as:
+
+- Larger asset estates
+- Multi-tenant enterprise deployments
+- Enterprise RBAC
+- SSO/SAML/OIDC
+- SCIM
+- Audit trails
+- Organization-level isolation
+- Background workers
+- Queue-based processing
+- Distributed scanning
+- Advanced telemetry
+- SIEM integrations
+- SOAR integrations
+- Enterprise reporting
+- Compliance frameworks
+- Multi-region deployment
+- High availability
+- Kubernetes autoscaling
+- Dedicated enterprise infrastructure
+
+However:
+
+DO NOT implement expensive enterprise infrastructure prematurely unless required by MVP.
+
+Prepare clean extension points instead.
+
+==================================================
+21. MIGRATION SAFETY
+==================================================
+
+Before modifying the codebase:
+
+1. Create a baseline.
+2. Record the current build state.
+3. Record tests currently passing.
+4. Record routes.
+5. Record API endpoints.
+6. Record database schema.
+7. Record environment variables.
+8. Record critical application flows.
+9. Record existing deployment behavior.
+
+After every major restructuring phase:
+
+- Run tests
+- Run type checks
+- Run linting
+- Build the application
+- Validate APIs
+- Validate database access
+- Validate authentication
+- Validate critical user flows
+
+Never make hundreds of unrelated changes at once.
+
+Use controlled migration phases.
+
+==================================================
+22. PRODUCTION READINESS CHECKLIST
+==================================================
+
+Create a production readiness checklist covering:
+
+[ ] Code structure
+[ ] Build
+[ ] TypeScript
+[ ] Tests
+[ ] Authentication
+[ ] Authorization
+[ ] Database
+[ ] RLS
+[ ] Storage
+[ ] API security
+[ ] Environment variables
+[ ] Secrets
+[ ] Docker
+[ ] Kubernetes
+[ ] Cloudflare
+[ ] Vercel
+[ ] Supabase
+[ ] Redis
+[ ] GitHub Actions
+[ ] Monitoring
+[ ] Logging
+[ ] Backups
+[ ] Disaster recovery
+[ ] Rollback
+[ ] Performance
+[ ] Security scanning
+[ ] Dependency scanning
+[ ] Production smoke tests
+[ ] Documentation
+
+==================================================
+23. REQUIRED DELIVERABLES
+==================================================
+
+Before implementation, provide:
+
+1. Current Architecture Assessment
+
+2. Identified Problems
+
+3. Production Risks
+
+4. Recommended MVP Architecture
+
+5. Recommended Repository Structure
+
+6. Deployment Architecture
+
+7. Environment Strategy
+
+8. CI/CD Strategy
+
+9. Security Strategy
+
+10. Database Strategy
+
+11. Redis Strategy
+
+12. Kubernetes Strategy
+
+13. Backup/Recovery Strategy
+
+14. Observability Strategy
+
+15. Migration Plan
+
+16. Production Readiness Checklist
+
+17. Future Enterprise Evolution Plan
+
+Then implement the approved/appropriate changes.
+
+==================================================
+24. IMPORTANT IMPLEMENTATION RULES
+==================================================
+
+DO NOT:
+
+- Rewrite the entire application unnecessarily
+- Replace working technologies without justification
+- Delete working features
+- Remove APIs without proving they are unused
+- Introduce fake data
+- Introduce unnecessary microservices
+- Introduce unnecessary Kubernetes workloads
+- Hardcode infrastructure values
+- Commit secrets
+- Break existing routes
+- Break database behavior
+- Break authentication
+- Break RLS
+- Break existing UI/UX flows
+
+DO:
+
+- Preserve working functionality
+- Simplify where justified
+- Modularize logically
+- Improve maintainability
+- Improve security
+- Improve deployment reliability
+- Improve observability
+- Improve testability
+- Improve scalability
+- Document architectural decisions
+- Keep MVP operational costs controlled
+- Make future enterprise expansion straightforward
+
+==================================================
+25. FINAL VALIDATION
+==================================================
+
+After implementation, perform a COMPLETE production simulation.
+
+Verify:
+
+Development → Build → Test → Container → Staging → Production
+
+Validate:
+
+- Application starts successfully
+- Frontend loads
+- Authentication works
+- Authorization works
+- Database operations work
+- RLS works
+- Storage works
+- Realtime works
+- APIs work
+- Critical dashboards work
+- Scanner functionality works
+- Reports work
+- AI functionality works
+- Existing workflows work
+- No critical console errors
+- No critical server errors
+- No broken imports
+- No broken routes
+- No missing environment variables
+- No exposed secrets
+- No fake production data
+- No unexpected regressions
+
+==================================================
+26. FINAL REPORT
+==================================================
+
+At the end, provide a concise but detailed report containing:
+
+A. What was inspected
+B. What was changed
+C. Why each major change was made
+D. Files/directories changed
+E. Features preserved
+F. Security improvements
+G. Infrastructure changes
+H. Deployment changes
+I. Tests performed
+J. Test results
+K. Remaining risks
+L. Items intentionally deferred to Phase 2+
+M. Exact production deployment steps
+N. Rollback procedure
+O. Recommended next enterprise enhancements
+
+MOST IMPORTANT:
+
+The objective is NOT simply to make the codebase "look cleaner."
+
+The objective is to transform the existing Qguard Helix codebase into a:
+
+SECURE
+STABLE
+MAINTAINABLE
+OBSERVABLE
+DEPLOYABLE
+SCALABLE
+PRODUCTION-READY
+ENTERPRISE-READY
+
+MVP foundation.
+
+Preserve the existing product capabilities while creating a clean architectural foundation for future Qguard Helix expansion.
+
+Do not assume.
+Inspect first.
+Document first.
+Validate before changing.
+Change incrementally.
+Test after every major phase.
+Never fabricate functionality or production data.
+Never sacrifice existing functionality merely for architectural cleanliness.

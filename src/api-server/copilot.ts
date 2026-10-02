@@ -23,7 +23,7 @@ import {
   suggestionsForPage,
 } from './copilot-knowledge'
 import { setToolAuditSink, type ToolContext } from './copilot-tools'
-import { buildInsights, runCopilotQuery } from './copilot-engine'
+import { buildInsights, runCopilotQuery, type PriorFigures, type QueryOutcome } from './copilot-engine'
 import { EMPTY_MEMORY, type CopilotAnswer, type CopilotContext, type CopilotConversation, type CopilotMemoryState, type CopilotMessage, type CopilotRole, type CopilotStreamEvent } from '@/types/copilot'
 
 const router = Router()
@@ -320,6 +320,48 @@ async function appendMessage(ctx: ToolContext, conversationId: string, role: 'us
   return message
 }
 
+/*
+ * Longitudinal memory — the figures Sophia previously reported to THIS tenant.
+ * Every answer persists its measured figures inside the stored answer JSON, so
+ * the history is the conversation store itself: no second store, no model
+ * training, nothing inferred. Only the JSON sub-path is selected, so this stays
+ * cheap however large the stored answers are.
+ */
+async function loadPriorFigures(ctx: ToolContext): Promise<PriorFigures> {
+  const prior: PriorFigures = {}
+  const absorb = (figures: unknown, at: string) => {
+    if (!Array.isArray(figures)) return
+    for (const f of figures as Array<Record<string, unknown>>) {
+      const key = str(f.key)
+      const value = Number(f.value)
+      // Rows arrive newest-first; the first reading of a key is the latest.
+      if (key && Number.isFinite(value) && !prior[key]) prior[key] = { value, at }
+    }
+  }
+  if (!schemaMissing) {
+    try {
+      const { data, error } = await ctx.client
+        .from(MESSAGES_TABLE)
+        .select('created_at, figures:answer->figures')
+        .eq('user_id', ctx.userId)
+        .eq('role', 'assistant')
+        .order('created_at', { ascending: false })
+        .limit(60)
+      if (!error) {
+        for (const row of (data || []) as Array<Record<string, unknown>>) absorb(row.figures, str(row.created_at))
+        return prior
+      }
+      if (isMissingTable(error)) schemaMissing = true
+    } catch { /* fall through to the in-memory store */ }
+  }
+  const store = memoryStoreFor(ctx.userId)
+  const answers = [...store.messages.values()].flat()
+    .filter((m) => m.role === 'assistant' && m.answer?.figures)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  for (const m of answers) absorb(m.answer?.figures, m.createdAt)
+  return prior
+}
+
 /* Per-conversation follow-up memory (in-process, bounded). */
 const conversationMemory = new Map<string, CopilotMemoryState>()
 function memoryFor(conversationId: string): CopilotMemoryState {
@@ -381,10 +423,13 @@ router.get('/health', (_req: Request, res: Response) => {
   res.json({
     data: {
       status: 'operational',
-      engine: 'sophia-multi-agent-v1',
+      engine: 'sophia-multi-agent-v2',
       components: {
         gateway: 'operational',
         intentDetection: 'operational',
+        topicSpecialists: 'operational',
+        entityLinking: 'operational',
+        longitudinalMemory: schemaMissing ? 'memory-fallback' : 'database',
         planner: 'operational',
         toolOrchestrator: 'operational',
         agents: 'operational',
@@ -502,6 +547,32 @@ router.get('/conversations/:id/export', async (req: Request, res: Response) => {
 })
 
 /* ------------------------------------------------------------------ */
+/* Feedback — a rating on one answer, recorded to the audit trail      */
+/* ------------------------------------------------------------------ */
+
+router.post('/feedback', async (req: Request, res: Response) => {
+  const { copilotCtx } = req as AuthedRequest
+  const body = rec(req.body)
+  const answerId = str(body.answerId).trim()
+  const rating = str(body.rating)
+  // Validated server-side: ids are opaque, bounded strings; the rating is an
+  // enum; the note is length-capped. Nothing here is interpreted or executed.
+  if (!/^[\w.:-]{1,80}$/.test(answerId) || (rating !== 'up' && rating !== 'down')) {
+    res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'answerId and rating (up | down) are required' } })
+    return
+  }
+  const conversationId = str(body.conversationId).slice(0, 80) || null
+  await recordAudit(copilotCtx!.userId, 'copilot.feedback', {
+    answerId,
+    conversationId,
+    rating,
+    focus: str(body.focus).slice(0, 40) || null,
+    note: str(body.note).slice(0, 500) || null,
+  })
+  res.status(201).json({ data: { recorded: true } })
+})
+
+/* ------------------------------------------------------------------ */
 /* Chat — JSON + SSE streaming                                         */
 /* ------------------------------------------------------------------ */
 
@@ -544,6 +615,20 @@ router.post('/chat', async (req: Request, res: Response) => {
   })
 
   const memory = { ...memoryFor(conversationId), currentPage: page || undefined }
+  const priorFigures = await loadPriorFigures(ctx).catch(() => ({} as PriorFigures))
+
+  // Learning from use, honestly: a question no specialist could ground is
+  // recorded (tenant's own audit trail) so coverage gaps are visible and can be
+  // closed — Sophia never "learns" by inventing an answer.
+  const recordGap = (outcome: QueryOutcome) => {
+    if (!outcome.knowledgeGap || sanitized.blocked) return
+    void recordAudit(ctx.userId, 'copilot.knowledge_gap', {
+      conversationId,
+      question: sanitized.text.slice(0, 240),
+      intents: outcome.answer.intents,
+      grounding: outcome.answer.grounding || null,
+    })
+  }
 
   if (wantsStream) {
     res.status(200)
@@ -558,8 +643,9 @@ router.post('/chat', async (req: Request, res: Response) => {
     send({ type: 'stage', stage: 'thinking', label: 'Connected to Sophia' })
     const heartbeat = setInterval(() => { try { res.write(': keep-alive\n\n') } catch { /* noop */ } }, 15_000)
     try {
-      const outcome = await runCopilotQuery(ctx, rawMessage, memory, send)
+      const outcome = await runCopilotQuery(ctx, rawMessage, memory, send, undefined, { priorFigures })
       saveMemory(conversationId, outcome.memory)
+      recordGap(outcome)
       await appendMessage(ctx, conversationId, 'assistant', outcome.answer.summary, outcome.answer)
       res.write(`event: meta\ndata: ${JSON.stringify({ type: 'meta', conversationId })}\n\n`)
     } catch (error) {
@@ -574,8 +660,9 @@ router.post('/chat', async (req: Request, res: Response) => {
 
   try {
     const events: CopilotStreamEvent[] = []
-    const outcome = await runCopilotQuery(ctx, rawMessage, memory, (event) => events.push(event))
+    const outcome = await runCopilotQuery(ctx, rawMessage, memory, (event) => events.push(event), undefined, { priorFigures })
     saveMemory(conversationId, outcome.memory)
+    recordGap(outcome)
     await appendMessage(ctx, conversationId, 'assistant', outcome.answer.summary, outcome.answer)
     res.json({ data: { conversationId, answer: outcome.answer, stages: events.filter((e) => e.type === 'stage') } })
   } catch (error) {

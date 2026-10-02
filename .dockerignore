@@ -1,0 +1,21 @@
+# Allow-list build context for the API image (Dockerfile).
+# Everything is excluded unless re-included below — this keeps .env files,
+# node_modules, dist/, the 22 GB qguard-messaging tree, browser profiles and
+# internal material out of the context and out of every image layer.
+*
+
+!package.json
+!package-lock.json
+!tsconfig.json
+!src
+!tools
+!supabase/functions/billing
+!public/downloads/QGuard-Messaging-Setup.exe
+
+# Never ship, even inside allowed folders
+**/.env
+**/.env.*
+**/*.log
+**/.semgrep
+tools/qguard-agent/dist
+tools/agent-installer-tests/out

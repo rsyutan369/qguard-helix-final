@@ -17,7 +17,7 @@ export default function MigrationPipeline({ pipeline, loading }: { pipeline: Exe
     <Panel>
       <PanelHeader
         title="Migration Pipeline" icon={GitBranch} href="/dashboard/migration-planner"
-        right={<span className="text-[9px] font-black uppercase tracking-widest text-cyan-300">{pipeline?.overallCompletion ?? 0}% complete</span>}
+        right={<span className="text-[9px] font-black uppercase tracking-widest text-cyan-300" title="Progress through the 11-stage migration lifecycle (matches Migration Planner)">{pipeline?.overallCompletion ?? 0}% of lifecycle</span>}
       />
       <div className="space-y-3">
         {stages.map((s, i) => (
@@ -43,9 +43,11 @@ export default function MigrationPipeline({ pipeline, loading }: { pipeline: Exe
       </div>
 
       <div className="mt-4 grid grid-cols-3 gap-2 border-t border-white/5 pt-3">
-        <Metric label="Remaining Assets" value={fmtNumber(pipeline?.remainingAssets || 0)} />
-        <Metric label="Est. Finish" value={pipeline?.estimatedFinishWeeks ? `${pipeline.estimatedFinishWeeks} wks` : 'On track'} />
-        <Metric label="Bottleneck" value={pipeline?.bottleneck || '—'} tone="warning" />
+        <Metric label="Assets Not PQC-Ready" value={fmtNumber(pipeline?.remainingAssets || 0)} />
+        {/* A planning estimate from remaining scope, not a schedule. "On track"
+            used to stand in for "no estimate", which is a claim, not an absence. */}
+        <Metric label="Est. Finish · model" value={pipeline?.estimatedFinishWeeks ? `${pipeline.estimatedFinishWeeks} wks` : 'No remaining scope'} />
+        <Metric label="Current Stage" value={pipeline?.bottleneck || '—'} tone="warning" />
       </div>
     </Panel>
   )

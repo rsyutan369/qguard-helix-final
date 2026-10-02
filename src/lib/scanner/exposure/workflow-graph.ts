@@ -1263,13 +1263,36 @@ export function focusScope(
     adjacency.get(edge.target)!.push(edge.source);
   }
 
+  /* OWNERSHIP. A finding is observed AT one entity of the focus kind; a
+     component or certificate is HOSTED by one. Such a node belongs to its
+     owner, so a focus must never reach it through a shared hub — a remediation
+     two assets both need, an algorithm both carry — when its owner is not in
+     focus. Without this, focusing one asset listed the other asset's findings
+     under the shared action. */
+  const owners = new Map<string, Set<string>>();
+  for (const edge of graph.edges) {
+    if (edge.kind !== 'observed-at' && edge.kind !== 'hosts') continue;
+    const sourceIsOwner = kindById.get(edge.source) === focusKind;
+    const targetIsOwner = kindById.get(edge.target) === focusKind;
+    if (sourceIsOwner === targetIsOwner) continue;
+    const owned = sourceIsOwner ? edge.target : edge.source;
+    const owner = sourceIsOwner ? edge.source : edge.target;
+    if (!owners.has(owned)) owners.set(owned, new Set());
+    owners.get(owned)!.add(owner);
+  }
+  const ownedElsewhere = (id: string) => {
+    const set = owners.get(id);
+    return Boolean(set && set.size > 0 && ![...set].some((owner) => focusIds.has(owner)));
+  };
+
   const frontier = [...focusIds];
   while (frontier.length > 0) {
     const id = frontier.pop()!;
     for (const neighbour of adjacency.get(id) ?? []) {
       // Never cross into another entity of the focus kind — that is the whole
-      // point of focusing one of them.
+      // point of focusing one of them — nor into anything that entity owns.
       if (kindById.get(neighbour) === focusKind && !focusIds.has(neighbour)) continue;
+      if (ownedElsewhere(neighbour)) continue;
       if (keep.has(neighbour)) continue;
       keep.add(neighbour);
       frontier.push(neighbour);

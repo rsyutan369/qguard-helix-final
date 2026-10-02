@@ -42,7 +42,7 @@ export function SophiaCopilot() {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   const copilot = useCopilot(location.pathname);
-  const { context, suggestions, messages, streaming, error, sendMessage, stopStreaming } = copilot;
+  const { context, suggestions, messages, streaming, error, sendMessage, stopStreaming, sendFeedback } = copilot;
 
   const speechSupported = useMemo(() => Boolean(getSpeechRecognition()), []);
 
@@ -209,8 +209,10 @@ export function SophiaCopilot() {
                     </div>
                   </div>
                 ) : (
-                  <div key={message.id}>
-                    {message.answer ? <SophiaMessage answer={message.answer} /> : <p className="text-[13px] text-slate-200">{message.content}</p>}
+                  <div key={message.id} className="min-w-0">
+                    {message.answer
+                      ? <SophiaMessage answer={message.answer} onFeedback={(rating) => { void sendFeedback(message.answer!, rating); }} />
+                      : <p className="text-[13px] text-slate-200">{message.content}</p>}
                   </div>
                 )
               ))}

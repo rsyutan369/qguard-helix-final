@@ -20,6 +20,7 @@ import { validateAsset } from '@/lib/scanner/asset-validator'
 import { assessPublicTarget } from '@/lib/scanner/public-scan/assess'
 import type { ObservationSink } from '@/lib/scanner/public-scan/engines'
 import type { PublicScanReport, PublicScanStage } from '@/lib/scanner/public-scan/types'
+import { trustedClientIp } from './runtime/client-ip'
 
 const router = Router()
 
@@ -86,6 +87,8 @@ interface RateEntry {
 const rateBuckets = new Map<string, RateEntry>()
 
 function readClientIp(req: Request): string {
+  const trusted = trustedClientIp(req)
+  if (trusted) return trusted
   const forwarded = req.headers['x-forwarded-for']
   if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0].trim()
   const realIp = req.headers['x-real-ip']

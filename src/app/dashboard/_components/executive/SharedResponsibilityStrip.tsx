@@ -17,6 +17,8 @@ export default function SharedResponsibilityStrip() {
   const r = data.readiness
   const dist = data.domainDistribution
   const totalDist = Math.max(1, dist.customer + dist.provider + dist.ecosystem)
+  const openFindings = Math.max(0, data.totals.findings - data.totals.resolved)
+  const openShare = (value: number) => (openFindings > 0 ? Math.min(100, (value / openFindings) * 100) : 0)
 
   return (
     <Panel>
@@ -30,9 +32,9 @@ export default function SharedResponsibilityStrip() {
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[auto_1fr]">
           {/* Tri-part readiness gauges */}
           <div className="flex items-center justify-around gap-4 lg:justify-start">
-            <GaugeCell label="Customer" score={r.customer.score} color="#22d3ee" />
-            <GaugeCell label="Provider" score={r.provider.score} color="#60a5fa" />
-            <GaugeCell label="Ecosystem" score={r.ecosystem.score} color="#a78bfa" />
+            <GaugeCell label="Customer" score={r.customer.score} total={r.customer.total} color="#22d3ee" />
+            <GaugeCell label="Provider" score={r.provider.score} total={r.provider.total} color="#60a5fa" />
+            <GaugeCell label="Ecosystem" score={r.ecosystem.score} total={r.ecosystem.total} color="#a78bfa" />
           </div>
 
           {/* Ownership split + actionable balance */}
@@ -40,7 +42,12 @@ export default function SharedResponsibilityStrip() {
             <div>
               <div className="mb-1.5 flex items-center justify-between text-[10px] font-black uppercase tracking-wide text-white/45">
                 <span>Ownership Split</span>
-                <span className="font-mono normal-case text-white/40">{fmtNumber(data.totals.findings)} findings</span>
+                {/* Split into open work and PQC-ready confirmations, so the total
+                    here reconciles with the Open Findings KPI instead of
+                    silently including observations that need no action. */}
+                <span className="font-mono normal-case text-white/40" title="Ownership is classified over every scanner observation, including PQC-ready confirmations">
+                  {fmtNumber(Math.max(0, data.totals.findings - data.totals.resolved))} open · {fmtNumber(data.totals.resolved)} PQC-ready
+                </span>
               </div>
               <div className="flex h-2.5 overflow-hidden rounded-full bg-white/5">
                 <div style={{ width: `${(dist.customer / totalDist) * 100}%`, backgroundColor: '#22d3ee' }} title={`Customer ${dist.customer}`} />
@@ -55,8 +62,8 @@ export default function SharedResponsibilityStrip() {
             </div>
 
             <div className="grid grid-cols-2 gap-3">
-              <StatTile icon={CheckCircle2} tone="good" label="Actionable Now" value={data.widgets.actionableFindings} sub="You can remediate" />
-              <StatTile icon={AlertTriangle} tone="bad" label="Migration Blockers" value={data.widgets.migrationBlockers} sub="Gated on a dependency" />
+              <StatTile icon={CheckCircle2} tone="good" label="Actionable Now" value={data.widgets.actionableFindings} sub="Open findings you can remediate" share={openShare(data.widgets.actionableFindings)} />
+              <StatTile icon={AlertTriangle} tone="bad" label="Migration Blockers" value={data.widgets.migrationBlockers} sub="Critical/high gated on a dependency" share={openShare(data.widgets.migrationBlockers)} />
             </div>
           </div>
         </div>
@@ -65,10 +72,14 @@ export default function SharedResponsibilityStrip() {
   )
 }
 
-function GaugeCell({ label, score, color }: { label: string; score: number; color: string }) {
+/* A domain with NO findings classified to it has nothing measured. The engine
+   scores it 100 ("Quantum-Ready"), which on this strip read as a verified pass
+   for a provider estate nobody assessed — it renders as not applicable. */
+function GaugeCell({ label, score, total, color }: { label: string; score: number; total: number; color: string }) {
+  const measured = total > 0
   return (
-    <div className="flex flex-col items-center gap-1">
-      <RadialGauge value={score} color={color} size={72} label={String(Math.round(score))} sublabel="/100" />
+    <div className="flex flex-col items-center gap-1" title={measured ? `${label} readiness over ${total} classified finding${total === 1 ? '' : 's'}` : `No findings are classified to the ${label.toLowerCase()} domain, so no readiness is published for it`}>
+      <RadialGauge value={measured ? score : 0} color={measured ? color : '#475569'} size={72} label={measured ? String(Math.round(score)) : '—'} sublabel={measured ? '/100' : 'none owned'} />
       <span className="text-[9px] font-black uppercase tracking-widest text-white/50">{label}</span>
     </div>
   )
@@ -82,7 +93,9 @@ function Legend({ color, icon: Icon, label, value }: { color: string; icon: type
   )
 }
 
-function StatTile({ icon: Icon, tone, label, value, sub }: { icon: typeof UserCog; tone: 'good' | 'bad'; label: string; value: number; sub: string }) {
+/* The bar is a SHARE of the open findings when one is known — it used to be
+   `value × 8`, a width with no unit that saturated at 13. */
+function StatTile({ icon: Icon, tone, label, value, sub, share }: { icon: typeof UserCog; tone: 'good' | 'bad'; label: string; value: number; sub: string; share?: number }) {
   const color = tone === 'good' ? '#34d399' : '#f87171'
   return (
     <div className={cx('rounded-lg border p-3', tone === 'good' ? 'border-emerald-500/20 bg-emerald-500/[0.05]' : 'border-red-500/20 bg-red-500/[0.05]')}>
@@ -91,7 +104,7 @@ function StatTile({ icon: Icon, tone, label, value, sub }: { icon: typeof UserCo
       </div>
       <div className="mt-1 text-xl font-black text-white">{fmtNumber(value)}</div>
       <div className="text-[10px] text-white/40">{sub}</div>
-      <div className="mt-1.5"><Bar value={value > 0 ? Math.min(100, value * 8) : 0} color={color} height={4} /></div>
+      {share !== undefined && <div className="mt-1.5"><Bar value={share} color={color} height={4} /></div>}
     </div>
   )
 }

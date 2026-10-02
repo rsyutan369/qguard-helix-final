@@ -1,17 +1,10 @@
-import { sha3_256 } from '@noble/hashes/sha3.js';
-import { UnsecuredJWT } from 'jose';
 import type { QuantumReadinessSnapshot } from '@/app/dashboard/quantum-readiness/_shared';
 import { buildReportModel } from './ReportEvidence';
 import { buildReportScope, scopeSnapshotToAssets } from './ReportScope';
 import { renderReportCharts } from './ReportCharts';
+import { sealDocument } from './ReportIntegrity';
 import type { EnterpriseAssessmentReport, ReportBranding, ReportKind } from './schemas/ReportSchema';
 import { enterpriseAssessmentReportSchema } from './schemas/ReportSchema';
-
-function hex(bytes: Uint8Array): string {
-  let out = '';
-  for (let i = 0; i < bytes.length; i += 1) out += bytes[i].toString(16).padStart(2, '0');
-  return out;
-}
 
 /** Stable integrity input — excludes the integrity block and bulky chart bytes. */
 function canonicalize(report: EnterpriseAssessmentReport): string {
@@ -24,14 +17,8 @@ function canonicalize(report: EnterpriseAssessmentReport): string {
 
 /** Compute SHA3-256 integrity hash + a jose verification token for the report. */
 export function attachIntegrity(report: EnterpriseAssessmentReport): EnterpriseAssessmentReport {
-  const digest = hex(sha3_256(new TextEncoder().encode(canonicalize(report))));
-  const signedAt = new Date().toISOString();
-  const verificationToken = new UnsecuredJWT({ hash: digest, reportId: report.meta.id, kind: report.meta.kind })
-    .setIssuedAt()
-    .setSubject(report.meta.id)
-    .setIssuer('qguard-helix-reporting')
-    .encode();
-  return { ...report, integrity: { algorithm: 'SHA3-256', hash: digest, signedAt, verificationToken } };
+  const seal = sealDocument(canonicalize(report), { reportId: report.meta.id, kind: report.meta.kind });
+  return { ...report, integrity: seal };
 }
 
 export interface BuildReportOptions {

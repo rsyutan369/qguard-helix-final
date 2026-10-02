@@ -27,6 +27,13 @@ import {
 import { publishAgentEvent } from './agent-event-bus'
 import { agentRole } from '@/lib/agent-installer/agent-release'
 import {
+  authorityFromRequest,
+  authorizedCapabilities,
+  clampAgentScanTypes,
+  normaliseScopeList,
+  resolveWriteAuthority,
+} from '@/lib/agent-installer/agent-scope'
+import {
   agentMayWrite,
   decideAgentRole,
   decideScanTypes,
@@ -418,14 +425,47 @@ async function requireAgentAuth(req: AgentRequest, res: Response, next: NextFunc
   next()
 }
 
+const ALERT_THRESHOLDS = new Set(['low', 'moderate', 'high', 'critical'])
+
+/**
+ * One policy shape for every reader and writer.
+ *
+ * Scope lists are sanitised here — strings only, trimmed, de-duplicated and
+ * bounded — because they were stored exactly as sent: a number, an object or a
+ * 10,000-entry array went straight into the row the agent executes. Scan types
+ * are normalised to module ids; clamping them to a role and plan is the
+ * caller's job (`clampPolicyScanTypes`), because only the caller knows both.
+ */
 function normalizePolicy(raw: any) {
+  const threshold = cleanString(raw?.alertThreshold || raw?.alert_threshold, 20)?.toLowerCase()
+  const requestedScanTypes = Array.isArray(raw?.scanTypes) ? raw.scanTypes : Array.isArray(raw?.scan_types) ? raw.scan_types : DEFAULT_AGENT_SCAN_TYPES
   return {
     enabled: raw?.enabled !== false,
-    intervalSeconds: Math.max(30, Math.min(60, Number(raw?.intervalSeconds || raw?.interval_seconds || 60))),
-    allowedTargets: Array.isArray(raw?.allowedTargets) ? raw.allowedTargets : Array.isArray(raw?.allowed_targets) ? raw.allowed_targets : [],
-    allowedPaths: Array.isArray(raw?.allowedPaths) ? raw.allowedPaths : Array.isArray(raw?.allowed_paths) ? raw.allowed_paths : [],
-    scanTypes: Array.isArray(raw?.scanTypes) ? raw.scanTypes : Array.isArray(raw?.scan_types) ? raw.scan_types : DEFAULT_AGENT_SCAN_TYPES,
-    alertThreshold: cleanString(raw?.alertThreshold || raw?.alert_threshold, 20) || 'moderate',
+    intervalSeconds: Math.max(30, Math.min(60, Number(raw?.intervalSeconds || raw?.interval_seconds || 60) || 60)),
+    allowedTargets: normaliseScopeList(Array.isArray(raw?.allowedTargets) ? raw.allowedTargets : Array.isArray(raw?.allowed_targets) ? raw.allowed_targets : [], 100, 500),
+    allowedPaths: normaliseScopeList(Array.isArray(raw?.allowedPaths) ? raw.allowedPaths : Array.isArray(raw?.allowed_paths) ? raw.allowed_paths : [], 100, 1000),
+    scanTypes: clampAgentScanTypes(null, requestedScanTypes, null).allowed,
+    alertThreshold: threshold && ALERT_THRESHOLDS.has(threshold) ? threshold : 'moderate',
+  }
+}
+
+/**
+ * Clamp a policy's modules to the agent's role and the caller's plan, and say
+ * what was removed. Used by enrolment and by policy edits so the two cannot
+ * disagree about what an agent may run.
+ */
+async function clampPolicyScanTypes(
+  req: AgentEntitlementRequest,
+  role: string,
+  requested: string[],
+): Promise<{ allowed: string[]; deniedByPlan: string[]; deniedByRole: string[]; tier: string }> {
+  const planDecision = await decideScanTypes(req, requested.length ? requested : agentRole(role).scanTypes)
+  const roleClamp = clampAgentScanTypes(role, planDecision.allowed, null)
+  return {
+    allowed: roleClamp.allowed,
+    deniedByPlan: planDecision.denied,
+    deniedByRole: roleClamp.deniedByRole,
+    tier: planDecision.tier,
   }
 }
 
@@ -1826,6 +1866,12 @@ function roleRefusalMessage(jobClass: 'migration' | 'remediation', reason: strin
     return `This is a Live Migration cutover and requires a Migration Operator agent. The claiming agent holds a different role.`
   }
   if (reason === 'agent_role_read_only') return `This agent holds a read-only role and cannot execute ${jobClass} work.`
+  if (reason === 'remediation_not_authorized') {
+    return `This ${required} has not been authorised to change its host. Grant remediation authority in the Agent Center to let it execute this job.`
+  }
+  if (reason === 'migration_not_authorized') {
+    return 'This Migration Operator has not been authorised to execute Live Migration cutovers. Grant migration authority in the Agent Center.'
+  }
   if (reason === 'agent_role_unresolved') return 'This agent has no server-resolved role, so no host-modifying work is dispatched to it.'
   if (reason === 'entitlement_unavailable') return 'The subscription behind this agent could not be verified, so no host-modifying work was dispatched.'
   if (reason === 'subscription_inactive') return `The subscription behind this agent is not active, so ${required} work is not dispatched.`
@@ -2631,11 +2677,27 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
    * Dropping them silently would leave the agent never reporting on those
    * dimensions, and an absent dimension reads as a clean one.
    */
-  const scanTypeDecision = await decideScanTypes(
+  const scanTypeDecision = await clampPolicyScanTypes(
     req as AgentEntitlementRequest,
-    Array.isArray(policy.scanTypes) && policy.scanTypes.length ? policy.scanTypes.map(String) : agentRole(resolvedRole).scanTypes,
+    resolvedRole,
+    Array.isArray(policy.scanTypes) ? policy.scanTypes.map(String) : [],
   )
   policy.scanTypes = scanTypeDecision.allowed
+
+  /*
+   * WRITE AUTHORITY IS OPT-IN, and the opt-in is the operator's, not the role's.
+   *
+   * The role definition used to be spread OVER the caller's capabilities, so a
+   * Patcher enrolled with "Authorize configuration remediation" unticked still
+   * received `remediation: true` — and the installer then shipped with
+   * `QGUARD_ENABLE_REMEDIATION=true`. The role is now the ceiling and the
+   * recorded authorisation the switch; an absent flag means not authorised.
+   */
+  const requestedMetadata = typeof req.body?.metadata === 'object' && req.body.metadata ? req.body.metadata : {}
+  const authority = authorityFromRequest(resolvedRole, {
+    remediationAuthorized: req.body?.remediationAuthorized ?? requestedMetadata.remediationAuthorized,
+    migrationAuthorized: req.body?.migrationAuthorized ?? requestedMetadata.migrationAuthorized,
+  })
 
   /*
    * Asset binding must be verified, not trusted. `metadata` is caller-supplied and
@@ -2674,16 +2736,15 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
     hostname: cleanString(req.body?.hostname, 255),
     platform: cleanString(req.body?.platform, 100),
     version: cleanString(req.body?.version, 100) || '0.1.0',
-    /* Capabilities follow the SERVER-RESOLVED role. A caller asking for
-       `remediation: true` on a collector gets a collector, because the role
-       definition is the authority on what a role may do (§40, §41). */
-    capabilities: defaultRemediationCapabilities({
-      ...(typeof req.body?.capabilities === 'object' && req.body.capabilities ? req.body.capabilities : {}),
-      ...agentRole(resolvedRole).capabilities,
-    }),
+    /* Capabilities follow the SERVER-RESOLVED role, reduced by the operator's
+       authorisation. A caller asking for `remediation: true` on a collector
+       gets a collector (§40, §41); a Patcher nobody authorised gets a
+       read-only Patcher. Caller-supplied boolean capability flags are not
+       trusted at all — only the role and the recorded authorisation decide. */
+    capabilities: defaultRemediationCapabilities(authorizedCapabilities(resolvedRole, authority)),
     policy,
     metadata: {
-      ...(typeof req.body?.metadata === 'object' && req.body.metadata ? req.body.metadata : {}),
+      ...requestedMetadata,
       // Server-resolved, never caller-asserted: the id and display name both come
       // from the row we just proved this tenant owns.
       assetId: resolvedAsset?.id || null,
@@ -2700,7 +2761,20 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
       /* Modules this plan does not include. Surfaced in the Agent Center as
          "not included in your plan" so a dimension nobody looked at is never
          mistaken for a dimension that came back clean. */
-      scanTypesDeniedByPlan: scanTypeDecision.denied,
+      scanTypesDeniedByPlan: scanTypeDecision.deniedByPlan,
+      /* Modules this ROLE does not run (the Scanner has no runtime collectors). */
+      scanTypesDeniedByRole: scanTypeDecision.deniedByRole,
+      /* Strict booleans, written after the caller's spread so a stray string
+         such as "false" can never read as truthy downstream. */
+      remediationAuthorized: authority.remediation,
+      migrationAuthorized: authority.migration,
+      writeAuthority: {
+        remediation: authority.remediation,
+        migration: authority.migration,
+        decidedBy: user.id,
+        decidedAt: now,
+        source: 'enrollment',
+      },
       remediationWorkflow: REMEDIATION_WORKFLOW_STAGES,
       supportedEnvironments: SUPPORTED_REMEDIATION_ENVIRONMENTS.map((item) => item.id),
       localCollector: LOCAL_COLLECTOR_CLARIFICATION,
@@ -3030,6 +3104,54 @@ router.put('/agents/:id/policy', requireUserAuth, async (req: AuthedRequest, res
   const client = req.client || null
   const user = req.user!
   const policy = normalizePolicy(req.body || {})
+
+  /*
+   * An edited policy is held to the same rules as an enrolled one.
+   *
+   * This route used to (a) write a policy row for ANY agent id — including one
+   * that does not exist or belongs to another tenant — and answer 200, and
+   * (b) store whatever module list it was sent, so a Basic tenant could put
+   * Pro modules on an agent by editing its policy after enrolment, and a
+   * Scanner could be handed the runtime collectors its role excludes. The
+   * agent pulls this row every cycle, so both went straight to the host.
+   */
+  let agentRow: any = null
+  if (client) {
+    const { data, error } = await client
+      .from('scanner_agents')
+      .select('id, name, status, revoked_at, metadata')
+      .eq('id', req.params.id)
+      .eq('user_id', user.id)
+      .limit(1)
+      .maybeSingle()
+    if (error && !isMissingRuntimeTable(error)) {
+      jsonError(res, 500, 'AGENT_LOOKUP_FAILED', error.message)
+      return
+    }
+    agentRow = data
+  } else {
+    agentRow = memoryStore.agents.find((item) => item.id === req.params.id && item.user_id === user.id) || null
+  }
+  if (!agentRow) {
+    jsonError(res, 404, 'AGENT_NOT_FOUND', 'Agent not found for this tenant')
+    return
+  }
+  if (agentRow.revoked_at || agentRow.status === 'revoked') {
+    jsonError(res, 409, 'AGENT_REVOKED', 'This agent is revoked; its policy can no longer be changed.')
+    return
+  }
+
+  const role = cleanString(agentRow.metadata?.role, 40) || 'collector'
+  const clamp = await clampPolicyScanTypes(req as AgentEntitlementRequest, role, policy.scanTypes)
+  policy.scanTypes = clamp.allowed
+  if (policy.scanTypes.length === 0) {
+    jsonError(res, 400, 'POLICY_SCOPE_EMPTY', 'None of the requested scan modules are available to this agent\'s role and plan.', {
+      deniedByPlan: clamp.deniedByPlan,
+      deniedByRole: clamp.deniedByRole,
+    })
+    return
+  }
+
   if (client) {
     const { data: existing } = await client.from('scanner_agent_policies').select('id').eq('agent_id', req.params.id).eq('user_id', user.id).limit(1).maybeSingle()
     if (existing?.id) {
@@ -3068,9 +3190,184 @@ router.put('/agents/:id/policy', requireUserAuth, async (req: AuthedRequest, res
         },
       })
     }
-    await client.from('scanner_agents').update({ policy, updated_at: new Date().toISOString() }).eq('id', req.params.id).eq('user_id', user.id)
+    await client.from('scanner_agents').update({
+      policy,
+      metadata: {
+        ...(agentRow.metadata || {}),
+        scanTypesDeniedByPlan: clamp.deniedByPlan,
+        scanTypesDeniedByRole: clamp.deniedByRole,
+      },
+      updated_at: new Date().toISOString(),
+    }).eq('id', req.params.id).eq('user_id', user.id)
+
+    await recordAgentAudit(client, {
+      userId: user.id,
+      action: 'scanner_agent_policy_updated',
+      entityType: 'scanner_agent',
+      entityId: req.params.id,
+      details: {
+        agentName: agentRow.name,
+        role,
+        enabled: policy.enabled,
+        intervalSeconds: policy.intervalSeconds,
+        allowedTargets: policy.allowedTargets.length,
+        allowedPaths: policy.allowedPaths.length,
+        scanTypes: policy.scanTypes,
+        deniedByPlan: clamp.deniedByPlan,
+        deniedByRole: clamp.deniedByRole,
+        alertThreshold: policy.alertThreshold,
+      },
+    })
+  } else {
+    Object.assign(agentRow, { policy })
   }
-  res.json({ data: { policy } })
+  res.json({ data: { policy, denied: { plan: clamp.deniedByPlan, role: clamp.deniedByRole } } })
+})
+
+/**
+ * Grant or revoke an agent's write authority.
+ *
+ * The same two decisions the deployment wizard asks for — "may this agent
+ * change its host" and "may it execute Live Migration cutovers" — made after
+ * enrolment. Revocation is always permitted and takes effect on the agent's
+ * next poll, because `agentMayWrite` re-reads it before every job is handed
+ * out. Granting re-checks the plan, exactly as enrolment does.
+ *
+ * The host keeps a second, independent switch (`QGUARD_ENABLE_REMEDIATION`,
+ * fixed when the installer ran). Granting here cannot flip it — an agent
+ * installed without it stays read-only until its installer is regenerated —
+ * and the response says so rather than implying a host change happened.
+ */
+router.put('/agents/:id/authority', requireUserAuth, async (req: AuthedRequest, res) => {
+  const client = req.client || null
+  const user = req.user!
+  const now = new Date().toISOString()
+
+  const readFlag = (value: unknown): boolean | undefined => (value === true ? true : value === false ? false : undefined)
+  const wantRemediation = readFlag(req.body?.remediation)
+  const wantMigration = readFlag(req.body?.migration)
+  if (wantRemediation === undefined && wantMigration === undefined) {
+    jsonError(res, 400, 'AUTHORITY_REQUIRED', 'Send remediation and/or migration as true or false.')
+    return
+  }
+
+  let agent: any = null
+  if (client) {
+    const { data, error } = await client
+      .from('scanner_agents')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('user_id', user.id)
+      .limit(1)
+      .maybeSingle()
+    if (error && !isMissingRuntimeTable(error)) {
+      jsonError(res, 500, 'AGENT_LOOKUP_FAILED', error.message)
+      return
+    }
+    agent = data
+  } else {
+    agent = memoryStore.agents.find((item) => item.id === req.params.id && item.user_id === user.id) || null
+  }
+  if (!agent) {
+    jsonError(res, 404, 'AGENT_NOT_FOUND', 'Agent not found for this tenant')
+    return
+  }
+  if (agent.revoked_at || agent.status === 'revoked') {
+    jsonError(res, 409, 'AGENT_REVOKED', 'This agent is revoked.')
+    return
+  }
+
+  const role = cleanString(agent.metadata?.role, 40) || 'collector'
+  const definition = agentRole(role)
+  if (!definition.mutatesTargets) {
+    jsonError(res, 409, 'AGENT_ROLE_READ_ONLY', `A ${definition.label} is read-only by role and cannot hold write authority. Deploy a Patcher or Migration Operator instead.`)
+    return
+  }
+  if (wantMigration === true && definition.id !== 'operator') {
+    jsonError(res, 409, 'AGENT_ROLE_NOT_OPERATOR', 'Only a Migration Operator can hold Live Migration authority.')
+    return
+  }
+
+  const current = resolveWriteAuthority(role, agent.capabilities, agent.metadata)
+  const requested = authorityFromRequest(role, {
+    remediationAuthorized: wantRemediation ?? current.remediation,
+    // Migration implies remediation: revoking remediation revokes migration too.
+    migrationAuthorized: wantMigration ?? current.migration,
+  })
+  const granting = (requested.remediation && !current.remediation) || (requested.migration && !current.migration)
+  if (granting) {
+    const roleDecision = await decideAgentRole(req as AgentEntitlementRequest, role, (id) => agentRole(id).label)
+    if (!roleDecision.ok) {
+      jsonError(res, roleDecision.status, roleDecision.code, roleDecision.message, roleDecision.detail)
+      return
+    }
+  }
+
+  const capabilities = {
+    ...(agent.capabilities || {}),
+    ...authorizedCapabilities(role, requested),
+  }
+  const metadata = {
+    ...(agent.metadata || {}),
+    remediationAuthorized: requested.remediation,
+    migrationAuthorized: requested.migration,
+    writeAuthority: {
+      remediation: requested.remediation,
+      migration: requested.migration,
+      decidedBy: user.id,
+      decidedAt: now,
+      source: 'agent-center',
+      previous: current,
+    },
+  }
+
+  if (client) {
+    const { data: updated, error } = await client
+      .from('scanner_agents')
+      .update({ capabilities, metadata, updated_at: now })
+      .eq('id', agent.id)
+      .eq('user_id', user.id)
+      .select('*')
+    if (error) {
+      jsonError(res, 500, 'AGENT_AUTHORITY_UPDATE_FAILED', error.message)
+      return
+    }
+    if (!updated || updated.length === 0) {
+      jsonError(res, 500, 'AGENT_AUTHORITY_UPDATE_FAILED', 'The authority change did not modify the agent record')
+      return
+    }
+    agent = updated[0]
+  } else {
+    Object.assign(agent, { capabilities, metadata, updated_at: now })
+  }
+
+  const action = granting ? 'scanner_agent_write_authority_granted' : 'scanner_agent_write_authority_changed'
+  await recordAgentAudit(client, {
+    userId: user.id,
+    action,
+    entityType: 'scanner_agent',
+    entityId: agent.id,
+    details: { agentName: agent.name, role, previous: current, authority: requested },
+  })
+  await recordAgentSecurityEvent(client, {
+    userId: user.id,
+    eventType: action,
+    severity: granting ? 'warning' : 'info',
+    message: `${agent.name}: remediation ${requested.remediation ? 'authorised' : 'not authorised'}, migration ${requested.migration ? 'authorised' : 'not authorised'}.`,
+    resourceName: agent.name,
+    resourceType: 'scanner_agent',
+    metadata: { agentId: agent.id, role, previous: current, authority: requested },
+  })
+  res.json({
+    data: {
+      agent: { ...agent, token_hash: undefined },
+      authority: requested,
+      previous: current,
+      hostNote: requested.remediation
+        ? 'Server-side authority granted. The host applies changes only if its installer enabled QGUARD_ENABLE_REMEDIATION — regenerate and re-run the installer if this agent was deployed read-only.'
+        : 'Write authority revoked. No remediation or migration job will be handed to this agent from its next poll onward.',
+    },
+  })
 })
 
 router.get('/alerts', requireUserAuth, async (req: AuthedRequest, res) => {
@@ -3932,13 +4229,23 @@ router.get('/agent/policy', requireAgentAuth, async (req: AgentRequest, res) => 
     payload: item.payload || {},
   }))
 
+  /* The role is re-applied on the way OUT as well as on the way in, so a
+     policy row written before role clamping existed (or by a path that
+     forgot it) still cannot hand a Scanner the runtime collectors its role
+     excludes. The agent runtime applies the same ceiling a third time. */
+  const agentRoleId = cleanString(agent.metadata?.role, 40) || 'collector'
+  const forRole = (policy: ReturnType<typeof normalizePolicy>) => ({
+    ...policy,
+    scanTypes: clampAgentScanTypes(agentRoleId, policy.scanTypes, null).allowed,
+  })
+
   if (client) {
     const { data } = await client.from('scanner_agent_policies').select('*').eq('agent_id', agent.id).eq('user_id', agent.user_id).eq('enabled', true).limit(1).maybeSingle()
-    res.json({ data: { policy: data ? normalizePolicy(data) : normalizePolicy(agent.policy || {}), commands } })
+    res.json({ data: { policy: forRole(data ? normalizePolicy(data) : normalizePolicy(agent.policy || {})), commands } })
     return
   }
   const policy = memoryStore.policies.find((item) => item.agent_id === agent.id && item.user_id === agent.user_id)
-  res.json({ data: { policy: normalizePolicy(policy || agent.policy || {}), commands } })
+  res.json({ data: { policy: forRole(normalizePolicy(policy || agent.policy || {})), commands } })
 })
 
 /**

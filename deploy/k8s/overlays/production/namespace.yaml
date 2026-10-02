@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: qguard-production
+  labels:
+    app.kubernetes.io/part-of: qguard-helix
+    # Pod Security Admission: the API runs non-root, read-only, no capabilities.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

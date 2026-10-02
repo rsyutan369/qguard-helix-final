@@ -1,0 +1,70 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Staging: same image and manifests as production, its own namespace, its own
+# load balancer / hostname (api-staging.qguardhelix.com) and — required — its
+# own Supabase project (the qguard-api-secrets Secret in this namespace points
+# at staging, never at production data).
+namespace: qguard-staging
+
+labels:
+  - pairs:
+      app.kubernetes.io/environment: staging
+    includeSelectors: false
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+images:
+  - name: qguard-api
+    newName: registry.digitalocean.com/qguard/qguard-api
+    newTag: latest
+
+patches:
+  - target:
+      kind: Service
+      name: qguard-api
+    patch: |-
+      - op: add
+        path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-name
+        value: qguard-api-staging
+      - op: replace
+        path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-certificate-name
+        value: qguard-api-origin-staging
+  - target:
+      kind: Deployment
+      name: qguard-api
+    patch: |-
+      # Staging favours fast rollouts over protecting long scans.
+      - op: replace
+        path: /spec/template/spec/terminationGracePeriodSeconds
+        value: 90
+  - target:
+      kind: ConfigMap
+      name: qguard-api-config
+    patch: |-
+      - op: replace
+        path: /data/SHUTDOWN_DRAIN_MS
+        value: "60000"
+      - op: replace
+        path: /data/APP_ORIGIN
+        value: https://staging.qguardhelix.com
+      - op: replace
+        path: /data/PUBLIC_APP_ORIGIN
+        value: https://staging.qguardhelix.com
+      - op: replace
+        path: /data/PUBLIC_APP_URL
+        value: https://staging.qguardhelix.com
+      # Vercel preview deployments call the STAGING API (VITE_API_ORIGIN in the
+      # Vercel "Preview" environment). Adjust the wildcard to your Vercel
+      # project/team slug; `*` matches a single DNS label only.
+      - op: replace
+        path: /data/ALLOWED_ORIGINS
+        value: https://staging.qguardhelix.com,https://qguard-helix-*.vercel.app
+      - op: replace
+        path: /data/QGUARD_CONTROL_PLANE_URL
+        value: https://api-staging.qguardhelix.com
+      - op: replace
+        path: /data/CERT_VERIFICATION_ORIGIN
+        value: https://staging.qguardhelix.com

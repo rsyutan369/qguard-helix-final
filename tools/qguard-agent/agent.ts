@@ -21,6 +21,12 @@ import {
   validateControlPlane,
 } from '../../src/lib/agent-installer/agent-environment.ts'
 import { RULE_SET_VERSION } from '../../src/lib/crypto/knowledge-base/rules.ts'
+import {
+  clampAgentScanTypes,
+  configEvidenceInScope,
+  parseAgentTarget,
+  readsConfigFiles,
+} from '../../src/lib/agent-installer/agent-scope.ts'
 
 type EvidenceConfidence = 'high' | 'medium' | 'low'
 type EvidenceType =
@@ -272,7 +278,7 @@ const API_URL = (process.env.QGUARD_API_URL || DEFAULT_API_URL).replace(/\/+$/, 
 const AGENT_ID = process.env.QGUARD_AGENT_ID || ''
 const AGENT_TOKEN = process.env.QGUARD_AGENT_TOKEN || ''
 /** Injected at bundle time by tools/build-agent-release.mjs; falls back for `tsx` runs. */
-const AGENT_VERSION = process.env.QGUARD_AGENT_BUILD_VERSION || process.env.QGUARD_AGENT_VERSION || '1.5.4'
+const AGENT_VERSION = process.env.QGUARD_AGENT_BUILD_VERSION || process.env.QGUARD_AGENT_VERSION || '1.5.5'
 const AGENT_ROLE = (process.env.QGUARD_AGENT_ROLE || 'collector').toLowerCase()
 const REMEDIATION_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_REMEDIATION || '')
 const CONFIG_PATCHES_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_CONFIG_PATCHES || '')
@@ -611,34 +617,13 @@ async function postRemediationEvent(
   })
 }
 
+/**
+ * Parse one allowed-target entry. Delegates to the shared parser so the Agent
+ * Center's scope preview ("TLS api.example.com:443") is exactly the parse the
+ * host performs — the wizard imports the same function.
+ */
 function parseTarget(raw: string): ScanTarget | null {
-  const value = raw.trim()
-  if (!value) return null
-
-  try {
-    const url = value.includes('://') ? new URL(value) : new URL(`tls://${value}`)
-    const protocol = url.protocol.replace(':', '').toLowerCase()
-    const host = url.hostname
-    if (!host) return null
-
-    if (protocol === 'ssh') {
-      return { original: value, type: 'ssh', host, port: Number(url.port || 22), protocol: 'ssh' }
-    }
-
-    if (protocol === 'https' || protocol === 'tls') {
-      return { original: value, type: 'tls', host, port: Number(url.port || 443), protocol: 'tls' }
-    }
-
-    if (protocol === 'http') {
-      return { original: value, type: 'tls', host, port: Number(url.port || 443), protocol: 'tls' }
-    }
-  } catch {
-    const [host, port] = value.split(':')
-    if (!host) return null
-    return { original: value, type: Number(port) === 22 ? 'ssh' : 'tls', host, port: Number(port || 443), protocol: Number(port) === 22 ? 'ssh' : 'tls' }
-  }
-
-  return null
+  return parseAgentTarget(raw)
 }
 
 function tlsProtocolToAlgorithm(protocol: string | null) {
@@ -1793,8 +1778,13 @@ async function scanAllowedPath(root: string, scanTypes: Set<string>) {
     if ((scanTypes.has('packages') || scanTypes.has('libraries')) && isPackageManifest(fileName)) {
       evidence.push(...await scanPackageManifest(filePath))
     }
-    if (scanTypes.has('configs')) {
-      evidence.push(...await scanConfigFile(filePath))
+    /* Surface modules (Kubernetes, VPN, databases …) select configuration by
+       surface. `configs` keeps every surface; without it only the selected
+       surfaces are kept. Before this, a surface module on its own collected
+       nothing and switching one off changed nothing. */
+    if (readsConfigFiles(scanTypes)) {
+      const found = await scanConfigFile(filePath)
+      for (const row of found) if (configEvidenceInScope(row.evidenceType, scanTypes)) evidence.push(row)
     }
     if (scanTypes.has('ssh') && (SSH_KEY_FILE_NAMES.has(fileName) || /\.pub$/i.test(fileName))) {
       evidence.push(...await scanSshKeyFile(filePath))
@@ -2574,7 +2564,10 @@ async function runScanCycle(policyOverride?: AgentPolicy) {
   const scanStartedAt = Date.now()
   agentHealth.lastScanStartedAt = isoNow()
 
-  const scanTypes = new Set(policy.scanTypes.map((item) => item.toLowerCase()))
+  /* The role ceiling, applied on the host as well as by the control plane: a
+     Scanner never runs the runtime collectors its role excludes, whatever
+     policy it is handed. */
+  const scanTypes = new Set(clampAgentScanTypes(AGENT_ROLE, policy.scanTypes, null).allowed)
   await sendHeartbeat('scanning', { phase: 'starting', allowedTargets: policy.allowedTargets.length, allowedPaths: policy.allowedPaths.length })
   await sendTelemetry('agent_scan_started', 'Local scanner evidence collection started', {
     scanTypes: [...scanTypes],

@@ -177,6 +177,85 @@ export interface CopilotMigrationStrategy {
   estimatedTimeline?: string
 }
 
+/** Visual tone for one entity row — maps to the platform's severity palette. */
+export type CopilotTone = 'critical' | 'high' | 'medium' | 'low' | 'good' | 'neutral'
+
+export interface CopilotEntityColumn {
+  key: string
+  label: string
+  align?: 'left' | 'right'
+}
+
+export interface CopilotEntityRow {
+  cells: Record<string, string | number | null>
+  tone?: CopilotTone
+  deepLink?: string
+}
+
+/**
+ * The named records a "which / show / list" question is actually asking for.
+ * A count answers "how many"; only the records answer "which". Every row is a
+ * record the owning module already holds — never a synthesized example.
+ */
+export interface CopilotEntityTable {
+  title: string
+  /** The unit each row is ("remediation action", "certificate", "asset"). */
+  unit: string
+  columns: CopilotEntityColumn[]
+  rows: CopilotEntityRow[]
+  /** Total matching records; `rows` may be a bounded head of this total. */
+  total: number
+  /** Platform module the rows come from. */
+  source: string
+  /** Where the full, unbounded list lives. */
+  deepLink?: string
+  note?: string
+}
+
+/**
+ * A traceable metric an answer reported. Sophia records these with every answer
+ * so a later answer can state what changed since — measured values only, never
+ * a projection or a modelled estimate.
+ */
+export interface CopilotFigure {
+  key: string
+  label: string
+  value: number
+  unit?: string
+  /** Which direction is an improvement ("lower" for open actions, "higher" for readiness). */
+  better: 'higher' | 'lower' | 'neutral'
+  source: string
+}
+
+export interface CopilotFigureChange {
+  key: string
+  label: string
+  previous: number
+  current: number
+  delta: number
+  unit?: string
+  direction: 'improved' | 'worsened' | 'unchanged' | 'changed'
+  /** When the previous value was reported (ISO). */
+  since: string
+}
+
+/**
+ * How the answer is grounded:
+ *  - `focused`    — a topic specialist answered from the module that owns the topic
+ *  - `correlated` — a cross-module synthesis over several sources
+ *  - `digest`     — no specialist matched; the answer restates what each source returned
+ *  - `none`       — no source returned evidence
+ */
+export type CopilotAnswerGrounding = 'focused' | 'correlated' | 'digest' | 'none'
+
+/** A user's rating of one answer — recorded to the tenant's audit trail. */
+export interface CopilotFeedback {
+  answerId: string
+  conversationId?: string
+  rating: 'up' | 'down'
+  note?: string
+}
+
 /** The structured, evidence-based answer every copilot response follows. */
 export interface CopilotAnswer {
   id: string
@@ -224,6 +303,20 @@ export interface CopilotAnswer {
   complianceAlignment?: string[]
   /** Things Sophia noticed while investigating (unprompted but important). */
   proactiveFindings?: CopilotProactiveFinding[]
+
+  /* ---- Topic grounding + longitudinal memory ---- */
+  /** The topic specialist that answered (e.g. "remediation_queue"). */
+  focus?: string
+  /** Human label of that specialist's topic ("Remediation queue"). */
+  focusLabel?: string
+  /** How the answer is grounded — drives the confidence ceiling. */
+  grounding?: CopilotAnswerGrounding
+  /** Named records answering a "which / show / list" question. */
+  entities?: CopilotEntityTable[]
+  /** Measured metrics this answer reported (recorded for change tracking). */
+  figures?: CopilotFigure[]
+  /** What moved since Sophia last reported the same figures to this tenant. */
+  changes?: CopilotFigureChange[]
 }
 
 /** Reasoning stages streamed while the coordinator works. */

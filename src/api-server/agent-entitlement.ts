@@ -40,6 +40,8 @@ import {
   type AccessTier,
   type AgentRoleId,
 } from '@/lib/subscription-access'
+import { resolveWriteAuthority } from '@/lib/agent-installer/agent-scope'
+import { isOwnerEmail } from '@/lib/admin-access'
 
 export interface AgentEntitlementRequest extends Request {
   user?: { id: string; email?: string | null }
@@ -245,8 +247,20 @@ export async function tenantTierForAgent(
     if (error) throw error
 
     const { normalizeTier, isAccessGrantingStatus } = await import('@/lib/subscription-access')
-    const tier = normalizeTier(data?.plan)
-    const isActive = isAccessGrantingStatus(data?.status)
+    let tier = normalizeTier(data?.plan)
+    let isActive = isAccessGrantingStatus(data?.status)
+
+    /* The platform owner holds Elite by override, not by a billing row —
+       `resolveEntitlement` applies that on every user-authenticated route.
+       This agent-authenticated path read billing only, so the owner's own
+       Patcher and Migration Operator were refused every job as
+       "plan_does_not_include_role". Same override, applied only when there is
+       no billing row to decide it. */
+    if (!data && (await tenantIsPlatformOwner(client, userId))) {
+      tier = 'elite'
+      isActive = true
+    }
+
     tierCache.set(userId, { tier, isActive, at: Date.now() })
     return { tier, isActive, resolved: true }
   } catch {
@@ -258,6 +272,18 @@ export async function tenantTierForAgent(
   }
 }
 
+/** Whether the tenant is the platform owner, read through the service client's admin API. */
+async function tenantIsPlatformOwner(client: { from: (table: string) => any } | null, userId: string): Promise<boolean> {
+  const getUserById = (client as { auth?: { admin?: { getUserById?: (id: string) => Promise<any> } } } | null)?.auth?.admin?.getUserById
+  if (!getUserById) return false
+  try {
+    const { data } = await getUserById.call((client as any).auth.admin, userId)
+    return isOwnerEmail(data?.user?.email)
+  } catch {
+    return false
+  }
+}
+
 /** Drop a tenant's cached tier — call after a plan change. */
 export function invalidateTenantTier(userId: string): void {
   tierCache.delete(userId)
@@ -266,9 +292,10 @@ export function invalidateTenantTier(userId: string): void {
 /**
  * May this agent execute WRITE operations right now?
  *
- * Checks two independent things, both of which must hold:
+ * Checks three independent things, all of which must hold:
  *   1. the agent's server-resolved role is one that writes (patcher/operator)
- *   2. the owning tenant currently holds a plan that includes that role
+ *   2. the operator explicitly authorised this agent to write (see 3 below)
+ *   3. the owning tenant currently holds a plan that includes that role
  *
  * (2) is what makes a downgrade take effect on agents that already exist. The
  * agent rows survive — deleting a tenant's fleet on a billing blip would be far
@@ -276,7 +303,7 @@ export function invalidateTenantTier(userId: string): void {
  */
 export async function agentMayWrite(
   client: { from: (table: string) => any } | null,
-  agent: { user_id: string; metadata?: Record<string, unknown> | null },
+  agent: { user_id: string; metadata?: Record<string, unknown> | null; capabilities?: Record<string, unknown> | null },
   operation: 'remediation' | 'migration',
 ): Promise<{ allowed: boolean; reason: string }> {
   const role = agent.metadata?.role
@@ -290,6 +317,20 @@ export async function agentMayWrite(
   }
   if (operation === 'remediation' && role !== 'patcher' && role !== 'operator') {
     return { allowed: false, reason: 'agent_role_read_only' }
+  }
+
+  /* 3. The operator authorised writes for THIS agent. A write-capable role is
+        a ceiling, not a grant: the wizard's "Authorize configuration
+        remediation" / "Authorize Live Migration execution" decisions are
+        recorded on the agent and read here, on every poll, so revoking them
+        stops the work at the next tick. Before this check the decision was
+        recorded and never read. */
+  const authority = resolveWriteAuthority(role, agent.capabilities, agent.metadata)
+  if (operation === 'remediation' && !authority.remediation) {
+    return { allowed: false, reason: 'remediation_not_authorized' }
+  }
+  if (operation === 'migration' && !authority.migration) {
+    return { allowed: false, reason: 'migration_not_authorized' }
   }
 
   const { tier, isActive, resolved } = await tenantTierForAgent(client, agent.user_id)

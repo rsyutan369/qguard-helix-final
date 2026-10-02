@@ -14,7 +14,7 @@
  * per key version's algorithm, never per service.
  */
 
-import { createSign } from 'node:crypto';
+import { createHash, createSign } from 'node:crypto';
 
 const TIMEOUT_MS = 12_000;
 
@@ -65,7 +65,10 @@ export async function getAccessToken(credentials: GcpCredentials): Promise<GcpCa
     return { ok: false, status: 0, data: null, reason: 'The service-account key JSON could not be parsed.' };
   }
 
-  const cached = tokenCache.get(key.client_email);
+  // The client_email is not secret; the private-key digest makes the cache
+  // entry usable only by a caller who presented the same key material.
+  const cacheKey = `${key.client_email}:${createHash('sha256').update(key.private_key).digest('hex')}`;
+  const cached = tokenCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now() + 60_000) {
     return { ok: true, status: 200, data: cached.token };
   }
@@ -115,7 +118,7 @@ export async function getAccessToken(credentials: GcpCredentials): Promise<GcpCa
         reason: json.error_description ?? `Google returned HTTP ${response.status} for the token request.`,
       };
     }
-    tokenCache.set(key.client_email, { token: json.access_token, expiresAt: Date.now() + (json.expires_in ?? 3600) * 1000 });
+    tokenCache.set(cacheKey, { token: json.access_token, expiresAt: Date.now() + (json.expires_in ?? 3600) * 1000 });
     return { ok: true, status: 200, data: json.access_token };
   } catch (error) {
     return { ok: false, status: 0, data: null, reason: (error as Error).message };

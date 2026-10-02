@@ -32,8 +32,13 @@ import { ROLE_CAPABILITIES, STANDARDS, algorithmFamily, algorithmFamilyLabel, in
 import type { AlgorithmFamily } from './copilot-knowledge'
 import { namesCryptography } from '@/lib/scanner/finding-identity'
 import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
+import { buildAssetRegister, type AssetRegisterRow, type RegisterQrInput, type RegisterSnapshotInput } from '@/lib/assets/asset-register'
 import type { CopilotEvidence, CopilotRole, CopilotToolRun, CopilotToolStatus } from '@/types/copilot'
 import type { ExposureIntelligence } from '@/types/exposure-graph'
+import type { RemediationAction, RemediationPlan } from '@/types/quantum-remediation'
+import type { CertificationDashboard } from '@/types/quantum-certification'
+import type { MigrationWorkflowState } from '@/types/migration-workflow'
+import type { SnapshotDashboard } from '@/types/migration-snapshot'
 
 /* ------------------------------------------------------------------ */
 /* Context + result contracts                                          */
@@ -67,30 +72,41 @@ export interface ToolDef {
   execute(ctx: ToolContext, args: Record<string, unknown>, deps: CopilotBuilders): Promise<ToolResult>
 }
 
+/*
+ * The builders' REAL output types. They were previously erased to
+ * `Record<string, unknown>`, which let every tool read a field by a guessed
+ * name and compile cleanly when the guess was wrong. Five shipped defects were
+ * exactly that: `eligibility.criteria` (the field is `checks`), `c.label` (it is
+ * `criterion`), `nextAction.label/path` (they are `title/route`),
+ * `banner.level/message` (they are `threatLevel/headline`) and a remediation
+ * status of 'completed' (the engine emits open | in_progress | resolved). With
+ * the types in place a wrong field is a compile error, not a silent blank.
+ */
+export type QrSnapshot = Awaited<ReturnType<typeof buildSnapshot>>
+export type ScannerIntelSnapshot = Awaited<ReturnType<typeof buildScannerIntelligence>>
+export type HndlIntelligence = Awaited<ReturnType<typeof buildHndlIntelligence>>
+
 /** Injectable builder seam — production uses the live platform builders. */
 export interface CopilotBuilders {
-  snapshot(token: string, userId: string): Promise<Record<string, unknown>>
-  scannerIntel(token: string, userId: string): Promise<Record<string, unknown>>
+  snapshot(token: string, userId: string): Promise<QrSnapshot>
+  scannerIntel(token: string, userId: string): Promise<ScannerIntelSnapshot>
   exposure(token: string, userId: string): Promise<ExposureIntelligence>
-  remediationPlan(token: string, userId: string): Promise<Record<string, unknown>>
-  certification(token: string, userId: string, email: string): Promise<Record<string, unknown>>
-  hndl(token: string, userId: string): Promise<Record<string, unknown>>
-  workflow(token: string, userId: string): Promise<Record<string, unknown>>
-  snapshotDashboard(token: string, userId: string, email: string): Promise<Record<string, unknown>>
+  remediationPlan(token: string, userId: string): Promise<RemediationPlan>
+  certification(token: string, userId: string, email: string): Promise<CertificationDashboard>
+  hndl(token: string, userId: string): Promise<HndlIntelligence>
+  workflow(token: string, userId: string): Promise<MigrationWorkflowState>
+  snapshotDashboard(token: string, userId: string, email: string): Promise<SnapshotDashboard>
 }
 
 export const liveBuilders: CopilotBuilders = {
-  snapshot: (token, userId) => buildSnapshot(token, userId) as Promise<Record<string, unknown>>,
-  scannerIntel: (token, userId) => buildScannerIntelligence(token, userId) as Promise<Record<string, unknown>>,
+  snapshot: (token, userId) => buildSnapshot(token, userId),
+  scannerIntel: (token, userId) => buildScannerIntelligence(token, userId),
   exposure: (token, userId) => buildExposureIntelligence(token, userId),
-  remediationPlan: async (token, userId) => {
-    const evidence = await assembleEvidence(token, userId)
-    return buildRemediationPlan(evidence) as unknown as Record<string, unknown>
-  },
-  certification: (token, userId, email) => buildCertificationDashboard(token, userId, email) as unknown as Promise<Record<string, unknown>>,
-  hndl: (token, userId) => buildHndlIntelligence(token, userId) as Promise<Record<string, unknown>>,
-  workflow: (token, userId) => buildWorkflowState(token, userId) as unknown as Promise<Record<string, unknown>>,
-  snapshotDashboard: (token, userId, email) => buildSnapshotDashboard(token, userId, email) as unknown as Promise<Record<string, unknown>>,
+  remediationPlan: async (token, userId) => buildRemediationPlan(await assembleEvidence(token, userId)),
+  certification: (token, userId, email) => buildCertificationDashboard(token, userId, email),
+  hndl: (token, userId) => buildHndlIntelligence(token, userId),
+  workflow: (token, userId) => buildWorkflowState(token, userId),
+  snapshotDashboard: (token, userId, email) => buildSnapshotDashboard(token, userId, email),
 }
 
 /* ------------------------------------------------------------------ */
@@ -222,6 +238,30 @@ function preparedAction(input: {
 
 const ASSET_SELECT = 'id, name, type, environment, region, service_owner, criticality, status, metadata, created_at, updated_at'
 
+/*
+ * `crypto_inventory` stores BOTH real cryptographic observations and scanner
+ * FINDINGS, because the scan writer sets `algorithm: finding.algorithm` for
+ * every rule it fires — so a policy finding lands with algorithm "No
+ * Certificate Pinning" or "Regulatory Compliance Gap". Counting those as
+ * cryptographic components inflates the component total and pollutes the
+ * algorithm distribution. The platform already has the separator for this (the
+ * same guard the migration snapshots use), so every tool uses it rather than
+ * inventing a second rule.
+ */
+function isCryptographicRow(row: Record<string, unknown>): boolean {
+  const name = str(row.name)
+  // The scanner writes `${category}: ${algorithm}`; a real cryptographic
+  // observation carries a cryptographic class prefix.
+  if (name && !namesCryptography(name)) return false
+  const anatomy = analyzeCryptoObservation({
+    algorithm: str(row.algorithm),
+    name,
+    itemType: str(row.item_type),
+    protocol: str(row.protocol),
+  })
+  return anatomy.kind !== 'policy'
+}
+
 function mapAsset(a: Record<string, unknown>) {
   return {
     id: str(a.id),
@@ -322,6 +362,165 @@ register({
   },
 })
 
+/** One register row, flattened for answers — every field is the Assets page's own. */
+export interface AssetView {
+  id: string
+  name: string
+  type: string
+  host: string
+  owner: string | null
+  environment: string | null
+  criticality: string | null
+  internetFacing: boolean
+  tlsVersion: string | null
+  riskScore: number | null
+  riskBand: string
+  pqcStatus: AssetRegisterRow['pqcStatus']
+  pqcStatusLabel: string
+  pqcStatusReason: string
+  components: AssetRegisterRow['components']
+  worstSeverity: string | null
+  algorithms: string[]
+  vulnerableComponents: Array<{ name: string; riskBearing: string; severity: string; pqcReplacement: string | null; instances: number }>
+  lastScanned: string | null
+  freshness: string
+  freshnessState: AssetRegisterRow['freshness']['state']
+  lifecycle: AssetRegisterRow['lifecycle']
+  scanning: boolean
+}
+
+function toAssetView(r: AssetRegisterRow): AssetView {
+  return {
+    id: r.id,
+    name: r.name,
+    type: r.typeLabel,
+    host: r.host,
+    owner: r.owner,
+    environment: r.environment,
+    criticality: r.criticality,
+    internetFacing: r.internetFacing,
+    tlsVersion: r.tlsVersion,
+    riskScore: r.riskScore,
+    riskBand: r.risk.label,
+    pqcStatus: r.pqcStatus,
+    pqcStatusLabel: r.pqcStatusLabel,
+    pqcStatusReason: r.pqcStatusReason,
+    components: r.components,
+    worstSeverity: r.worstComponentSeverity,
+    algorithms: r.algorithms.slice(0, 10),
+    vulnerableComponents: r.componentList
+      .filter((c) => c.posture === 'vulnerable')
+      .slice(0, 10)
+      .map((c) => ({ name: c.name, riskBearing: c.riskBearing, severity: String(c.severity), pqcReplacement: c.pqcReplacement, instances: c.instances })),
+    lastScanned: r.lastScanned,
+    freshness: r.freshness.label,
+    freshnessState: r.freshness.state,
+    lifecycle: r.lifecycle,
+    scanning: r.scanning.active,
+  }
+}
+
+const NAME_NOISE = /[^a-z0-9]+/g
+
+/**
+ * Link the words of a question to the tenant's REAL assets. A token only
+ * becomes an asset reference when an asset in the register actually carries
+ * that name or host — which is what stops question words ("pending",
+ * "remediation") from ever being treated as asset filters.
+ */
+export function linkAssetMentions(rows: AssetRegisterRow[], question: string, mentions: string[]): AssetRegisterRow[] {
+  const q = ` ${question.toLowerCase().replace(NAME_NOISE, ' ')} `
+  const scored: Array<{ row: AssetRegisterRow; score: number }> = []
+  for (const row of rows) {
+    const name = row.name.toLowerCase()
+    const flatName = name.replace(NAME_NOISE, ' ').trim()
+    const host = (row.host || '').toLowerCase()
+    let score = 0
+    // The full asset name appears in the question ("status of orders-db").
+    if (flatName.length >= 3 && q.includes(` ${flatName} `)) score = 100 + flatName.length
+    for (const raw of mentions) {
+      const m = raw.toLowerCase()
+      if (m.length < 3) continue
+      if (m === name || m === host) score = Math.max(score, 90 + m.length)
+      else if (m.length >= 4 && (name.includes(m) || (host !== '' && host.includes(m)))) score = Math.max(score, 40 + m.length)
+    }
+    if (score > 0) scored.push({ row, score })
+  }
+  if (!scored.length) return []
+  scored.sort((a, b) => b.score - a.score)
+  // Keep only the best-scoring tier so "orders-db" never drags in every "*-db".
+  const best = scored[0].score
+  return scored.filter((s) => s.score >= best - 10).slice(0, 5).map((s) => s.row)
+}
+
+register({
+  name: 'getAssetRegister',
+  module: 'assets',
+  description: 'The Assets page register — per-asset PQC status, risk, components, owner, exposure, freshness and lifecycle; resolves named assets',
+  capability: 'read',
+  async execute(ctx, args, deps) {
+    /*
+     * The exact derivation /dashboard/assets renders: `buildAssetRegister` over
+     * the scanner-intelligence snapshot, the QR figures and the workflow asset
+     * states. Sophia's statement about an asset is the Assets page's row for
+     * it, by construction — not a second estimate that "should" agree.
+     */
+    const [intel, snapshot, workflow] = await Promise.all([
+      deps.scannerIntel(ctx.token, ctx.userId),
+      deps.snapshot(ctx.token, ctx.userId).catch(() => null),
+      deps.workflow(ctx.token, ctx.userId).catch(() => null),
+    ])
+    const intelRec = rec(intel)
+    if (!intelRec.summary || !Array.isArray(rec(intelRec.assets).assets)) {
+      return empty({ rows: [], matched: [] }, 'The asset register has no scanner evidence yet — run a discovery scan.')
+    }
+    const has = Boolean(snapshot?.hasData)
+    const qr: RegisterQrInput = {
+      resolved: snapshot != null,
+      hasData: has,
+      readiness: has && snapshot ? snapshot.scores.quantumReadiness : null,
+      readinessLevel: has && snapshot ? snapshot.scores.quantumReadinessLevel : null,
+      risk: has && snapshot ? snapshot.scores.quantumRisk : null,
+      components: has && snapshot ? snapshot.inventory.cryptoComponents : null,
+      vulnerableComponents: has && snapshot ? snapshot.inventory.vulnerableComponents : null,
+    }
+    const register = buildAssetRegister({
+      snapshot: intel as unknown as RegisterSnapshotInput,
+      qr,
+      workflowStates: workflow?.assetStates ?? null,
+      now: Date.now(),
+    })
+    const mentions = Array.isArray(args.mentions) ? (args.mentions as unknown[]).map(String) : []
+    const direct = str(args.asset || args.assetId)
+    const matched = linkAssetMentions(register.rows, str(args.question), direct ? [direct, ...mentions] : mentions)
+    const byRisk = [...register.rows].sort((a, b) => (b.riskScore ?? -1) - (a.riskScore ?? -1))
+    const totals = register.totals
+    return ok(
+      {
+        rows: byRisk.slice(0, 60).map(toAssetView),
+        matched: matched.map(toAssetView),
+        totalAssets: register.headline.totalAssets,
+        pqcStatus: totals.pqcStatus,
+        internetFacing: totals.internetFacing,
+        owners: totals.owners,
+        freshness: totals.freshness,
+        risk: totals.risk,
+        components: totals.components,
+        vulnerableAssets: register.headline.vulnerableAssets,
+        unattributed: register.unattributed,
+        measuredAt: register.measuredAt,
+        activeScans: register.activeScans,
+      },
+      [ev('Assets & CBOM', 'Asset register', `${register.headline.totalAssets} asset(s)`, {
+        detail: `${totals.pqcStatus['quantum-vulnerable']} quantum-vulnerable · ${totals.pqcStatus['pqc-ready']} PQC-ready · ${totals.pqcStatus['not-measured']} not measured · ${totals.internetFacing} internet-facing`,
+        observedAt: register.measuredAt || undefined,
+        deepLink: modulePath('assets'),
+      })],
+      register.rows.length,
+    )
+  },
+})
+
 register({
   name: 'findAssetsUsingAlgorithm',
   module: 'cbom',
@@ -358,30 +557,6 @@ register({
     ])
 
     const assetById = new Map(assets.map((a) => [str(a.id), a]))
-
-    /*
-     * `crypto_inventory` stores BOTH real cryptographic observations and
-     * scanner FINDINGS, because the scan writer sets `algorithm:
-     * finding.algorithm` for every rule it fires — so a policy finding lands
-     * with algorithm "No Certificate Pinning" or "Regulatory Compliance Gap".
-     * Counting those as cryptographic components inflates the component total
-     * and pollutes the algorithm distribution. The platform already has the
-     * separator for this (the same guard the migration snapshots use), so use
-     * it rather than inventing a second rule.
-     */
-    const isCryptographicRow = (row: Record<string, unknown>): boolean => {
-      const name = str(row.name)
-      // The scanner writes `${category}: ${algorithm}`; a real cryptographic
-      // observation carries a cryptographic class prefix.
-      if (name && !namesCryptography(name)) return false
-      const anatomy = analyzeCryptoObservation({
-        algorithm: str(row.algorithm),
-        name,
-        itemType: str(row.item_type),
-        protocol: str(row.protocol),
-      })
-      return anatomy.kind !== 'policy'
-    }
 
     /*
      * Whether a row INVOLVES a wanted family — not what its single canonical
@@ -628,9 +803,12 @@ register({
       return { name: str(rc.name), domain: str(rc.domain), findings: num(rc.count), pqRoadmap: str(rc.pqRoadmapStatus), customerInfluence: str(rc.customerInfluence) }
     })
 
-    const detail = tokens.length
-      ? `${explain.length} finding(s) matched "${tokens.join(' ')}"`
-      : `${ownershipBreakdown.customer} customer · ${ownershipBreakdown.provider} provider · ${ownershipBreakdown.ecosystem} ecosystem`
+    // A filter that matched nothing is not a finding about ownership — keep the
+    // real split visible rather than publishing "0 matched" as the headline.
+    const split = `${ownershipBreakdown.customer} customer · ${ownershipBreakdown.provider} provider · ${ownershipBreakdown.ecosystem} ecosystem`
+    const detail = tokens.length && explain.length
+      ? `${explain.length} finding(s) matched "${tokens.join(' ')}" · ${split}`
+      : split
 
     return ok(
       { ownershipBreakdown, triPartReadiness, matchedFindings: explain, providers, query: tokens.join(' '), filtered: tokens.length > 0 },
@@ -647,18 +825,35 @@ register({
   module: 'cbom',
   description: 'Cryptographic inventory (CBOM source of truth) with posture counts',
   capability: 'read',
-  async execute(ctx) {
-    const [rows, total, vulnerable, safe] = await Promise.all([
+  async execute(ctx, _args, deps) {
+    /*
+     * The headline counts are the CBOM's own — read from the QR snapshot, the
+     * figure CBOM Explorer and every dashboard publish. A raw head-count of
+     * crypto_inventory also counts the scanner FINDINGS stored in that table,
+     * so this tool used to report e.g. 178 "components" beside a CBOM of 77.
+     */
+    const [snapshot, rows] = await Promise.all([
+      deps.snapshot(ctx.token, ctx.userId),
       tenantRows(ctx, 'crypto_inventory', 'id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, created_at', (q) => q.order('created_at', { ascending: false }), 300),
-      tenantCount(ctx, 'crypto_inventory'),
-      tenantCount(ctx, 'crypto_inventory', (q) => q.eq('is_vulnerable', true)),
-      tenantCount(ctx, 'crypto_inventory', (q) => q.eq('is_quantum_safe', true)),
     ])
-    const totalCount = total ?? rows.length
+    const inventory = snapshot.inventory
+    const total = num(inventory.cryptoComponents)
+    const vulnerable = num(inventory.vulnerableComponents)
+    const pqcReady = num(inventory.pqcReadyComponents)
     return ok(
-      { total: totalCount, vulnerable: vulnerable ?? 0, quantumSafe: safe ?? 0, sample: rows.slice(0, 40) },
-      [ev('CBOM Explorer', 'Crypto components', String(totalCount), { detail: `${vulnerable ?? 0} quantum-vulnerable · ${safe ?? 0} quantum-safe`, deepLink: modulePath('cbom') })],
-      totalCount,
+      {
+        total,
+        vulnerable,
+        quantumSafe: pqcReady,
+        cryptoComponents: total,
+        vulnerableComponents: vulnerable,
+        pqcReadyComponents: pqcReady,
+        findingRowsExcluded: num(inventory.findingRowsExcluded),
+        inventoryRows: num(inventory.cryptoInventoryRows),
+        sample: rows.filter(isCryptographicRow).slice(0, 40),
+      },
+      [ev('CBOM Explorer', 'Crypto components', String(total), { detail: `${vulnerable} quantum-vulnerable · ${pqcReady} PQC-ready`, observedAt: str(snapshot.lastAssessmentAt) || undefined, deepLink: modulePath('cbom') })],
+      total,
     )
   },
 })
@@ -775,10 +970,11 @@ register({
         summary: s,
         waves: intel.migrationOrder.waves.length,
         blockers: intel.migrationOrder.blockers.length,
+        blockerList: intel.migrationOrder.blockers.slice(0, 12),
         thirdParty: intel.thirdParty.length,
       },
       [
-        ev('Exposure Graph', 'Graph coverage', `${s.totalAssets} asset(s), ${s.trustRelationships} trust edge(s)`, { detail: `${s.quantumVulnerable} quantum-vulnerable · ${s.internetFacingAssets} internet-facing`, observedAt: intel.generatedAt || undefined, deepLink: modulePath('exposure_graph') }),
+        ev('Exposure Graph', 'Graph coverage', `${s.totalAssets} asset(s), ${s.trustRelationships} trust edge(s)`, { detail: `${s.quantumVulnerable} quantum-vulnerable · ${s.internetFacingAssets} internet-facing`, observedAt: intel.lastAssessmentAt || undefined, deepLink: modulePath('exposure_graph') }),
       ],
       s.totalAssets,
     )
@@ -802,8 +998,18 @@ register({
     if (!node) return empty({ ref }, `Asset "${ref}" is not in the exposure graph`)
     const adjacency = buildAdjacency(intel.graph.edges)
     const blast = computeBlastRadius(intel.graph.nodes, intel.graph.edges, node.id, 6, adjacency)
+    // The blast result carries node ids; answers name assets.
+    const labelOf = new Map(intel.graph.nodes.map((n) => [n.id, n.label]))
+    const names = (ids: string[]) => ids.map((id) => labelOf.get(id) || id).slice(0, 15)
     return ok(
-      { asset: node.label, blast },
+      {
+        asset: node.label,
+        riskScore: num((node as unknown as Record<string, unknown>).riskScore),
+        blast,
+        directNames: names(blast.direct),
+        indirectNames: names(blast.indirect),
+        trustChainNames: names(blast.trustChain),
+      },
       [ev('Exposure Graph', `Blast radius of ${node.label}`, `${blast.totalAffected} affected asset(s)`, { detail: `${blast.direct.length} direct · ${blast.indirect.length} indirect · ${blast.trustChain.length} via trust chains · ${blast.internetFacing} internet-facing`, deepLink: modulePath('exposure_graph') })],
       blast.totalAffected,
     )
@@ -870,17 +1076,30 @@ register({
   capability: 'read',
   async execute(ctx, _args, deps) {
     const wf = await deps.workflow(ctx.token, ctx.userId)
-    const nextAction = rec(wf.nextAction)
+    const stages = Array.isArray(wf.stages) ? wf.stages : []
+    const current = stages.find((s) => s.id === wf.currentStageId)
+    // WorkflowNextAction is { title, detail, route }. Reading label/path (which
+    // do not exist) silently dropped the "next migration step" from every answer.
+    const next = wf.nextAction
+    const nextAction = next ? { label: str(next.title), detail: str(next.detail), path: str(next.route), stageId: str(next.stageId) } : null
     return ok(
       {
+        hasData: wf.hasData !== false,
         overallProgressPct: num(wf.overallProgressPct),
         currentStageId: str(wf.currentStageId),
+        currentStageLabel: current ? current.label : str(wf.currentStageId),
         certificationReadinessPct: num(wf.certificationReadinessPct),
+        certificationEligible: wf.certificationEligible === true,
         nextAction,
-        stages: arr(wf.stages).slice(0, 12),
+        stages: stages.slice(0, 12).map((s) => ({ id: s.id, label: s.label, status: s.status, progressPct: num(s.progressPct), kpi: s.kpi, detail: s.detail, route: s.route })),
+        assetLifecycle: (wf.assetLifecycle || []).slice(0, 12),
       },
-      [ev('Live Migration Ops', 'Migration progress', `${num(wf.overallProgressPct)}%`, { detail: `current stage: ${str(wf.currentStageId)} · next: ${str(nextAction.label)}`, observedAt: str(wf.generatedAt) || undefined, deepLink: modulePath('live_migration') })],
-      arr(wf.stages).length,
+      [ev('Live Migration Ops', 'Migration progress', `${num(wf.overallProgressPct)}%`, {
+        // No observedAt: generatedAt is when the workflow was computed (now).
+        detail: `current stage: ${current ? current.label : str(wf.currentStageId) || 'not started'}${nextAction?.label ? ` · next: ${nextAction.label}` : ''}`,
+        deepLink: modulePath('live_migration'),
+      })],
+      stages.length,
     )
   },
 })
@@ -928,27 +1147,119 @@ register({
 
 /* ---- Remediation -------------------------------------------------- */
 
+/**
+ * One remediation action, flattened to what an answer needs. Read from the
+ * engine's typed RemediationAction — the Remediation page renders the same
+ * object, so Sophia's row and the page's row cannot disagree.
+ */
+export interface PendingActionRow {
+  id: string
+  rank: number
+  asset: string
+  domain: string
+  problem: string
+  recommendation: string
+  targetState: string
+  priority: RemediationAction['priority']
+  priorityScore: number
+  status: RemediationAction['status']
+  effort: string
+  effortWeeks: number
+  certificationGainPct: number
+  projectedReadinessPct: number
+  owner: string
+  internetFacing: boolean
+  quickWin: boolean
+  requiresReplacement: boolean
+  hndlRelevant: boolean
+  standards: string[]
+  breakingChangeWarning: string | null
+  rollback: string
+  route: string
+}
+
+function toActionRow(a: RemediationAction): PendingActionRow {
+  return {
+    id: a.id,
+    rank: a.rank,
+    asset: a.asset,
+    domain: a.domainLabel,
+    problem: a.problem,
+    recommendation: a.recommendation,
+    targetState: a.targetState,
+    priority: a.priority,
+    priorityScore: a.priorityScore,
+    status: a.status,
+    effort: a.effort,
+    effortWeeks: a.effortWeeks,
+    certificationGainPct: a.certificationGainPct,
+    projectedReadinessPct: a.projectedReadinessPct,
+    owner: a.owner,
+    internetFacing: a.internetFacing,
+    quickWin: a.quickWin,
+    requiresReplacement: a.requiresReplacement,
+    hndlRelevant: /harvest/i.test(a.risk) || (a.impact?.hndlReductionPts ?? 0) > 0,
+    standards: a.standards || [],
+    breakingChangeWarning: a.breakingChangeWarning,
+    rollback: a.rollback,
+    route: a.integration?.route || modulePath('remediation'),
+  }
+}
+
 register({
   name: 'getPendingRemediation',
   module: 'remediation',
-  description: 'Pending remediation actions from the Quantum Remediation Engine™',
+  description: 'Open remediation actions from the Quantum Remediation Engine™ — the same ranked queue the Remediation page shows',
   capability: 'read',
   async execute(ctx, _args, deps) {
-    const plan = await deps.remediationPlan(ctx.token, ctx.userId)
-    const actions = arr(plan.actions) as Array<Record<string, unknown>>
-    const queues = rec(plan.queues)
-    const pending = actions.filter((a) => str(a.status) !== 'completed')
+    // The plan is computed on request, so its generatedAt is "now" — the age of
+    // the EVIDENCE behind it is the assessment's, read from the same snapshot
+    // the plan was assembled from.
+    const [plan, snapshot] = await Promise.all([
+      deps.remediationPlan(ctx.token, ctx.userId),
+      deps.snapshot(ctx.token, ctx.userId).catch(() => null),
+    ])
+    const evidenceAt = str(snapshot?.lastAssessmentAt) || undefined
+    const actions = Array.isArray(plan.actions) ? plan.actions : []
+    // The engine's statuses are open | in_progress | resolved. Filtering on
+    // 'completed' — a status it never emits — counted resolved work as pending.
+    const pending = actions.filter((a) => a.status !== 'resolved')
+    // Exact counts over the pending queue. `plan.criticalBlockers` is a display
+    // head capped at six ids, so its length is not a count of anything.
+    const byPriority: Record<RemediationAction['priority'], number> = { critical: 0, high: 0, medium: 0, low: 0 }
+    for (const a of pending) byPriority[a.priority] += 1
+    const progress = plan.progress
+    const rows = pending.map(toActionRow)
+    const quickWins = rows.filter((r) => r.quickWin).length
     return ok(
       {
-        pending: pending.slice(0, 25),
+        hasData: plan.hasData !== false,
+        pending: rows.slice(0, 40),
         pendingCount: pending.length,
-        queues,
+        openCount: progress ? progress.openActions : rows.filter((r) => r.status === 'open').length,
+        inProgressCount: progress ? progress.inProgressActions : rows.filter((r) => r.status === 'in_progress').length,
+        resolvedCount: progress ? progress.resolvedActions : 0,
+        completionPct: progress ? progress.completionPct : 0,
+        byPriority,
+        criticalBlockers: byPriority.critical,
+        quickWins,
+        replacementsRequired: rows.filter((r) => r.requiresReplacement).length,
         certificationReadinessPct: num(plan.certificationReadinessPct),
-        quickWins: arr(plan.quickWins).length,
-        criticalBlockers: arr(plan.criticalBlockers).length,
+        certificationEligible: plan.certificationEligible === true,
+        estimatedCompletionWeeks: num(plan.estimatedCompletionWeeks),
+        parallelWorkstreams: num(plan.parallelWorkstreams) || 1,
+        estimatedCertificationDate: plan.estimatedCertificationDate || null,
+        totalEffortWeeks: Math.round(rows.reduce((s, r) => s + r.effortWeeks, 0) * 10) / 10,
+        ladder: (plan.ladder || []).slice(0, 12),
+        generatedAt: plan.generatedAt || null,
       },
-      [ev('Quantum Remediation Engine™', 'Pending remediation actions', String(pending.length), { detail: `${arr(plan.criticalBlockers).length} critical blocker(s) · ${arr(plan.quickWins).length} quick win(s)`, deepLink: modulePath('remediation') })],
+      [ev('Quantum Remediation Engine™', 'Pending remediation actions', String(pending.length), {
+        detail: `${byPriority.critical} critical · ${byPriority.high} high · ${byPriority.medium} medium · ${byPriority.low} low · ${quickWins} quick win(s)`,
+        observedAt: evidenceAt,
+        deepLink: modulePath('remediation'),
+      })],
       pending.length,
+      pending.length ? undefined : plan.hasData === false ? 'No assessment evidence yet — the remediation queue is built from scan evidence.' : 'The remediation queue is empty — no open action remains in the latest evidence.',
     )
   },
 })
@@ -960,23 +1271,36 @@ register({
   capability: 'operate',
   async execute(ctx, args, deps) {
     const plan = await deps.remediationPlan(ctx.token, ctx.userId)
-    const actions = arr(plan.actions) as Array<Record<string, unknown>>
+    const actions = (Array.isArray(plan.actions) ? plan.actions : []).filter((a) => a.status !== 'resolved')
     const ref = str(args.actionId || args.action || args.query).toLowerCase()
     const action = ref
-      ? actions.find((a) => str(a.id).toLowerCase() === ref || str(a.title).toLowerCase().includes(ref))
-      : actions.find((a) => str(a.priority) === 'critical') || actions[0]
+      ? actions.find((a) => matchesAction(a, ref))
+      : actions.find((a) => a.priority === 'critical') || actions[0]
     if (!action) return empty({ ref }, 'No matching remediation action found for this tenant')
-    audit(ctx, 'copilot.remediation.approve_prepared', { actionId: str(action.id), title: str(action.title) })
+    const title = actionTitle(action)
+    audit(ctx, 'copilot.remediation.approve_prepared', { actionId: action.id, title })
     return preparedAction({
       action: 'approveRemediation',
       module: 'remediation',
       deepLink: modulePath('remediation'),
-      summary: `Approval prepared for "${str(action.title)}" — confirm in the Remediation Center to execute with full validation checkpoints and rollback protection.`,
-      preflight: { actionId: str(action.id), title: str(action.title), priority: str(action.priority), domain: str(action.domain) },
-      evidence: [ev('Quantum Remediation Engine™', 'Action ready for approval', str(action.title), { detail: `priority ${str(action.priority)}`, deepLink: modulePath('remediation') })],
+      summary: `Approval prepared for "${title}" — confirm in the Remediation Center to execute with full validation checkpoints and rollback protection.`,
+      preflight: { actionId: action.id, title, priority: action.priority, domain: action.domain },
+      evidence: [ev('Quantum Remediation Engine™', 'Action ready for approval', title, { detail: `priority ${action.priority}`, deepLink: modulePath('remediation') })],
     })
   },
 })
+
+/** A remediation action has no title field — its identity is asset + fix. */
+function actionTitle(a: RemediationAction): string {
+  return `${a.asset}: ${a.recommendation}`
+}
+
+function matchesAction(a: RemediationAction, ref: string): boolean {
+  return a.id.toLowerCase() === ref
+    || a.asset.toLowerCase().includes(ref)
+    || a.recommendation.toLowerCase().includes(ref)
+    || a.problem.toLowerCase().includes(ref)
+}
 
 register({
   name: 'rejectRemediation',
@@ -985,18 +1309,19 @@ register({
   capability: 'operate',
   async execute(ctx, args, deps) {
     const plan = await deps.remediationPlan(ctx.token, ctx.userId)
-    const actions = arr(plan.actions) as Array<Record<string, unknown>>
+    const actions = (Array.isArray(plan.actions) ? plan.actions : []).filter((a) => a.status !== 'resolved')
     const ref = str(args.actionId || args.action || args.query).toLowerCase()
-    const action = ref ? actions.find((a) => str(a.id).toLowerCase() === ref || str(a.title).toLowerCase().includes(ref)) : null
-    if (!action) return empty({ ref }, 'Specify which remediation action to reject (id or title)')
-    audit(ctx, 'copilot.remediation.reject_prepared', { actionId: str(action.id), title: str(action.title) })
+    const action = ref ? actions.find((a) => matchesAction(a, ref)) : null
+    if (!action) return empty({ ref }, 'Specify which remediation action to reject (its asset or recommended fix)')
+    const title = actionTitle(action)
+    audit(ctx, 'copilot.remediation.reject_prepared', { actionId: action.id, title })
     return preparedAction({
       action: 'rejectRemediation',
       module: 'remediation',
       deepLink: modulePath('remediation'),
-      summary: `Rejection prepared for "${str(action.title)}" — confirm in the Remediation Center (the decision is audited).`,
-      preflight: { actionId: str(action.id), title: str(action.title) },
-      evidence: [ev('Quantum Remediation Engine™', 'Action ready for rejection', str(action.title), { deepLink: modulePath('remediation') })],
+      summary: `Rejection prepared for "${title}" — confirm in the Remediation Center (the decision is audited).`,
+      preflight: { actionId: action.id, title },
+      evidence: [ev('Quantum Remediation Engine™', 'Action ready for rejection', title, { deepLink: modulePath('remediation') })],
     })
   },
 })
@@ -1019,23 +1344,105 @@ register({
 
 /* ---- Certificates / PKI ------------------------------------------- */
 
+export interface CertificateView {
+  name: string
+  asset: string | null
+  algorithm: string
+  keySize: number | null
+  issuer: string
+  notAfter: string | null
+  daysRemaining: number | null
+  expired: boolean
+  expiringSoon: boolean
+  quantum: 'safe' | 'vulnerable' | 'unknown'
+  weakReasons: string[]
+}
+
+const CLASSICAL_PUBLIC_KEY = new Set(['rsa', 'ecdsa', 'ecdh', 'dh', 'dsa'])
+const POST_QUANTUM = new Set(['ml-dsa', 'slh-dsa', 'ml-kem', 'hybrid'])
+
+function describeCertificate(r: Record<string, unknown>, assetName: Map<string, string>, nowMs: number, withinDays: number): CertificateView {
+  const expiresMs = r.not_after ? new Date(str(r.not_after)).getTime() : NaN
+  const daysRemaining = Number.isFinite(expiresMs) ? Math.floor((expiresMs - nowMs) / 86400000) : null
+  const algorithm = str(r.algorithm)
+  const family = algorithmFamily(algorithm)
+  // The stored flag is the scanner's verdict. Only when it is absent is the
+  // algorithm family consulted, and an unparseable algorithm stays unknown —
+  // an absent flag used to be counted as quantum-vulnerable.
+  const quantum: CertificateView['quantum'] = r.is_quantum_safe === true ? 'safe'
+    : r.is_quantum_safe === false ? 'vulnerable'
+    : CLASSICAL_PUBLIC_KEY.has(family) ? 'vulnerable'
+    : POST_QUANTUM.has(family) ? 'safe'
+    : 'unknown'
+  const keySize = num(r.key_size)
+  const weakReasons: string[] = []
+  if (involvesAlgorithmFamily(algorithm, 'rsa') && keySize > 0 && keySize < 2048) weakReasons.push(`RSA-${keySize} is below the 2048-bit minimum`)
+  if ((family === 'ecdsa' || family === 'ecdh') && keySize > 0 && keySize < 256) weakReasons.push(`${keySize}-bit elliptic curve is below 256 bits`)
+  if (involvesAlgorithmFamily(algorithm, 'sha1')) weakReasons.push('SHA-1 signature (deprecated, collision-prone)')
+  if (involvesAlgorithmFamily(algorithm, 'md5')) weakReasons.push('MD5 signature (broken)')
+  return {
+    name: str(r.name) || 'Unnamed certificate',
+    asset: assetName.get(str(r.asset_id)) || null,
+    algorithm: algorithm || 'unknown',
+    keySize: keySize || null,
+    issuer: str(r.issuer) || 'Unknown issuer',
+    notAfter: str(r.not_after) || null,
+    daysRemaining,
+    expired: daysRemaining !== null && daysRemaining < 0,
+    // A window the user named ("next 7 days") is applied exactly; otherwise the
+    // stored flag — the PKI module's own expiring-soon window — decides.
+    expiringSoon: withinDays > 0
+      ? daysRemaining !== null && daysRemaining >= 0 && daysRemaining <= withinDays
+      : r.is_expiring_soon === true,
+    quantum,
+    weakReasons,
+  }
+}
+
 register({
   name: 'getCertificates',
   module: 'pki',
   description: 'Certificate inventory with quantum-safety and expiry posture',
   capability: 'read',
-  async execute(ctx) {
-    const [rows, total] = await Promise.all([
-      tenantRows(ctx, 'certificates', 'id, asset_id, name, algorithm, key_size, issuer, not_after, is_quantum_safe, is_expiring_soon, status', (q) => q.order('not_after', { ascending: true }), 300),
+  async execute(ctx, args) {
+    const [rows, total, assets] = await Promise.all([
+      tenantRows(ctx, 'certificates', 'id, asset_id, name, algorithm, key_size, issuer, not_after, is_quantum_safe, is_expiring_soon, status, updated_at', (q) => q.order('not_after', { ascending: true }), 500),
       tenantCount(ctx, 'certificates'),
+      tenantRows(ctx, 'assets', 'id, name', (q) => q, 800),
     ])
+    const assetName = new Map(assets.map((a) => [str(a.id), str(a.name)]))
     const nowMs = Date.now()
-    const expired = rows.filter((r) => r.not_after && new Date(str(r.not_after)).getTime() < nowMs)
-    const expiring = rows.filter((r) => r.is_expiring_soon === true)
-    const quantumVulnerable = rows.filter((r) => r.is_quantum_safe !== true)
+    const withinDays = Math.max(0, Math.min(3650, num(args.withinDays)))
+    const certs = rows.map((r) => describeCertificate(r, assetName, nowMs, withinDays))
+    const expired = certs.filter((c) => c.expired)
+    const expiring = certs.filter((c) => !c.expired && c.expiringSoon)
+    const quantumVulnerable = certs.filter((c) => c.quantum === 'vulnerable')
+    const weak = certs.filter((c) => c.weakReasons.length > 0)
+    const issuers = new Map<string, { issuer: string; certificates: number; quantumSafe: number }>()
+    for (const c of certs) {
+      const g = issuers.get(c.issuer) || { issuer: c.issuer, certificates: 0, quantumSafe: 0 }
+      g.certificates += 1
+      if (c.quantum === 'safe') g.quantumSafe += 1
+      issuers.set(c.issuer, g)
+    }
     return ok(
-      { total: total ?? rows.length, expired: expired.length, expiringSoon: expiring.length, quantumVulnerable: quantumVulnerable.length, sample: rows.slice(0, 30) },
-      [ev('PKI Visibility', 'Certificates', String(total ?? rows.length), { detail: `${quantumVulnerable.length} quantum-vulnerable · ${expired.length} expired · ${expiring.length} expiring soon`, deepLink: modulePath('pki') })],
+      {
+        total: total ?? rows.length,
+        listed: certs.length,
+        expired: expired.length,
+        expiringSoon: expiring.length,
+        withinDays: withinDays || null,
+        quantumVulnerable: quantumVulnerable.length,
+        quantumUnknown: certs.filter((c) => c.quantum === 'unknown').length,
+        weak: weak.length,
+        expiredList: expired.slice(0, 25),
+        expiringList: expiring.sort((a, b) => (a.daysRemaining ?? 0) - (b.daysRemaining ?? 0)).slice(0, 25),
+        vulnerableList: quantumVulnerable.slice(0, 25),
+        weakList: weak.slice(0, 25),
+        issuers: [...issuers.values()].sort((a, b) => b.certificates - a.certificates).slice(0, 20),
+        sample: certs.slice(0, 30),
+      },
+      [ev('PKI Visibility', 'Certificates', String(total ?? rows.length), { detail: `${quantumVulnerable.length} quantum-vulnerable · ${expired.length} expired · ${expiring.length} expiring soon${weak.length ? ` · ${weak.length} weak` : ''}`, deepLink: modulePath('pki') })],
       total ?? rows.length,
     )
   },
@@ -1149,13 +1556,57 @@ register({
   capability: 'read',
   async execute(ctx, _args, deps) {
     const hndl = await deps.hndl(ctx.token, ctx.userId)
-    const banner = rec(hndl.banner)
-    const future = rec(hndl.futureDecryptable)
-    const fs = rec(hndl.forwardSecrecy)
+    // The banner's fields are threatLevel / hndlExposureScore / headline. The
+    // tool previously read `level || severity` and `message`, neither of which
+    // exists, so every HNDL answer said "exposure: assessed".
+    const banner = hndl.banner
+    const fs = hndl.forwardSecrecy
+    const future = hndl.futureDecryptable
+    const topFindings = (hndl.topFindings || []).slice(0, 12)
     return ok(
-      { banner, futureDecryptable: future, forwardSecrecy: fs, topFindings: arr(hndl.topFindings).slice(0, 10) },
-      [ev('Harvest Now (HNDL)', 'HNDL exposure', str(banner.level || banner.severity) || 'assessed', { detail: str(banner.headline || banner.message) || undefined, deepLink: modulePath('harvest_now') })],
-      arr(hndl.topFindings).length || 1,
+      {
+        hasData: hndl.hasData === true,
+        threatLevel: banner.threatLevel,
+        hndlScore: num(banner.hndlExposureScore),
+        hndlLevel: str(banner.hndlExposureLevel),
+        criticalExposures: num(banner.criticalFindings),
+        exposureWindow: str(banner.quantumExposureWindow),
+        migrationDeadlineYear: num(banner.migrationDeadlineYear),
+        yearsToDeadline: num(banner.yearsToDeadline),
+        headline: str(banner.headline),
+        forwardSecrecy: {
+          hasEvidence: fs.hasEvidence === true,
+          coveragePct: num(fs.coveragePct),
+          componentsMeasured: num(fs.componentsMeasured),
+          componentsWithoutPfs: num(fs.assetsUnprotected),
+          componentsNotApplicable: num(fs.componentsNotApplicable),
+          assetsWithPfs: num(fs.assetsWithPfs),
+          assetsWithoutPfs: num(fs.assetsWithoutPfs),
+          nonPfsBreakdown: fs.nonPfsBreakdown || [],
+          topUnprotected: fs.topUnprotected || [],
+          basis: str(fs.basis),
+        },
+        // Terabyte figures are a MODEL (per-asset-class volume assumptions ×
+        // the measured vulnerable share) — carried with that flag so an answer
+        // can never present them as a measurement.
+        futureDecryptable: {
+          modelled: true,
+          hasEvidence: future.hasEvidence === true,
+          projectedDecryptableTb: num(future.projectedDecryptableTb),
+          totalDataAtRiskTb: num(future.totalDataAtRiskTb),
+          vulnerableSharePct: num(future.vulnerableSharePct),
+        },
+        topFindings,
+        modelledActions: (hndl.remediationCenter || []).filter((a) => a.inScope).slice(0, 6),
+        lastScanAt: hndl.lastScanAt || null,
+      },
+      [ev('Harvest Now (HNDL)', 'HNDL threat level', hndl.hasData ? `${banner.threatLevel} · ${num(banner.hndlExposureScore)}/100` : 'no evidence yet', {
+        detail: str(banner.headline) || undefined,
+        observedAt: hndl.lastScanAt || undefined,
+        deepLink: modulePath('harvest_now'),
+      })],
+      hndl.hasData ? Math.max(1, topFindings.length) : 0,
+      hndl.hasData ? undefined : 'No assessment evidence yet — HNDL exposure is derived from scan evidence.',
     )
   },
 })
@@ -1228,7 +1679,14 @@ register({
     const legacy = rows.filter((r) => r.is_legacy === true).length
     const hndl = rows.filter((r) => r.hndl_risk === true).length
     return ok(
-      { recentEvents: rows.length, pqcEvents: pqc, legacyEvents: legacy, hndlFlagged: hndl, latestAt: str(rows[0]?.observed_at) || null },
+      {
+        recentEvents: rows.length,
+        pqcEvents: pqc,
+        legacyEvents: legacy,
+        hndlFlagged: hndl,
+        latestAt: str(rows[0]?.observed_at) || null,
+        recent: rows.slice(0, 40).map((r) => ({ algorithm: str(r.algorithm), severity: str(r.severity), is_legacy: r.is_legacy === true, is_pqc: r.is_pqc === true, hndl_risk: r.hndl_risk === true, observed_at: str(r.observed_at) })),
+      },
       [ev('Runtime Telemetry', 'Recent runtime crypto events', String(rows.length), { detail: `${legacy} legacy · ${pqc} PQC · ${hndl} HNDL-flagged`, observedAt: str(rows[0]?.observed_at) || undefined, deepLink: modulePath('telemetry') })],
       rows.length,
     )
@@ -1299,8 +1757,23 @@ register({
   async execute(ctx) {
     const rows = await tenantRows(ctx, 'scanner_agents', AGENT_SELECT, (q) => q.is('revoked_at', null), 100)
     const online = rows.filter(agentOnline).length
+    const agents = rows.map((r) => ({
+      name: str(r.name) || str(r.hostname) || 'Unnamed agent',
+      hostname: str(r.hostname) || null,
+      platform: str(r.platform) || null,
+      version: str(r.version) || null,
+      online: agentOnline(r),
+      lastSeenAt: str(r.last_seen_at) || null,
+    }))
     return ok(
-      { fleet: rows.length, online, offline: rows.length - online, healthy: online === rows.length && rows.length > 0 },
+      {
+        fleet: rows.length,
+        online,
+        offline: rows.length - online,
+        healthy: online === rows.length && rows.length > 0,
+        onlineWindowMinutes: ONLINE_WINDOW_MS / 60000,
+        agents: agents.sort((a, b) => Number(a.online) - Number(b.online)).slice(0, 40),
+      },
       [ev('Agent Collectors', 'Fleet status', rows.length ? `${online}/${rows.length} online` : 'no collectors enrolled', { deepLink: modulePath('collectors') })],
       rows.length,
     )
@@ -1472,7 +1945,16 @@ register({
     const scores = rec(snapshot.scores)
     const inventory = rec(snapshot.inventory)
     return ok(
-      { scores, inventory, hasData: Boolean(snapshot.hasData), lastAssessmentAt: str(snapshot.lastAssessmentAt) || null },
+      {
+        scores,
+        inventory,
+        hasData: Boolean(snapshot.hasData),
+        lastAssessmentAt: str(snapshot.lastAssessmentAt) || null,
+        // The factor breakdown the QR Engine page renders — what "explain my
+        // readiness score" is actually asking for.
+        readinessFactors: (snapshot.readinessFactors || []).map((f) => ({ label: f.label, score: num(f.score) })),
+        riskFactors: (snapshot.riskFactors || []).map((f) => ({ label: f.label, score: num(f.score), severity: str(f.severity) })),
+      },
       [ev('Quantum Readiness', 'Quantum readiness', `${num(scores.quantumReadiness)}/100 (${str(scores.quantumReadinessLevel)})`, { detail: `risk ${num(scores.quantumRisk)} · HNDL ${num(scores.hndlRisk)} · PQC adoption ${num(scores.pqcAdoption)}%`, observedAt: str(snapshot.lastAssessmentAt) || undefined, deepLink: modulePath('quantum_readiness') })],
       Boolean(snapshot.hasData) ? 1 : 0,
       Boolean(snapshot.hasData) ? undefined : 'No assessment data yet — run a discovery scan to generate readiness scores.',
@@ -1538,16 +2020,29 @@ register({
   capability: 'read',
   async execute(ctx, _args, deps) {
     const dash = await deps.certification(ctx.token, ctx.userId, ctx.email)
-    const cert = rec(dash.certificate)
-    const eligibility = rec(dash.eligibility)
+    const cert = dash.certificate
+    const eligibility = dash.eligibility
+    const requiredMet = num(eligibility?.requiredMet)
+    const requiredTotal = num(eligibility?.requiredTotal)
     return ok(
-      { certified: Boolean(dash.certificate), certificate: dash.certificate ? cert : null, eligibility, renewal: rec(dash.renewal), schemaReady: Boolean(dash.schemaReady) },
+      {
+        certified: Boolean(cert),
+        certificate: cert ? { level: cert.level, levelLabel: cert.levelLabel, trustScore: cert.trustScore, status: cert.status, issuedAt: cert.issuedAt, expiresAt: cert.expiresAt } : null,
+        eligible: eligibility?.eligible === true,
+        issuable: eligibility?.issuable === true,
+        requiredMet,
+        requiredTotal,
+        currentLevelLabel: str(eligibility?.levelLabel),
+        trustScore: num(eligibility?.trustScore),
+        renewal: dash.renewal || null,
+        schemaReady: dash.schemaReady === true,
+      },
       [
-        dash.certificate
-          ? ev('Quantum Trust Certification™', 'Certification', `${str(cert.levelLabel) || str(cert.level)} — trust score ${num(cert.trustScore)}`, { deepLink: modulePath('certification') })
-          : ev('Quantum Trust Certification™', 'Certification', 'not yet certified', { detail: str(eligibility.summary) || undefined, deepLink: modulePath('certification') }),
+        cert
+          ? ev('Quantum Trust Certification™', 'Certification', `${cert.levelLabel || cert.level} — trust score ${num(cert.trustScore)}`, { deepLink: modulePath('certification') })
+          : ev('Quantum Trust Certification™', 'Certification', 'not yet certified', { detail: requiredTotal ? `${requiredMet}/${requiredTotal} required criteria met` : undefined, deepLink: modulePath('certification') }),
       ],
-      dash.certificate ? 1 : 0,
+      cert ? 1 : 0,
     )
   },
 })
@@ -1560,20 +2055,64 @@ register({
   async execute(ctx, _args, deps) {
     const [dash, plan] = await Promise.all([
       deps.certification(ctx.token, ctx.userId, ctx.email),
-      deps.remediationPlan(ctx.token, ctx.userId).catch(() => ({} as Record<string, unknown>)),
+      deps.remediationPlan(ctx.token, ctx.userId).catch(() => null as RemediationPlan | null),
     ])
-    const eligibility = rec(dash.eligibility)
-    const criteria = arr(eligibility.criteria) as Array<Record<string, unknown>>
-    const unmet = criteria.filter((c) => c.met !== true)
+    const eligibility = dash.eligibility
+    // EligibilityResult carries its criteria in `checks`, each named by
+    // `criterion`. Reading `criteria` / `label` (fields that do not exist)
+    // made every tenant look "not eligible, 0 criteria unmet".
+    const checks = Array.isArray(eligibility?.checks) ? eligibility.checks : []
+    const toCriterion = (c: (typeof checks)[number]) => ({
+      id: c.id,
+      label: c.criterion,
+      required: c.required,
+      actual: c.actual,
+      met: c.met === true,
+      severity: c.severity,
+      remediation: c.remediation,
+      evidence: c.evidence,
+    })
+    const criteria = checks.map(toCriterion)
+    const unmet = criteria.filter((c) => !c.met)
+    const requiredUnmet = unmet.filter((c) => c.severity === 'required')
+    // The Remediation Engine's requirement gaps name the assets and actions that
+    // close each criterion, and its projection dates certification.
+    const gaps = (plan?.requirements || []).filter((r) => r.status === 'unmet').map((r) => ({
+      id: r.id,
+      requirement: r.requirement,
+      recommendedSolution: r.recommendedSolution,
+      relatedAssets: r.relatedAssets.slice(0, 6),
+      relatedActions: r.relatedActionIds.length,
+      estimatedCompletionWeeks: r.estimatedCompletionWeeks,
+      estimatedScoreIncreasePct: r.estimatedScoreIncreasePct,
+      route: r.integration?.route || modulePath('remediation'),
+    }))
     return ok(
       {
-        eligible: eligibility.eligible === true,
-        criteria: criteria.slice(0, 12),
-        unmet: unmet.slice(0, 10),
-        certificationReadinessPct: num(rec(plan).certificationReadinessPct),
+        eligible: eligibility?.eligible === true,
+        issuable: eligibility?.issuable === true,
+        hasData: eligibility?.hasData === true,
+        levelLabel: str(eligibility?.levelLabel),
+        trustScore: num(eligibility?.trustScore),
+        requiredMet: num(eligibility?.requiredMet),
+        requiredTotal: num(eligibility?.requiredTotal) || criteria.filter((c) => c.severity === 'required').length,
+        criteria,
+        unmet,
+        requiredUnmet,
+        gaps,
+        certificationReadinessPct: num(plan?.certificationReadinessPct),
+        estimatedCertificationDate: plan?.estimatedCertificationDate || null,
+        estimatedCompletionWeeks: num(plan?.estimatedCompletionWeeks),
+        ladder: (plan?.ladder || []).slice(0, 12),
       },
-      [ev('Quantum Trust Certification™', 'Eligibility', eligibility.eligible === true ? 'eligible' : `${unmet.length} criteria unmet`, { detail: unmet.slice(0, 3).map((c) => str(c.label || c.id)).join(', ') || undefined, deepLink: modulePath('certification') })],
+      [ev('Quantum Trust Certification™', 'Eligibility', eligibility?.eligible === true ? 'eligible' : `${requiredUnmet.length} required criteria unmet`, {
+        // No observedAt: evaluatedAt is when the rules ran (now), not the age
+        // of the evidence — stamping it would make stale evidence read fresh.
+        detail: requiredUnmet.slice(0, 3).map((c) => c.label).join(', ') || undefined,
+        deepLink: modulePath('certification'),
+      })],
       criteria.length,
+      criteria.length ? undefined : 'No certification criteria were evaluated — run an assessment first.',
     )
   },
 })
@@ -1750,12 +2289,23 @@ register({
       deps.remediationPlan(ctx.token, ctx.userId).catch(() => ({} as Record<string, unknown>)),
     ])
     const snapshotActions = arr(snapshot.recommendedActions).slice(0, 8)
-    const planActions = (arr(rec(plan).actions) as Array<Record<string, unknown>>)
-      .filter((a) => str(a.status) !== 'completed')
-      .slice(0, 8)
+    const planActions = (Array.isArray(rec(plan).actions) ? (plan as RemediationPlan).actions : [])
+      .filter((a) => a.status !== 'resolved')
+    // Two different units: estate-level platform recommendations and
+    // asset-level remediation actions. Summing them produced "9 prioritized
+    // actions" beside "6 pending remediation actions" for the same queue.
     return ok(
-      { snapshotRecommendations: snapshotActions, remediationActions: planActions, certificationReadinessPct: num(rec(plan).certificationReadinessPct) },
-      [ev('Quantum Remediation Engine™', 'Prioritized actions', String(snapshotActions.length + planActions.length), { deepLink: modulePath('remediation') })],
+      {
+        snapshotRecommendations: snapshotActions,
+        remediationActions: planActions.slice(0, 8).map(toActionRow),
+        remediationActionCount: planActions.length,
+        platformRecommendationCount: snapshotActions.length,
+        certificationReadinessPct: num(rec(plan).certificationReadinessPct),
+      },
+      [ev('Quantum Remediation Engine™', 'Platform recommendations', String(snapshotActions.length), {
+        detail: `estate-level guidance · the asset-level queue holds ${planActions.length} remediation action(s)`,
+        deepLink: modulePath('remediation'),
+      })],
       snapshotActions.length + planActions.length,
     )
   },

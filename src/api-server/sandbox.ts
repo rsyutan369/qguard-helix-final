@@ -6,6 +6,7 @@ import { dedupeGradedObservations, namesCryptography, observationClass } from '@
 import { riskBandFor, riskScoreFromLoad } from '@/lib/migration/asset-intelligence'
 import { isSimulationJob, jobPlanId } from '@/lib/migration/job-safety'
 import { describeOperationalWorkflow, type OperationalAgent } from '@/lib/migration/operational-workflow'
+import { resolveWriteAuthority } from '@/lib/agent-installer/agent-scope'
 import { jobExecutionClass } from './agent-scanner'
 import {
   ENGINE_PIPELINE_STAGES,
@@ -887,7 +888,7 @@ async function loadAgentFleet(client: any, userId: string): Promise<OperationalA
   try {
     const { data, error } = await client
       .from('scanner_agents')
-      .select('id, name, hostname, status, last_seen_at, revoked_at, role:metadata->>role')
+      .select('id, name, hostname, status, last_seen_at, revoked_at, capabilities, role:metadata->>role, remediation_authorized:metadata->remediationAuthorized, migration_authorized:metadata->migrationAuthorized')
       .eq('user_id', userId)
       .limit(500)
     if (error) {
@@ -902,6 +903,10 @@ async function loadAgentFleet(client: any, userId: string): Promise<OperationalA
       role: row.role || null,
       lastSeenAt: row.last_seen_at || null,
       revoked: Boolean(row.revoked_at) || String(row.status || '').toLowerCase() === 'revoked',
+      writeAuthority: resolveWriteAuthority(row.role, row.capabilities, {
+        remediationAuthorized: row.remediation_authorized,
+        migrationAuthorized: row.migration_authorized,
+      }),
     }))
   } catch (error: any) {
     console.warn('[sandbox] agent fleet read threw:', error?.message || error)

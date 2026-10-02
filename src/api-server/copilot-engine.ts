@@ -24,21 +24,37 @@ import {
   modulePath,
   moduleLabel,
   STANDARDS,
+  type QueryFilter,
 } from './copilot-knowledge'
 import {
   liveBuilders,
   runTool,
   TOOL_REGISTRY,
+  type AssetView,
   type CopilotBuilders,
   type ToolContext,
   type ToolExecution,
   type ToolResult,
 } from './copilot-tools'
+import {
+  answerFocus,
+  finalizeFocus,
+  FOCUS_SPECS,
+  focusLabel,
+  focusTools,
+  resolveFocus,
+  type FocusAnswer,
+  type FocusId,
+  type SourceStatus,
+} from './copilot-answers'
 import type {
   CopilotAgentId,
   CopilotAnswer,
+  CopilotAnswerGrounding,
   CopilotAnswerMode,
   CopilotEvidence,
+  CopilotFigure,
+  CopilotFigureChange,
   CopilotInsight,
   CopilotIntent,
   CopilotMemoryState,
@@ -172,6 +188,9 @@ export interface ExecutionPlan {
   objectiveKind: CopilotObjectiveKind
   objective: string
   expansion: string[]
+  /** The topic specialist that owns this question (null → cross-module agents). */
+  focus: FocusId | null
+  filter: QueryFilter
 }
 
 const ALL_AGENTS: CopilotAgentId[] = [
@@ -184,6 +203,14 @@ export function planQuery(question: string, memory: CopilotMemoryState): Executi
   const detection = detectIntents(question, memory.focusIntents)
   const objective = inferObjective(question, detection.intents)
   const { modules, agents } = planForIntents(detection.intents)
+  const filter = extractQueryFilter(question)
+  // The topic specialist that owns the question. Its sources are pinned ahead
+  // of every other tool so the planner's cap can never drop them.
+  const focus = resolveFocus(question, detection.intents, objective.kind, filter)
+  const pinned: string[] = [...focusTools(focus)]
+  // Entity linking: any word that might name one of the tenant's records is
+  // resolved against the REAL asset register ("status of orders-db").
+  if (filter.mentions.length && !pinned.includes('getAssetRegister')) pinned.push('getAssetRegister')
 
   const tools: string[] = []
   for (const intent of detection.intents) {
@@ -215,13 +242,15 @@ export function planQuery(question: string, memory: CopilotMemoryState): Executi
   // ("show my most vulnerable assets") never do — asking a question is not a
   // name filter, and treating it as one produced contradictory "0 match"
   // answers over live risk data.
-  const filter = extractQueryFilter(question)
   const args: Record<string, unknown> = {
     query: filter.query,
     algorithms: filter.algorithms,
     algorithmLabels: filter.algorithmLabels,
     entity: filter.entity,
     wantsOwner: filter.wantsOwner,
+    mentions: filter.mentions,
+    question,
+    withinDays: filter.withinDays,
   }
   if (filter.internetFacing) args.internetFacing = true
   if (filter.criticality) args.criticality = filter.criticality
@@ -244,18 +273,27 @@ export function planQuery(question: string, memory: CopilotMemoryState): Executi
     ? [...new Set([...modules, 'quantum_readiness', 'risk_analysis', 'exposure_graph', 'live_migration', 'pki', 'compliance'])]
     : modules
 
+  // Investigations may consult up to 24 sources; focused lookups stay at 10.
+  // Pinned (specialist) sources always come first.
+  const cap = objective.investigate ? 24 : 10
+  const ordered = [...pinned, ...tools.filter((t) => !pinned.includes(t))]
+
   return {
     intents: detection.intents,
     agents: [...agentSet],
-    modules: modeModules,
-    // Investigations may consult up to 22 tools; focused lookups stay at 9.
-    tools: tools.slice(0, objective.investigate ? 22 : 9),
+    modules: focus ? [...new Set([...modeModules, ...focusTools(focus).map((t) => TOOL_REGISTRY[t]?.module).filter(Boolean) as string[]])] : modeModules,
+    tools: ordered.slice(0, Math.max(cap, pinned.length)),
     args,
     followUp: detection.followUp,
     mode: objective.investigate ? 'investigate' : 'direct',
     objectiveKind: objective.kind,
-    objective: objective.objective,
+    // A specialist states the objective precisely; the generic inference is
+    // the fallback ("a focused status readout for a specific area" told the
+    // user nothing about what was understood).
+    objective: focus ? FOCUS_SPECS[focus].objective : objective.objective,
     expansion: expandQuestion(question, detection.intents),
+    focus,
+    filter,
   }
 }
 
@@ -430,7 +468,7 @@ const AGENT_SYNTH: Record<CopilotAgentId, (b: SynthBundle) => AgentContribution>
     const pending = b.tool('getPendingRemediation')
 
     if (wf) {
-      findings.push(`Migration workflow is ${num(wf.data.overallProgressPct)}% complete (stage: ${str(wf.data.currentStageId) || 'not started'}).`)
+      findings.push(`Migration workflow is ${num(wf.data.overallProgressPct)}% complete (stage: ${str(wf.data.currentStageLabel) || str(wf.data.currentStageId) || 'not started'}).`)
       const next = rec(wf.data.nextAction)
       if (str(next.label)) {
         recommendations.push({
@@ -554,9 +592,12 @@ const AGENT_SYNTH: Record<CopilotAgentId, (b: SynthBundle) => AgentContribution>
       }
     }
     if (hndl) {
-      const banner = rec(hndl.data.banner)
-      if (str(banner.level || banner.severity)) {
-        risk = { ...risk, level: maxRisk(risk.level, /critical|severe/i.test(str(banner.level || banner.severity)) ? 'critical' : 'high'), drivers: [...risk.drivers, 'Harvest-Now-Decrypt-Later exposure on long-lived data'] }
+      // Escalate only from the MEASURED threat level (Critical/High); a
+      // Guarded or Elevated tenant is not raised to "high" by the mere
+      // presence of the HNDL module.
+      const threat = str(hndl.data.threatLevel)
+      if (hndl.data.hasData === true && /critical|high/i.test(threat)) {
+        risk = { ...risk, level: maxRisk(risk.level, /critical/i.test(threat) ? 'critical' : 'high'), drivers: [...risk.drivers, `HNDL threat level ${threat} (${num(hndl.data.hndlScore)}/100)`] }
       }
       recommendations.push({
         title: 'Close the Harvest-Now window',
@@ -716,14 +757,17 @@ const AGENT_SYNTH: Record<CopilotAgentId, (b: SynthBundle) => AgentContribution>
     const hndl = b.tool('getHarvestNowExposure')
     const score = b.tool('getRiskScore')
 
-    if (hndl) {
-      const future = rec(hndl.data.futureDecryptable)
+    if (hndl && hndl.data.hasData === true) {
       const fs = rec(hndl.data.forwardSecrecy)
-      const banner = rec(hndl.data.banner)
-      if (str(banner.headline || banner.message)) findings.push(str(banner.headline || banner.message))
-      if (Object.keys(future).length) findings.push('Data recorded today without quantum-safe key establishment remains decryptable once a cryptanalytically relevant quantum computer exists.')
-      if (Object.keys(fs).length) findings.push('Forward-secrecy coverage determines how much captured traffic stays protected — see the HNDL forward-secrecy panel for per-endpoint state.')
-      risk = { level: 'high', drivers: ['HNDL: long-lived sensitive data under legacy key establishment'] }
+      const threat = str(hndl.data.threatLevel)
+      if (str(hndl.data.headline)) findings.push(str(hndl.data.headline))
+      if (fs.hasEvidence === true) {
+        findings.push(`Forward secrecy covers ${num(fs.coveragePct)}% of ${num(fs.componentsMeasured)} measured key exchange(s); ${num(fs.componentsWithoutPfs)} lack it.`)
+      }
+      // The level comes from the measured threat level — it was hardcoded to
+      // "high" for every tenant, including ones the HNDL module rates Guarded.
+      const level: CopilotRiskLevel = /critical/i.test(threat) ? 'critical' : /high/i.test(threat) ? 'high' : /elevated/i.test(threat) ? 'medium' : 'low'
+      risk = { level, drivers: [`HNDL threat level ${threat || 'unrated'} (${num(hndl.data.hndlScore)}/100)`] }
     }
     if (score && num(score.data.hndlRisk) >= 55) {
       risk = { level: maxRisk(risk.level, 'high'), score: num(score.data.hndlRisk), drivers: [...risk.drivers, `HNDL risk score ${num(score.data.hndlRisk)}/100`] }
@@ -832,7 +876,9 @@ function extractIntelligence(toolData: Map<string, ToolResult>): TenantIntellige
 
   const exposureSummary = rec(exposureData?.summary)
   const blast = blastData ? rec(blastData.blast) : null
-  const banner = rec(hndlData?.banner)
+  // The tools now publish these under their real names (threatLevel/headline,
+  // nextAction.label/path mapped from title/route, unmet criteria labelled
+  // from `criterion`) — see copilot-tools for the drift each one fixed.
   const nextAction = rec(migData?.nextAction)
 
   const hasData = Boolean(
@@ -871,9 +917,9 @@ function extractIntelligence(toolData: Map<string, ToolResult>): TenantIntellige
       criticalTrust: num(exposureSummary.criticalTrustRelationships), thirdParty: num(exposureData.thirdParty ?? exposureSummary.thirdPartyDependencies),
       blockers: num(exposureData.blockers), certificateChains: num(exposureSummary.certificateChains), internetFacing: num(exposureSummary.internetFacingAssets),
     } : null,
-    hndl: hndlData ? { level: str(banner.level || banner.severity) || 'assessed', headline: str(banner.headline || banner.message) } : null,
+    hndl: hndlData && hndlData.hasData === true ? { level: str(hndlData.threatLevel) || 'unrated', headline: str(hndlData.headline) } : null,
     migration: migData ? {
-      progressPct: num(migData.overallProgressPct), stage: str(migData.currentStageId) || 'not started',
+      progressPct: num(migData.overallProgressPct), stage: str(migData.currentStageLabel) || str(migData.currentStageId) || 'not started',
       certReadinessPct: num(migData.certificationReadinessPct), nextLabel: str(nextAction.label), nextPath: str(nextAction.path), nextDetail: str(nextAction.detail),
     } : null,
     jobs: jobsData ? { total: num(jobsData.total), active: arr(jobsData.active).length, failed: arr(jobsData.failed).length } : null,
@@ -883,7 +929,7 @@ function extractIntelligence(toolData: Map<string, ToolResult>): TenantIntellige
     } : null,
     certs: certData ? {
       total: num(certData.total), quantumVulnerable: num(certData.quantumVulnerable),
-      expired: num(certData.expired), expiringSoon: num(certData.expiringSoon), issuers: arr(rec(trustData).chains).length,
+      expired: num(certData.expired), expiringSoon: num(certData.expiringSoon), issuers: arr(certData.issuers).length,
     } : null,
     remediation: remData ? {
       pending: num(remData.pendingCount), criticalBlockers: num(remData.criticalBlockers),
@@ -891,7 +937,7 @@ function extractIntelligence(toolData: Map<string, ToolResult>): TenantIntellige
     } : null,
     certification: certifData ? {
       eligible: certifData.eligible === true,
-      unmet: (arr(certifData.unmet) as Array<Record<string, unknown>>).map((c) => str(c.label || c.id)).filter(Boolean).slice(0, 8),
+      unmet: (arr(certifData.requiredUnmet ?? certifData.unmet) as Array<Record<string, unknown>>).map((c) => str(c.label || c.id)).filter(Boolean).slice(0, 8),
       readinessPct: num(certifData.certificationReadinessPct),
     } : null,
     telemetry: teleData ? { legacy: num(teleData.legacyEvents), pqc: num(teleData.pqcEvents), hndlFlagged: num(teleData.hndlFlagged) } : null,
@@ -1336,11 +1382,89 @@ const INTENT_FOLLOW_UPS: Partial<Record<CopilotIntent, string[]>> = {
   scanner: ['Show critical findings.', 'Which algorithms were discovered?'],
 }
 
+/** The most recent value Sophia reported for each figure key (tenant-scoped). */
+export type PriorFigures = Record<string, { value: number; at: string }>
+
 export interface ComposeInput {
   question: string
   plan: ExecutionPlan
   executions: ToolExecution[]
   lastAssessmentAt?: string | null
+  priorFigures?: PriorFigures
+}
+
+/** A repeat question within this window says nothing new about change. */
+const CHANGE_MIN_AGE_MS = 10 * 60 * 1000
+
+/**
+ * Longitudinal memory — what moved since Sophia last reported the same
+ * measured figure to this tenant. Only measured values are compared; a figure
+ * with no earlier reading produces nothing rather than an invented baseline.
+ */
+export function computeChanges(figures: CopilotFigure[], prior: PriorFigures | undefined, now = Date.now()): CopilotFigureChange[] {
+  if (!prior) return []
+  const out: CopilotFigureChange[] = []
+  for (const f of figures) {
+    const p = prior[f.key]
+    if (!p || !Number.isFinite(p.value)) continue
+    const age = now - new Date(p.at).getTime()
+    if (!Number.isFinite(age) || age < CHANGE_MIN_AGE_MS) continue
+    const delta = Math.round((f.value - p.value) * 10) / 10
+    const direction: CopilotFigureChange['direction'] = delta === 0 ? 'unchanged'
+      : f.better === 'neutral' ? 'changed'
+        : (delta < 0) === (f.better === 'lower') ? 'improved' : 'worsened'
+    out.push({ key: f.key, label: f.label, previous: p.value, current: f.value, delta, unit: f.unit, direction, since: p.at })
+  }
+  return out
+}
+
+/** Headline figures of a cross-module (non-specialist) answer. */
+function intelFigures(intel: TenantIntelligence): CopilotFigure[] {
+  const out: CopilotFigure[] = []
+  if (intel.readiness != null) out.push({ key: 'readiness.score', label: 'Quantum readiness', value: intel.readiness, unit: '/100', better: 'higher', source: 'Quantum Readiness Assessment Engine™' })
+  if (intel.quantumRisk != null) out.push({ key: 'risk.quantum', label: 'Quantum risk', value: intel.quantumRisk, unit: '/100', better: 'lower', source: 'Quantum Risk Analysis' })
+  if (intel.vulnerableComponents != null) out.push({ key: 'cbom.vulnerable', label: 'Quantum-vulnerable components', value: intel.vulnerableComponents, better: 'lower', source: 'CBOM Explorer' })
+  if (intel.remediation) out.push({ key: 'remediation.pending', label: 'Pending remediation actions', value: intel.remediation.pending, better: 'lower', source: 'Quantum Remediation Engine™' })
+  if (intel.certification) out.push({ key: 'certification.readinessPct', label: 'Certification readiness', value: intel.certification.readinessPct, unit: '%', better: 'higher', source: 'Quantum Remediation Engine™' })
+  return out
+}
+
+/*
+ * Which deep-investigation narratives belong with which topic. A deep
+ * composer reasons about ONE subject (migration order, certification gaps,
+ * readiness…); attaching its narrative to a different topic is how "Summarize
+ * my compliance posture" came back as a readiness briefing.
+ */
+const NARRATIVE_FOR_FOCUS: Partial<Record<FocusId, CopilotObjectiveKind[]>> = {
+  certification_gap: ['gap_analysis'],
+  certification_next_level: ['gap_analysis'],
+  critical_blockers: ['gap_analysis'],
+  readiness: ['executive', 'explain'],
+  readiness_blockers: ['gap_analysis', 'explain'],
+  hndl_exposure: ['explain'],
+  hndl_reduction: ['guidance'],
+  critical_findings: ['explain'],
+  migration_priority: ['prioritization', 'guidance'],
+  most_vulnerable_assets: ['prioritization', 'explain'],
+  remediation_queue: ['prioritization', 'guidance'],
+}
+
+/** Topics whose answers benefit from the dependency-safe migration order and rollback plan. */
+const MIGRATION_CONTEXT_FOCUS = new Set<FocusId>(['migration_priority', 'remediation_queue', 'hndl_reduction', 'migration_effort', 'most_vulnerable_assets'])
+
+function focusConfidence(fa: FocusAnswer, focus: FocusId, runs: CopilotToolRun[], lastAssessmentAt?: string | null): number {
+  if (fa.unavailable) return 25
+  const own = focusTools(focus)
+  const okOwn = own.filter((t) => runs.some((r) => r.tool === t && r.status === 'ok')).length
+  let score = 55 + Math.round((okOwn / Math.max(1, own.length)) * 33)
+  if (lastAssessmentAt) {
+    const ageH = (Date.now() - new Date(lastAssessmentAt).getTime()) / 36e5
+    if (Number.isFinite(ageH) && ageH <= 24) score += 8
+    else if (Number.isFinite(ageH) && ageH > 72) score -= 12
+  }
+  score -= runs.filter((r) => r.status === 'error').length * 3
+  if (fa.noData) score = Math.min(score, 60)
+  return clamp(score, 5, 96)
 }
 
 /**
@@ -1445,6 +1569,90 @@ export function composeAnswer(input: ComposeInput): CopilotAnswer {
     return recs.filter((r) => (seen.has(r.title) ? false : (seen.add(r.title), true))).slice(0, 6)
   }
 
+  /* ---- Topic specialist: the module that owns the topic answers it ---- */
+  const register = toolData.get('getAssetRegister')
+  const assetScope = register ? (arr(register.data.matched) as AssetView[]) : []
+  const focus = finalizeFocus(plan.focus, assetScope)
+  if (focus) {
+    const statusOf = (name: string): SourceStatus => (toolRuns.find((r) => r.tool === name)?.status as SourceStatus | undefined) || 'missing'
+    const fa = answerFocus(focus, {
+      question: input.question,
+      filter: plan.filter,
+      tool: (name) => toolData.get(name) || null,
+      status: statusOf,
+      assetScope,
+    })
+    const freshness = describeFreshness(input.lastAssessmentAt)
+
+    // Investigations still correlate the wider platform — but only the
+    // sections that belong to this topic are attached.
+    const intel = plan.mode === 'investigate' ? extractIntelligence(toolData) : null
+    const deep = intel && intel.hasData && !fa.unavailable ? synthesizeDeep(plan.objectiveKind, intel, fa.objective) : null
+    const narrative = deep && (NARRATIVE_FOR_FOCUS[focus] || []).includes(plan.objectiveKind) ? deep : null
+    const migrationContext = MIGRATION_CONTEXT_FOCUS.has(focus)
+
+    // Evidence from the specialist's own sources leads.
+    const own = new Set(focusTools(focus))
+    const ownEvidence: CopilotEvidence[] = []
+    const otherEvidence: CopilotEvidence[] = []
+    for (const [name, result] of toolData) (own.has(name) ? ownEvidence : otherEvidence).push(...result.evidence)
+
+    const nextActions: CopilotNextAction[] = []
+    for (const a of [...preparedActions, ...fa.nextActions, ...(narrative?.nextActions || [])]) {
+      if (!nextActions.some((x) => x.path === a.path)) nextActions.push(a)
+    }
+    const recommendations = dedupeRecs([...fa.recommendations, ...(narrative?.recommendations || [])])
+    const figures = fa.figures
+    const grounding: CopilotAnswerGrounding = fa.unavailable ? 'none' : 'focused'
+    const sources = [...new Set([...own].map((t) => sourceLabel(t)))]
+
+    return {
+      id: nextId(),
+      intents: plan.intents,
+      agents: plan.agents,
+      summary: fa.headline,
+      reasoning: [
+        `Routed to the ${focusLabel(focus)} specialist${assetScope.length ? `, scoped to ${assetScope.map((a) => a.name).join(', ')}` : ''}.`,
+        `Answered from the topic's system of record: ${sources.join(', ')}.`,
+        freshness.sentence,
+        ...(deep ? [`Correlated ${okRuns} live source(s) across the platform for dependencies, rollback and proactive findings.`] : []),
+        ...sourceNotes(toolRuns, ['error', 'denied'], 3),
+      ],
+      evidence: [...ownEvidence, ...otherEvidence].slice(0, 14),
+      recommendations,
+      risk: fa.risk || agentRisk,
+      nextActions: nextActions.slice(0, 6),
+      relatedPages,
+      standards: [...new Set([...recommendations.flatMap((r) => r.standards), ...(narrative?.complianceAlignment?.map((s) => s.split(' — ')[0]) || [])])].slice(0, 8),
+      confidence: {
+        score: focusConfidence(fa, focus, toolRuns, input.lastAssessmentAt),
+        basis: `${focusLabel(focus)} specialist · ${confidenceBasis}`,
+      },
+      toolRuns,
+      followUps,
+      generatedAt: new Date().toISOString(),
+      mode: plan.mode,
+      objectiveKind: plan.objectiveKind,
+      objective: fa.objective,
+      keyFindings: fa.keyFindings.slice(0, 10),
+      focus,
+      focusLabel: focusLabel(focus),
+      grounding,
+      entities: fa.entities,
+      figures,
+      changes: computeChanges(figures, input.priorFigures),
+      rootCause: fa.rootCause ?? narrative?.rootCause,
+      businessImpact: narrative?.businessImpact,
+      technicalAnalysis: narrative?.technicalAnalysis,
+      migrationStrategy: migrationContext && deep ? deep.migrationStrategy : undefined,
+      dependencies: migrationContext || focus === 'blast_radius' ? deep?.dependencies : undefined,
+      potentialBreakages: migrationContext ? deep?.potentialBreakages : undefined,
+      rollbackStrategy: migrationContext ? deep?.rollbackStrategy : undefined,
+      riskOutlook: narrative?.riskOutlook,
+      proactiveFindings: intel && !fa.unavailable ? detectProactiveFindings(intel) : undefined,
+    }
+  }
+
   /* ---- Investigate mode: deep, correlated, consultant-grade answer ---- */
   if (plan.mode === 'investigate') {
     const intel = extractIntelligence(toolData)
@@ -1475,6 +1683,7 @@ export function composeAnswer(input: ComposeInput): CopilotAnswer {
         mode: 'investigate', objectiveKind: plan.objectiveKind, objective: plan.objective,
         keyFindings: ['No live cryptographic evidence found for this tenant yet.'],
         proactiveFindings: proactive,
+        grounding: 'none',
         generatedAt: new Date().toISOString(),
       }
     }
@@ -1529,6 +1738,9 @@ export function composeAnswer(input: ComposeInput): CopilotAnswer {
       riskOutlook: deep.riskOutlook,
       complianceAlignment: deep.complianceAlignment,
       proactiveFindings: proactive,
+      grounding: 'correlated',
+      figures: intelFigures(intel),
+      changes: computeChanges(intelFigures(intel), input.priorFigures),
     }
   }
 
@@ -1541,6 +1753,7 @@ export function composeAnswer(input: ComposeInput): CopilotAnswer {
   }
 
   let summary: string
+  let grounding: CopilotAnswerGrounding
   if (findings.length) {
     // The summary is the headline; the FULL findings list is carried on
     // keyFindings so nothing is silently dropped. Truncating to three here was
@@ -1548,10 +1761,20 @@ export function composeAnswer(input: ComposeInput): CopilotAnswer {
     // "…and who owns them?" — the user saw one asset and never learned the
     // others existed.
     summary = findings.slice(0, 3).join(' ')
+    grounding = 'correlated'
   } else if (emptyRuns === attempted && attempted > 0) {
     summary = 'No live data exists yet for this question. Connect a scanner, collector or cloud connector and run a discovery scan — I only report evidence, never estimates.'
+    grounding = 'none'
+  } else if (evidence.length) {
+    // Never dead-end while evidence is sitting right there. "I could not
+    // derive an evidence-backed answer" was printed directly above an
+    // evidence card reading "6 pending remediation actions". With no
+    // specialist for the exact question, restate what each source returned.
+    summary = `I don't have a dedicated specialist for that exact question, so here is what each source I consulted reports: ${evidence.slice(0, 4).map((e) => `${e.module} — ${e.label}: ${e.value}${e.detail ? ` (${e.detail})` : ''}`).join('; ')}. Ask about one of these areas for a ranked, detailed answer.`
+    grounding = 'digest'
   } else {
-    summary = 'I could not derive an evidence-backed answer for this question. Try one of the suggested questions, or ask about a specific module.'
+    summary = 'None of the sources I consulted returned evidence for this question, so I have nothing grounded to tell you — I don\'t guess. Try one of the suggested questions, or ask about a specific area such as remediation, certificates, assets or compliance.'
+    grounding = 'none'
   }
 
   /* Data freshness must be STATED, not merely folded into a confidence score.
@@ -1591,13 +1814,19 @@ export function composeAnswer(input: ComposeInput): CopilotAnswer {
     nextActions: nextActions.slice(0, 5),
     relatedPages,
     standards,
-    confidence: { score: confidenceScore, basis: confidenceBasis },
+    // Confidence is confidence in THIS ANSWER, not in the tools having run:
+    // a dead-end answer was shown at 88% because every source had responded.
+    confidence: {
+      score: grounding === 'none' ? Math.min(confidenceScore, 30) : grounding === 'digest' ? Math.min(confidenceScore, 55) : confidenceScore,
+      basis: `${grounding === 'digest' ? 'Source digest (no topic specialist) · ' : grounding === 'none' ? 'No grounded evidence · ' : ''}${confidenceBasis}`,
+    },
     toolRuns,
     followUps,
     generatedAt: new Date().toISOString(),
     mode: 'direct',
     objectiveKind: plan.objectiveKind,
     objective: plan.objective,
+    grounding,
   }
 }
 
@@ -1630,6 +1859,13 @@ export function blockedAnswer(reasons: string[]): CopilotAnswer {
 export interface QueryOutcome {
   answer: CopilotAnswer
   memory: CopilotMemoryState
+  /** No specialist or agent could ground an answer — logged so coverage can grow. */
+  knowledgeGap: boolean
+}
+
+export interface QueryOptions {
+  /** Figures Sophia previously reported to this tenant, for change tracking. */
+  priorFigures?: PriorFigures
 }
 
 export async function runCopilotQuery(
@@ -1638,6 +1874,7 @@ export async function runCopilotQuery(
   memory: CopilotMemoryState,
   emit: (event: CopilotStreamEvent) => void,
   deps: CopilotBuilders = liveBuilders,
+  options: QueryOptions = {},
 ): Promise<QueryOutcome> {
   emit({ type: 'stage', stage: 'thinking', label: 'Sophia is thinking…' })
 
@@ -1646,11 +1883,14 @@ export async function runCopilotQuery(
     const answer = blockedAnswer(sanitized.reasons)
     emit({ type: 'answer', answer })
     emit({ type: 'done' })
-    return { answer, memory: { ...memory, turns: memory.turns + 1 } }
+    return { answer, memory: { ...memory, turns: memory.turns + 1 }, knowledgeGap: false }
   }
 
   const plan = planQuery(sanitized.text, memory)
   emit({ type: 'stage', stage: 'intent', label: `Understood your objective: ${plan.objective}` })
+  if (plan.focus) {
+    emit({ type: 'stage', stage: 'planning', label: `Routing to the ${focusLabel(plan.focus)} specialist — reading ${[...new Set(focusTools(plan.focus).map(sourceLabel))].join(', ')}…` })
+  }
   if (plan.mode === 'investigate') {
     emit({ type: 'stage', stage: 'expanding', label: `Expanding the question — also examining: ${plan.expansion.slice(0, 4).join(', ')}` })
     emit({ type: 'stage', stage: 'investigating', label: `Running a full cross-module investigation (${plan.tools.length} sources across ${plan.modules.length} modules)…` })
@@ -1679,12 +1919,14 @@ export async function runCopilotQuery(
      assessment timestamp is recorded" even though every source it DID use
      carried an observation time. Prefer the QR assessment time, then fall back
      to the newest observedAt across the evidence actually gathered. */
-  let lastAssessmentAt: string | null = null
-  const readiness = executions.find((e) => e.run.tool === 'getQuantumReadiness')?.result
-  if (readiness) lastAssessmentAt = str(rec(readiness.data).lastAssessmentAt) || null
-  if (!lastAssessmentAt) {
+  /* The age stated is the age of the PRIMARY evidence — the specialist's own
+     sources, or the planner's first source. Taking the newest timestamp across
+     every source let one freshly computed side-source (a snapshot rollup) make
+     21-day-old primary evidence read as current. */
+  const newestObserved = (only?: string[]): number => {
     let newest = 0
     for (const execution of executions) {
+      if (only && !only.includes(execution.run.tool)) continue
       // A failed or denied tool has result === null — it contributed no
       // evidence and must not crash the freshness scan.
       for (const item of execution.result?.evidence || []) {
@@ -1692,11 +1934,23 @@ export async function runCopilotQuery(
         if (Number.isFinite(ms) && ms > newest) newest = ms
       }
     }
+    return newest
+  }
+  let lastAssessmentAt: string | null = null
+  const primary = plan.focus ? focusTools(plan.focus) : plan.tools.slice(0, 1)
+  const primaryAt = newestObserved(primary)
+  if (primaryAt > 0) lastAssessmentAt = new Date(primaryAt).toISOString()
+  if (!lastAssessmentAt) {
+    const readiness = executions.find((e) => e.run.tool === 'getQuantumReadiness')?.result
+    if (readiness) lastAssessmentAt = str(rec(readiness.data).lastAssessmentAt) || null
+  }
+  if (!lastAssessmentAt) {
+    const newest = newestObserved()
     if (newest > 0) lastAssessmentAt = new Date(newest).toISOString()
   }
 
   emit({ type: 'stage', stage: 'generating', label: plan.mode === 'investigate' ? 'Writing the consultant-grade analysis…' : 'Generating the evidence-based answer…' })
-  const answer = composeAnswer({ question: sanitized.text, plan, executions, lastAssessmentAt })
+  const answer = composeAnswer({ question: sanitized.text, plan, executions, lastAssessmentAt, priorFigures: options.priorFigures })
   emit({ type: 'answer', answer })
   emit({ type: 'done' })
 
@@ -1705,10 +1959,14 @@ export async function runCopilotQuery(
   for (const item of answer.evidence) {
     if (/asset/i.test(item.label) && item.detail) focusAssets.push(item.detail.slice(0, 60))
   }
+  // A named asset becomes the follow-up focus ("…and what depends on it?").
+  const registerExec = executions.find((e) => e.run.tool === 'getAssetRegister')?.result
+  const linked = registerExec ? (arr(registerExec.data.matched) as AssetView[]) : []
   const blastExec = executions.find((e) => e.run.tool === 'getBlastRadius')?.result
-  const focusEntity = blastExec ? str(rec(blastExec.data).asset) : memory.focusEntity
+  const focusEntity = linked[0]?.name || (blastExec ? str(rec(blastExec.data).asset) : memory.focusEntity)
 
   return {
+    knowledgeGap: answer.grounding === 'digest' || answer.grounding === 'none',
     answer,
     memory: {
       focusIntents: answer.intents.length ? answer.intents : memory.focusIntents,

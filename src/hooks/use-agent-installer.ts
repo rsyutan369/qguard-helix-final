@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import {
-  AGENT_ROLES,
   CAPABILITY_LABELS,
   type AgentCommand,
   type AgentPlatform,
   type AgentRole,
   type ConnectionState,
 } from '@/lib/agent-installer/agent-release';
+import { authorityFromRequest, authorizedCapabilities } from '@/lib/agent-installer/agent-scope';
 
 /**
  * useAgentInstaller — data layer for the Qguard Helix Agent Center (/downloads).
@@ -232,6 +232,26 @@ export type CreateAgentInput = {
   /** Explicit operator authorisation for a role that can change configuration. */
   remediationAuthorized: boolean;
   migrationAuthorized: boolean;
+  /** Where the deployment started (e.g. `local-assessment`) — recorded for the audit trail. */
+  source?: string;
+  /** The scan preset the operator picked, recorded with the agent. */
+  scanPreset?: string | null;
+};
+
+/** The agent row exactly as the control plane persisted it at enrolment. */
+export type EnrolledAgentRecord = {
+  id: string;
+  name: string;
+  capabilities?: Record<string, unknown> | null;
+  policy?: {
+    enabled?: boolean;
+    intervalSeconds?: number;
+    allowedTargets?: string[];
+    allowedPaths?: string[];
+    scanTypes?: string[];
+    alertThreshold?: string;
+  } | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 export type OneTimeToken = { agentId: string; token: string; createdAt: string; mode: 'created' | 'rotated' } | null;
@@ -551,22 +571,25 @@ export function useAgentInstaller(enabled: boolean) {
    * rows, audit events and security events all follow the one established path.
    */
   const createAgent = useCallback(
-    async (input: CreateAgentInput): Promise<ActionResult<{ agentId: string; token: string }>> => {
-      const definition = AGENT_ROLES.find((role) => role.id === input.role) || AGENT_ROLES[0];
-      const capabilities: Record<string, boolean> = { ...definition.capabilities };
+    async (input: CreateAgentInput): Promise<ActionResult<{ agentId: string; token: string; agent: EnrolledAgentRecord | null }>> => {
       // A role that CAN mutate still only does so when the operator said yes.
-      if (!input.remediationAuthorized) {
-        capabilities.remediation = false;
-        capabilities.config_patches = false;
-      }
-      if (!input.migrationAuthorized) capabilities.migration = false;
+      // The server derives the same answer from the same function; sending it
+      // here only keeps the request self-describing in the audit trail.
+      const authority = authorityFromRequest(input.role, {
+        remediationAuthorized: input.remediationAuthorized,
+        migrationAuthorized: input.migrationAuthorized,
+      });
+      const capabilities = authorizedCapabilities(input.role, authority);
 
-      const result = await call<{ agent: { id: string }; enrollment: { agentId: string; agentToken: string } }>(
+      const result = await call<{ agent: EnrolledAgentRecord; enrollment: { agentId: string; agentToken: string } }>(
         `${SCANNER_API}/agents/enroll`,
         {
           method: 'POST',
           body: JSON.stringify({
             name: input.name,
+            role: input.role,
+            remediationAuthorized: authority.remediation,
+            migrationAuthorized: authority.migration,
             environment: input.environment,
             hostname: 'pending-customer-install',
             platform: 'customer-managed',
@@ -586,9 +609,10 @@ export function useAgentInstaller(enabled: boolean) {
               description: input.description || '',
               assetId: input.assetId || null,
               assetName: input.assetName || null,
-              remediationAuthorized: input.remediationAuthorized,
-              migrationAuthorized: input.migrationAuthorized,
-              source: 'agent-center',
+              remediationAuthorized: authority.remediation,
+              migrationAuthorized: authority.migration,
+              source: input.source || 'agent-center',
+              ...(input.scanPreset ? { scanPreset: input.scanPreset } : {}),
             },
           }),
         },
@@ -601,9 +625,27 @@ export function useAgentInstaller(enabled: boolean) {
         setOneTimeToken({ agentId, token: agentToken, createdAt: new Date().toISOString(), mode: 'created' });
       }
       await Promise.all([loadSummary(), loadAssets()]);
-      return { ok: true, data: { agentId, token: agentToken } };
+      return { ok: true, data: { agentId, token: agentToken, agent: result.data.agent || null } };
     },
     [call, loadSummary, loadAssets, release],
+  );
+
+  /**
+   * Grant or revoke write authority on an existing agent. Revocation takes
+   * effect at the agent's next poll; granting re-checks the plan server-side.
+   */
+  const setWriteAuthority = useCallback(
+    async (agentId: string, change: { remediation?: boolean; migration?: boolean }) => {
+      const result = await call<{ authority: { remediation: boolean; migration: boolean }; hostNote: string }>(
+        `${SCANNER_API}/agents/${agentId}/authority`,
+        { method: 'PUT', body: JSON.stringify(change) },
+      );
+      if (result.ok) await loadSummary();
+      return result.ok && result.data
+        ? { ok: true, message: result.data.hostNote, data: result.data }
+        : { ok: false, message: result.message };
+    },
+    [call, loadSummary],
   );
 
   const rotateToken = useCallback(
@@ -733,6 +775,7 @@ export function useAgentInstaller(enabled: boolean) {
     refresh,
     loadAssets,
     createAgent,
+    setWriteAuthority,
     rotateToken,
     generatePackage,
     revokeAgent,

@@ -1,0 +1,49 @@
+# Deploy the Supabase `billing` Edge Function (manual, per environment).
+#
+# `--no-verify-jwt` is REQUIRED: PayPal's webhook calls this function without a
+# Supabase JWT (supabase/functions/billing/index.ts). A plain
+# `supabase functions deploy` defaults to verify_jwt=true, which would make
+# every PayPal webhook fail with 401 and silently stop subscription activation.
+#
+# Setup: environment secrets SUPABASE_ACCESS_TOKEN and SUPABASE_PROJECT_REF in
+# `staging` and `production`. Function secrets (PAYPAL_*, APP_ORIGIN) are set
+# once with `supabase secrets set` — see docs/deployment/03-RUNBOOK.md.
+name: Deploy Supabase Edge Function
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        type: choice
+        options: [staging, production]
+        default: staging
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: supabase-functions-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Billing logic regression check before deploying
+        run: |
+          npm ci --no-audit --no-fund
+          npx tsx tools/billing-edge-check.ts
+
+      - name: Deploy billing function (JWT verification OFF by design)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: supabase functions deploy billing --project-ref "$PROJECT_REF" --no-verify-jwt

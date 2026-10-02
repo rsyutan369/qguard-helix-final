@@ -334,7 +334,8 @@ export function scopeSnapshotToAssets(snapshot: QuantumReadinessSnapshot, assetK
   if (vulnerableComponents > 0) {
     recommendedActions.push({
       id: 'rec-vuln',
-      title: `Remediate ${vulnerableComponents} quantum-vulnerable algorithm${vulnerableComponents === 1 ? '' : 's'}`,
+      // Same wording as the backend snapshot: the count is CBOM components.
+      title: `Remediate ${vulnerableComponents} quantum-vulnerable CBOM component${vulnerableComponents === 1 ? '' : 's'}`,
       detail: 'Replace RSA/ECC primitives with ML-KEM / ML-DSA or hybrid equivalents.',
       severity: 'critical',
       route: '/dashboard/crypto-agility',

@@ -296,6 +296,35 @@ function pruneVerificationCache(now: number) {
 const TOKEN_REVOCATION_TTL_MS = 24 * 60 * 60_000
 const tokenRevocations = new Map<string, number>()
 let tokenRevocationsHydrated = false
+let tokenRevocationsRefreshedAt = 0
+let tokenRevocationsRefreshing: Promise<void> | null = null
+
+/**
+ * Re-read admin_session_revocations every N ms (TOKEN_REVOCATION_REFRESH_MS).
+ * The map is per process, so with more than one API replica a revocation
+ * recorded by pod A must also reach pod B; this is request-driven (no timer)
+ * and off when unset, which keeps the single-process dev behaviour unchanged.
+ */
+function revocationRefreshIntervalMs(): number {
+  const value = Number(process.env.TOKEN_REVOCATION_REFRESH_MS || 0)
+  return Number.isFinite(value) && value > 0 ? Math.max(5_000, value) : 0
+}
+
+function refreshTokenRevocations(): Promise<void> {
+  if (!tokenRevocationsRefreshing) {
+    tokenRevocationsHydrated = true
+    tokenRevocationsRefreshedAt = Date.now()
+    tokenRevocationsRefreshing = hydrateTokenRevocations().finally(() => {
+      tokenRevocationsRefreshing = null
+    })
+  }
+  return tokenRevocationsRefreshing
+}
+
+/** Load revocations at process start (standalone server) rather than on the first request. */
+export function primeTokenRevocations(): Promise<void> {
+  return refreshTokenRevocations()
+}
 
 export function revokeUserTokensIssuedBefore(userId: string, revokedAtMs = Date.now()) {
   if (!userId) return
@@ -353,8 +382,10 @@ async function hydrateTokenRevocations() {
 export async function getServerUser(token: string, options?: { full?: boolean }): Promise<User | null> {
   if (!token) return null
   if (!tokenRevocationsHydrated) {
-    tokenRevocationsHydrated = true
-    void hydrateTokenRevocations()
+    void refreshTokenRevocations()
+  } else {
+    const refreshEvery = revocationRefreshIntervalMs()
+    if (refreshEvery && Date.now() - tokenRevocationsRefreshedAt > refreshEvery) void refreshTokenRevocations()
   }
   const user = await verifyServerUser(token, options)
   return user && isTokenRevoked(user.id, token) ? null : user

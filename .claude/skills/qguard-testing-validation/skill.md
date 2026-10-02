@@ -276,6 +276,31 @@ What these caught that reading the code did not:
   clips), then list elements whose right edge exceeds the viewport outside an
   `overflow-x: auto` ancestor.
 
+### Assets & CBOM register + Report Studio (/dashboard/assets)
+
+```bash
+npx tsx tools/asset-register-check.ts                    # 54 offline: findings never components, CBOM-key grouping, PQC-ready only when all safe, unassessed band, evidence-time freshness, NIST-role PQC targets, subset totals, divergence reporting
+npx tsx tools/asset-report-check.ts                      # 96 offline: scope honesty, reconciliation, consolidation totals, validation gates, KEM-on-signature sweep, SHA3 seal + tamper control, 3 templates x 7 formats rendered + structurally checked, 600-asset build bound
+npx tsx tools/assets-live-check.ts http://localhost:3001 # 57 live on 3 tenants: API contract, register == CBOM == QR, no finding as component, evidence-based last-scanned, change-only SSE, reports reconcile
+```
+
+What these caught that reading the code did not:
+
+- **`null ?? fallback` is not "no value".** A fixture meaning "never scanned"
+  passed `lastScanned: null` and `??` turned it into a timestamp — which exposed
+  the real defect: an asset with no evidence got its RECORD time as "last
+  scanned". Use `'key' in o ? o.key : default` in fixtures.
+- **"No exception" is not "renders correctly".** All 21 template x format
+  renders succeeded before anyone looked; rasterising the PDF showed a 25-column
+  register wrapping one character per line. With no poppler on this machine,
+  render pages via pdf.js in headless Chrome (scratch `pdfshot.mjs`) and drive the
+  page over CDP with Node 24's built-in `WebSocket` (`.report-smoke/page-shot.mjs`:
+  magic-link session into localStorage, tall viewport because the dashboard
+  scrolls inside its own container, `Browser.setDownloadBehavior` to capture real
+  browser exports).
+- **Per-click generation** gave each format of "one" report its own id and digest;
+  grep the report id across every downloaded file.
+
 ### Database security changes (live project)
 
 ```bash
@@ -303,6 +328,27 @@ Two traps worth remembering for any check of this shape:
 - assert that a dashboard builder performs **no writes** by regexing its own
   function body for `.update(` / `.insert(`. `buildSnapshotDashboard` was
   rewriting migration jobs on a GET.
+
+### Sophia AI Copilot (/dashboard/sophia)
+
+```bash
+npx tsx tools/sophia-question-audit.ts                     # 1,440 checks: EVERY suggested question + follow-ups + per-asset + empty tenant + analyst role + change tracking; expected values from the REAL buildRemediationPlan / buildAssetRegister
+SOPHIA_AUDIT_PRINT=1 npx tsx tools/sophia-question-audit.ts # same, printing each answer for prose review
+npx tsx tools/copilot-check.ts                             # security: tenant scoping, RBAC, injection, rate limit
+npx tsx tools/sophia-check.ts                              # algorithm-question accuracy (RSA/ECDSA/ML-KEM joins, 42703 vs 42P01)
+npx tsc --noEmit -p tsconfig.sophia.json                   # ~1 min scoped typecheck (full repo tsc takes >9 min)
+```
+
+What these caught that reading the code did not:
+
+- **Mocks that share the code's bug.** The builder mocks used the same wrong
+  field names as the tools (`criteria`, `label`, `banner.level`), so a certification
+  answer that could never name a blocker passed. Shape mocks from the real type.
+- **Asking the product's own suggestions.** The suites asserted hand-picked
+  questions; none asked the eleven questions the page offers. The audit now fails
+  if any offered suggestion is not covered.
+- **Reading the prose.** `SOPHIA_AUDIT_PRINT=1` exposed a dossier listing the
+  SAFE AES-256-GCM after "are quantum-vulnerable" — every assertion passed.
 
 ## Evidence ladder
 

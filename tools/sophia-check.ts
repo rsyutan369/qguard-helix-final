@@ -193,10 +193,13 @@ const builders: CopilotBuilders = {
   scannerIntel: async () => ({ summary: { totalComponents: GT_TOTAL_COMPONENTS, vulnerableComponents: GT_VULNERABLE, pqcReadyComponents: 18, totalAssets: 4, vulnerableAssets: 4 }, severityCounts: { critical: 18, high: 49, medium: 36, low: 19, safe: 18 }, findings: [] }),
   exposure: async () => mockExposure,
   remediationPlan: async () => ({ certificationReadinessPct: 18, actions: [], queues: { critical: 0, high: 0, medium: 0, low: 0 }, quickWins: [], criticalBlockers: [] }),
-  certification: async () => ({ certificate: null, certificates: [], schemaReady: true, renewal: {}, eligibility: { eligible: false, summary: 'Not eligible', criteria: [] } }),
-  hndl: async () => ({ summary: {}, assets: [] }),
-  workflow: async () => ({ stages: [], currentStage: null }),
-  snapshots: async () => ({ snapshots: [], summary: {} }),
+  // Real field names — `checks` (not `criteria`) and the `snapshotDashboard`
+  // builder key. The previous key `snapshots` did not exist on the interface,
+  // so every snapshot tool threw inside this suite without anyone noticing.
+  certification: async () => ({ certificate: null, certificates: [], schemaReady: true, renewal: {}, eligibility: { eligible: false, hasData: true, requiredMet: 6, requiredTotal: 10, checks: [] } }),
+  hndl: async () => ({ hasData: false, banner: { threatLevel: 'Unknown', headline: '' }, forwardSecrecy: { hasEvidence: false }, futureDecryptable: { hasEvidence: false }, topFindings: [], remediationCenter: [] }),
+  workflow: async () => ({ stages: [], currentStageId: 'discover', overallProgressPct: 0, nextAction: { stageId: 'discover', title: 'Run discovery', detail: '', route: '/dashboard/scanner' } }),
+  snapshotDashboard: async () => ({ schemaReady: true, snapshots: [], summary: { total: 0, restorable: 0, automaticRollbacks: 0 } }),
 } as unknown as CopilotBuilders
 
 const ctx: ToolContext = { token: 't', userId: USER_ID, email: 'u@example.com', role: 'owner', tier: 'elite', client: makeClient() }

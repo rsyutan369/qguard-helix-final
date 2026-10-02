@@ -8,6 +8,8 @@
  * data-plane `getSecret` is deliberately not implemented in this adapter.
  */
 
+import { createHash } from 'node:crypto';
+
 const ARM = 'https://management.azure.com';
 const TIMEOUT_MS = 12_000;
 
@@ -38,12 +40,15 @@ const tokenCache = new Map<string, CachedToken>();
 /**
  * Acquire an ARM access token.
  *
- * Cached until 60s before expiry, keyed by (tenant, client) — a scan makes
- * dozens of ARM calls and re-authenticating on each one both wastes time and
- * trips Entra ID's throttling.
+ * Cached until 60s before expiry, keyed by (tenant, client, SECRET DIGEST) — a
+ * scan makes dozens of ARM calls and re-authenticating on each one both wastes
+ * time and trips Entra ID's throttling. The secret digest is part of the key
+ * because tenant and client ids are not secret: without it, a second caller who
+ * knew them could be handed a token minted with someone else's secret.
  */
 export async function getArmToken(credentials: AzureCredentials): Promise<AzureCallResult<string>> {
-  const cacheKey = `${credentials.tenantId}:${credentials.clientId}`;
+  const secretDigest = createHash('sha256').update(credentials.clientSecret).digest('hex');
+  const cacheKey = `${credentials.tenantId}:${credentials.clientId}:${secretDigest}`;
   const cached = tokenCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now() + 60_000) {
     return { ok: true, status: 200, data: cached.token };

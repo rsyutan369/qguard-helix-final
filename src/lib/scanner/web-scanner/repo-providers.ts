@@ -88,6 +88,16 @@ const MAX_TREE_ENTRIES = 4_000
 export function resolveProviderToken(provider: RepoProvider): string | null {
   if (typeof process === 'undefined' || !process.env) return null
   const env = process.env
+  // A platform-wide token on a MULTI-TENANT server would be inherited by every
+  // tenant's scan that did not bring its own credential (callers pass
+  // `token ?? resolveProviderToken(...)`), exposing whatever private
+  // repositories that token can read. Production therefore ignores these
+  // variables unless the operator explicitly opts in; local development keeps
+  // using a personal GITHUB_TOKEN exactly as before.
+  const allowPlatformToken = env.ALLOW_PLATFORM_REPO_TOKEN
+    ? env.ALLOW_PLATFORM_REPO_TOKEN === 'true'
+    : env.NODE_ENV !== 'production'
+  if (!allowPlatformToken) return null
   const pick = (...names: string[]) => {
     for (const name of names) {
       const value = env[name]

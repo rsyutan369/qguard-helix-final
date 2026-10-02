@@ -19,6 +19,12 @@ export type ScannerFinding = {
 
 export type ScannerIntelligenceSnapshot = {
   generatedAt: string;
+  /**
+   * Content fingerprint published by the API (excludes `generatedAt`). Two
+   * snapshots with the same fingerprint describe the same estate, so the hook
+   * skips the re-render, the cache rewrite and the dashboards' re-derivation.
+   */
+  fingerprint?: string;
   mode: string;
   summary: {
     totalAssets: number;
@@ -353,6 +359,22 @@ function normalizeStreamSnapshot(payload: unknown): ScannerIntelligenceSnapshot 
   };
 }
 
+/**
+ * How the page is currently receiving the estate:
+ *  - `connecting` — nothing confirmed by the server yet
+ *  - `stream`     — live SSE; the server re-checks the estate every tick
+ *  - `polling`    — the stream is unavailable; REST snapshot every 8s
+ *  - `manual`     — live updates switched off; refreshed on demand only
+ *  - `offline`    — the last request failed; data on screen is not current
+ */
+export type ScannerTransport = 'connecting' | 'stream' | 'polling' | 'manual' | 'offline';
+
+/** Where the snapshot on screen came from — a cache is never presented as live. */
+export type ScannerSnapshotSource = 'none' | 'cache' | 'network';
+
+/** How long the stream may stay silent before the REST fallback is used. */
+const STREAM_FIRST_FRAME_GRACE_MS = 4000;
+
 export function useScannerIntelligence(options: { live?: boolean } = {}) {
   const { session } = useAuth();
   const token = session?.access_token;
@@ -361,7 +383,12 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
+  const [source, setSource] = useState<ScannerSnapshotSource>('none');
+  const [transport, setTransport] = useState<ScannerTransport>('connecting');
+  /** When the server last confirmed the estate — a new snapshot OR an "unchanged" tick. */
+  const [lastVerifiedAt, setLastVerifiedAt] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const fingerprintRef = useRef<string | null>(null);
 
   const authHeaders = useMemo(() => (token ? { Authorization: `Bearer ${token}` } : undefined), [token]);
   const cacheKey = useMemo(() => {
@@ -382,14 +409,25 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
     token,
   ]);
 
-  const applySnapshot = useCallback((snapshot: ScannerIntelligenceSnapshot) => {
+  /**
+   * Apply a snapshot the SERVER produced. Identical content (same fingerprint)
+   * only records that the server re-confirmed the estate: no re-render, no
+   * 1 MB localStorage rewrite, no dashboard re-derivation.
+   */
+  const applyNetworkSnapshot = useCallback((snapshot: ScannerIntelligenceSnapshot) => {
+    setSource('network');
+    setLastVerifiedAt(snapshot.generatedAt || new Date().toISOString());
+    if (snapshot.fingerprint && snapshot.fingerprint === fingerprintRef.current) return;
+    fingerprintRef.current = snapshot.fingerprint || null;
     setData(snapshot);
     writeCachedSnapshot(cacheKey, snapshot);
   }, [cacheKey]);
 
   const refresh = useCallback(async () => {
     if (!authHeaders) {
+      fingerprintRef.current = null;
       setData(EMPTY_SNAPSHOT);
+      setSource('none');
       setLoading(false);
       setConnected(false);
       return;
@@ -399,7 +437,7 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
     setError(null);
     try {
       const snapshot = await fetchScannerIntelligence(authHeaders);
-      applySnapshot(snapshot);
+      applyNetworkSnapshot(snapshot);
       setConnected(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load scanner intelligence');
@@ -407,7 +445,7 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
     } finally {
       setLoading(false);
     }
-  }, [applySnapshot, authHeaders]);
+  }, [applyNetworkSnapshot, authHeaders]);
 
   useEffect(() => {
     abortRef.current?.abort();
@@ -415,7 +453,10 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
     abortRef.current = controller;
 
     if (!authHeaders) {
+      fingerprintRef.current = null;
       setData(EMPTY_SNAPSHOT);
+      setSource('none');
+      setTransport('offline');
       setLoading(false);
       setConnected(false);
       return () => controller.abort();
@@ -424,13 +465,24 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let loadingTimer: ReturnType<typeof setTimeout> | null = null;
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
     let eventSource: EventSource | null = null;
+    let streamDelivering = false;
     const cachedSnapshot = readCachedSnapshot(cacheKey);
 
+    setTransport('connecting');
     if (cachedSnapshot) {
-      applySnapshot(cachedSnapshot);
+      // Shown immediately, but labelled as cached until the server confirms it.
+      fingerprintRef.current = cachedSnapshot.fingerprint || null;
+      setData(cachedSnapshot);
+      setSource('cache');
       setLoading(false);
     } else {
+      // A different tenant/user (or none cached): never keep showing the
+      // previous identity's snapshot while this one loads.
+      fingerprintRef.current = null;
+      setData(EMPTY_SNAPSHOT);
+      setSource('none');
       setLoading(true);
       loadingTimer = setTimeout(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -444,23 +496,30 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
       }
     };
 
+    const markDelivered = () => {
+      if (loadingTimer) {
+        clearTimeout(loadingTimer);
+        loadingTimer = null;
+      }
+      setLoading(false);
+      setError(null);
+      setConnected(true);
+    };
+
     const pollSnapshot = () => {
       void fetchScannerIntelligence(authHeaders, controller.signal)
         .then((nextSnapshot) => {
-          applySnapshot(nextSnapshot);
-          setError(null);
-          setConnected(true);
-          setLoading(false);
-          if (loadingTimer) {
-            clearTimeout(loadingTimer);
-            loadingTimer = null;
-          }
+          if (controller.signal.aborted) return;
+          applyNetworkSnapshot(nextSnapshot);
+          markDelivered();
+          setTransport(!live ? 'manual' : streamDelivering ? 'stream' : 'polling');
         })
         .catch((err) => {
           if (!controller.signal.aborted) {
             setError(err instanceof Error ? err.message : 'Scanner intelligence refresh failed');
             setConnected(false);
             setLoading(false);
+            setTransport('offline');
           }
         });
     };
@@ -480,21 +539,47 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
       eventSource?.close();
       eventSource = new EventSource(`/api/v1/scanner/intelligence/stream?token=${encodeURIComponent(token)}`);
 
+      // The stream's first frame normally lands in well under a second. If it
+      // stays silent (a buffering proxy, a stalled build) the page must not sit
+      // blank: fall back to REST until a frame arrives. This replaces the old
+      // unconditional mount-time poll, which downloaded every snapshot twice.
+      if (graceTimer) clearTimeout(graceTimer);
+      graceTimer = setTimeout(() => {
+        graceTimer = null;
+        if (!streamDelivering && !controller.signal.aborted) startPolling();
+      }, STREAM_FIRST_FRAME_GRACE_MS);
+
+      const onStreamFrame = () => {
+        streamDelivering = true;
+        clearPollTimer();
+        if (graceTimer) {
+          clearTimeout(graceTimer);
+          graceTimer = null;
+        }
+        setTransport('stream');
+        markDelivered();
+      };
+
       eventSource.addEventListener('scanner-intelligence', (event) => {
         try {
           const snapshot = normalizeStreamSnapshot(JSON.parse((event as MessageEvent).data));
           if (!snapshot) throw new Error('Invalid scanner intelligence stream payload');
-          clearPollTimer();
-          applySnapshot(snapshot);
-          setLoading(false);
-          if (loadingTimer) {
-            clearTimeout(loadingTimer);
-            loadingTimer = null;
-          }
-          setError(null);
-          setConnected(true);
+          applyNetworkSnapshot(snapshot);
+          onStreamFrame();
         } catch (err) {
           setError(err instanceof Error ? err.message : 'Unable to parse scanner intelligence stream');
+        }
+      });
+
+      // The server re-checked the estate and nothing changed: record the
+      // confirmation, keep the snapshot on screen untouched.
+      eventSource.addEventListener('scanner-intelligence-unchanged', (event) => {
+        try {
+          const payload = JSON.parse((event as MessageEvent).data) as { generatedAt?: string; checkedAt?: string };
+          setLastVerifiedAt(payload.generatedAt || payload.checkedAt || new Date().toISOString());
+          onStreamFrame();
+        } catch {
+          /* a malformed confirmation carries no data to lose */
         }
       });
 
@@ -510,7 +595,9 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
       eventSource.onerror = () => {
         eventSource?.close();
         eventSource = null;
+        streamDelivering = false;
         setConnected(false);
+        setTransport('polling');
         startPolling();
         if (!retryTimer && !controller.signal.aborted) {
           retryTimer = setTimeout(() => {
@@ -523,8 +610,9 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
 
     if (live) {
       connectStream();
+    } else {
+      pollSnapshot();
     }
-    pollSnapshot();
 
     return () => {
       controller.abort();
@@ -532,9 +620,22 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
       clearPollTimer();
       if (retryTimer) clearTimeout(retryTimer);
       if (loadingTimer) clearTimeout(loadingTimer);
+      if (graceTimer) clearTimeout(graceTimer);
       setConnected(false);
     };
-  }, [applySnapshot, authHeaders, cacheKey, token, live]);
+  }, [applyNetworkSnapshot, authHeaders, cacheKey, token, live]);
 
-  return { data, loading, error, connected, refresh };
+  return {
+    data,
+    loading,
+    error,
+    connected,
+    refresh,
+    /** Where the snapshot on screen came from (`cache` is never presented as live). */
+    source,
+    /** True once the SERVER has answered (a snapshot or an error) — a cache does not count. */
+    resolved: source === 'network' || error !== null,
+    transport,
+    lastVerifiedAt,
+  };
 }

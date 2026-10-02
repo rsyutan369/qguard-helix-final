@@ -463,9 +463,24 @@ export async function buildExecutiveComplianceProjection(token: string, userId: 
       complianceMeasured: model.scores.compliance.measured,
       controlCoverage: model.scores.controlCoverage.value ?? 0,
     },
+    /* The requirement counts travel WITH the score, so the executive strip can
+       state measured gaps (failing + partial requirements) and coverage instead
+       of dividing the score into an invented per-framework control total. */
     frameworkAlignment: model.frameworks
       .filter((framework) => framework.measured && framework.score !== null)
-      .map((framework) => ({ name: framework.name, score: framework.score as number })),
+      .map((framework) => ({
+        name: framework.name,
+        score: framework.score as number,
+        requirementsTotal: framework.requirementsTotal,
+        requirementsMeasured: framework.requirementsMeasured,
+        requirementsCompliant: framework.requirementsCompliant,
+        requirementsPartial: framework.requirementsPartial,
+        requirementsFailing: framework.requirementsFailing,
+        requirementsUnassessed: framework.requirementsUnassessed,
+        coverage: framework.coverage,
+        evidenceCount: framework.evidenceCount,
+        attestedEvidenceCount: framework.attestedEvidenceCount,
+      })),
   }
 }
 

@@ -3,12 +3,16 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "vite --configLoader runner --port=3000 --host=0.0.0.0",
     "build": "vite build --configLoader runner",
     "preview": "vite preview",
     "start": "tsx src/api-server/standalone.ts",
     "serve:api": "tsx src/api-server/standalone.ts",
+    "start:prod": "node --import tsx src/api-server/standalone.ts",
     "agent:scan": "tsx tools/qguard-agent/agent.ts scan",
     "agent:watch": "tsx tools/qguard-agent/agent.ts watch",
     "clean": "rm -rf dist",
@@ -21,7 +25,9 @@
     "agent:check:remediation": "tsx tools/agent-remediation-check.ts",
     "agent:check:governance": "node tools/agent-governance-check.mjs",
     "agent:check:rollback": "tsx tools/rollback-check.ts",
-    "agent:check:rollback:live": "tsx tools/rollback-live-check.ts"
+    "agent:check:rollback:live": "tsx tools/rollback-live-check.ts",
+    "check:boundary": "tsx tools/client-bundle-boundary-check.ts",
+    "check:deploy": "tsx tools/deploy/deploy-readiness-check.ts"
   },
   "dependencies": {
     "@aws-sdk/client-elastic-load-balancing-v2": "^3.1068.0",
@@ -89,6 +95,7 @@
     "tailwind-merge": "^3.5.0",
     "tailwindcss-animate": "^1.0.7",
     "three": "^0.184.0",
+    "tsx": "^4.21.0",
     "tw-animate-css": "^1.4.0",
     "uuid": "^14.0.1",
     "zod": "^4.4.3",
@@ -101,7 +108,6 @@
     "@types/papaparse": "^5.5.2",
     "autoprefixer": "^10.4.21",
     "tailwindcss": "^4.1.14",
-    "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^8.0.16"
   }

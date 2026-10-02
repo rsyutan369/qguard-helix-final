@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express'
 import { createHash, randomBytes } from 'node:crypto'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
 import { createAuthClient, getServerUser } from '@/lib/supabase-server'
+import { trustedClientIp } from './runtime/client-ip'
 
 type AuthedRequest = Request & {
   user?: User
@@ -35,6 +36,8 @@ function getRefreshToken(req: Request): string | null {
 }
 
 function getClientIp(req: Request): string | null {
+  const trusted = trustedClientIp(req)
+  if (trusted) return trusted
   const forwarded = req.headers['x-forwarded-for']
   const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded
   const candidate = raw?.split(',')[0]?.trim() || req.ip || req.socket.remoteAddress || null

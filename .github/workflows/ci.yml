@@ -1,0 +1,183 @@
+# Continuous integration — every pull request and every push to main.
+# A deployment (deploy-api.yml) only runs from main, so nothing reaches staging
+# or production unless these gates are green on the merged commit.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Typecheck, tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install (lockfile-exact)
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run lint
+
+      - name: Client bundle boundary (no server code in the browser bundle)
+        run: npm run check:boundary
+
+      - name: Deployment readiness (probes, preflight, routing, manifests)
+        run: npm run check:deploy
+
+      - name: Domain regression suites (hermetic)
+        run: |
+          npx tsx tools/scanner-accuracy-check.ts
+          npx tsx tools/crypto-detection-check.ts
+          npx tsx tools/crypto-classification-check.ts
+          npx tsx tools/agent-access-check.ts
+          npx tsx tools/hero-grading-alignment-check.ts
+
+      - name: Production build (as Vercel runs it)
+        env:
+          # Public, non-secret placeholders: CI only proves the bundle builds.
+          VITE_SUPABASE_URL: https://ci-placeholder.supabase.co
+          VITE_SUPABASE_ANON_KEY: ci-placeholder
+        run: |
+          npm run build
+          node tools/deploy/prune-static-output.mjs
+          test ! -f dist/downloads/QGuard-Messaging-Setup.exe
+
+      - name: Built bundle carries no server secrets
+        run: |
+          if grep -rlE "service_role|SUPABASE_SERVICE_ROLE_KEY|PAYPAL_SECRET|PAYPAL_CLIENT_SECRET" dist/assets; then
+            echo "::error::Server-only secret material found in the client bundle"; exit 1
+          fi
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependencies:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      # Reported, not yet blocking: triage the current backlog, then remove
+      # continue-on-error so new HIGH/CRITICAL advisories fail the build.
+      - name: npm audit (runtime dependencies)
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high
+
+  container:
+    name: API image build + smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: qguard-api:ci
+          build-args: |
+            APP_VERSION=ci
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Hybrid ML-KEM groups available in the image (scanner accuracy)
+        run: |
+          docker run --rm --entrypoint node qguard-api:ci -e "
+            const tls = require('node:tls');
+            console.log('OpenSSL', process.versions.openssl);
+            try { tls.createSecureContext({ ecdhCurve: 'X25519MLKEM768' }); console.log('X25519MLKEM768 supported'); }
+            catch (e) { console.error('X25519MLKEM768 NOT supported:', e.message); process.exit(1); }"
+
+      - name: Boot, probe and drain the container
+        run: |
+          docker run -d --name api -p 8080:8080 \
+            -e VITE_SUPABASE_URL=https://ci-placeholder.supabase.co \
+            -e VITE_SUPABASE_ANON_KEY=ci-placeholder \
+            -e SUPABASE_SERVICE_ROLE_KEY=ci-placeholder \
+            -e APP_ORIGIN=https://ci.qguardhelix.com \
+            -e QGUARD_CONTROL_PLANE_URL=https://api.qguardhelix.com \
+            -e SHUTDOWN_DELAY_MS=1000 -e SHUTDOWN_DRAIN_MS=5000 \
+            qguard-api:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/api/v1/healthz >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/api/v1/healthz
+          # readyz answers (200 degraded or 503) — Supabase is a placeholder here.
+          curl -sS -o /dev/null -w "readyz HTTP %{http_code}\n" http://127.0.0.1:8080/api/v1/readyz
+          # Unknown API route → JSON 404 (router mounted, HTTPS enforcement honours X-Forwarded-Proto)
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-Proto: https' http://127.0.0.1:8080/api/v1/does-not-exist)" = "404"
+          docker stop --time 30 api
+          docker logs api 2>&1 | tail -20
+          docker logs api 2>&1 | grep -q '"event":"shutdown_complete"'
+
+      - name: Refuses to start with unsafe configuration
+        run: |
+          set +e
+          docker run --rm -e GITHUB_TOKEN=should-refuse \
+            -e VITE_SUPABASE_URL=https://ci-placeholder.supabase.co -e VITE_SUPABASE_ANON_KEY=x \
+            -e SUPABASE_SERVICE_ROLE_KEY=x -e APP_ORIGIN=https://ci.qguardhelix.com \
+            -e QGUARD_CONTROL_PLANE_URL=https://api.qguardhelix.com qguard-api:ci
+          code=$?
+          set -e
+          test "$code" = "78"
+
+      - name: Image vulnerability scan (report)
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          image-ref: qguard-api:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  manifests:
+    name: Kubernetes manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo mv kubeconform /usr/local/bin/
+      - name: Render and validate overlays
+        run: |
+          for overlay in staging production; do
+            echo "::group::$overlay"
+            kubectl kustomize deploy/k8s/overlays/$overlay | kubeconform -strict -summary -
+            echo "::endgroup::"
+          done

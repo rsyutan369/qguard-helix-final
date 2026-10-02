@@ -48,8 +48,12 @@ function verificationOrigin(): string {
   return FALLBACK_ORIGIN;
 }
 
-/** Public verification URL for a signed report; null until integrity is attached. */
-export function reportVerificationUrl(report: EnterpriseAssessmentReport): string | null {
+/**
+ * Public verification URL for a signed report; null until integrity is attached.
+ * Structurally typed so every sealed report family (assessment, asset / CBOM)
+ * resolves to the same verification page.
+ */
+export function reportVerificationUrl(report: Pick<EnterpriseAssessmentReport, 'integrity'> | { integrity?: { verificationToken?: string } | null }): string | null {
   const token = report.integrity?.verificationToken;
   if (!token) return null;
   return `${verificationOrigin()}/verify-report?token=${encodeURIComponent(token)}`;

@@ -26,6 +26,7 @@ import type { FindingSeverity } from '../types';
 import type { EngineContext, EngineResult, ExposureEngine } from '../engine-contract';
 import { buildEvidence, buildFinding, completed, notAssessed } from '../engine-contract';
 import { canonicalAlgorithmName, classifyQuantum } from '../algorithms';
+import { createHash } from 'node:crypto';
 
 const TIMEOUT_MS = 15_000;
 const MANIFEST_ACCEPT = [
@@ -122,7 +123,10 @@ async function resolveToken(challenge: string, auth: RegistryAuth): Promise<stri
   const service = challenge.match(/service="([^"]+)"/)?.[1];
   const scope = challenge.match(/scope="([^"]+)"/)?.[1];
 
-  const cacheKey = `${realm}|${service}|${scope}|${auth.username ?? ''}`;
+  // The password digest is part of the key: a username alone is not a secret,
+  // so without it a second caller could reuse a token minted with another's password.
+  const secretDigest = auth.password ? createHash('sha256').update(auth.password).digest('hex') : '';
+  const cacheKey = `${realm}|${service}|${scope}|${auth.username ?? ''}|${secretDigest}`;
   const cached = tokenCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now() + 30_000) return cached.token;
 

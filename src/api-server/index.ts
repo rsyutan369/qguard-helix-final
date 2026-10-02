@@ -63,6 +63,9 @@ import copilotRoutes from './copilot'
 import { getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
 import { subscriptionGateway } from './subscription-guard'
 import { emitShareLinkEvent, subscribeOwnerEvents } from '@/lib/vault/share-events'
+import { healthProbeRoutes } from './runtime/health'
+import { requestContext } from './runtime/observability'
+import { trustedClientIp } from './runtime/client-ip'
 
 const shareIpAttempts = new Map<string, { count: number; windowStart: number }>()
 const SHARE_RATE_LIMIT_WINDOW_MS = 60_000
@@ -95,6 +98,8 @@ function isShareIpRateLimited(ip: string): boolean {
 }
 
 function readClientIp(req: express.Request): string {
+  const trusted = trustedClientIp(req)
+  if (trusted) return trusted
   const forwarded = req.headers['x-forwarded-for']
   if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0].trim()
   const realIp = req.headers['x-real-ip']
@@ -297,6 +302,14 @@ function allowedOrigin(req: express.Request): string | null {
       .filter(Boolean)
 
     if (configured.includes(origin)) return origin
+    // Optional single-label wildcard (e.g. https://qguard-helix-*.vercel.app for
+    // preview deployments against a STAGING API). `*` never spans a dot, so a
+    // pattern cannot be widened to an attacker-controlled parent domain.
+    for (const pattern of configured) {
+      if (!pattern.includes('*')) continue
+      const expression = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[a-z0-9-]+')
+      if (new RegExp(`^${expression}$`, 'i').test(origin)) return origin
+    }
   } catch {
     return null
   }
@@ -335,10 +348,18 @@ export function createApiServer() {
   const app = express()
   app.set('trust proxy', true)
 
+  // Correlation id on every response (+ opt-in JSON access log, ACCESS_LOG=true).
+  app.use(requestContext)
+
   /* Ahead of everything: the messaging installer must not be obtainable from
      the static public/downloads path it used to live at. Entitlement is proven
      at /api/v1/downloads/messaging/windows or not at all. */
   app.use(blockPublicInstallerPath)
+
+  // Liveness/readiness probes. MUST stay ahead of the HTTPS enforcement below:
+  // kubelet and load-balancer probes arrive over plain HTTP without
+  // X-Forwarded-Proto and would otherwise be 308-redirected to https://<podIP>.
+  app.use(healthProbeRoutes)
 
   app.use(installCookieHardening)
 
@@ -361,11 +382,25 @@ export function createApiServer() {
     })
   })
 
+  // The raw body is kept for webhook signature checks (billing.ts Stripe HMAC).
+  // body-parser hands `verify` a buffer it never mutates or reuses, so keeping
+  // the reference is equivalent to the previous copy at half the peak memory.
+  const keepRawBody = (req: express.Request & { rawBody?: Buffer }, _res: unknown, buf: Buffer) => {
+    req.rawBody = buf
+  }
+
+  // Unauthenticated endpoints only ever receive small JSON documents; parse
+  // them with a tight limit so anonymous callers cannot make a pod buffer
+  // 80 MB bodies. body-parser skips an already-parsed body, so the general
+  // parser below leaves these requests alone.
+  app.use(
+    ['/api/v1/auth', '/api/v1/public-scan', '/api/v1/paypal/webhook', '/api/v1/play-billing/rtdn'],
+    express.json({ limit: process.env.API_PUBLIC_JSON_LIMIT || '256kb', verify: keepRawBody }),
+  )
+
   app.use(express.json({
-    limit: '80mb',
-    verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
-      req.rawBody = Buffer.from(buf)
-    },
+    limit: process.env.API_JSON_LIMIT || '80mb',
+    verify: keepRawBody,
   }))
 
   app.use((req, res, next) => {
@@ -391,8 +426,13 @@ export function createApiServer() {
       res.setHeader('Access-Control-Allow-Origin', originAllowed)
       res.setHeader('Vary', 'Origin')
     }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-QGuard-Device-Id, X-QGuard-Refresh-Token, X-QGuard-Agent-Id, X-QGuard-Agent-Token')
+    // Only relevant to a split-origin deployment (SPA on Vercel calling
+    // api.<domain> directly): lets the SPA read export filenames/row counts and
+    // caches preflights so Bearer-authenticated calls are not doubled.
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, X-Report-Rows, Retry-After, X-Request-Id')
+    res.setHeader('Access-Control-Max-Age', '600')
     if (req.method === 'OPTIONS') {
       if (origin && !originAllowed) {
         res.sendStatus(403)

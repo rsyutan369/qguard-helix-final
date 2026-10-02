@@ -79,7 +79,10 @@ async function enrol(token: string, role: string, policy: Record<string, unknown
       name: `roles-${role}-${Date.now()}`,
       hostname: os.hostname(),
       platform: `${os.platform()} ${os.arch()}`,
-      version: '1.5.4',
+      version: '1.5.5',
+      /* Write roles are read-only until the operator authorises them. */
+      remediationAuthorized: role === 'patcher' || role === 'operator',
+      migrationAuthorized: role === 'operator',
       metadata: { role, environment: 'lab' },
       policy: { enabled: true, intervalSeconds: 60, ...policy },
     }),

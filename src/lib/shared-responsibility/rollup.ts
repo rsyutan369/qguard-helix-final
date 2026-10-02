@@ -101,8 +101,10 @@ function domainReadiness(
   )
   const score = Math.round(contributions.reduce((a, b) => a + b, 0) / total)
   const resolved = subset.filter((f) => f.severity === 'safe').length
-  const actionable = subset.filter((f) => f.customerActionable !== 'no').length
-  const blocked = subset.filter((f) => f.migrationDependencyStatus !== 'ready').length
+  // A resolved (PQC-ready) observation is not work: it is neither actionable
+  // nor blocked. Counting it made "actionable" include what is already done.
+  const actionable = subset.filter((f) => f.severity !== 'safe' && f.customerActionable !== 'no').length
+  const blocked = subset.filter((f) => f.severity !== 'safe' && f.migrationDependencyStatus !== 'ready').length
   return { domain, score, level: levelFromReadiness(score), total, resolved, actionable, blocked }
 }
 
@@ -367,9 +369,15 @@ export function buildSharedResponsibility(
   const provider = byDomain('provider')
   const ecosystem = byDomain('ecosystem')
 
-  const actionable = findings.filter((f) => f.domain === 'customer' && f.customerActionable !== 'no')
-  const waiting = findings.filter((f) => isWaiting(f))
-  const blocked = findings.filter((f) => f.migrationDependencyStatus === 'blocked' || (f.domain === 'customer' && f.customerActionable === 'no'))
+  /* Work counters describe OPEN findings only. A SAFE finding is a PQC-ready
+     confirmation — already done — so it can be neither "actionable now" nor
+     "waiting on a dependency". Counting them published e.g. "Actionable Now 24"
+     for an estate with 20 open findings (and a PQC-ready ML-KEM detection
+     "waiting" on the ecosystem). */
+  const open = findings.filter((f) => f.severity !== 'safe')
+  const actionable = open.filter((f) => f.domain === 'customer' && f.customerActionable !== 'no')
+  const waiting = open.filter((f) => isWaiting(f))
+  const blocked = open.filter((f) => f.migrationDependencyStatus === 'blocked' || (f.domain === 'customer' && f.customerActionable === 'no'))
   const resolved = findings.filter((f) => f.severity === 'safe')
 
   // Tri-part readiness.

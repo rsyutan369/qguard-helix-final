@@ -34,7 +34,8 @@ export interface DashboardSummary {
 export interface SecurityEvent {
   id: string
   timestamp: string
-  severity: 'critical' | 'warning' | 'info' | 'success'
+  /** Faithful to the recorded severity — HIGH is its own tier, never folded into critical. */
+  severity: 'critical' | 'high' | 'warning' | 'info' | 'success'
   eventType: string
   message: string
   assetId: string | null
@@ -72,6 +73,7 @@ export interface ActivityItem {
 
 export interface Recommendation {
   id: string
+  /** 1 critical · 2 high · 3 medium · 4 low. */
   priority: number
   category: string
   title: string
@@ -79,6 +81,10 @@ export interface Recommendation {
   assetId: string | null
   action: string
   estimatedEffort: string
+  /** Open findings (or grouped signals) this action closes. */
+  findingCount?: number
+  /** Where the action was derived from: 'findings', 'certificates', 'scanner_alerts', … */
+  source?: string
 }
 
 export interface HealthStatus {
@@ -106,8 +112,15 @@ export interface ExecutiveKpi {
   targetLabel: string
   deltaPercent: number
   trend: 'up' | 'down' | 'flat'
+  /**
+   * 'history' when `trend`/`sparkline` are this metric's OWN stored history;
+   * 'none' when no history exists — the card then says so instead of "stable".
+   */
+  trendBasis?: 'history' | 'none'
   level?: string
   sparkline: number[]
+  /** Real composition of the value (e.g. findings by severity), shown when there is no history. */
+  breakdown?: Array<{ label: string; value: number; tone: 'critical' | 'warning' | 'good' | 'neutral' | 'info' }>
   lastUpdated: string
   route: string
   hint: string
@@ -120,6 +133,11 @@ export interface ExecutiveNarrativeFact {
   label: string
   value: string | number
   tone: 'critical' | 'warning' | 'good' | 'neutral'
+  /** 'relative-time' = `value` is an ISO timestamp to render as an age. */
+  format?: 'relative-time'
+  /** A planning estimate, not a measurement. */
+  modeled?: boolean
+  hint?: string
 }
 
 export interface PipelineStage {
@@ -134,7 +152,13 @@ export interface ComplianceFramework {
   name: string
   progress: number
   evidenceCount: number
-  missingControls: number
+  attestedEvidenceCount: number
+  /** Failing + partially met requirements, as MEASURED by the governance model. */
+  gaps: number
+  requirementsTotal: number
+  requirementsMeasured: number
+  /** Measured requirements / total requirements. */
+  coverage: number
   modeled: boolean
 }
 
@@ -157,7 +181,8 @@ export interface ExecutiveSnapshot {
     hasData: boolean
     facts: ExecutiveNarrativeFact[]
     priority: { title: string; detail: string; severity: string; route: string }
-    confidence: number
+    /** Which evidence sources the assessment holds — replaces the old "AI confidence" constant. */
+    evidenceCoverage: { pct: number; present: number; total: number; missing: string[] }
     summary: string
   }
   kpis: ExecutiveKpi[]
@@ -169,7 +194,7 @@ export interface ExecutiveSnapshot {
     bottleneck: string
     certificationReadiness: number
   }
-  compliance: { overall: number; frameworks: ComplianceFramework[] }
+  compliance: { overall: number; measured: boolean; frameworks: ComplianceFramework[] }
   businessImpact: {
     modeled: boolean
     financialExposure: number
@@ -180,10 +205,13 @@ export interface ExecutiveSnapshot {
     applications: number
     operationalImpact: number
     estimatedDowntimeHours: number
-    riskTrendDelta: number
-    projectedRoiPct: number
+    /** null — no stored history of the modelled exposure exists. */
+    riskTrendDelta: number | null
+    /** Upper-bound ROI; null when exposure or cost is not modelled. */
+    projectedRoiPct: number | null
     migrationCostUsd: number
     assumptions: string
+    criticalityTagged?: boolean
   }
   assetInventory: { total: number; categories: AssetCategory[] }
   threatIntel: {
@@ -233,20 +261,33 @@ export function useDashboard() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null)
   const [executive, setExecutive] = useState<ExecutiveSnapshot | null>(null)
   const [events, setEvents] = useState<SecurityEvent[]>([])
-  const [exposureMap, setExposureMap] = useState<ExposureMap>({ nodes: [], edges: [] })
+  /** PQC-ready confirmations in the event window — counted, not streamed as threats. */
+  const [eventsOmitted, setEventsOmitted] = useState(0)
   const [estateWorkflow, setEstateWorkflow] = useState<EstateWorkflow | null>(null)
   const [workflowState, setWorkflowState] = useState<LoadingState>('loading')
-  const [activities, setActivities] = useState<ActivityItem[]>([])
   const [recommendations, setRecommendations] = useState<Recommendation[]>([])
+  /** Every action derived, before the endpoint's bound — so the panel can disclose it. */
+  const [recommendationsTotal, setRecommendationsTotal] = useState(0)
   const [health, setHealth] = useState<HealthStatus | null>(null)
   const [summaryState, setSummaryState] = useState<LoadingState>('loading')
   const [executiveState, setExecutiveState] = useState<LoadingState>('loading')
   const [eventsState, setEventsState] = useState<LoadingState>('loading')
-  const [mapState, setMapState] = useState<LoadingState>('loading')
-  const [activityState, setActivityState] = useState<LoadingState>('loading')
   const [recommendationsState, setRecommendationsState] = useState<LoadingState>('loading')
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null)
+  /*
+   * LIVE means a channel is open NOW. This used to be a boolean set true on the
+   * first SUBSCRIBED/onopen and never set false again, so "Live" and "SSE up"
+   * survived every later disconnect. Each channel now registers and
+   * deregisters itself; the indicator is true only while at least one is open.
+   */
+  const liveChannelsRef = useRef<Set<string>>(new Set())
   const [sseConnected, setSseConnected] = useState(false)
+  const markChannel = useCallback((id: string, open: boolean) => {
+    const channels = liveChannelsRef.current
+    if (open) channels.add(id)
+    else channels.delete(id)
+    setSseConnected(channels.size > 0)
+  }, [])
   const eventSourcesRef = useRef<EventSource[]>([])
   const sseReconnectTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   // Coalesced, single-flight refresh control. Automatic triggers (30s poll,
@@ -305,6 +346,7 @@ export function useDashboard() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json()
       setEvents(json.data?.events || [])
+      setEventsOmitted(Number(json.data?.pqcConfirmationsOmitted) || 0)
       setEventsState('success')
     } catch (err) {
       console.error('Failed to fetch security events:', err)
@@ -312,29 +354,11 @@ export function useDashboard() {
     }
   }, [token])
 
-  const fetchExposureMap = useCallback(async () => {
-    if (!token) return
-    setMapState('loading')
-    try {
-      const res = await fetch('/api/v1/dashboard/exposure-map', { headers: apiHeaders })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const json = await res.json()
-      setExposureMap(json.data || { nodes: [], edges: [] })
-      setMapState('success')
-    } catch (err) {
-      console.error('Failed to fetch exposure map:', err)
-      setMapState(prev => prev === 'success' ? 'offline' : 'error')
-    }
-  }, [token])
-
   /**
    * The Estate Exposure Workflow graph.
    *
-   * Built SERVER-side from the same rows `/exposure-map` reads, so the two
-   * projections of this estate cannot disagree. Kept as its own state slot
-   * rather than derived from `exposureMap`: the map carries only assets and
-   * edges, while the workflow also holds the CBOM, certificates, algorithms and
-   * the finding registers.
+   * Built SERVER-side from the canonical finding set and CBOM the KPI cards
+   * count, so the workflow and the numbers above it cannot disagree.
    */
   const fetchEstateWorkflow = useCallback(async () => {
     if (!token) return
@@ -351,21 +375,6 @@ export function useDashboard() {
     }
   }, [token])
 
-  const fetchActivity = useCallback(async () => {
-    if (!token) return
-    setActivityState('loading')
-    try {
-      const res = await fetch('/api/v1/dashboard/activity?limit=20', { headers: apiHeaders })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const json = await res.json()
-      setActivities(json.data?.activities || [])
-      setActivityState('success')
-    } catch (err) {
-      console.error('Failed to fetch activity:', err)
-      setActivityState(prev => prev === 'success' ? 'offline' : 'error')
-    }
-  }, [token])
-
   const fetchRecommendations = useCallback(async () => {
     if (!token) return
     setRecommendationsState('loading')
@@ -373,7 +382,9 @@ export function useDashboard() {
       const res = await fetch('/api/v1/dashboard/recommendations', { headers: apiHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json()
-      setRecommendations(json.data?.recommendations || [])
+      const list: Recommendation[] = json.data?.recommendations || []
+      setRecommendations(list)
+      setRecommendationsTotal(Number(json.data?.total) || list.length)
       setRecommendationsState('success')
     } catch (err) {
       console.error('Failed to fetch recommendations:', err)
@@ -405,9 +416,12 @@ export function useDashboard() {
     refreshInFlightRef.current = true
     lastRefreshAtRef.current = Date.now()
     try {
+      // Only what /dashboard renders. The exposure map and activity feed were
+      // fetched on every refresh and never drawn — two extra estate reads per
+      // 30s tick for nothing.
       await Promise.all([
-        fetchSummary(), fetchExecutive(), fetchEvents(), fetchExposureMap(),
-        fetchEstateWorkflow(), fetchActivity(), fetchRecommendations(), fetchHealth(),
+        fetchSummary(), fetchExecutive(), fetchEvents(),
+        fetchEstateWorkflow(), fetchRecommendations(), fetchHealth(),
       ])
     } finally {
       refreshInFlightRef.current = false
@@ -416,7 +430,7 @@ export function useDashboard() {
         void runRefresh()
       }
     }
-  }, [fetchSummary, fetchExecutive, fetchEvents, fetchExposureMap, fetchActivity, fetchRecommendations, fetchHealth])
+  }, [fetchSummary, fetchExecutive, fetchEvents, fetchEstateWorkflow, fetchRecommendations, fetchHealth])
 
   // User-initiated (header refresh button / error reconnect): refresh now.
   const refreshAll = useCallback(() => { void runRefresh() }, [runRefresh])
@@ -488,9 +502,10 @@ export function useDashboard() {
           queueRefreshAll,
         )
         .subscribe((status) => {
-          // The realtime websocket is the dashboard's true "live" channel — drive
-          // the monitoring indicator from it (one websocket, no HTTP-connection cost).
-          if (status === 'SUBSCRIBED') setSseConnected(true)
+          // The realtime websocket is the dashboard's true "live" channel. Open
+          // on SUBSCRIBED; closed on any terminal status.
+          if (status === 'SUBSCRIBED') markChannel(`realtime:${tableName}`, true)
+          else if (status === 'CLOSED' || status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') markChannel(`realtime:${tableName}`, false)
         })
       channels.push(channel)
     }
@@ -499,8 +514,9 @@ export function useDashboard() {
       for (const channel of channels) {
         supabase.removeChannel(channel)
       }
+      for (const tableName of tables) markChannel(`realtime:${tableName}`, false)
     }
-  }, [user, queueRefreshAll])
+  }, [user, queueRefreshAll, markChannel])
 
   // SSE for change-driven signals. The dashboard-/metrics- streams were REMOVED:
   // they emitted an unconditional "*-update" every 8s (a hidden fast poll) that
@@ -528,9 +544,10 @@ export function useDashboard() {
       if (cancelled) return
       const es = new EventSource(spec.url)
       eventSourcesRef.current.push(es)
-      es.onopen = () => setSseConnected(true)
+      es.onopen = () => markChannel(`sse:${spec.url}`, true)
       for (const ev of spec.events) es.addEventListener(ev, queueRefreshAll)
       es.onerror = () => {
+        markChannel(`sse:${spec.url}`, false)
         es.close()
         eventSourcesRef.current = eventSourcesRef.current.filter((s) => s !== es)
         if (cancelled) return
@@ -548,8 +565,9 @@ export function useDashboard() {
       eventSourcesRef.current = []
       for (const timer of sseReconnectTimersRef.current) clearTimeout(timer)
       sseReconnectTimersRef.current = []
+      for (const spec of specs) markChannel(`sse:${spec.url}`, false)
     }
-  }, [token, queueRefreshAll])
+  }, [token, queueRefreshAll, markChannel])
 
   useEffect(() => () => {
     if (throttleTimerRef.current) clearTimeout(throttleTimerRef.current)
@@ -561,17 +579,15 @@ export function useDashboard() {
     summary,
     executive,
     events,
-    exposureMap,
+    eventsOmitted,
     estateWorkflow,
     workflowState,
-    activities,
     recommendations,
+    recommendationsTotal,
     health,
     summaryState,
     executiveState,
     eventsState,
-    mapState,
-    activityState,
     recommendationsState,
     lastSyncAt,
     sseConnected,

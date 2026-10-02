@@ -73,7 +73,7 @@ export default function SophiaConsolePage() {
   const {
     context, suggestions, insights, insightsState, conversations, activeConversationId,
     messages, streaming, error,
-    sendMessage, stopStreaming, loadInsights, openConversation, newConversation,
+    sendMessage, stopStreaming, sendFeedback, loadInsights, openConversation, newConversation,
     pinConversation, deleteConversation, exportConversation, searchConversations,
   } = copilot;
 
@@ -281,8 +281,10 @@ export default function SophiaConsolePage() {
                   <div className="max-w-[80%] rounded-2xl rounded-br-sm border border-blue-400/30 bg-blue-600/20 px-4 py-2.5 text-[14px] text-slate-100">{message.content}</div>
                 </div>
               ) : (
-                <div key={message.id} className="max-w-3xl">
-                  {message.answer ? <SophiaMessage answer={message.answer} /> : <p className="text-[14px] text-slate-200">{message.content}</p>}
+                <div key={message.id} className="min-w-0 max-w-3xl">
+                  {message.answer
+                    ? <SophiaMessage answer={message.answer} onFeedback={(rating) => { void sendFeedback(message.answer!, rating); }} />
+                    : <p className="text-[14px] text-slate-200">{message.content}</p>}
                 </div>
               )
             ))}

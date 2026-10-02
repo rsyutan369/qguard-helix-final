@@ -97,13 +97,16 @@ assert(api.includes('modeled: true'), 'the business-impact block declares itself
 assert(api.includes('assumptions:'), 'and carries its assumptions')
 assert(impact.includes('Modelling assumptions'), 'the panel exposes those assumptions to the reader')
 assert(impact.includes('{data.assumptions}'), 'and prints the real assumption text')
+/* Compliance is the governance model's MEASURED frameworks — or nothing. The
+   old strip divided each score into an invented control total and, when the
+   model was unavailable, fabricated eight frameworks as readiness × 0.82. */
 assert(
-  compliance.includes("f.modeled ? 'modelled'"),
-  'a framework with no evidence is labelled modelled, not scored as if audited',
+  compliance.includes('requirementsMeasured') && compliance.includes('No framework has a measured control yet'),
+  'each framework states how much of it was measured, and an unmeasured estate says so instead of estimating',
 )
 assert(
-  /modeled: !\(ev && ev\.count > 0\)/.test(api),
-  'modelled is derived from evidence presence, never hardcoded',
+  !/readinessBaseline|totalControls/.test(apiCode) && api.includes('requirementsFailing'),
+  'no readiness-modelled fallback and no invented control totals — gaps are measured failing + partial requirements',
 )
 
 /* ------------------------------------------------------------------ */
@@ -142,6 +145,74 @@ assert(
   counts.every((l) => l.includes('userId')),
   'every exact head-count is tenant-scoped too',
   `${counts.length} count(s)`,
+)
+
+/* ------------------------------------------------------------------ */
+console.log('\n[6b] Accuracy invariants from the 2026-09-24 audit')
+const primitives = readFileSync('src/app/dashboard/_components/executive/primitives.tsx', 'utf8')
+const threatIntel = readFileSync('src/app/dashboard/_components/executive/ThreatIntel.tsx', 'utf8')
+/* Comments RECORD the removed wording ("It used to say Sophia-ranked"), so the
+   UI sources are scanned with comments stripped — see the note on apiCode. */
+const stripComments = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+const recsPanel = stripComments(readFileSync('src/app/dashboard/_components/executive/AiRecommendations.tsx', 'utf8'))
+const page = stripComments(readFileSync('src/app/dashboard/page.tsx', 'utf8'))
+const dash = readFileSync('src/api-server/dashboard.ts', 'utf8')
+assert(
+  !/sparkline:\s*(riskSeries|readinessSeries|eventSeries|findingSeries)/.test(apiCode) && !apiCode.includes('dailyBuckets'),
+  'no KPI borrows another metric\'s series as its sparkline',
+)
+assert(
+  apiCode.includes("trendBasis: 'none'") && primitives.includes("basis === 'none'") && primitives.includes('no prior baseline'),
+  'with no stored history a KPI says "no prior baseline" — never "stable"',
+)
+assert(
+  !/assessmentProgress \* 0\.6/.test(apiCode) && api.includes('evidenceSources'),
+  'evidence coverage is the share of named evidence sources — no flat +40 "AI confidence" constant',
+)
+assert(
+  !/\/secret\|key\|credential\/\.test/.test(apiCode) && /SECRET_ITEM_TYPE = \/\^/.test(api),
+  'Secrets match the WHOLE item type — key-exchange components are not secrets',
+)
+assert(
+  !/bumpCat\(key, crit === 'critical'/.test(apiCode) && api.includes('snap.assetTypePosture'),
+  'Asset Inventory "at risk" is the shared posture verdict, not the business-criticality tag',
+)
+assert(
+  !/shorAtRisk = inv\.vulnerableComponents/.test(apiCode) && api.includes('definition.shorBroken'),
+  'Shor-at-Risk counts only components whose primitive Shor breaks (knowledge base), not every vulnerable component',
+)
+assert(
+  !/item_type\)\)\)\.length/.test(apiCode) && api.includes('effectiveStrength < 128'),
+  'Grover-Weakened classifies the algorithm (effective strength), not the item_type column',
+)
+assert(
+  api.includes('assetsWithCertificates') && !/pct\(certificates\.length, totalAssets\)/.test(apiCode),
+  'Certificate Coverage counts assets WITH a certificate, not certificate rows',
+)
+assert(
+  !/clampPct\(\(financialExposure \/ /.test(apiCode) && api.includes('(financialExposure - migrationCostUsd) / migrationCostUsd'),
+  'ROI is (loss avoided − cost) ÷ cost and is not clamped to 100%',
+)
+assert(
+  api.includes('snap.criticalFindings') && !/openVulns\s*\.filter\(\(v\) => severityRank\(v\.severity\) >= 3\)/.test(apiCode),
+  'the threat feed is the canonical critical/high finding set, not derived backlog bucket rows',
+)
+assert(threatIntel.includes("measured ? fmtNumber(c.value) : '—'"), 'runtime-sourced threat tiles read "—" without a collector')
+assert(
+  !recsPanel.includes('Sophia-ranked') && (recsPanel.match(/<TruncationNote/g) || []).length === 1,
+  'recommendations claim no model ranking, and disclose truncation ONCE (not inside every card)',
+)
+assert(
+  dash.includes('groupRecommendedActions(canonical.findings)') && !/for \(const vuln of \(vulnerabilities \|\| \[\]\)/.test(dash),
+  'recommendations come from the canonical findings grouped by recorded action — no derived-bucket duplicates',
+)
+assert(
+  /\\bhigh\\b/.test(dash) && !/text\.includes\('critical'\) \|\| text\.includes\('high'\)/.test(dash),
+  'event severity keeps HIGH as its own tier — never folded into critical',
+)
+assert(
+  !page.includes('Live monitoring') && page.includes('No runtime collector') && !page.includes('FIPS 140-3 Aligned'),
+  'the header separates connection state from estate monitoring, and the footer makes no unevidenced compliance claim',
 )
 
 /* ------------------------------------------------------------------ */

@@ -23,6 +23,10 @@
  * so a reader can verify the match without trusting us.
  */
 import type { ReportTable } from './schemas/ReportSchema'
+import type { ReportDocument } from './ReportDocument'
+import type { IntegritySeal } from './ReportIntegrity'
+import { isCryptographicComponent as isCanonicalCryptographicComponent } from '@/lib/scanner/finding-identity'
+import { algorithmFamily } from '@/lib/governance/subjects'
 
 /**
  * Document kinds that share this model and the exporters behind it. The
@@ -59,11 +63,26 @@ export interface InventoryReport {
     provenance: string
     /** Filename stem for the exported file. Defaults per kind. */
     filenameSlug?: string
+    /** Stable document id (printed on the cover and in the integrity seal). */
+    reportId?: string
+    version?: string
+    generatedBy?: string
+    /** Newest scan evidence the document describes — "data as of". */
+    dataAsOf?: string | null
   }
   kpis: InventoryKpi[]
   tables: ReportTable[]
   reconciliation: ReconciliationRow[]
   notes: string[]
+  /**
+   * Premium enterprise document. When present the exporters render the full
+   * report layout (cover, contents, executive summary, sections, decisions,
+   * validation, integrity); when absent they render the register layout the
+   * CBOM, QKMS and Live Migration exports have always used.
+   */
+  document?: ReportDocument
+  /** SHA3-256 seal over the canonical document (see ReportIntegrity.ts). */
+  integrity?: IntegritySeal
 }
 
 /* ------------------------------------------------------------------ */
@@ -158,33 +177,22 @@ const dateLabel = (value: unknown): string => {
 }
 
 /**
- * Component names are class-prefixed ("Cipher Suite: TLS_…", "Rule (Certificate
- * Risk): No OCSP Stapling"). Rows whose class is not cryptographic record
- * POSTURE, not an algorithm, and are tabled separately — the same split the
- * CBOM Explorer applies on screen, so the export cannot contradict it.
+ * Rows that record POSTURE (a scanner finding such as "Rule (Certificate Risk):
+ * No OCSP Stapling") are tabled separately from cryptographic components — the
+ * same split the CBOM Explorer and the API apply, so the export cannot
+ * contradict them.
+ *
+ * Delegates to the ONE canonical predicate (`finding-identity.ts`). This module
+ * used to keep its own class-prefix list, which had drifted: it missed agent
+ * rows (`key_exchange: X25519` — underscore) and the "Web Crypto
+ * (Post-Quantum)" library class, so real components were exported under
+ * "Configuration & Policy Observations" while the dashboard counted them.
  */
-const CRYPTO_CLASSES = new Set([
-  'cipher suite',
-  'symmetric encryption',
-  'asymmetric encryption',
-  'certificate',
-  'certificate signature',
-  'signature',
-  'key exchange',
-  'post-quantum key agreement',
-  'protocol',
-  'protocol support',
-  'hash',
-  'mac',
-  'kdf',
-])
-function componentClass(component: unknown): string {
-  const s = String(component ?? '').trim()
-  const prefix = s.includes(':') ? s.slice(0, s.indexOf(':')) : s
-  return prefix.replace(/\s*\(.*$/, '').trim().toLowerCase()
-}
 export function isCryptographicComponent(row: CbomRow): boolean {
-  return CRYPTO_CLASSES.has(componentClass(row.component))
+  return isCanonicalCryptographicComponent(
+    { name: row.component, algorithm: row.algorithm, item_type: row.type },
+    algorithmFamily,
+  )
 }
 
 /* ------------------------------------------------------------------ */

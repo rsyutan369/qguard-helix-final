@@ -52,6 +52,7 @@ import {
 } from '@/lib/billing/revenue-model'
 import { ROLE_CAPABILITIES, ROLE_LABELS as COPILOT_ROLE_LABELS, normalizeRole as normalizeCopilotRole } from './copilot-knowledge'
 import { cancelSubscription } from './paypal'
+import { trustedClientIp } from './runtime/client-ip'
 
 type AdminRequest = Request & {
   adminUser?: User
@@ -74,6 +75,8 @@ function readQueryToken(req: Request): string | null {
 }
 
 function readClientIp(req: Request): string {
+  const trusted = trustedClientIp(req)
+  if (trusted) return trusted
   const forwarded = req.headers['x-forwarded-for']
   if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0].trim()
   const realIp = req.headers['x-real-ip']
@@ -348,7 +351,9 @@ async function tryForbiddenAudit(user: User, req: Request) {
       entity_id: null,
       ip_address: readClientIp(req),
       user_agent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null,
-      details: { path: req.originalUrl },
+      // Path only: stream routes authenticate with ?token=<JWT>, which must
+      // never be persisted in an audit row.
+      details: { path: (req.originalUrl || '').split('?')[0] },
     })
   } catch {
     // Best effort security trace.

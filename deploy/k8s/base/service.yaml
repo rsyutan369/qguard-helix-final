@@ -1,0 +1,48 @@
+# Public entry point: one DigitalOcean *HTTP* load balancer in front of the API.
+#
+# No ingress controller: the community ingress-nginx project is retired
+# (archived March 2026) and a single service does not need one. If routing
+# grows (several services, canaries), use DOKS's managed Cilium Gateway API.
+#
+# do-loadbalancer-type: REGIONAL is REQUIRED — without it DOKS >= 1.33.1
+# provisions a layer-4 network LB that cannot terminate TLS, redirect HTTP or
+# set the HTTP idle timeout the SSE streams need.
+apiVersion: v1
+kind: Service
+metadata:
+  name: qguard-api
+  labels:
+    app.kubernetes.io/name: qguard-api
+    app.kubernetes.io/part-of: qguard-helix
+  annotations:
+    service.beta.kubernetes.io/do-loadbalancer-type: "REGIONAL"
+    service.beta.kubernetes.io/do-loadbalancer-protocol: "http"
+    service.beta.kubernetes.io/do-loadbalancer-tls-ports: "443"
+    # Uploaded Cloudflare Origin CA certificate (see docs/deployment/03-RUNBOOK.md).
+    # Overlays set the real name.
+    service.beta.kubernetes.io/do-loadbalancer-certificate-name: "qguard-api-origin"
+    service.beta.kubernetes.io/do-loadbalancer-redirect-http-to-https: "true"
+    # SSE streams heartbeat every 10-30s and scans run up to 240s: 600s is the maximum.
+    service.beta.kubernetes.io/do-loadbalancer-http-idle-timeout-seconds: "600"
+    service.beta.kubernetes.io/do-loadbalancer-override-health-check: "true"
+    service.beta.kubernetes.io/do-loadbalancer-healthcheck-protocol: "http"
+    service.beta.kubernetes.io/do-loadbalancer-healthcheck-port: "80"
+    service.beta.kubernetes.io/do-loadbalancer-healthcheck-path: "/api/v1/healthz"
+    service.beta.kubernetes.io/do-loadbalancer-healthcheck-check-interval-seconds: "10"
+    service.beta.kubernetes.io/do-loadbalancer-healthcheck-response-timeout-seconds: "5"
+    service.beta.kubernetes.io/do-loadbalancer-healthcheck-unhealthy-threshold: "3"
+    service.beta.kubernetes.io/do-loadbalancer-healthcheck-healthy-threshold: "2"
+    service.beta.kubernetes.io/do-loadbalancer-size-unit: "1"
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: qguard-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+    - name: https
+      port: 443
+      targetPort: http
+      protocol: TCP

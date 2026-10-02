@@ -2,12 +2,13 @@
 
 import { useMemo, useState } from 'react'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
-import { History, Search, AlertTriangle, ShieldAlert, Info, CheckCircle, type LucideIcon } from 'lucide-react'
+import { History, Search, AlertTriangle, AlertOctagon, ShieldAlert, Info, CheckCircle, type LucideIcon } from 'lucide-react'
 import type { SecurityEvent } from '@/hooks/use-dashboard'
 import { Panel, PanelHeader, cx, TONE, relativeTime, type Tone, TruncationNote} from './primitives'
 
 const SEV_META: Record<SecurityEvent['severity'], { icon: LucideIcon; tone: Tone }> = {
-  critical: { icon: AlertTriangle, tone: 'critical' },
+  critical: { icon: AlertOctagon, tone: 'critical' },
+  high: { icon: AlertTriangle, tone: 'warning' },
   warning: { icon: ShieldAlert, tone: 'warning' },
   info: { icon: Info, tone: 'info' },
   success: { icon: CheckCircle, tone: 'good' },
@@ -16,7 +17,8 @@ const SEV_META: Record<SecurityEvent['severity'], { icon: LucideIcon; tone: Tone
 const FILTERS: Array<{ key: 'all' | SecurityEvent['severity']; label: string }> = [
   { key: 'all', label: 'All' },
   { key: 'critical', label: 'Critical' },
-  { key: 'warning', label: 'Warning' },
+  { key: 'high', label: 'High' },
+  { key: 'warning', label: 'Medium' },
   { key: 'info', label: 'Info' },
   { key: 'success', label: 'Success' },
 ]
@@ -32,7 +34,9 @@ function eventHref(e: SecurityEvent): string {
   return '/dashboard/audit-vault'
 }
 
-export default function ThreatTimeline({ events, loading }: { events: SecurityEvent[]; loading: boolean }) {
+export default function ThreatTimeline({
+  events, loading, live, pqcConfirmationsOmitted = 0,
+}: { events: SecurityEvent[]; loading: boolean; live?: boolean; pqcConfirmationsOmitted?: number }) {
   const reduce = useReducedMotion()
   const [filter, setFilter] = useState<'all' | SecurityEvent['severity']>('all')
   const [query, setQuery] = useState('')
@@ -52,7 +56,8 @@ export default function ThreatTimeline({ events, loading }: { events: SecurityEv
 
   return (
     <Panel className="flex h-full flex-col">
-      <PanelHeader title="Threat Timeline" icon={History} live={events.length > 0} />
+      {/* "Live" is the CONNECTION being open — not the presence of events. */}
+      <PanelHeader title="Threat Timeline" icon={History} live={Boolean(live)} />
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[140px]">
@@ -142,9 +147,14 @@ export default function ThreatTimeline({ events, loading }: { events: SecurityEv
             <TruncationNote
               shown={filtered.length}
               total={matching.length}
-              noun={filter === 'all' ? 'events' : `${filter} events`}
+              noun={filter === 'all' ? 'events' : `${(FILTERS.find((f) => f.key === filter)?.label || filter).toLowerCase()} events`}
               rank="most recent"
             />
+            {pqcConfirmationsOmitted > 0 && (
+              <div className="pt-2 text-[9px] font-bold uppercase tracking-wider text-white/25">
+                {pqcConfirmationsOmitted} PQC-ready confirmation{pqcConfirmationsOmitted === 1 ? '' : 's'} in this window are recorded on the CBOM, not listed as threats
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
-  Bell, AlertTriangle, Shield, CheckCircle, Info, 
+  Bell, AlertTriangle, AlertOctagon, CheckCircle, Info, 
   ExternalLink, FileSearch, ShieldAlert, History, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import type { SecurityEvent } from '@/hooks/use-dashboard';
@@ -9,17 +9,21 @@ import type { SecurityEvent } from '@/hooks/use-dashboard';
 interface Props {
   events: SecurityEvent[];
   loading: boolean;
+  /** True while a realtime channel is actually open. */
+  live?: boolean;
 }
 
-const SEVERITY_COLORS = {
+const SEVERITY_COLORS: Record<SecurityEvent['severity'], string> = {
   critical: 'text-red-500 bg-red-500/10 border-red-500/20',
-  warning: 'text-orange-500 bg-orange-500/10 border-orange-500/20',
+  high: 'text-orange-500 bg-orange-500/10 border-orange-500/20',
+  warning: 'text-amber-400 bg-amber-400/10 border-amber-400/20',
   info: 'text-blue-400 bg-blue-400/10 border-blue-400/20',
   success: 'text-green-500 bg-green-500/10 border-green-500/20',
 };
 
-const SEVERITY_ICONS = {
-  critical: AlertTriangle,
+const SEVERITY_ICONS: Record<SecurityEvent['severity'], typeof Info> = {
+  critical: AlertOctagon,
+  high: AlertTriangle,
   warning: ShieldAlert,
   info: Info,
   success: CheckCircle,
@@ -40,7 +44,14 @@ function eventHref(event: SecurityEvent) {
   return '/dashboard/telemetry-correlation';
 }
 
-export default function SecurityEventsPanel({ events, loading }: Props) {
+/** Date AND time — a bare time-of-day made a week-old event read as today's. */
+function eventStamp(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+export default function SecurityEventsPanel({ events, loading, live = false }: Props) {
   const [currentPage, setCurrentPage] = useState(1);
   const pageCount = Math.max(1, Math.ceil(events.length / EVENTS_PER_PAGE));
 
@@ -75,9 +86,9 @@ export default function SecurityEventsPanel({ events, loading }: Props) {
           <Bell className="h-4 w-4 text-gold" />
           Security Events
         </h2>
-        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-gold/10 border border-gold/20">
-          <span className="w-1.5 h-1.5 bg-gold rounded-full animate-pulse" />
-          <span className="text-[9px] font-black text-gold uppercase tracking-widest">Real-time</span>
+        <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full border ${live ? 'bg-gold/10 border-gold/20' : 'bg-white/5 border-white/10'}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${live ? 'bg-gold animate-pulse' : 'bg-white/30'}`} />
+          <span className={`text-[9px] font-black uppercase tracking-widest ${live ? 'text-gold' : 'text-white/40'}`}>{live ? 'Real-time' : 'Polling'}</span>
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
@@ -85,7 +96,7 @@ export default function SecurityEventsPanel({ events, loading }: Props) {
           {events.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center opacity-30 py-12">
                 <History className="w-10 h-10 mb-4 text-gold/50" />
-                <p className="text-[10px] uppercase font-black tracking-widest">No recent security events</p>
+                <p className="text-[10px] uppercase font-black tracking-widest">No security events recorded</p>
             </div>
           ) : (
             visibleEvents.map((event) => {
@@ -116,7 +127,7 @@ export default function SecurityEventsPanel({ events, loading }: Props) {
                     <div className="flex justify-between items-start gap-2">
                       <div className="text-[10px] font-black uppercase tracking-wider">{event.eventType.replace(/_/g, ' ')}</div>
                       <div className="text-[8px] font-mono opacity-50 whitespace-nowrap">
-                        {new Date(event.timestamp).toLocaleTimeString()}
+                        {eventStamp(event.timestamp)}
                       </div>
                     </div>
                     <p className="text-[11px] text-white/70 leading-relaxed font-medium [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden">

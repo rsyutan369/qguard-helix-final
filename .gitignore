@@ -11,3 +11,16 @@ coverage/
 # Agent runtime bundle - rebuilt by "npm run agent:release" (chained from prebuild)
 tools/qguard-agent/dist/
 .playwright-mcp/
+
+# Local tool state (browser profiles, crash dumps, logs) — never commit
+.codex-tmp/
+.codex-logs/
+.playwright-cli/
+*.dmp
+
+# Deployment secrets rendered for kubectl / local testing
+deploy/**/*.env
+!deploy/k8s/secrets.example.env
+
+# Supabase CLI local state
+supabase/.temp/

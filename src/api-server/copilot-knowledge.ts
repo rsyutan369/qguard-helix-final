@@ -714,7 +714,70 @@ const FILTER_STOPWORDS = new Set([
   'component', 'components', 'finding', 'findings', 'algorithm', 'algorithms', 'certificate', 'certificates', 'cert', 'certs',
   'key', 'keys', 'library', 'libraries', 'dependency', 'dependencies', 'cbom', 'scan', 'scans', 'endpoint', 'endpoints',
   'status', 'state', 'posture', 'overview', 'summary', 'report', 'data', 'info', 'information', 'details', 'detail', 'result', 'results',
+  // TOPIC vocabulary — names a platform subject, never a record. "What is
+  // pending remediation?" became the ownership filter "remediation pending",
+  // which matched 0 findings and published "0 finding(s) matched" as evidence.
+  'pending', 'open', 'outstanding', 'queue', 'queued', 'action', 'actions', 'task', 'tasks', 'playbook', 'playbooks',
+  'remediation', 'remediations', 'blocker', 'blockers', 'blocking', 'blocked', 'block', 'gain', 'gains', 'fastest', 'quickest',
+  'quick', 'win', 'wins', 'raise', 'raises', 'improve', 'improves', 'reach', 'next', 'first', 'level', 'levels', 'eligible',
+  'eligibility', 'certification', 'certified', 'certify', 'readiness', 'ready', 'score', 'scores', 'harvest', 'hndl', 'decrypt',
+  'decryptable', 'later', 'future', 'forward', 'secrecy', 'pfs', 'compliance', 'compliant', 'framework', 'frameworks',
+  'summarize', 'summarise', 'latest', 'last', 'recent', 'discovered', 'expiring', 'expire', 'expires', 'expired', 'expiry',
+  'issuer', 'issuers', 'anchor', 'anchors', 'chain', 'chains', 'trust', 'relationship', 'relationships', 'collector',
+  'collectors', 'agent', 'agents', 'healthy', 'health', 'offline', 'online', 'snapshot', 'snapshots', 'rollback', 'roll',
+  'back', 'restore', 'job', 'jobs', 'active', 'failed', 'effort', 'estimate', 'timeline', 'cost', 'plan', 'walk', 'through',
+  'carry', 'carries', 'drive', 'drives', 'driving', 'lack', 'lacks', 'lacking', 'missing', 'reduce', 'reduces', 'reduction',
+  'lower', 'fast', 'quickly', 'achieved', 'achieve', 'exactly', 'explain', 'about', 'day', 'days', 'week', 'weeks', 'month',
+  'months', 'generate', 'executive', 'board', 'third', 'party', 'parties', 'vendor', 'vendors', 'supplier', 'suppliers',
+  'nist', 'fips', 'cnsa', 'iso', 'pci', 'alignment', 'aligned', 'close', 'closing', 'within', 'count', 'total', 'telemetry',
+  'runtime', 'event', 'events', 'legacy', 'blast', 'radius', 'dependent', 'dependents', 'tell', 'stand', 'going', 'doing',
 ])
+
+/**
+ * Words that may be a reference to one of the tenant's records — kept for
+ * ENTITY LINKING, not for filtering. `linkAssetMentions` (copilot-tools) only
+ * treats a mention as an asset when the register actually holds an asset of
+ * that name, so a mention is a candidate, never an assumption.
+ */
+function mentionTokens(residual: string): string[] {
+  return [...new Set(residual
+    .replace(/[^a-z0-9._\- ]+/g, ' ')
+    .split(/\s+/)
+    .map((t) => t.replace(/^[._-]+|[._-]+$/g, ''))
+    .filter((t) => t.length >= 3 && !FILTER_STOPWORDS.has(t) && !TYPE_NOUNS.has(t) && !/^\d+$/.test(t)))]
+    .slice(0, 8)
+}
+
+/**
+ * Asset-TYPE words. They stay usable as a type filter ("production servers")
+ * but are never a record reference: "which servers are internet-facing?" must
+ * not link to an asset that happens to be called "web-server-01".
+ */
+const TYPE_NOUNS = new Set([
+  'server', 'servers', 'host', 'hosts', 'application', 'applications', 'app', 'apps', 'service', 'services',
+  'database', 'databases', 'domain', 'domains', 'website', 'websites', 'api', 'apis', 'workload', 'workloads',
+  'machine', 'machines', 'cluster', 'clusters', 'gateway', 'gateways', 'vpn', 'container', 'containers',
+  'network', 'networks', 'device', 'devices', 'repository', 'repositories', 'repo', 'repos', 'bucket', 'buckets',
+  'environment', 'environments', 'production', 'staging', 'development', 'prod', 'dev',
+])
+
+/**
+ * A time window the question names — "expire in the next 90 days",
+ * "within 2 weeks", "this month". Returned in days; 0 when none is named.
+ */
+export function extractWindowDays(question: string): number {
+  const q = String(question || '').toLowerCase()
+  const m = q.match(/\b(?:next|within|in|over the next|coming)\s+(\d{1,4})\s*(day|week|month|year)s?\b/)
+  if (m) {
+    const n = Number(m[1])
+    const unit = m[2]
+    return unit === 'day' ? n : unit === 'week' ? n * 7 : unit === 'month' ? n * 30 : n * 365
+  }
+  if (/\bthis week\b/.test(q)) return 7
+  if (/\bthis month\b/.test(q)) return 30
+  if (/\bthis quarter\b/.test(q)) return 90
+  return 0
+}
 
 /**
  * A token that looks like a concrete identifier rather than a common word —
@@ -744,6 +807,10 @@ export interface QueryFilter {
   wantsOwner: boolean
   /** The record kind the user asked about. */
   entity: QueryEntity
+  /** Candidate record references for entity linking against the real register. */
+  mentions: string[]
+  /** A time window the question names, in days (0 = none). */
+  withinDays: number
 }
 
 /**
@@ -774,6 +841,9 @@ export function extractQueryFilter(question: string): QueryFilter {
     // "servers" still matches type "server".
     .map((t) => (t.length > 3 && t.endsWith('s') && !t.endsWith('ss') ? t.slice(0, -1) : t))
     .filter((t) => !FILTER_STOPWORDS.has(t))
+    // A bare number ("90" from "next 90 days") is a quantity, not a name —
+    // left in, it became `name ILIKE '%90%'`.
+    .filter((t) => !/^\d+$/.test(t))
 
   // Rank by selectivity, NOT by position. Taking the first three tokens in
   // sentence order is what dropped "rsa" (the only discriminating term) from
@@ -788,6 +858,8 @@ export function extractQueryFilter(question: string): QueryFilter {
     criticality: /\bcritical\b/i.test(raw) ? 'critical' : '',
     wantsOwner: /\bwho owns\b|\bowner(s)?\b|\bownership\b|\bwho (is |are )?responsible\b|\bwhose\b|\bwho manages\b|\bteam\b/i.test(raw),
     entity: detectEntityKind(raw),
+    mentions: mentionTokens(residual),
+    withinDays: extractWindowDays(raw),
   }
 }
 

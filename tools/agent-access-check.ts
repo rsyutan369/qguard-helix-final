@@ -305,9 +305,9 @@ function checkRouter(): void {
     'metadata is spread in verbatim, so `role` must be written after it',
   );
   check(
-    'enrolment derives capabilities from the resolved role',
-    /\.\.\.agentRole\(resolvedRole\)\.capabilities/.test(scanner),
-    'a caller asking for remediation:true on a collector must still get a collector',
+    'enrolment derives capabilities from the resolved role, reduced by the operator authorisation',
+    /authorizedCapabilities\(resolvedRole, authority\)/.test(scanner),
+    'a caller asking for remediation:true on a collector must still get a collector, and an unauthorised patcher a read-only one',
   );
   check(
     'enrolment clamps the scan-module list to the plan',

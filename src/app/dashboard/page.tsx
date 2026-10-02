@@ -2,13 +2,13 @@
 
 import {
   Shield, AlertTriangle, Activity, RefreshCw, ChevronRight, GitBranch,
-  ScrollText, Briefcase, Boxes, Radar, Bell, History, Sparkles, FileDown, Scale,
+  ScrollText, Briefcase, Boxes, Radar, Bell, History, Sparkles, FileDown, Scale, Radio,
 } from 'lucide-react'
 import { useDashboard } from '@/hooks/use-dashboard'
 import { useAuth } from '@/contexts/auth-context'
 import { isOwnerEmail } from '@/lib/admin-access'
 import { ExposureWorkflowGraph } from '@/components/exposure/ExposureWorkflowGraph'
-import { ESTATE_LENSES } from '@/lib/dashboard/estate-workflow'
+import { ESTATE_GROUPINGS, ESTATE_LENSES } from '@/lib/dashboard/estate-workflow'
 import SecurityEventsPanel from './security_events_panel/SecurityEventsPanel'
 import ExecutiveSummary from './_components/executive/ExecutiveSummary'
 import KpiGrid from './_components/executive/KpiGrid'
@@ -31,32 +31,55 @@ function firstName(user: ReturnType<typeof useAuth>['user']): string | null {
   return null
 }
 
+function plural(count: number, noun: string): string {
+  return `${count.toLocaleString()} ${noun}${count === 1 ? '' : 's'}`
+}
+
 export default function Dashboard() {
   const { user } = useAuth()
   const {
-    summary, executive, events, estateWorkflow, recommendations, health,
+    summary, executive, events, eventsOmitted, estateWorkflow, recommendations, recommendationsTotal, health,
     summaryState, executiveState, eventsState, workflowState, recommendationsState,
     lastSyncAt, sseConnected, refreshAll,
   } = useDashboard()
 
   const execLoading = executiveState === 'loading' && !executive
   const workflowLoading = workflowState === 'loading' && !estateWorkflow
+  const workflowFailed = workflowState === 'error' && !estateWorkflow
   const eventsLoading = eventsState === 'loading' && events.length === 0
   const recsLoading = recommendationsState === 'loading' && recommendations.length === 0
   const summaryLoading = summaryState === 'loading' && !summary
   const error = summaryState === 'error' && !summary && executiveState === 'error' && !executive
 
-  const monitoringStatus = health?.services?.migration === 'migrating'
-    ? 'migrating'
+  /*
+   * Two different questions, two indicators.
+   *
+   * The first pill is the CONNECTION: is this page receiving live updates.
+   * It used to read "Live monitoring" whenever a websocket was open — a claim
+   * about the ESTATE (that something is watching it) made from a fact about the
+   * BROWSER (that it is subscribed to database changes). The second pill is
+   * the estate claim, answered from what is actually enrolled.
+   */
+  const activity = health?.services?.migration === 'migrating'
+    ? 'Migration running'
     : health?.services?.scanner === 'scanning'
-      ? 'scanning'
-      : summaryState === 'offline'
-        ? 'offline'
-        : health?.status === 'degraded'
-          ? 'degraded'
-          : sseConnected
-            ? 'active'
-            : summary?.monitoringStatus || 'active'
+      ? 'Scan running'
+      : null
+  const syncState = summaryState === 'offline' || executiveState === 'offline'
+    ? 'offline'
+    : health?.status === 'degraded'
+      ? 'degraded'
+      : sseConnected
+        ? 'live'
+        : 'polling'
+  const runtime = executive?.runtime
+  const coverage = !runtime
+    ? null
+    : runtime.measured
+      ? { label: 'Runtime telemetry reporting', tone: 'good' as const }
+      : runtime.agentsEnrolled
+        ? { label: 'Collector enrolled · no events yet', tone: 'warning' as const }
+        : { label: 'No runtime collector', tone: 'muted' as const }
 
   if (error) {
     return (
@@ -76,6 +99,8 @@ export default function Dashboard() {
     )
   }
 
+  const estate = estateWorkflow?.estate
+
   return (
     <div className="p-4 lg:p-7 space-y-6 animate-in fade-in duration-500">
       {/* Global header */}
@@ -92,18 +117,37 @@ export default function Dashboard() {
           <p className="text-[13px] font-medium text-white/45">Enterprise Post-Quantum Cryptographic Posture · Discover → Migrate → Govern</p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
           <span className="font-mono text-[10px] uppercase tracking-widest text-white/30">Synced {relativeTime(lastSyncAt)}</span>
-          <div className={`flex items-center gap-2 rounded-full border px-4 py-1.5 text-[10px] font-black uppercase tracking-widest transition-all ${
-            monitoringStatus === 'active' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400'
-              : monitoringStatus === 'scanning' || monitoringStatus === 'migrating' ? 'border-cyan-500/25 bg-cyan-500/10 text-cyan-300'
-              : monitoringStatus === 'degraded' ? 'border-amber-500/25 bg-amber-500/10 text-amber-400'
-              : monitoringStatus === 'offline' ? 'border-red-500/25 bg-red-500/10 text-red-400'
-              : 'border-cyan-500/25 bg-cyan-500/10 text-cyan-300'
-          }`}>
-            <Activity className={`h-3 w-3 ${monitoringStatus === 'active' || monitoringStatus === 'scanning' ? 'animate-pulse' : ''}`} />
-            {monitoringStatus === 'active' ? 'Live monitoring' : monitoringStatus}
+          <div
+            title={syncState === 'live' ? 'Receiving database changes in real time' : syncState === 'polling' ? 'Realtime channel not open — refreshing every 30s' : undefined}
+            className={`flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-[10px] font-black uppercase tracking-widest transition-all ${
+              syncState === 'live' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400'
+                : syncState === 'degraded' ? 'border-amber-500/25 bg-amber-500/10 text-amber-400'
+                : syncState === 'offline' ? 'border-red-500/25 bg-red-500/10 text-red-400'
+                : 'border-cyan-500/25 bg-cyan-500/10 text-cyan-300'
+            }`}
+          >
+            <Activity className={`h-3 w-3 ${syncState === 'live' ? 'animate-pulse' : ''}`} />
+            {syncState === 'live' ? 'Live sync' : syncState === 'polling' ? 'Polling · 30s' : syncState}
           </div>
+          {activity && (
+            <div className="flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/10 px-3.5 py-1.5 text-[10px] font-black uppercase tracking-widest text-cyan-300">
+              <Activity className="h-3 w-3 animate-pulse" /> {activity}
+            </div>
+          )}
+          {coverage && (
+            <a
+              href="/dashboard/runtime-telemetry"
+              className={`flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-[10px] font-black uppercase tracking-widest no-underline transition-colors ${
+                coverage.tone === 'good' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-400'
+                  : coverage.tone === 'warning' ? 'border-amber-500/25 bg-amber-500/10 text-amber-400'
+                  : 'border-white/10 bg-white/5 text-white/45 hover:text-white/70'
+              }`}
+            >
+              <Radio className="h-3 w-3" /> {coverage.label}
+            </a>
+          )}
           <a
             href="/dashboard/quantum-readiness/reports"
             className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[10px] font-black uppercase tracking-widest text-white/55 no-underline transition-all hover:border-cyan-400/30 hover:text-cyan-300"
@@ -135,27 +179,21 @@ export default function Dashboard() {
         <div className="mt-2"><SharedResponsibilityStrip /></div>
       </div>
 
-      {/* Estate Exposure Workflow — the same engine the Local and Dev scanner
-          panels render, projecting the TENANT ESTATE instead of one assessment.
-          It replaces the old Exposure Graph + Node Inspector pair: those showed
-          assets and a side panel, this shows the relationships BETWEEN them —
-          scan sessions, assets and their real parent/child links, the CBOM,
-          certificates, algorithms, both finding registers and the remediations
-          on record — with the inspector built in. */}
+      {/* Estate Exposure Workflow — the same renderer the Local and Dev scanner
+          panels use, projecting the TENANT ESTATE: scan sessions, assets and
+          their real relationships, the canonical CBOM, certificates, algorithms,
+          the canonical open findings and the actions recorded against them. */}
       <div>
         <SectionLabel
           href="/dashboard/assets"
-          meta={estateWorkflow
+          meta={estate
             ? [
-                `${estateWorkflow.estate.assessedAssets} of ${estateWorkflow.estate.assets} assets assessed`,
-                `${estateWorkflow.estate.relationships} relationships`,
-                /* Stated, not hidden: a lower algorithm count than the number of
-                   recorded values is a REJECTION of scanner finding titles, not
-                   missing data. */
-                estateWorkflow.estate.rejectedAlgorithmLabels > 0
-                  ? `${estateWorkflow.estate.rejectedAlgorithmLabels} finding titles excluded from algorithms`
-                  : null,
-              ].filter(Boolean).join(' · ')
+                `${estate.assessedAssets} of ${plural(estate.assets, 'asset')} assessed`,
+                plural(estate.openFindings, 'open finding'),
+                plural(estate.components, 'CBOM component'),
+                plural(estate.certificates, 'certificate'),
+                plural(estate.relationships, 'relationship'),
+              ].join(' · ')
             : summary?.lastScanAt ? `Last scan ${relativeTime(summary.lastScanAt)}` : undefined}
         >
           <GitBranch className="h-4 w-4 text-cyan-300" /> Estate Exposure Workflow™
@@ -167,13 +205,33 @@ export default function Dashboard() {
                 Building estate workflow…
               </p>
             </div>
-          ) : estateWorkflow && estateWorkflow.nodes.length > 0 ? (
+          ) : workflowFailed ? (
+            /* A failed read is NOT an empty estate. Saying "No estate evidence
+               yet" here would tell a tenant with a full inventory that it has
+               none. */
+            <div className="grid h-[320px] place-items-center rounded-2xl border border-amber-400/25 bg-amber-400/[0.04] px-6 text-center">
+              <div className="max-w-md space-y-2">
+                <p className="text-sm font-bold text-amber-100">The estate workflow could not be built</p>
+                <p className="text-[12.5px] leading-relaxed text-amber-100/70">
+                  The server did not return the estate graph. Your inventory is unaffected — this view could not be drawn.
+                  Retry, or open the Assets page for the same records.
+                </p>
+                <button
+                  type="button"
+                  onClick={refreshAll}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300/30 bg-amber-300/10 px-3 py-1.5 text-[11px] font-bold uppercase tracking-[0.14em] text-amber-100 transition-colors hover:border-amber-300/50"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" /> Retry
+                </button>
+              </div>
+            </div>
+          ) : estateWorkflow && estate && estateWorkflow.nodes.length > 0 ? (
             <div className="space-y-2">
               {/* A degraded read is disclosed, never presented as the durable
                   estate. `persistence: 'memory'` means the database was
                   unreachable and the scanner's in-process results answered —
                   real scan output that will not survive a restart. */}
-              {estateWorkflow.estate.persistence === 'memory' && (
+              {estate.persistence === 'memory' && (
                 <div className="flex items-start gap-2.5 rounded-xl border border-amber-400/30 bg-amber-400/[0.07] px-3.5 py-2.5">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
                   <p className="text-[12px] leading-relaxed text-amber-100/85">
@@ -186,9 +244,33 @@ export default function Dashboard() {
               )}
               <ExposureWorkflowGraph
                 graph={estateWorkflow}
+                findings={estateWorkflow.findingCorpus}
                 lenses={ESTATE_LENSES}
+                groupings={ESTATE_GROUPINGS}
                 focusKind="asset"
-                provenance="Every node is a row this tenant already holds — the workflow adds nothing to the estate. Risk comes from the same shared posture model the Assets and Quantum Readiness pages read."
+                evidenceNote={
+                  <>
+                    Asset, finding, CBOM, certificate and scan-session nodes are records your tenant holds —{' '}
+                    <strong className="font-bold">observed</strong>. Algorithm and remediation nodes are groupings this view
+                    draws from those records — <strong className="font-bold">inferred</strong>, drawn dashed, and can be switched
+                    off. An algorithm or remediation carries the severity of its <strong className="font-bold">own</strong> findings,
+                    never that of the asset it sits on.
+                  </>
+                }
+                inferredHint="Turn it off to see only the records the platform holds — no algorithm or remediation groupings."
+                reconciliationNote={
+                  <>
+                    Plotted {estateWorkflow.reconciliation.findingsProjected.toLocaleString()} of{' '}
+                    {plural(estate.openFindings, 'open finding')} (the Open Findings KPI) and{' '}
+                    {estateWorkflow.reconciliation.componentsProjected.toLocaleString()} of {plural(estate.components, 'CBOM component')}{' '}
+                    ({plural(estate.componentInstances, 'recorded instance')} — the Cryptographic Inventory KPI).
+                    {estate.pqcConfirmations > 0 && ` ${plural(estate.pqcConfirmations, 'PQC-ready confirmation')} are carried by their CBOM components, not drawn as findings.`}
+                    {estate.unlinkedFindings > 0 && ` ${plural(estate.unlinkedFindings, 'finding')} could not be linked to an inventoried asset.`}
+                    {estate.rejectedAlgorithmLabels > 0 && ` ${plural(estate.rejectedAlgorithmLabels, 'recorded value')} named a finding rather than a primitive and produced no algorithm node.`}
+                    {estate.nonActionRecommendations > 0 && ` ${plural(estate.nonActionRecommendations, 'recommendation')} read “no action required” and are not drawn as actions.`}
+                  </>
+                }
+                provenance="Findings and components are the same canonical sets the KPI cards count; risk comes from the shared posture model the Assets and Quantum Readiness pages read."
               />
             </div>
           ) : (
@@ -219,13 +301,13 @@ export default function Dashboard() {
         <div>
           <SectionLabel href="/dashboard/quantum-risk-scoring"><Sparkles className="h-4 w-4 text-violet-300" /> AI Recommendations</SectionLabel>
           <div className="mt-2 h-[460px]">
-            <AiRecommendations recommendations={recommendations} loading={recsLoading} />
+            <AiRecommendations recommendations={recommendations} total={recommendationsTotal} loading={recsLoading} />
           </div>
         </div>
         <div>
           <SectionLabel href="/dashboard/audit-vault"><History className="h-4 w-4 text-cyan-300" /> Threat Timeline</SectionLabel>
           <div className="mt-2 h-[460px]">
-            <ThreatTimeline events={events} loading={eventsLoading} />
+            <ThreatTimeline events={events} loading={eventsLoading} live={sseConnected} pqcConfirmationsOmitted={eventsOmitted} />
           </div>
         </div>
       </div>
@@ -265,26 +347,28 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <div>
           <SectionLabel href="/dashboard/quantum-readiness/risk-analysis"><Radar className="h-4 w-4 text-cyan-300" /> Threat Intelligence</SectionLabel>
-          <div className="mt-2"><ThreatIntel intel={executive?.threatIntel} loading={execLoading} /></div>
+          <div className="mt-2"><ThreatIntel intel={executive?.threatIntel} loading={execLoading} runtimeMeasured={executive?.runtime?.measured} /></div>
         </div>
         <div>
           <SectionLabel href="/dashboard/audit-vault"><Bell className="h-4 w-4 text-cyan-300" /> Security Events</SectionLabel>
           <div className="mt-2 h-[440px]">
-            <SecurityEventsPanel events={events} loading={eventsLoading} />
+            <SecurityEventsPanel events={events} loading={eventsLoading} live={sseConnected} />
           </div>
         </div>
       </div>
 
-      {/* Footer */}
+      {/* Footer — statements about THIS page's data only. Compliance or
+          encryption claims about the platform ("FIPS 140-3 aligned",
+          "end-to-end PQC encrypted") are not evidenced here and are not made. */}
       <footer className="flex flex-col items-center justify-between gap-4 border-t border-white/5 pt-6 md:flex-row">
         <div className="flex items-center gap-2 opacity-30">
           <img src="/NEW_LOGO.png" alt="Logo" className="h-5 w-5 grayscale" />
-          <span className="text-[10px] font-black uppercase tracking-widest text-white">QGuard Helix Protocol v2.4</span>
+          <span className="text-[10px] font-black uppercase tracking-widest text-white">QGuard Helix</span>
         </div>
-        <div className="flex gap-6 text-[9px] font-bold uppercase tracking-widest text-white/20">
-          <span>End-to-End PQC Encrypted</span>
-          <span>GDPR / NIST / FIPS 140-3 Aligned</span>
-          <span>Tenant-Isolated</span>
+        <div className="flex flex-wrap justify-center gap-x-6 gap-y-1 text-[9px] font-bold uppercase tracking-widest text-white/25">
+          <span>Every figure derives from your own scans and records</span>
+          <span>Tenant-isolated reads</span>
+          <span>{executive?.lastAssessmentAt ? `Last assessment ${relativeTime(executive.lastAssessmentAt)}` : 'No assessment yet'}</span>
         </div>
       </footer>
     </div>

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   Activity,
@@ -901,7 +901,10 @@ export default function CbomExplorer() {
   const qr = useQuantumReadiness();
   const [activeTab, setActiveTab] = useState<CbomTab>('Overview');
   const [query, setQuery] = useState('');
-  const [assetFilter, setAssetFilter] = useState('all');
+  // `?asset=<name>` deep link — the Assets register links each asset's CBOM
+  // here, so the explorer opens already scoped to that asset.
+  const [searchParams] = useSearchParams();
+  const [assetFilter, setAssetFilter] = useState(() => searchParams.get('asset') || 'all');
   const [typeFilter, setTypeFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [page, setPage] = useState(1);

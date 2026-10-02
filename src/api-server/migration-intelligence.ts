@@ -172,6 +172,8 @@ router.get('/stream', async (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache, no-transform')
   res.setHeader('Connection', 'keep-alive')
+  // Matches every other SSE route: tells buffering proxies to stream through.
+  res.setHeader('X-Accel-Buffering', 'no')
   res.flushHeaders?.()
 
   let closed = false

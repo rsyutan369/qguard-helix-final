@@ -14,7 +14,10 @@ import {defineConfig, loadEnv, type Plugin} from 'vite';
  */
 function resolveConnectSrc(env: Record<string, string>): string[] {
   const tokens = new Set<string>(["'self'", 'https://*.supabase.co', 'wss://*.supabase.co']);
-  for (const key of ['VITE_SUPABASE_URL', 'VITE_SUPABASE_FALLBACK_URL']) {
+  // VITE_API_ORIGIN: split-origin API (src/lib/api-origin.ts). VITE_BILLING_API_ORIGIN:
+  // optional non-Supabase billing host (src/lib/billing/billing-api.ts). Both are
+  // skipped when unset, so the policy is byte-identical to before in that case.
+  for (const key of ['VITE_SUPABASE_URL', 'VITE_SUPABASE_FALLBACK_URL', 'VITE_API_ORIGIN', 'VITE_BILLING_API_ORIGIN']) {
     const value = env[key];
     if (!value) continue;
     try {

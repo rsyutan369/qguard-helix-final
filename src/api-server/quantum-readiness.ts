@@ -618,7 +618,9 @@ async function computeSnapshot(token: string, userId: string) {
   if (vulnerable > 0) {
     recommendedActions.push({
       id: 'rec-vuln',
-      title: `Remediate ${vulnerable} quantum-vulnerable algorithm${vulnerable === 1 ? '' : 's'}`,
+      // `vulnerable` counts CBOM COMPONENTS (protocol versions and suites
+      // included), not distinct algorithms — labelled as the unit it is.
+      title: `Remediate ${vulnerable} quantum-vulnerable CBOM component${vulnerable === 1 ? '' : 's'}`,
       detail: 'Replace RSA/ECC primitives with ML-KEM / ML-DSA or hybrid equivalents.',
       severity: 'critical',
       route: '/dashboard/crypto-agility',
@@ -675,8 +677,24 @@ async function computeSnapshot(token: string, userId: string) {
     .sort((x, y) => y.riskScore - x.riskScore)
     .slice(0, 10)
 
+  // ---- Posture by asset type ---------------------------------------------
+  // The per-asset verdict of the SHARED posture model, rolled up by the raw
+  // `assets.type`, so a consumer that groups assets into categories (the
+  // Executive Asset Inventory) reports "at risk" from the same verdict as the
+  // Quantum-Vulnerable Assets KPI — not from the business-criticality tag, which
+  // read "0 at risk" beside "1 quantum-vulnerable asset".
+  const assetTypePostureMap = new Map<string, { type: string; total: number; quantumVulnerable: number }>()
+  for (const asset of assets) {
+    const type = str(asset.type) || 'unknown'
+    const entry = assetTypePostureMap.get(type) || { type, total: 0, quantumVulnerable: 0 }
+    entry.total += 1
+    if (assetPosture.get(str(asset.id)) === 'vulnerable') entry.quantumVulnerable += 1
+    assetTypePostureMap.set(type, entry)
+  }
+  const assetTypePosture = [...assetTypePostureMap.values()]
+
   // ---- Exposure graph ---------------------------------------------------
-  const rankedAssets = [...assets].sort((a, b) => (assetRisk.get(str(b.id)) || 0) - (assetRisk.get(str(a.id)) || 0)).slice(0, 40)
+  const rankedAssets =[...assets].sort((a, b) => (assetRisk.get(str(b.id)) || 0) - (assetRisk.get(str(a.id)) || 0)).slice(0, 40)
   const nodes = rankedAssets.map((a) => ({
     id: str(a.id),
     label: str(a.name) || 'asset',
@@ -711,16 +729,19 @@ async function computeSnapshot(token: string, userId: string) {
     })
 
   // ---- Assessment progress ---------------------------------------------
-  const signals = [
-    assetsAssessed > 0,
-    scanResults.length > 0 || scanSessions.length > 0,
-    certificatesAnalyzed > 0,
-    keysDiscovered > 0,
-    trustRelationships > 0,
-    runtimeEvents.length > 0,
-    cryptoInventory.length > 0,
+  /* Named, so a consumer can say WHICH evidence is missing rather than
+     printing a bare percentage. `assessmentProgress` is derived from this list
+     and nothing else. */
+  const evidenceSources = [
+    { id: 'assets', label: 'Asset inventory', present: assetsAssessed > 0 },
+    { id: 'scans', label: 'Discovery scans', present: scanResults.length > 0 || scanSessions.length > 0 },
+    { id: 'certificates', label: 'Certificates', present: certificatesAnalyzed > 0 },
+    { id: 'keys', label: 'Key inventory', present: keysDiscovered > 0 },
+    { id: 'relationships', label: 'Asset relationships', present: trustRelationships > 0 },
+    { id: 'runtime', label: 'Runtime telemetry', present: runtimeEvents.length > 0 },
+    { id: 'cbom', label: 'Cryptographic inventory', present: cryptoInventory.length > 0 },
   ]
-  const assessmentProgress = Math.round((signals.filter(Boolean).length / signals.length) * 100)
+  const assessmentProgress = Math.round((evidenceSources.filter((source) => source.present).length / evidenceSources.length) * 100)
   const assessmentStatus = !hasData ? 'not_started' : assessmentProgress >= 85 ? 'complete' : 'in_progress'
 
   const allTimestamps = [
@@ -759,6 +780,7 @@ async function computeSnapshot(token: string, userId: string) {
     generatedAt: new Date().toISOString(),
     lastAssessmentAt,
     assessmentProgress,
+    evidenceSources,
     assessmentStatus,
     hasData,
     /**
@@ -815,6 +837,7 @@ async function computeSnapshot(token: string, userId: string) {
     criticalFindings,
     recommendedActions,
     topRiskAssets,
+    assetTypePosture,
     exposureGraph: { nodes, edges },
     riskTrend,
     estimates: { migrationTimelineWeeks, migrationCostUsd, parallelWorkstreams },

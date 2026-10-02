@@ -14,6 +14,7 @@ import {
   type SourceCoverage,
   type SubscriptionRecord,
 } from '@/lib/billing/revenue-model'
+import { trustedClientIp } from './runtime/client-ip'
 
 /**
  * Revenue Intelligence™ — owner-only financial analytics service.
@@ -62,6 +63,8 @@ function isStreamRequest(req: Request): boolean {
 }
 
 function clientIp(req: Request): string | null {
+  const trusted = trustedClientIp(req)
+  if (trusted) return trusted
   const forwarded = req.headers['x-forwarded-for']
   const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim()
   return first || req.socket?.remoteAddress || null

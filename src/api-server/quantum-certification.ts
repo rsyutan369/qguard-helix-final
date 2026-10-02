@@ -20,6 +20,7 @@ import type {
   QuantumTrustCertificate,
 } from '@/types/quantum-certification'
 import { LEVEL_LABELS } from '@/types/quantum-certification'
+import { trustedClientIp } from './runtime/client-ip'
 
 /**
  * Quantum Trust Certification Engine™
@@ -95,6 +96,8 @@ function fromHex(hex: string): Uint8Array {
   return out
 }
 function clientIp(req: Request): string {
+  const trusted = trustedClientIp(req)
+  if (trusted) return trusted
   const fwd = str(req.headers['x-forwarded-for']).split(',')[0].trim()
   return fwd || req.socket?.remoteAddress || ''
 }

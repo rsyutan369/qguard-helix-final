@@ -1,0 +1,49 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: qguard-paypal-reconcile
+  labels:
+    app.kubernetes.io/name: qguard-paypal-reconcile
+    app.kubernetes.io/part-of: qguard-helix
+spec:
+  schedule: "17 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: reconcile
+              image: curlimages/curl:8.11.1
+              env:
+                - name: RECONCILE_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: qguard-api-secrets
+                      key: PAYPAL_RECONCILE_SECRET
+              # In-cluster call. X-Forwarded-Proto marks it as already-TLS so
+              # the API's HTTPS enforcement does not answer 426.
+              command:
+                - sh
+                - -c
+                - >-
+                  curl --fail-with-body --silent --show-error --max-time 540
+                  -X POST http://qguard-api/api/v1/paypal/reconcile
+                  -H "X-Forwarded-Proto: https"
+                  -H "X-Reconcile-Secret: ${RECONCILE_SECRET}"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]

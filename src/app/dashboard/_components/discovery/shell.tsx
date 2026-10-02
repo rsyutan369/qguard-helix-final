@@ -74,6 +74,7 @@ export function DiscoveryHeader({
   measuredAt,
   reconciledNote,
   actions,
+  status,
 }: {
   title: string;
   subtitle: string;
@@ -81,26 +82,33 @@ export function DiscoveryHeader({
   measuredAt?: string | null;
   reconciledNote?: string;
   actions?: ReactNode;
+  /**
+   * Replaces the default two-state "Live Telemetry / Cached" pill with a
+   * page-specific transport status (e.g. stream vs polling vs offline).
+   */
+  status?: ReactNode;
 }) {
   return (
     <header className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-      <div>
+      <div className="min-w-0">
         <div className="flex items-center gap-2">
           <h1 className="text-2xl font-black tracking-tight text-[var(--qg-dashboard-text)] md:text-3xl">{title}</h1>
           <Info className="h-4 w-4 text-[var(--qg-text-muted)]" />
         </div>
         <p className="mt-1 text-sm text-[var(--qg-dashboard-text-soft)]">{subtitle}</p>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest">
-          <span
-            className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 ${
-              connected
-                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-                : 'border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] text-[var(--qg-text-muted)]'
-            }`}
-          >
-            <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-[var(--qg-text-muted)]'}`} />
-            {connected ? 'Live Telemetry' : 'Cached'}
-          </span>
+          {status ?? (
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 ${
+                connected
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                  : 'border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] text-[var(--qg-text-muted)]'
+              }`}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-[var(--qg-text-muted)]'}`} />
+              {connected ? 'Live Telemetry' : 'Cached'}
+            </span>
+          )}
           <FreshnessPill measuredAt={measuredAt} />
           {reconciledNote ? (
             <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--qg-cyan)]/25 bg-[var(--qg-cyan)]/10 px-2 py-0.5 text-[var(--qg-cyan)]">

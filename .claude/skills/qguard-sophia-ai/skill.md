@@ -69,12 +69,48 @@ An insight earns its place only if it is:
 Generic security advice with no tenant evidence behind it is noise and should not
 be generated.
 
+## Topic specialists (the answer layer)
+
+`src/api-server/copilot-answers.ts` holds 32 specialists. `resolveFocus()`
+maps a question to the topic that owns it (remediation queue, certification
+gap, HNDL, forward secrecy, certificates, asset dossier…); the planner pins that
+topic's tools ahead of every other source; `answerFocus()` composes the answer
+from THAT module's data. The cross-module agents and the deep composers are the
+fallback and the enrichment — never the lead for a topic a specialist owns.
+
+- **Records, not counts.** A "which / show / list" question returns
+  `CopilotAnswer.entities` — the named rows the owning module holds.
+- **Per-asset truth = the Assets page.** `getAssetRegister` runs
+  `buildAssetRegister` over the same scanner-intel + QR + workflow payloads the
+  page uses. `linkAssetMentions` treats a word as an asset only if a real asset
+  carries that name — question words never become filters.
+- **Typed builder boundary.** `CopilotBuilders` returns the builders' real types.
+  Add a field read → the compiler checks the name. Never widen it back to
+  `Record<string, unknown>`.
+- **Grounding.** `focused | correlated | digest | none` caps confidence; a
+  question with evidence is never answered "could not derive".
+- **Modelled ≠ measured.** HNDL terabytes, Q-REMEDY gains and certification
+  dates are projections and must say so in the sentence that uses them.
+
+## Longitudinal memory ("learning by doing", honestly)
+
+Each answer carries `figures` (measured values only). The gateway reads the
+tenant's previously reported figures from `copilot_messages.answer->figures`
+and the engine attaches `changes` ("pending remediation 8 → 5, improved").
+Nothing is trained or inferred: it is the tenant's own history of measured
+values. Unanswerable questions are audited as `copilot.knowledge_gap`, ratings as
+`copilot.feedback`, so coverage gaps are visible and can be closed.
+
 ## Checklist
 
+- [ ] A new suggested question is added to `tools/sophia-question-audit.ts`
+      (the audit fails when an offered suggestion is not covered).
+- [ ] A new topic gets a specialist with its owning tools, not an agent tweak.
 - [ ] Every number traces to the shared assessment model.
 - [ ] All tool queries `user_id`-pinned server-side; RBAC enforced.
 - [ ] Side-effectful actions gated on explicit human approval.
 - [ ] Retrieved content treated as untrusted data.
 - [ ] Insights cite evidence and state scope.
 - [ ] Unmeasured values reported as unknown, never inferred.
-- [ ] `tools/copilot-check.ts` passes.
+- [ ] `tools/copilot-check.ts`, `tools/sophia-check.ts` and
+      `tools/sophia-question-audit.ts` pass.

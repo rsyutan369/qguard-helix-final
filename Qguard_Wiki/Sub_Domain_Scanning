@@ -1,0 +1,887 @@
+## Public Scan — Subdomain Scanning & Quantum Security Assessment Enhancement
+
+In:
+
+`http://localhost:3000/public-scan`
+
+Please enhance the **Public Scan** functionality to support **main-domain + subdomain scanning**, while maintaining the existing scanner architecture, security controls, data integrity, and premium enterprise-grade user experience.
+
+### 1. Main Requirement
+
+Allow users to perform a Public Scan against:
+
+- Their primary/root domain
+- Up to **10 subdomains** belonging to that domain
+
+The maximum scope per Public Scan must therefore be:
+
+> **1 Main Domain + up to 10 Subdomains = Maximum 11 targets**
+
+Example:
+
+```text
+example.com
+www.example.com
+api.example.com
+mail.example.com
+vpn.example.com
+portal.example.com
+app.example.com
+dev.example.com
+staging.example.com
+secure.example.com
+auth.example.com
+```
+
+The user must **not be allowed to exceed 10 subdomains** in a single Public Scan.
+
+---
+
+# 2. Public Scan UI/UX
+
+Enhance the existing `/public-scan` interface with a premium, professional workflow.
+
+### Domain Input
+
+Provide a primary domain field:
+
+```text
+Primary Domain
+[ example.com ]
+```
+
+Then provide a subdomain management section:
+
+```text
+Subdomains — Maximum 10
+
+[ api.example.com        ] [Remove]
+[ app.example.com        ] [Remove]
+[ portal.example.com     ] [Remove]
+
+[ + Add Subdomain ]
+```
+
+Display a clear counter:
+
+```text
+3 / 10 Subdomains
+```
+
+When the user reaches 10:
+
+```text
+10 / 10 Subdomains
+Maximum subdomain limit reached.
+```
+
+Prevent adding an 11th subdomain.
+
+### Input Validation
+
+Validate that:
+
+- The primary domain is syntactically valid.
+- Subdomains are syntactically valid.
+- Subdomains belong to the specified primary domain.
+- Users cannot submit unrelated external domains.
+- Duplicate domains/subdomains are rejected.
+- Protocols such as `http://` and `https://` are normalized appropriately.
+- Paths, query strings, fragments, credentials, and malformed hostnames are rejected.
+- Internationalized domains should be handled safely if supported.
+- Wildcard entries such as `*.example.com` should not automatically expand into arbitrary hosts unless explicitly supported by the architecture.
+
+Example:
+
+```text
+Primary Domain:
+example.com
+
+Valid:
+api.example.com
+portal.example.com
+mail.example.com
+
+Invalid:
+google.com
+attacker.example.net
+example.org
+```
+
+---
+
+# 3. Subdomain Discovery Assistance
+
+Where technically and legally appropriate, provide an optional:
+
+### "Discover Subdomains"
+
+capability.
+
+This should help identify publicly observable subdomains associated with the primary domain.
+
+However:
+
+- Do not automatically scan discovered subdomains without explicit user confirmation.
+- Present discovered hosts for user selection.
+- Enforce the maximum of 10 selected subdomains.
+- Only scan targets that the user explicitly includes in the Public Scan scope.
+- Clearly display which hosts are user-entered versus discovered.
+
+Example:
+
+```text
+Discovered Subdomains
+
+☑ api.example.com
+☑ app.example.com
+☐ dev.example.com
+☐ staging.example.com
+☐ vpn.example.com
+
+Selected: 2 / 10
+```
+
+---
+
+# 4. Reuse and Enhance Existing Public Scan Scanners
+
+Do **not** create a completely separate scanner architecture for subdomains.
+
+Reuse the existing Public Scan scanner framework and enhance it so the same engines can process:
+
+```text
+Primary Domain
+        +
+Selected Subdomains
+        ↓
+Public Scan Scanner Pipeline
+        ↓
+Per-Target Results
+        ↓
+Aggregated Public Findings
+```
+
+Every target must retain its own individual scan results.
+
+The architecture should support:
+
+```text
+Scan
+ ├── example.com
+ ├── api.example.com
+ ├── app.example.com
+ ├── portal.example.com
+ └── ...
+```
+
+Each target should be independently identifiable throughout the scanning pipeline.
+
+---
+
+# 5. Scanner Coverage
+
+Ensure the existing Public Scan scanners are properly executed against **every selected target**.
+
+At minimum, evaluate:
+
+### Asset / Endpoint Discovery
+
+Identify:
+
+- DNS records
+- A / AAAA
+- CNAME
+- MX
+- NS
+- TXT
+- CAA
+- DNSSEC where observable
+- HTTP/HTTPS availability
+- Redirect chains
+- Hosting/edge/CDN information where observable
+
+### Transport & TLS
+
+Inspect:
+
+- TLS versions
+- TLS 1.2 / TLS 1.3
+- Supported cipher suites
+- Key exchange mechanisms
+- Certificate chains
+- Signature algorithms
+- Certificate public-key algorithms
+- RSA
+- ECC / ECDSA
+- DH / ECDH
+- Hybrid/PQC capabilities where externally observable
+- X25519
+- ML-KEM / hybrid key exchange where detectable
+- Weak/deprecated protocols
+- Weak/deprecated cipher suites
+- Certificate validity
+- Certificate expiration
+- Certificate chain issues
+
+### Quantum-Vulnerability Detection
+
+Improve the scanner to accurately identify cryptographic technologies that may create future quantum exposure.
+
+Distinguish between:
+
+**Classical cryptography**
+
+```text
+RSA
+ECDSA
+ECDH
+DH
+X25519
+```
+
+and:
+
+**Post-quantum / hybrid cryptography**
+
+```text
+ML-KEM
+ML-KEM-768
+ML-KEM-1024
+X25519 + ML-KEM
+Hybrid TLS
+ML-DSA
+SLH-DSA
+```
+
+Do not classify a system as PQC-protected merely because a generic TLS 1.3 connection exists.
+
+Likewise, do not classify an algorithm as quantum-vulnerable merely because it is classical without considering its actual cryptographic role.
+
+For example:
+
+- RSA key exchange/signatures → quantum-vulnerable public-key primitive
+- ECDSA → quantum-vulnerable signature primitive
+- ECDH → quantum-vulnerable key-establishment primitive
+- AES-256 → symmetric algorithm with substantially different quantum considerations
+- SHA-256/SHA-3 → hash functions requiring appropriate quantum-security interpretation
+
+The scanner must distinguish:
+
+```text
+Encryption
+Key Exchange
+Digital Signature
+Hashing
+Certificate Public Key
+TLS Cipher
+Authentication
+Token Signing
+```
+
+rather than placing all cryptographic findings into a single generic category.
+
+---
+
+# 6. Certificate Analysis
+
+For every scanned target, inspect publicly observable certificates and report:
+
+- Subject
+- SANs
+- Issuer
+- Valid From
+- Valid Until
+- Expiration status
+- Public-key algorithm
+- Key size
+- Signature algorithm
+- Certificate chain
+- Trust status where determinable
+- TLS association
+- PQC/hybrid characteristics where observable
+
+Flag relevant conditions such as:
+
+```text
+Expired Certificate
+Expiring Certificate
+Weak Key
+Legacy Signature Algorithm
+Quantum-Vulnerable Public-Key Algorithm
+Certificate Chain Issue
+Unsupported/Deprecated Configuration
+```
+
+Do not report a certificate as vulnerable simply because it uses a classical algorithm. Explain **why the algorithm creates quantum exposure and what role it serves**.
+
+---
+
+# 7. Quantum Impact Classification
+
+Every relevant cryptographic finding should receive a clear Quantum Impact classification.
+
+For example:
+
+### Critical Quantum Exposure
+
+Used for high-value public-key key establishment or authentication where a cryptographically relevant quantum computer could fundamentally compromise the primitive.
+
+### High Quantum Exposure
+
+Important public-key cryptography that requires migration planning.
+
+### Moderate Quantum Exposure
+
+Cryptography with reduced quantum security or transitional concerns.
+
+### Low / Informational
+
+Cryptographic technology that does not represent an immediate quantum migration concern.
+
+The exact classification must come from the application's documented risk model and scanner evidence rather than arbitrary hardcoded labels.
+
+---
+
+# 8. Public Findings Enhancement
+
+Enhance the existing **"Public Findings"** Card/Panel.
+
+Add dedicated tabs to accommodate the expanded multi-domain results.
+
+Recommended tabs:
+
+```text
+Overview
+Main Domain
+Subdomains
+All Findings
+Quantum Findings
+Certificates
+TLS & Ciphers
+DNS & Infrastructure
+Recommendations
+```
+
+If the existing UI already has equivalent tabs, integrate into the existing information architecture rather than duplicating functionality.
+
+---
+
+# 9. Subdomain Findings Tab
+
+Create a dedicated:
+
+### "Subdomains"
+
+tab.
+
+Display a professional table such as:
+
+| Subdomain | Status | Findings | Quantum Risk | Certificate | TLS |
+|---|---|---:|---|---|---|
+| api.example.com | Scanned | 4 | High | Valid | TLS 1.3 |
+| app.example.com | Scanned | 2 | Moderate | Valid | TLS 1.3 |
+| mail.example.com | Scanned | 6 | High | Expiring | TLS 1.2 |
+
+Each subdomain should be selectable to reveal detailed findings.
+
+---
+
+# 10. Finding Details
+
+Each finding should clearly display:
+
+### Finding
+
+```text
+RSA-2048 Certificate Public Key
+```
+
+### Affected Asset
+
+```text
+api.example.com
+```
+
+### Status
+
+Examples:
+
+```text
+Detected
+Confirmed
+Resolved
+Informational
+Not Determinable
+```
+
+Do not use "Passed" or "Protected" unless the scanner actually has sufficient evidence to make that determination.
+
+### Business Impact
+
+Explain the practical business consequence.
+
+Example:
+
+```text
+If this public-key infrastructure is compromised by a
+future cryptographically relevant quantum computer,
+attackers could potentially compromise encrypted sessions
+or authenticated communications depending on how the key
+is used.
+```
+
+### Quantum Impact
+
+Explain:
+
+- Which cryptographic primitive is affected
+- Why it matters in a post-quantum threat model
+- Whether the risk relates to HNDL
+- Whether the primitive is used for encryption, key exchange, authentication, or signing
+
+### Evidence
+
+Show the actual technical evidence that caused the finding.
+
+Examples:
+
+```text
+TLS Version: TLS 1.3
+Key Exchange: X25519
+Certificate Key: RSA 2048
+Certificate Signature: SHA256-RSA
+Cipher Suite: TLS_AES_256_GCM_SHA384
+```
+
+### Recommended Next Steps
+
+Provide actionable remediation guidance.
+
+Example:
+
+```text
+1. Inventory the affected certificate and dependent services.
+2. Identify applications consuming the certificate.
+3. Evaluate hybrid PQC key exchange support.
+4. Prioritize migration to an approved hybrid/PQC configuration.
+5. Validate compatibility.
+6. Monitor the deployment after migration.
+```
+
+---
+
+# 11. Per-Subdomain Status
+
+Each target should have its own scan state:
+
+```text
+Queued
+Scanning
+Completed
+Partial
+Failed
+Timed Out
+Not Reachable
+Not Determinable
+```
+
+Do not allow a failed subdomain to incorrectly make the entire scan appear successful.
+
+Example:
+
+```text
+Overall Scan
+87% Complete
+
+example.com       ✓ Completed
+api.example.com   ✓ Completed
+app.example.com   ✓ Completed
+dev.example.com   ⚠ Partial
+vpn.example.com   ✕ Failed
+```
+
+---
+
+# 12. Aggregated Results
+
+The Public Scan dashboard should provide both:
+
+### Aggregate View
+
+Across:
+
+```text
+1 Main Domain
++
+N Subdomains
+```
+
+and:
+
+### Individual Target View
+
+For each hostname independently.
+
+Example:
+
+```text
+Public Scan Summary
+
+Targets Scanned:        8
+Completed:              7
+Partial:                1
+
+Total Findings:         23
+Quantum Findings:       11
+Certificate Findings:    5
+TLS Findings:            9
+
+Highest Observed Quantum Impact:
+High
+```
+
+All aggregate values must be calculated from actual scan results.
+
+### IMPORTANT
+
+Do **not** introduce:
+
+- Fake metrics
+- Random metrics
+- Hardcoded findings
+- Simulated scanner results
+- Placeholder vulnerability counts
+
+Every metric displayed must originate from the actual scanner execution and persisted scan results.
+
+---
+
+# 13. Data Model / Backend
+
+Extend the Public Scan data model so every finding is associated with a specific target.
+
+Conceptually:
+
+```text
+public_scan
+    ↓
+scan_targets
+    ↓
+target_findings
+    ↓
+finding_evidence
+```
+
+Each target should have a stable identifier.
+
+Example:
+
+```text
+scan_id
+target_id
+hostname
+target_type
+status
+started_at
+completed_at
+```
+
+Findings should reference:
+
+```text
+scan_id
+target_id
+hostname
+finding_id
+finding_type
+severity
+quantum_impact
+business_impact
+evidence
+recommendation
+status
+```
+
+Do not duplicate the same finding unnecessarily across multiple database tables.
+
+Use a normalized source of truth and derive aggregate dashboard metrics from that source.
+
+---
+
+# 14. Scan Execution
+
+Design the scan pipeline so that multiple targets can be processed safely without:
+
+- Race conditions
+- Duplicate findings
+- Cross-target result contamination
+- Incorrect aggregation
+- UI state corruption
+- Timeout propagation
+- One failed target terminating unrelated scans
+
+Use controlled concurrency appropriate for the existing infrastructure.
+
+Do not bypass existing security/rate-limit protections.
+
+---
+
+# 15. Public Scan Security Boundaries
+
+Because this is a **Public Scan** feature, maintain strict scope controls.
+
+The scanner must only scan:
+
+1. The user-provided primary domain
+2. Explicitly selected subdomains belonging to that domain
+
+Do not turn this feature into an unrestricted arbitrary-host scanner.
+
+Implement appropriate:
+
+- Input validation
+- SSRF protections
+- DNS rebinding protections
+- Private/internal IP blocking
+- Loopback blocking
+- Link-local address blocking
+- Cloud metadata endpoint protection
+- Redirect validation
+- DNS resolution validation
+- Safe HTTP request handling
+- Request timeouts
+- Rate limiting
+- Concurrency limits
+
+Revalidate the resolved destination during the scanning process where appropriate to prevent DNS-rebinding-based scope bypasses.
+
+---
+
+# 16. Premium UI/UX
+
+Make the entire experience feel **premium, modern, professional, and enterprise-grade**.
+
+Use clear visual hierarchy for:
+
+- Main domain
+- Subdomains
+- Scan progress
+- Quantum exposure
+- Findings
+- Certificates
+- TLS configuration
+- Business impact
+- Recommended remediation
+
+Use polished:
+
+- Cards
+- Tabs
+- Badges
+- Progress indicators
+- Risk indicators
+- Expandable findings
+- Tooltips
+- Evidence panels
+- Scan-state indicators
+- Empty states
+- Loading states
+- Error states
+
+The UI should remain clean and understandable for both:
+
+### Technical Security Professionals
+
+and:
+
+### Executives / Business Users
+
+Avoid overwhelming users with raw technical output without context.
+
+---
+
+# 17. Scan Progress
+
+During scanning, show target-level progress:
+
+```text
+Public Scan
+
+Overall Progress
+██████████████░░░░ 78%
+
+8 Targets
+6 Completed
+1 Scanning
+1 Queued
+```
+
+And:
+
+```text
+Currently Scanning
+
+api.example.com
+
+TLS Analysis       ✓
+Certificate        ✓
+DNS Analysis       ✓
+Quantum Analysis   ⟳
+```
+
+---
+
+# 18. No Regression
+
+Before considering the implementation complete, verify that:
+
+- Existing `/public-scan` functionality still works.
+- Existing main-domain scanning is not broken.
+- Existing scanner modules continue to execute.
+- Existing findings remain accessible.
+- Existing database records remain compatible.
+- Existing API contracts are preserved where possible.
+- Existing authentication/authorization behavior is preserved.
+- Existing UI functionality is preserved.
+- No unrelated dashboard modules are affected.
+
+---
+
+# 19. Testing Requirements
+
+Perform comprehensive testing for:
+
+### Domain Validation
+
+- Valid root domain
+- Valid subdomain
+- Invalid domain
+- External domain
+- Duplicate subdomain
+- 10-subdomain maximum
+- Attempted 11th subdomain
+- Malformed hostname
+- URL/path injection attempts
+
+### Scanner Tests
+
+Test:
+
+- Root domain only
+- Root + 1 subdomain
+- Root + 5 subdomains
+- Root + 10 subdomains
+- Reachable target
+- Unreachable target
+- Timeout
+- Redirect
+- TLS failure
+- Certificate failure
+- DNS failure
+- Mixed success/failure
+
+### Quantum Detection
+
+Validate detection of:
+
+- RSA
+- ECDSA
+- ECDH
+- X25519
+- Classical TLS configurations
+- PQC/hybrid configurations where externally detectable
+- ML-KEM
+- Hybrid key exchange
+- ML-DSA / SLH-DSA where observable
+
+Ensure the scanner does not falsely claim PQC protection or quantum vulnerability without sufficient evidence.
+
+---
+
+# 20. Production-Readiness Audit
+
+After implementation, perform a complete audit of:
+
+```text
+Frontend
+Backend
+Scanner Engine
+Database
+API
+Validation
+Security
+Concurrency
+Error Handling
+Persistence
+Aggregation
+Quantum Classification
+UI/UX
+Performance
+```
+
+Trace the complete flow:
+
+```text
+User
+ ↓
+Public Scan UI
+ ↓
+Domain/Subdomain Validation
+ ↓
+Scan Scope Creation
+ ↓
+Scanner Orchestrator
+ ↓
+Per-Target Scanner Execution
+ ↓
+Evidence Collection
+ ↓
+Finding Normalization
+ ↓
+Quantum Risk Classification
+ ↓
+Persistence
+ ↓
+Aggregation
+ ↓
+Public Findings
+ ↓
+UI
+```
+
+Identify and fix any broken links in this flow.
+
+---
+
+# 21. Final Acceptance Criteria
+
+The implementation is complete only when:
+
+- Users can scan their main domain.
+- Users can add up to 10 subdomains.
+- An 11th subdomain cannot be added.
+- Every selected subdomain is independently scanned.
+- Existing Public Scan scanners are reused and enhanced.
+- Findings are associated with the correct hostname.
+- Quantum-vulnerable cryptography is detected using actual scanner evidence.
+- Certificates are analyzed accurately.
+- TLS/cipher/key-exchange information is accurately reported.
+- Quantum impact is distinguished from conventional security severity.
+- Business impact is clearly explained.
+- Recommended next steps are actionable.
+- Subdomain findings have their own dedicated UI.
+- Aggregate findings accurately represent all scanned targets.
+- Failed/partial targets are clearly identified.
+- No fake, random, simulated, or hardcoded scan metrics are introduced.
+- SSRF and scope-bypass protections are enforced.
+- Existing Public Scan functionality remains intact.
+- The implementation is production-ready and extensible for future scanner modules.
+
+### Final Goal
+
+Transform `/public-scan` from a **single-domain public security checker** into a **professional multi-target Public Quantum Security Assessment capability** that provides users with a clear, evidence-based view of their:
+
+**Domain → Subdomains → Certificates → TLS → Cryptographic Algorithms → Quantum Exposure → Business Impact → Recommended Remediation**
+
+while maintaining strict scanning scope, accurate technical evidence, strong security controls, and a premium enterprise-grade user experience.

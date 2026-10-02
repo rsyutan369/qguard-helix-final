@@ -1,10 +1,12 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import net from 'node:net'
+import { createHash } from 'node:crypto'
 import { getToken, getServerUser, createAuthClient, getServiceClient } from '@/lib/supabase-server'
 import { validateAsset } from '@/lib/scanner/asset-validator'
 import { persistableTelemetry } from '@/lib/scanner/session-payload'
 import { findingIdentityKey, isCryptographicComponent, richerText } from '@/lib/scanner/finding-identity'
-import { algorithmFamily } from '@/lib/governance/subjects'
+import { cbomComponentKey, evidenceTimestamp, partitionAssetInventory } from '@/lib/scanner/asset-components'
+import { algorithmFamily, assetIsInternetFacing } from '@/lib/governance/subjects'
 import { classifyCryptoRootCause } from '@/lib/crypto-root-cause'
 import { executeWebScan } from '@/lib/scanner/web-scanner/scan-orchestrator'
 import { repositoryProvider } from '@/lib/scanner/web-scanner/repo-scanner'
@@ -591,11 +593,17 @@ function severityFromThreat(threat: ThreatLevel) {
   return 'safe'
 }
 
-function statusFromThreat(threat: ThreatLevel, algorithm: string): DefensiveFinding['status'] {
+/** SSLv2/v3, TLS 1.0 ("TLSv1", "TLSv1.0", "TLS 1.0") and TLS 1.1 — never 1.2 or 1.3. */
+export const DEPRECATED_PROTOCOL_RE = /\bssl\s*v?[23](\.0)?\b|\btls\s*v?1(\.[01])?(?![.\d])/i
+
+export function statusFromThreat(threat: ThreatLevel, algorithm: string): DefensiveFinding['status'] {
   const lower = algorithm.toLowerCase()
   if (threat === 'SAFE') return 'PQC-ready'
   if (lower.includes('unknown') || lower.includes('manual')) return 'Unknown / requires manual review'
-  if (lower.includes('tlsv1') || lower.includes('sha-1') || lower.includes('md5') || lower.includes('expired')) return 'Legacy/deprecated'
+  /* Only the DEPRECATED protocol versions (RFC 8996: SSL 2/3, TLS 1.0, 1.1).
+     A bare `includes('tlsv1')` matched "TLSv1.2" and "TLSv1.3" too, so every
+     scan published the current, recommended protocol as "Legacy/deprecated". */
+  if (DEPRECATED_PROTOCOL_RE.test(lower) || lower.includes('sha-1') || lower.includes('md5') || lower.includes('expired')) return 'Legacy/deprecated'
   if (lower.includes('missing') || lower.includes('self-signed') || lower.includes('failed')) return 'Misconfigured'
   return 'Quantum-vulnerable'
 }
@@ -2289,7 +2297,9 @@ router.get('/stream', async (req, res) => {
 
 router.post('/jobs/:id/cancel', (req, res) => {
   const state = activeJobs.get(req.params.id)
-  if (!state) {
+  // A job id is not a capability: only the tenant that started the scan may
+  // cancel it. Another tenant gets the same 404 as an unknown id.
+  if (!state || state.userId !== (req as any).user?.id) {
     res.status(404).json({ error: { code: 'JOB_NOT_FOUND', message: 'Active scan job not found' } })
     return
   }
@@ -2521,7 +2531,9 @@ function buildCbomPayload(assets: any[], inventory: any[], mode: PersistenceMode
   for (const item of inventory) {
     if (!isCryptographicComponent(item, algorithmFamily)) { findingRowsExcluded += 1; continue }
     const asset = assetById.get(item.asset_id)
-    const key = `${item.asset_id}:${item.item_type}:${item.algorithm}:${item.name}`
+    // Shared with the per-asset register (asset-components.ts) so an asset's
+    // component list and the CBOM can never group one component differently.
+    const key = cbomComponentKey(item)
     const existing = grouped.get(key)
     const discoveredAt = item.discovered_at || item.created_at
     if (existing) {
@@ -3135,17 +3147,58 @@ function mergeScannerFindings(findings: ScannerFindingInput[]): MergedScannerFin
   })
 }
 
+/**
+ * PQC status of one asset, decided ONLY from its measured cryptographic
+ * components. The previous label ("PQC ready / monitored") was granted to any
+ * asset with inventory and no open signal — i.e. without validating a single
+ * component as quantum-safe, which the platform rules forbid.
+ */
+export type AssetPqcStatus = 'quantum-vulnerable' | 'pqc-ready' | 'needs-review' | 'not-measured'
+
+const ASSET_PQC_STATUS_LABEL: Record<AssetPqcStatus, string> = {
+  'quantum-vulnerable': 'Action required',
+  'pqc-ready': 'PQC-ready (scanner-validated)',
+  'needs-review': 'Review required',
+  'not-measured': 'No cryptography measured',
+}
+
+function assetPqcStatus(counts: { components: number; vulnerable: number; pqcReady: number }): AssetPqcStatus {
+  if (counts.components === 0) return 'not-measured'
+  if (counts.vulnerable > 0) return 'quantum-vulnerable'
+  if (counts.pqcReady === counts.components) return 'pqc-ready'
+  return 'needs-review'
+}
+
 function buildAssetsPayload(assets: any[], inventory: any[], exposures: any[], results: any[], vulnerabilityRows: any[], mode: PersistenceMode) {
   const evidenceAssets = buildEvidenceBackedAssets(assets, inventory, exposures, results, vulnerabilityRows)
   const normalized = evidenceAssets.map((asset) => {
     const rawCrypto = inventory.filter((item) => item.asset_id === asset.id)
+    // Every inventory row, grouped as before. The detection-signal list and the
+    // risk heuristic read components AND findings, and they feed the merged
+    // finding set (severityCounts -> QR riskDistribution), so their inputs must
+    // not move when the component register is corrected below.
     const crypto = groupCryptoInventory(rawCrypto)
+    // The asset's CBOM: cryptography only, grouped with the CBOM's own key, so
+    // Σ per-asset components === the CBOM headline by construction. Findings
+    // stored in crypto_inventory become posture observations, not components.
+    const partition = partitionAssetInventory(rawCrypto, algorithmFamily)
     const assetExposures = exposures.filter((item) => item.asset_id === asset.id)
     const assetResults = results.filter((item) => item.asset_id === asset.id)
     const assetVulnerabilityRows = vulnerabilityRows.filter((item) => item.asset_id === asset.id)
     const vulnerabilities = buildAssetVulnerabilities(asset.id, crypto, assetExposures, assetResults, assetVulnerabilityRows)
     const riskScore = assetRiskScore(asset, crypto, assetExposures, vulnerabilities)
-    const algorithms = Array.from(new Set(crypto.map((item: any) => item.algorithm).filter(Boolean)))
+    const algorithms = Array.from(new Set(partition.components.map((item) => item.algorithm).filter(Boolean)))
+    const pqcStatus = assetPqcStatus(partition.counts)
+    // "Last scanned" is when the scanner last OBSERVED this asset. The asset row
+    // is written at the start of a scan and its evidence afterwards, and
+    // `updated_at` also moves on unrelated edits, so the newest evidence row is
+    // the honest reading; the recorded scan time is the fallback.
+    const latestEvidenceMs = [...assetResults, ...assetExposures].reduce(
+      (latest: number, row: any) => Math.max(latest, evidenceTimestamp(row)),
+      partition.latestEvidenceMs,
+    )
+    const recordedScanMs = Date.parse(String(asset.metadata?.last_scanned_at || '')) || 0
+    const lastScannedMs = Math.max(latestEvidenceMs, recordedScanMs)
     return {
       id: asset.id,
       name: asset.name,
@@ -3154,23 +3207,36 @@ function buildAssetsPayload(assets: any[], inventory: any[], exposures: any[], r
       ipAddress: asset.ip_address,
       url: asset.metadata?.authorized_target || null,
       cryptography: algorithms,
-      cryptoInventory: crypto,
+      cryptoInventory: partition.components,
+      postureObservations: partition.posture,
+      componentCounts: partition.counts,
       riskScore,
       qScore: asset.metadata?.qScore ?? Math.max(0, 100 - riskScore),
       riskLevel: asset.metadata?.riskLevel || (riskScore >= 80 ? 'CRITICAL' : riskScore >= 60 ? 'HIGH' : riskScore >= 40 ? 'MEDIUM' : 'LOW'),
-      complianceStatus: vulnerabilities.length > 0 ? 'Action required' : crypto.length > 0 ? 'PQC ready / monitored' : 'Manual review',
-      lastScanned: asset.metadata?.last_scanned_at || asset.updated_at || asset.created_at,
+      pqcStatus,
+      complianceStatus: ASSET_PQC_STATUS_LABEL[pqcStatus],
+      lastScanned: lastScannedMs ? new Date(lastScannedMs).toISOString() : asset.updated_at || asset.created_at,
+      lastScannedSource: latestEvidenceMs >= recordedScanMs && latestEvidenceMs > 0 ? 'evidence' : recordedScanMs ? 'scan-record' : 'asset-record',
       status: asset.status,
+      // Ownership and exposure context, straight from the asset record. `null`
+      // means NOT RECORDED — the register says "Unassigned", never a guess.
+      owner: asset.service_owner || asset.metadata?.owner || asset.metadata?.businessOwner || null,
+      environment: asset.environment || asset.metadata?.environment || null,
+      region: asset.region || null,
+      criticality: asset.criticality || null,
+      internetFacing: assetIsInternetFacing(asset),
+      tlsVersion: asset.metadata?.tlsVersion || null,
       // findingsCount is finding-level (each rule/cipher detection) — QR's
       // exposure-graph and Report Center render it as "scan findings".
       findingsCount: Math.max(crypto.length, vulnerabilities.length),
-      // vulnerableCount is COMPONENT-level (is_vulnerable && !is_quantum_safe on
-      // the grouped crypto inventory) — the same unit the CBOM Explorer and the
-      // Quantum Readiness Engine count. Keeping this component-level (not the raw
-      // finding count) keeps the Assets page, Migration Timeline and Migration
-      // Phases reconciled with the platform snapshot instead of inflating totals.
       findingSignalCount: vulnerabilities.length,
-      vulnerableCount: crypto.filter((item: any) => item.is_vulnerable && !item.is_quantum_safe).length,
+      // COMPONENT-level, over cryptography only — the unit the CBOM Explorer and
+      // the Quantum Readiness Engine count, so Σ vulnerableCount === the
+      // `vulnerableComponents` headline. It used to include scanner findings
+      // stored in crypto_inventory (20 per asset where the CBOM counted 8).
+      vulnerableCount: partition.counts.vulnerable,
+      pqcReadyCount: partition.counts.pqcReady,
+      componentCount: partition.counts.components,
       vulnerabilities,
       metadata: asset.metadata || {},
     }
@@ -3574,13 +3640,43 @@ function mergeActiveScannerJobs(userId: string, historyPayload: { mode: Persiste
   return { ...historyPayload, history }
 }
 
+/**
+ * Content fingerprint of a scanner-intelligence snapshot, excluding the moment it
+ * was computed (`generatedAt` changes on every recompute even when nothing else
+ * did). Memoised per snapshot OBJECT: the 15s single-flight cache hands every
+ * caller the same object, so N open dashboards hash it once, not N times.
+ */
+const snapshotFingerprints = new WeakMap<object, string>()
+function snapshotFingerprint(data: any): string {
+  if (data && typeof data === 'object') {
+    const cached = snapshotFingerprints.get(data)
+    if (cached) return cached
+  }
+  const { generatedAt: _computedAt, ...content } = data || {}
+  const fingerprint = createHash('sha1').update(JSON.stringify(content)).digest('hex')
+  if (data && typeof data === 'object') snapshotFingerprints.set(data, fingerprint)
+  return fingerprint
+}
+
 router.get('/intelligence', async (req, res) => {
   const user = (req as any).user
   const token = (req as any).token as string
   const data = await buildScannerIntelligence(token, user.id)
-  res.json({ data })
+  res.json({ data: { ...data, fingerprint: snapshotFingerprint(data) } })
 })
 
+/**
+ * Live scanner intelligence.
+ *
+ * The full snapshot is ~0.7-1.2 MB even for a two-asset tenant, and this stream
+ * used to re-send it every 8s whether or not anything had changed — ~100 KB/s
+ * per open tab, plus a full client re-render and localStorage rewrite per frame.
+ * It now sends the snapshot only when its CONTENT changes (a scan wrote rows, a
+ * job progressed), and otherwise a small `scanner-intelligence-unchanged` frame
+ * proving the server re-checked the estate at `checkedAt`. Liveness is therefore
+ * still demonstrable every tick; the payload is only paid for news. During an
+ * active scan the cache is bypassed, so every tick carries real progress.
+ */
 router.get('/intelligence/stream', async (req, res) => {
   const user = (req as any).user
   const token = (req as any).token as string
@@ -3591,13 +3687,30 @@ router.get('/intelligence/stream', async (req, res) => {
   res.flushHeaders?.()
 
   let closed = false
+  let emitting = false
+  let lastFingerprint = ''
   const emitSnapshot = async () => {
-    if (closed) return
+    // A build slower than the tick must not stack a second one behind it.
+    if (closed || emitting) return
+    emitting = true
     try {
       const data = await buildScannerIntelligence(token, user.id)
-      sendSsePayload(res, 'scanner-intelligence', data)
+      if (closed) return
+      const fingerprint = snapshotFingerprint(data)
+      if (fingerprint === lastFingerprint) {
+        sendSsePayload(res, 'scanner-intelligence-unchanged', {
+          fingerprint,
+          generatedAt: data.generatedAt,
+          checkedAt: new Date().toISOString(),
+        })
+        return
+      }
+      lastFingerprint = fingerprint
+      sendSsePayload(res, 'scanner-intelligence', { ...data, fingerprint })
     } catch (err) {
       sendSsePayload(res, 'scanner-error', { message: err instanceof Error ? err.message : 'Scanner intelligence stream failed' })
+    } finally {
+      emitting = false
     }
   }
 

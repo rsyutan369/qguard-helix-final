@@ -1,0 +1,29 @@
+# Files the Vercel frontend build never needs. Keeping them out shrinks the
+# build context and keeps internal material off the public CDN.
+# (src/, public/, tools/, supabase/ and the root config files ARE needed:
+#  `npm run build` runs tools/build-agent-release.mjs and Vite bundles src/.)
+
+/qguard-messaging
+/Qguard_Wiki
+/Website_Creation_Resources
+/SKILLS
+/Scanners
+/test_images
+/tasks
+/deploy
+/.claude
+/.codex
+/.codex-tmp
+/.codex-logs
+/.playwright-cli
+/.playwright-mcp
+/.superpowers
+/.semgrep
+/.report-smoke
+*.log
+
+# Internal screenshots / architecture material that must not become public URLs
+# (none is referenced by the application).
+/public/To_Audit
+/public/Screenshot*
+/public/MVP_Deployment.png

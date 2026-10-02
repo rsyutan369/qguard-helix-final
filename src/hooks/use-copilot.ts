@@ -265,6 +265,18 @@ export function useCopilot(currentPage?: string) {
     setStreaming(IDLE_STREAM);
   }, []);
 
+  /* ---- Feedback — rate an answer (recorded to the tenant audit trail) ---- */
+  const sendFeedback = useCallback(async (answer: CopilotAnswer, rating: 'up' | 'down') => {
+    if (!token) return;
+    try {
+      await fetch('/api/v1/copilot/feedback', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ answerId: answer.id, conversationId: activeConversationId, rating, focus: answer.focus }),
+      });
+    } catch { /* feedback is best-effort and never blocks the chat */ }
+  }, [token, authHeaders, activeConversationId]);
+
   /* ---- Bootstrap -------------------------------------------------- */
   useEffect(() => {
     if (!token) return;
@@ -291,6 +303,7 @@ export function useCopilot(currentPage?: string) {
     // actions
     sendMessage,
     stopStreaming,
+    sendFeedback,
     loadInsights,
     loadConversations,
     openConversation,

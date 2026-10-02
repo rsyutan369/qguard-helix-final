@@ -5,9 +5,12 @@ import {
   ChevronDown, Gauge, BookMarked, Layers, AlertTriangle,
   Target, ListChecks, Microscope, Briefcase, Route, Network,
   Unplug, RotateCcw, TrendingDown, Radar, Cpu,
+  Table2, History, ThumbsUp, ThumbsDown, ArrowUpRight, ArrowDownRight, Minus, BadgeCheck,
 } from 'lucide-react';
 import { SophiaAvatar } from './SophiaAvatar';
-import type { CopilotAnswer, CopilotRiskLevel, CopilotToolRun } from '@/types/copilot';
+import type {
+  CopilotAnswer, CopilotEntityTable, CopilotFigureChange, CopilotRiskLevel, CopilotTone, CopilotToolRun,
+} from '@/types/copilot';
 
 /**
  * SophiaMessage — renders one structured CopilotAnswer.
@@ -71,17 +74,165 @@ function SectionTitle({ icon: Icon, children }: { icon: typeof ShieldAlert; chil
   );
 }
 
-export function SophiaMessage({ answer }: { answer: CopilotAnswer }) {
+const TONE_BAR: Record<CopilotTone, string> = {
+  critical: 'bg-red-500',
+  high: 'bg-orange-500',
+  medium: 'bg-amber-400',
+  low: 'bg-sky-400',
+  good: 'bg-emerald-500',
+  neutral: 'bg-slate-600',
+};
+
+const ROWS_COLLAPSED = 6;
+
+/**
+ * The named records behind a "which / show / list" answer. Wrapped in its own
+ * horizontal scroller with `min-w-0` so a wide table can never widen the chat
+ * column on a phone (a min-width table inside an implicit grid/flex track is
+ * what caused sideways page panning elsewhere in the platform).
+ */
+function EntityTable({ table }: { table: CopilotEntityTable }) {
+  const [expanded, setExpanded] = useState(false);
+  const rows = expanded ? table.rows : table.rows.slice(0, ROWS_COLLAPSED);
+  const unit = `${table.unit}${table.total === 1 ? '' : 's'}`;
+  return (
+    <div className="min-w-0 space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <SectionTitle icon={Table2}>{table.title}</SectionTitle>
+        <span className="text-[10px] text-slate-500">
+          {table.rows.length < table.total ? `${table.rows.length} of ${table.total}` : table.total} {unit} · {table.source}
+        </span>
+      </div>
+      <div className="min-w-0 max-w-full overflow-x-auto rounded-lg border border-slate-700/50 bg-slate-900/40 scrollbar-thin">
+        <table className="w-full min-w-[440px] border-collapse text-left">
+          <thead>
+            <tr className="border-b border-slate-700/50">
+              <th className="w-[3px] p-0" aria-hidden />
+              {table.columns.map((column) => (
+                <th key={column.key} scope="col" className={`whitespace-nowrap px-2.5 py-2 text-[9px] font-bold uppercase tracking-wider text-slate-500 ${column.align === 'right' ? 'text-right' : ''}`}>
+                  {column.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={i} className="border-b border-slate-800/60 last:border-0 hover:bg-slate-800/30">
+                <td className="w-[3px] p-0" aria-hidden><span className={`block h-full min-h-[30px] w-[3px] ${TONE_BAR[row.tone || 'neutral']}`} /></td>
+                {table.columns.map((column, j) => {
+                  const value = row.cells[column.key];
+                  const text = value === null || value === undefined || value === '' ? '—' : String(value);
+                  return (
+                    <td key={column.key} className={`px-2.5 py-1.5 align-top text-[11px] leading-snug ${j === 0 ? 'font-semibold text-slate-100' : 'text-slate-300'} ${column.align === 'right' ? 'whitespace-nowrap text-right tabular-nums' : ''}`}>
+                      {j === 0 && row.deepLink
+                        ? <Link to={row.deepLink} className="text-slate-100 no-underline hover:text-cyan-300">{text}</Link>
+                        : text}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {table.note ? <p className="min-w-0 flex-1 text-[10px] leading-relaxed text-slate-500">{table.note}</p> : <span />}
+        <div className="flex items-center gap-3">
+          {table.rows.length > ROWS_COLLAPSED && (
+            <button onClick={() => setExpanded((e) => !e)} className="text-[10px] font-bold text-cyan-300 hover:text-cyan-200">
+              {expanded ? 'Show fewer' : `Show all ${table.rows.length}`}
+            </button>
+          )}
+          {table.deepLink && (
+            <Link to={table.deepLink} className="flex items-center gap-1 text-[10px] font-bold text-cyan-300 no-underline hover:text-cyan-200">
+              Open full list <ArrowRight className="h-3 w-3" />
+            </Link>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function relativeTime(iso: string): string {
+  const ms = new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return 'earlier';
+  const hours = Math.max(0, (Date.now() - ms) / 36e5);
+  if (hours < 1) return 'less than an hour ago';
+  if (hours < 48) return `${Math.round(hours)} h ago`;
+  return `${Math.round(hours / 24)} days ago`;
+}
+
+// Colour says whether the move is GOOD; the arrow says which way the value
+// moved. They are independent: readiness going up is an improvement with an
+// up arrow, pending actions going down is an improvement with a down arrow.
+const CHANGE_STYLE: Record<CopilotFigureChange['direction'], { cls: string; word: string }> = {
+  improved: { cls: 'border-emerald-500/30 bg-emerald-500/[0.07] text-emerald-200', word: 'improved' },
+  worsened: { cls: 'border-red-500/30 bg-red-500/[0.07] text-red-200', word: 'worsened' },
+  changed: { cls: 'border-sky-500/30 bg-sky-500/[0.07] text-sky-200', word: 'changed' },
+  unchanged: { cls: 'border-slate-600/40 bg-slate-800/40 text-slate-300', word: 'unchanged' },
+};
+
+function arrowFor(delta: number) {
+  return delta > 0 ? ArrowUpRight : delta < 0 ? ArrowDownRight : Minus;
+}
+
+/** What moved since Sophia last reported the same measured figures to this tenant. */
+function ChangesStrip({ changes }: { changes: CopilotFigureChange[] }) {
+  const moved = changes.filter((c) => c.direction !== 'unchanged');
+  const newest = changes.reduce((acc, c) => (c.since > acc ? c.since : acc), changes[0].since);
+  return (
+    <div className="rounded-lg border border-slate-700/50 bg-slate-900/40 p-3">
+      <SectionTitle icon={History}>
+        Since you last asked · {relativeTime(newest)}
+      </SectionTitle>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {changes.map((change) => {
+          const style = CHANGE_STYLE[change.direction];
+          const Arrow = arrowFor(change.delta);
+          const unit = change.unit === '%' ? '%' : change.unit ? ` ${change.unit}` : '';
+          return (
+            <span key={change.key} title={`Previously reported ${new Date(change.since).toLocaleString()}`} className={`flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] ${style.cls}`}>
+              <Arrow className="h-3 w-3" />
+              <span className="font-semibold">{change.label}</span>
+              <span className="tabular-nums">{change.previous}{unit} → {change.current}{unit}</span>
+              <span className="opacity-70">({style.word})</span>
+            </span>
+          );
+        })}
+      </div>
+      {!moved.length && <p className="mt-1.5 text-[10px] text-slate-500">No measured change since then — the evidence is the same as when you last asked.</p>}
+    </div>
+  );
+}
+
+export function SophiaMessage({ answer, onFeedback }: { answer: CopilotAnswer; onFeedback?: (rating: 'up' | 'down') => void }) {
   const [showReasoning, setShowReasoning] = useState(false);
+  const [rated, setRated] = useState<'up' | 'down' | null>(null);
   const risk = RISK_STYLE[answer.risk.level] || RISK_STYLE.info;
+  const rate = (rating: 'up' | 'down') => {
+    if (rated) return;
+    setRated(rating);
+    onFeedback?.(rating);
+  };
 
   return (
-    <div className="space-y-3.5">
+    <div className="min-w-0 space-y-3.5">
       {/* Summary */}
       <div className="rounded-xl border border-blue-400/20 bg-gradient-to-br from-blue-500/[0.07] to-violet-500/[0.04] p-4">
         <div className="mb-2 flex items-center gap-2">
           <SophiaAvatar active={false} size={24} />
           <span className="text-[10px] font-black uppercase tracking-[0.2em] text-cyan-300/80">Sophia</span>
+          {answer.grounding === 'focused' && answer.focusLabel && !answer.blocked && (
+            <span className="flex items-center gap-1 rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-300" title="Answered by the module that owns this topic — the same data its page shows">
+              <BadgeCheck className="h-3 w-3" /> {answer.focusLabel}
+            </span>
+          )}
+          {answer.grounding === 'digest' && (
+            <span className="flex items-center gap-1 rounded-md border border-amber-400/30 bg-amber-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-300" title="No topic specialist matched — this restates what each source returned">
+              Source digest
+            </span>
+          )}
           {answer.mode === 'investigate' && !answer.blocked && (
             <span className="flex items-center gap-1 rounded-md border border-cyan-400/30 bg-cyan-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider text-cyan-300">
               <Radar className="h-3 w-3" /> Deep investigation
@@ -102,6 +253,9 @@ export function SophiaMessage({ answer }: { answer: CopilotAnswer }) {
         <p className="text-[13px] leading-relaxed text-slate-100">{answer.summary}</p>
       </div>
 
+      {/* Longitudinal memory — what moved since the last answer */}
+      {answer.changes && answer.changes.length > 0 && <ChangesStrip changes={answer.changes} />}
+
       {/* Key findings */}
       {answer.keyFindings && answer.keyFindings.length > 0 && (
         <div className="space-y-2">
@@ -116,6 +270,9 @@ export function SophiaMessage({ answer }: { answer: CopilotAnswer }) {
           </ul>
         </div>
       )}
+
+      {/* The named records behind a "which / show / list" answer */}
+      {answer.entities?.map((table, i) => <EntityTable key={`${table.title}-${i}`} table={table} />)}
 
       {/* Risk outlook — before → after */}
       {answer.riskOutlook && (
@@ -404,6 +561,27 @@ export function SophiaMessage({ answer }: { answer: CopilotAnswer }) {
           <div className="flex items-center gap-1.5">
             <BookMarked className="h-3 w-3 text-slate-500" />
             <span className="text-[9px] text-slate-500">{answer.standards.slice(0, 4).join(' · ')}</span>
+          </div>
+        )}
+        {onFeedback && !answer.blocked && (
+          <div className="flex items-center gap-1.5">
+            <span className="text-[9px] text-slate-500">{rated ? 'Thanks — recorded' : 'Accurate?'}</span>
+            <button
+              onClick={() => rate('up')}
+              disabled={rated !== null}
+              aria-label="This answer was accurate"
+              className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors ${rated === 'up' ? 'bg-emerald-500/20 text-emerald-300' : 'text-slate-500 hover:bg-white/5 hover:text-emerald-300'} disabled:cursor-default`}
+            >
+              <ThumbsUp className="h-3 w-3" />
+            </button>
+            <button
+              onClick={() => rate('down')}
+              disabled={rated !== null}
+              aria-label="This answer was not accurate"
+              className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors ${rated === 'down' ? 'bg-red-500/20 text-red-300' : 'text-slate-500 hover:bg-white/5 hover:text-red-300'} disabled:cursor-default`}
+            >
+              <ThumbsDown className="h-3 w-3" />
+            </button>
           </div>
         )}
         <div className="ml-auto flex items-center gap-2">

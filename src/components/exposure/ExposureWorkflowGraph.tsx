@@ -1522,7 +1522,21 @@ export interface ExposureWorkflowGraphProps {
    * everything attached to it. Omitted, the graph behaves exactly as before.
    */
   focusKind?: WorkflowNodeKind;
+  /**
+   * Grouping modes offered in the sidebar. Defaults to the assessment set
+   * (phase / layer …). A projection with no phases or layers — the estate —
+   * passes the groupings it actually populates, so no button draws nothing.
+   */
+  groupings?: WorkflowGrouping[];
+  /** Replaces the scanner's evidence banner ("nothing was executed…") for other projections. */
+  evidenceNote?: React.ReactNode;
+  /** Replaces the inferred-toggle help text. */
+  inferredHint?: string;
+  /** Replaces the default reconciliation sentence in the footer. */
+  reconciliationNote?: React.ReactNode;
 }
+
+const DEFAULT_GROUPINGS: WorkflowGrouping[] = ['none', 'phase', 'layer', 'severity', 'kind'];
 
 export function ExposureWorkflowGraph({
   assessment,
@@ -1533,6 +1547,10 @@ export function ExposureWorkflowGraph({
   lenses: providedLenses,
   provenance,
   focusKind,
+  groupings = DEFAULT_GROUPINGS,
+  evidenceNote,
+  inferredHint,
+  reconciliationNote,
 }: ExposureWorkflowGraphProps) {
   const resolvedMode = mode ?? assessment?.task.mode ?? 'local';
 
@@ -1586,10 +1604,10 @@ export function ExposureWorkflowGraph({
 
   /* A lens carries its own natural grouping; changing tab adopts it. */
   React.useEffect(() => {
-    setGrouping(lens.groupBy);
+    setGrouping(groupings.includes(lens.groupBy) ? lens.groupBy : 'none');
     setSelected(null);
     store.select(null);
-  }, [lens, store]);
+  }, [lens, store, groupings]);
 
   const projection = React.useMemo(
     () =>
@@ -1780,10 +1798,14 @@ export function ExposureWorkflowGraph({
         <div className="flex items-start gap-2.5 border-b border-white/[0.06] bg-amber-400/[0.045] px-5 py-2.5">
           <AlertTriangle aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
           <p className="text-[11.5px] leading-relaxed text-amber-100/80">
-            Algorithm, CBOM, exposure and remediation nodes are conclusions <strong className="font-bold">inferred</strong>{' '}
-            from static evidence — nothing was executed. Process, finding, file and secret nodes were{' '}
-            <strong className="font-bold">observed</strong> in the corpus itself. Inferred relationships are drawn dashed
-            and can be switched off.
+            {evidenceNote ?? (
+              <>
+                Algorithm, CBOM, exposure and remediation nodes are conclusions <strong className="font-bold">inferred</strong>{' '}
+                from static evidence — nothing was executed. Process, finding, file and secret nodes were{' '}
+                <strong className="font-bold">observed</strong> in the corpus itself. Inferred relationships are drawn dashed
+                and can be switched off.
+              </>
+            )}
           </p>
         </div>
 
@@ -1831,7 +1853,7 @@ export function ExposureWorkflowGraph({
                 <span className="min-w-0">
                   <span className="block text-[11.5px] font-semibold text-slate-300">Show inferred relationships</span>
                   <span className="mt-0.5 block text-[10.5px] leading-relaxed text-slate-500">
-                    Nothing was executed. Turn it off to see only what is literally present in the files.
+                    {inferredHint ?? 'Nothing was executed. Turn it off to see only what is literally present in the files.'}
                   </span>
                 </span>
               </label>
@@ -1888,7 +1910,7 @@ export function ExposureWorkflowGraph({
             <div className="px-4 py-3.5">
               <SidebarHeading icon={Layers}>Group by</SidebarHeading>
               <div className="flex flex-wrap gap-1">
-                {(['none', 'phase', 'layer', 'severity', 'kind'] as WorkflowGrouping[]).map((entry) => (
+                {groupings.map((entry) => (
                   <button
                     key={entry}
                     type="button"
@@ -2094,12 +2116,16 @@ export function ExposureWorkflowGraph({
         {/* ── reconciliation + truncation disclosure ─────────────────────── */}
         <div className="space-y-1 border-t border-white/[0.06] px-5 py-2.5">
           <p className="font-mono text-[10.5px] leading-relaxed text-slate-500">
-            Plotted {graph.reconciliation.findingsProjected.toLocaleString()} of{' '}
-            {graph.reconciliation.findingsInAssessment.toLocaleString()} findings,{' '}
-            {graph.reconciliation.componentsProjected.toLocaleString()} of{' '}
-            {graph.reconciliation.componentsInAssessment.toLocaleString()} CBOM components and{' '}
-            {graph.reconciliation.exposuresProjected.toLocaleString()} of{' '}
-            {graph.reconciliation.exposuresInAssessment.toLocaleString()} correlated exposures.{' '}
+            {reconciliationNote ?? (
+              <>
+                Plotted {graph.reconciliation.findingsProjected.toLocaleString()} of{' '}
+                {graph.reconciliation.findingsInAssessment.toLocaleString()} findings,{' '}
+                {graph.reconciliation.componentsProjected.toLocaleString()} of{' '}
+                {graph.reconciliation.componentsInAssessment.toLocaleString()} CBOM components and{' '}
+                {graph.reconciliation.exposuresProjected.toLocaleString()} of{' '}
+                {graph.reconciliation.exposuresInAssessment.toLocaleString()} correlated exposures.
+              </>
+            )}{' '}
             {provenance ??
               'Every node is a projection of a row in the panels above — the map adds nothing to the assessment.'}
           </p>

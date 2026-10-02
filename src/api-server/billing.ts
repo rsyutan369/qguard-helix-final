@@ -4,6 +4,7 @@ import type { SupabaseClient, User } from '@supabase/supabase-js'
 import { createAuthClient, getServerUser, getServiceClient } from '@/lib/supabase-server'
 import { createSubscription, reviseSubscription, cancelSubscription, resolveOrigin, isPaypalConfigured } from './paypal'
 import { cancellationPatch, isCancellationRecorded } from '../../supabase/functions/billing/logic'
+import { trustedClientIp } from './runtime/client-ip'
 
 type AuthedRequest = Request & {
   user?: User
@@ -124,6 +125,8 @@ function extractToken(req: Request): string | null {
 }
 
 function getClientIp(req: Request): string | null {
+  const trusted = trustedClientIp(req)
+  if (trusted) return trusted
   const forwarded = req.headers['x-forwarded-for']
   const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded
   const candidate = raw?.split(',')[0]?.trim() || req.ip || req.socket.remoteAddress || null

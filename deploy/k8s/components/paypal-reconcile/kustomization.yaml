@@ -1,0 +1,8 @@
+# Scheduled PayPal subscription reconciliation (POST /api/v1/paypal/reconcile,
+# guarded by PAYPAL_RECONCILE_SECRET from the qguard-api-secrets Secret).
+# Opt-in: enabling it starts a job that did not run on a schedule before.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - cronjob.yaml

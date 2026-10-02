@@ -1,0 +1,58 @@
+# Network backstop for the in-process scanners (DOKS enforces NetworkPolicy via Cilium).
+#
+# The scanners open TLS/TCP/HTTP connections to customer-supplied targets. The
+# application already refuses private targets in most paths, but several
+# fetch-based probes follow redirects without re-validating the address. Inside
+# a cluster that could reach the droplet metadata service (169.254.169.254),
+# cluster services and VPC peers. This policy makes those unreachable at the
+# network layer regardless of application bugs:
+#   - egress to the public internet: allowed (scans, Supabase, PayPal, Google)
+#   - egress to private / link-local / CGNAT / loopback ranges: denied
+#   - DNS: only to kube-dns
+# If a private dependency is added later (e.g. DO Managed Valkey over the VPC),
+# allow its exact IP/port here rather than widening the except-list.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qguard-api
+  labels:
+    app.kubernetes.io/name: qguard-api
+    app.kubernetes.io/part-of: qguard-helix
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: qguard-api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Load balancer traffic arrives via the node ports / kube-proxy.
+    - ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 0.0.0.0/8
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 224.0.0.0/4
+              - 240.0.0.0/4

@@ -2178,8 +2178,10 @@ inflating the very "session sprawl" control the Security tab measures.
 3. Roles have no per-request enforcement in this platform — their only real
    effect is the Sophia copilot capability mapping (`normalizeRole` /
    `ROLE_CAPABILITIES` in `src/api-server/copilot-knowledge.ts`), and
-   `normalizeRole` falls back to `infrastructure_admin` (read+operate+audit+
+   `normalizeRole` fell back to `infrastructure_admin` (read+operate+audit+
    executive) for any account WITHOUT a role. The console never said so.
+   Resolved 2026-09-24: the fallback is now `DEFAULT_COPILOT_ROLE =
+   'security_analyst'` (read-only); `tools/copilot-check.ts` pins it.
 4. Unset optional inputs were written as NULL into NOT NULL columns.
 
 **Solution**
@@ -2226,6 +2228,436 @@ inflating the very "session sprawl" control the Security tab measures.
       5s admin model cache — it bypasses `invalidateAdminModels()`.
 - [ ] Run `tools/admin-console-check.ts --live --mutate` and
       `tools/admin-console-sse-probe.ts` after touching `/api/v1/admin/*`.
+
+---
+
+## 41. /dashboard: Exposure Workflow says 31 findings / 101 components beside KPIs reading 20 / 12, ML-KEM rated HIGH, certificates missing
+
+**Problem**
+
+On `/dashboard` the Estate Exposure Workflow disagreed with every card around it
+(live tenant, 2026-09-24): 31 findings vs the Open Findings KPI's 20, 101 CBOM
+components vs the Cryptographic Inventory KPI's 12, 0 certificates on an asset
+that presents one (Certificate Coverage read 100%), ML-KEM / AES-256 / Hybrid
+ML-KEM grouped under HIGH, "No action required. AES-256 is quantum-safe" drawn
+as a HIGH remediation with 31 findings attached, and the Risk / Type groupings
+drawing nothing. Around it: "Secrets 2 · 2 at risk" on a tenant with no secrets,
+"Applications 1 · 0 at risk" beside "Critical Assets 1", Projected ROI 100%
+(real ceiling 28%), five KPIs drawing a sparkline of a DIFFERENT metric, HIGH
+findings shown as "critical" events, AI Recommendations listing "Replace ECC on
+<asset>" four times plus derived "Rule (App Crypto)" rows, Shared Responsibility
+"Actionable Now 24" for 20 open findings, and TLSv1.3 filed "Legacy/deprecated".
+
+**Root Cause**
+
+1. The workflow projected RAW registers: `vulnerabilities` (a DERIVED bucket
+   register) AND `crypto_exposures`, and one component node per raw
+   `crypto_inventory` row (instances, not components).
+2. `loadEstateRows` selected `certificates.common_name` — no such column.
+   PostgREST rejected the query and `safeRows` swallowed it → `[]`.
+3. Algorithm and remediation nodes inherited the ASSET's worst severity and all
+   of the asset's findings.
+4. The estate graph set no `severity` / `kind` group membership, so
+   `projectLens` found no clusters for those groupings; the sidebar offered
+   `phase` / `layer`, which the estate never populates.
+5. Executive: `/secret|key|credential/` on `item_type` matched `key-exchange`;
+   "at risk" used the business-criticality TAG; Grover regexed `item_type`
+   ("algorithm") so it could never match; ROI was exposure÷cost clamped to 100.
+6. `dashboardEventSeverity` folded `high` into `critical`; `statusFromThreat`
+   used `includes('tlsv1')`, which matches TLSv1.2 and TLSv1.3.
+7. SR rollup counted SAFE (PQC-ready) findings as actionable / waiting.
+
+**Solution**
+
+- `src/lib/dashboard/estate-workflow.ts` now takes CANONICAL inputs:
+  `findings` = `buildScannerIntelligence().findings` (SAFE counted as
+  `pqcConfirmations`, not drawn) and `components` = `cbom.entries` (instances
+  summed). The route builds them in `loadCanonicalEstate()` (dashboard.ts),
+  resolving each finding's asset by its raw row, else its host.
+- Algorithm severity = worst finding whose subject IS that algorithm
+  (`algorithmKey` strips a trailing "(Certificate)" qualifier); remediation =
+  `groupRecommendedActions()` — the ONE derivation shared with
+  `/dashboard/recommendations`; placeholders and "no action required" are
+  counted, never drawn. Quantum verdicts from `findAlgorithm()` (Crypto KB).
+- Every node carries `severity` + `kind` groups; `ESTATE_GROUPINGS` is passed to
+  `ExposureWorkflowGraph` (`groupings`, `evidenceNote`, `inferredHint`,
+  `reconciliationNote` props). `focusScope` no longer crosses into findings /
+  components another asset OWNS via a shared hub.
+- Executive: posture-based `snap.assetTypePosture`, exact `SECRET_ITEM_TYPE`,
+  KB-classified Shor/Grover over `cbom.entries`, cert coverage = assets WITH a
+  cert, ROI = (exposure − cost) / cost unclamped, `trendBasis: 'none'` + real
+  `breakdown` instead of borrowed series, evidence coverage from
+  `snap.evidenceSources` (no "+40" AI-confidence constant), compliance from the
+  governance model's measured requirement counts with NO readiness fallback.
+- Events: HIGH is its own tier; SAFE scan results reported as
+  `pqcConfirmationsOmitted`. `DEPRECATED_PROTOCOL_RE` (scanner.ts) matches only
+  SSLv2/3, TLS 1.0/1.1. SR `open = findings.filter(severity !== 'safe')`.
+
+**Prevention Checklist**
+
+- [ ] A projection that COUNTS findings or components reads the canonical sets
+      (`buildScannerIntelligence`), never `vulnerabilities` / raw inventory rows.
+- [ ] Never select a column you have not confirmed exists — `safeRows` turns a
+      42703 into an empty, plausible-looking panel. Log-check after adding one.
+- [ ] A hub node (algorithm, remediation) takes severity from ITS OWN evidence.
+- [ ] Every grouping a view offers must have clusters in the graph it renders.
+- [ ] Classify on the whole token (`^…$`) or word boundaries — `key` ⊂
+      `key-exchange`, `tlsv1` ⊂ `tlsv1.3`.
+- [ ] A sparkline / delta is the metric's OWN history or nothing
+      (`trendBasis: 'none'` renders "no prior baseline", never "stable").
+- [ ] Run `npx tsx tools/estate-workflow-check.ts` (121),
+      `tools/executive-dashboard-check.ts`, and live
+      `tools/dashboard-live-reconcile.ts [origin]` (every panel == every other
+      panel on real tenants).
+
+---
+
+## 42. An asset row says "20 vulnerable of 25" under a headline of "8 of 12" — for the same single asset
+
+**Problem**
+
+`/dashboard/assets` (single-asset tenant): KPI "Quantum-Vulnerable Components 8 —
+matches QR Engine & CBOM", while the asset's row read **"20 vulnerable of 25"** and
+its "Observed Cryptography" chips listed "Wide Crypto Attack Surface", "HNDL
+Exposure", "Quantum-Vulnerable OIDs" as if they were algorithms. Measured on three
+live tenants: Σ per-asset vulnerable 20 / 38 / 71 against headlines 8 / 14 / 33.
+The same leak fed `asset.cryptography[0]` / the first vulnerable row to the
+Migration Ops Center and PQC Orchestration as an asset's "current algorithm".
+
+**Root Cause**
+
+`crypto_inventory` holds scanner FINDINGS as well as cryptography (#20 context,
+memory `cbom-components-vs-findings`). `buildCbomPayload` excluded them with
+`isCryptographicComponent`, but `buildAssetsPayload` built `cryptoInventory`,
+`cryptography` and `vulnerableCount` from ALL rows via `groupCryptoInventory` —
+a second grouping, on a different key, without the predicate.
+
+**Solution**
+
+`src/lib/scanner/asset-components.ts` (pure): `partitionAssetInventory(rows,
+algorithmFamily)` applies the canonical predicate and groups with
+`cbomComponentKey` — the exact key `buildCbomPayload` now also uses — so
+Σ per-asset components == CBOM headline BY CONSTRUCTION. Findings become
+`postureObservations`. The detection-signal list and risk heuristic keep reading
+all rows, so `findings`/`severityCounts`/QR risk did not move. The page derives
+everything from ONE model, `src/lib/assets/asset-register.ts`
+(`buildAssetRegister` → rows + totals + reconciliation checks), which also
+re-partitions cached pre-fix payloads client-side.
+
+**Prevention Checklist**
+
+- [ ] Two groupings of one table on two keys WILL disagree. Share the key
+      (`cbomComponentKey`) and the predicate (`isCryptographicComponent`).
+- [ ] Every per-row count must be assertable as Σ rows == headline; the register
+      publishes those checks and the page/report print them.
+- [ ] Fixing a count must not move a DIFFERENT population: keep signal/risk
+      inputs on their old rows and prove severityCounts unchanged.
+- [ ] Run `npx tsx tools/asset-register-check.ts` (54) and live
+      `tools/assets-live-check.ts [origin]` (57 on 3 tenants).
+
+---
+
+## 43. An eight-day-old inventory says "Scanned < 1h ago" and never shows the stale banner
+
+**Problem**
+
+The Assets header read "Scanned < 1h ago" and `StaleAssessmentBanner` never
+appeared, while the newest scan evidence was 8 days old. The export printed "Most
+recent scan evidence: <export time>". Separately, an asset with NO evidence would
+read "scanned 3d ago" (its record creation time).
+
+**Root Cause**
+
+`measuredAt={data.generatedAt}` — the time the 15 s-cached snapshot was COMPUTED,
+refreshed every tick, so it was always "now". Per asset, `lastScanned` was
+`metadata.last_scanned_at || updated_at || created_at`: the asset row is written at
+scan START (evidence lands ~2 min later) and `updated_at` moves on unrelated edits.
+
+**Solution**
+
+API: `lastScanned` = max(newest evidence timestamp across inventory/results/
+exposures, recorded scan time) plus `lastScannedSource` ('evidence' |
+'scan-record' | 'asset-record'). Register: `asset-record` is NOT a scan (freshness
+'unknown'); page `measuredAt` = newest evidence across rows; freshness from the
+shared `STALE_AFTER_HOURS`.
+
+**Prevention Checklist**
+
+- [ ] `generatedAt` is when a SNAPSHOT was built, never when the estate was
+      measured. Freshness pills and "data as of" lines read evidence time.
+- [ ] A fallback timestamp that is not a measurement must be labelled as such.
+- [ ] Assert: an asset with only a record time reads "No scan timestamp"
+      (`asset-register-check.ts` §5 negative control).
+
+---
+
+## 44. Every open Assets/CBOM/Scanner tab downloads ~1 MB every 8 seconds, though nothing changed
+
+**Problem**
+
+`/api/v1/scanner/intelligence/stream` re-sent the full snapshot (0.7–1.2 MB on a
+two-asset tenant; history + findings + a duplicated telemetry array) every 8 s per
+client — ~100 KB/s/tab — and the hook re-rendered and rewrote ~1 MB of
+localStorage per frame. The hook also fetched the same snapshot by REST at mount
+in parallel with the stream (double download on every page load). A slow first
+load flipped `loading` false after 2.2 s and rendered "No assets" with zero KPIs.
+
+**Solution**
+
+Server: `snapshotFingerprint(data)` (sha1 over content minus `generatedAt`,
+memoised per cached snapshot object) — a full `scanner-intelligence` frame only on
+change, otherwise `scanner-intelligence-unchanged {fingerprint, generatedAt}`; the
+REST route returns `fingerprint` too. Hook (`use-scanner-intelligence.ts`):
+fingerprint de-dup (no re-render/cache write on identical content), REST poll only
+as a fallback (no first frame within 4 s, or stream error), `source`
+('none'|'cache'|'network'), `resolved`, `transport`
+('connecting'|'stream'|'polling'|'manual'|'offline'), `lastVerifiedAt`, and a reset
+to EMPTY when the tenant changes. Assets page shows loading until the SERVER
+answers — zeros are never a placeholder.
+
+**Prevention Checklist**
+
+- [ ] A polled/streamed payload needs a content version; send news, not repeats.
+- [ ] Liveness can be proven cheaply ("unchanged" frames) — don't prove it by
+      re-sending the data.
+- [ ] "No data yet" and "no data" are different states; never infer empty from a
+      timer.
+- [ ] `assets-live-check.ts` asserts one full frame then only small unchanged
+      frames on an idle tenant.
+
+---
+
+## 45. Asset export: estate KPIs over a 2-asset selection, ML-KEM "targets" for certificate signatures, and a new report ID per format
+
+**Problem**
+
+The Assets export printed ESTATE KPIs (all assets/components) on a document
+scoped to 2 selected assets; its "Components" column counted distinct algorithms
+(finding titles included); a class-prefix copy of the component predicate filed
+real agent/library components under "Configuration & Policy Observations"; stored
+scanner targets like "ML-KEM-768 (FIPS 203)" appeared on certificate SIGNATURES
+(ML-KEM is key establishment only); and every format click built a new report, so
+the PDF and the XLSX of "one" report had different IDs and SHA3-256 digests.
+
+**Solution**
+
+`src/services/reporting/AssetReport.ts` builds from register ROWS of the scope
+(`summarizeRows(scopeRows)`), with three templates, consolidated exposures
+(Σ == vulnerable), evidence-derived decisions, a validation/quality gate,
+reconciliation, and a seal via the shared `ReportIntegrity.ts` (also used by
+`ReportEngine.attachIntegrity`). `resolvePqcTarget()` (asset-register.ts) keeps a
+stored target only when it fits the component's role, otherwise uses the canonical
+`pqcTargetFor` and marks it "(corrected)". `InventoryReport.isCryptographicComponent`
+now delegates to the canonical predicate. Rendering: `ReportDocument` blocks →
+`exporters/document/{pdf,docx,xlsx,pptx,html}.ts` + CSV/JSON via
+`DocumentExporters.ts` (lazy). The Report Studio exports its validated preview
+report, so all formats share one id and digest.
+
+**Prevention Checklist**
+
+- [ ] Report totals come from the SCOPED rows; estate figures appear only as
+      labelled context or in full-scope reconciliation.
+- [ ] A PQC target must match the primitive's role; test with a certificate
+      signature carrying a stored KEM target (`asset-report-check.ts` §5).
+- [ ] Wide registers need curated print columns with explicit widths (a 25-column
+      PDF table wraps one character per line); keep the full register in XLSX/CSV.
+- [ ] One generation = one id + one digest across formats; verify by grepping the
+      report id in every downloaded file.
+- [ ] Run `npx tsx tools/asset-report-check.ts` (96: 3 templates × 7 formats).
+
+---
+
+## 46. A backend change "has no effect" — the dev server is serving another git worktree
+
+**Problem**
+
+After editing `src/api-server/scanner.ts`, the live payload still lacked the new
+fields, even after the watcher fired, a `touch`, and a dev-server restart.
+
+**Root Cause**
+
+The process on :3000 had been (re)started by another session from
+`.claude/worktrees/<name>/` — a checkout NESTED inside the repo. `npm run dev`
+there resolves the PARENT repo's `node_modules/.bin/vite`, so its command line is
+identical to the main checkout's server, while Vite serves the worktree's sources.
+
+**Solution / Prevention Checklist**
+
+- [ ] When a change does not show up, compare the served payload's keys with the
+      source first, then check `git worktree list` and which directory each
+      `vite` process runs from (`Get-NetTCPConnection -LocalPort <p>`).
+- [ ] Never edit or restart another session's worktree server; run the main
+      checkout on its own port (`npx vite --configLoader runner --port=3001
+      --strictPort`) and point live checks at it.
+- [ ] A `cd` into a worktree changes the harness's primary working directory —
+      use absolute paths when inspecting one.
+
+---
+
+## 47. Sophia answers her OWN suggested question with "I could not derive an evidence-backed answer"
+
+**Problem**
+
+On `/dashboard/sophia`, clicking the suggestion "What is pending remediation?"
+returned "I could not derive an evidence-backed answer for this question" —
+directly above an evidence card reading "6 pending remediation actions", at 88%
+confidence. A second card said "0 finding(s) matched 'remediation pending'".
+Across the other suggestions: certification gaps always read "0 criteria unmet",
+HNDL always read "exposure: assessed", the "next migration step" never appeared,
+"Summarize my compliance posture" came back as a readiness briefing, and "Which
+endpoints lack forward secrecy?" was answered with a pointer to another page.
+
+**Root Cause**
+
+1. **No agent owned the topic.** The `remediation` intent mapped to agents that
+   only mention remediation when the question contains "migrate".
+2. **Field-name drift, hidden by erased types.** `CopilotBuilders` returned
+   `Record<string, unknown>`, so tools read guessed fields and compiled:
+   `eligibility.criteria` (real: `checks`), `c.label` (real: `criterion`),
+   `nextAction.label/path` (real: `title/route`), `banner.level/message` (real:
+   `threatLevel/headline`), remediation status `'completed'` (real:
+   `open | in_progress | resolved`), `action.title` (no such field). The test
+   mocks used the SAME wrong names, so every suite passed.
+3. **Question words became filters** — "remediation"/"pending" were not
+   stopwords, so the ownership tool filtered findings by them.
+4. **Topic-blind composers** — five deep composers ignored the topic, and
+   "which" questions got counts instead of records.
+5. **Confidence measured tool success, not answer grounding.**
+
+**Solution**
+
+- `CopilotBuilders` carries the builders' REAL types; wrong fields are compile
+  errors. Tools map them into normalised data (`src/api-server/copilot-tools.ts`).
+- `src/api-server/copilot-answers.ts`: 32 topic specialists (`resolveFocus` →
+  `answerFocus`), each reading the module that OWNS the topic and returning the
+  named records (`CopilotAnswer.entities`), measured figures and next step.
+- Per-asset status comes from `buildAssetRegister` (the Assets page's own
+  derivation) via the `getAssetRegister` tool; `linkAssetMentions` only treats a
+  word as an asset when a real asset carries that name.
+- Grounding-aware confidence (`grounding: focused | correlated | digest | none`);
+  a digest restates what each source returned instead of dead-ending.
+- Freshness is the age of the PRIMARY evidence; tools stamp `observedAt` with
+  the assessment time, never their own compute time.
+
+**Prevention Checklist**
+
+- [ ] Builder outputs are typed with the builder's real return type — never
+      `Record<string, unknown>` at a module boundary.
+- [ ] Test mocks are shaped from the real type; a mock that shares the code's
+      wrong field name proves nothing.
+- [ ] Every question Sophia SUGGESTS is in `tools/sophia-question-audit.ts`
+      (it fails if a suggestion is not covered).
+- [ ] A "which / show / list" answer returns the records, not only a count.
+- [ ] Topic vocabulary is a stopword; only a name that exists in the register
+      is an asset reference.
+- [ ] Run `npx tsx tools/sophia-question-audit.ts` (1,440 checks).
+
+---
+
+## 48. A Patcher deployed with "Authorize configuration remediation" UNticked still patches hosts
+
+**Problem**
+
+The Agent Center wizard's two permission checkboxes were recorded and never read.
+`POST /agent-scanner/agents/enroll` spread `agentRole(role).capabilities` OVER the
+caller's capabilities, so every Patcher/Operator was stored with
+`remediation: true`; `/agent-installer/package` baked
+`QGUARD_ENABLE_REMEDIATION=true` from that; `agentMayWrite` checked role + plan only.
+An operator who deliberately deployed a read-only Patcher got one that claims and
+applies remediation jobs. Same audit found `PUT /agents/:id/policy` wrote a policy
+row for ANY agent id (200 for a foreign/unknown id) and stored any module list — a
+Basic tenant could add Pro modules and a Scanner could be handed runtime collectors.
+
+**Root Cause**
+
+Role treated as a grant instead of a ceiling; authorisation had no single owner, so
+the UI, API, installer and job gate each decided (or skipped) it separately.
+
+**Solution**
+
+`src/lib/agent-installer/agent-scope.ts` (isomorphic; the agent runtime imports it):
+`authorityFromRequest` (strict `=== true`, migration ⇒ remediation),
+`authorizedCapabilities` (role is the ceiling), `resolveWriteAuthority` (reads caps
+AND `metadata.remediationAuthorized`, so pre-fix rows are not authorised by the old
+defect). Used by enrolment, `agentMayWrite` (new reasons
+`remediation_not_authorized` / `migration_not_authorized`), the installer, the
+rollback executor (its agent SELECT now includes `capabilities` — without it every
+rollback is refused) and the Sandbox "who can claim" copy. New
+`PUT /agents/:id/authority` grants/revokes (plan re-checked on grant, audited;
+revoke takes effect at the next poll). Policy edits: ownership 404, role + plan clamp
+(`clampPolicyScanTypes`), removals returned + audited; `/agent/policy` re-applies the
+role ceiling; the runtime applies it a third time.
+
+**Prevention Checklist**
+
+- [ ] A write capability is a ceiling from the role AND an explicit, strict-boolean
+      grant — never either alone.
+- [ ] Every read of write authority goes through `resolveWriteAuthority`; any SELECT
+      feeding it must include `capabilities` AND `metadata`.
+- [ ] Every mutation route by id: ownership lookup → 404, confirm rows changed.
+- [ ] Run `npx tsx tools/agent-scope-check.ts` (83, offline, runs the shipped bundle)
+      and `npx tsx tools/agent-authority-live-check.ts` (23, :3000, self-cleaning).
+
+---
+
+## 49. Selecting only "Kubernetes" (or VPN, Databases …) as an agent module collects nothing
+
+**Problem**
+
+Platform-surface modules were offered as scope but the runtime only read
+configuration when `configs` was on; surfaces were merely labels on config
+evidence. "Kubernetes only" → zero evidence; switching a surface off → no change.
+Also: a bare `host:22` target was TLS-probed on port 22 (only the parser's catch
+branch knew the SSH convention), and `not a target!` was accepted as a TLS host.
+
+**Solution**
+
+`CONFIG_EVIDENCE_SURFACE` + `configEvidenceInScope` / `readsConfigFiles` in
+agent-scope.ts; `scanAllowedPath` reads config when any config-selecting module is on
+and keeps a row only if `configs` is on or its surface is selected.
+`parseAgentTarget` (shared by wizard preview and runtime) treats a scheme-less
+`:22` as SSH and validates host + port range. Wizard shows each module's state
+(`planAgentScope`: active / idle-needs-scope / via-configs / plan-locked /
+role-excluded) and blocks configurations that collect nothing.
+
+**Prevention Checklist**
+
+- [ ] A selectable module must change runtime behaviour — prove it with the shipped
+      bundle against a lab (`agent-scope-check.ts` section 3), not by reading code.
+- [ ] Target/path validation in the UI must be the SAME function the runtime uses.
+- [ ] Lab paths for classifier tests use digits-only names — the config classifier
+      reads the whole path, and a random suffix can spell a surface keyword.
+
+---
+
+## 50. One open agent drawer fires hundreds of health/activity/findings/scans requests a minute
+
+**Problem**
+
+`/downloads` → open any agent: the network log filled with
+`/agents/:id/{health,activity,findings,scans}` requests in a tight loop, continuing
+(as 404s) after the agent was deleted. The Deploy Wizard's Verify step did the same
+with `/activity`.
+
+**Root Cause**
+
+`useAgentInstaller()` returns a NEW object every render, and every loader goes
+through `call()`, which toggles the hook's `busy` state. Effects/callbacks keyed on
+`[agent.id, installer]` therefore re-created themselves on their own result →
+fetch → busy → parent render → new `installer` → effect again, forever.
+
+**Solution**
+
+Destructure the stable loaders (`const { loadHealth, … } = installer`) and key the
+callback/effect on them (they depend on `call` → `authHeaders` → token). Measured:
+16 requests on open, 0 in the following 20 s (refresh only on live events).
+
+**Prevention Checklist**
+
+- [ ] Never put a hook's returned OBJECT in a dependency array — depend on the
+      memoised functions/values you use.
+- [ ] After adding a data-loading effect, count requests over 20 s with
+      `performance.getEntriesByType('resource')`; steady state must be ~0.
 
 ---
 

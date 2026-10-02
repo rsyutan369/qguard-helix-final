@@ -31,6 +31,7 @@ import {
   type EngineCredential,
 } from '@/lib/scanner/exposure/engine-contract';
 import { descriptorsForMode, engineHealth } from '@/lib/scanner/exposure/registry';
+import { trustedClientIp } from './runtime/client-ip';
 /* Side-effect import: registers the server-only connector engines so /engines
    reports their real health rather than "descriptor only". */
 import '@/lib/scanner/exposure/dev/connectors';
@@ -245,6 +246,8 @@ const MAX_TRACKED = 5_000;
 const buckets = new Map<string, { count: number; windowStart: number }>();
 
 function clientIp(req: Request): string {
+  const trusted = trustedClientIp(req);
+  if (trusted) return trusted;
   const forwarded = req.headers['x-forwarded-for'];
   if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0].trim();
   const real = req.headers['x-real-ip'];

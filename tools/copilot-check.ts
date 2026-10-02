@@ -148,7 +148,7 @@ const mockExposure: ExposureIntelligence = {
   evidence: { sources: ['assets', 'certificates'], note: 'mock' },
 }
 
-const mockBuilders: CopilotBuilders = {
+const mockBuilders = {
   snapshot: async () => ({
     hasData: true, lastAssessmentAt: new Date().toISOString(),
     scores: { quantumReadiness: 45, quantumReadinessLevel: 'developing', quantumRisk: 62, quantumRiskLevel: 'high', hndlRisk: 58, hndlRiskLevel: 'high', cryptoExposure: 55, pqcAdoption: 33 },
@@ -169,27 +169,54 @@ const mockBuilders: CopilotBuilders = {
     findings: [{ id: 'f1', algorithm: 'RSA-2048', category: 'key', threatLevel: 'critical' }],
   }),
   exposure: async () => mockExposure,
+  // The builder mocks below mirror the REAL output shapes. The previous mocks
+  // used the same wrong field names the tools read (`title`, status
+  // 'pending', `criteria`/`label`, `banner.level`, `nextAction.label/path`),
+  // which is exactly why those tool defects passed this suite.
   remediationPlan: async () => ({
-    certificationReadinessPct: 55, actions: [{ id: 'a1', title: 'Replace RSA', priority: 'critical', domain: 'pki', status: 'pending' }],
-    queues: { critical: 1, high: 2, medium: 3, low: 0 }, quickWins: ['a1'], criticalBlockers: ['a1'],
+    hasData: true, generatedAt: new Date().toISOString(), certificationReadinessPct: 55, certificationEligible: false,
+    estimatedCompletionWeeks: 6, parallelWorkstreams: 2, estimatedCertificationDate: new Date(Date.now() + 42 * 86400000).toISOString(),
+    actions: [{
+      id: 'a1', rank: 1, asset: 'web-01', domainLabel: 'TLS', problem: 'TLS uses RSA-2048', recommendation: 'Deploy hybrid X25519 + ML-KEM-768',
+      targetState: 'Hybrid X25519 + ML-KEM-768 (FIPS 203)', priority: 'critical', priorityScore: 82, status: 'open', effort: 'medium', effortWeeks: 2,
+      certificationGainPct: 8, projectedReadinessPct: 63, owner: 'Ops', internetFacing: true, quickWin: false, requiresReplacement: false,
+      risk: 'Harvest Now, Decrypt Later', impact: { hndlReductionPts: 4 }, standards: ['FIPS 203'], breakingChangeWarning: null,
+      rollback: 'Restore the pre-migration TLS configuration snapshot.', integration: { label: 'Open TLS', route: '/dashboard/tls-telemetry' },
+    }],
+    queues: { critical: 1, high: 0, medium: 0, low: 0 }, quickWins: [], criticalBlockers: ['a1'], ladder: [],
+    requirements: [{ id: 'pqc-adoption', requirement: 'PQC adoption', status: 'unmet', recommendedSolution: 'Adopt ML-KEM / ML-DSA', relatedAssets: ['web-01'], relatedActionIds: ['a1'], estimatedCompletionWeeks: 2, estimatedScoreIncreasePct: 8, integration: { route: '/dashboard/quantum-readiness/remediation' } }],
+    progress: { totalActions: 1, openActions: 1, inProgressActions: 0, resolvedActions: 0, completionPct: 0 },
   }),
   certification: async () => ({
     certificate: null, certificates: [], schemaReady: true, renewal: {},
-    eligibility: { eligible: false, summary: 'Not yet eligible', criteria: [{ id: 'c1', label: 'Hybrid TLS', met: false }] },
+    eligibility: {
+      eligible: false, issuable: true, hasData: true, evaluatedAt: new Date().toISOString(), requiredMet: 8, requiredTotal: 10, trustScore: 540, levelLabel: 'Bronze — Initial Readiness',
+      checks: [
+        { id: 'pqc-adoption', criterion: 'PQC adoption', required: '≥ 60%', actual: '33%', met: false, severity: 'required', evidence: 'CBOM', remediation: 'Adopt ML-KEM / ML-DSA on edge TLS' },
+        { id: 'hndl', criterion: 'HNDL risk', required: '≤ 40/100', actual: '58/100', met: false, severity: 'required', evidence: 'HNDL', remediation: 'Enable hybrid key establishment' },
+        { id: 'validation', criterion: 'Report self-validation', required: 'PASS', actual: 'PASS', met: true, severity: 'required', evidence: 'Report engine', remediation: '' },
+      ],
+    },
   }),
   hndl: async () => ({
-    banner: { level: 'high', headline: 'HNDL exposure detected' }, futureDecryptable: { tb: 3 }, forwardSecrecy: { coverage: 40 },
-    topFindings: [{ id: 'h1' }],
+    hasData: true, lastScanAt: new Date().toISOString(),
+    banner: { threatLevel: 'High', hndlExposureScore: 58, hndlExposureLevel: 'high', criticalFindings: 2, quantumExposureWindow: 'Within 5 Years', migrationDeadlineYear: 2030, yearsToDeadline: 4, estimatedFutureDecryptableTb: 3, headline: '2 critical quantum-vulnerable exposure(s) across 7 asset(s). HNDL risk 58/100 (high).' },
+    futureDecryptable: { totalDataAtRiskTb: 8, projectedDecryptableTb: 3, highValueDataPct: 40, vulnerableSharePct: 45, hasEvidence: true },
+    forwardSecrecy: { coveragePct: 60, assetsUnprotected: 4, componentsMeasured: 10, componentsNotApplicable: 30, assetsWithPfs: 5, assetsWithoutPfs: 2, nonPfsBreakdown: [{ type: 'Static RSA key exchange', count: 4 }], topUnprotected: [{ asset: 'web-01', algorithm: 'TLS_RSA_WITH_AES_128_CBC_SHA', protocol: 'TLS 1.2', reason: 'Static RSA key exchange' }], hasEvidence: true, basis: '10 key-agreement observation(s) measured.' },
+    topFindings: [{ id: 'h1', asset: 'web-01', algorithm: 'RSA-2048', severity: 'critical', dataLifetimeYears: 10, dataLifetimeLabel: '10 yrs (Financial)', riskWindow: 'Exceeds CRQC', exceedsCrqc: true, migrationPriority: 'P1' }],
+    remediationCenter: [],
   }),
   workflow: async () => ({
-    generatedAt: new Date().toISOString(), overallProgressPct: 30, currentStageId: 'migrate', certificationReadinessPct: 55,
-    nextAction: { label: 'Execute wave 1', detail: 'Start PKI wave', path: '/dashboard/live-migration' }, stages: [{ id: 'discover' }, { id: 'migrate' }],
+    generatedAt: new Date().toISOString(), hasData: true, overallProgressPct: 30, currentStageId: 'migrate', certificationReadinessPct: 55, certificationEligible: false,
+    nextAction: { stageId: 'migrate', title: 'Execute wave 1', detail: 'Start PKI wave', route: '/dashboard/live-migration' },
+    stages: [{ id: 'discover', label: 'Discover', status: 'complete', progressPct: 100 }, { id: 'migrate', label: 'Migrate', status: 'active', progressPct: 30 }],
+    assetLifecycle: [], assetStates: [],
   }),
   snapshotDashboard: async () => ({
     schemaReady: true, summary: { total: 4, restorable: 2, automaticRollbacks: 1 },
     snapshots: [{ snapshotId: 'SNAP-1', assetName: 'web-01', status: 'restorable', integrityVerified: true, migrationJobId: 'migration_jobs-1' }],
   }),
-}
+} as unknown as CopilotBuilders
 
 function ctxFor(role: CopilotRole, client: unknown = makeMockClient([])): ToolContext {
   return { token: 'test-token', userId: USER_ID, email: 'analyst@acme.test', role, tier: 'pro', client }
@@ -296,11 +323,11 @@ async function main() {
   assert(ans.standards.length > 0, 'recommendations cite standards')
 
   // Empty-tenant honesty: no fabricated numbers when there is no data.
-  const emptyBuilders: CopilotBuilders = {
+  const emptyBuilders = {
     ...mockBuilders,
     snapshot: async () => ({ hasData: false, scores: {}, inventory: {}, riskDistribution: {}, recommendedActions: [], estimates: {}, riskTrend: [], topRiskAssets: [], riskFactors: [], criticalFindings: [] }),
-    certification: async () => ({ certificate: null, certificates: [], schemaReady: false, renewal: {}, eligibility: { eligible: false, summary: 'No data', criteria: [] } }),
-  }
+    certification: async () => ({ certificate: null, certificates: [], schemaReady: false, renewal: {}, eligibility: { eligible: false, hasData: false, requiredMet: 0, requiredTotal: 10, checks: [] } }),
+  } as unknown as CopilotBuilders
   const emptyOutcome = await runCopilotQuery(ctxFor('owner'), 'Am I quantum ready?', { ...EMPTY_MEMORY }, () => {}, emptyBuilders)
   assert(/no|run a|scan|connect/i.test(emptyOutcome.answer.summary), 'empty tenant → honest guidance, not fabricated metrics', emptyOutcome.answer.summary.slice(0, 60))
 
@@ -403,15 +430,15 @@ async function main() {
 
   console.log('\n[22] Empty-tenant honesty in deep mode — no fabricated strategy/metrics')
   const emptyDeepCtx: ToolContext = { ...ctxFor('owner', makeEmptyMockClient()) }
-  const emptyDeepBuilders: CopilotBuilders = {
+  const emptyDeepBuilders = {
     ...mockBuilders,
     snapshot: async () => ({ hasData: false, scores: {}, inventory: {}, riskDistribution: {}, recommendedActions: [], estimates: {}, riskTrend: [], topRiskAssets: [], riskFactors: [], criticalFindings: [] }),
     exposure: async () => ({ ...mockExposure, hasData: false, graph: { nodes: [], edges: [] }, summary: { ...mockExposure.summary, totalAssets: 0, quantumVulnerable: 0 } }),
-    remediationPlan: async () => ({ certificationReadinessPct: 0, actions: [], queues: {}, quickWins: [], criticalBlockers: [] }),
-    certification: async () => ({ certificate: null, certificates: [], schemaReady: false, renewal: {}, eligibility: { eligible: false, criteria: [] } }),
-    hndl: async () => ({ banner: {}, futureDecryptable: {}, forwardSecrecy: {}, topFindings: [] }),
+    remediationPlan: async () => ({ hasData: false, certificationReadinessPct: 0, actions: [], queues: {}, quickWins: [], criticalBlockers: [], progress: { totalActions: 0, openActions: 0, inProgressActions: 0, resolvedActions: 0, completionPct: 0 } }),
+    certification: async () => ({ certificate: null, certificates: [], schemaReady: false, renewal: {}, eligibility: { eligible: false, hasData: false, requiredMet: 0, requiredTotal: 10, checks: [] } }),
+    hndl: async () => ({ hasData: false, banner: { threatLevel: 'Unknown', headline: 'No assessment evidence yet.' }, futureDecryptable: { hasEvidence: false }, forwardSecrecy: { hasEvidence: false }, topFindings: [], remediationCenter: [] }),
     snapshotDashboard: async () => ({ schemaReady: false, summary: { total: 0, restorable: 0, automaticRollbacks: 0 }, snapshots: [] }),
-  }
+  } as unknown as CopilotBuilders
   const emptyDeep = (await runCopilotQuery(emptyDeepCtx, 'how can i migrate my assets?', { ...EMPTY_MEMORY }, () => {}, emptyDeepBuilders)).answer
   assert(emptyDeep.mode === 'investigate', 'empty deep answer still runs an investigation')
   assert(!emptyDeep.migrationStrategy, 'no fabricated migration strategy without evidence')

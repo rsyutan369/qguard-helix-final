@@ -1,0 +1,41 @@
+# Non-secret runtime configuration. Secrets live in the `qguard-api-secrets`
+# Secret, created out-of-band (see deploy/k8s/secrets.example.env) — never in git.
+# Environment-specific origins are patched by the overlays.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qguard-api-config
+  labels:
+    app.kubernetes.io/name: qguard-api
+    app.kubernetes.io/part-of: qguard-helix
+data:
+  NODE_ENV: "production"
+  QGUARD_ENVIRONMENT: "production"
+  PORT: "8080"
+  SERVE_STATIC: "false"
+
+  # Observability
+  ACCESS_LOG: "true"
+
+  # Lifecycle (src/api-server/standalone.ts)
+  HTTP_KEEP_ALIVE_TIMEOUT_MS: "65000"
+  SHUTDOWN_DELAY_MS: "5000"
+  SHUTDOWN_DRAIN_MS: "240000"
+  READINESS_REQUIRE_SUPABASE: "false"
+
+  # Security posture — explicit, so a forgotten default can never weaken a pod
+  REGISTRATION_AUTO_CONFIRM: "false"
+  SUBSCRIPTION_ENFORCEMENT: "enforce"
+  TOKEN_REVOCATION_REFRESH_MS: "30000"
+
+  # Runtime sizing (container memory limit is 1536Mi)
+  NODE_OPTIONS: "--max-old-space-size=1024"
+  SUPABASE_MAX_SOCKETS: "16"
+
+  # Origins — overridden per environment by the overlays
+  APP_ORIGIN: "https://qguardhelix.com"
+  PUBLIC_APP_ORIGIN: "https://qguardhelix.com"
+  PUBLIC_APP_URL: "https://qguardhelix.com"
+  ALLOWED_ORIGINS: "https://qguardhelix.com,https://www.qguardhelix.com"
+  QGUARD_CONTROL_PLANE_URL: "https://api.qguardhelix.com"
+  CERT_VERIFICATION_ORIGIN: "https://qguardhelix.com"

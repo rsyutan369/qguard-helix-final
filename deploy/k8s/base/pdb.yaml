@@ -1,0 +1,15 @@
+# With replicas: 1 this must NOT be minAvailable: 1 — that would block node
+# drains during DOKS upgrades forever. maxUnavailable: 1 lets the drain proceed
+# (the Deployment's surge pod takes over). Tighten once replicas > 1.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: qguard-api
+  labels:
+    app.kubernetes.io/name: qguard-api
+    app.kubernetes.io/part-of: qguard-helix
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: qguard-api

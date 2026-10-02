@@ -23,6 +23,9 @@ import {
   describeCostAssumptions,
 } from '@/lib/migration/cost-model'
 import { buildWorkflowState } from './migration-workflow'
+import { buildScannerIntelligence } from './scanner'
+import { findAlgorithm, parseKeySize } from '@/lib/crypto/knowledge-base/algorithms'
+import { quantumVerdict } from '@/lib/crypto/knowledge-base/classify'
 
 type Row = Record<string, any>
 type Snapshot = Awaited<ReturnType<typeof buildSnapshot>>
@@ -146,46 +149,20 @@ function categorizeAssetType(type: string): CategoryKey {
 }
 
 /* ------------------------------------------------------------------ */
-/* Compliance frameworks (guideline set) — evidence-driven, else      */
-/* readiness-modelled with a clear `modeled` flag.                    */
+/* Framework id aliases — used ONLY to give each governance framework a      */
+/* stable id. Scores, gaps and coverage come from the governance model.       */
 /* ------------------------------------------------------------------ */
 
-const FRAMEWORKS: Array<{ id: string; name: string; aliases: RegExp; totalControls: number }> = [
-  { id: 'nist-pqc', name: 'NIST PQC', aliases: /nist|fips 203|fips 204|fips 205|ml-kem|ml-dsa|slh-dsa|800-208|800-131/i, totalControls: 12 },
-  { id: 'fips-140-3', name: 'FIPS 140-3', aliases: /fips.?140/i, totalControls: 11 },
-  { id: 'cnsa-2', name: 'CNSA 2.0', aliases: /cnsa/i, totalControls: 8 },
-  { id: 'pci-dss', name: 'PCI DSS', aliases: /pci/i, totalControls: 12 },
-  { id: 'iso-27001', name: 'ISO 27001', aliases: /iso.?27001|iso\/iec 27001/i, totalControls: 14 },
-  { id: 'soc-2', name: 'SOC 2', aliases: /soc.?2/i, totalControls: 5 },
-  { id: 'nis2', name: 'NIS2', aliases: /nis.?2/i, totalControls: 10 },
-  { id: 'cyber-essentials', name: 'Cyber Essentials', aliases: /cyber.?essentials/i, totalControls: 5 },
+const FRAMEWORKS: Array<{ id: string; name: string; aliases: RegExp }> = [
+  { id: 'nist-pqc', name: 'NIST PQC', aliases: /nist|fips 203|fips 204|fips 205|ml-kem|ml-dsa|slh-dsa|800-208|800-131/i },
+  { id: 'fips-140-3', name: 'FIPS 140-3', aliases: /fips.?140/i },
+  { id: 'cnsa-2', name: 'CNSA 2.0', aliases: /cnsa/i },
+  { id: 'pci-dss', name: 'PCI DSS', aliases: /pci/i },
+  { id: 'iso-27001', name: 'ISO 27001', aliases: /iso.?27001|iso\/iec 27001/i },
+  { id: 'soc-2', name: 'SOC 2', aliases: /soc.?2/i },
+  { id: 'nis2', name: 'NIS2', aliases: /nis.?2/i },
+  { id: 'cyber-essentials', name: 'Cyber Essentials', aliases: /cyber.?essentials/i },
 ]
-
-function complianceStatusScore(status: unknown): number {
-  const s = str(status).toLowerCase()
-  if (/pass|compliant|met|satisfied|approved|verified/.test(s)) return 100
-  if (/partial|in.?progress|review|pending/.test(s)) return 55
-  if (/fail|non.?compliant|missing|gap|open/.test(s)) return 10
-  return 40
-}
-
-/* ------------------------------------------------------------------ */
-/* Sparkline helpers — built ONLY from real series                    */
-/* ------------------------------------------------------------------ */
-
-/** N-day rolling count buckets from a list of timestamps. */
-function dailyBuckets(timestamps: number[], days = 7): number[] {
-  const now = new Date()
-  now.setHours(0, 0, 0, 0)
-  const start = now.getTime() - (days - 1) * 86400000
-  const buckets = new Array(days).fill(0)
-  for (const ts of timestamps) {
-    if (ts < start) continue
-    const idx = Math.floor((ts - start) / 86400000)
-    if (idx >= 0 && idx < days) buckets[idx] += 1
-  }
-  return buckets
-}
 
 /* ------------------------------------------------------------------ */
 /* Builder                                                            */
@@ -239,6 +216,7 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
     scanResults,
     scanSessions,
     assetsTotal,
+    intel,
   ] = await Promise.all([
     buildSnapshot(token, userId),
     buildWorkflowState(token, userId).catch(() => null),
@@ -251,11 +229,14 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
     safeRows(client, 'scanner_agents', (q) => q.select('id, status, last_seen_at, revoked_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(500)),
     safeRows(client, 'agent_heartbeats', (q) => q.select('id, status, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(500)),
     safeRows(client, 'crypto_inventory', (q) => q.select('id, item_type, is_vulnerable, is_quantum_safe').eq('user_id', userId).limit(4000)),
-    safeRows(client, 'certificates', (q) => q.select('id, status, not_after, is_expiring_soon, is_quantum_safe').eq('user_id', userId).limit(2000)),
+    safeRows(client, 'certificates', (q) => q.select('id, asset_id, status, not_after, is_expiring_soon, is_quantum_safe').eq('user_id', userId).limit(2000)),
     safeRows(client, 'connector_accounts', (q) => q.select('id, provider, status').eq('user_id', userId).limit(400)),
     safeRows(client, 'pqc_scan_results', (q) => q.select('id, threat_level, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(4000)),
     safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, findings_count, total_assets, scanned_assets, completed_at, updated_at, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(200)),
     exactCount(client, 'assets', userId),
+    // Canonical CBOM (15s single-flight cache, already warmed by buildSnapshot):
+    // the Shor / Grover tiles classify ITS components, not raw inventory rows.
+    buildScannerIntelligence(token, userId).catch(() => null),
   ])
 
   const now = Date.now()
@@ -273,17 +254,27 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
     if (atRisk) cur.atRisk += 1
     categoryCounts.set(key, cur)
   }
-  // Approximate per-asset risk from criticality (real per-asset risk lives in the
-  // canonical snapshot but is not exposed per id; criticality is a truthful proxy).
-  for (const a of activeAssets) {
-    const key = categorizeAssetType(str(a.type))
-    const crit = str(a.criticality).toLowerCase()
-    bumpCat(key, crit === 'critical' || crit === 'high')
+  /* "At risk" is the SHARED posture model's verdict — quantum-vulnerable —
+     rolled up by asset type in the canonical snapshot. It used to be the
+     business-criticality TAG ("criticality is a truthful proxy"), which is a
+     statement about importance, not exposure: an untagged quantum-vulnerable
+     web application read "Applications 1 · 0 at risk" directly beside a
+     Quantum-Vulnerable Assets KPI of 1. */
+  for (const a of activeAssets) bumpCat(categorizeAssetType(str(a.type)))
+  for (const entry of snap.assetTypePosture ?? []) {
+    const key = categorizeAssetType(str(entry.type))
+    const current = categoryCounts.get(key)
+    if (!current) continue
+    current.atRisk = Math.min(current.count, current.atRisk + num(entry.quantumVulnerable))
   }
   // Certificates & secrets & cloud accounts come from their authoritative tables.
   const certAtRisk = certificates.filter((c) => !c.is_quantum_safe || c.is_expiring_soon).length
   if (certificates.length) categoryCounts.set('certificates', { count: certificates.length, atRisk: certAtRisk })
-  const secretItems = inventoryItems.filter((i) => /secret|key|credential/.test(str(i.item_type).toLowerCase()))
+  /* Matched on the WHOLE item type. A substring test for "key" filed every
+     `key-exchange` component (ECDHE, X25519) under Secrets — a tenant holding
+     no secrets at all read "Secrets 2 · 2 at risk". */
+  const SECRET_ITEM_TYPE = /^(secret|credential|password|token|api[-_ ]?key|private[-_ ]?key|ssh[-_ ]?key|signing[-_ ]?key|key[-_ ]?material)s?$/
+  const secretItems = inventoryItems.filter((i) => SECRET_ITEM_TYPE.test(str(i.item_type).trim().toLowerCase()))
   if (secretItems.length) {
     categoryCounts.set('secrets', {
       count: secretItems.length,
@@ -324,7 +315,10 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
         { key: 'planning', label: 'Planning', completion: avgPct('remediation', 'planning', 'approval'), remaining: snap.recommendedActions.length },
         { key: 'migration', label: 'Migration', completion: stagePct('execution'), remaining: runningJobs.length + Math.max(0, inv.quantumVulnerableAssets - migratedAssets) },
         { key: 'validation', label: 'Validation', completion: stagePct('validation'), remaining: stagePct('validation') >= 100 ? 0 : completedJobs.length },
-        { key: 'certified', label: 'Certified', completion: clampPct(num(workflow!.certificationReadinessPct ?? stagePct('certification'))), remaining: Math.max(0, inv.quantumVulnerableAssets) },
+        /* Certification READINESS, not certification: 62% here means the
+           evidence is 62% of the way to a certifiable state, while nothing has
+           been certified. Labelled "Certified" it read as 62% done. */
+        { key: 'certified', label: 'Cert. Readiness', completion: clampPct(num(workflow!.certificationReadinessPct ?? stagePct('certification'))), remaining: Math.max(0, inv.quantumVulnerableAssets) },
       ]
     : // Fallback (workflow unavailable): derive from posture so numbers stay sane.
       [
@@ -333,7 +327,7 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
         { key: 'planning', label: 'Planning', completion: migrationJobs.length ? clampPct(100 - scores.migrationEffort) : (snap.recommendedActions.length ? 40 : 0), remaining: snap.recommendedActions.length },
         { key: 'migration', label: 'Migration', completion: pct(completedJobs.length, Math.max(1, migrationJobs.length)), remaining: runningJobs.length },
         { key: 'validation', label: 'Validation', completion: pct(completedJobs.length, Math.max(1, migrationJobs.length || 1)), remaining: 0 },
-        { key: 'certified', label: 'Certified', completion: pct(migratedAssets, Math.max(1, inv.pqcReadyAssets + inv.hybridAssets + inv.quantumVulnerableAssets)), remaining: Math.max(0, inv.quantumVulnerableAssets) },
+        { key: 'certified', label: 'Cert. Readiness', completion: pct(migratedAssets, Math.max(1, inv.pqcReadyAssets + inv.hybridAssets + inv.quantumVulnerableAssets)), remaining: Math.max(0, inv.quantumVulnerableAssets) },
       ]
   // Overall progress = the workflow's own canonical figure (matches Migration Planner).
   const overallCompletion = workflow
@@ -344,65 +338,53 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
     : (pipelineStages.find((s) => s.completion < 60)?.label || (hasData ? 'On track' : 'Awaiting discovery'))
   const certificationReadiness = workflow ? clampPct(num(workflow.certificationReadinessPct)) : 0
 
-  /* ---- Compliance — sourced from the canonical Compliance snapshot -
-   * (buildComplianceDashboardSnapshot) so Compliance Score + frameworks MATCH
-   * the Compliance dashboard exactly. Falls back to a clearly-flagged
-   * readiness model only when that snapshot is unavailable. */
-  const evidenceCountByFramework = new Map<string, { count: number; controls: Set<string> }>()
-  for (const ev of complianceEvidence) {
-    const label = str(ev.framework)
-    const fw = FRAMEWORKS.find((f) => f.aliases.test(label))
-    const key = fw ? fw.id : label.toLowerCase()
-    const cur = evidenceCountByFramework.get(key) || { count: 0, controls: new Set<string>() }
-    cur.count += 1
-    if (ev.control_id) cur.controls.add(str(ev.control_id))
-    evidenceCountByFramework.set(key, cur)
-  }
+  /* ---- Compliance — the canonical governance model, or nothing ----
+   * Score and frameworks come from the governance control engine (the
+   * Compliance dashboard's own model), so the two pages cannot disagree.
+   *
+   * Each framework now carries its MEASURED requirement counts: gaps are the
+   * failing + partially-met requirements, coverage is measured / total. This
+   * used to divide the score into an invented per-framework control total
+   * ("12 controls" for any NIST framework) and label every framework
+   * "modelled" whenever no manual attestation row existed.
+   *
+   * When the governance model is unavailable there is NO fallback: the old
+   * path fabricated eight frameworks as readiness × 0.82 — the exact
+   * fabrication the governance projection exists to prevent. The strip says
+   * the model is unavailable instead. */
   const cMetrics = complianceSnap?.metrics
   const cAlignment: Row[] = Array.isArray(complianceSnap?.frameworkAlignment) ? complianceSnap!.frameworkAlignment : []
-  const readinessBaseline = scores.quantumReadiness
-  let complianceOverall: number
-  let complianceFrameworks: Array<{ id: string; name: string; progress: number; evidenceCount: number; missingControls: number; modeled: boolean }>
-  if (cMetrics && cAlignment.length) {
-    complianceOverall = clampPct(num(cMetrics.complianceScore))
-    // Distinct aligned frameworks can alias-collapse to the same canonical id
-    // (e.g. "NIST SP 800-208" and "NIST PQC / FIPS 203" both match the nist-pqc
-    // alias). They are separate rows, so guarantee unique ids — a duplicate id
-    // is a React key collision in the compliance strip.
-    const usedFrameworkIds = new Set<string>()
-    complianceFrameworks = cAlignment.map((fw, i) => {
-      const name = str(fw.name)
-      const match = FRAMEWORKS.find((f) => f.aliases.test(name))
-      const ev = evidenceCountByFramework.get(match ? match.id : name.toLowerCase())
-      const progress = clampPct(num(fw.score))
-      const total = match?.totalControls || 12
-      let id = match?.id || `fw-${i}`
-      if (usedFrameworkIds.has(id)) id = `${id}-${i}`
-      usedFrameworkIds.add(id)
-      return {
-        id,
-        name,
-        progress,
-        evidenceCount: ev?.count || 0,
-        missingControls: Math.max(0, total - (ev?.controls.size ?? Math.round((progress / 100) * total))),
-        modeled: !(ev && ev.count > 0),
-      }
-    })
-  } else {
-    // Fallback: readiness-modelled 8-framework view (flagged modeled).
-    complianceFrameworks = FRAMEWORKS.map((fw) => {
-      const factor = fw.id === 'nist-pqc' || fw.id === 'fips-140-3' || fw.id === 'cnsa-2' ? 1 : 0.82
-      const progress = hasData ? clampPct(readinessBaseline * factor) : 0
-      const ev = evidenceCountByFramework.get(fw.id)
-      return {
-        id: fw.id, name: fw.name, progress,
-        evidenceCount: ev?.count || 0,
-        missingControls: fw.totalControls - Math.round((progress / 100) * fw.totalControls),
-        modeled: !(ev && ev.count > 0),
-      }
-    })
-    complianceOverall = clampPct(complianceFrameworks.reduce((s, f) => s + f.progress, 0) / complianceFrameworks.length)
+  const complianceMeasured = Boolean(cMetrics) && cMetrics!.complianceMeasured !== false && cAlignment.length > 0
+  const complianceOverall = complianceMeasured ? clampPct(num(cMetrics!.complianceScore)) : 0
+  const attestedByFramework = new Map<string, number>()
+  for (const ev of complianceEvidence) {
+    const label = str(ev.framework).toLowerCase()
+    if (label) attestedByFramework.set(label, (attestedByFramework.get(label) || 0) + 1)
   }
+  const usedFrameworkIds = new Set<string>()
+  const complianceFrameworks = (complianceMeasured ? cAlignment : []).map((fw, i) => {
+    const name = str(fw.name)
+    const match = FRAMEWORKS.find((f) => f.aliases.test(name))
+    // Distinct frameworks can alias-collapse to one canonical id (every NIST
+    // publication matches the nist alias) — ids stay unique for React keys.
+    let id = match?.id || `fw-${i}`
+    if (usedFrameworkIds.has(id)) id = `${id}-${i}`
+    usedFrameworkIds.add(id)
+    const requirementsTotal = num(fw.requirementsTotal)
+    const requirementsMeasured = num(fw.requirementsMeasured)
+    return {
+      id,
+      name,
+      progress: clampPct(num(fw.score)),
+      evidenceCount: num(fw.evidenceCount),
+      attestedEvidenceCount: num(fw.attestedEvidenceCount) || attestedByFramework.get(name.toLowerCase()) || 0,
+      gaps: num(fw.requirementsFailing) + num(fw.requirementsPartial),
+      requirementsTotal,
+      requirementsMeasured,
+      coverage: requirementsTotal > 0 ? clampPct((requirementsMeasured / requirementsTotal) * 100) : 0,
+      modeled: false,
+    }
+  })
 
   /* ---- Threat intelligence rollups (real signals + honest empties) */
   const hndl = runtimeEvents.filter((e) => e.hndl_risk === true).length
@@ -419,19 +401,46 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
     .map((v) => num(recordOf(v.metadata).epss))
     .filter((n) => n > 0)
   const epssMax = epssValues.length ? Math.round(Math.max(...epssValues) * 100) : 0
-  // Quantum threat model: Shor breaks RSA/ECC/DH signatures & KEX; Grover halves
-  // symmetric strength. Derived from the canonical vulnerable-component share.
-  const shorAtRisk = inv.vulnerableComponents
-  const groverWeakened = inventoryItems.filter((i) => /aes-128|3des|sha-1|sha1|md5/i.test(str(i.item_type))).length
-  const threatFeeds = openVulns
-    .filter((v) => severityRank(v.severity) >= 3)
-    .slice(0, 8)
-    .map((v) => ({
-      id: str(v.id),
-      title: str(v.title) || 'Security finding',
-      severity: str(v.severity).toLowerCase() || 'high',
-      source: str(v.source) || 'telemetry',
-      at: str(v.updated_at) || str(v.created_at),
+  /* Quantum threat model over the CANONICAL CBOM, classified by the Crypto
+     Knowledge Base.
+     • Shor-at-Risk: vulnerable components whose primitive Shor's algorithm
+       breaks outright (RSA, ECC, DH). This used to be ALL vulnerable
+       components, so a TLS protocol version and an AES-256-GCM suite were
+       counted as Shor targets.
+     • Grover-Weakened: symmetric/hash primitives left below the 128-bit
+       post-quantum margin (AES-128, SHA-1…). This used to regex the
+       `item_type` column — "algorithm", "protocol" — so it could never match
+       and always read 0 whatever the estate held. */
+  const cbomEntries: Row[] = Array.isArray(intel?.cbom?.entries) ? intel.cbom.entries : []
+  let shorAtRisk = 0
+  let groverWeakened = 0
+  for (const entry of cbomEntries) {
+    const algorithmLabel = str(entry.algorithm)
+    const definition = findAlgorithm(algorithmLabel)
+    if (!definition) continue
+    if (definition.shorBroken) {
+      if (entry.isVulnerable && !entry.isQuantumSafe) shorAtRisk += 1
+      continue
+    }
+    if (definition.groverAffected) {
+      const verdict = quantumVerdict({ algorithm: definition, role: 'unknown', keySize: parseKeySize(algorithmLabel, definition) })
+      if (verdict.effectiveStrength !== null && verdict.effectiveStrength < 128) groverWeakened += 1
+    }
+  }
+  /* The feed is the canonical critical/high findings (the set Quantum
+     Readiness → Risk Analysis lists, where the feed links) — not the derived
+     `vulnerabilities` bucket rows, whose titles are the bucket they were filed
+     under ("Rule (App Crypto)", "Runtime Crypto Exposure" on a tenant with no
+     runtime telemetry at all). */
+  const threatFeeds = (snap.criticalFindings || [])
+    .slice()
+    .sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || dateMs(b.detectedAt) - dateMs(a.detectedAt))
+    .map((finding) => ({
+      id: str(finding.id),
+      title: str(finding.title).replace(/\s+detected$/i, '') || 'Security finding',
+      severity: str(finding.severity).toLowerCase() || 'high',
+      source: str(finding.asset) || 'scanner',
+      at: str(finding.detectedAt),
     }))
 
   /* ---- Live platform runtime telemetry (REAL, process-level) ------ */
@@ -506,12 +515,16 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
    * which unit it is reporting, and routes to the page that owns it.
    */
   const hasAssetInventory = totalAssets > 0
+  /* Labelled as what it counts. "Critical Assets" read as a SEVERITY claim —
+     "1 critical asset" beside a finding set holding zero critical findings —
+     when the number is the posture verdict: assets the shared model rates
+     quantum-vulnerable. */
   const criticalHeadline = hasAssetInventory
     ? {
-        label: 'Critical Assets',
+        label: 'Quantum-Vulnerable Assets',
         value: vulnerableAssets,
         unitLabel: 'assets',
-        hint: 'Quantum-vulnerable assets (matches Quantum Readiness).',
+        hint: 'Assets the shared posture model rates quantum-vulnerable (matches Quantum Readiness).',
         route: '/dashboard/quantum-readiness/risk-analysis',
       }
     : {
@@ -547,155 +560,217 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
      value models and print contradicting figures (exposure $80,000 beside a
      "risk-reduction value" of $352,688). One model, one set of numbers. */
   const costAssumptions = snap.costAssumptions ?? DEFAULT_COST_ASSUMPTIONS
-  const VALUE_PER_CRITICAL = costAssumptions.valuePerCriticalAssetUsd
-  const VALUE_PER_STANDARD = costAssumptions.valuePerStandardAssetUsd
   const exposure = snap.businessValue ?? buildFinancialExposure(
     { vulnerableAssets, taggedCriticalAssets: missionCriticalTagged, pqcReadyAssets: inv.pqcReadyAssets },
     costAssumptions,
   )
-  const criticalVulnerable = exposure.criticalVulnerableAssets
-  const standardVulnerable = exposure.standardVulnerableAssets
   const financialExposure = exposure.financialExposureUsd
   const revenueProtected = exposure.revenueProtectedUsd
+  const migrationCostUsd = num(snap.estimates.migrationCostUsd)
+  /* ROI = (loss avoided − cost) / cost, where the loss avoided is at most the
+     modelled exposure — so this is an UPPER BOUND, and it can be negative. It
+     used to be exposure ÷ cost clamped to 100%, which is neither a return nor
+     bounded honestly: $40,000 of exposure against a $31,350 programme printed
+     "Projected ROI 100%" (the true ceiling is 28%). `null` when either side is
+     unmodelled, rendered "Not modelled" — never a 0% that reads as "no return". */
+  const projectedRoiPct = financialExposure > 0 && migrationCostUsd > 0
+    ? Math.round(((financialExposure - migrationCostUsd) / migrationCostUsd) * 100)
+    : null
   const businessImpact = {
     modeled: true,
     financialExposure,
     revenueProtected,
-    // Displayed as "Critical Assets at Risk" — the quantum-vulnerable count.
+    // Displayed as "Quantum-Vulnerable Assets" — the shared posture verdict.
     missionCriticalAssets: criticalAssets,
     taggedCriticalAssets: missionCriticalTagged,
     applicationsAtRisk,
     applications,
     operationalImpact: scores.migrationComplexity, // 0-100 index
     estimatedDowntimeHours: Math.round(vulnerableAssets * 0.25 * 10) / 10, // ~15 min planned cutover/asset
-    riskTrendDelta: snap.riskTrend.length >= 2 ? snap.riskTrend[snap.riskTrend.length - 1].risk - snap.riskTrend[snap.riskTrend.length - 2].risk : 0,
-    projectedRoiPct: financialExposure > 0 ? clampPct((financialExposure / Math.max(1, snap.estimates.migrationCostUsd || financialExposure)) * 100) : 0,
-    migrationCostUsd: snap.estimates.migrationCostUsd,
-    assumptions: `${describeCostAssumptions(costAssumptions)} Cutover ~15 min/asset.`,
+    /* No stored history of the modelled exposure exists, so there is no trend
+       to report. This used to difference the per-session "findings per asset"
+       series — a different metric — and publish it as the exposure trend. */
+    riskTrendDelta: null as number | null,
+    projectedRoiPct,
+    migrationCostUsd,
+    assumptions: `${describeCostAssumptions(costAssumptions)} Cutover ~15 min/asset. ROI is an upper bound: loss avoided cannot exceed the modelled exposure.`,
     // Untagged estates value every asset at the STANDARD rate, which understates
     // exposure — say so rather than letting the figure imply full coverage.
     criticalityTagged: exposure.criticalityTagged,
   }
 
-  /* ---- KPI cards (12) — real values, trends, targets, sparklines -- */
-  const runtimeTs = runtimeEvents.map((e) => dateMs(e.observed_at || e.created_at)).filter(Boolean)
-  const scanTs = scanResults.map((r) => dateMs(r.created_at)).filter(Boolean)
-  const riskSeries = snap.riskTrend.map((t) => t.risk)
-  const readinessSeries = snap.riskTrend.map((t) => t.readiness)
-  const findingSeries = dailyBuckets(scanTs.length ? scanTs : runtimeTs)
-  const eventSeries = dailyBuckets(runtimeTs)
-  const trendOf = (series: number[], lowerBetter: boolean) => {
-    if (series.length < 2) return { deltaPercent: 0, trend: 'flat' as const }
-    const prev = series[series.length - 2]
-    const curr = series[series.length - 1]
-    if (prev === 0 && curr === 0) return { deltaPercent: 0, trend: 'flat' as const }
-    const raw = prev === 0 ? 100 : Math.round(((curr - prev) / Math.abs(prev)) * 100)
-    const improving = lowerBetter ? curr < prev : curr > prev
-    return { deltaPercent: Math.abs(raw), trend: (curr === prev ? 'flat' : improving ? 'down' : 'up') as 'up' | 'down' | 'flat' }
-  }
-  const riskTrendInfo = trendOf(riskSeries, true)
-  const readinessTrendInfo = trendOf(readinessSeries, false)
+  /* ---- KPI cards (12) ----------------------------------------------
+   * TRENDS AND SPARKLINES ARE ONLY EVER THE METRIC'S OWN HISTORY.
+   *
+   * The platform stores no history of these scores. The cards used to borrow
+   * a series anyway: Quantum Risk, Quantum Ready, Migration Progress,
+   * Compliance and Business Risk all drew `riskTrend` — a per-session
+   * "findings per asset" ratio, a DIFFERENT metric (it read risk 100 beside a
+   * Quantum Risk Score of 57) — and derived their "improved/worse %" from it;
+   * Harvest Now drew the runtime-event count; Open Findings drew raw scan rows
+   * per day. Each card now carries `trendBasis: 'none'` and, where it helps, a
+   * `breakdown` of the value it shows — real composition, not a borrowed line.
+   */
   const openFindings = snap.riskDistribution.critical + snap.riskDistribution.high + snap.riskDistribution.medium + snap.riskDistribution.low
-  const certCoverage = totalAssets > 0 ? pct(certificates.length, totalAssets) : 0
-  // AI confidence = evidence-coverage of the assessment (real signal breadth).
-  const aiConfidence = clampPct(snap.assessmentProgress * 0.6 + (inv.cryptoComponents > 0 ? 40 : 0))
+  /* Coverage is ASSETS WITH a certificate over assets — not certificate rows
+     over assets, which reads 100% for one asset holding two certificates and
+     none on the other. */
+  const estateAssetIds = new Set(activeAssets.map((a) => str(a.id)))
+  const assetsWithCertificates = new Set(certificates.map((c) => str(c.asset_id)).filter((id) => estateAssetIds.has(id))).size
+  const certCoverage = totalAssets > 0 ? pct(assetsWithCertificates, totalAssets) : 0
+  /* Evidence coverage — which of the seven evidence sources the assessment
+     actually holds. This used to be "AI Confidence" = coverage × 0.6 + a flat
+     40 points for having any CBOM, a constant presented as a measurement. */
+  const evidenceSources: Array<{ id: string; label: string; present: boolean }> = Array.isArray(snap.evidenceSources) ? snap.evidenceSources : []
+  const presentSources = evidenceSources.filter((source) => source.present)
+  const missingSources = evidenceSources.filter((source) => !source.present)
+  const evidenceCoverage = snap.assessmentProgress
   // Runtime health is a MEASURED signal: only meaningful when runtime crypto
   // telemetry exists. With no runtime events we report `unmeasured` (UI shows
   // "no telemetry"), never a misleading 0%.
   const runtimeMeasured = runtimeEvents.length > 0
   const runtimeHealth = runtimeMeasured ? clampPct(100 - pct(legacyCrypto + downgrade + shadowCrypto, runtimeEvents.length)) : 0
   const lastUpdated = snap.lastAssessmentAt || snap.generatedAt
+  const noHistory = { deltaPercent: 0, trend: 'flat' as const, trendBasis: 'none' as const, sparkline: [] as number[] }
+  const otherAssets = Math.max(0, totalAssets - inv.quantumVulnerableAssets - inv.pqcReadyAssets)
+  const assetPostureBreakdown = [
+    { label: 'Quantum-vulnerable', value: inv.quantumVulnerableAssets, tone: 'critical' },
+    { label: 'PQC-ready', value: inv.pqcReadyAssets, tone: 'good' },
+    { label: 'Other / unassessed', value: otherAssets, tone: 'neutral' },
+  ]
+  const executionStarted = stagePct('execution') > 0 || completedJobs.length > 0 || runningJobs.length > 0
 
   const kpis = [
     {
       id: 'quantum-risk', label: 'Quantum Risk Score', value: scores.quantumRisk, unit: '/100', format: 'score',
-      direction: 'lower-better', target: 20, targetLabel: 'Below 20', ...riskTrendInfo,
-      level: scores.quantumRiskLevel, sparkline: riskSeries, lastUpdated, route: '/dashboard/quantum-risk-scoring',
-      hint: 'Composite quantum exposure — lower is safer.',
+      direction: 'lower-better', target: 20, targetLabel: 'Below 20', ...noHistory,
+      level: scores.quantumRiskLevel, lastUpdated, route: '/dashboard/quantum-risk-scoring',
+      hint: 'Composite quantum exposure (severity pressure, vulnerable-component share, internet exposure) — lower is safer.',
     },
     {
       id: 'critical-assets', label: criticalHeadline.label, value: criticalHeadline.value, unit: '', format: 'count',
-      direction: 'lower-better', target: 0, targetLabel: `Zero ${criticalHeadline.unitLabel} at risk`, deltaPercent: 0, trend: 'flat',
+      direction: 'lower-better', target: 0, targetLabel: `Zero ${criticalHeadline.unitLabel} at risk`, ...noHistory,
       level: criticalHeadline.value > 0 ? 'high' : 'low',
-      sparkline: [], lastUpdated, route: criticalHeadline.route, hint: criticalHeadline.hint,
+      breakdown: hasAssetInventory ? assetPostureBreakdown : undefined,
+      lastUpdated, route: criticalHeadline.route, hint: criticalHeadline.hint,
     },
     {
       id: 'quantum-ready', label: readyHeadline.label, value: readyHeadline.value, unit: '', format: 'count',
-      direction: 'higher-better', target: readyHeadline.target, targetLabel: readyHeadline.targetLabel, ...readinessTrendInfo,
-      sparkline: readinessSeries, lastUpdated, route: readyHeadline.route, hint: readyHeadline.hint,
+      direction: 'higher-better', target: readyHeadline.target, targetLabel: readyHeadline.targetLabel, ...noHistory,
+      breakdown: hasAssetInventory ? assetPostureBreakdown : undefined,
+      lastUpdated, route: readyHeadline.route, hint: readyHeadline.hint,
     },
     {
-      id: 'migration-progress', label: 'Migration Progress', value: overallCompletion, unit: '%', format: 'percent',
-      direction: 'higher-better', target: 100, targetLabel: '100%', ...readinessTrendInfo,
-      sparkline: readinessSeries, lastUpdated, route: '/dashboard/migration-planner', hint: 'Canonical migration lifecycle — matches Migration Planner.',
+      id: 'migration-progress', label: 'Migration Lifecycle', value: overallCompletion, unit: '%', format: 'percent',
+      direction: 'higher-better', target: 100, targetLabel: '100%', ...noHistory,
+      breakdown: wfStages.length
+        ? [
+            { label: 'Complete', value: wfStages.filter((s) => str(s.status) === 'complete').length, tone: 'good' },
+            { label: 'Active', value: wfStages.filter((s) => str(s.status) === 'active').length, tone: 'info' },
+            { label: 'Pending', value: wfStages.filter((s) => !['complete', 'active'].includes(str(s.status))).length, tone: 'neutral' },
+          ]
+        : undefined,
+      lastUpdated, route: '/dashboard/migration-planner',
+      hint: `Progress through the 11-stage migration lifecycle (matches Migration Planner)${workflow?.currentStageId ? ` — current stage: ${titleCaseStage(str(workflow.currentStageId))}` : ''}.${executionStarted ? '' : ' Migration execution has not started.'}`,
     },
     {
       id: 'compliance', label: 'Compliance Score', value: complianceOverall, unit: '%', format: 'percent',
-      direction: 'higher-better', target: 100, targetLabel: '100%', deltaPercent: 0, trend: 'flat',
-      sparkline: readinessSeries, lastUpdated, route: '/dashboard/compliance', hint: 'Matches the Compliance dashboard.',
+      direction: 'higher-better', target: 100, targetLabel: complianceMeasured ? '100%' : 'Model unavailable', ...noHistory,
+      unmeasured: !complianceMeasured,
+      lastUpdated, route: '/dashboard/compliance',
+      hint: complianceMeasured
+        ? `Matches the Compliance dashboard — scored over measured controls across ${complianceFrameworks.length} framework${complianceFrameworks.length === 1 ? '' : 's'}.`
+        : 'The governance control model returned no measured framework, so no compliance score is published.',
     },
     {
       id: 'open-findings', label: 'Open Findings', value: openFindings, unit: '', format: 'count',
-      direction: 'lower-better', target: 0, targetLabel: 'Zero open', ...trendOf(findingSeries, true),
-      sparkline: findingSeries, lastUpdated, route: '/dashboard/quantum-readiness/risk-analysis', hint: 'Unresolved cryptographic findings.',
+      direction: 'lower-better', target: 0, targetLabel: 'Zero open', ...noHistory,
+      breakdown: [
+        { label: 'Critical', value: snap.riskDistribution.critical, tone: 'critical' },
+        { label: 'High', value: snap.riskDistribution.high, tone: 'warning' },
+        { label: 'Medium', value: snap.riskDistribution.medium, tone: 'info' },
+        { label: 'Low', value: snap.riskDistribution.low, tone: 'neutral' },
+      ],
+      lastUpdated, route: '/dashboard/quantum-readiness/risk-analysis', hint: 'Unresolved cryptographic findings, merged across storage copies (matches Risk Analysis).',
     },
     {
       id: 'hndl-risk', label: 'Harvest Now Risk', value: scores.hndlRisk, unit: '/100', format: 'score',
-      direction: 'lower-better', target: 20, targetLabel: 'Below 20', deltaPercent: 0, trend: 'flat',
-      level: scores.hndlRiskLevel, sparkline: eventSeries, lastUpdated, route: '/dashboard/harvest-now',
-      hint: 'Harvest-Now-Decrypt-Later exposure.',
+      direction: 'lower-better', target: 20, targetLabel: 'Below 20', ...noHistory,
+      level: scores.hndlRiskLevel, lastUpdated, route: '/dashboard/harvest-now',
+      hint: runtimeMeasured
+        ? 'Harvest-Now-Decrypt-Later exposure from vulnerable key exchange, runtime HNDL signals and internet exposure.'
+        : 'Harvest-Now-Decrypt-Later exposure from vulnerable key exchange and internet exposure. Runtime HNDL signals are not measured — no collector enrolled.',
     },
     {
-      id: 'ai-confidence', label: 'AI Confidence', value: aiConfidence, unit: '%', format: 'percent',
-      direction: 'higher-better', target: 90, targetLabel: 'Above 90%', deltaPercent: 0, trend: 'flat',
-      sparkline: [], lastUpdated, route: '/dashboard/sophia', hint: 'Evidence breadth behind AI insights.',
+      id: 'evidence-coverage', label: 'Evidence Coverage', value: evidenceCoverage, unit: '%', format: 'percent',
+      direction: 'higher-better', target: 100, targetLabel: `${presentSources.length} of ${evidenceSources.length} sources`, ...noHistory,
+      breakdown: evidenceSources.length
+        ? [
+            { label: 'Present', value: presentSources.length, tone: 'good' },
+            { label: 'Missing', value: missingSources.length, tone: 'neutral' },
+          ]
+        : undefined,
+      lastUpdated, route: '/dashboard/quantum-readiness',
+      hint: missingSources.length
+        ? `Evidence behind every score on this page. Missing: ${missingSources.map((source) => source.label).join(', ')}.`
+        : 'Every evidence source is present.',
     },
     {
       id: 'runtime-health', label: 'Runtime Health', value: runtimeHealth, unit: '%', format: 'percent',
-      direction: 'higher-better', target: 100, targetLabel: runtimeMeasured ? '100%' : 'Connect telemetry',
-      ...(runtimeMeasured ? trendOf(eventSeries.map((n) => 100 - n), false) : { deltaPercent: 0, trend: 'flat' as const }),
+      direction: 'higher-better', target: 100, targetLabel: runtimeMeasured ? '100%' : 'Connect telemetry', ...noHistory,
       unmeasured: !runtimeMeasured,
-      sparkline: runtimeMeasured ? eventSeries : [], lastUpdated, route: '/dashboard/runtime-telemetry',
-      hint: runtimeMeasured ? 'Clean runtime crypto observations.' : 'No runtime telemetry yet — deploy an agent to measure.',
+      lastUpdated, route: '/dashboard/runtime-telemetry',
+      hint: runtimeMeasured ? 'Share of runtime crypto observations with no legacy, downgrade or shadow-crypto signal.' : 'No runtime telemetry yet — deploy an agent to measure.',
     },
     {
       id: 'cert-coverage', label: 'Certificate Coverage', value: certCoverage, unit: '%', format: 'percent',
-      direction: 'higher-better', target: 100, targetLabel: '100%', deltaPercent: 0, trend: 'flat',
-      sparkline: [], lastUpdated, route: '/dashboard/certificate-telemetry', hint: 'Assets with certificate visibility.',
+      direction: 'higher-better', target: 100, targetLabel: '100%', ...noHistory,
+      breakdown: totalAssets > 0
+        ? [
+            { label: 'With certificate', value: assetsWithCertificates, tone: 'good' },
+            { label: 'Without', value: Math.max(0, totalAssets - assetsWithCertificates), tone: 'neutral' },
+          ]
+        : undefined,
+      lastUpdated, route: '/dashboard/certificate-telemetry', hint: `Assets presenting at least one inventoried certificate (${assetsWithCertificates} of ${totalAssets}).`,
     },
     {
       id: 'crypto-inventory', label: 'Cryptographic Inventory', value: inv.cryptoComponents, unit: '', format: 'count',
-      direction: 'higher-better', target: 0, targetLabel: 'Full CBOM', deltaPercent: 0, trend: 'flat',
-      sparkline: [], lastUpdated, route: '/dashboard/cbom', hint: 'Discovered CBOM components.',
+      direction: 'higher-better', target: 0, targetLabel: 'Full CBOM', ...noHistory,
+      breakdown: [
+        { label: 'Quantum-vulnerable', value: inv.vulnerableComponents, tone: 'critical' },
+        { label: 'PQC-ready', value: num(inv.pqcReadyComponents), tone: 'good' },
+        { label: 'Unclassified', value: Math.max(0, inv.cryptoComponents - inv.vulnerableComponents - num(inv.pqcReadyComponents)), tone: 'neutral' },
+      ],
+      lastUpdated, route: '/dashboard/cbom', hint: 'Canonical CBOM components (matches the CBOM page) — instances of one component are counted once.',
     },
     {
       id: 'business-risk', label: 'Business Risk', value: financialExposure, unit: 'USD', format: 'currency',
-      direction: 'lower-better', target: 0, targetLabel: '$0 exposed', deltaPercent: Math.abs(businessImpact.riskTrendDelta),
-      trend: businessImpact.riskTrendDelta < 0 ? 'down' : businessImpact.riskTrendDelta > 0 ? 'up' : 'flat',
-      sparkline: riskSeries, lastUpdated, route: '/dashboard/revenue-intelligence', hint: 'Modelled financial exposure.', modeled: true,
+      direction: 'lower-better', target: 0, targetLabel: '$0 exposed', ...noHistory,
+      lastUpdated, route: '/dashboard/revenue-intelligence', hint: 'Modelled financial exposure over quantum-vulnerable assets — planning assumptions, not measured loss.', modeled: true,
     },
   ]
 
   /* ---- Executive AI narrative ------------------------------------ */
   const criticalFindingCount = snap.riskDistribution.critical
   const highFindingCount = snap.riskDistribution.high
-  const remediationHours = Math.round(
-    (snap.recommendedActions.slice(0, 6).reduce((sum, r) => {
-      const sev = str(r.severity).toLowerCase()
-      return sum + (sev === 'critical' ? 24 : sev === 'high' ? 12 : 6)
-    }, 0)) * 10,
-  ) / 10
   const topPriority = snap.recommendedActions[0] || null
+  const currentStage = workflow?.currentStageId ? titleCaseStage(str(workflow.currentStageId)) : null
   const facts = [
     /* Same unit-awareness as the KPI card: the executive facts row must not
        label a component count as an asset count either. */
     { id: 'critical-assets', label: criticalHeadline.label, value: criticalHeadline.value, tone: criticalHeadline.value > 0 ? 'critical' : 'good' },
-    { id: 'high-findings', label: 'High-risk findings', value: criticalFindingCount + highFindingCount, tone: (criticalFindingCount + highFindingCount) > 0 ? 'warning' : 'good' },
-    { id: 'risk-trend', label: 'Risk trend', value: riskTrendInfo.trend === 'down' ? `improved ${riskTrendInfo.deltaPercent}%` : riskTrendInfo.trend === 'up' ? `up ${riskTrendInfo.deltaPercent}%` : 'stable', tone: riskTrendInfo.trend === 'down' ? 'good' : riskTrendInfo.trend === 'up' ? 'warning' : 'neutral' },
-    { id: 'migration', label: 'Migration progress', value: `${overallCompletion}%`, tone: overallCompletion >= 50 ? 'good' : 'neutral' },
-    { id: 'remediation', label: 'Est. quick remediation', value: remediationHours > 0 ? `${remediationHours} hrs` : 'None pending', tone: 'neutral' },
-    { id: 'timeline', label: 'Migration timeline', value: snap.estimates.migrationTimelineWeeks > 0 ? `${snap.estimates.migrationTimelineWeeks} wks` : 'Complete', tone: 'neutral' },
+    { id: 'high-findings', label: 'Critical + high findings', value: criticalFindingCount + highFindingCount, tone: (criticalFindingCount + highFindingCount) > 0 ? 'warning' : 'good' },
+    /* Freshness, not a trend: with no stored score history "Risk trend: stable"
+       asserted a comparison that was never made. How old the evidence is IS
+       measured, and it is what an executive needs before trusting the rest. */
+    { id: 'last-assessment', label: 'Last assessment', value: snap.lastAssessmentAt ? snap.lastAssessmentAt : 'Never', tone: 'neutral', format: 'relative-time' },
+    { id: 'migration', label: 'Migration lifecycle', value: `${overallCompletion}%`, tone: overallCompletion >= 50 ? 'good' : 'neutral', hint: currentStage ? `Current stage: ${currentStage}` : undefined },
+    { id: 'evidence', label: 'Evidence coverage', value: `${presentSources.length} of ${evidenceSources.length} sources`, tone: missingSources.length === 0 ? 'good' : 'neutral' },
+    { id: 'timeline', label: 'Est. migration timeline', value: snap.estimates.migrationTimelineWeeks > 0 ? `${snap.estimates.migrationTimelineWeeks} wks` : hasData ? 'No remaining scope' : '—', tone: 'neutral', modeled: true, hint: 'Planning estimate from remaining vulnerable components and migration complexity.' },
   ]
+  const migrationSentence = executionStarted
+    ? `the migration lifecycle is ${overallCompletion}% complete${currentStage ? ` (current stage: ${currentStage})` : ''}`
+    : `the migration lifecycle is ${overallCompletion}% through its stages${currentStage ? ` (current stage: ${currentStage})` : ''} — no cryptography has been migrated yet`
   const narrative = {
     posture: scores.quantumReadinessLevel,
     readinessScore: scores.quantumReadiness,
@@ -708,9 +783,14 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
       : hasData
         ? { title: 'Maintain quantum-safe posture', detail: 'No critical actions pending. Continue monitoring for cryptographic drift.', severity: 'low', route: '/dashboard/drift_detection' }
         : { title: 'Run your first PQC discovery scan', detail: 'Discover cryptographic assets to begin the quantum readiness assessment.', severity: 'medium', route: '/dashboard/scanner' },
-    confidence: aiConfidence,
+    evidenceCoverage: {
+      pct: evidenceCoverage,
+      present: presentSources.length,
+      total: evidenceSources.length,
+      missing: missingSources.map((source) => source.label),
+    },
     summary: hasData
-      ? `Your environment has ${criticalAssets} quantum-vulnerable asset${criticalAssets === 1 ? '' : 's'} and ${criticalFindingCount + highFindingCount} high-risk cryptographic finding${(criticalFindingCount + highFindingCount) === 1 ? '' : 's'}. Quantum risk is ${scores.quantumRisk}/100 (${scores.quantumRiskLevel}) and migration is ${overallCompletion}% complete.`
+      ? `Your environment has ${criticalAssets} quantum-vulnerable asset${criticalAssets === 1 ? '' : 's'} and ${criticalFindingCount + highFindingCount} critical or high cryptographic finding${(criticalFindingCount + highFindingCount) === 1 ? '' : 's'}. Quantum risk is ${scores.quantumRisk}/100 (${scores.quantumRiskLevel}), and ${migrationSentence}.`
       : 'No cryptographic telemetry yet. Run a PQC discovery scan or connect an integration to populate your command center.',
   }
 
@@ -721,7 +801,7 @@ async function computeExecutive(token: string, userId: string, deps: ExecutiveDe
     narrative,
     kpis,
     pipeline: { stages: pipelineStages, overallCompletion, remainingAssets: Math.max(0, totalAssets - migratedAssets), estimatedFinishWeeks: snap.estimates.migrationTimelineWeeks, bottleneck, certificationReadiness },
-    compliance: { overall: complianceOverall, frameworks: complianceFrameworks },
+    compliance: { overall: complianceOverall, measured: complianceMeasured, frameworks: complianceFrameworks },
     businessImpact,
     assetInventory: { total: totalAssets, categories },
     threatIntel: {

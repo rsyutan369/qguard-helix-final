@@ -109,7 +109,16 @@ export function PanelHeader({
 
 /* ---- Delta badge ------------------------------------------------- */
 
-export function DeltaBadge({ trend, delta, direction }: { trend: 'up' | 'down' | 'flat'; delta: number; direction: 'lower-better' | 'higher-better' }) {
+export function DeltaBadge({ trend, delta, direction, basis }: { trend: 'up' | 'down' | 'flat'; delta: number; direction: 'lower-better' | 'higher-better'; basis?: 'history' | 'none' }) {
+  /* "Stable" is a CLAIM — that the value was compared with an earlier one and
+     did not move. With no stored history there was no comparison, so say that. */
+  if (basis === 'none') {
+    return (
+      <span className="inline-flex items-center gap-0.5 text-[9px] font-black uppercase tracking-wide text-white/30" title="No earlier reading of this metric is stored, so no trend is published">
+        <Minus className="h-2.5 w-2.5" /> no prior baseline
+      </span>
+    )
+  }
   if (trend === 'flat' || delta === 0) {
     return (
       <span className="inline-flex items-center gap-0.5 text-[9px] font-black uppercase tracking-wide text-white/35">

@@ -13,9 +13,16 @@ import {
   str as textOf,
   UNASSESSED_BAND,
 } from '@/lib/migration/asset-intelligence'
-import { buildEstateWorkflowGraph } from '@/lib/dashboard/estate-workflow'
+import {
+  buildEstateWorkflowGraph,
+  groupRecommendedActions,
+  type EstateComponentInput,
+  type EstateFindingInput,
+} from '@/lib/dashboard/estate-workflow'
+import { normalizeFindingSubject } from '@/lib/scanner/finding-identity'
+import { findAlgorithm } from '@/lib/crypto/knowledge-base/algorithms'
 import { buildSnapshot } from './quantum-readiness'
-import { readScannerMemoryRows } from './scanner'
+import { buildScannerIntelligence, readScannerMemoryRows } from './scanner'
 
 const router = Router()
 
@@ -306,11 +313,22 @@ async function buildDashboardSummaryFallback(client: any, userId: string) {
   }
 }
 
-function dashboardEventSeverity(value: unknown): 'critical' | 'warning' | 'info' | 'success' {
+/**
+ * Event severity, faithful to the severity that was recorded.
+ *
+ * HIGH used to be folded into `critical` (as were "fail" and "error"), so a
+ * tenant whose canonical finding set held ZERO critical findings saw a Threat
+ * Timeline full of red "critical" events, and the Critical filter answered a
+ * question the estate's own numbers contradicted. `open` also promoted every
+ * low-severity backlog row to a warning. Severity is now read on word
+ * boundaries, in order, and HIGH is its own tier.
+ */
+function dashboardEventSeverity(value: unknown): 'critical' | 'high' | 'warning' | 'info' | 'success' {
   const text = String(value || '').toLowerCase()
-  if (text.includes('critical') || text.includes('high') || text.includes('fail') || text.includes('error')) return 'critical'
-  if (text.includes('warning') || text.includes('medium') || text.includes('moderate') || text.includes('open')) return 'warning'
-  if (text.includes('success') || text.includes('complete') || text.includes('resolved') || text.includes('trusted')) return 'success'
+  if (/\b(critical|severe)\b/.test(text)) return 'critical'
+  if (/\bhigh\b/.test(text) || /fail|error/.test(text)) return 'high'
+  if (/\b(warning|medium|moderate)\b/.test(text)) return 'warning'
+  if (/success|complete|resolved|trusted/.test(text)) return 'success'
   return 'info'
 }
 
@@ -341,7 +359,7 @@ async function buildEventsFallback(client: any, userId: string, limit: number) {
     ...(scannerAlerts || []).map((alert: any) => ({
       id: `scanner-alert-${alert.id}`,
       timestamp: alert.updated_at || alert.created_at,
-      severity: dashboardEventSeverity(`${alert.severity || ''} ${alert.status || ''}`),
+      severity: ['resolved', 'closed', 'suppressed'].includes(String(alert.status || '').toLowerCase()) ? 'success' as const : dashboardEventSeverity(alert.severity),
       eventType: alert.category || 'scanner_alert',
       message: alert.title || alert.message || 'Scanner alert captured',
       assetId: null,
@@ -353,16 +371,25 @@ async function buildEventsFallback(client: any, userId: string, limit: number) {
     ...(scanSessions || []).map((scan: any) => ({
       id: `scan-${scan.id}`,
       timestamp: scan.completed_at || scan.updated_at || scan.started_at || scan.created_at,
-      severity: dashboardEventSeverity(Number(scan.findings_count || 0) > 0 ? 'warning' : scan.status),
+      // The event is the RUN — its outcome is the run's status. `findings_count`
+      // counts every row the run persisted (PQC-ready confirmations and storage
+      // copies included), so it is reported as observations, not as findings:
+      // "120 findings" beside an Open Findings KPI of 20 was two answers to one
+      // question.
+      severity: dashboardEventSeverity(scan.status),
       eventType: 'pqc_scan_session',
-      message: `PQC scan ${String(scan.status || 'recorded').replace(/_/g, ' ')} with ${Number(scan.findings_count || 0)} finding${Number(scan.findings_count || 0) === 1 ? '' : 's'}`,
+      message: `PQC scan ${String(scan.status || 'recorded').replace(/_/g, ' ')} · ${Number(scan.findings_count || 0)} observation${Number(scan.findings_count || 0) === 1 ? '' : 's'} recorded`,
       assetId: null,
       resourceName: textValue(scan.target_scope, 'PQC scan'),
       resourceType: 'scan_session',
       metadata: recordOf(scan.metadata),
       isRead: false,
     })),
-    ...(scanResults || []).map((result: any) => ({
+    /* A SAFE scan result is a PQC-ready CONFIRMATION ("ML-KEM detected"), not a
+       security event: it is recorded on the CBOM as a PQC-ready component. On a
+       page crawl it can be dozens of rows, which used to fill the event window
+       and push the actual threats out of it. Counted and reported instead. */
+    ...(scanResults || []).filter((result: any) => String(result.threat_level || '').toLowerCase() !== 'safe').map((result: any) => ({
       id: `scan-result-${result.id}`,
       timestamp: result.created_at,
       severity: dashboardEventSeverity(result.threat_level),
@@ -386,18 +413,26 @@ async function buildEventsFallback(client: any, userId: string, limit: number) {
       metadata: {},
       isRead: false,
     })),
-    ...(vulnerabilities || []).map((vuln: any) => ({
-      id: `vulnerability-${vuln.id}`,
-      timestamp: vuln.updated_at || vuln.created_at,
-      severity: dashboardEventSeverity(`${vuln.severity || ''} ${vuln.status || ''}`),
-      eventType: 'vulnerability',
-      message: vuln.title || 'Vulnerability finding',
-      assetId: vuln.asset_id,
-      resourceName: vuln.source || 'Vulnerability',
-      resourceType: 'vulnerability',
-      metadata: recordOf(vuln.metadata),
-      isRead: ['resolved', 'closed', 'false_positive'].includes(String(vuln.status || '').toLowerCase()),
-    })),
+    ...(vulnerabilities || []).map((vuln: any) => {
+      /* Backlog rows are titled by the BUCKET they were filed under ("Rule (App
+         Crypto)", "Certificate Risk"), which tells an operator nothing. The
+         observation the row tracks is on record in its metadata — name it. */
+      const metadata = recordOf(vuln.metadata)
+      const subject = textValue(recordOf(metadata.raw).algorithm, textValue(metadata.algorithm))
+      const closed = ['resolved', 'remediated', 'closed', 'false_positive', 'accepted'].includes(String(vuln.status || '').toLowerCase())
+      return {
+        id: `vulnerability-${vuln.id}`,
+        timestamp: vuln.updated_at || vuln.created_at,
+        severity: closed ? 'success' as const : dashboardEventSeverity(vuln.severity),
+        eventType: 'remediation_backlog',
+        message: subject ? `${subject} — tracked in the remediation backlog (${vuln.title || 'finding'})` : vuln.title || 'Vulnerability finding',
+        assetId: vuln.asset_id,
+        resourceName: vuln.source || 'Vulnerability',
+        resourceType: 'vulnerability',
+        metadata,
+        isRead: closed,
+      }
+    }),
     ...(auditLogs || []).map((log: any) => ({
       id: `audit-${log.id}`,
       timestamp: log.created_at,
@@ -412,9 +447,13 @@ async function buildEventsFallback(client: any, userId: string, limit: number) {
     })),
   ].filter((event) => event.timestamp)
 
-  return events
-    .sort((a, b) => dateMs(b.timestamp) - dateMs(a.timestamp))
-    .slice(0, limit)
+  return {
+    events: events
+      .sort((a, b) => dateMs(b.timestamp) - dateMs(a.timestamp))
+      .slice(0, limit),
+    /** SAFE scan results in the read window — PQC-ready confirmations, reported rather than streamed. */
+    pqcConfirmationsOmitted: (scanResults || []).filter((result: any) => String(result.threat_level || '').toLowerCase() === 'safe').length,
+  }
 }
 
 /**
@@ -439,11 +478,18 @@ async function loadEstateRows(client: any, userId: string) {
     // `algorithm` is required: the shared posture engine classifies it to decide
     // whether the asset is quantum-vulnerable. Omitting it silently downgraded
     // every asset's posture to "hybrid".
-    safeRows(client, 'pqc_scan_results', (q) => q.select('id, asset_id, algorithm, threat_level, remediation, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
+    // `scan_session_id` is the recorded link between a scan session and the
+    // assets it assessed — the estate workflow draws session→asset edges from it.
+    safeRows(client, 'pqc_scan_results', (q) => q.select('id, asset_id, scan_session_id, algorithm, threat_level, remediation, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
     safeRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, severity, risk_score, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(2400)),
     safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, algorithm, protocol, is_vulnerable, is_quantum_safe, exposure_level, discovered_at, created_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(1600)),
-    safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, common_name, status, algorithm, not_after, is_quantum_safe, is_expiring_soon, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1200)),
-    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, findings_count, started_at, completed_at, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(60)),
+    /* Only columns that EXIST. This select used to name `common_name`, which the
+       certificates table does not have — PostgREST rejected the whole query,
+       `safeRows` swallowed the error, and /dashboard drew an estate with zero
+       certificates (and "Certificates: 0" on assets that present one) while the
+       Certificate Coverage KPI above it read 100%. */
+    safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, subject, issuer, key_size, status, algorithm, not_before, not_after, is_quantum_safe, is_expiring_soon, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1200)),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, target_scope, findings_count, started_at, completed_at, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(60)),
   ])
 
   /*
@@ -491,6 +537,93 @@ async function loadEstateRows(client: any, userId: string) {
     sessions: effectiveSessions,
     persistence,
   }
+}
+
+/**
+ * The estate's CANONICAL findings and CBOM components.
+ *
+ * Read from `buildScannerIntelligence` — the merged finding set and grouped
+ * CBOM entries that the Open Findings KPI, the Cryptographic Inventory KPI, the
+ * CBOM page, the Findings tables and the Quantum Readiness engine all count
+ * (15s single-flight cache, so this costs nothing the executive endpoint has
+ * not already paid). Projecting the raw registers instead is how /dashboard
+ * came to publish 31 findings and 101 components beside KPIs reading 20 and 12:
+ * the `vulnerabilities` table is a DERIVED bucket register that repeats
+ * observations `crypto_exposures` already holds, and `crypto_inventory` stores
+ * one row per instance of a component.
+ *
+ * `assets` are the estate rows the caller already loaded; each finding is
+ * resolved to one of them by the row it was merged from, else by the host it
+ * was observed on. A finding that resolves to no inventoried asset is kept and
+ * reported as unlinked — never dropped, never attached to a guess.
+ */
+async function loadCanonicalEstate(token: string, userId: string, assets: any[]) {
+  const intel: any = await buildScannerIntelligence(token, userId)
+  const assetIds = new Set((assets || []).map((asset: any) => String(asset.id)))
+  const byHost = new Map<string, string>()
+  const index = (value: unknown, id: string) => {
+    const text = String(value || '').trim().toLowerCase()
+    if (!text) return
+    const host = normalizeFindingSubject(text) || text
+    if (!byHost.has(host)) byHost.set(host, id)
+  }
+  for (const asset of assets || []) {
+    const metadata = recordOf(asset.metadata)
+    index(asset.name, String(asset.id))
+    index(metadata.authorized_target, String(asset.id))
+    index(metadata.target, String(asset.id))
+  }
+  for (const asset of intel?.assets?.assets || []) {
+    if (!assetIds.has(String(asset.id))) continue
+    index(asset.name, String(asset.id))
+    index(asset.domain, String(asset.id))
+    index(asset.url, String(asset.id))
+  }
+  const resolveAsset = (finding: any): string => {
+    const raw = recordOf(finding.raw)
+    const rawAsset = textValue(raw.asset_id)
+    if (rawAsset && assetIds.has(rawAsset)) return rawAsset
+    for (const candidate of [finding.location, finding.scanTarget]) {
+      const host = normalizeFindingSubject(String(candidate || ''))
+      if (host && byHost.has(host)) return byHost.get(host)!
+    }
+    return byHost.get(String(finding.location || '').trim().toLowerCase()) || ''
+  }
+
+  const findings: EstateFindingInput[] = (intel?.findings || []).map((finding: any) => ({
+    id: String(finding.id),
+    assetId: resolveAsset(finding),
+    title: textValue(finding.algorithm, textValue(finding.category, 'Finding')),
+    category: textValue(finding.category),
+    threatLevel: textValue(finding.threatLevel),
+    status: textValue(finding.status),
+    description: textValue(finding.description),
+    recommendation: textValue(finding.recommendation),
+    evidence: textValue(finding.evidence),
+    location: textValue(finding.location),
+    detectedAt: textValue(finding.detectedAt, textValue(finding.timestamp)) || null,
+    observations: Number(finding.observations) || 1,
+    sources: Array.isArray(finding.sources) ? finding.sources.map(String) : [],
+    ownership: textValue(finding.ownership?.domain) || null,
+    keySize: typeof finding.keySize === 'number' ? finding.keySize : null,
+  }))
+
+  const components: EstateComponentInput[] = (intel?.cbom?.entries || []).map((entry: any) => ({
+    id: String(entry.id),
+    assetId: textValue(entry.sourceAssetId),
+    name: textValue(entry.component),
+    type: textValue(entry.type),
+    algorithm: textValue(entry.algorithm),
+    isVulnerable: Boolean(entry.isVulnerable),
+    isQuantumSafe: Boolean(entry.isQuantumSafe),
+    riskSeverity: textValue(entry.riskSeverity),
+    instances: Number(entry.instances) || 1,
+    detectionMethod: textValue(entry.detectionMethod),
+    lastSeen: textValue(entry.lastScannedDate) || null,
+    replacement: textValue(entry.pqcReplacement) || null,
+  }))
+
+  return { findings, components }
 }
 
 async function buildExposureMapFallback(client: any, userId: string) {
@@ -648,8 +781,8 @@ router.get('/events', async (req: Request, res: Response) => {
       return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
     }
 
-    const events = await buildEventsFallback(client, user.id, limit)
-    return res.json({ data: { events } })
+    const { events, pqcConfirmationsOmitted } = await buildEventsFallback(client, user.id, limit)
+    return res.json({ data: { events, pqcConfirmationsOmitted } })
   } catch (err) {
     console.error('Dashboard events error:', err)
     return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to fetch security events' } })
@@ -685,11 +818,13 @@ router.get('/exposure-map', async (req: Request, res: Response) => {
  * asset-to-asset relationships, CBOM components, certificates, algorithms,
  * findings and recorded remediations, projected into ONE typed graph.
  *
- * Reads `loadEstateRows` — the same rows `/exposure-map` reads — and applies
- * the same shared posture model, so the workflow, the map and the asset
- * dossiers cannot report different numbers for one estate. The projection
- * itself is pure and lives in `src/lib/dashboard/estate-workflow.ts`; nothing
- * about the graph is computed here.
+ * Assets, relationships, certificates and sessions come from `loadEstateRows`
+ * (the same rows `/exposure-map` reads); findings and CBOM components come from
+ * `loadCanonicalEstate` — the canonical sets the KPIs above it count. Per-asset
+ * risk comes from the shared posture model. So the workflow, the KPI cards, the
+ * CBOM page and the asset dossiers cannot report different numbers for one
+ * estate. The projection itself is pure and lives in
+ * `src/lib/dashboard/estate-workflow.ts`; nothing about the graph is computed here.
  */
 router.get('/estate-workflow', async (req: Request, res: Response) => {
   try {
@@ -702,6 +837,7 @@ router.get('/estate-workflow', async (req: Request, res: Response) => {
     }
 
     const rows = await loadEstateRows(client, user.id)
+    const canonical = await loadCanonicalEstate(token, user.id, rows.assets)
 
     // Same call the exposure map, Quantum Readiness and the Migration Planner
     // make. Risk is never re-derived for a projection.
@@ -714,7 +850,14 @@ router.get('/estate-workflow', async (req: Request, res: Response) => {
     })
 
     const graph = buildEstateWorkflowGraph({
-      ...rows,
+      assets: rows.assets,
+      relationships: rows.relationships,
+      findings: canonical.findings,
+      components: canonical.components,
+      certificates: rows.certificates,
+      scanLinks: rows.scanResults,
+      sessions: rows.sessions,
+      runtimeEvents: rows.runtimeEvents,
       assetRisk: postureModel.assetRisk,
       assetPosture: postureModel.assetPosture,
       persistence: rows.persistence,
@@ -886,7 +1029,24 @@ router.get('/stream', (req: Request, res: Response) => {
 
 /**
  * GET /api/v1/dashboard/recommendations
- * Returns prioritized remediation actions based on actual findings.
+ *
+ * Prioritised remediation actions, derived from the estate's CANONICAL
+ * findings — the same merged set the Open Findings KPI counts.
+ *
+ * The finding-backed actions come from `groupRecommendedActions`, the ONE
+ * derivation the Exposure Workflow's Remediation lens also draws, so the two can
+ * never recommend different work for one estate. This route used to build its
+ * list from the raw registers with a templated title per row: one asset with
+ * four ECC observations produced four identical "Replace ECC on <asset>" cards,
+ * the derived `vulnerabilities` bucket rows added a second copy of findings the
+ * exposure register already held (titled "Rule (App Crypto)" with the
+ * description "requires remediation tracking"), and each source was sliced
+ * BEFORE the list was ranked, so a critical row could be cut while a low one
+ * survived. Every action now states the findings it closes.
+ *
+ * Operational signals the finding set does not carry — certificate expiry,
+ * failed migration jobs, open scanner alerts, runtime telemetry — are added
+ * beside it, each grouped so one condition is one card.
  */
 router.get('/recommendations', async (req: Request, res: Response) => {
   try {
@@ -900,15 +1060,13 @@ router.get('/recommendations', async (req: Request, res: Response) => {
 
     const now = Date.now()
     const recommendations: any[] = []
-    const [assets, cryptoExposures, certificates, migrationJobs, scanResults, scannerAlerts, runtimeEvents, vulnerabilities] = await Promise.all([
-      safeRows(client, 'assets', (q) => q.select('id, name, type, environment, status').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1000)),
-      safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
-      safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, not_after, algorithm, status, is_quantum_safe, is_expiring_soon, updated_at, created_at').eq('user_id', user.id).order('not_after', { ascending: true }).limit(300)),
+    const [assets, certificates, migrationJobs, scanResults, scannerAlerts, runtimeEvents] = await Promise.all([
+      safeRows(client, 'assets', (q) => q.select('id, name, type, environment, status, metadata').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(1000)),
+      safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, subject, not_after, algorithm, status, is_quantum_safe, is_expiring_soon, updated_at, created_at').eq('user_id', user.id).order('not_after', { ascending: true }).limit(300)),
       safeRows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, progress, updated_at, created_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(300)),
-      safeRows(client, 'pqc_scan_results', (q) => q.select('id, asset_id, finding_type, algorithm, threat_level, description, remediation, created_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(1000)),
+      safeRows(client, 'pqc_scan_results', (q) => q.select('asset_id').eq('user_id', user.id).limit(1000)),
       safeRows(client, 'scanner_alerts', (q) => q.select('id, severity, category, title, message, recommendation, status, metadata, created_at, updated_at').eq('user_id', user.id).order('created_at', { ascending: false }).limit(300)),
       safeRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, event_type, operation_type, severity, risk_score, asset_name, host, algorithm, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, observed_at, created_at').eq('user_id', user.id).order('observed_at', { ascending: false }).limit(1000)),
-      safeRows(client, 'vulnerabilities', (q) => q.select('id, asset_id, title, severity, status, source, metadata, updated_at, created_at').eq('user_id', user.id).order('updated_at', { ascending: false }).limit(500)),
     ])
 
     const assetMap = new Map<string, any>((assets || []).map((asset: any) => [asset.id, asset]))
@@ -916,163 +1074,183 @@ router.get('/recommendations', async (req: Request, res: Response) => {
       const asset = typeof assetId === 'string' ? assetMap.get(assetId) : null
       return textValue(asset?.name, fallback)
     }
+    /** 1 critical · 2 high · 3 medium · 4 low — LOW is its own tier, not "medium". */
     const priorityFromSeverity = (severity: unknown) => {
       const rank = severityRank(String(severity || ''))
       if (rank >= 4) return 1
       if (rank >= 3) return 2
-      return 3
+      if (rank >= 2) return 3
+      return 4
     }
 
-    for (const exp of (cryptoExposures || [])
-      .filter((row: any) => ['rsa', 'ecc', 'dh'].some((token) => String(row.exposure_type || row.detected_value || '').toLowerCase().includes(token)))
-      .slice(0, 10)) {
+    /* ---- 1. Finding-backed actions (canonical, grouped by recorded action) ---- */
+    const canonical = await loadCanonicalEstate(token, user.id, assets || [])
+    const { actions } = groupRecommendedActions(canonical.findings)
+    const certificateActionAssets = new Set<string>()
+    for (const action of actions) {
+      const profile = recommendationProfile(action.text, action.subjects, action.categories, action.severity)
+      if (profile.category === 'certificate') for (const assetId of action.assetIds) certificateActionAssets.add(assetId)
+      const names = action.assetIds.map((assetId) => assetName(assetId, '')).filter(Boolean)
+      const count = action.findingIds.length
       recommendations.push({
-        id: `exp-${exp.id}`,
-        priority: priorityFromSeverity(exp.severity),
-        category: 'cryptography',
-        title: `Replace ${String(exp.exposure_type || exp.detected_value || 'legacy crypto').toUpperCase()} on ${assetName(exp.asset_id)}`,
-        description: exp.description || 'Detected quantum-vulnerable cryptography requiring migration to PQC algorithms such as ML-KEM and ML-DSA.',
-        assetId: exp.asset_id,
-        action: 'start_migration',
-        estimatedEffort: severityRank(String(exp.severity || '')) >= 4 ? 'high' : 'medium',
+        id: `action-${stableTextKey(action.key)}`,
+        priority: priorityFromSeverity(action.severity),
+        category: profile.category,
+        title: action.text,
+        description: `Closes ${count} open finding${count === 1 ? '' : 's'}: ${action.subjects.join(', ')}${names.length ? ` — on ${names.join(', ')}` : ''}.`,
+        assetId: action.assetIds.length === 1 ? action.assetIds[0] : null,
+        action: profile.action,
+        estimatedEffort: profile.effort,
+        findingCount: count,
+        source: 'findings',
       })
     }
 
-    for (const exp of (cryptoExposures || [])
-      .filter((row: any) => /weak_tls|tls|ssl|cipher|protocol/i.test(`${row.exposure_type || ''} ${row.detected_value || ''} ${row.description || ''}`))
-      .slice(0, 5)) {
-      recommendations.push({
-        id: `tls-${exp.id}`,
-        priority: priorityFromSeverity(exp.severity),
-        category: 'protocol',
-        title: `Upgrade TLS configuration on ${assetName(exp.asset_id)}`,
-        description: exp.description || 'Weak TLS version or cipher suite detected. Enable TLS 1.3 with hybrid post-quantum key exchange.',
-        assetId: exp.asset_id,
-        action: 'upgrade_tls',
-        estimatedEffort: 'low',
-      })
+    /* ---- 2. Certificate expiry — a measured, operational deadline ---------------
+       Quantum migration of a certificate is already an action above when the
+       scanner recorded it; a non-PQC certificate only earns its own card when no
+       finding covers it. */
+    for (const cert of certificates || []) {
+      const active = !['revoked', 'deleted', 'expired'].includes(String(cert.status || 'active').toLowerCase())
+      if (!active) continue
+      const expiresAt = dateMs(cert.not_after)
+      const daysLeft = expiresAt ? Math.ceil((expiresAt - now) / 86400000) : null
+      const label = textValue(cert.subject, textValue(cert.name, assetName(cert.asset_id, 'Certificate')))
+      if (cert.is_expiring_soon || (daysLeft !== null && daysLeft <= 30)) {
+        recommendations.push({
+          id: `cert-${cert.id}`,
+          priority: daysLeft !== null && daysLeft <= 7 ? 1 : 2,
+          category: 'certificate',
+          title: `Renew certificate: ${label}`,
+          description: daysLeft === null
+            ? `Flagged as expiring soon on ${assetName(cert.asset_id)}. Renew onto an ML-DSA or hybrid chain where the CA supports it.`
+            : daysLeft < 0
+              ? `Expired ${Math.abs(daysLeft)} day${Math.abs(daysLeft) === 1 ? '' : 's'} ago on ${assetName(cert.asset_id)}.`
+              : `Expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'} on ${assetName(cert.asset_id)}. Renew onto an ML-DSA or hybrid chain where the CA supports it.`,
+          assetId: cert.asset_id,
+          action: 'renew_certificate',
+          estimatedEffort: 'medium',
+          findingCount: 0,
+          source: 'certificates',
+        })
+      } else if (!cert.is_quantum_safe && !isPqcReadyAlgorithm(`${cert.algorithm || ''}`) && !certificateActionAssets.has(String(cert.asset_id))) {
+        recommendations.push({
+          id: `cert-pqc-${cert.id}`,
+          priority: 3,
+          category: 'certificate',
+          title: `Plan PQC transition: ${label}`,
+          description: `Signed with ${cert.algorithm || 'a classical algorithm'}${daysLeft !== null ? `; valid for ${daysLeft} more days` : ''}. Schedule an ML-DSA or hybrid replacement at the next renewal.`,
+          assetId: cert.asset_id,
+          action: 'transition_certificate',
+          estimatedEffort: 'medium',
+          findingCount: 0,
+          source: 'certificates',
+        })
+      }
     }
 
-    for (const cert of (certificates || [])
-      .filter((row: any) => {
-        const expiresAt = dateMs(row.not_after)
-        const active = !['revoked', 'deleted', 'expired'].includes(String(row.status || 'active').toLowerCase())
-        return active && (row.is_expiring_soon || (expiresAt && expiresAt < now + 30 * 86400000) || (!row.is_quantum_safe && !isPqcReadyAlgorithm(`${row.algorithm || ''}`)))
-      })
-      .slice(0, 5)) {
-      const daysLeft = cert.not_after ? Math.ceil((dateMs(cert.not_after) - now) / 86400000) : null
-      recommendations.push({
-        id: `cert-${cert.id}`,
-        priority: daysLeft !== null && daysLeft <= 7 ? 1 : 2,
-        category: 'certificate',
-        title: `Renew certificate: ${cert.name || assetName(cert.asset_id, 'Certificate')}`,
-        description: daysLeft !== null
-          ? `Certificate expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'} on ${assetName(cert.asset_id)}. Transition to ML-DSA or hybrid certificate.`
-          : `Certificate uses ${cert.algorithm || 'a classical algorithm'} and should be reviewed for PQC readiness.`,
-        assetId: cert.asset_id,
-        action: 'renew_certificate',
-        estimatedEffort: 'medium',
-      })
-    }
-
-    for (const job of (migrationJobs || []).filter((row: any) => normalizeJobStatus(row.status) === 'failed').slice(0, 5)) {
+    /* ---- 3. Failed migration jobs --------------------------------------------- */
+    for (const job of (migrationJobs || []).filter((row: any) => normalizeJobStatus(row.status) === 'failed')) {
       recommendations.push({
         id: `migrate-${job.id}`,
         priority: 2,
         category: 'migration',
         title: `Review failed migration: ${job.name || titleCase(job.job_type || 'migration job')}`,
-        description: `Migration job failed. Review logs and retry with corrected parameters.`,
+        description: `Migration job failed${job.asset_id ? ` on ${assetName(job.asset_id)}` : ''}. Review its logs and retry with corrected parameters.`,
         assetId: job.asset_id,
         action: 'review_migration',
         estimatedEffort: 'high',
+        findingCount: 0,
+        source: 'migration_jobs',
       })
     }
 
-    for (const alert of (scannerAlerts || [])
-      .filter((row: any) => !['resolved', 'closed', 'suppressed'].includes(String(row.status || 'open').toLowerCase()))
-      .slice(0, 5)) {
+    /* ---- 4. Open scanner alerts, one card per alert title ----------------------- */
+    const alertGroups = new Map<string, { alert: any; count: number; worst: number }>()
+    for (const alert of (scannerAlerts || []).filter((row: any) => !['resolved', 'closed', 'suppressed'].includes(String(row.status || 'open').toLowerCase()))) {
+      const key = String(alert.title || alert.category || 'scanner alert').trim().toLowerCase()
+      const rank = severityRank(String(alert.severity || ''))
+      const group = alertGroups.get(key)
+      if (!group) alertGroups.set(key, { alert, count: 1, worst: rank })
+      else {
+        group.count += 1
+        if (rank > group.worst) { group.worst = rank; group.alert = alert }
+      }
+    }
+    for (const { alert, count } of alertGroups.values()) {
       const metadata = recordOf(alert.metadata)
       recommendations.push({
         id: `scanner-alert-${alert.id}`,
         priority: priorityFromSeverity(alert.severity),
         category: 'discovery',
         title: alert.title || titleCase(alert.category || 'Scanner alert'),
-        description: alert.recommendation || alert.message || 'Scanner alert requires review.',
+        description: `${alert.recommendation || alert.message || 'Scanner alert requires review.'}${count > 1 ? ` (${count} open alerts)` : ''}`,
         assetId: typeof metadata.assetId === 'string' ? metadata.assetId : null,
         action: 'review_scanner_alert',
         estimatedEffort: severityRank(String(alert.severity || '')) >= 4 ? 'high' : 'medium',
+        findingCount: count,
+        source: 'scanner_alerts',
       })
     }
 
-    for (const event of (runtimeEvents || [])
-      .filter((row: any) => row.is_legacy || row.downgrade_detected || row.shadow_crypto || row.hndl_risk || severityRank(String(row.severity || '')) >= 3 || Number(row.risk_score || 0) >= 68)
-      .slice(0, 5)) {
+    /* ---- 5. Runtime telemetry, one card per (asset, algorithm) ----------------- */
+    const runtimeGroups = new Map<string, { event: any; count: number }>()
+    for (const event of (runtimeEvents || []).filter((row: any) => row.is_legacy || row.downgrade_detected || row.shadow_crypto || row.hndl_risk || severityRank(String(row.severity || '')) >= 3 || Number(row.risk_score || 0) >= 68)) {
+      const key = `${event.asset_id || event.host || event.asset_name || 'runtime'}|${String(event.algorithm || event.operation_type || '').toLowerCase()}`
+      const group = runtimeGroups.get(key)
+      if (!group) runtimeGroups.set(key, { event, count: 1 })
+      else group.count += 1
+    }
+    for (const { event, count } of runtimeGroups.values()) {
       recommendations.push({
         id: `runtime-${event.id}`,
         priority: Number(event.risk_score || 0) >= 86 || severityRank(String(event.severity || '')) >= 4 ? 1 : 2,
         category: 'cryptography',
         title: `Investigate runtime crypto on ${assetName(event.asset_id, textValue(event.asset_name, textValue(event.host, 'runtime source')))}`,
-        description: `${event.algorithm || event.operation_type || event.event_type || 'Runtime cryptography'} produced a live risk signal that should be validated against PQC policy.`,
+        description: `${event.algorithm || event.operation_type || event.event_type || 'Runtime cryptography'} produced ${count} live risk signal${count === 1 ? '' : 's'} that should be validated against PQC policy.`,
         assetId: event.asset_id,
         action: 'inspect_runtime_telemetry',
         estimatedEffort: 'medium',
+        findingCount: count,
+        source: 'runtime_crypto_events',
       })
     }
 
-    for (const vuln of (vulnerabilities || [])
-      .filter((row: any) => !['resolved', 'remediated', 'false_positive', 'accepted', 'closed'].includes(String(row.status || 'open').toLowerCase()))
-      .slice(0, 5)) {
-      recommendations.push({
-        id: `vulnerability-${vuln.id}`,
-        priority: priorityFromSeverity(vuln.severity),
-        category: 'cryptography',
-        title: vuln.title || `Resolve vulnerability on ${assetName(vuln.asset_id)}`,
-        description: `Open ${String(vuln.severity || 'security')} vulnerability from ${vuln.source || 'telemetry'} requires remediation tracking.`,
-        assetId: vuln.asset_id,
-        action: 'resolve_vulnerability',
-        estimatedEffort: severityRank(String(vuln.severity || '')) >= 4 ? 'high' : 'medium',
-      })
-    }
-
+    /* ---- 6. Coverage gap: inventory that has never been scanned ---------------- */
     const activeAssets = (assets || []).filter((asset: any) => !['archived', 'deleted', 'retired'].includes(String(asset.status || 'active').toLowerCase()))
     const scannedAssets = new Set((scanResults || []).map((row: any) => row.asset_id).filter(Boolean))
-
-    if (activeAssets.length > 0 && scannedAssets.size === 0) {
+    if (activeAssets.length > 0 && scannedAssets.size === 0 && canonical.findings.length === 0) {
       recommendations.push({
         id: 'scan-assets',
         priority: 1,
         category: 'discovery',
         title: 'Run PQC Discovery Scan',
-        description: `${activeAssets.length} assets have not been scanned for quantum vulnerabilities. Start a comprehensive scan to build your CBOM.`,
+        description: `${activeAssets.length} asset${activeAssets.length === 1 ? ' has' : 's have'} not been scanned for quantum vulnerabilities. Start a scan to build your CBOM.`,
         action: 'start_scan',
         estimatedEffort: 'low',
+        findingCount: 0,
+        source: 'assets',
       })
     }
 
-    // Sort by priority
-    recommendations.sort((a, b) => a.priority - b.priority)
+    // Rank the WHOLE list, then bound it — never the other way round.
+    recommendations.sort((a, b) => a.priority - b.priority || (b.findingCount || 0) - (a.findingCount || 0))
 
     /*
      * CANONICAL FALLBACK — an empty list here must mean "nothing to do", not
      * "this endpoint could not see the evidence".
      *
-     * This route builds its recommendations from its OWN direct table reads.
-     * When those reads come back empty but the canonical Quantum Readiness
-     * snapshot still holds recommended actions — which happens whenever the
-     * snapshot is answering from the scanner's in-memory store — the panel
-     * rendered a green shield reading "No active recommendations · Your posture
-     * is stable" while the engine beside it held four actions, one of them
-     * CRITICAL. Absence was being published as safety.
-     *
-     * The canonical actions therefore answer when this route has nothing. They
-     * are the same actions the Quantum Readiness page shows, so the two cannot
-     * recommend different work for one estate.
+     * When nothing above produced an action but the canonical Quantum Readiness
+     * snapshot still holds recommended actions (it can answer from the
+     * scanner's in-memory store), the panel used to render a green shield
+     * reading "No active recommendations · Your posture is stable" beside an
+     * engine holding a CRITICAL action. Absence was being published as safety.
      */
     if (recommendations.length === 0) {
       try {
         const snapshot = await buildSnapshot(token, user.id)
         const severityPriority: Record<string, number> = { critical: 1, high: 2, medium: 3, low: 4 }
-        const canonical = (snapshot.recommendedActions || []).map((action) => ({
+        const canonicalActions = (snapshot.recommendedActions || []).map((action) => ({
           id: action.id,
           priority: severityPriority[String(action.severity).toLowerCase()] ?? 3,
           category: 'quantum-readiness',
@@ -1081,21 +1259,64 @@ router.get('/recommendations', async (req: Request, res: Response) => {
           assetId: null as string | null,
           action: action.route,
           estimatedEffort: 'medium',
+          findingCount: 0,
+          source: 'quantum-readiness',
         }))
-        if (canonical.length > 0) {
-          return res.json({ data: { recommendations: canonical.slice(0, 20) } })
+        if (canonicalActions.length > 0) {
+          return res.json({ data: { recommendations: canonicalActions.slice(0, 20), total: canonicalActions.length } })
         }
       } catch {
         // Snapshot unavailable — fall through to the honest empty list.
       }
     }
 
-    return res.json({ data: { recommendations: recommendations.slice(0, 20) } })
+    return res.json({
+      data: {
+        recommendations: recommendations.slice(0, 20),
+        total: recommendations.length,
+        /** Finding-backed actions before the bound — equals the Remediation lens node count. */
+        findingActions: actions.length,
+      },
+    })
   } catch (err) {
     console.error('Dashboard recommendations error:', err)
     return res.status(500).json({ error: { code: 'INTERNAL_ERROR', message: 'Failed to generate recommendations' } })
   }
 })
+
+/**
+ * What kind of work a recorded action is, from what it is about.
+ *
+ * Classified on the action's SUBJECTS and categories first (what the scanner
+ * found), its text second. Headers are tested before TLS so an HSTS max-age fix
+ * is configuration work, not a protocol migration; a certificate action routes
+ * to the certificate estate, a key-exchange one to migration.
+ */
+function recommendationProfile(text: string, subjects: string[], categories: string[], severity: string) {
+  const about = `${subjects.join(' ')} ${categories.join(' ')}`.toLowerCase()
+  const all = `${about} ${text.toLowerCase()}`
+  if (/\b(csp|x-frame|hsts|header|information disclosure|clickjacking)\b/.test(about)) {
+    return { category: 'configuration', action: 'harden_configuration', effort: 'low' }
+  }
+  if (/certificate|\boids?\b|pinning/.test(all)) {
+    return { category: 'certificate', action: 'transition_certificate', effort: 'medium' }
+  }
+  const shor = subjects.some((subject) => findAlgorithm(subject)?.shorBroken === true)
+  if (shor || /key exchange|key_share|hndl|x25519mlkem|ml-kem|attack surface/.test(all)) {
+    return { category: 'cryptography', action: 'start_migration', effort: severity === 'critical' ? 'high' : 'medium' }
+  }
+  if (/\btls|cipher|protocol|\bssl\b/.test(all)) {
+    return { category: 'protocol', action: 'upgrade_tls', effort: 'low' }
+  }
+  return { category: 'cryptography', action: 'review_finding', effort: 'medium' }
+}
+
+/** Short, stable id for a recorded action's text (djb2). */
+function stableTextKey(text: string): string {
+  let hash = 5381
+  for (let index = 0; index < text.length; index += 1) hash = ((hash << 5) + hash + text.charCodeAt(index)) | 0
+  return (hash >>> 0).toString(36)
+}
 
 type AgilityStatus = 'Ready' | 'Staged' | 'Blocked' | 'Not Scanned'
 

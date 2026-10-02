@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { getServiceClient } from '@/lib/supabase-server'
 import { isOwnerEmail } from '@/lib/admin-access'
+import { trustedClientIp } from './runtime/client-ip'
 
 /**
  * Public registration endpoint.
@@ -84,8 +85,10 @@ router.post('/register', async (req: Request, res: Response) => {
   try {
     // Real peer address only — NOT req.ip/X-Forwarded-For (spoofable under
     // `trust proxy: true`). Behind a real proxy every request shares the
-    // proxy's socket address, which only makes the per-peer limit stricter.
-    const peer = req.socket.remoteAddress || 'unknown'
+    // proxy's socket address, which would turn the per-peer limit into ONE
+    // platform-wide bucket; a deployment that locks its origin to Cloudflare
+    // therefore names the header that proxy guarantees (TRUSTED_CLIENT_IP_HEADER).
+    const peer = trustedClientIp(req) || req.socket.remoteAddress || 'unknown'
     if (peerRateLimited(peer) || globalRateLimited()) {
       return res.status(429).json({ error: { code: 'RATE_LIMITED', message: 'Too many registration attempts. Try again in a few minutes.' } })
     }

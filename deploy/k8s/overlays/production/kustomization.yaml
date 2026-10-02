@@ -1,0 +1,62 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: qguard-production
+
+labels:
+  - pairs:
+      app.kubernetes.io/environment: production
+    includeSelectors: false
+
+resources:
+  - namespace.yaml
+  - ../../base
+
+# Opt-in hardening/extensions (see docs/deployment/03-RUNBOOK.md):
+#   cloudflare-origin-lock — ONLY after api.qguardhelix.com is orange-clouded in
+#                            Cloudflare; restricts the LB to Cloudflare ranges and
+#                            trusts CF-Connecting-IP for per-client rate limits.
+#   paypal-reconcile       — scheduled PayPal subscription reconciliation.
+# components:
+#   - ../../components/cloudflare-origin-lock
+#   - ../../components/paypal-reconcile
+
+# CI replaces the registry/tag: kustomize edit set image qguard-api=<registry>/qguard-api:<git-sha>
+images:
+  - name: qguard-api
+    newName: registry.digitalocean.com/qguard/qguard-api
+    newTag: latest
+
+patches:
+  - target:
+      kind: Service
+      name: qguard-api
+    patch: |-
+      - op: add
+        path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-name
+        value: qguard-api-production
+      - op: replace
+        path: /metadata/annotations/service.beta.kubernetes.io~1do-loadbalancer-certificate-name
+        value: qguard-api-origin-production
+  - target:
+      kind: ConfigMap
+      name: qguard-api-config
+    patch: |-
+      - op: replace
+        path: /data/APP_ORIGIN
+        value: https://qguardhelix.com
+      - op: replace
+        path: /data/PUBLIC_APP_ORIGIN
+        value: https://qguardhelix.com
+      - op: replace
+        path: /data/PUBLIC_APP_URL
+        value: https://qguardhelix.com
+      - op: replace
+        path: /data/ALLOWED_ORIGINS
+        value: https://qguardhelix.com,https://www.qguardhelix.com
+      - op: replace
+        path: /data/QGUARD_CONTROL_PLANE_URL
+        value: https://api.qguardhelix.com
+      - op: replace
+        path: /data/CERT_VERIFICATION_ORIGIN
+        value: https://qguardhelix.com
