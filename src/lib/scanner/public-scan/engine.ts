@@ -23,12 +23,12 @@
 import type { CertificateInfo, CipherSuiteDetail, ThreatLevel } from '../web-scanner/types'
 import { buildControlStates, findControl, resolveForwardSecrecy, resolveKeyExchange } from './controls'
 import {
-  buildScoreCategories,
   CLASSICAL_CATEGORY_KEYS,
   postQuantumReadinessFromSignals,
   RISK_ORDER,
   scoreToGrade,
 } from './grading-model'
+import { buildScoreCategories } from './score-categories'
 import { detectPlatform, effortFor, remediationFor, type RemediationTopic } from './remediation'
 import type {
   AssessmentScope,
@@ -238,6 +238,12 @@ export function computeConfidence(evidence: PublicScanEvidence): { score: number
   if (!evidence.dns.caaQueryable) {
     score -= 4
     factors.push('CAA issuance policy not queryable')
+  } else if (!evidence.dns.caaClimbComplete) {
+    /* The leaf name answered but the climb to the registrable domain did not
+       complete, so issuance policy is undetermined — the same confidence cost
+       as an unqueryable name, because the same question is unanswered. */
+    score -= 4
+    factors.push('CAA issuance policy undetermined (climb to the registrable domain did not complete)')
   }
 
   return { score: clamp(score, 10, 99), factors }

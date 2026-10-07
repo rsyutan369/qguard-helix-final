@@ -31,7 +31,8 @@ import {
   toAttackSurface,
   toFindings,
 } from '../src/lib/scanner/public-scan/engine';
-import { buildScoreCategories, SCORE_CATEGORY_DEFS } from '../src/lib/scanner/public-scan/grading-model';
+import { SCORE_CATEGORY_DEFS } from '../src/lib/scanner/public-scan/grading-model';
+import { buildScoreCategories } from '../src/lib/scanner/public-scan/score-categories';
 import type { PublicScanEvidence } from '../src/lib/scanner/public-scan/types';
 
 let passed = 0;

@@ -445,6 +445,7 @@ export async function collectEdgeIntelligence(
       caaRecords: cap(dns.caaRecords.map((record) => record.raw), MAX_CAA),
       caaSource: dns.caaSource,
       caaAtName: dns.caaAtName,
+      caaClimbComplete: dns.caaClimbComplete,
       dnssecQueryable: dns.dnssecQueryable,
       dnssecSigned: dns.dnssecSigned,
       dnssecValidated: dns.dnssecValidated,

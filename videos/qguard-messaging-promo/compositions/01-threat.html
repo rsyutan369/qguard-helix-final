@@ -1,0 +1,420 @@
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    #s01-wall {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1920px;
+      height: 1080px;
+      display: block;
+    }
+    /* Quietens the wall behind the headline so the type reads first. */
+    #s01-scrim {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(1500px 620px at 30% 40%, rgba(4, 7, 15, 0.9) 0%, rgba(4, 7, 15, 0.62) 45%, rgba(4, 7, 15, 0) 78%),
+        linear-gradient(180deg, rgba(4, 7, 15, 0) 70%, rgba(4, 7, 15, 0.86) 100%);
+    }
+    #s01-kicker {
+      position: absolute;
+      left: 96px;
+      top: 80px;
+    }
+    .s01-head {
+      position: absolute;
+      left: 96px;
+      top: 286px;
+      width: 1728px;
+      transform-origin: 22% 50%;
+      white-space: nowrap;
+    }
+    #s01-caption {
+      position: absolute;
+      left: 104px;
+      top: 548px;
+      width: 1180px;
+      font-size: 40px;
+      line-height: 1.28;
+      color: #c9d6f0;
+    }
+    #s01-caption b {
+      font-weight: 700;
+      color: #ffffff;
+    }
+    /* Timeline: TODAY ————— Q-DAY */
+    #s01-time {
+      position: absolute;
+      left: 96px;
+      right: 96px;
+      top: 896px;
+      height: 110px;
+      color: #9fb2d4;
+    }
+    #s01-time-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 52px;
+      height: 2px;
+      background: rgba(159, 178, 212, 0.55);
+      transform-origin: left center;
+    }
+    .s01-tick {
+      position: absolute;
+      top: 40px;
+      width: 2px;
+      height: 26px;
+      background: rgba(159, 178, 212, 0.75);
+    }
+    #s01-tick-a {
+      left: 0;
+    }
+    #s01-tick-b {
+      right: 0;
+    }
+    .s01-end {
+      position: absolute;
+      top: 0;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    #s01-today {
+      left: 0;
+      color: #eaf1ff;
+    }
+    #s01-qday {
+      right: 0;
+      color: #eaf1ff;
+    }
+    .s01-status {
+      position: absolute;
+      top: 76px;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 20px;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      white-space: pre;
+    }
+    #s01-status-a {
+      left: 0;
+      color: #22d3ee;
+    }
+    #s01-status-b {
+      right: 0;
+      color: #ff5c7a;
+    }
+    #s01-playhead {
+      position: absolute;
+      left: -11px;
+      top: 42px;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: #eaf1ff;
+      box-shadow: 0 0 0 6px rgba(234, 241, 255, 0.16);
+    }
+  </style>
+
+  <div id="root" data-composition-id="s01-threat" data-width="1920" data-height="1080" data-duration="6">
+    <div id="s01-stage" class="clip is-night" data-start="0" data-duration="6" data-track-index="0">
+      <canvas id="s01-wall" data-layout-ignore></canvas>
+      <div id="s01-scrim" data-layout-ignore></div>
+
+      <div id="s01-kicker" class="qg-kicker">The threat model</div>
+
+      <div id="s01-wipe" class="qg-fill">
+        <h1 id="s01-head-a" class="s01-head qg-hero">Harvest now.</h1>
+        <h1 id="s01-head-b" class="s01-head qg-hero">Decrypt later.</h1>
+        <p id="s01-caption" class="qg-body"><b>Recorded today.</b> Opened when quantum computers break RSA and ECC.</p>
+
+        <div id="s01-time">
+          <span id="s01-time-line"></span>
+          <span id="s01-tick-a" class="s01-tick"></span>
+          <span id="s01-tick-b" class="s01-tick"></span>
+          <span id="s01-today" class="s01-end">Today</span>
+          <span id="s01-qday" class="s01-end">Q-Day</span>
+          <span id="s01-status-a" class="s01-status">Encrypted traffic copied   0%</span>
+          <span id="s01-status-b" class="s01-status">Keys broken · readable</span>
+          <span id="s01-playhead"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const QG = window.QG;
+      const tl = gsap.timeline({ paused: true, defaults: { ease: "power3.out" } });
+
+      /* ---------------------------------------------------------------------
+         The wall. 64 × 20 cells of cipher glyphs.
+         Sweep 1 (cyan)  0.45–2.05s  the harvest: everything is copied.
+         Sweep 2 (rose)  2.75–4.00s  Q-Day: runs of glyphs read as plaintext.
+         Sweep 3 (helix) 4.45–5.70s  the answer: it is sealed again, for good.
+         Every value below is a pure function of scene time.
+         ------------------------------------------------------------------- */
+      const cv = QG.canvas(document.getElementById("s01-wall"), 1920, 1080);
+      const ctx = cv.ctx;
+      const COLS = 64;
+      const ROWS = 20;
+      const CW = 30;
+      const CH = 54;
+      const G = "0123456789ABCDEF0123456789abcdef+/=";
+
+      // What the archive turns out to contain.
+      const WORDS = [
+        { text: "CUSTOMER DATA", col: 12, row: 1 },
+        { text: "CONTRACTS", col: 47, row: 2 },
+        { text: "API KEYS", col: 31, row: 3 },
+        { text: "CREDENTIALS", col: 50, row: 5 },
+        { text: "SOURCE CODE", col: 48, row: 8 },
+        { text: "MEDICAL RECORDS", col: 45, row: 11 },
+        { text: "PRIVATE MESSAGES", col: 41, row: 14 },
+        { text: "BOARD MINUTES", col: 6, row: 15 },
+        { text: "TRADE SECRETS", col: 23, row: 16 },
+      ];
+      const plain = {};
+      WORDS.forEach(function (w, wi) {
+        for (let k = 0; k < w.text.length; k++) {
+          if (w.text.charAt(k) !== " ") plain[(w.col + k) + ":" + w.row] = { ch: w.text.charAt(k), wi: wi };
+        }
+      });
+
+      function ease(p) {
+        p = QG.clamp(p, 0, 1);
+        return p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+      }
+
+      function sweepX(t, from, dur) {
+        return QG.lerp(-140, 2060, ease((t - from) / dur));
+      }
+
+      function drawHelix(t, front) {
+        // two strands a half-turn apart, drawn from the left edge to the front
+        const amp = 132;
+        const k = 0.0105;
+        const w = t * 2.2;
+        const grow = QG.ramp(t, 4.45, 5.2);
+        const power = 0.75 + 0.9 * QG.ramp(t, 5.0, 5.9);
+        const strands = [
+          { phase: 0, rgb: "167,139,250" },
+          { phase: Math.PI, rgb: "34,211,238" },
+        ];
+
+        // rungs first, so the strands sit over them
+        ctx.lineCap = "round";
+        for (let x = 30; x < front; x += 46) {
+          const a = Math.sin(k * x + w);
+          const y1 = 540 + amp * grow * a;
+          const y2 = 540 - amp * grow * a;
+          const depth = Math.abs(Math.cos(k * x + w));
+          const fade = QG.clamp((front - x) / 220, 0, 1);
+          ctx.globalAlpha = 0.16 * depth * fade * power;
+          ctx.strokeStyle = "rgb(124,163,255)";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(x, y1);
+          ctx.lineTo(x, y2);
+          ctx.stroke();
+        }
+
+        strands.forEach(function (s) {
+          for (let pass = 0; pass < 2; pass++) {
+            ctx.beginPath();
+            let started = false;
+            for (let x = -20; x <= front; x += 8) {
+              const y = 540 + amp * grow * Math.sin(k * x + w + s.phase);
+              if (!started) {
+                ctx.moveTo(x, y);
+                started = true;
+              } else {
+                ctx.lineTo(x, y);
+              }
+            }
+            ctx.strokeStyle = "rgb(" + s.rgb + ")";
+            ctx.lineJoin = "round";
+            if (pass === 0) {
+              ctx.globalAlpha = 0.2 * power;
+              ctx.lineWidth = 22;
+            } else {
+              ctx.globalAlpha = Math.min(1, 0.92 * power);
+              ctx.lineWidth = 5;
+            }
+            ctx.stroke();
+          }
+        });
+
+        // the leading edge
+        if (front > 0 && front < 2000) {
+          const g = ctx.createRadialGradient(front, 540, 0, front, 540, 320);
+          g.addColorStop(0, "rgba(186,230,253,0.55)");
+          g.addColorStop(1, "rgba(76,141,255,0)");
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = g;
+          ctx.fillRect(front - 320, 220, 640, 640);
+        }
+      }
+
+      function draw(t) {
+        cv.clear();
+        const wallIn = QG.ramp(t, 0.05, 0.9);
+        const s1 = sweepX(t, 0.45, 1.6);
+        const s2 = t < 2.75 ? -9999 : sweepX(t, 2.75, 1.25);
+        const s3 = t < 4.45 ? -9999 : sweepX(t, 4.45, 1.25);
+        const copiedFade = 1 - QG.ramp(t, 2.2, 2.9);
+
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+
+        for (let r = 0; r < ROWS; r++) {
+          for (let c = 0; c < COLS; c++) {
+            const x = c * CW + CW / 2;
+            const y = r * CH + CH / 2;
+            const h = QG.hash(c * 3 + 1, r * 7 + 2);
+            const rate = 0.7 + 2.6 * h;
+            const bucket = Math.floor(t * rate + h * 10);
+            let ch = G.charAt(Math.floor(QG.hash(c * 17 + r * 131, bucket) * G.length));
+            let alpha = (0.15 + 0.2 * QG.hash(c + 5, r + 9)) * wallIn;
+            let rgb = "143,166,214";
+            let bold = false;
+
+            // sweep 1 — the harvest
+            const d1 = s1 - x;
+            if (d1 > 0 && t < 2.9) {
+              const flare = d1 < 240 ? Math.pow(1 - d1 / 240, 2) : 0;
+              alpha += (0.6 * flare + 0.1) * copiedFade;
+              if (flare > 0.05) rgb = "34,211,238";
+            }
+
+            // sweep 2 — Q-Day
+            const p = plain[c + ":" + r];
+            const d2 = s2 - x;
+            if (d2 > 0) {
+              if (p) {
+                const k = QG.clamp(d2 / 110, 0, 1);
+                if (k >= 1) ch = p.ch;
+                rgb = "255,92,122";
+                alpha = 0.35 + 0.65 * k;
+                bold = true;
+              } else {
+                alpha *= QG.lerp(1, 0.42, QG.clamp(d2 / 320, 0, 1));
+              }
+            }
+
+            // sweep 3 — sealed again
+            const d3 = s3 - x;
+            if (d3 > 0) {
+              const k = QG.clamp(d3 / 150, 0, 1);
+              if (p) {
+                if (k < 1) {
+                  rgb = "196,150,214";
+                  alpha = QG.lerp(1, 0.5, k);
+                } else {
+                  rgb = "124,163,255";
+                  alpha = 0.5;
+                  bold = false;
+                }
+              } else {
+                rgb = "124,163,255";
+                alpha = QG.lerp(alpha, 0.34 + 0.12 * h, k);
+              }
+            }
+
+            if (alpha < 0.02) continue;
+            ctx.globalAlpha = Math.min(1, alpha);
+            ctx.fillStyle = "rgb(" + rgb + ")";
+            ctx.font = (bold ? "700" : "500") + ' 25px "JetBrains Mono", monospace';
+            ctx.fillText(ch, x, y);
+          }
+        }
+
+        // the scan bars
+        function bar(x, rgb) {
+          if (x < -130 || x > 2050) return;
+          const g = ctx.createLinearGradient(x - 220, 0, x + 6, 0);
+          g.addColorStop(0, "rgba(" + rgb + ",0)");
+          g.addColorStop(0.85, "rgba(" + rgb + ",0.14)");
+          g.addColorStop(1, "rgba(" + rgb + ",0.9)");
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = g;
+          ctx.fillRect(x - 220, 0, 226, 1080);
+          ctx.fillStyle = "rgba(255,255,255,0.9)";
+          ctx.fillRect(x, 0, 3, 1080);
+        }
+        if (t < 2.2) bar(s1, "34,211,238");
+        if (t >= 2.75 && t < 4.1) bar(s2, "255,92,122");
+
+        if (t >= 4.45) drawHelix(t, s3);
+        ctx.globalAlpha = 1;
+
+        // the helix front wipes the statement away as it seals the wall
+        const cut = t < 4.45 ? 0 : QG.clamp(s3, 0, 1920);
+        const clip = cut <= 0 ? "none" : "inset(0px 0px 0px " + cut.toFixed(1) + "px)";
+        if (wipe.style.clipPath !== clip) wipe.style.clipPath = clip;
+
+        // the readout under TODAY is the sweep's own progress
+        const pct = Math.round(100 * QG.clamp((s1 + 140) / 2200, 0, 1));
+        const pad = pct < 10 ? "  " : pct < 100 ? " " : "";
+        if (statusA.textContent.slice(-4) !== pad + pct + "%") {
+          statusA.textContent = "Encrypted traffic copied " + pad + pct + "%";
+        }
+      }
+
+      const statusA = document.getElementById("s01-status-a");
+      const wipe = document.getElementById("s01-wipe");
+      const clock = QG.proxy(draw);
+      clock.t = 0;
+      tl.fromTo(clock, { t: 0 }, { t: 6, duration: 6, ease: "none" }, 0);
+
+      /* --- Type ------------------------------------------------------------ */
+      const headA = QG.split(document.getElementById("s01-head-a"));
+      const headB = QG.split(document.getElementById("s01-head-b"));
+
+      tl.fromTo("#s01-kicker", { y: -18, opacity: 0 }, { y: 0, opacity: 1, duration: 0.6 }, 0.2);
+      QG.rise(tl, headA, 0.3, { stagger: 0.11, duration: 0.85 });
+
+      // timeline rule and the TODAY end
+      tl.fromTo("#s01-time-line", { scaleX: 0 }, { scaleX: 1, duration: 0.9, ease: "power2.inOut" }, 0.7);
+      tl.fromTo(["#s01-tick-a", "#s01-today", "#s01-playhead"], { opacity: 0 }, { opacity: 1, duration: 0.35, stagger: 0.06 }, 0.75);
+      tl.fromTo("#s01-status-a", { opacity: 0 }, { opacity: 1, duration: 0.35 }, 0.95);
+      tl.fromTo(["#s01-tick-b", "#s01-qday"], { opacity: 0 }, { opacity: 0.5, duration: 0.4 }, 1.5);
+
+      // zoom-through seam: "Harvest now." → "Decrypt later."
+      tl.set("#s01-head-b", { opacity: 0 }, 0);
+      tl.fromTo("#s01-head-a", { scale: 1, filter: "blur(0px)" }, { scale: 1.2, filter: "blur(10px)", duration: 0.2, ease: "power3.in", immediateRender: false }, 1.8);
+      tl.fromTo("#s01-head-a", { opacity: 1 }, { opacity: 0.15, duration: 0.2, ease: "none", immediateRender: false }, 1.8);
+      tl.set("#s01-head-a", { opacity: 0 }, 2.0);
+      tl.fromTo(
+        "#s01-head-b",
+        { scale: 0.75, filter: "blur(10px)", opacity: 0.15 },
+        { scale: 1, filter: "blur(0px)", opacity: 1, duration: 0.5, ease: "expo.out", immediateRender: false },
+        2.0,
+      );
+
+      // the playhead whips from TODAY to Q-DAY
+      tl.fromTo("#s01-playhead", { x: 0 }, { x: 1728, duration: 0.75, ease: "power3.inOut", immediateRender: false }, 2.15);
+      tl.to("#s01-playhead", { backgroundColor: "#ff5c7a", boxShadow: "0 0 0 6px rgba(255, 92, 122, 0.22)", duration: 0.3 }, 2.6);
+      tl.to(["#s01-tick-b", "#s01-qday"], { opacity: 1, duration: 0.25 }, 2.75);
+      tl.to(["#s01-today", "#s01-status-a", "#s01-tick-a"], { opacity: 0.45, duration: 0.4 }, 2.5);
+      tl.fromTo("#s01-status-b", { opacity: 0 }, { opacity: 1, duration: 0.3 }, 2.95);
+      QG.decode(tl, document.getElementById("s01-status-b"), 2.95, { duration: 0.6, seed: 3 });
+
+      tl.fromTo("#s01-caption", { y: 26, opacity: 0 }, { y: 0, opacity: 1, duration: 0.7 }, 2.55);
+
+      // (the helix wipe on #s01-wipe is driven from draw(), locked to the helix front)
+      tl.to("#s01-kicker", { opacity: 0, duration: 0.4, ease: "power2.in" }, 4.5);
+
+      window.__timelines["s01-threat"] = tl;
+    })();
+  </script>
+</template>

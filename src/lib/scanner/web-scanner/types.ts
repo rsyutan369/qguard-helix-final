@@ -36,6 +36,15 @@ export interface TlsProtocolProbe {
   supported: boolean
   cipherSuite: string | null
   keyExchange: string | null
+  /**
+   * Whether the endpoint ANSWERED this probe at all.
+   *
+   * `supported: false` covers two different observations: the endpoint replied
+   * and refused (a measured negative), or it never replied (silence, which
+   * measures nothing). Optional because fixtures and stored scans predate it;
+   * absent reads as "not recorded", never as silence.
+   */
+  answered?: boolean
   error?: string
 }
 

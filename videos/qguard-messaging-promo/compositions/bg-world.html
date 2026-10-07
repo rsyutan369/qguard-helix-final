@@ -1,0 +1,169 @@
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    /* Night ground: ink, cool stage lights, a faint coordinate grid. */
+    #bgw-night {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(1100px 680px at 8% -12%, rgba(76, 141, 255, 0.26), rgba(76, 141, 255, 0) 62%),
+        radial-gradient(940px 660px at 108% 4%, rgba(139, 92, 246, 0.22), rgba(139, 92, 246, 0) 58%),
+        radial-gradient(1200px 800px at 50% 116%, rgba(45, 225, 194, 0.13), rgba(45, 225, 194, 0) 60%),
+        #04070f;
+    }
+    #bgw-night-grid {
+      position: absolute;
+      inset: 0;
+      opacity: 0.55;
+      background-image:
+        linear-gradient(rgba(124, 163, 255, 0.11) 1px, rgba(124, 163, 255, 0) 1px),
+        linear-gradient(90deg, rgba(124, 163, 255, 0.11) 1px, rgba(124, 163, 255, 0) 1px);
+      background-size: 60px 60px;
+      -webkit-mask-image: radial-gradient(ellipse 90% 80% at 50% 40%, #000 0%, rgba(0, 0, 0, 0) 85%);
+      mask-image: radial-gradient(ellipse 90% 80% at 50% 40%, #000 0%, rgba(0, 0, 0, 0) 85%);
+    }
+    /* Day ground: the source pages' paper, grid and two soft washes. */
+    #bgw-day {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 78% 18%, rgba(0, 197, 235, 0.16), rgba(0, 197, 235, 0) 640px),
+        radial-gradient(circle at 14% 84%, rgba(16, 185, 129, 0.11), rgba(16, 185, 129, 0) 600px),
+        radial-gradient(circle at 96% 96%, rgba(124, 58, 237, 0.1), rgba(124, 58, 237, 0) 620px),
+        #f8fbff;
+    }
+    #bgw-day-grid {
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(203, 213, 225, 0.6) 2px, rgba(203, 213, 225, 0) 2px),
+        linear-gradient(90deg, rgba(203, 213, 225, 0.6) 2px, rgba(203, 213, 225, 0) 2px);
+      background-size: 60px 60px;
+      background-position: -1px -1px;
+    }
+    #bgw-lattice {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 1920px;
+      height: 1080px;
+      display: block;
+    }
+  </style>
+
+  <div id="root" data-composition-id="bg-world" data-width="1920" data-height="1080" data-duration="60">
+    <div id="bgw-layers" class="clip" data-start="0" data-duration="60" data-track-index="0" data-layout-ignore>
+      <div id="bgw-night"><div id="bgw-night-grid"></div></div>
+      <div id="bgw-day"><div id="bgw-day-grid"></div></div>
+      <canvas id="bgw-lattice" data-layout-allow-overflow></canvas>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const QG = window.QG;
+      const tl = gsap.timeline({ paused: true });
+
+      const dayLayer = document.getElementById("bgw-day");
+      const cv = QG.canvas(document.getElementById("bgw-lattice"), 1920, 1080);
+      const ctx = cv.ctx;
+
+      const dayMix = QG.dayMix;
+
+      /* The lattice: a triangular point lattice, the structure behind ML-KEM and
+         the hex field around the logo. It drifts and turns very slowly; a few
+         short vectors light up and fade. It is the only ambient motion in the film. */
+      const STEP = 96;
+      const COS60 = 0.5;
+      const SIN60 = Math.sqrt(3) / 2;
+
+      function draw(t) {
+        const day = dayMix(t);
+        dayLayer.style.opacity = day.toFixed(4);
+
+        cv.clear();
+        const theta = 0.12 + t * 0.0042;
+        const ca = Math.cos(theta);
+        const sa = Math.sin(theta);
+        const ox = 960 + t * 5.5;
+        const oy = 540 - t * 3.1;
+        // basis vectors
+        const ax = STEP * ca;
+        const ay = STEP * sa;
+        const bx = STEP * (COS60 * ca - SIN60 * sa);
+        const by = STEP * (COS60 * sa + SIN60 * ca);
+
+        // point colour moves from luminous blue (night) to slate blue (day)
+        const pr = Math.round(QG.lerp(124, 37, day));
+        const pg = Math.round(QG.lerp(163, 99, day));
+        const pb = Math.round(QG.lerp(255, 235, day));
+        const baseA = QG.lerp(0.34, 0.2, day);
+
+        const R = 16;
+        // shift indices so the visible window stays covered as the origin drifts
+        const det = ax * by - ay * bx;
+        const ci = Math.round(((960 - ox) * by - (540 - oy) * bx) / det);
+        const cj = Math.round(((540 - oy) * ax - (960 - ox) * ay) / det);
+
+        for (let di = -R; di <= R; di++) {
+          for (let dj = -R; dj <= R; dj++) {
+            const i = ci + di;
+            const j = cj + dj;
+            const x = ox + i * ax + j * bx;
+            const y = oy + i * ay + j * by;
+            if (x < -40 || x > 1960 || y < -40 || y > 1120) continue;
+
+            const h = QG.hash(i * 7 + 3, j * 13 + 5);
+            // gentle radial falloff so the centre of frame stays quiet for content
+            const dx = (x - 960) / 960;
+            const dy = (y - 540) / 540;
+            const edge = QG.clamp(0.35 + 0.65 * Math.sqrt(dx * dx + dy * dy), 0, 1);
+            const tw = 0.75 + 0.25 * Math.sin(t * 0.9 + h * 6.283);
+            ctx.globalAlpha = baseA * edge * tw;
+            ctx.fillStyle = "rgb(" + pr + "," + pg + "," + pb + ")";
+            ctx.beginPath();
+            ctx.arc(x, y, 2.2 + h * 1.6, 0, 6.2832);
+            ctx.fill();
+
+            // a short vector lights up between neighbours, then fades
+            if (h > 0.9) {
+              const period = 3.2 + h * 2.4;
+              const ph = (t + h * 40) / period;
+              const cyc = ph - Math.floor(ph);
+              const bucket = Math.floor(ph);
+              const env = Math.sin(Math.PI * QG.clamp(cyc / 0.55, 0, 1));
+              if (env > 0.01) {
+                const pick = QG.hash(i * 31 + bucket, j * 17 + 9);
+                const nx = pick < 0.34 ? ax : pick < 0.67 ? bx : bx - ax;
+                const ny = pick < 0.34 ? ay : pick < 0.67 ? by : by - ay;
+                const violet = QG.hash(i + 11, j + bucket) > 0.5;
+                const cr = violet ? (day > 0.5 ? "124,58,237" : "167,139,250") : day > 0.5 ? "0,168,214" : "34,211,238";
+                ctx.globalAlpha = env * edge * QG.lerp(0.75, 0.6, day);
+                ctx.strokeStyle = "rgb(" + cr + ")";
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(x, y);
+                ctx.lineTo(x + nx * env, y + ny * env);
+                ctx.stroke();
+                ctx.fillStyle = "rgb(" + cr + ")";
+                ctx.beginPath();
+                ctx.arc(x, y, 4, 0, 6.2832);
+                ctx.fill();
+              }
+            }
+          }
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      const clock = QG.proxy(draw);
+      clock.t = 0;
+      tl.fromTo(clock, { t: 0 }, { t: 60, duration: 60, ease: "none" }, 0);
+
+      window.__timelines["bg-world"] = tl;
+    })();
+  </script>
+</template>

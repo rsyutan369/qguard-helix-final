@@ -39,7 +39,7 @@ import type {
   ScanMode,
 } from '@/lib/scanner/exposure/types';
 import { SEVERITY_ORDER } from '@/lib/scanner/exposure/types';
-import { completenessNote, reconcileExposure, withUnit } from '@/lib/scanner/exposure/exposure-truth';
+import { QUANTUM_STATUS_TEXT, completenessNote, reconcileExposure, withUnit } from '@/lib/scanner/exposure/exposure-truth';
 import { layerLabel } from '@/lib/scanner/exposure/correlate';
 import { algorithmChipCoverage, summariseCorrelation } from '@/lib/scanner/exposure/panel-model';
 import { CAPABILITY_LABEL, type EngineDescriptor } from '@/lib/scanner/exposure/engine-contract';
@@ -64,14 +64,9 @@ export const QUANTUM_COLOR: Record<QuantumStatus, string> = {
   'not-applicable': '#475569',
 };
 
-export const QUANTUM_LABEL: Record<QuantumStatus, string> = {
-  vulnerable: 'Quantum Vulnerable',
-  hybrid: 'Hybrid',
-  pqc: 'Post-Quantum',
-  resistant: 'Quantum Resistant',
-  unknown: 'Unknown',
-  'not-applicable': 'Not Applicable',
-};
+/* The verdict labels live in `exposure-truth` so the panels and the exported
+   reports cannot call the same status two different things. */
+export const QUANTUM_LABEL: Record<QuantumStatus, string> = QUANTUM_STATUS_TEXT;
 
 const CONFIDENCE_LABEL: Record<FindingConfidence, string> = {
   high: 'High confidence',

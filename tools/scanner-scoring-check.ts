@@ -200,6 +200,7 @@ function edge(mode: 'hybrid' | 'refused' | 'unprobed'): EdgeIntelligence {
       caaRecords: ['0 issue "example-ca.com"'],
       caaSource: 'dns',
       caaAtName: 'example.com',
+      caaClimbComplete: true,
       dnssecQueryable: true,
       dnssecSigned: false,
       dnssecValidated: false,

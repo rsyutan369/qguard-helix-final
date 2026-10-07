@@ -535,6 +535,16 @@ export async function runExposureScan(options: OrchestratorOptions): Promise<Exp
     task.failureReason =
       `Every selected engine completed, but ${dimensions.length} dimension${dimensions.length === 1 ? '' : 's'} could not be read: ${dimensions.join(' · ')}. ` +
       'Those dimensions are reported as unassessed, never as a passing control.';
+  } else if (task.coverage.truncated) {
+    /* The same rule, for the other shape of hole: an engine that hit its own
+       budget stopped before reading its remit, so part of the scope went
+       unexamined however cleanly every engine exited. Reported as `completed`,
+       it put "Assessment complete" and a 100% coverage ring above a note
+       saying 588 of 870 files were never read. */
+    task.status = 'partial';
+    task.failureReason =
+      `Every selected engine completed, but a bounded budget stopped the work before the whole scope was read. ${task.coverage.truncationNote ?? ''} ` +
+      'Counts below are a floor: the scope may hold more than was reached.';
   } else {
     task.status = 'completed';
   }

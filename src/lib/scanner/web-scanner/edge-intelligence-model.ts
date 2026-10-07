@@ -123,6 +123,9 @@ export interface EdgeDnsSurface {
   caaRecords: string[]
   caaSource: string | null
   caaAtName: string | null
+  /** The RFC 8659 climb reached a conclusion; `caaPresent: false` is only a
+      measured absence under this flag. */
+  caaClimbComplete: boolean
   dnssecQueryable: boolean
   dnssecSigned: boolean
   dnssecValidated: boolean

@@ -686,6 +686,36 @@ export function beamColor(node: QveNode, surface: string = QVE_DARK_SURFACE): st
 }
 
 /**
+ * The colour a node's POSTURE NUMBER carries — its own grade's, never the
+ * verdict's.
+ *
+ * A settled card makes two statements: the worst thing observed on the surface
+ * (the word) and the measured posture of the published categories projected
+ * onto it (the number). {@link resolveNodeVerdict} deliberately lets the worse
+ * of the two decide the WORD, because an operator must see the worst finding
+ * first. Painting the NUMBER in that same colour then asserts the two are one
+ * statement, and they are not:
+ *
+ *   TRANSPORT & CIPHERS   Critical  74      ← 74 is grade C, Fair, moderate risk
+ *   CERTIFICATES & KEYS   At Risk   73
+ *   CODE & DEPENDENCIES   Fair      73      ← same number, different word
+ *
+ * All three were correct and the screen was unreadable, because nothing
+ * distinguished "the posture is critical" from "the posture is 74 and a
+ * critical finding was observed here". The number now carries the published
+ * colour for its own score, so a reader can see at a glance that the word and
+ * the number are answering different questions — and two cards showing 73 paint
+ * that 73 identically however their findings differ.
+ *
+ * Returns null when the surface has no measured posture, which is not a pass
+ * and must not be painted like one.
+ */
+export function nodePostureTone(node: QveNode, surface: string = QVE_DARK_SURFACE): string | null {
+  if (node.score === null || !node.hasEvidence) return null;
+  return readableOn(scoreToGrade(node.score).color, surface);
+}
+
+/**
  * Quantum-wave colour ramp for a published grade letter.
  *
  * The primary stop is the grade's OWN colour from `SCORE_GRADE_TABLE` rather

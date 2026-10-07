@@ -252,13 +252,30 @@ function computeCoverage(coverage: ScanCoverage, runs: EngineRun[]): { score: nu
       .map((entry) => entry.engineId)
       .filter((id): id is string => typeof id === 'string' && id.length > 0),
   );
+  /* Truncation is the same shape of hole: an engine that hit its own budget
+     stopped short of its remit, so it did not cover it in full either. Without
+     this, a dev-mode run whose source analysis stopped 400 files early
+     published "Coverage 100%" in the very document that also stated "every
+     total in this report is therefore a floor". */
+  const truncatedEngines = new Set(coverage.truncatedBy ?? []);
+  for (const engineId of truncatedEngines) gapEngines.add(engineId);
   const reportedWithGaps = applicable.filter(
     (run) => run.state === 'completed' && gapEngines.has(run.engineId),
+  ).length;
+  /* The two holes are not the same thing to a reader, so the basis names
+     whichever applies rather than calling a budget stop "a dimension they
+     could not read". */
+  const truncatedReported = applicable.filter(
+    (run) => run.state === 'completed' && truncatedEngines.has(run.engineId),
   ).length;
   const fullyRead = reported - reportedWithGaps;
   const engineShare = fullyRead / applicable.length;
 
   const discovered = coverage.filesDiscovered;
+  /* `filesAnalyzed` is what discovery READ and classified, not what every
+     downstream engine then examined — the crypto engine publishes its own
+     reach in its truncation note. Said as "analysed", it sat beside a note
+     reporting 588 files unread and read as a contradiction. */
   const fileShare = discovered > 0 ? coverage.filesAnalyzed / discovered : 1;
 
   const score = Math.round(((engineShare * 0.6 + fileShare * 0.4) * 100));
@@ -267,7 +284,13 @@ function computeCoverage(coverage: ScanCoverage, runs: EngineRun[]): { score: nu
   if (coverage.exclusions.length) limitations.push(`${coverage.exclusions.length} exclusion rule${coverage.exclusions.length === 1 ? '' : 's'} in force`);
   if (coverage.filesUnsupported) limitations.push(`${coverage.filesUnsupported} binary or unsupported file${coverage.filesUnsupported === 1 ? '' : 's'}`);
   if (coverage.notAssessed.length) limitations.push(`${coverage.notAssessed.length} dimension${coverage.notAssessed.length === 1 ? '' : 's'} not assessed`);
-  if (coverage.truncated) limitations.push('a bounded budget truncated the analysis');
+  if (coverage.truncated) {
+    limitations.push(
+      coverage.truncationNote
+        ? `a bounded budget truncated the analysis (${coverage.truncationNote.replace(/\.$/, '')})`
+        : 'a bounded budget truncated the analysis',
+    );
+  }
 
   /* Stated, not hidden: a reader comparing "6 of 6 engines" against a catalogue
      of 13 needs to be told the other 7 were excluded because they do not
@@ -275,8 +298,12 @@ function computeCoverage(coverage: ScanCoverage, runs: EngineRun[]): { score: nu
   /* Said in the same sentence as the completion count, because "6 of 6 engines
      completed" and a coverage figure below 100 look like a contradiction until
      the reader is told which of the six came back with a hole in it. */
+  const dimensionGaps = reportedWithGaps - truncatedReported;
+  const gapCauses: string[] = [];
+  if (dimensionGaps > 0) gapCauses.push(`${dimensionGaps} reporting a dimension they could not read`);
+  if (truncatedReported > 0) gapCauses.push(`${truncatedReported} stopped by its own budget before reading its remit`);
   const gapNote = reportedWithGaps > 0
-    ? ` (${reportedWithGaps} of them reporting a dimension they could not read, so ${fullyRead} covered their remit in full)`
+    ? ` (${gapCauses.join(' and ')}, so ${fullyRead} covered their remit in full)`
     : '';
 
   const applicabilityNote = inapplicable > 0
@@ -285,7 +312,7 @@ function computeCoverage(coverage: ScanCoverage, runs: EngineRun[]): { score: nu
 
   return {
     score: Math.max(0, Math.min(100, score)),
-    basis: `Coverage ${score}%: ${reported} of ${applicable.length} applicable engines completed${gapNote} and ${coverage.filesAnalyzed} of ${discovered} discovered files were analysed${limitations.length ? `. Limitations: ${limitations.join('; ')}.` : '.'}${applicabilityNote}`,
+    basis: `Coverage ${score}%: ${reported} of ${applicable.length} applicable engines completed${gapNote} and ${coverage.filesAnalyzed} of ${discovered} discovered files were read and classified${limitations.length ? `. Limitations: ${limitations.join('; ')}.` : '.'}${applicabilityNote}`,
   };
 }
 

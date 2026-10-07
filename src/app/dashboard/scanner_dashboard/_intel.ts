@@ -494,7 +494,7 @@ export function riskColorFor(band: RiskBand): string {
  */
 export const SCANNER_NODE_CATEGORIES: Record<string, readonly string[]> = {
   discovery: ['dns-caa'],
-  transport: ['tls-configuration', 'cipher-suites', 'key-exchange', 'forward-secrecy'],
+  transport: ['tls-configuration', 'cipher-suites', 'forward-secrecy'],
   certificates: ['certificates', 'certificate-transparency', 'ocsp-stapling'],
   /* The Code & Dependencies card is where this dashboard renders the
      application-layer controls it measures (response headers, HSTS). Application
@@ -502,7 +502,19 @@ export const SCANNER_NODE_CATEGORIES: Record<string, readonly string[]> = {
      its own in the published model; it is folded into `cryptographic-algorithms`
      and therefore scored on the Quantum Posture surface. */
   code: ['http-security-headers', 'hsts'],
-  posture: ['cryptographic-algorithms', 'post-quantum-readiness'],
+  /* `key-exchange` sits here, not on Transport, and that placement is load-
+     bearing. It is the category that carries the hybrid ML-KEM reading, and a
+     Quantum Posture card scored without it is structurally incapable of
+     reflecting a hybrid deployment: test.openquantumsafe.org — the reference
+     post-quantum endpoint, serving X25519MLKEM768 across every handshake —
+     published "Quantum Posture · At Risk 67" while Transport & Ciphers banked
+     the 100 that its key agreement had earned.
+
+     It also puts this ring in agreement with /public-scan's `quantum` node,
+     which has always grouped it this way. Key agreement is a transport property
+     AND a quantum one; of the two readings, only one of them lets the card say
+     something true about post-quantum posture. */
+  posture: ['key-exchange', 'cryptographic-algorithms', 'post-quantum-readiness'],
   /**
    * Deliberately empty. The published model has NO category for SSH host keys or
    * token signing algorithms, so this surface has no measured posture to report
@@ -611,6 +623,61 @@ export const PQ_ALGORITHM_PATTERN = /ml-?kem|ml-?dsa|slh-?dsa|dilithium|kyber|sp
  * and "0% of the weighted model" under a Post-Quantum Readiness score of 78.
  */
 export const PQ_CATEGORY_KEYS = new Set(['cryptographic-algorithms', 'post-quantum-readiness']);
+
+/**
+ * The caption under a post-quantum number, and what that number IS.
+ *
+ * TWO NUMBERS, TWO LADDERS — this type exists so they cannot be the same one.
+ */
+export interface PostQuantumCaption {
+  /** The phrase printed under the figure. */
+  headline: string;
+  /** What the figure measures. Printed, not implied. */
+  scope: string;
+}
+
+/**
+ * The Executive Summary's Post-Quantum Readiness tile.
+ *
+ * This is the published `post-quantum-readiness` CATEGORY: hybrid key
+ * agreement, post-quantum signatures, a TLS 1.3 floor, certificate lifetime and
+ * CT participation. It describes the endpoint's readiness CONTROLS.
+ *
+ * ITS LADDER IS DISJOINT FROM {@link postQuantumPostureCaption}'S BY
+ * CONSTRUCTION. Both tiles used to run `score >= 60 ? 'Controls largely in
+ * place' : 'Migration outstanding'`, so a www.cloudflare.com scan published
+ * "81% · Controls largely in place" in the Executive Summary and "51 ·
+ * Migration outstanding" in the Encryption Score — one page asserting both
+ * halves of a contradiction about the same subject, in the same words, from two
+ * correct measurements. `tools/scanner-result-alignment-check.ts` sweeps every
+ * (readiness, posture) pair and fails on any shared phrase.
+ */
+export function postQuantumReadinessCaption(score: number | null): PostQuantumCaption {
+  const scope = 'Published Post-Quantum Readiness category — the endpoint\'s readiness controls, not a share of its inventory.';
+  if (score === null) return { headline: 'Not scored', scope };
+  if (score >= 85) return { headline: 'Readiness controls in place', scope };
+  if (score >= 60) return { headline: 'Readiness controls mostly in place', scope };
+  if (score >= 35) return { headline: 'Readiness controls partly in place', scope };
+  return { headline: 'Readiness controls not yet in place', scope };
+}
+
+/**
+ * The Encryption Score panel's Post-Quantum Posture flank.
+ *
+ * This is the post-quantum WEIGHT SLICE of the composite — Cryptographic
+ * Algorithms plus Post-Quantum Readiness — and it is the only number that,
+ * weighted against the classical flank, reproduces the gauge between them. It
+ * runs lower than the readiness category whenever the inventory still holds
+ * classical primitives, because the algorithm census is most of its weight.
+ */
+export function postQuantumPostureCaption(score: number | null): PostQuantumCaption {
+  const scope = 'Post-quantum weight slice of the composite — it is what, weighted against the classical flank, reproduces the gauge.';
+  if (score === null) return { headline: 'Posture not scored', scope };
+  if (score >= 85) return { headline: 'Inventory largely migrated', scope };
+  if (score >= 60) return { headline: 'Migration well advanced', scope };
+  if (score >= 35) return { headline: 'Migration in progress', scope };
+  return { headline: 'Migration outstanding', scope };
+}
 
 /**
  * Every category whose score MOVES when post-quantum cryptography is deployed.
@@ -2348,8 +2415,17 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
           key: 'components',
           label: scope === 'scan' ? 'Crypto Components' : 'Crypto Observations',
           value: scope === 'scan' ? componentFindings.length : input.estate.totalFindings,
+          /* "DISTINCT" WAS THE WRONG WORD and it made this tile irreconcilable
+             with the Cryptographic Intelligence census beside it. These are
+             inventory ROWS — every accepted cipher suite is its own row, as is
+             each certificate key and signature — so a www.cloudflare.com scan
+             counts 16 of them and calls 12 quantum-vulnerable, while the
+             algorithm census on the same page reports 12 observed ALGORITHMS of
+             which 6 are asymmetric and 2 post-quantum. Both are right; one
+             counts occurrences and the other counts primitives, and nothing on
+             either panel said so. The unit is now named here. */
           countedFrom: scope === 'scan'
-            ? `distinct cryptographic components recorded by this assessment, counted with the same rule CBOM and Quantum Readiness use${policyFindings.length ? ` — ${pluralize(policyFindings.length, 'further finding')} in this scan ${policyFindings.length === 1 ? 'is a policy or configuration observation' : 'are policy or configuration observations'}, not inventory` : ''}`
+            ? `cryptographic inventory entries recorded by this assessment — one per observed occurrence (each accepted cipher suite, certificate key and signature is its own entry), counted with the same rule CBOM and Quantum Readiness use. The Cryptographic Intelligence census counts distinct ALGORITHMS instead, so its totals are smaller by design.${policyFindings.length ? ` ${pluralize(policyFindings.length, 'further finding')} in this scan ${policyFindings.length === 1 ? 'is a policy or configuration observation' : 'are policy or configuration observations'}, not inventory.` : ''}`
             : 'cryptographic observations recorded for this tenant, from the Scanner Intelligence snapshot — a total, not a classified component inventory; open CBOM for the component view',
         },
         {

@@ -112,7 +112,17 @@ export interface ExposureTruth {
   incompleteEngines: Array<{ engineId: string; label: string; state: string; detail: string }>;
   /** Dimensions the scan could not read. */
   notAssessed: Array<{ dimension: string; reason: string }>;
-  /** True when any dimension is missing — the scan is partial, not clean. */
+  /**
+   * True when a bounded budget stopped an engine before it had read its remit.
+   *
+   * A third shape of hole, beside a failed engine and an unread dimension, and
+   * the one that used to be invisible: every engine exits cleanly, so nothing
+   * in `incompleteEngines` or `notAssessed` records it.
+   */
+  truncated: boolean;
+  /** Why, in the engine's own words, when `truncated`. */
+  truncationNote: string | null;
+  /** True when any part of the scope went unread — partial, not clean. */
   partial: boolean;
 
   /**
@@ -285,12 +295,31 @@ export function reconcileExposure(assessment: ExposureAssessment): ExposureTruth
     actionable,
     incompleteEngines,
     notAssessed,
-    partial: incompleteEngines.length > 0 || notAssessed.length > 0,
+    truncated: assessment.task.coverage.truncated,
+    truncationNote: assessment.task.coverage.truncationNote ?? null,
+    partial: incompleteEngines.length > 0 || notAssessed.length > 0 || assessment.task.coverage.truncated,
     unitNote,
   };
 }
 
 /* ─────────────────────────────────────────────────────── display helpers ──── */
+
+/**
+ * The label for a quantum verdict — ONE map for every surface.
+ *
+ * The result panels, the exported reports and the check tools all print these
+ * strings. They used to live in `components/exposure/shared.tsx`, which a pure
+ * builder cannot import, so a report that re-typed them would eventually call
+ * `hybrid` something the panel beside it does not.
+ */
+export const QUANTUM_STATUS_TEXT: Record<QuantumStatus, string> = {
+  vulnerable: 'Quantum Vulnerable',
+  hybrid: 'Hybrid',
+  pqc: 'Post-Quantum',
+  resistant: 'Quantum Resistant',
+  unknown: 'Unknown',
+  'not-applicable': 'Not Applicable',
+};
 
 /** "1 critical, 8 high, 2 medium" — omitting the bands with no members. */
 export function describeSeverity(counts: Record<FindingSeverity, number>): string {
@@ -302,7 +331,9 @@ export function describeSeverity(counts: Record<FindingSeverity, number>): strin
 
 /** "5 components" / "12 findings" / "13 exposures" — the unit, said out loud. */
 export function withUnit(count: number, unit: CountUnit): string {
-  return `${count} ${unit}${count === 1 ? '' : 's'}`;
+  /* Grouped, like every other figure the reports print. Unseparated, a cover
+     line read "1220 findings … 1,154 cryptographic components". */
+  return `${count.toLocaleString('en-US')} ${unit}${count === 1 ? '' : 's'}`;
 }
 
 /**
@@ -314,6 +345,29 @@ export function withUnit(count: number, unit: CountUnit): string {
  */
 export function isComplete(truth: ExposureTruth): boolean {
   return !truth.partial;
+}
+
+/**
+ * The holes in a scan, named — ONE list, for every surface that has to explain
+ * a coverage figure.
+ *
+ * Enumerated independently, a run whose only hole was a budget stop was
+ * described as "0 dimensions unread, 0 engines incomplete" under a ring that
+ * was not at 100%, and on the report's own KPI card as "Every selected engine
+ * reported in full".
+ */
+export function coverageGapParts(truth: ExposureTruth): string[] {
+  const parts: string[] = [];
+  if (truth.notAssessed.length) parts.push(`${truth.notAssessed.length} dimension${truth.notAssessed.length === 1 ? '' : 's'} unread`);
+  if (truth.incompleteEngines.length) parts.push(`${truth.incompleteEngines.length} engine${truth.incompleteEngines.length === 1 ? '' : 's'} incomplete`);
+  if (truth.truncated) parts.push('work stopped by a bounded budget');
+  return parts;
+}
+
+/** The same list as one phrase, for a caption or a sentence. */
+export function coverageGapPhrase(truth: ExposureTruth): string {
+  const parts = coverageGapParts(truth);
+  return parts.length ? parts.join(', ') : 'partial — see Assessment Coverage & Limits';
 }
 
 /** One sentence naming what is missing, for the panel header. */
@@ -329,6 +383,9 @@ export function completenessNote(truth: ExposureTruth): string | null {
     parts.push(
       `${truth.notAssessed.length} dimension${truth.notAssessed.length === 1 ? '' : 's'} could not be read (${truth.notAssessed.map((entry) => entry.dimension).join(', ')})`,
     );
+  }
+  if (truth.truncated) {
+    parts.push(`a bounded budget stopped the work before the whole scope was read${truth.truncationNote ? ` (${truth.truncationNote.replace(/\.$/, '')})` : ''}`);
   }
   return `These counts are from a PARTIAL scan: ${parts.join(', and ')}. Absent evidence is not clean evidence.`;
 }

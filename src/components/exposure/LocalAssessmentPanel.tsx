@@ -48,6 +48,7 @@ import { useScannerEngines } from '@/hooks/use-scanner-engines';
 import { useExposureAccess } from '@/hooks/use-exposure-access';
 import { ModeAccessGate, ModeAccessSkeleton } from './ModeAccessGate';
 import { cbomToCsv, cbomToCycloneDx, cbomToJson } from '@/lib/scanner/exposure/cbom';
+import { ExposureReportButton, ExposureReportPanel, type ExposureReportAuthor } from './ExposureReportLauncher';
 
 /* ─────────────────────────────────────────────────────────────── download ─── */
 
@@ -68,9 +69,15 @@ export interface LocalAssessmentPanelProps {
   onSync?: (assessment: NonNullable<ReturnType<typeof useLocalScan>['assessment']>) => Promise<void>;
   /** Shown in the enterprise upsell slot on the anonymous page. */
   upsellSlot?: React.ReactNode;
+  /**
+   * When set, the Report Studio is offered on completion, with this author on
+   * the cover. Absent on `/public-scan`, so an enterprise report is never
+   * emitted from a surface with no tenant behind it.
+   */
+  reports?: ExposureReportAuthor;
 }
 
-export function LocalAssessmentPanel({ onSync, upsellSlot }: LocalAssessmentPanelProps) {
+export function LocalAssessmentPanel({ onSync, upsellSlot, reports }: LocalAssessmentPanelProps) {
   /* Entitlement is resolved INSIDE the panel rather than by each page that
      mounts it, so /public-scan and /dashboard/scanner cannot drift apart on who
      may scan. The hook is called unconditionally — hooks always are — and the
@@ -536,6 +543,7 @@ export function LocalAssessmentPanel({ onSync, upsellSlot }: LocalAssessmentPane
             syncState={syncState}
             extra={
               <>
+                {reports && <ExposureReportButton assessment={scan.assessment} author={reports} />}
                 <ExportRow assessment={scan.assessment} />
               </>
             }
@@ -570,6 +578,11 @@ export function LocalAssessmentPanel({ onSync, upsellSlot }: LocalAssessmentPane
             }}
           />
           <CoveragePanel coverage={scan.assessment.task.coverage} mode="local" />
+          {/* Reporting closes the stack: a reader exports after reading, and the
+              card names what each document is for rather than being a bare
+              button. The status bar carries the same entry point for anyone who
+              came here only to produce one. */}
+          {reports && <ExposureReportPanel assessment={scan.assessment} author={reports} />}
         </div>
       )}
 

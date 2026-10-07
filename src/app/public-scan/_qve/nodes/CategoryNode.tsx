@@ -35,8 +35,9 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { resolveNodeVerdict, type QveNode, type QveNodeKey, type QveResolvedVerdict } from '../types';
+import { nodePostureTone, resolveNodeVerdict, type QveNode, type QveNodeKey, type QveResolvedVerdict } from '../types';
 import { useQvePalette } from '../theme';
+import { scoreToGrade } from '@/lib/scanner/public-scan/grading-model';
 
 /**
  * Icon per node key. Open-ended because the node ring is supplied by whoever
@@ -136,6 +137,10 @@ export const CategoryNode = React.memo(function CategoryNode({
      measures 1.7:1 on the light card. */
   const verdict = resolveNodeVerdict(node, palette.surface);
   const color = verdict.color;
+  /* The posture number's own grade colour — see `nodePostureTone`. Null when the
+     surface has no measured posture, in which case no number is rendered. */
+  const postureTone = nodePostureTone(node, palette.surface);
+  const postureGrade = node.score !== null ? scoreToGrade(node.score) : null;
   const live = node.state !== 'idle';
   const alert = verdict.alert;
   /* The surface-specific phrase the derivation produced ("Legacy exposed",
@@ -229,13 +234,26 @@ export const CategoryNode = React.memo(function CategoryNode({
               {verdict.label}
             </span>
             {node.score !== null && node.hasEvidence && (
+              /* TWO STATEMENTS, TWO COLOURS.
+                 The word to the left is the worst finding on this surface; this
+                 number is its measured posture. They answer different questions
+                 and routinely disagree — 74 is grade C "Fair" on a surface
+                 carrying a CRITICAL finding — so the number carries its OWN
+                 grade's published colour and sits in its own chip. Painting it
+                 in the verdict colour is what made `Critical 74` read as one
+                 claim, and made 73 look like two different numbers on the two
+                 cards beside each other. */
               <span
-                className="shrink-0 font-mono text-[9.5px] font-bold tabular-nums"
-                style={{ color: live ? color : palette.inkMuted }}
+                className="shrink-0 rounded px-1 py-px font-mono text-[9.5px] font-bold tabular-nums"
+                style={
+                  live
+                    ? { color: postureTone ?? color, backgroundColor: `${postureTone ?? color}14` }
+                    : { color: palette.inkMuted }
+                }
                 title={
                   node.scoreScope
-                    ? `Posture ${node.score}/100, projected from the published grading categories: ${node.scoreScope}. It grades those controls, not whether this surface's own modules ran.`
-                    : `Posture ${node.score}/100.`
+                    ? `Measured posture ${node.score}/100 — grade ${postureGrade?.grade}, ${postureGrade?.rating.toLowerCase()}. Projected from the published grading categories: ${node.scoreScope}. This grades those controls; the word beside it is the worst finding observed on this surface.`
+                    : `Measured posture ${node.score}/100 — grade ${postureGrade?.grade}, ${postureGrade?.rating.toLowerCase()}.`
                 }
               >
                 {node.score}

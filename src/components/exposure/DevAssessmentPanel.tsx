@@ -45,6 +45,7 @@ import { ExposureWorkflowGraph } from './ExposureWorkflowGraph';
 import { useScannerEngines } from '@/hooks/use-scanner-engines';
 import { useExposureAccess } from '@/hooks/use-exposure-access';
 import { ModeAccessGate, ModeAccessSkeleton } from './ModeAccessGate';
+import { ExposureReportButton, ExposureReportPanel, type ExposureReportAuthor } from './ExposureReportLauncher';
 
 /* ────────────────────────────────────────────────────────────── providers ─── */
 
@@ -77,9 +78,15 @@ export interface DevAssessmentPanelProps {
   authenticated?: boolean;
   upsellSlot?: React.ReactNode;
   onSync?: (scanId: string) => Promise<void>;
+  /**
+   * When set, the Report Studio is offered on completion, with this author on
+   * the cover. Absent on `/public-scan`, so an enterprise report is never
+   * emitted from a surface with no tenant behind it.
+   */
+  reports?: ExposureReportAuthor;
 }
 
-export function DevAssessmentPanel({ authenticated = false, upsellSlot, onSync }: DevAssessmentPanelProps) {
+export function DevAssessmentPanel({ authenticated = false, upsellSlot, onSync, reports }: DevAssessmentPanelProps) {
   /* Entitlement is resolved INSIDE the panel rather than by each page that
      mounts it, so /public-scan and /dashboard/scanner cannot drift apart on who
      may scan. Dev sits a tier above Local because it executes server-side and
@@ -621,14 +628,17 @@ export function DevAssessmentPanel({ authenticated = false, upsellSlot, onSync }
             onSync={authenticated && onSync ? handleSync : undefined}
             syncState={syncState}
             extra={
-              scan.scanId ? (
-                <a
-                  href={`/api/v1/exposure/scans/${encodeURIComponent(scan.scanId)}/cbom?format=cyclonedx`}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-3 py-1.5 text-[11.5px] font-semibold text-slate-300 no-underline transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
-                >
-                  CycloneDX CBOM
-                </a>
-              ) : null
+              <>
+                {reports && <ExposureReportButton assessment={scan.assessment} author={reports} />}
+                {scan.scanId ? (
+                  <a
+                    href={`/api/v1/exposure/scans/${encodeURIComponent(scan.scanId)}/cbom?format=cyclonedx`}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-3 py-1.5 text-[11.5px] font-semibold text-slate-300 no-underline transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
+                  >
+                    CycloneDX CBOM
+                  </a>
+                ) : null}
+              </>
             }
           />
           <DevPostureDashboard assessment={scan.assessment} />
@@ -651,6 +661,11 @@ export function DevAssessmentPanel({ authenticated = false, upsellSlot, onSync }
             }}
           />
           <CoveragePanel coverage={scan.assessment.task.coverage} mode="dev" />
+          {/* Reporting closes the stack: a reader exports after reading, and the
+              card names what each document is for rather than being a bare
+              button. The status bar carries the same entry point for anyone who
+              came here only to produce one. */}
+          {reports && <ExposureReportPanel assessment={scan.assessment} author={reports} />}
         </div>
       )}
 

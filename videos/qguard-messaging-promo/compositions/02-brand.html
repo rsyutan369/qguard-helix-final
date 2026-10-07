@@ -1,0 +1,162 @@
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    /* The logo sits on its own pale ground. A soft plate in the same tone lets
+       that ground melt into the paper; the artwork itself is untouched. */
+    #s02-logo-pos {
+      position: absolute;
+      left: 640px;
+      top: 138px;
+      width: 640px;
+      height: 640px;
+    }
+    #s02-logo-move {
+      position: absolute;
+      inset: 0;
+    }
+    #s02-plate {
+      position: absolute;
+      left: -330px;
+      top: -330px;
+      width: 1300px;
+      height: 1300px;
+      border-radius: 50%;
+      background: radial-gradient(circle, #eceef9 0%, #eceef9 30%, rgba(236, 238, 249, 0) 68%);
+    }
+    #s02-logo-iris {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+    }
+    #s02-logo {
+      position: absolute;
+      inset: 0;
+      width: 640px;
+      height: 640px;
+      display: block;
+    }
+    #s02-sheen {
+      position: absolute;
+      top: -80px;
+      left: 0;
+      width: 240px;
+      height: 800px;
+      background: linear-gradient(100deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.8) 50%, rgba(255, 255, 255, 0) 100%);
+    }
+    #s02-ring {
+      position: absolute;
+      left: -40px;
+      top: -52px;
+      width: 720px;
+      height: 720px;
+      overflow: visible;
+    }
+    #s02-copy {
+      position: absolute;
+      left: 900px;
+      top: 232px;
+      width: 940px;
+    }
+    #s02-h1 {
+      margin-top: 30px;
+      font-size: 124px;
+      line-height: 1.02;
+    }
+    .s02-l {
+      display: block;
+      white-space: nowrap;
+    }
+    #s02-chips {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 862px;
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+    }
+  </style>
+
+  <div id="root" data-composition-id="s02-brand" data-width="1920" data-height="1080" data-duration="6">
+    <div id="s02-stage" class="clip" data-start="0" data-duration="6" data-track-index="0">
+      <div id="s02-logo-pos">
+        <div id="s02-logo-move">
+          <div id="s02-plate" data-layout-ignore></div>
+          <div id="s02-logo-iris">
+            <img id="s02-logo" src="assets/img/logo-feather.png" alt="Qguard Helix" />
+            <div id="s02-sheen" data-layout-ignore></div>
+          </div>
+          <svg id="s02-ring" viewBox="0 0 720 720" data-layout-ignore>
+            <defs>
+              <linearGradient id="s02-ring-grad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#00c5eb" />
+                <stop offset="55%" stop-color="#2563eb" />
+                <stop offset="100%" stop-color="#7c3aed" />
+              </linearGradient>
+            </defs>
+            <circle id="s02-ring-c" cx="360" cy="330" r="332" fill="none" stroke="url(#s02-ring-grad)" stroke-width="4" stroke-linecap="round" transform="rotate(-90 360 330)" />
+          </svg>
+        </div>
+      </div>
+
+      <div id="s02-copy">
+        <div id="s02-kicker" class="qg-kicker">QGuard Messaging</div>
+        <h1 id="s02-h1" class="qg-xl">
+          <span class="s02-l" id="s02-l1">One app.</span>
+          <span class="s02-l" id="s02-l2">Quantum-safe</span>
+          <span class="s02-l" id="s02-l3"><span class="qg-grad">chat</span> &amp; <span class="qg-grad">vault.</span></span>
+        </h1>
+      </div>
+
+      <div id="s02-chips">
+        <span class="qg-chip s02-chip"><span class="qg-dot"></span>NIST FIPS 203</span>
+        <span class="qg-chip s02-chip"><span class="qg-dot"></span>FIPS 204</span>
+        <span class="qg-chip s02-chip is-emerald"><span class="qg-dot"></span>End-to-end encrypted</span>
+        <span class="qg-chip s02-chip is-emerald"><span class="qg-dot"></span>Zero-knowledge</span>
+        <span class="qg-chip s02-chip is-violet"><span class="qg-dot"></span>Hybrid post-quantum</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const QG = window.QG;
+      const tl = gsap.timeline({ paused: true, defaults: { ease: "power3.out" } });
+      const settle = QG.springEase(0.62);
+
+      /* Scene 1 — the mark comes to exist on a cleared stage. */
+      tl.fromTo("#s02-plate", { opacity: 0, scale: 0.7 }, { opacity: 1, scale: 1, duration: 0.9, ease: "power2.out" }, 0.02);
+      tl.fromTo(
+        "#s02-logo-iris",
+        { clipPath: "circle(0% at 50% 42%)" },
+        { clipPath: "circle(78% at 50% 42%)", duration: 1.15, ease: "expo.out" },
+        0.1,
+      );
+      tl.fromTo("#s02-logo", { scale: 1.12 }, { scale: 1, duration: settle.duration, ease: settle.ease }, 0.1);
+
+      const RING = 2 * Math.PI * 332;
+      tl.set("#s02-ring-c", { strokeDasharray: RING }, 0);
+      tl.fromTo("#s02-ring-c", { strokeDashoffset: RING, opacity: 1 }, { strokeDashoffset: 0, duration: 1.0, ease: "power2.inOut" }, 0.12);
+      tl.to("#s02-ring-c", { opacity: 0, duration: 0.45, ease: "power1.in" }, 1.12);
+
+      tl.fromTo("#s02-sheen", { x: -300, opacity: 1 }, { x: 760, duration: 0.75, ease: "power2.inOut" }, 0.85);
+      tl.set("#s02-sheen", { opacity: 0 }, 1.62);
+
+      /* Scene 2 — the logo steps left and the name and promise land beside it. */
+      tl.fromTo("#s02-logo-move", { x: 0, scale: 1 }, { x: -468, scale: 0.94, duration: 0.85, ease: "power3.inOut" }, 1.5);
+
+      tl.fromTo("#s02-kicker", { y: 22, opacity: 0 }, { y: 0, opacity: 1, duration: 0.55 }, 1.95);
+      QG.rise(tl, QG.split(document.getElementById("s02-l1")), 2.05, { stagger: 0.09 });
+      QG.rise(tl, QG.split(document.getElementById("s02-l2")), 2.4, { stagger: 0.09 });
+      QG.rise(tl, QG.split(document.getElementById("s02-l3")), 2.7, { stagger: 0.1 });
+
+      /* Scene 3 — five facts lift off their shadows, one per half-beat. */
+      QG.lift(tl, ".s02-chip", 3.5, { stagger: 0.25, duration: 0.5 });
+
+      window.__timelines["s02-brand"] = tl;
+    })();
+  </script>
+</template>

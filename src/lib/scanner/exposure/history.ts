@@ -514,6 +514,7 @@ function coverageFrom(metadata: Record<string, unknown>): ScanCoverage {
     }));
   base.truncated = Boolean(raw.truncated);
   base.truncationNote = str(raw.truncationNote);
+  base.truncatedBy = array(raw.truncatedBy).filter((entry): entry is string => typeof entry === 'string');
   return base;
 }
 

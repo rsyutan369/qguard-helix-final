@@ -47,7 +47,13 @@ import {
   StatusPill,
   scoreColor,
 } from '@/components/quantum-scan/ui';
-import { pluralize, riskColorFor, type ScannerAssessment } from './_intel';
+import {
+  pluralize,
+  postQuantumPostureCaption,
+  postQuantumReadinessCaption,
+  riskColorFor,
+  type ScannerAssessment,
+} from './_intel';
 import type { ModuleState } from './_types';
 
 /* ================================================================ executive = */
@@ -91,17 +97,23 @@ export function ScannerExecutiveSummary({ assessment }: { assessment: ScannerAss
       sub:
         executive.postQuantumReadiness === null
           ? 'Not measured on this scan'
-          : executive.postQuantumReadiness >= 60
-            ? 'Controls largely in place'
-            : 'Migration outstanding',
+          : postQuantumReadinessCaption(executive.postQuantumReadiness).headline,
+      /* NAMES ITSELF, THEN NAMES THE OTHER NUMBER.
+         The Encryption Score panel below publishes a second post-quantum figure
+         — the weight slice — and it is normally lower, because the algorithm
+         census carries most of that slice's weight. A reader who meets 81% here
+         and 51 there with no stated relationship concludes one of them is
+         broken. The component count is a THIRD population (inventory rows, not
+         controls and not distinct primitives) and is now introduced as one
+         instead of being joined to this sentence with an em-dash. */
       detail:
         executive.postQuantumReadiness === null
           ? executive.postQuantumReadinessReason ?? 'This dimension was not measured, so no readiness figure is published.'
-          : `${
-              executive.postQuantumReadiness >= 60
-                ? 'Most of the post-quantum readiness controls this model scores are deployed'
-                : 'Most of the post-quantum readiness controls this model scores are not yet deployed'
-            } — ${assessment.footprint.components.total > 0 ? `${assessment.footprint.components.vulnerable} of ${assessment.footprint.components.total} inventoried components remain quantum-vulnerable` : 'no cryptographic component was inventoried on this run'}.`,
+          : `${postQuantumReadinessCaption(executive.postQuantumReadiness).scope} The Encryption Score panel publishes the wider post-quantum weight slice separately.${
+              assessment.footprint.components.total > 0
+                ? ` Separately, ${assessment.footprint.components.vulnerable} of ${assessment.footprint.components.total} inventoried components are classified quantum-vulnerable.`
+                : ' No cryptographic component was inventoried on this run.'
+            }`,
       ring: executive.postQuantumReadiness ?? 0,
       color: scoreColor(executive.postQuantumReadiness ?? 0),
     },
@@ -272,16 +284,25 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
             <>
               <CountUp value={postQuantum.score} className="mt-2 block text-5xl font-black tracking-tight" />
               <p className="mt-1 text-xs font-semibold" style={{ color: scoreColor(postQuantum.score) }}>
-                {postQuantum.score >= 60 ? 'Controls largely in place' : 'Migration outstanding'}
+                {postQuantumPostureCaption(postQuantum.score).headline}
               </p>
               <Meter value={postQuantum.score} className="mx-auto mt-3 max-w-[9rem] sm:mx-0 sm:ml-auto" />
               <p className="mt-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-600">
                 {postQuantum.weightShare}% of the measured model
               </p>
+              {/* The reciprocal pointer. The Executive Summary tile above
+                  publishes the readiness CATEGORY and this is the wider slice
+                  that contains it, so each number now names the other and says
+                  why they differ. Without that, 81% and 51 read as one broken
+                  measurement rather than two correct ones. */}
               <p className="mt-1 text-[10.5px] leading-snug text-slate-600 sm:ml-auto sm:max-w-[13rem]">
                 {postQuantum.categories.join(' + ')}
                 {executive.postQuantumReadiness !== null && (
-                  <> · readiness category on its own: {executive.postQuantumReadiness}</>
+                  <>
+                    {' '}
+                    · the Executive Summary&apos;s Post-Quantum Readiness tile shows the narrower
+                    readiness category on its own: {executive.postQuantumReadiness}
+                  </>
                 )}
               </p>
             </>
@@ -711,13 +732,25 @@ export function ScannerCryptoIntelligence({ assessment }: { assessment: ScannerA
             {intelligence.quantumVulnerabilityReason}
           </p>
           {intelligence.scanner2Readiness && (
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-slate-400" title="Share of the cryptographic OBSERVATIONS Scanner_2 could map onto its migration catalogue that need no migration. A different population from the endpoint posture below — and not a share of the asset inventory, which is what this row used to claim — so it is reported separately rather than blended into it.">
-                Scanner_2 Migration Readiness
-              </dt>
+            /* TWO READINESS FIGURES ON ONE PANEL, SO BOTH NAME THEIR POPULATION
+               ON THE FACE. This row and "Endpoint PQ Readiness" below it
+               routinely differ by a factor of four — 21% beside 81% on a
+               www.cloudflare.com scan — because they count different things:
+               this is the share of the OBSERVATIONS Scanner_2 could map onto
+               its migration catalogue that need no migration, and that one
+               grades the endpoint's own readiness controls. Both were correct
+               and the gap was explained only in a hover tooltip, which is not a
+               disclosure on a dashboard. */
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+              <dt className="text-slate-400">Scanner_2 Migration Readiness</dt>
               <dd className="font-bold text-violet-300">
                 {intelligence.scanner2Readiness.score}% · {intelligence.scanner2Readiness.label}
               </dd>
+              <p className="w-full text-[10.5px] leading-snug text-slate-600">
+                Share of the cryptographic observations Scanner_2 mapped onto its migration catalogue
+                that need no migration — not a share of the asset inventory, and a different
+                population from the endpoint readiness below.
+              </p>
             </div>
           )}
         </dl>
@@ -754,6 +787,11 @@ export function ScannerCryptoIntelligence({ assessment }: { assessment: ScannerA
                 {intelligence.postQuantumReadiness.score}%
               </span>
             </div>
+            {/* The reciprocal half of the disclosure on the Scanner_2 row. */}
+            <p className="mt-1 text-[10.5px] leading-snug text-slate-600">
+              The published readiness category for this endpoint&apos;s own controls — hybrid key
+              agreement, signatures, protocol floor, certificate lifetime.
+            </p>
             <Meter
               value={intelligence.postQuantumReadiness.score}
               color={scoreColor(intelligence.postQuantumReadiness.score)}

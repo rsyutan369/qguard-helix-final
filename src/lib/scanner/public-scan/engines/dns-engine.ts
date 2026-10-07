@@ -82,6 +82,18 @@ export interface DnsIntelligence {
   caaSource: string | null
   /** Which name the CAA RRset was found on (issuance is checked up the tree). */
   caaAtName: string | null
+  /**
+   * True only when the RFC 8659 climb actually finished: an RRset was found, or
+   * the registrable domain itself answered authoritatively with none.
+   *
+   * `caaPresent === false` is a MEASURED ABSENCE only under this flag. Without
+   * it the field means "we stopped looking", and the two are not the same
+   * answer: `www.cloudflare.com` holds no CAA RRset of its own while
+   * `cloudflare.com` publishes eleven, so a climb abandoned after the leaf
+   * name reports "any CA may issue" about one of the most tightly
+   * issuance-constrained names on the Internet.
+   */
+  caaClimbComplete: boolean
 
   spf: string | null
   dmarc: string | null
@@ -117,6 +129,7 @@ function emptyDns(host: string): DnsIntelligence {
     caaQueryable: false,
     caaSource: null,
     caaAtName: null,
+    caaClimbComplete: false,
     spf: null,
     dmarc: null,
     dkimSelectorsFound: [],
@@ -128,6 +141,64 @@ function emptyDns(host: string): DnsIntelligence {
     dohAvailable: false,
     resolvedVia: 'none',
     error: null,
+  }
+}
+
+/** One name's answer in the CAA climb, as the transports resolved it. */
+export interface CaaClimbAnswer {
+  name: string
+  /** A resolver answered for this name — including an authoritative NODATA. */
+  answered: boolean
+  records: CaaRecord[]
+  source: string | null
+}
+
+export interface CaaClimbResult {
+  queryable: boolean
+  present: boolean
+  /** The climb reached a conclusion; see {@link DnsIntelligence.caaClimbComplete}. */
+  climbComplete: boolean
+  records: CaaRecord[]
+  atName: string | null
+  source: string | null
+}
+
+/**
+ * Resolve CAA issuance policy from the answers collected up the tree.
+ *
+ * RFC 8659 §3: the policy that governs a name is the CAA RRset on the closest
+ * ancestor that has one, so the climb runs leaf-first and the first RRset wins.
+ * Absence is only an answer once the registrable domain itself has said so —
+ * that is the whole point of `climbComplete`, and it is why this is a pure
+ * function: the live bug was a time budget silently truncating the walk, and a
+ * resolver that takes its answers as data can be tested without a network.
+ */
+export function resolveCaaClimb(answers: CaaClimbAnswer[], apex: string): CaaClimbResult {
+  const queryable = answers.some((answer) => answer.answered)
+  const found = answers.find((answer) => answer.answered && answer.records.length > 0)
+  if (found) {
+    return {
+      queryable: true,
+      present: true,
+      climbComplete: true,
+      records: found.records,
+      atName: found.name,
+      source: found.source,
+    }
+  }
+
+  /* No RRset anywhere we looked. That is a measured absence ONLY if the
+     registrable domain is one of the places we looked and it answered. */
+  const atApex = answers.find((answer) => answer.name === apex)
+  const climbComplete = Boolean(atApex?.answered)
+  const lastAnswered = [...answers].reverse().find((answer) => answer.answered) ?? null
+  return {
+    queryable,
+    present: false,
+    climbComplete,
+    records: [],
+    atName: climbComplete ? apex : (lastAnswered?.name ?? null),
+    source: (climbComplete ? atApex?.source : lastAnswered?.source) ?? null,
   }
 }
 
@@ -418,48 +489,65 @@ export async function runDnsEngine(
       data.error = 'No public A/AAAA records resolved'
     }
 
-    // ── CAA: system resolver first, DoH as an equal-standing fallback ────────
-    // Issuance is checked at the name and inherited up the tree, so both are
-    // queried before concluding "no policy".
-    for (const name of [host, apex].filter((value, index, all) => all.indexOf(value) === index)) {
-      if (remaining() <= 0) break
-      /* The system resolver and DoH are raced rather than tried in series. They
-         are independent transports answering the same question, and the loop
-         runs for up to two names — four sequential waits of 4-5s each was up to
-         18s of the DNS engine's wall clock spent waiting for a fallback that
-         the faster transport had usually already answered. */
-      const [viaSystem, viaDohRaced] = await Promise.all([
-        withTimeout(systemCaa(name), Math.min(DNS_TIMEOUT, Math.max(0, remaining())), {
-          records: [] as CaaRecord[],
-          authoritative: false,
-        }),
-        withTimeout(caaViaDoh(name), Math.min(DOH_TIMEOUT, Math.max(0, remaining())), null),
-      ])
-      if (viaSystem.authoritative) {
-        data.caaQueryable = true
-        data.caaSource = 'system resolver'
-        data.caaAtName = name
-        if (viaSystem.records.length) {
-          data.caaRecords = viaSystem.records
-          break
-        }
-        continue
-      }
+    /* ── CAA: the whole climb, in one parallel pass ───────────────────────────
+       Issuance policy is inherited up the tree (RFC 8659 §3), so the question
+       is not answered until the registrable domain has been asked.
 
-      const viaDoh = viaDohRaced
-      if (viaDoh) {
-        data.caaQueryable = true
-        data.dohAvailable = true
-        data.caaSource = `${viaDoh.resolver} (DoH)`
-        data.caaAtName = name
-        if (viaDoh.records.length) {
-          data.caaRecords = viaDoh.records
-          break
+       THIS USED TO BE A SEQUENTIAL LOOP WITH A BUDGET BREAK, and the break is
+       what made the answer non-deterministic. Measured on www.cloudflare.com: a
+       cold run spent its 8s budget on the leaf name, broke before reaching
+       `cloudflare.com`, and published `caaPresent: false` — "no CAA record, any
+       public CA may issue" — for a name governed by an eleven-record policy. A
+       warm run reached the apex and published 100. Same endpoint, same code,
+       score 0 or 100 depending on DNS cache temperature. `dns-caa` is the only
+       category behind the Asset Discovery surface, so that coin flip decided
+       whether the surface rendered Critical.
+
+       The names are independent queries answering one question, so they run
+       together. At two names and two transports this is four requests in one
+       pass instead of up to four sequential waits — strictly faster than the
+       loop it replaces as well as complete. `resolveCaaClimb` then applies the
+       RFC's closest-name rule to the collected answers. */
+    const caaNames = [host, apex].filter((value, index, all) => all.indexOf(value) === index)
+    const caaBudget = Math.max(0, remaining())
+    const climbAnswers: CaaClimbAnswer[] = await Promise.all(
+      caaNames.map(async (name): Promise<CaaClimbAnswer> => {
+        if (caaBudget <= 0) return { name, answered: false, records: [], source: null }
+        /* The system resolver and DoH are raced rather than tried in series.
+           They are independent transports answering the same question. */
+        const [viaSystem, viaDoh] = await Promise.all([
+          withTimeout(systemCaa(name), Math.min(DNS_TIMEOUT, caaBudget), {
+            records: [] as CaaRecord[],
+            authoritative: false,
+          }),
+          withTimeout(caaViaDoh(name), Math.min(DOH_TIMEOUT, caaBudget), null),
+        ])
+        /* Whichever transport actually answered. An RRset is unforgeable, so a
+           transport that found one is preferred over one that found none. */
+        if (viaSystem.authoritative && (viaSystem.records.length > 0 || !viaDoh?.records.length)) {
+          return { name, answered: true, records: viaSystem.records, source: 'system resolver' }
         }
-      }
+        if (viaDoh) {
+          data.dohAvailable = true
+          return { name, answered: true, records: viaDoh.records, source: `${viaDoh.resolver} (DoH)` }
+        }
+        return { name, answered: viaSystem.authoritative, records: viaSystem.records, source: viaSystem.authoritative ? 'system resolver' : null }
+      }),
+    )
+
+    const climb = resolveCaaClimb(climbAnswers, apex)
+    data.caaQueryable = climb.queryable
+    data.caaPresent = climb.present
+    data.caaClimbComplete = climb.climbComplete
+    data.caaRecords = climb.records
+    data.caaAtName = climb.atName
+    data.caaSource = climb.source
+    if (climb.queryable && !climb.climbComplete) {
+      notes.push(
+        `CAA issuance policy is undetermined: ${climb.atName ?? host} returned no CAA RRset and the climb to ${apex} did not complete inside the DNS budget. Absence is not claimed.`,
+      )
     }
-    data.caaPresent = data.caaRecords.length > 0
-    if (data.caaQueryable) {
+    if (data.caaQueryable && data.caaClimbComplete) {
       evidence.push({
         label: 'CAA issuance policy',
         observedValue: data.caaPresent

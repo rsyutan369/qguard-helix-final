@@ -1,29 +1,28 @@
 /**
- * QGuard Web Scanner — the platform's PUBLISHED scoring model, applied to
- * authenticated scan evidence.
+ * QGuard Web Scanner — ADAPTER onto the platform's published scoring model.
  *
- * WHY THIS EXISTS
- * The web scanner used to grade on a private five-dimension model
- * (certificate / TLS / cipher / app-crypto / PQC) while /public-scan graded on
- * the twelve published categories in `SCORE_CATEGORY_DEFS`. The same host
- * therefore scored differently depending on which surface you looked at, with
- * no way to reconcile the two. This module maps what the authenticated scanner
- * observes onto those same twelve categories, with the same weights, so one
- * host produces one score whichever surface reports it.
+ * WHAT THIS IS NOW
+ * Every category ladder that used to live here has moved to
+ * `src/lib/scanner/published-categories.ts`, which /public-scan also delegates
+ * to. This file holds no scoring opinions whatsoever; it normalises the
+ * authenticated scanner's evidence into `PublishedCategoryEvidence` and hands it
+ * over.
+ *
+ * WHY
+ * The ladders here and the ones in `grading-model.buildScoreCategories` were two
+ * implementations of ONE published model, and they drifted. Fed byte-identical
+ * evidence for test.openquantumsafe.org they disagreed on six of twelve
+ * categories and published B · Good against B- · Fair for the same endpoint at
+ * the same moment. The resolution of each disagreement is documented at the top
+ * of `published-categories.ts`; what matters here is that this surface can no
+ * longer form an opinion of its own.
  *
  * WHAT THIS SCANNER CAN AND CANNOT SEE
  * A category is `applicable: false` — excluded from the weighted mean with its
  * weight redistributed, never scored 0 — whenever the evidence behind it was not
  * collected for this target. That is the difference between "we looked and it is
- * absent" and "we did not look".
- *
- * OCSP stapling, Certificate Transparency and DNS CAA used to be permanently
- * inapplicable here on the grounds that an authenticated scan cannot probe them.
- * That stopped being true when the edge engine joined this pipeline: it staples,
- * counts SCTs and queries CAA on every web target, and the dashboard already
- * renders those readings. Scoring them as unmeasured while the UI displayed the
- * measurement was itself an inconsistency, so they are now scored from the edge
- * bundle when it exists and inapplicable only when it does not.
+ * absent" and "we did not look". The adapter below is responsible for reporting
+ * absence of EVIDENCE honestly; the shared module decides what absence means.
  *
  * WHY `edgeIntelligence` IS NOT OPTIONAL SUGAR
  * Node's `getEphemeralKeyInfo()` is empty for TLS 1.3, so `tlsResult.keyExchange`
@@ -35,13 +34,20 @@
  * Measured evidence is passed in and takes precedence over the socket label
  * wherever the two disagree.
  */
+import { SCORE_CATEGORY_DEFS, weightedCategoryScore } from '../public-scan/grading-model'
 import {
-  postQuantumReadinessFromSignals,
-  SCORE_CATEGORY_DEFS,
-  weightedCategoryScore,
-} from '../public-scan/grading-model'
-import { buildAlgorithmCensus } from './algorithm-census'
-import { headerTally, measuredKeyAgreement, type EdgeIntelligence, type MeasuredKeyAgreement } from './edge-intelligence-model'
+  buildPublishedCategorySet,
+  classifySuite,
+  type PublishedCategory,
+  type PublishedCategoryEvidence,
+  type SuiteObservation,
+} from '../published-categories'
+import {
+  headerTally,
+  measuredKeyAgreement,
+  type EdgeDnsSurface,
+  type EdgeIntelligence,
+} from './edge-intelligence-model'
 import { reconcileTransport } from './transport-truth'
 import type {
   ApiSecurityResult,
@@ -53,18 +59,8 @@ import type {
   WebScanFinding,
 } from './types'
 
-const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)))
-
-export interface PublishedScoreCategory {
-  key: string
-  label: string
-  weight: number
-  /** 0-100 posture. Meaningless unless `applicable`. */
-  score: number
-  applicable: boolean
-  /** The measurement this score was read from — shown verbatim in the UI. */
-  observed: string
-}
+/** Re-exported under this surface's historical name. One shape, one source. */
+export type PublishedScoreCategory = PublishedCategory
 
 export interface PublishedScoringInput {
   tlsResult: TlsAnalysisResult | null
@@ -78,311 +74,28 @@ export interface PublishedScoringInput {
    * The public-edge measurement for this target, when the edge phase ran.
    *
    * Optional in the TYPE only so historical callers keep compiling; every
-   * category below treats its absence as "not measured" rather than as a
-   * negative result, so omitting it can never manufacture a passing score.
+   * category treats its absence as "not measured" rather than as a negative
+   * result, so omitting it can never manufacture a passing score.
    */
   edgeIntelligence?: EdgeIntelligence | null
 }
 
-const PQ_PATTERN = /ml-kem|ml-dsa|kyber|dilithium|slh-dsa|sphincs|falcon|frodo/i
-const STATIC_RSA_PATTERN = /(^|_)RSA_WITH/i
-const WEAK_CIPHER_PATTERN = /3DES|_DES_|RC4|NULL|EXPORT|MD5/i
+const PQ_SIGNATURE_PATTERN = /ml-dsa|slh-dsa|dilithium|sphincs|falcon/i
 
-/* ─── Individual categories ─────────────────────────────────────────────── */
+/* ─── Evidence normalisation ────────────────────────────────────────────────
+   Each helper answers one question: what did this pipeline actually observe?
+   None of them decides what an observation is WORTH. */
 
-/** TLS protocol versions the endpoint accepts. */
-function tlsConfiguration(
-  tls: TlsAnalysisResult | null,
-  edge: EdgeIntelligence | null,
-): { score: number; observed: string } | null {
-  if (!tls) return null
-  /* The edge engine probes every version individually; the socket only ever
-     knows the one it negotiated. Where both have an answer the probed list is
-     the stronger evidence and wins. */
-  const protocols = edge?.transport.supportedProtocols?.length
-    ? edge.transport.supportedProtocols
-    : (tls.supportedProtocols ?? [])
-  const observed = protocols.length ? protocols.join(', ') : tls.tlsVersion
-
-  /* THE NEGOTIATED VERSION IS NOT THE ACCEPTED SET.
-     This category scores the protocol versions an endpoint ACCEPTS, and the
-     only component that knows them is the per-version probe. When that probe
-     returns nothing — an endpoint that throttles the enumeration answers the
-     first handshake and refuses the rest — the socket still reports the one
-     version it negotiated, and the old fallback scored TLS 1.3 as a perfect
-     100 from it.
-
-     That is "unmeasured rendered as ideal", and it is the second half of the
-     reported contradiction: the SAME endpoint scored 45/100 with the list
-     `TLSv1, TLSv1.1, TLSv1.2, TLSv1.3` on a run that settled, and 100/100
-     labelled "TLSv1.3" on a run that did not — while accepting TLS 1.0 in both.
-     A 100 here asserts "TLS 1.3 only", which one handshake cannot establish.
-     The category is excluded and its weight redistributed instead. */
-  if (protocols.length === 0) return null
-
-  if (protocols.some((protocol) => /SSLv2|SSLv3/i.test(protocol))) return { score: 0, observed }
-  if (protocols.some((protocol) => /TLSv1(\.0)?$|TLSv1\.1/i.test(protocol))) return { score: 45, observed }
-  if (protocols.includes('TLSv1.3')) return { score: protocols.includes('TLSv1.2') ? 90 : 100, observed }
-  if (protocols.includes('TLSv1.2')) return { score: 70, observed }
-  return { score: 45, observed }
+/** Symmetric strength of the negotiated AEAD, for the shared Grover margin. */
+function symmetricBits(cipherSuite: string | null | undefined): number | null {
+  if (!cipherSuite) return null
+  if (/_256_|AES256|CHACHA20/i.test(cipherSuite)) return 256
+  if (/_128_|AES128/i.test(cipherSuite)) return 128
+  return null
 }
 
-/** Strength of the negotiated suite and of everything else still accepted. */
-function cipherSuites(
-  tls: TlsAnalysisResult | null,
-  edge: EdgeIntelligence | null,
-): { score: number; observed: string } | null {
-  if (!tls) return null
-  const suites = tls.cipherSuites ?? []
-  const negotiated = tls.cipherSuite || ''
-  let score = 100
-
-  if (!/GCM|CHACHA20|POLY1305|CCM/i.test(negotiated)) score -= 20
-  if (WEAK_CIPHER_PATTERN.test(negotiated)) score -= 40
-  if (/CBC/i.test(negotiated)) score -= 20
-
-  // Everything the server still ACCEPTS counts, not just what it chose.
-  const staticRsa = suites.filter((suite) => STATIC_RSA_PATTERN.test(suite.name) || suite.category === 'rsa-kex')
-  const weak = suites.filter((suite) => WEAK_CIPHER_PATTERN.test(suite.name))
-  const cbc = suites.filter((suite) => /CBC/i.test(suite.name))
-  /* Static-RSA key transport is the one penalty a hybrid key agreement must
-     NEVER offset. ML-KEM lives only in the TLS 1.3 key_share, so a client that
-     negotiates one of these suites gets a session with no forward secrecy and
-     no post-quantum protection at all. */
-  const staticRsaAccepted = staticRsa.length > 0 || edge?.transport.staticRsaAccepted === true
-  if (staticRsaAccepted) score -= 50
-  if (weak.length) score -= 40
-  else if (cbc.length) score -= 15
-
-  const observed = negotiated
-    ? `${negotiated}${suites.length ? ` · ${suites.length} suite(s) enumerated` : ''}${staticRsaAccepted ? ' · static RSA accepted' : ''}`
-    : `${suites.length} suite(s) enumerated`
-  return { score: clamp(score), observed }
-}
-
-/** Leaf certificate algorithm, lifecycle and chain quality. */
-function certificates(cert: CertificateInfo | null): { score: number; observed: string } | null {
-  if (!cert) return null
-  let score = 100
-  const algorithm = (cert.publicKeyAlgorithm || '').toLowerCase()
-
-  if (cert.isExpired) score -= 60
-  if (cert.isSelfSigned) score -= 30
-
-  if (PQ_PATTERN.test(algorithm)) score -= 0
-  else if (algorithm.includes('rsa')) score -= cert.publicKeySize < 2048 ? 40 : 25
-  else if (algorithm.includes('ec') || algorithm.includes('ed')) score -= 20
-  else score -= 25
-
-  if (/sha-?1|md5/i.test(cert.signatureAlgorithm || '')) score -= 40
-  if ((cert.chain ?? []).some((entry) => entry.isExpired)) score -= 20
-
-  const validityDays = certificateValidityDays(cert)
-  const observed = `${cert.publicKeyAlgorithm}${cert.publicKeySize ? ` ${cert.publicKeySize}` : ''}${
-    validityDays !== null ? ` · ${validityDays}-day lifetime` : ''
-  }${cert.isExpired ? ' · EXPIRED' : ''}`
-  return { score: clamp(score), observed }
-}
-
-/**
- * Strength of the negotiated key-agreement mechanism.
- *
- * The MEASURED group decides. `tls.keyExchange` is consulted only when named-group
- * probing never ran, and its TLS 1.3 value is a protocol guarantee ("some ephemeral
- * (EC)DHE group was used", RFC 8446) — not a statement about WHICH group, which it
- * cannot make. Reading it as one is what scored a hybrid endpoint 70/100.
- */
-function keyExchange(
-  tls: TlsAnalysisResult | null,
-  kem: MeasuredKeyAgreement,
-): { score: number; observed: string } | null {
-  if (!tls) return null
-
-  if (kem.hybrid) {
-    return {
-      score: 100,
-      observed: `${kem.group} — ${kem.classicalComponent} + ${kem.postQuantumComponent}, accepted in isolation across ${kem.handshakes} handshake(s)`,
-    }
-  }
-  if (kem.pureKem) {
-    /* Real post-quantum key agreement, but with no classical hedge: a flaw in
-       the lattice assumption has no fallback. Strong, not perfect. */
-    return { score: 90, observed: `${kem.group} — post-quantum only, no classical hedge` }
-  }
-
-  const kex = `${tls.keyExchange || ''} ${tls.negotiatedCurve || ''} ${tls.cipherSuite || ''}`
-  /* Only a SETTLED probe licenses the refusal sentence. `kem.probed` is true as
-     soon as group probing ran at all — and the classical groups settle first
-     and cheapest — so phrasing it off `probed` printed "every hybrid ML-KEM
-     group was offered in isolation and refused" for endpoints whose hybrid
-     probes had simply been throttled. */
-  const probedSuffix = kem.hybridSettled
-    ? ' · every hybrid ML-KEM group was offered in isolation and refused'
-    : kem.probed
-      ? ' · hybrid ML-KEM groups did not settle on this run, so no post-quantum claim is made either way'
-      : ''
-  const observed = `${tls.keyExchange || 'not observed'}${tls.negotiatedCurve ? ` (${tls.negotiatedCurve})` : ''}${probedSuffix}`
-  if (PQ_PATTERN.test(kex)) return { score: 100, observed }
-  if (/ECDHE|X25519|X448/i.test(kex)) return { score: 70, observed }
-  if (/DHE/i.test(kex)) return { score: (tls.ephemeralKeySize ?? 0) >= 2048 ? 60 : 40, observed }
-  if (/RSA/i.test(kex)) return { score: 20, observed }
-  return { score: 40, observed }
-}
-
-/** Whether every session the endpoint will agree to is forward secret. */
-function forwardSecrecy(
-  tls: TlsAnalysisResult | null,
-  edge: EdgeIntelligence | null,
-  kem: MeasuredKeyAgreement,
-): { score: number; observed: string } | null {
-  if (!tls) return null
-
-  /* Reconciled through the shared reading rather than re-derived here.
-     This function and two dashboard panels each had their own fallback chain,
-     and on a TLS 1.3 endpoint whose named-group probe timed out they published
-     100, "Not offered" and "Not observed" simultaneously. */
-  const truth = reconcileTransport(tls, edge, kem)
-
-  /* Not measured returns null, which redistributes the weight — the same
-     treatment every other unmeasured dimension gets. Scoring an unmeasured
-     control as 100 was the half of the contradiction that flattered the target. */
-  if (!truth.forwardSecrecy.measured) return null
-
-  const ephemeral = truth.forwardSecrecy.value === true
-  const staticRsa = (tls.cipherSuites ?? []).filter(
-    (suite) => STATIC_RSA_PATTERN.test(suite.name) || suite.category === 'rsa-kex',
-  )
-  const staticRsaAccepted = truth.staticRsaAccepted.value === true
-  const label = kem.group ?? tls.keyExchange ?? 'ephemeral'
-  if (!ephemeral) return { score: 0, observed: 'no ephemeral key agreement' }
-  // Preferring ECDHE while still accepting static-RSA key transport is not full
-  // forward secrecy — a client that asks for those suites gets none.
-  return staticRsaAccepted
-    ? {
-        score: 70,
-        observed: `${label} · ${staticRsa.length || 'some'} static-RSA suite(s) still accepted`,
-      }
-    : { score: 100, observed: `${label}${tls.negotiatedCurve ? ` (${tls.negotiatedCurve})` : ''}` }
-}
-
-/* ─── Public-edge categories ────────────────────────────────────────────────
-   Measured by the edge engine, which now runs inside this pipeline. Each returns
-   null — inapplicable, weight redistributed — when the edge phase did not reach
-   the target, so "not probed" never renders as a failing zero. */
-
-function ocspStapling(edge: EdgeIntelligence | null): { score: number; observed: string } | null {
-  const cert = edge?.certificate
-  if (!cert?.probed) return null
-  if (cert.ocspStapled) return { score: 100, observed: 'stapled in the handshake' }
-  /* A must-staple certificate that does not staple is a hard failure: relying
-     parties are instructed to refuse the connection. Absent stapling without
-     that commitment is a latency and privacy weakness, not a broken control. */
-  if (cert.mustStaple) return { score: 0, observed: 'must-staple asserted but no response stapled' }
-  return { score: 40, observed: cert.ocspUri ? 'not stapled — responder reachable off-path' : 'not stapled' }
-}
-
-function certificateTransparency(edge: EdgeIntelligence | null): { score: number; observed: string } | null {
-  const cert = edge?.certificate
-  if (!cert?.probed) return null
-  if (!cert.sctPresent) return { score: 0, observed: 'no SCTs in the certificate, handshake or stapled response' }
-  // Chrome's CT policy floor is two independent logs for most lifetimes.
-  return { score: cert.sctCount >= 2 ? 100 : 70, observed: `${cert.sctCount} SCT(s)` }
-}
-
-function dnsCaa(edge: EdgeIntelligence | null): { score: number; observed: string } | null {
-  const dns = edge?.dns
-  // Not queryable is not the same as absent — a blocked resolver is unmeasured.
-  if (!dns?.probed || !dns.caaQueryable) return null
-  if (!dns.caaPresent) return { score: 0, observed: 'no CAA record — any CA may issue for this name' }
-  return {
-    score: 100,
-    observed: `${dns.caaRecords.length} CAA record(s)${dns.caaAtName ? ` at ${dns.caaAtName}` : ''}`,
-  }
-}
-
-/**
- * Transport-security response headers, excluding HSTS (scored separately).
- *
- * Counted through the SHARED tally, which prefers the edge model's applicable
- * set. Counting `apiResult.securityHeaders` here while the dashboard's Observed
- * Attack Surface counted the edge model is why one scan published
- * "4/9 transport headers hardened" in the score decomposition and
- * "3/8 hardened" in the surface row directly beside it.
- */
-function httpSecurityHeaders(
-  api: ApiSecurityResult | null,
-  edge: EdgeIntelligence | null,
-): { score: number; observed: string } | null {
-  const tally = headerTally(edge?.http, api?.securityHeaders)
-  if (tally.hardened === null || tally.applicable === null || tally.applicable === 0) return null
-  return {
-    score: clamp((tally.hardened / tally.applicable) * 100),
-    observed: `${tally.hardened}/${tally.applicable} transport headers hardened`,
-  }
-}
-
-function hsts(api: ApiSecurityResult | null): { score: number; observed: string } | null {
-  if (!api?.securityHeaders?.length) return null
-  const header = api.securityHeaders.find((entry) => entry.name.toLowerCase() === 'strict-transport-security')
-  if (!header) return { score: 0, observed: 'absent' }
-  if (!header.present) return { score: 0, observed: 'absent' }
-  if (!header.secure) return { score: 50, observed: 'present, weak max-age' }
-  const value = header.value ?? ''
-  const preload = /preload/i.test(value)
-  const subdomains = /includeSubDomains/i.test(value)
-  return {
-    score: preload && subdomains ? 100 : subdomains ? 90 : 80,
-    observed: `enforced${subdomains ? ' · includeSubDomains' : ''}${preload ? ' · preload' : ''}`,
-  }
-}
-
-/**
- * Share of the observed cryptographic material that is not quantum-vulnerable.
- * Application-code patterns count here too — repository and Web Crypto findings
- * are observations about the algorithms in use, which is exactly what this
- * category measures.
- */
-/**
- * The observed-algorithm census, scored.
- *
- * WHY THIS DELEGATES RATHER THAN COUNTING
- * This function used to keep its OWN list, built with its own rules, while the
- * dashboard's Cryptographic Intelligence panel kept a second one. They differed
- * in population (this one pushed the TLS 1.3 socket placeholder and every
- * supported protocol version), in naming and in verdict — and this one defined
- * "quantum-safe" as "not flagged vulnerable", which counted AES-128-GCM and
- * TLSv1.3 as post-quantum wins. One CDN endpoint therefore published
- * "4 algorithms observed · 1 quantum-safe" directly above a list of three
- * algorithms, none of which is quantum-safe.
- *
- * `buildAlgorithmCensus` is now the only census on either side of the wire.
- */
-function cryptographicAlgorithms(
-  input: PublishedScoringInput,
-  kem: MeasuredKeyAgreement,
-  edge: EdgeIntelligence | null,
-): { score: number; observed: string } | null {
-  const census = buildAlgorithmCensus({
-    observations: [
-      {
-        tls: input.tlsResult,
-        certificate: input.certInfo,
-        keyAgreement: {
-          ...kem,
-          kemParameterSets: edge?.pqKeyAgreement.probed ? edge.pqKeyAgreement.kemParameterSets : [],
-        },
-      },
-    ],
-    patterns: [...(input.repoResult?.patterns ?? []), ...(input.webCryptoResult?.patterns ?? [])],
-  })
-
-  if (census.observed === 0) return null
-  /* Observed, but nothing asymmetric among it: the post-quantum share is not
-     defined over symmetric and protocol entries, so the category is excluded
-     and its weight redistributed rather than scored off primitives it does not
-     describe. The reason travels with it. */
-  if (census.score === null) return null
-  return { score: clamp(census.score), observed: census.summary }
+function suiteObservations(tls: TlsAnalysisResult | null): SuiteObservation[] {
+  return (tls?.cipherSuites ?? []).map((suite) => classifySuite(suite.name, suite.category))
 }
 
 function certificateValidityDays(cert: CertificateInfo | null): number | null {
@@ -393,103 +106,182 @@ function certificateValidityDays(cert: CertificateInfo | null): number | null {
   return Math.max(0, Math.round((to - from) / 86400000))
 }
 
-/* ─── Assembly ──────────────────────────────────────────────────────────── */
+function daysRemaining(cert: CertificateInfo | null, edge: EdgeIntelligence | null): number | null {
+  if (cert?.validTo) {
+    const to = Date.parse(cert.validTo)
+    if (Number.isFinite(to)) return Math.round((to - Date.now()) / 86400000)
+  }
+  return edge?.certificate?.probed ? edge.certificate.daysRemaining : null
+}
 
 /**
- * Build all twelve published categories from authenticated scan evidence.
- * Categories this scanner cannot probe come back `applicable: false` with the
- * reason in `observed`, so the UI can list every category — as /public-scan
- * does — without implying a measurement that never happened.
+ * The published `dns-caa` category, exported on its own.
+ *
+ * It is the ONLY category behind the Asset Discovery surface, so whatever this
+ * returns IS that card — and a wrong negative here renders a surface whose five
+ * modules all reported cleanly as Critical 0. It delegates to the shared ladder
+ * rather than restating it, so `tools/scanner-result-alignment-check.ts` pins
+ * the real code path in both directions.
  */
-export function buildPublishedCategories(input: PublishedScoringInput): PublishedScoreCategory[] {
+export function dnsCaaCategory(
+  dns: EdgeDnsSurface | null,
+): { score: number; observed: string } | null {
+  const row = buildPublishedCategorySet(
+    toCategoryEvidence({
+      tlsResult: null,
+      certInfo: null,
+      apiResult: null,
+      repoResult: null,
+      webCryptoResult: null,
+      ruleResults: [],
+      findings: [],
+      edgeIntelligence: dns ? ({ dns } as unknown as EdgeIntelligence) : null,
+    }),
+  ).find((category) => category.key === 'dns-caa')
+  if (!row || !row.applicable) return null
+  return { score: row.score, observed: row.observed }
+}
+
+/**
+ * Flatten authenticated scan evidence into the shared category input.
+ *
+ * Every field here is a MEASUREMENT or an explicit "not measured" — no defaults
+ * that read as negatives, no socket labels standing in for probe results.
+ */
+function toCategoryEvidence(input: PublishedScoringInput): PublishedCategoryEvidence {
   const { tlsResult, certInfo, apiResult } = input
   const edge = input.edgeIntelligence ?? null
   const kem = measuredKeyAgreement(edge)
-
+  /* EVERY sub-surface is guarded, not just `edge` itself.
+     An `edgeIntelligence` record missing one of its six sub-objects used to take
+     the whole page down with "Cannot read properties of undefined" — and this
+     module is also reached with a deliberately partial bundle by
+     `dnsCaaCategory`, which has a CAA surface and nothing else. A missing
+     sub-surface is "not measured", which every category below already knows how
+     to render. */
   const edgeCert = edge?.certificate
-  /* HYBRID CARRIES 55 OF THE READINESS MODEL'S 100 POINTS.
-     Feeding it `false` when the hybrid probe never settled is not a
-     conservative default — it is an unmeasured dimension scored as a negative
-     one, and it is what turned a 73% endpoint into 6% on a throttled run.
-     Rule 3: exclude the category and redistribute its weight instead. */
-  const readinessMeasurable = !edge || kem.hybridSettled
-  const pq =
-    (tlsResult || certInfo) && readinessMeasurable
-      ? postQuantumReadinessFromSignals({
-          /* MEASURED, not pattern-matched. The old expression tested the socket's
-             key-exchange label for "ML-KEM", which a TLS 1.3 handshake never
-             contains, so this forfeited the model's 55-point hybrid allowance on
-             every hybrid endpoint in existence. */
-          hybridObserved: kem.hybrid || kem.pureKem,
-          pqSignatureObserved:
-            edge?.quantum.pqSignatureObserved === true ||
-            PQ_PATTERN.test(
-              `${certInfo?.signatureAlgorithm ?? ''} ${certInfo?.publicKeyAlgorithm ?? ''} ${tlsResult?.signatureAlgorithm ?? ''}`,
-            ),
-          tls13Offered:
-            (edge?.transport.supportedProtocols ?? tlsResult?.supportedProtocols ?? []).includes('TLSv1.3'),
-          certificateValidityDays: certificateValidityDays(certInfo) ?? edgeCert?.validityDays ?? null,
-          // Now a real reading whenever the edge phase ran, and a plain `false`
-          // only when it did not — the model awards no allowance either way, but
-          // a present SCT set is no longer discarded.
-          certificateTransparency: edgeCert?.probed ? edgeCert.sctPresent : false,
-          hstsEnforced:
-            edge?.http.hsts.present === true
-              ? edge.http.hsts.status.toLowerCase().includes('enforc') || edge.http.hsts.maxAge !== null
-              : Boolean(
-                  apiResult?.securityHeaders?.find(
-                    (header) => header.name.toLowerCase() === 'strict-transport-security' && header.secure,
-                  ),
-                ),
-        })
+  const truth = reconcileTransport(tlsResult, edge, kem)
+
+  /* The edge engine probes every version individually; the socket only ever
+     knows the one it negotiated. Where both have an answer the probed list is
+     the stronger evidence and wins — and where NEITHER enumerated, the list
+     stays null so the shared ladder excludes the category rather than scoring
+     one negotiated version as though it ruled the others out. */
+  const probedProtocols = edge?.transport?.supportedProtocols ?? []
+  const socketProtocols = tlsResult?.supportedProtocols ?? []
+  const acceptedProtocols = probedProtocols.length
+    ? probedProtocols
+    : socketProtocols.length
+      ? socketProtocols
       : null
 
-  const NOT_PROBED = 'the public-edge phase did not reach this target, so this control was not measured'
-  const PROTOCOLS_UNENUMERATED =
-    'per-version probing returned no accepted protocol list, so the versions this endpoint accepts were not established — the one version the socket negotiated cannot rule the others out, and scoring it as though it could is what published a perfect 100 for an endpoint that also accepts TLS 1.0'
-  const READINESS_UNSETTLED =
-    'hybrid ML-KEM group probing did not settle on this run, and hybrid deployment carries 55 of this category’s 100 points — a readiness figure without it would be a guess, so the category is excluded and its weight redistributed'
+  const tally = headerTally(edge?.http, apiResult?.securityHeaders)
 
-  const measured: Record<string, { score: number; observed: string } | null> = {
-    'tls-configuration': tlsConfiguration(tlsResult, edge),
-    'cipher-suites': cipherSuites(tlsResult, edge),
-    certificates: certificates(certInfo),
-    'key-exchange': keyExchange(tlsResult, kem),
-    'forward-secrecy': forwardSecrecy(tlsResult, edge, kem),
-    'http-security-headers': httpSecurityHeaders(apiResult, edge),
-    hsts: hsts(apiResult),
-    // Measured by the edge engine that now runs inside this pipeline.
-    'ocsp-stapling': ocspStapling(edge),
-    'certificate-transparency': certificateTransparency(edge),
-    'dns-caa': dnsCaa(edge),
-    'cryptographic-algorithms': cryptographicAlgorithms(input, kem, edge),
-    'post-quantum-readiness': pq
-      ? { score: pq.score, observed: `${pq.score}% readiness · ${pq.reasons.slice(0, 2).join(' · ') || 'measured from the observed edge surface'}` }
+  /* HSTS: the edge model parses the directive set; the authenticated header
+     list only knows present/secure. Prefer the parsed reading and fall back to
+     a presence-only one, which the shared ladder scores conservatively. */
+  const edgeHsts = edge?.http?.probed ? edge.http.hsts : null
+  const apiHsts = apiResult?.securityHeaders?.find(
+    (header) => header.name.toLowerCase() === 'strict-transport-security',
+  )
+  const hstsObserved = Boolean(edgeHsts) || Boolean(apiResult?.securityHeaders?.length)
+  const hstsRaw = edgeHsts?.raw ?? apiHsts?.value ?? null
+  const parsedMaxAge = hstsRaw ? Number(/max-age=(\d+)/i.exec(hstsRaw)?.[1] ?? NaN) : NaN
+
+  return {
+    transport: {
+      handshakeCompleted: Boolean(tlsResult) || truth.handshakeCompleted,
+      acceptedProtocols,
+      negotiatedProtocol: edge?.transport?.negotiatedProtocol ?? tlsResult?.tlsVersion ?? null,
+      negotiatedSuite: tlsResult?.cipherSuite || edge?.transport?.negotiatedCipher || null,
+      enumeratedSuites: suiteObservations(tlsResult),
+      staticRsaAccepted: truth.staticRsaAccepted.measured ? truth.staticRsaAccepted.value : null,
+      symmetricBits: symmetricBits(tlsResult?.cipherSuite ?? edge?.transport?.negotiatedCipher),
+      forwardSecrecy: {
+        measured: truth.forwardSecrecy.measured,
+        value: truth.forwardSecrecy.value,
+      },
+    },
+    certificate: certInfo
+      ? {
+          publicKeyAlgorithm: certInfo.publicKeyAlgorithm,
+          publicKeySize: certInfo.publicKeySize || null,
+          signatureAlgorithm: certInfo.signatureAlgorithm,
+          isExpired: Boolean(certInfo.isExpired),
+          isSelfSigned: Boolean(certInfo.isSelfSigned),
+          chainTrusted: edgeCert?.probed ? edgeCert.chainTrusted : null,
+          chainHasExpiredEntry: (certInfo.chain ?? []).some((entry) => entry.isExpired),
+          validityDays: certificateValidityDays(certInfo) ?? edgeCert?.validityDays ?? null,
+          daysRemaining: daysRemaining(certInfo, edge),
+        }
       : null,
-    /* Reason travels with the exclusion so the UI never has to guess why. */
+    keyAgreement: {
+      probed: kem.probed,
+      hybridSettled: kem.hybridSettled,
+      hybrid: kem.hybrid,
+      pureKem: kem.pureKem,
+      group: kem.group,
+      classicalComponent: kem.classicalComponent,
+      postQuantumComponent: kem.postQuantumComponent,
+      handshakes: kem.handshakes || null,
+      classicalObserved: Boolean(edge?.pqKeyAgreement?.probed && edge.pqKeyAgreement.classicalGroups?.length),
+      socketLabel: tlsResult?.keyExchange || edge?.transport?.keyExchange || null,
+      negotiatedCurve: tlsResult?.negotiatedCurve ?? null,
+    },
+    revocation: edgeCert?.probed
+      ? {
+          probed: true,
+          advertisesResponder: Boolean(edgeCert.ocspUri),
+          stapled: edgeCert.ocspStapled,
+          mustStaple: edgeCert.mustStaple,
+          responderDead: edgeCert.ocspResponderState === 'unreachable',
+        }
+      : null,
+    transparency: edgeCert?.probed ? { probed: true, sctCount: edgeCert.sctCount } : null,
+    caa: edge?.dns?.probed
+      ? {
+          probed: true,
+          queryable: edge.dns.caaQueryable,
+          climbComplete: edge.dns.caaClimbComplete,
+          present: edge.dns.caaPresent,
+          recordCount: edge.dns.caaRecords.length,
+          atName: edge.dns.caaAtName,
+        }
+      : null,
+    headers: { hardened: tally.hardened, applicable: tally.applicable },
+    hsts: hstsObserved
+      ? {
+          observed: true,
+          present: edgeHsts ? edgeHsts.present : Boolean(apiHsts?.present),
+          maxAgeSeconds: edgeHsts?.maxAge ?? (Number.isFinite(parsedMaxAge) ? parsedMaxAge : null),
+          includeSubDomains:
+            edgeHsts?.includeSubDomains ?? /includeSubDomains/i.test(hstsRaw ?? ''),
+          preload: edgeHsts?.preload ?? /preload/i.test(hstsRaw ?? ''),
+        }
+      : null,
+    algorithmSources: {
+      tls: tlsResult,
+      certificate: certInfo,
+      patterns: [...(input.repoResult?.patterns ?? []), ...(input.webCryptoResult?.patterns ?? [])],
+    },
+    pqSignatureObserved:
+      edge?.quantum?.pqSignatureObserved === true ||
+      PQ_SIGNATURE_PATTERN.test(
+        `${certInfo?.signatureAlgorithm ?? ''} ${certInfo?.publicKeyAlgorithm ?? ''} ${
+          tlsResult?.signatureAlgorithm ?? ''
+        }`,
+      ),
   }
+}
 
-  const EDGE_MEASURED = new Set(['ocsp-stapling', 'certificate-transparency', 'dns-caa'])
-
-  return SCORE_CATEGORY_DEFS.map((def) => {
-    const row = measured[def.key] ?? null
-    return {
-      key: def.key,
-      label: def.label,
-      weight: def.weight,
-      score: row?.score ?? 0,
-      applicable: row !== null,
-      observed:
-        row?.observed ??
-        (def.key === 'post-quantum-readiness' && !readinessMeasurable
-          ? READINESS_UNSETTLED
-          : def.key === 'tls-configuration' && tlsResult
-            ? PROTOCOLS_UNENUMERATED
-            : EDGE_MEASURED.has(def.key)
-            ? NOT_PROBED
-            : 'not observed'),
-    }
-  })
+/**
+ * Build all twelve published categories from authenticated scan evidence.
+ *
+ * A pure delegation — the ladders live in `published-categories.ts` and are the
+ * same ones /public-scan walks.
+ */
+export function buildPublishedCategories(input: PublishedScoringInput): PublishedScoreCategory[] {
+  return buildPublishedCategorySet(toCategoryEvidence(input))
 }
 
 /**
@@ -500,3 +292,6 @@ export function buildPublishedCategories(input: PublishedScoringInput): Publishe
 export function publishedPostureScore(categories: PublishedScoreCategory[]): number {
   return weightedCategoryScore(categories)
 }
+
+/** Re-exported so existing importers of the weight table keep one source. */
+export { SCORE_CATEGORY_DEFS }

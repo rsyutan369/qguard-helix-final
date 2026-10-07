@@ -134,6 +134,7 @@ function edgeFixture(overrides: Partial<EdgeIntelligence> = {}): EdgeIntelligenc
       caaRecords: ['0 issue "letsencrypt.org"'],
       caaSource: 'Cloudflare (DoH)',
       caaAtName: 'example.test',
+      caaClimbComplete: true,
       dnssecQueryable: true,
       dnssecSigned: true,
       dnssecValidated: true,

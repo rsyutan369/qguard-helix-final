@@ -152,6 +152,11 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
   const { tls, certificate, certificateExtras, cipherSuites, dns, http, keyAgreement } = evidence
   const states: ControlState[] = []
 
+  /* CAA is answered only when a resolver replied AND the RFC 8659 climb reached
+     the registrable domain. Either gap leaves issuance policy Unknown — see the
+     `dns-caa` control below. */
+  const caaAnswered = dns.caaQueryable && dns.caaClimbComplete
+
   /* ── Inventory rows (reported, not scored) ─────────────────────────────── */
 
   states.push(
@@ -1015,37 +1020,43 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
       key: 'dns-caa',
       control: 'DNS Security (CAA)',
       shortLabel: 'DNS Security (CAA)',
-      status: !dns.caaQueryable ? 'Unknown' : dns.caaPresent ? 'Healthy' : 'Not Supported',
-      severity: !dns.caaQueryable ? 'LOW' : dns.caaPresent ? 'SAFE' : 'MEDIUM',
-      value: !dns.caaQueryable ? 'Unknown' : dns.caaPresent ? 'Pass' : 'Fail',
-      finding: !dns.caaQueryable
+      /* `caaAnswered` collapses the two ways the question can go unanswered —
+         no resolver replied, or the RFC 8659 climb stopped before reaching the
+         registrable domain. Both are Unknown. Only a COMPLETED climb that found
+         no RRset anywhere is the measured negative this control may report, or
+         every name whose policy is inherited from its apex (which is most of
+         them) is published as "any public CA may issue". */
+      status: !caaAnswered ? 'Unknown' : dns.caaPresent ? 'Healthy' : 'Not Supported',
+      severity: !caaAnswered ? 'LOW' : dns.caaPresent ? 'SAFE' : 'MEDIUM',
+      value: !caaAnswered ? 'Unknown' : dns.caaPresent ? 'Pass' : 'Fail',
+      finding: !caaAnswered
         ? 'Could not be determined'
         : dns.caaPresent
           ? 'CAA policy published'
           : 'No CAA records',
-      evidence: !dns.caaQueryable
+      evidence: !caaAnswered
         ? 'CAA query did not return an authoritative answer'
         : dns.caaPresent
           ? dns.caaRecords.join(' | ')
           : 'No CAA RRset at the name or its registrable domain',
-      businessImpact: !dns.caaQueryable
+      businessImpact: !caaAnswered
         ? 'CAA issuance policy could not be read from this vantage point.'
         : dns.caaPresent
           ? 'Restricts which authorities may issue for this domain.'
           : 'Any public CA may issue certificates for this domain.',
       quantumImpact: 'Controls which CA will issue your future PQ certificates.',
-      nextStep: !dns.caaQueryable
+      nextStep: !caaAnswered
         ? 'Verify CAA directly with your DNS provider.'
         : dns.caaPresent
           ? 'Continue monitoring.'
           : 'Publish CAA records for the approved authorities.',
-      score: !dns.caaQueryable ? null : dns.caaPresent ? 100 : 0,
-      observed: dns.caaQueryable
+      score: !caaAnswered ? null : dns.caaPresent ? 100 : 0,
+      observed: caaAnswered
         ? dns.caaPresent
           ? dns.caaRecords.join(' | ')
           : 'no CAA records published'
         : 'CAA query unavailable from this vantage point',
-      detail: !dns.caaQueryable
+      detail: !caaAnswered
         ? 'The CAA RRset could not be queried, so issuance policy is Unknown — not scored.'
         : 'CAA restricts which authorities may issue for this name.',
       inAttackSurface: true,

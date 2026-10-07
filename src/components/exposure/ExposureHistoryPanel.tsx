@@ -45,6 +45,8 @@ import {
 import { cn } from '@/lib/utils';
 import { ACCENT, Panel, SectionLabel } from '@/components/quantum-scan/ui';
 import { useExposureHistory, type ExposureHistoryDetail } from '@/hooks/use-exposure-history';
+import { ExposureReportButton, type ExposureReportAuthor } from './ExposureReportLauncher';
+import { exposureRecordFromProvenance } from '@/services/reporting/ExposureReport';
 import type { ExposureHistoryEntry, ExposureHistoryMode } from '@/lib/scanner/exposure/history';
 import type { FindingSeverity } from '@/lib/scanner/exposure/types';
 import { cbomToCsv, cbomToCycloneDx, cbomToJson } from '@/lib/scanner/exposure/cbom';
@@ -142,9 +144,15 @@ export interface ExposureHistoryPanelProps {
   active?: boolean;
   /** Take the operator back to the assessment surface to run a new scan. */
   onStartAssessment?: () => void;
+  /**
+   * When set, a recorded assessment can be reported on, with this author on the
+   * cover. The report declares the record's own provenance — which fields were
+   * read back, which were recomputed and which the record never held.
+   */
+  reports?: ExposureReportAuthor;
 }
 
-export function ExposureHistoryPanel({ mode, active = true, onStartAssessment }: ExposureHistoryPanelProps) {
+export function ExposureHistoryPanel({ mode, active = true, onStartAssessment, reports }: ExposureHistoryPanelProps) {
   const history = useExposureHistory(mode, { enabled: active });
 
   const [query, setQuery] = React.useState('');
@@ -285,6 +293,7 @@ export function ExposureHistoryPanel({ mode, active = true, onStartAssessment }:
               onBack={closeDetail}
               onDelete={(entry) => setPendingDelete(entry)}
               onRetry={() => void openDetail(openScanId)}
+              reports={reports}
             />
           </motion.div>
         ) : (
@@ -1043,6 +1052,7 @@ function HistoryDetailView({
   onBack,
   onDelete,
   onRetry,
+  reports,
 }: {
   mode: ExposureHistoryMode;
   entry: ExposureHistoryEntry | null;
@@ -1053,6 +1063,7 @@ function HistoryDetailView({
   onBack: () => void;
   onDelete: (entry: ExposureHistoryEntry) => void;
   onRetry: () => void;
+  reports?: ExposureReportAuthor;
 }) {
   const shown = detail?.entry ?? entry;
 
@@ -1080,6 +1091,13 @@ function HistoryDetailView({
           </div>
 
           <div className="flex shrink-0 flex-wrap items-center gap-2">
+            {detail && reports && (
+              <ExposureReportButton
+                assessment={detail.assessment}
+                author={reports}
+                record={exposureRecordFromProvenance(detail.provenance)}
+              />
+            )}
             {detail && <ExportRow detail={detail} />}
             {shown && shown.origin === 'recorded' && (
               <button

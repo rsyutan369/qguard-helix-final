@@ -126,6 +126,11 @@ export async function runScanEngines(options: OrchestratorOptions): Promise<Scan
   const deadline = startedAt + (options.budgetMs ?? DEFAULT_SCAN_BUDGET_MS)
   const emit = observationEmitter(options.onObservation)
 
+/** CAA is answered only when a resolver replied AND the RFC 8659 climb reached
+    the registrable domain. Either gap leaves issuance policy Unknown. */
+const caaAnswered = (dns: { caaQueryable: boolean; caaClimbComplete: boolean }) =>
+  dns.caaQueryable && dns.caaClimbComplete
+
   // DNS and HTTP touch different infrastructure than the TLS probes, so they
   // run alongside the TLS chain without competing for the same connection pool.
   onEngineStart?.('dns-intelligence')
@@ -138,7 +143,11 @@ export async function runScanEngines(options: OrchestratorOptions): Promise<Scan
       'dns-intelligence',
       result.ok,
       `${result.data.addressCount} address(es), CAA ${
-        result.data.caaQueryable ? (result.data.caaPresent ? 'present' : 'absent') : 'unknown'
+        !result.data.caaQueryable || !result.data.caaClimbComplete
+          ? 'unknown'
+          : result.data.caaPresent
+            ? 'present'
+            : 'absent'
       }`,
     )
     emit({
@@ -154,14 +163,19 @@ export async function runScanEngines(options: OrchestratorOptions): Promise<Scan
     emit({
       surface: 'dns',
       label: 'CAA issuance policy',
+      /* `caaAnswered`: a resolver replied AND the RFC 8659 climb reached the
+         registrable domain. Short of that the row says Unknown — issuance policy
+         is inherited up the tree, so a leaf NODATA is not "Open issuance". */
       detail: !result.data.caaQueryable
         ? 'CAA not observable from this resolver'
-        : result.data.caaPresent
-          ? `CAA record found · ${result.data.caaRecords.length} issuer(s)`
-          : 'No CAA issuance policy',
-      status: !result.data.caaQueryable ? 'info' : result.data.caaPresent ? 'pass' : 'warning',
-      severity: !result.data.caaQueryable ? 'info' : result.data.caaPresent ? 'none' : 'low',
-      verdict: !result.data.caaQueryable ? 'Partial' : result.data.caaPresent ? 'Secure' : 'Open issuance',
+        : !result.data.caaClimbComplete
+          ? 'CAA undetermined — the climb to the registrable domain did not complete'
+          : result.data.caaPresent
+            ? `CAA record found · ${result.data.caaRecords.length} issuer(s)`
+            : 'No CAA issuance policy',
+      status: !caaAnswered(result.data) ? 'info' : result.data.caaPresent ? 'pass' : 'warning',
+      severity: !caaAnswered(result.data) ? 'info' : result.data.caaPresent ? 'none' : 'low',
+      verdict: !caaAnswered(result.data) ? 'Partial' : result.data.caaPresent ? 'Secure' : 'Open issuance',
     })
     return result
   })

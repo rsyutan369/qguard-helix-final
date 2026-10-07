@@ -1,0 +1,182 @@
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+    /* --- Bloom to paper: the bookend transition (01→02 and 11→12) --- */
+    .fxo-bloom {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+    }
+    .fxo-burst {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 3400px;
+      height: 3400px;
+      margin: -1700px 0 0 -1700px;
+      border-radius: 50%;
+      background: radial-gradient(
+        circle,
+        #ffffff 0%,
+        #f8fbff 46%,
+        rgba(186, 230, 253, 0.85) 56%,
+        rgba(76, 141, 255, 0.35) 63%,
+        rgba(76, 141, 255, 0) 70%
+      );
+      opacity: 0;
+    }
+    .fxo-flat {
+      position: absolute;
+      inset: 0;
+      background: #f8fbff;
+      opacity: 0;
+    }
+    /* --- Grain: fine film grain that also dithers gradients for the encoder --- */
+    .fxo-grain {
+      position: absolute;
+      inset: 0;
+      background-size: 512px 512px;
+      opacity: 0;
+    }
+    /* Sub-composition markup is mounted into index.html, so asset URLs here are
+       relative to the project root, not to this file. */
+    #fxo-grain-night {
+      background-image: url("assets/img/grain-light.png");
+    }
+    #fxo-grain-day {
+      background-image: url("assets/img/grain-dark.png");
+    }
+    /* --- Chapter rail --- */
+    #fxo-rail {
+      position: absolute;
+      left: 96px;
+      right: 96px;
+      bottom: 34px;
+      height: 44px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      color: #090d16;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 19px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      opacity: 0;
+    }
+    #fxo-rail-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 2px;
+      background: currentColor;
+      opacity: 0.22;
+      transform-origin: left center;
+    }
+    .fxo-rail-side {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      white-space: nowrap;
+    }
+    #fxo-rail-mark {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #00c5eb;
+    }
+    #fxo-rail-ver {
+      opacity: 0.55;
+    }
+    #fxo-rail-idx {
+      opacity: 0.55;
+    }
+  </style>
+
+  <div id="root" data-composition-id="fx-overlay" data-width="1920" data-height="1080" data-duration="60">
+    <div id="fxo-layers" class="clip" data-start="0" data-duration="60" data-track-index="0" data-layout-ignore>
+      <div id="fxo-rail">
+        <span id="fxo-rail-line"></span>
+        <span class="fxo-rail-side"><span id="fxo-rail-mark"></span><span id="fxo-rail-name">QGuard Messaging</span><span id="fxo-rail-ver">v1.3.9</span></span>
+        <span class="fxo-rail-side"><span id="fxo-rail-idx"></span><span id="fxo-rail-chapter">The app</span></span>
+      </div>
+
+      <div class="fxo-bloom" id="fxo-bloom-a"><div class="fxo-burst" id="fxo-burst-a"></div><div class="fxo-flat" id="fxo-flat-a"></div></div>
+      <div class="fxo-bloom" id="fxo-bloom-b"><div class="fxo-burst" id="fxo-burst-b"></div><div class="fxo-flat" id="fxo-flat-b"></div></div>
+
+      <div class="fxo-grain" id="fxo-grain-night"></div>
+      <div class="fxo-grain" id="fxo-grain-day"></div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const QG = window.QG;
+      const tl = gsap.timeline({ paused: true });
+
+      /* Bloom A crests on the bar line at 6.0s, bloom B at 54.0s. */
+      function bloom(burst, flat, peak) {
+        tl.fromTo(burst, { scale: 0.03, opacity: 0 }, { scale: 1.32, opacity: 1, duration: 0.5, ease: "power3.in" }, peak - 0.5);
+        tl.fromTo(flat, { opacity: 0 }, { opacity: 1, duration: 0.2, ease: "power2.in" }, peak - 0.2);
+        tl.to(burst, { opacity: 0, duration: 0.2, ease: "none" }, peak);
+        tl.to(flat, { opacity: 0, duration: 0.6, ease: "power2.out" }, peak + 0.04);
+      }
+      bloom("#fxo-burst-a", "#fxo-flat-a", 6.0);
+      bloom("#fxo-burst-b", "#fxo-flat-b", 54.0);
+
+      /* Grain and the chapter rail are pure functions of global time. */
+      const grainNight = document.getElementById("fxo-grain-night");
+      const grainDay = document.getElementById("fxo-grain-day");
+      const rail = document.getElementById("fxo-rail");
+      const railIdx = document.getElementById("fxo-rail-idx");
+      const railChapter = document.getElementById("fxo-rail-chapter");
+
+      const CHAPTERS = [
+        { from: 12, idx: "", name: "Desktop + mobile" },
+        { from: 18, idx: "01 / 02", name: "Secure Chat" },
+        { from: 30, idx: "02 / 02", name: "Quantum Vault" },
+        { from: 42, idx: "", name: "The exact suite" },
+      ];
+      let shown = -1;
+
+      function draw(t) {
+        const day = QG.dayMix(t);
+        const frame = Math.floor(t * 30 + 0.0001);
+        const gx = Math.floor(QG.hash(frame, 11) * 512);
+        const gy = Math.floor(QG.hash(frame, 29) * 512);
+        const pos = gx + "px " + gy + "px";
+        grainNight.style.backgroundPosition = pos;
+        grainDay.style.backgroundPosition = pos;
+        grainNight.style.opacity = (0.2 * (1 - day)).toFixed(4);
+        grainDay.style.opacity = (0.11 * day).toFixed(4);
+
+        // rail: in at 12.3, out before the principles
+        const vis = QG.ramp(t, 12.3, 12.9) * (1 - QG.ramp(t, 49.55, 49.9));
+        rail.style.opacity = vis.toFixed(4);
+        const c = Math.round(QG.lerp(234, 9, day));
+        const g = Math.round(QG.lerp(241, 13, day));
+        const b = Math.round(QG.lerp(255, 22, day));
+        rail.style.color = "rgb(" + c + "," + g + "," + b + ")";
+
+        let k = 0;
+        for (let i = 0; i < CHAPTERS.length; i++) if (t >= CHAPTERS[i].from) k = i;
+        if (k !== shown) {
+          shown = k;
+          railIdx.textContent = CHAPTERS[k].idx;
+          railChapter.textContent = CHAPTERS[k].name;
+        }
+      }
+
+      const clock = QG.proxy(draw);
+      clock.t = 0;
+      tl.fromTo(clock, { t: 0 }, { t: 60, duration: 60, ease: "none" }, 0);
+
+      window.__timelines["fx-overlay"] = tl;
+    })();
+  </script>
+</template>

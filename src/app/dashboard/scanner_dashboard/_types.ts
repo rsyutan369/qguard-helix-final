@@ -14,6 +14,7 @@
    isomorphic half of the engine — pure types and pure derivations, no sockets —
    so the browser gets the real contract instead of a copy of it. */
 import type { EdgeIntelligence } from '@/lib/scanner/web-scanner/edge-intelligence-model';
+import type { PublishedCategory as SharedPublishedCategory } from '@/lib/scanner/published-categories';
 
 export type { EdgeIntelligence };
 
@@ -141,15 +142,16 @@ export type ScanRiskApplicability = {
  * One category of the platform's published twelve-category scoring model, as
  * returned per target by the scanner. This is the SAME model /public-scan grades
  * against — same keys, same weights, same grade table.
+ *
+ * RE-EXPORTED, NOT RESTATED. This used to be a hand-copied structural twin of
+ * the scorer's own type, which is the third copy of one shape in a codebase that
+ * had already been bitten twice by exactly that: a field added at the source
+ * (`detail`) left this copy silently behind, and the only symptom was a cast
+ * failing in a test fixture. `published-categories.ts` is deliberately pure — it
+ * imports nothing but the published weight table — so a client module can name
+ * its type without pulling a scanner collector into the bundle.
  */
-export type PublishedScoreCategory = {
-  key: string;
-  label: string;
-  weight: number;
-  score: number;
-  applicable: boolean;
-  observed: string;
-};
+export type PublishedScoreCategory = SharedPublishedCategory;
 
 export type ScanConfidence = {
   confidence: number;

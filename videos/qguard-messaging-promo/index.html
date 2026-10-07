@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>QGuard Messaging — One app. Quantum-safe chat &amp; vault.</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <link rel="stylesheet" href="css/qg-base.css" />
+    <link rel="stylesheet" href="css/qg-desktop.css" />
+    <link rel="stylesheet" href="css/qg-phone.css" />
+    <script src="js/qg.js"></script>
+    <script src="js/qg-ui.js"></script>
+    <style>
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #04070f;
+      }
+      /* Every slot fills the frame. Order: shared ground, scenes, overlay. */
+      #root > div[data-composition-src] {
+        position: absolute;
+        inset: 0;
+      }
+      #el-bg {
+        z-index: 0;
+      }
+      .scene-slot {
+        z-index: 10;
+        transform-origin: 50% 50%;
+      }
+      #el-fx {
+        z-index: 100;
+        pointer-events: none;
+      }
+      /* Asks the browser for every face the canvases draw with, so canvas text
+         never falls back to a system font. Rendered, fully transparent. */
+      #font-primer {
+        position: absolute;
+        left: 0;
+        top: 0;
+        opacity: 0;
+        pointer-events: none;
+        white-space: nowrap;
+        font-size: 12px;
+        line-height: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="60" data-fps="30" data-width="1920" data-height="1080">
+      <div id="font-primer" data-layout-ignore aria-hidden="true">
+        <span style="font-family: 'Geist'; font-weight: 500">Aa</span>
+        <span style="font-family: 'Geist'; font-weight: 800">Aa</span>
+        <span style="font-family: 'Geist'; font-weight: 900">Aa</span>
+        <span style="font-family: 'JetBrains Mono'; font-weight: 500">Aa</span>
+        <span style="font-family: 'JetBrains Mono'; font-weight: 700">Aa</span>
+        <span style="font-family: 'Inter'; font-weight: 400">Aa</span>
+        <span style="font-family: 'Inter'; font-weight: 600">Aa</span>
+        <span style="font-family: 'Inter'; font-weight: 700">Aa</span>
+        <span style="font-family: 'Archivo'; font-weight: 400">Aa</span>
+        <span style="font-family: 'Archivo'; font-weight: 800">Aa</span>
+      </div>
+
+      <!-- Track 0 — the shared ground: paper by day, ink by night, one drifting lattice. -->
+      <div id="el-bg" data-composition-id="bg-world" data-composition-src="compositions/bg-world.html" data-start="0" data-duration="60" data-track-index="0"></div>
+
+      <!-- Tracks 1–2 — the twelve scenes, back to back, each starting on a bar line (120 BPM, 2s bars). -->
+      <div id="el-s01" class="scene-slot" data-composition-id="s01-threat" data-composition-src="compositions/01-threat.html" data-start="0" data-duration="6" data-track-index="1"></div>
+      <div id="el-s02" class="scene-slot" data-composition-id="s02-brand" data-composition-src="compositions/02-brand.html" data-start="6" data-duration="6" data-track-index="2"></div>
+
+      <!-- Track 3 — overlay: the bloom bookends, film grain, chapter rail. -->
+      <div id="el-fx" data-composition-id="fx-overlay" data-composition-src="compositions/fx-overlay.html" data-start="0" data-duration="60" data-track-index="3"></div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+
+      /* -----------------------------------------------------------------------
+         Scene handoffs. Three types only, each stamped on the two scene slots at
+         the bar line T. Scenes never animate their own exit: the handoff is the exit.
+
+         zoomThrough — chapter turns and diving in. Hard swap at the blur peak.
+         cutCurve    — related beats. Both sides travel left at matched velocity.
+         bloom       — the bookend. The overlay carries the light; the slots just
+                       lean into it and settle out of it.
+         --------------------------------------------------------------------- */
+      function zoomThrough(out, inn, T) {
+        tl.fromTo(out, { scale: 1, filter: "blur(0px)" }, { scale: 1.22, filter: "blur(18px)", duration: 0.24, ease: "power3.in", immediateRender: false }, T - 0.24);
+        tl.fromTo(out, { opacity: 1 }, { opacity: 0.15, duration: 0.24, ease: "none", immediateRender: false }, T - 0.24);
+        tl.fromTo(inn, { scale: 0.8, filter: "blur(18px)", opacity: 0.15 }, { scale: 1, filter: "blur(0px)", opacity: 1, duration: 0.55, ease: "expo.out" }, T);
+        tl.set(inn, { filter: "none" }, T + 0.56);
+      }
+
+      function cutCurve(out, inn, T) {
+        tl.fromTo(out, { x: 0 }, { x: -230, duration: 0.3, ease: "power4.in", immediateRender: false }, T - 0.3);
+        tl.fromTo(out, { opacity: 1 }, { opacity: 0, duration: 0.22, ease: "power1.in", immediateRender: false }, T - 0.22);
+        tl.fromTo(inn, { x: 230, opacity: 0.35 }, { x: 0, opacity: 1, duration: 0.34, ease: "power4.out" }, T);
+      }
+
+      function bloom(out, inn, T) {
+        tl.fromTo(out, { scale: 1 }, { scale: 1.1, duration: 0.5, ease: "power3.in", immediateRender: false }, T - 0.5);
+        tl.fromTo(inn, { scale: 1.05 }, { scale: 1, duration: 0.9, ease: "expo.out" }, T);
+      }
+
+      bloom("#el-s01", "#el-s02", 6);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

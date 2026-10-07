@@ -10,8 +10,7 @@
  * discrepancy — this file is what guarantees that.
  */
 
-import { findControl, resolveKeyExchange } from './controls'
-import type { ControlState, PublicScanEvidence, RiskBand, ScoreComponent, SecurityGrade } from './types'
+import type { RiskBand, SecurityGrade } from './types'
 
 const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)))
 
@@ -245,133 +244,25 @@ export const RATING_TIERS: Array<{ rating: string; color: string }> = (() => {
   return tiers.reverse() // worst → best, matching the gauge's left-to-right sweep
 })()
 
-// ─── Category scorers not backed 1:1 by a single control ────────────────────
+/* ─── Category scoring lives elsewhere now ───────────────────────────────────
 
-/**
- * Key Exchange strength: distinct from Forward Secrecy. This scores WHICH
- * mechanism was negotiated (hybrid PQ > strong classical > weak > none), not
- * merely whether ephemeral key agreement is present at all.
- */
-function keyExchangeScore(evidence: PublicScanEvidence): number | null {
-  if (!evidence.tls) return null
-  if (evidence.keyAgreement.hybridGroups.length) return 100
-  if (evidence.keyAgreement.classicalGroups.length) return 70
-  const kex = evidence.tls.keyExchange ?? ''
-  if (/ecdhe|x25519|ffdhe/i.test(kex)) return 65
-  if (/dhe/i.test(kex)) return 55
-  if (/rsa/i.test(kex)) return 15
-  // TLS 1.3 guarantees ephemeral key agreement even when the named-group probe
-  // could not resolve which group — Node never exposes it for 1.3.
-  return evidence.tls.tlsVersion === 'TLSv1.3' ? 65 : 30
-}
+   `buildScoreCategories` and its four private scorers used to sit here. They
+   were ONE of two implementations of the twelve categories above — the other
+   being `web-scanner/published-scoring.ts` — and fed byte-identical evidence
+   for test.openquantumsafe.org the two disagreed on six of twelve categories,
+   publishing B · Good against B- · Fair for the same endpoint at the same
+   moment.
 
-/**
- * Cryptographic Algorithms: the share of everything the Cryptographic
- * Intelligence engine catalogued (cipher, cert key, signature hash, protocol,
- * key-agreement group) that classifies as Quantum Safe or Hybrid rather than
- * Classical, Legacy or Deprecated.
- */
-function cryptographicAlgorithmsScore(evidence: PublicScanEvidence): number | null {
-  const algorithms = evidence.engines?.crypto?.data?.algorithms ?? []
-  if (!algorithms.length) return null
-  const points = algorithms.reduce((sum, algorithm) => {
-    if (algorithm.classification === 'Quantum Safe' || algorithm.classification === 'Hybrid') return sum + 100
-    if (algorithm.classification === 'Classical') return sum + 55
-    if (algorithm.classification === 'Legacy') return sum + 25
-    return sum + 5 // Deprecated
-  }, 0)
-  return clamp(points / algorithms.length)
-}
+   There is now exactly one implementation, in
+   `src/lib/scanner/published-categories.ts`, and both surfaces delegate to it:
 
-/** Certificates: blends the algorithm/trust score (65%) with lifecycle hygiene (35%). */
-function certificatesScore(controls: ControlState[]): number | null {
-  const algorithm = findControl(controls, 'certificate-algorithm')?.score ?? null
-  const lifetime = findControl(controls, 'certificate-lifetime')?.score ?? null
-  if (algorithm === null && lifetime === null) return null
-  if (algorithm === null) return lifetime
-  if (lifetime === null) return algorithm
-  return clamp(algorithm * 0.65 + lifetime * 0.35)
-}
+     /public-scan         public-scan/score-categories.ts   -> buildScoreCategories
+     /dashboard/scanner   web-scanner/published-scoring.ts  -> buildPublishedCategories
 
-// ─── Category aggregation ─────────────────────────────────────────────────────
+   This file keeps only the published STANDARD — the weight table, the grade
+   table, the gauge bands and the post-quantum readiness model — which is what
+   both surfaces agree on and what `published-categories.ts` imports. Putting an
+   adapter back in here would close a module cycle, and would quietly re-open the
+   door to a second opinion.
 
-/**
- * The published 12-category weighted model, computed from live evidence.
- *
- * Eight of the twelve categories pass an existing granular control's score
- * straight through; Certificates blends two related controls. Cryptographic
- * Algorithms and Post-Quantum Readiness are computed here directly from the
- * Cryptographic Intelligence engine and the dedicated PQ-readiness scorer, so
- * the number shown in this decomposition always matches the number shown on
- * the Post-Quantum Readiness stat elsewhere in the report — one calculation,
- * never two.
- */
-export function buildScoreCategories(
-  evidence: PublicScanEvidence,
-  controls: ControlState[],
-  postQuantumReadinessScore: number,
-): ScoreComponent[] {
-  const rawScore = (key: string): number | null => findControl(controls, key)?.score ?? null
-  const observedOf = (key: string) => findControl(controls, key)?.observed ?? 'not observed'
-  const detailOf = (key: string) => findControl(controls, key)?.detail ?? ''
-
-  const cert = evidence.certificate
-  const extras = evidence.certificateExtras
-  const algorithms = evidence.engines?.crypto?.data?.algorithms ?? []
-  // Post-quantum readiness (and the categories derived alongside it) cannot be
-  // determined without a completed handshake — same "unobservable, not zero"
-  // rule as every other dimension.
-  const pqApplicable = evidence.tls !== null
-
-  const rows: Array<{ key: string; score: number | null; observed: string; detail: string }> = [
-    { key: 'tls-configuration', score: rawScore('tls-version'), observed: observedOf('tls-version'), detail: detailOf('tls-version') },
-    { key: 'cipher-suites', score: rawScore('cipher-suite'), observed: observedOf('cipher-suite'), detail: detailOf('cipher-suite') },
-    {
-      key: 'certificates',
-      score: certificatesScore(controls),
-      observed: cert
-        ? `${cert.publicKeyAlgorithm} · ${extras ? `${extras.validityDays}-day lifetime` : 'lifetime unknown'}`
-        : 'not observed',
-      detail: 'Blend of certificate algorithm/trust (65%) and lifecycle hygiene (35%)',
-    },
-    {
-      key: 'key-exchange',
-      score: keyExchangeScore(evidence),
-      observed: evidence.tls ? resolveKeyExchange(evidence) : 'not observed',
-      detail: 'Strength of the negotiated or accepted key-agreement mechanism',
-    },
-    { key: 'forward-secrecy', score: rawScore('forward-secrecy'), observed: observedOf('forward-secrecy'), detail: detailOf('forward-secrecy') },
-    { key: 'http-security-headers', score: rawScore('http-security'), observed: observedOf('http-security'), detail: detailOf('http-security') },
-    { key: 'hsts', score: rawScore('hsts'), observed: observedOf('hsts'), detail: detailOf('hsts') },
-    { key: 'ocsp-stapling', score: rawScore('ocsp-stapling'), observed: observedOf('ocsp-stapling'), detail: detailOf('ocsp-stapling') },
-    { key: 'certificate-transparency', score: rawScore('certificate-transparency'), observed: observedOf('certificate-transparency'), detail: detailOf('certificate-transparency') },
-    { key: 'dns-caa', score: rawScore('dns-caa'), observed: observedOf('dns-caa'), detail: detailOf('dns-caa') },
-    {
-      key: 'cryptographic-algorithms',
-      score: pqApplicable ? cryptographicAlgorithmsScore(evidence) : null,
-      observed: algorithms.length ? `${algorithms.length} algorithms observed` : 'not observed',
-      detail: 'Share of observed algorithms classified Quantum Safe or Hybrid',
-    },
-    {
-      key: 'post-quantum-readiness',
-      score: pqApplicable ? postQuantumReadinessScore : null,
-      observed: pqApplicable ? `${postQuantumReadinessScore}% readiness` : 'not observed',
-      detail: 'Hybrid post-quantum key agreement and signature observations',
-    },
-  ]
-
-  const defByKey = new Map(SCORE_CATEGORY_DEFS.map((def) => [def.key, def]))
-  return rows.map((row) => {
-    const def = defByKey.get(row.key)
-    if (!def) throw new Error(`Unknown score category key: ${row.key}`)
-    return {
-      key: row.key,
-      label: def.label,
-      score: row.score ?? 0,
-      weight: def.weight,
-      applicable: row.score !== null,
-      observed: row.observed,
-      detail: row.detail,
-    }
-  })
-}
+   `tools/surface-parity-check.ts` fails if a second opinion ever appears. */

@@ -323,6 +323,16 @@ export interface ScanCoverage {
   /** True when a bounded budget truncated the work. */
   truncated: boolean;
   truncationNote?: string;
+  /**
+   * Engines whose own budget stopped them before they had read their remit.
+   *
+   * `truncated` alone is a flag with nobody attached to it, and coverage is
+   * scored per ENGINE — so a truncating engine was still counted as having
+   * covered its remit in full, and a run that stopped 400 files short
+   * published "Coverage 100%" beside its own "totals are a floor" note.
+   * Naming the engine lets `computeCoverage` stop crediting it.
+   */
+  truncatedBy: string[];
 }
 
 export function emptyCoverage(): ScanCoverage {
@@ -350,6 +360,7 @@ export function emptyCoverage(): ScanCoverage {
     exclusions: [],
     notAssessed: [],
     truncated: false,
+    truncatedBy: [],
   };
 }
 
@@ -358,7 +369,7 @@ export function mergeCoverage(base: ScanCoverage, patch: Partial<ScanCoverage>):
   const next: ScanCoverage = { ...base };
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined || value === null) continue;
-    if (key === 'exclusions' || key === 'notAssessed') continue;
+    if (key === 'exclusions' || key === 'notAssessed' || key === 'truncatedBy') continue;
     if (key === 'truncated') {
       next.truncated = next.truncated || Boolean(value);
       continue;
@@ -374,6 +385,11 @@ export function mergeCoverage(base: ScanCoverage, patch: Partial<ScanCoverage>):
   }
   if (patch.exclusions?.length) {
     next.exclusions = Array.from(new Set([...next.exclusions, ...patch.exclusions]));
+  }
+  if (patch.truncatedBy?.length) {
+    /* `next.truncatedBy` can be absent on a coverage object rehydrated from a
+       record written before this field existed. */
+    next.truncatedBy = Array.from(new Set([...(next.truncatedBy ?? []), ...patch.truncatedBy]));
   }
   if (patch.notAssessed?.length) {
     /* Keyed on DIMENSION alone. Keying on `dimension|reason` let one gap appear

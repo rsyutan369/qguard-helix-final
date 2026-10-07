@@ -28,7 +28,7 @@ import {
   toAttackSurface,
   toFindings,
 } from './engine'
-import { buildScoreCategories } from './grading-model'
+import { buildScoreCategories } from './score-categories'
 import {
   PUBLIC_SCAN_STAGES,
   type PublicScanEvidence,
@@ -116,6 +116,13 @@ export function toReportEvidence(bundle: ScanEvidenceBundle): PublicScanEvidence
     cipherSuites: tls.data.cipherSuites,
     keyAgreement: {
       probed: tls.data.groupsProbed,
+      /* An ACCEPTANCE settles the question by itself — a throttled connection
+         cannot forge one. Otherwise a hybrid group must have been conclusively
+         refused for the absence to mean anything. */
+      hybridSettled:
+        tls.data.hybridGroups.length > 0 ||
+        tls.data.pureKemGroups.length > 0 ||
+        tls.data.hybridGroupsSettled.length > 0,
       hybridGroups: tls.data.hybridGroups,
       pureKemGroups: tls.data.pureKemGroups,
       classicalGroups: tls.data.classicalGroups,
@@ -129,6 +136,7 @@ export function toReportEvidence(bundle: ScanEvidenceBundle): PublicScanEvidence
       caaRecords: dns.data.caaRecords.map((record) => record.raw),
       caaPresent: dns.data.caaPresent,
       caaQueryable: dns.data.caaQueryable,
+      caaClimbComplete: dns.data.caaClimbComplete,
       resolverAvailable: dns.data.systemResolverAvailable || dns.data.dohAvailable,
       nameservers: dns.data.nameservers,
       mxHosts: dns.data.mailExchangers.map((mx) => mx.exchange),

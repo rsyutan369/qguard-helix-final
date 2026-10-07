@@ -54,7 +54,19 @@ import {
 
 const MAX_LINE_LENGTH = 4_000;
 const MAX_LEXICAL_MATCHES_PER_FILE = 60;
-const MAX_COMPONENTS = 1_200;
+/**
+ * Per-run cap on the observations this engine emits.
+ *
+ * Named for what it actually counts. As `MAX_COMPONENTS` it was reported to the
+ * reader as a cap on "components", and the CBOM deduplicates observations into
+ * distinct components — so a run that stopped at 1,200 observations printed
+ * "stopped at the engine budget of 1200 components" in a document whose own
+ * bill of materials listed 1,154.
+ */
+const MAX_OBSERVATIONS = 1_200;
+
+/** Thousands separators, so a cap printed in a report reads as a figure. */
+const nf = (value: number) => value.toLocaleString('en-US');
 /** Window inside which the same lexical rule in one file is one match. */
 const DEDUP_WINDOW = 5;
 
@@ -229,7 +241,7 @@ export const sourceCryptoEngine: ExposureEngine = {
     const sourceStride = reportStride(files.length);
     for (const file of files) {
       if (context.isCancelled()) break;
-      if (findings.length >= MAX_COMPONENTS) {
+      if (findings.length >= MAX_OBSERVATIONS) {
         truncated = true;
         break;
       }
@@ -258,7 +270,7 @@ export const sourceCryptoEngine: ExposureEngine = {
       const groups = groupForGroundTruth(document, observations);
 
       for (const [key, group] of groups) {
-        if (findings.length >= MAX_COMPONENTS) {
+        if (findings.length >= MAX_OBSERVATIONS) {
           truncated = true;
           break;
         }
@@ -407,8 +419,13 @@ export const sourceCryptoEngine: ExposureEngine = {
       {
         cryptoComponents: componentKeys.size,
         truncated,
+        truncatedBy: truncated ? ['source-crypto'] : [],
+        /* Every number here is measured: the cap, and how many in-scope files
+           were still unread when it was reached. A note that gave only the cap
+           could not be sized by a reader, and naming it in "components" put it
+           in a unit the bill of materials counts differently. */
         truncationNote: truncated
-          ? `Cryptographic analysis stopped at the engine budget of ${MAX_COMPONENTS} components; the estate may contain more.`
+          ? `Cryptographic source analysis stopped at its per-run cap of ${nf(MAX_OBSERVATIONS)} observations, with ${nf(Math.max(0, files.length - processed))} of ${nf(files.length)} in-scope files still unread. Counts from this engine are a floor.`
           : undefined,
       },
       {

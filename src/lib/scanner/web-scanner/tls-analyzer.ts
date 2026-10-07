@@ -345,6 +345,18 @@ function connectTls(
   })
 }
 
+/**
+ * True when a failed probe produced NO ANSWER from the endpoint.
+ *
+ * `connectTls` rejects with a "TLS connection timeout" message when the socket
+ * or the guard timer fires, and with "TLS connection failed … <code>" when the
+ * peer actually responded (RST, TLS alert). One predicate so the distinction is
+ * made in exactly one place.
+ */
+function isNoAnswerError(message: string): boolean {
+  return /connection timeout/i.test(message)
+}
+
 async function probeProtocol(hostname: string, port: number, protocol: tls.SecureVersion, connectHost = hostname): Promise<TlsProtocolProbe> {
   try {
     const result = await connectTls(
@@ -366,12 +378,18 @@ async function probeProtocol(hostname: string, port: number, protocol: tls.Secur
       keyExchange: result.keyExchange,
     }
   } catch (err) {
+    const message = (err as Error).message
     return {
       protocol,
       supported: false,
       cipherSuite: null,
       keyExchange: null,
-      error: (err as Error).message,
+      /* Did the endpoint SAY anything? A TLS alert or an RST is an answer and
+         makes the negative falsifiable; a timeout is silence and measures
+         nothing. `confirmProtocolNegatives` spends its retry budget on the
+         silent ones. */
+      answered: !isNoAnswerError(message),
+      error: message,
     }
   }
 }
@@ -436,14 +454,39 @@ async function confirmProtocolNegatives(
   // add four timeouts to a scan that already knows the endpoint is unreachable.
   if (refused.length === 0 || accepted === 0) return probes
 
+  /* A REFUSAL AND A SILENCE ARE NOT THE SAME NEGATIVE, and one re-probe was not
+     enough for the silent kind. Sweeping www.cloudflare.com repeatedly, every
+     answer the endpoint actually gave — `ECONNRESET`, TLS alert — arrived in
+     under 1.1s, while every version that went missing had simply TIMED OUT at
+     PROBE_TIMEOUT, twice in a row. The published consequence: one run in four
+     reported `Accepts: TLSv1.3` for an endpoint that provably accepts TLS 1.2,
+     which moves `tls-configuration` in the FLATTERING direction — a legacy
+     version disappearing looks like good configuration.
+
+     So the budget is spent where it buys a measurement: a probe the endpoint
+     answered is already falsifiable evidence and is re-probed once as before,
+     while a probe that produced no answer at all is retried until it produces
+     one, up to ATTEMPTS_FOR_SILENCE. A version that still never answers keeps
+     its timeout in `error` rather than being published as a clean refusal. */
+  const ATTEMPTS_FOR_SILENCE = 3
   for (const probe of refused) {
-    if (Date.now() >= deadline) break
-    const retry = await probeProtocol(hostname, port, probe.protocol as tls.SecureVersion, connectHost)
-    if (retry.supported) {
-      probe.supported = true
-      probe.cipherSuite = retry.cipherSuite
-      probe.keyExchange = retry.keyExchange
-      probe.error = undefined
+    const attempts = probe.answered === false ? ATTEMPTS_FOR_SILENCE : 1
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (Date.now() >= deadline) break
+      const retry = await probeProtocol(hostname, port, probe.protocol as tls.SecureVersion, connectHost)
+      if (retry.supported) {
+        probe.supported = true
+        probe.cipherSuite = retry.cipherSuite
+        probe.keyExchange = retry.keyExchange
+        probe.answered = true
+        probe.error = undefined
+        break
+      }
+      probe.answered = retry.answered
+      probe.error = retry.error
+      /* The endpoint spoke. That is the falsifiable negative this pass exists to
+         confirm, and repeating it would only cost time. */
+      if (retry.answered) break
     }
   }
 
@@ -454,30 +497,94 @@ async function confirmProtocolNegatives(
  *  rather than by its own probe, so the field is never silently null. */
 const primaryCipherPlaceholder = null
 
-async function enumerateTls12CipherSuites(hostname: string, port: number, connectHost = hostname): Promise<CipherSuiteDetail[]> {
-  const probes = await Promise.all(
-    TLS12_CIPHER_PROBES.map(async (probe) => {
-      try {
-        const result = await connectTls(
-          hostname,
-          port,
-          {
-            minVersion: 'TLSv1.2',
-            maxVersion: 'TLSv1.2',
-            ciphers: `${probe.opensslName}:@SECLEVEL=0`,
-          },
-          PROBE_TIMEOUT,
-          connectHost
-        )
-        return classifyCipherSuite(probe.standardName || result.cipherSuite, result.tlsVersion)
-      } catch {
-        return null
-      }
-    })
+/** One cipher probe: the suite if it was accepted, or null if it was not. */
+async function probeCipherSuite(
+  hostname: string,
+  port: number,
+  connectHost: string,
+  probe: (typeof TLS12_CIPHER_PROBES)[number],
+): Promise<CipherSuiteDetail | null> {
+  try {
+    const result = await connectTls(
+      hostname,
+      port,
+      {
+        minVersion: 'TLSv1.2',
+        maxVersion: 'TLSv1.2',
+        ciphers: `${probe.opensslName}:@SECLEVEL=0`,
+      },
+      PROBE_TIMEOUT,
+      connectHost,
+    )
+    return classifyCipherSuite(probe.standardName || result.cipherSuite, result.tlsVersion)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Which TLS 1.2 cipher suites the endpoint actually accepts.
+ *
+ * THE EVIDENCE IS ASYMMETRIC, exactly as it is for protocol versions, and this
+ * function used to ignore that. Ten `connectTls` calls went out under one
+ * `Promise.all` with `catch { return null }`, so a throttling RST and a genuine
+ * refusal produced the same answer — and ten near-simultaneous TLS 1.2
+ * handshakes to one IP is itself what provokes the throttling.
+ *
+ * Measured on www.cloudflare.com, two runs minutes apart against an unchanged
+ * endpoint: one enumerated 8 suites including 4 static-RSA and scored
+ * `cipher-suites` 35; the next enumerated 2 and scored 50. The endpoint really
+ * does accept `AES128-GCM-SHA256` and friends (verified independently with
+ * `openssl s_client`, no Server Temp Key), so the second run was publishing an
+ * undercount as a complete enumeration — understating exposure AND making the
+ * composite move with network luck rather than with configuration.
+ *
+ * So: an ACCEPTANCE is unforgeable and is never re-probed. Only refusals are
+ * re-probed, once, strictly sequentially, and only a second refusal is
+ * published. The first pass is also bounded in concurrency so the sweep stops
+ * provoking the resets it then has to confirm. Skipped entirely when nothing
+ * was accepted (systemic failure, not per-suite) or past the deadline, so the
+ * normal cost of the confirmation pass is zero.
+ */
+async function enumerateTls12CipherSuites(
+  hostname: string,
+  port: number,
+  connectHost = hostname,
+  deadline = Number.POSITIVE_INFINITY,
+): Promise<CipherSuiteDetail[]> {
+  /* CONCURRENCY IS NOT THE VARIABLE THAT MATTERS — measured, not assumed.
+     Sweeping www.cloudflare.com at concurrency 10/4/2/1, twice each: the
+     accepted count barely moved (6-7, 7-9, 6-9, 7-8 of 10) while wall clock
+     went from ~4.5s to ~14s. Serialising the sweep costs 3x the time and buys
+     nothing. What distinguishes the outcomes is LATENCY AND KIND: a genuine
+     refusal is a TLS alert or an RST and always came back under 1.1s
+     (`ECONNRESET@556ms`, `HANDSHAKE_FAILURE@514ms`), while every lost suite was
+     a `timeout@~4100ms` — no answer at all. So the first pass stays fully
+     parallel and only the probes that never answered are retried. */
+  const results: Array<CipherSuiteDetail | null> = await Promise.all(
+    TLS12_CIPHER_PROBES.map((probe) => probeCipherSuite(hostname, port, connectHost, probe)),
   )
 
+  const acceptedCount = results.filter((suite) => suite !== null).length
+  /* Nothing answered: systemic, not per-suite. Re-probing would add ten
+     timeouts to a sweep that already knows the endpoint refused everything. */
+  if (acceptedCount > 0 && Date.now() < deadline) {
+    const unanswered = results
+      .map((suite, index) => (suite === null ? index : -1))
+      .filter((index) => index >= 0)
+    /* One confirmation wave, in parallel like the first. Only a second silence
+       is published as a refusal; a suite that answers here was always accepted
+       and the first pass simply never heard it. */
+    const confirmed = await Promise.all(
+      unanswered.map((index) => probeCipherSuite(hostname, port, connectHost, TLS12_CIPHER_PROBES[index])),
+    )
+    unanswered.forEach((index, slot) => {
+      if (confirmed[slot]) results[index] = confirmed[slot]
+    })
+  }
+
   const seen = new Set<string>()
-  return probes.filter((suite): suite is CipherSuiteDetail => {
+  return results.filter((suite): suite is CipherSuiteDetail => {
     if (!suite || seen.has(suite.standardName)) return false
     seen.add(suite.standardName)
     return true
@@ -527,7 +634,7 @@ export async function analyzeTls(
 
   const [discoveredProtocols, enumeratedTls12Suites] = await Promise.all([
     Promise.all(TLS_PROTOCOLS.map((protocol) => probeProtocol(hostname, port, protocol, connectHost))),
-    enumerateTls12CipherSuites(hostname, port, connectHost),
+    enumerateTls12CipherSuites(hostname, port, connectHost, options.deadline ?? Number.POSITIVE_INFINITY),
   ])
 
   const protocolSupport = await confirmProtocolNegatives(

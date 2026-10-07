@@ -35,7 +35,7 @@ import { algorithmFamily } from '@/lib/governance/subjects'
  * Excel, Word, HTML, CSV and JSON for free rather than growing a second
  * export stack.
  */
-export type InventoryReportKind = 'assets' | 'cbom' | 'migration'
+export type InventoryReportKind = 'assets' | 'cbom' | 'migration' | 'exposure'
 
 export interface InventoryKpi {
   label: string

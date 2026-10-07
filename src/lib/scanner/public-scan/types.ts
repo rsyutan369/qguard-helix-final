@@ -391,6 +391,14 @@ export interface DnsEvidence {
    * Unknown rather than Fail, and the score must drop the dimension entirely.
    */
   caaQueryable: boolean
+  /**
+   * False when the RFC 8659 climb stopped before reaching the registrable
+   * domain. Issuance policy is inherited up the tree, so a leaf NODATA answer
+   * establishes nothing on its own — `caaPresent: false` is a measured absence
+   * only under this flag. `www.cloudflare.com` publishes no CAA RRset of its
+   * own; `cloudflare.com` publishes eleven.
+   */
+  caaClimbComplete: boolean
   /** False when only the OS stub resolver answered (no record-type queries). */
   resolverAvailable: boolean
   nameservers: string[]
@@ -407,6 +415,16 @@ export interface DnsEvidence {
  */
 export interface KeyAgreementEvidence {
   probed: boolean
+  /**
+   * At least one HYBRID group reached a conclusive verdict.
+   *
+   * `probed` covers the group probe as a whole, and the classical groups settle
+   * first and cheapest — so `probed && !hybridGroups.length` does NOT license
+   * "hybrid was refused". Post-quantum readiness carries 55 of its 100 points on
+   * the hybrid signal, so scoring a throttled probe as a refusal publishes the
+   * strongest possible negative from no evidence at all.
+   */
+  hybridSettled: boolean
   hybridGroups: string[]
   /**
    * Standalone ML-KEM groups accepted — post-quantum key agreement with NO

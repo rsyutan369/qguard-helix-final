@@ -445,7 +445,11 @@ function cachedStages(report: PublicScanReport): PublicScanStage[] {
       description: 'Resolving public records and CAA policy',
       state: evidence.dns.addressCount ? 'complete' : 'failed',
       detail: `${evidence.dns.addressCount} address${evidence.dns.addressCount === 1 ? '' : 'es'}, CAA ${
-        evidence.dns.caaQueryable ? (evidence.dns.caaPresent ? 'present' : 'absent') : 'unknown'
+        evidence.dns.caaQueryable && evidence.dns.caaClimbComplete
+          ? evidence.dns.caaPresent
+            ? 'present'
+            : 'absent'
+          : 'unknown'
       }`,
     },
     {

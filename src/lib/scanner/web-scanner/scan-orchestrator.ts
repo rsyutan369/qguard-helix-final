@@ -326,7 +326,10 @@ export async function executeWebScan(
     /* ── DNS security: CAA + DNSSEC ─────────────────────────────────────── */
     const dnsFindingStart = findings.length
     if (edge?.dns.probed) {
-      if (edge.dns.caaQueryable && !edge.dns.caaPresent) {
+      /* `caaClimbComplete` gates this the same way it gates the score: a climb
+         that stopped at the leaf name has not established that no policy exists,
+         and a finding is a claim. */
+      if (edge.dns.caaQueryable && edge.dns.caaClimbComplete && !edge.dns.caaPresent) {
         addFinding({
           phase: 'edge-intelligence',
           algorithm: 'No CAA Issuance Policy',
