@@ -45,7 +45,7 @@
     { t: 50.0, day: 0, d: 0 },
     { t: 51.0, day: 1, d: 0 },
     { t: 52.0, day: 0, d: 0 },
-    { t: 53.0, day: 1, d: 0 },
+    { t: 53.86, day: 1, d: 0.3 },
   ];
 
   function dayMix(t) {
@@ -340,6 +340,7 @@
     msgplus: '<path d="M4 5h16v11H9l-5 4z"/><path d="M12 8v5M9.5 10.5h5"/>',
     windows: '<path d="M3 5.5 11 4.3v7.2H3zM13 4l8-1.2v8.7h-8zM3 13h8v7.2L3 19zM13 13h8v8.7L13 20.5z" fill="currentColor" stroke="none"/>',
     arrow: '<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>',
+    copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>',
   };
 
   function icon(name, size, extraStyle) {

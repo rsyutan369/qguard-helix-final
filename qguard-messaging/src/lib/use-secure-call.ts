@@ -1,12 +1,23 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
+  CALL_STAGES,
+  completeTimeline,
+  createTimeline,
+  describeTimeline,
+  markTimeline,
+  publishTimeline,
+  type Timeline,
+  type TimelineOutcome,
+} from "@/lib/perf-timeline";
+import {
   describeCallConnectFailure,
   lastRelayHealth,
   prewarmRtcConfiguration,
   probeRelayHealth,
+  relayProvenForCalls,
   resolveRtcConfiguration,
 } from "@/lib/call-ice";
-import { connectDeadlineMs } from "@/lib/call-deadline";
+import { connectDeadlineMs, shouldAttemptIceRecovery } from "@/lib/call-deadline";
 import { callReducer, INITIAL_CALL_STATE } from "@/lib/call-state";
 import { sendCallSignal, sendCallSignals, subscribeCallSignals, type CallSignalChannel } from "@/lib/call-signaling";
 import { applyDecline } from "@/lib/call-targets";
@@ -77,8 +88,24 @@ const OFFER_WAIT_MS = 30_000;
 //                that trickles candidates forever still ends.
 const RING_TIMEOUT_MS = 45_000;
 const INCOMING_RING_TIMEOUT_MS = 60_000;
-const CONNECT_STALL_MS = 20_000;
+// Lowered from 20s: with no dead relay stalling the ICE agent, gathering now
+// completes in under three seconds, so twenty seconds of TOTAL silence is no
+// longer evidence of a slow network — it is evidence of a path that will not
+// come up. Progress still re-arms this, so a call that keeps gathering keeps
+// its room; only a genuinely frozen one reaches a failure the user can act on.
+const CONNECT_STALL_MS = 10_000;
 const CONNECT_CEILING_MS = 90_000;
+
+// When a connecting call should be re-examined to see whether RECOVERY has
+// anything new to offer (chiefly: a relay that has since been proven healthy).
+// This is not a give-up clock and never ends a call.
+const ICE_RECOVERY_REVIEW_MS = 5_000;
+
+// At most two ICE restarts per call. One is the standard remedy for a path
+// change; a second exists so a call that began before the relay probe returned
+// can re-gather WITH the relay once it is proven. Beyond that a restart is
+// just a loop that keeps a dead call alive.
+const MAX_ICE_RESTARTS = 2;
 
 // Chromium emits ICE candidates in bursts. One INSERT per candidate turned a
 // burst into 6-10 sequential round trips on the call's critical path; coalescing
@@ -220,13 +247,61 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   // Outgoing ICE candidates waiting to be written as one batch.
   const iceQueueRef = useRef<Array<{ route: CallRoute; candidate: RTCIceCandidateInit }>>([]);
   const iceFlushTimerRef = useRef<number | undefined>(undefined);
-  // One ICE restart per call. A restart is the standard recovery for a path
-  // change (Wi-Fi to cellular, a NAT rebinding); allowing more than one would
-  // let a genuinely dead call renegotiate in a loop instead of ending.
-  const iceRestartUsedRef = useRef(false);
+  // How many ICE restarts this call has spent (bounded by MAX_ICE_RESTARTS).
+  const iceRestartsUsedRef = useRef(0);
+  // Whether the live peer connection already carries a proven relay, so a
+  // restart can tell "I have something new to try" from "I would re-gather the
+  // exact same servers and fail the exact same way".
+  const relayInPcRef = useRef(false);
+  // Timer for the recovery review described at ICE_RECOVERY_REVIEW_MS.
+  const iceRecoveryTimerRef = useRef<number | undefined>(undefined);
   const renegotiatingRef = useRef(false);
   const supported = useMemo(callSupported, []);
   const RECONNECT_GRACE_MS = 12000;
+
+  // ---------------------------------------------------------------------
+  // Call setup timings
+  // ---------------------------------------------------------------------
+  // Every call failure in this deployment has looked the same from the outside
+  // ("it rang, then ended") while having entirely different causes — a ring
+  // delivered to an idle device, an ICE agent that never finished gathering, a
+  // relay that could not allocate. Each was found only by reconstructing
+  // timings afterwards from signal rows. Recording the stages as they happen
+  // makes the next one readable from a single log line.
+  const callTimelineRef = useRef<Timeline | null>(null);
+
+  const beginCallTimeline = useCallback((callId: string, role: "caller" | "callee") => {
+    const timeline = createTimeline("call", callId, performance.now());
+    markTimeline(timeline, CALL_STAGES.initiated, performance.now());
+    describeTimeline(timeline, { role });
+    callTimelineRef.current = timeline;
+  }, []);
+
+  const markCallStage = useCallback((stage: string) => {
+    const timeline = callTimelineRef.current;
+    if (timeline) markTimeline(timeline, stage, performance.now());
+  }, []);
+
+  const describeCallTimeline = useCallback((detail: Record<string, string | number | boolean>) => {
+    const timeline = callTimelineRef.current;
+    if (timeline) describeTimeline(timeline, detail);
+  }, []);
+
+  /**
+   * Close out the call's timeline. Records the relay verdict alongside the
+   * stages, because "which stage did it die at" and "was a relay available"
+   * are only diagnostic together.
+   */
+  const finishCallTimeline = useCallback((outcome: TimelineOutcome) => {
+    const timeline = callTimelineRef.current;
+    if (!timeline) return;
+    callTimelineRef.current = null;
+    describeTimeline(timeline, {
+      relay: lastRelayHealth()?.status ?? "unknown",
+      restarts: iceRestartsUsedRef.current,
+    });
+    publishTimeline(completeTimeline(timeline, outcome, performance.now()));
+  }, []);
 
   const worker = useCallback(() => {
     if (!workerRef.current) {
@@ -310,9 +385,14 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     if (timeoutRef.current !== undefined) { window.clearTimeout(timeoutRef.current); timeoutRef.current = undefined; }
     if (reconnectTimerRef.current !== undefined) { window.clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = undefined; }
     if (iceFlushTimerRef.current !== undefined) { window.clearTimeout(iceFlushTimerRef.current); iceFlushTimerRef.current = undefined; }
+    if (iceRecoveryTimerRef.current !== undefined) { window.clearTimeout(iceRecoveryTimerRef.current); iceRecoveryTimerRef.current = undefined; }
     iceQueueRef.current = [];
+    // Published only if setup never finished — a connected call already closed
+    // its own timeline with "ok", and this is a no-op for it.
+    finishCallTimeline("abandoned");
     connectCeilingRef.current = 0;
-    iceRestartUsedRef.current = false;
+    iceRestartsUsedRef.current = 0;
+    relayInPcRef.current = false;
     renegotiatingRef.current = false;
     setReconnecting(false);
     // Read the live stream from a ref so `cleanup` keeps a STABLE identity. If it
@@ -370,6 +450,8 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       // A give-up during the RING phase means nobody picked up; a give-up after
       // that means the media path could not be built, which is worth explaining
       // (most often: no working relay between two different networks).
+      describeCallTimeline({ gaveUpIn: connectCeilingRef.current ? "connect" : "ring" });
+      finishCallTimeline("timeout");
       dispatch({
         type: "failed",
         error: connectCeilingRef.current
@@ -382,6 +464,42 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     }, ms);
   }, [cleanup, signalRoutes, teardownRoutes]);
 
+  // Set once `tryIceRestart` exists. The recovery review needs to call it, and
+  // the restart needs `beginConnectPhase`, which needs the review — a ref
+  // breaks that cycle without making any of the three unstable.
+  const tryIceRestartRef = useRef<() => boolean>(() => false);
+
+  /**
+   * Re-examine a still-connecting call to see whether recovery has anything NEW
+   * to offer, and restart ICE only if it does.
+   *
+   * The restraint is the point. An ICE restart abandons the current generation
+   * of candidate pairs, so restarting a connection that was merely slow can
+   * destroy the very handshake that was about to succeed — this codebase has
+   * already been bitten by a give-up clock that killed a call three seconds
+   * before its only usable candidate arrived. So this fires on new INFORMATION,
+   * not on elapsed time: the one thing that genuinely changes the outcome is a
+   * relay that has since been proven healthy and is not yet in the peer
+   * connection. Without that, the existing generation is left to keep trying
+   * and the normal progress/stall machinery decides its fate.
+   */
+  const armIceRecoveryReview = useCallback(() => {
+    if (iceRecoveryTimerRef.current !== undefined) window.clearTimeout(iceRecoveryTimerRef.current);
+    iceRecoveryTimerRef.current = window.setTimeout(() => {
+      iceRecoveryTimerRef.current = undefined;
+      const pc = pcRef.current;
+      if (!pc) return;
+      if (!shouldAttemptIceRecovery({
+        connected: phaseRef.current === "connected" || pc.connectionState === "connected",
+        relayInPeerConnection: relayInPcRef.current,
+        relayProven: relayProvenForCalls(),
+        restartsUsed: iceRestartsUsedRef.current,
+        maxRestarts: MAX_ICE_RESTARTS,
+      })) return;
+      tryIceRestartRef.current();
+    }, ICE_RECOVERY_REVIEW_MS);
+  }, []);
+
   /**
    * Enter the connect phase: the call has been answered and ICE is now
    * responsible for getting media flowing. Starts the absolute ceiling and arms
@@ -390,7 +508,8 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   const beginConnectPhase = useCallback(() => {
     connectCeilingRef.current = Date.now() + CONNECT_CEILING_MS;
     armTimeout(CONNECT_STALL_MS);
-  }, [armTimeout]);
+    armIceRecoveryReview();
+  }, [armTimeout, armIceRecoveryReview]);
 
   /**
    * ICE did something. Push the stall deadline out, bounded by the ceiling.
@@ -452,14 +571,29 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     const setup = setupRef.current;
     if (!pc || !route || !callId || !setup) return false;
     if (roleRef.current !== "caller") return false;
-    if (iceRestartUsedRef.current || renegotiatingRef.current) return false;
-    iceRestartUsedRef.current = true;
+    if (iceRestartsUsedRef.current >= MAX_ICE_RESTARTS || renegotiatingRef.current) return false;
+    iceRestartsUsedRef.current += 1;
     renegotiatingRef.current = true;
     setReconnecting(true);
     signalChannelRef.current?.boost();
     beginConnectPhase();
     void (async () => {
       try {
+        // Re-resolve the ICE servers before re-gathering. A call that started
+        // before the relay probe returned had none, and a restart that
+        // re-gathers the identical server set can only reproduce the identical
+        // failure. `setConfiguration` applies the new servers to the restart's
+        // gathering without touching the media keys or the attached E2EE
+        // transforms — a restart renegotiates transport, never cryptography.
+        if (!relayInPcRef.current && relayProvenForCalls()) {
+          try {
+            pc.setConfiguration(await resolveRtcConfiguration());
+            relayInPcRef.current = true;
+          } catch {
+            // An older WebView may refuse setConfiguration; re-gathering on the
+            // existing servers is still worth attempting.
+          }
+        }
         const offer = await pc.createOffer({ iceRestart: true });
         await pc.setLocalDescription(offer);
         await sendCallSignal({
@@ -479,6 +613,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     })();
     return true;
   }, [args.deviceId, args.userId, beginConnectPhase]); // eslint-disable-line react-hooks/exhaustive-deps
+  tryIceRestartRef.current = tryIceRestart;
 
   const buildPeerConnection = useCallback(async (callId: string, route: CallRoute) => {
     // Live STUN/TURN resolution (operator relay config → env → Open Relay):
@@ -488,6 +623,10 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     // construction; RTCRtpScriptTransform doesn't need it, so we only set it when
     // the fallback will be used.
     const rtcConfig = await resolveRtcConfiguration();
+    // Remember whether this connection actually got a relay, so a later restart
+    // can tell whether re-gathering would bring anything new.
+    relayInPcRef.current = (rtcConfig.iceServers ?? []).some((server) =>
+      [server.urls].flat().some((url) => /^turns?:/.test(String(url))));
     const pc = new RTCPeerConnection(
       detectTransformStrategy() === "encoded-streams"
         ? { ...rtcConfig, encodedInsertableStreams: true }
@@ -504,8 +643,19 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     };
     // ICE state movement counts as progress too, so a connection that is
     // checking pairs is never mistaken for a stalled one.
-    pc.oniceconnectionstatechange = () => noteIceProgress();
-    pc.onicegatheringstatechange = () => noteIceProgress();
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") {
+        markCallStage(CALL_STAGES.iceConnected);
+      }
+      noteIceProgress();
+    };
+    pc.onicegatheringstatechange = () => {
+      if (pc.iceGatheringState === "gathering") markCallStage(CALL_STAGES.iceStarted);
+      // Gathering actually COMPLETING is the signal a dead relay used to
+      // withhold forever, so it is worth recording explicitly.
+      if (pc.iceGatheringState === "complete") describeCallTimeline({ gatheringComplete: true });
+      noteIceProgress();
+    };
     // Inbound decryption is wired up-front in attachMediaTransforms (before
     // negotiation) — see that function. Here we only surface the remote stream
     // to the UI.
@@ -521,8 +671,11 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
         renegotiatingRef.current = false;
         if (timeoutRef.current !== undefined) { window.clearTimeout(timeoutRef.current); timeoutRef.current = undefined; }
         if (reconnectTimerRef.current !== undefined) { window.clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = undefined; }
+        if (iceRecoveryTimerRef.current !== undefined) { window.clearTimeout(iceRecoveryTimerRef.current); iceRecoveryTimerRef.current = undefined; }
         setReconnecting(false);
+        markCallStage(CALL_STAGES.mediaConnected);
         if (setupRef.current) {
+          markCallStage(CALL_STAGES.established);
           dispatch({ type: "media-connected", safetyNumber: setupRef.current.safetyNumber });
           void recordCryptoTelemetry({ userId: args.userId, scope: "call", stage: "call_connected", detail: "Quantum-encrypted call connected", progress: 100, status: "complete", metadata: { call_id: callId } });
         }
@@ -534,6 +687,9 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
         if (!statsStopRef.current) {
           statsStopRef.current = startCallStatsMonitor(pc, setStats);
         }
+        // The SETUP timeline is finished the moment media flows; the call's own
+        // duration is a different measurement and not this one's business.
+        finishCallTimeline("ok");
         return;
       }
       // `failed` is recoverable exactly once, via an ICE restart — the standard
@@ -703,6 +859,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     // still has somewhere to go; rebound for real on the winning accept.
     routeRef.current = routes[0];
     const callId = crypto.randomUUID();
+    beginCallTimeline(callId, "caller");
     dispatch({ type: "start-outgoing", callId, peerUserId: peer.userId, peerDeviceId: peer.devices[0].deviceId });
     // Ring phase: a pure wall clock, bounding how long the peer's devices ring.
     armTimeout(RING_TIMEOUT_MS);
@@ -720,6 +877,8 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
         to_user_id: route.toUserId, to_device_id: route.toDeviceId,
         signal_type: "ring" as const, payload: {},
       })));
+      markCallStage(CALL_STAGES.signalingStarted);
+      describeCallTimeline({ rang: routes.length });
 
       // Everything expensive runs CONCURRENTLY while the peer's devices ring:
       // the camera warm-up, the relay config read, and one KEM encapsulation
@@ -772,6 +931,10 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     const callId = incoming.call_id;
     const route: CallRoute = { conversationId: incoming.conversation_id, toUserId: incoming.from_user_id, toDeviceId: incoming.from_device_id };
     routeRef.current = route;
+    // The callee measures its own setup. Both ends are instrumented because the
+    // two see different halves of a failure: which end stopped making progress
+    // is exactly what a one-sided log cannot tell you.
+    beginCallTimeline(callId, "callee");
     dispatch({ type: "accept" });
     // Still a wall clock until the offer lands — nothing is negotiating yet.
     armTimeout(RING_TIMEOUT_MS);
@@ -793,6 +956,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
         to_user_id: route.toUserId, to_device_id: route.toDeviceId,
         signal_type: "accept", payload: {},
       }).catch(() => undefined);
+      markCallStage(CALL_STAGES.signalingStarted);
 
       const offer = await waitForOffer(callId);
       pendingOfferRef.current = offer;

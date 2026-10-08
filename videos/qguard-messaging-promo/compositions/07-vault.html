@@ -1,0 +1,128 @@
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    #s07-copy {
+      position: absolute;
+      left: 96px;
+      top: 214px;
+      width: 800px;
+    }
+    #s07-h {
+      margin-top: 30px;
+      font-size: 92px;
+      line-height: 1.02;
+    }
+    .s07-l {
+      display: block;
+      white-space: nowrap;
+    }
+    #s07-chips {
+      margin-top: 54px;
+      display: grid;
+      grid-template-columns: max-content max-content;
+      gap: 20px 22px;
+    }
+    /* The vault workspace card, lifted out of the desktop window. */
+    #s07-pane {
+      position: absolute;
+      left: 934px;
+      top: 290px;
+      width: 900px;
+      height: 500px;
+      transform-origin: 50% 50%;
+    }
+    /* at this width the workspace description wraps, as it does in a narrow window */
+    #s07-pane .vt-head p {
+      white-space: normal;
+      max-width: 520px;
+    }
+    #s07-file-pos {
+      position: absolute;
+      left: 1234px;
+      top: 392px;
+      width: 300px;
+      font-family: "Inter", sans-serif;
+      font-size: 15px;
+      color: #111827;
+    }
+  </style>
+
+  <div id="root" data-composition-id="s07-vault" data-width="1920" data-height="1080" data-duration="4">
+    <div id="s07-stage" class="clip" data-start="0" data-duration="4" data-track-index="0">
+      <div id="s07-copy">
+        <div id="s07-kicker" class="qg-kicker">02 — Quantum Vault</div>
+        <h1 id="s07-h" class="qg-lg qg-stack">
+          <span class="s07-l" id="s07-l1">Your files,</span>
+          <span class="s07-l" id="s07-l2">sealed for the</span>
+          <span class="s07-l" id="s07-l3"><span class="qg-grad">quantum age.</span></span>
+        </h1>
+        <div id="s07-chips">
+          <span class="qg-chip s07-chip is-emerald"><span class="qg-dot"></span>100% on-device</span>
+          <span class="qg-chip s07-chip is-emerald"><span class="qg-dot"></span>Zero-knowledge</span>
+          <span class="qg-chip s07-chip"><span class="qg-dot"></span>Any file or folder</span>
+        </div>
+      </div>
+
+      <div id="s07-pane" class="dw-float"></div>
+      <div id="s07-file-pos"></div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const QG = window.QG;
+      const tl = gsap.timeline({ paused: true, defaults: { ease: "power3.out" } });
+
+      /* The real workspace card: Encrypt / Decrypt, the dropzone, the suite line,
+         the five algorithm tiles. */
+      document.getElementById("s07-pane").innerHTML = QG.ui.vaultWorkspace("s07v");
+      document.getElementById("s07-file-pos").innerHTML = QG.ui.fileCard("s07f", "board-pack-q4.pdf", "64.0 MB · PDF document");
+      gsap.set("#s07-pane", { scale: 1.06 });
+
+      const drop = document.getElementById("s07v-drop");
+      const title = drop.querySelector("h3");
+      const status = document.getElementById("s07v-status");
+      const PRESS = 2.5;
+
+      // the dropzone title and the status line switch when Encrypt File is pressed
+      function draw(t) {
+        const running = t >= PRESS;
+        const head = running ? "Encryption running" : "Choose a file or folder to encrypt";
+        if (title.textContent !== head) title.textContent = head;
+        const line = running ? "Encrypting board-pack-q4.pdf → board-pack-q4.pdf.qvault" : "";
+        if (status.textContent !== line) status.textContent = line;
+      }
+      const clock = QG.proxy(draw);
+      clock.t = 0;
+      tl.fromTo(clock, { t: 0 }, { t: 4, duration: 4, ease: "none" }, 0);
+
+      /* Scene 1 — chapter two. */
+      tl.fromTo("#s07-kicker", { y: 20, opacity: 0 }, { y: 0, opacity: 1, duration: 0.55 }, 0.18);
+      QG.rise(tl, QG.split(document.getElementById("s07-l1")), 0.28, { stagger: 0.08 });
+      QG.rise(tl, QG.split(document.getElementById("s07-l2")), 0.5, { stagger: 0.08 });
+      QG.rise(tl, QG.split(document.getElementById("s07-l3")), 0.75, { stagger: 0.08 });
+
+      /* Scene 2 — a file is dropped in, and Encrypt File is pressed. */
+      tl.fromTo(
+        "#s07f-file",
+        { x: -360, y: -230, rotation: -9, scale: 1.2, opacity: 0 },
+        { x: 0, y: 0, rotation: 0, scale: 1.1, opacity: 1, duration: 0.85, ease: "expo.out" },
+        1.15,
+      );
+      tl.fromTo("#s07v-drop", { borderColor: "rgba(8, 145, 178, 0.4)" }, { borderColor: "#0891b2", duration: 0.25, immediateRender: false }, 1.8);
+      tl.to("#s07f-file", { y: 26, scale: 0.3, opacity: 0, duration: 0.26, ease: "power2.in" }, 2.02);
+      tl.fromTo("#s07v-btn-file", { scale: 1 }, { scale: 0.92, duration: 0.08, ease: "power2.in", immediateRender: false }, PRESS - 0.08);
+      tl.to("#s07v-btn-file", { scale: 1, duration: 0.3 }, PRESS);
+      tl.fromTo("#s07v-drop-ico", { rotation: 0, color: "#64748b" }, { rotation: 360, color: "#0891b2", duration: 1.6, ease: "none", immediateRender: false }, PRESS);
+      tl.fromTo("#s07v-status", { opacity: 0 }, { opacity: 1, duration: 0.3 }, PRESS);
+
+      /* Scene 3 — where it happens, and what that means. */
+      QG.lift(tl, ".s07-chip", 3.0, { stagger: 0.25, duration: 0.45 });
+
+      window.__timelines["s07-vault"] = tl;
+    })();
+  </script>
+</template>

@@ -17,34 +17,54 @@
     #bgw-night-grid {
       position: absolute;
       inset: 0;
-      opacity: 0.55;
       background-image:
-        linear-gradient(rgba(124, 163, 255, 0.11) 1px, rgba(124, 163, 255, 0) 1px),
-        linear-gradient(90deg, rgba(124, 163, 255, 0.11) 1px, rgba(124, 163, 255, 0) 1px);
+        linear-gradient(rgba(124, 163, 255, 0.085) 2px, rgba(124, 163, 255, 0) 2px),
+        linear-gradient(90deg, rgba(124, 163, 255, 0.085) 2px, rgba(124, 163, 255, 0) 2px);
       background-size: 60px 60px;
-      -webkit-mask-image: radial-gradient(ellipse 90% 80% at 50% 40%, #000 0%, rgba(0, 0, 0, 0) 85%);
-      mask-image: radial-gradient(ellipse 90% 80% at 50% 40%, #000 0%, rgba(0, 0, 0, 0) 85%);
+      background-position: -1px -1px;
     }
-    /* Day ground: the source pages' paper, grid and two soft washes. */
+    /* Day ground: the source pages' paper, grid and soft washes. */
     #bgw-day {
       position: absolute;
       inset: 0;
-      background:
-        radial-gradient(circle at 78% 18%, rgba(0, 197, 235, 0.16), rgba(0, 197, 235, 0) 640px),
-        radial-gradient(circle at 14% 84%, rgba(16, 185, 129, 0.11), rgba(16, 185, 129, 0) 600px),
-        radial-gradient(circle at 96% 96%, rgba(124, 58, 237, 0.1), rgba(124, 58, 237, 0) 620px),
-        #f8fbff;
+      background: #f8fbff;
+      overflow: hidden;
+    }
+    .bgw-wash {
+      position: absolute;
+      border-radius: 50%;
+    }
+    #bgw-wash-cyan {
+      left: 860px;
+      top: -460px;
+      width: 1400px;
+      height: 1400px;
+      background: radial-gradient(circle, rgba(0, 197, 235, 0.2) 0%, rgba(0, 197, 235, 0) 62%);
+    }
+    #bgw-wash-emerald {
+      left: -420px;
+      top: 420px;
+      width: 1300px;
+      height: 1300px;
+      background: radial-gradient(circle, rgba(16, 185, 129, 0.13) 0%, rgba(16, 185, 129, 0) 62%);
+    }
+    #bgw-wash-violet {
+      left: 1180px;
+      top: 440px;
+      width: 1400px;
+      height: 1400px;
+      background: radial-gradient(circle, rgba(124, 58, 237, 0.13) 0%, rgba(124, 58, 237, 0) 62%);
     }
     #bgw-day-grid {
       position: absolute;
       inset: 0;
       background-image:
-        linear-gradient(rgba(203, 213, 225, 0.6) 2px, rgba(203, 213, 225, 0) 2px),
-        linear-gradient(90deg, rgba(203, 213, 225, 0.6) 2px, rgba(203, 213, 225, 0) 2px);
+        linear-gradient(rgba(203, 213, 225, 0.5) 2px, rgba(203, 213, 225, 0) 2px),
+        linear-gradient(90deg, rgba(203, 213, 225, 0.5) 2px, rgba(203, 213, 225, 0) 2px);
       background-size: 60px 60px;
       background-position: -1px -1px;
     }
-    #bgw-lattice {
+    #bgw-pulses {
       position: absolute;
       left: 0;
       top: 0;
@@ -57,8 +77,13 @@
   <div id="root" data-composition-id="bg-world" data-width="1920" data-height="1080" data-duration="60">
     <div id="bgw-layers" class="clip" data-start="0" data-duration="60" data-track-index="0" data-layout-ignore>
       <div id="bgw-night"><div id="bgw-night-grid"></div></div>
-      <div id="bgw-day"><div id="bgw-day-grid"></div></div>
-      <canvas id="bgw-lattice" data-layout-allow-overflow></canvas>
+      <div id="bgw-day">
+        <div id="bgw-wash-cyan" class="bgw-wash"></div>
+        <div id="bgw-wash-emerald" class="bgw-wash"></div>
+        <div id="bgw-wash-violet" class="bgw-wash"></div>
+        <div id="bgw-day-grid"></div>
+      </div>
+      <canvas id="bgw-pulses" data-layout-allow-overflow></canvas>
     </div>
   </div>
 
@@ -68,95 +93,96 @@
       const tl = gsap.timeline({ paused: true });
 
       const dayLayer = document.getElementById("bgw-day");
-      const cv = QG.canvas(document.getElementById("bgw-lattice"), 1920, 1080);
+      const cv = QG.canvas(document.getElementById("bgw-pulses"), 1920, 1080);
       const ctx = cv.ctx;
 
-      const dayMix = QG.dayMix;
+      /* The washes drift across the paper very slowly, once, over the whole film. */
+      tl.fromTo("#bgw-wash-cyan", { x: -140, y: 0 }, { x: 160, y: 70, duration: 60, ease: "none" }, 0);
+      tl.fromTo("#bgw-wash-emerald", { x: 0, y: 40 }, { x: 220, y: -90, duration: 60, ease: "none" }, 0);
+      tl.fromTo("#bgw-wash-violet", { x: 90, y: 0 }, { x: -180, y: -60, duration: 60, ease: "none" }, 0);
 
-      /* The lattice: a triangular point lattice, the structure behind ML-KEM and
-         the hex field around the logo. It drifts and turns very slowly; a few
-         short vectors light up and fade. It is the only ambient motion in the film. */
-      const STEP = 96;
-      const COS60 = 0.5;
-      const SIN60 = Math.sqrt(3) / 2;
+      /* Packets on the grid. A handful of short pulses travel along the grid
+         lines — traffic on the wire. They are the only ambient motion in the
+         film, so foreground content can land and hold completely still. */
+      const CELL = 60;
+      const rnd = QG.rng(7719);
+      const PULSES = [];
+      for (let i = 0; i < 22; i++) {
+        const horizontal = rnd() < 0.56;
+        const lines = horizontal ? 18 : 32;
+        PULSES.push({
+          h: horizontal,
+          line: 1 + Math.floor(rnd() * (lines - 1)),
+          dir: rnd() < 0.5 ? 1 : -1,
+          speed: 150 + rnd() * 190,
+          len: 90 + rnd() * 130,
+          offset: rnd() * 6000,
+          gap: 1500 + rnd() * 2600,
+          hue: Math.floor(rnd() * 3),
+        });
+      }
+      const DAY_RGB = ["0,168,214", "37,99,235", "124,58,237"];
+      const NIGHT_RGB = ["34,211,238", "76,141,255", "167,139,250"];
 
       function draw(t) {
-        const day = dayMix(t);
+        const day = QG.dayMix(t);
         dayLayer.style.opacity = day.toFixed(4);
 
         cv.clear();
-        const theta = 0.12 + t * 0.0042;
-        const ca = Math.cos(theta);
-        const sa = Math.sin(theta);
-        const ox = 960 + t * 5.5;
-        const oy = 540 - t * 3.1;
-        // basis vectors
-        const ax = STEP * ca;
-        const ay = STEP * sa;
-        const bx = STEP * (COS60 * ca - SIN60 * sa);
-        const by = STEP * (COS60 * sa + SIN60 * ca);
+        // scene 01 owns the whole frame; the wire wakes up with the brand
+        const wake = QG.ramp(t, 5.7, 6.6);
+        if (wake <= 0) return;
 
-        // point colour moves from luminous blue (night) to slate blue (day)
-        const pr = Math.round(QG.lerp(124, 37, day));
-        const pg = Math.round(QG.lerp(163, 99, day));
-        const pb = Math.round(QG.lerp(255, 235, day));
-        const baseA = QG.lerp(0.34, 0.2, day);
+        ctx.lineCap = "round";
+        for (let i = 0; i < PULSES.length; i++) {
+          const p = PULSES[i];
+          const span = (p.h ? 1920 : 1080) + p.len + p.gap;
+          let d = (p.offset + p.speed * t) % span;
+          d -= p.len;
+          const head = p.dir > 0 ? d : (p.h ? 1920 : 1080) - d;
+          const tail = head - p.dir * p.len;
+          const fixed = p.line * CELL;
+          const x1 = p.h ? tail : fixed;
+          const y1 = p.h ? fixed : tail;
+          const x2 = p.h ? head : fixed;
+          const y2 = p.h ? fixed : head;
+          if (Math.max(x1, x2) < -20 || Math.min(x1, x2) > 1940 || Math.max(y1, y2) < -20 || Math.min(y1, y2) > 1100) continue;
 
-        const R = 16;
-        // shift indices so the visible window stays covered as the origin drifts
-        const det = ax * by - ay * bx;
-        const ci = Math.round(((960 - ox) * by - (540 - oy) * bx) / det);
-        const cj = Math.round(((540 - oy) * ax - (960 - ox) * ay) / det);
+          // full strength only in the outer margin; a faint trace wherever
+          // content can sit, so a packet never reads as a mark beside the type
+          const margin = Math.min(x2, 1920 - x2, y2, 1080 - y2);
+          const inside = QG.smooth((margin - 50) / 110);
+          const edge = QG.lerp(1, 0.3, inside);
+          const rgb = day > 0.5 ? DAY_RGB[p.hue] : NIGHT_RGB[p.hue];
+          const a = wake * edge * QG.lerp(0.95, 0.78, day);
 
-        for (let di = -R; di <= R; di++) {
-          for (let dj = -R; dj <= R; dj++) {
-            const i = ci + di;
-            const j = cj + dj;
-            const x = ox + i * ax + j * bx;
-            const y = oy + i * ay + j * by;
-            if (x < -40 || x > 1960 || y < -40 || y > 1120) continue;
+          const g = ctx.createLinearGradient(x1, y1, x2, y2);
+          g.addColorStop(0, "rgba(" + rgb + ",0)");
+          g.addColorStop(1, "rgba(" + rgb + "," + a.toFixed(3) + ")");
+          ctx.strokeStyle = g;
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
 
-            const h = QG.hash(i * 7 + 3, j * 13 + 5);
-            // gentle radial falloff so the centre of frame stays quiet for content
-            const dx = (x - 960) / 960;
-            const dy = (y - 540) / 540;
-            const edge = QG.clamp(0.35 + 0.65 * Math.sqrt(dx * dx + dy * dy), 0, 1);
-            const tw = 0.75 + 0.25 * Math.sin(t * 0.9 + h * 6.283);
-            ctx.globalAlpha = baseA * edge * tw;
-            ctx.fillStyle = "rgb(" + pr + "," + pg + "," + pb + ")";
+          // the head of the packet is a point of light only out in the margin
+          const point = 1 - inside;
+          if (point > 0.01) {
+            ctx.globalAlpha = a * point;
+            ctx.fillStyle = "rgb(" + rgb + ")";
             ctx.beginPath();
-            ctx.arc(x, y, 2.2 + h * 1.6, 0, 6.2832);
+            ctx.arc(x2, y2, 4, 0, 6.2832);
             ctx.fill();
-
-            // a short vector lights up between neighbours, then fades
-            if (h > 0.9) {
-              const period = 3.2 + h * 2.4;
-              const ph = (t + h * 40) / period;
-              const cyc = ph - Math.floor(ph);
-              const bucket = Math.floor(ph);
-              const env = Math.sin(Math.PI * QG.clamp(cyc / 0.55, 0, 1));
-              if (env > 0.01) {
-                const pick = QG.hash(i * 31 + bucket, j * 17 + 9);
-                const nx = pick < 0.34 ? ax : pick < 0.67 ? bx : bx - ax;
-                const ny = pick < 0.34 ? ay : pick < 0.67 ? by : by - ay;
-                const violet = QG.hash(i + 11, j + bucket) > 0.5;
-                const cr = violet ? (day > 0.5 ? "124,58,237" : "167,139,250") : day > 0.5 ? "0,168,214" : "34,211,238";
-                ctx.globalAlpha = env * edge * QG.lerp(0.75, 0.6, day);
-                ctx.strokeStyle = "rgb(" + cr + ")";
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.moveTo(x, y);
-                ctx.lineTo(x + nx * env, y + ny * env);
-                ctx.stroke();
-                ctx.fillStyle = "rgb(" + cr + ")";
-                ctx.beginPath();
-                ctx.arc(x, y, 4, 0, 6.2832);
-                ctx.fill();
-              }
+            if (day < 0.5) {
+              ctx.globalAlpha = a * point * 0.22;
+              ctx.beginPath();
+              ctx.arc(x2, y2, 13, 0, 6.2832);
+              ctx.fill();
             }
+            ctx.globalAlpha = 1;
           }
         }
-        ctx.globalAlpha = 1;
       }
 
       const clock = QG.proxy(draw);

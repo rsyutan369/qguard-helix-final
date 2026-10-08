@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connectDeadlineMs } from "@/lib/call-deadline";
+import { connectDeadlineMs, shouldAttemptIceRecovery } from "@/lib/call-deadline";
 
 const STALL = 20_000;
 const NOW = 1_000_000;
@@ -32,5 +32,40 @@ describe("connectDeadlineMs", () => {
     // forever keep resetting its own deadline and never end.
     expect(connectDeadlineMs(NOW, NOW, STALL)).toBeNull();
     expect(connectDeadlineMs(NOW, NOW - 1, STALL)).toBeNull();
+  });
+});
+
+describe("shouldAttemptIceRecovery", () => {
+  const base = {
+    connected: false,
+    relayInPeerConnection: false,
+    relayProven: true,
+    restartsUsed: 0,
+    maxRestarts: 2,
+  };
+
+  it("restarts when a relay has become proven and the connection lacks one", () => {
+    // The only situation where re-gathering has something the failed generation
+    // did not: a call that started before the relay probe returned.
+    expect(shouldAttemptIceRecovery(base)).toBe(true);
+  });
+
+  it("does NOT restart merely because the call is still connecting", () => {
+    // A restart abandons the current candidate pairs, so with nothing new to
+    // offer it can only destroy a handshake that might still land.
+    expect(shouldAttemptIceRecovery({ ...base, relayProven: false })).toBe(false);
+  });
+
+  it("does NOT restart when the connection already carries the relay", () => {
+    expect(shouldAttemptIceRecovery({ ...base, relayInPeerConnection: true })).toBe(false);
+  });
+
+  it("never restarts a connected call", () => {
+    expect(shouldAttemptIceRecovery({ ...base, connected: true })).toBe(false);
+  });
+
+  it("stops at the restart budget so a dead call cannot renegotiate in a loop", () => {
+    expect(shouldAttemptIceRecovery({ ...base, restartsUsed: 2 })).toBe(false);
+    expect(shouldAttemptIceRecovery({ ...base, restartsUsed: 1 })).toBe(true);
   });
 });

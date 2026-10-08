@@ -1,0 +1,187 @@
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    #s08-copy {
+      position: absolute;
+      left: 96px;
+      top: 78px;
+      width: 1728px;
+    }
+    #s08-h {
+      margin-top: 24px;
+      white-space: nowrap;
+    }
+    /* Four layers stand side by side in shallow 3D, then close into one block. */
+    #s08-rig {
+      position: absolute;
+      left: 0;
+      top: 250px;
+      width: 1920px;
+      height: 520px;
+      perspective: 2600px;
+      perspective-origin: 50% 40%;
+    }
+    .s08-slot {
+      position: absolute;
+      top: 40px;
+      width: 330px;
+      height: 430px;
+      margin-left: -165px;
+      transform-style: preserve-3d;
+    }
+    .s08-plate {
+      position: absolute;
+      inset: 0;
+      border-radius: 22px;
+      border: 3px solid currentColor;
+      background: rgba(10, 17, 32, 0.92);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 22px;
+      box-shadow:
+        inset 0 0 90px -30px currentColor,
+        0 40px 80px -30px rgba(0, 0, 0, 0.9);
+    }
+    .s08-plate::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: 19px;
+      background-image:
+        linear-gradient(currentColor 1px, rgba(0, 0, 0, 0) 1px),
+        linear-gradient(90deg, currentColor 1px, rgba(0, 0, 0, 0) 1px);
+      background-size: 30px 30px;
+      opacity: 0.1;
+    }
+    .s08-num {
+      position: relative;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      opacity: 0.8;
+    }
+    #s08-p1 {
+      color: #22d3ee;
+    }
+    #s08-p2 {
+      color: #4c8dff;
+    }
+    #s08-p3 {
+      color: #a78bfa;
+    }
+    #s08-p4 {
+      color: #2de1c2;
+    }
+    .s08-cap {
+      position: absolute;
+      top: 826px;
+      width: 420px;
+      margin-left: -210px;
+      text-align: center;
+    }
+    .s08-cap b {
+      display: block;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+    .s08-cap span {
+      display: block;
+      margin-top: 10px;
+      font-size: 28px;
+      font-weight: 500;
+      color: #c9d6f0;
+      white-space: nowrap;
+    }
+    #s08-qvault {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 742px;
+      text-align: center;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 30px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: #2de1c2;
+      white-space: pre;
+    }
+  </style>
+
+  <div id="root" data-composition-id="s08-envelope" data-width="1920" data-height="1080" data-duration="4">
+    <div id="s08-stage" class="clip is-night" data-start="0" data-duration="4" data-track-index="0">
+      <div id="s08-copy">
+        <div id="s08-kicker" class="qg-kicker">The key envelope</div>
+        <h1 id="s08-h" class="qg-md">Breaking one layer <span class="qg-grad">never opens</span> your files.</h1>
+      </div>
+
+      <div id="s08-rig" data-layout-ignore>
+        <div class="s08-slot" id="s08-s1" style="left: 330px"><div class="s08-plate" id="s08-p1"><span class="s08-ico"></span><span class="s08-num">LAYER 01</span></div></div>
+        <div class="s08-slot" id="s08-s2" style="left: 750px"><div class="s08-plate" id="s08-p2"><span class="s08-ico"></span><span class="s08-num">LAYER 02</span></div></div>
+        <div class="s08-slot" id="s08-s3" style="left: 1170px"><div class="s08-plate" id="s08-p3"><span class="s08-ico"></span><span class="s08-num">LAYER 03</span></div></div>
+        <div class="s08-slot" id="s08-s4" style="left: 1590px"><div class="s08-plate" id="s08-p4"><span class="s08-ico"></span><span class="s08-num">LAYER 04</span></div></div>
+      </div>
+
+      <div id="s08-qvault">board-pack-q4.pdf.qvault</div>
+
+      <div class="s08-cap" id="s08-c1" style="left: 330px; color: #22d3ee"><b>AES-256-GCM</b><span>encrypts the file</span></div>
+      <div class="s08-cap" id="s08-c2" style="left: 750px; color: #4c8dff"><b>VAULT MASTER KEY</b><span>wraps the file key</span></div>
+      <div class="s08-cap" id="s08-c3" style="left: 1170px; color: #a78bfa"><b>X25519 + ML-KEM-1024</b><span>seals the master key</span></div>
+      <div class="s08-cap" id="s08-c4" style="left: 1590px; color: #2de1c2"><b>ML-DSA-87 + Ed25519</b><span>signs the container</span></div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const QG = window.QG;
+      const tl = gsap.timeline({ paused: true, defaults: { ease: "power3.out" } });
+
+      const ICONS = ["file", "key", "atom", "filecheck"];
+      document.querySelectorAll(".s08-ico").forEach(function (el, i) {
+        el.innerHTML = QG.icon(ICONS[i], 120, "stroke-width:1.4");
+      });
+
+      /* Scene 1 — four layers, inside to outside, one per half-bar. Layer 01 is
+         standing when the zoom lands. Each plate turns to face the next. */
+      QG.rise(tl, QG.split(document.getElementById("s08-h")), 0.1, { stagger: 0.06 });
+
+      const TILT = -38;
+      gsap.set(".s08-plate", { rotationY: TILT, transformOrigin: "50% 50%" });
+      const AT = [0, 0.5, 1.0, 1.5];
+      for (let i = 1; i <= 4; i++) {
+        const at = AT[i - 1];
+        if (i > 1) {
+          tl.fromTo("#s08-s" + i, { x: 150, z: 260, opacity: 0 }, { x: 0, z: 0, opacity: 1, duration: 0.7, ease: "expo.out" }, at);
+        }
+        tl.fromTo("#s08-c" + i, { y: 18, opacity: 0 }, { y: 0, opacity: 1, duration: 0.45 }, at + (i === 1 ? 0.25 : 0.2));
+      }
+
+      /* Scene 2 — the envelope closes: four layers, one sealed container. */
+      const CLOSE = 2.5;
+      const TARGET = [735, 865, 995, 1125];
+      const FROM = [330, 750, 1170, 1590];
+      for (let i = 1; i <= 4; i++) {
+        tl.fromTo(
+          "#s08-s" + i,
+          { x: 0 },
+          { x: TARGET[i - 1] - FROM[i - 1], duration: 0.6, ease: "power3.inOut", immediateRender: false },
+          CLOSE,
+        );
+      }
+      tl.fromTo(".s08-plate", { rotationY: TILT }, { rotationY: -58, duration: 0.6, ease: "power3.inOut", immediateRender: false }, CLOSE);
+      tl.to(".s08-plate", { borderColor: "#2de1c2", duration: 0.35 }, CLOSE + 0.55);
+      tl.fromTo("#s08-qvault", { opacity: 0 }, { opacity: 1, duration: 0.3 }, CLOSE + 0.5);
+      QG.decode(tl, document.getElementById("s08-qvault"), CLOSE + 0.5, { duration: 0.55, seed: 9 });
+
+      window.__timelines["s08-envelope"] = tl;
+    })();
+  </script>
+</template>

@@ -157,7 +157,7 @@ export const MESSAGING_INSTALLER = {
    * print "Get-FileHash windows" in the verification command below.
    */
   fileName: 'QGuard-Messaging-Setup.exe',
-  version: '1.3.9',
+  version: '1.3.10',
   sizeMb: 6,
   requirements: 'Windows 10/11 · 64-bit',
   /**
@@ -169,7 +169,7 @@ export const MESSAGING_INSTALLER = {
    * an honest user their legitimate download was tampered with, which is worse
    * than publishing no hash at all.
    */
-  sha256: '7847AAC5C66903B103437F860F3AADFC65A61B7BBD1D235A4CF4D1F2E39DC2B6',
+  sha256: 'CD798E899262A8DAE2ED6256EB392AD3214BD9118F999C5F3D2A5117A0B9DE82',
 };
 
 /**

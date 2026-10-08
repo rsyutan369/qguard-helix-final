@@ -26,13 +26,19 @@ CREATE POLICY messaging_call_relay_read ON public.messaging_call_relay
   FOR SELECT TO authenticated USING (true);
 -- No INSERT/UPDATE/DELETE policies: only the service role manages this row.
 
--- Seed with the public Open Relay so calls traverse strict NATs immediately;
--- replace with your own coturn/Twilio/Cloudflare relay for production scale.
+-- Seed the row with NO relay.
+--
+-- This used to seed the public Open Relay (`openrelay.metered.ca`) so that
+-- "calls traverse strict NATs immediately". That relay cannot allocate, and an
+-- unallocatable TURN entry stops ICE gathering from ever completing — so the
+-- seed did not merely fail to help cross-network calls, it broke ALL calls,
+-- same-LAN included. See 035 for the measurements and for the repair of
+-- databases that were seeded this way.
+--
+-- The seed is kept (the client expects row 1 to exist) but empty: no relay
+-- means same-network and cooperative-NAT calls connect, and cross-network
+-- calls honestly report that an administrator needs to configure a relay.
+-- Point this row at a real coturn/Twilio/Cloudflare relay for production.
 INSERT INTO public.messaging_call_relay (id, turn_urls, turn_username, turn_credential)
-VALUES (
-  1,
-  '["turn:openrelay.metered.ca:80","turn:openrelay.metered.ca:443","turns:openrelay.metered.ca:443?transport=tcp"]'::jsonb,
-  'openrelayproject',
-  'openrelayproject'
-)
+VALUES (1, '[]'::jsonb, '', '')
 ON CONFLICT (id) DO NOTHING;

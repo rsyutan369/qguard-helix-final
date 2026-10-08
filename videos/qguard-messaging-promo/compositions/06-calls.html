@@ -1,0 +1,150 @@
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    #s06-copy {
+      position: absolute;
+      left: 96px;
+      top: 78px;
+      width: 1728px;
+    }
+    #s06-h {
+      margin-top: 24px;
+      white-space: nowrap;
+    }
+    #s06-chips {
+      margin-top: 30px;
+      display: flex;
+      gap: 24px;
+    }
+    /* Both ends of the call, turned toward each other: the number has to match. */
+    #s06-rig {
+      position: absolute;
+      inset: 0;
+      perspective: 2600px;
+      perspective-origin: 50% 60%;
+    }
+    #s06-desk {
+      position: absolute;
+      left: 60px;
+      top: 252px;
+      width: 1320px;
+      height: 820px;
+      transform-origin: 50% 50%;
+    }
+    #s06-phone {
+      position: absolute;
+      left: 1300px;
+      top: 212px;
+      width: 430px;
+      height: 900px;
+      transform-origin: 50% 50%;
+    }
+    #s06-match {
+      position: absolute;
+      left: 953px;
+      top: 470px;
+      width: 421px;
+      height: 44px;
+    }
+    #s06-match-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 21px;
+      height: 3px;
+      background: #059669;
+    }
+    #s06-match-badge {
+      position: absolute;
+      left: 50%;
+      top: 0;
+      height: 44px;
+      width: 150px;
+      margin-left: -75px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border-radius: 999px;
+      border: 2px solid rgba(9, 13, 22, 0.6);
+      background: #34d399;
+      color: #04121a;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+    }
+  </style>
+
+  <div id="root" data-composition-id="s06-calls" data-width="1920" data-height="1080" data-duration="4">
+    <div id="s06-stage" class="clip" data-start="0" data-duration="4" data-track-index="0">
+      <div id="s06-rig">
+        <div id="s06-desk"></div>
+        <div id="s06-phone"></div>
+      </div>
+      <div id="s06-match" data-layout-ignore>
+        <span id="s06-match-line"></span>
+        <span id="s06-match-badge"></span>
+      </div>
+
+      <div id="s06-copy">
+        <div id="s06-kicker" class="qg-kicker">Quantum-encrypted calls</div>
+        <h1 id="s06-h" class="qg-md">Voice and video, sealed <span class="qg-grad">frame by frame.</span></h1>
+        <div id="s06-chips">
+          <span id="s06-chip-key" class="qg-chip"><span class="qg-dot"></span>A fresh post-quantum key per call</span>
+          <span id="s06-chip-tap" class="qg-chip is-emerald"><span class="qg-dot"></span>Verified in one tap</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const QG = window.QG;
+      const tl = gsap.timeline({ paused: true, defaults: { ease: "power3.out" } });
+
+      /* The safety number is derived on both devices from the call's shared
+         secret; the two people compare it. Avery on desktop, Jordan on Android. */
+      const NUMBER = "4827-1903-6645-0271-9358";
+      document.getElementById("s06-desk").innerHTML = QG.ui.callWindow("s06d", { name: "Jordan Reyes", initials: "JR", number: NUMBER });
+      document.getElementById("s06-phone").innerHTML = QG.ui.phoneCall("s06p", { name: "Avery Quinn", initials: "AQ", number: NUMBER });
+      document.getElementById("s06-match-badge").innerHTML = QG.icon("tick", 20, "stroke-width:3") + "MATCH";
+
+      gsap.set("#s06-desk", { scale: 0.76, rotationY: 9, rotationX: 3 });
+      gsap.set("#s06-phone", { scale: 0.76, rotationY: -13, rotationX: 3 });
+      gsap.set(["#s06d-ok", "#s06p-ok"], { opacity: 0 });
+
+      /* Scene 1 — the call is up on both devices. */
+      tl.fromTo("#s06-kicker", { y: 20, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5 }, 0.06);
+      QG.rise(tl, QG.split(document.getElementById("s06-h")), 0.1, { stagger: 0.06 });
+      tl.fromTo("#s06d-sas", { y: -26, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5 }, 0.5);
+      tl.fromTo("#s06p-sas", { y: -22, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5 }, 0.62);
+      QG.lift(tl, "#s06-chip-key", 0.9, { duration: 0.45 });
+
+      /* Scene 2 — the same number resolves on both screens, and they match. */
+      QG.decode(tl, document.getElementById("s06d-sas-n"), 0.85, { duration: 0.8, seed: 7 });
+      QG.decode(tl, document.getElementById("s06p-sas-n"), 0.85, { duration: 0.8, seed: 7 });
+      tl.fromTo("#s06d-sas-n", { color: "#111827" }, { color: "#047857", duration: 0.2, immediateRender: false }, 2.0);
+      tl.fromTo("#s06-match-line", { scaleX: 0 }, { scaleX: 1, duration: 0.35, ease: "power2.out" }, 1.9);
+      tl.fromTo("#s06-match-badge", { scale: 0.6, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.35, ease: "expo.out" }, 2.0);
+      // the tap: the desktop button dips; the Android one inverts, as that skin's buttons do
+      tl.fromTo("#s06d-sas-btn", { scale: 1 }, { scale: 0.92, duration: 0.09, ease: "power2.in", immediateRender: false }, 2.41);
+      tl.to("#s06d-sas-btn", { scale: 1, duration: 0.25 }, 2.5);
+      tl.fromTo("#s06p-sas-btn", { backgroundColor: "#201e1d", color: "#f3f2f2" }, { backgroundColor: "#f3f2f2", color: "#201e1d", duration: 0.06, ease: "none", immediateRender: false }, 2.41);
+
+      /* Scene 3 — verified. The card clears, the other person takes the stage,
+         and the state pill flips on both. */
+      tl.to(["#s06d-sas", "#s06p-sas", "#s06-match"], { opacity: 0, duration: 0.28, ease: "power2.in" }, 2.7);
+      tl.fromTo("#s06d-remote", { y: 0 }, { y: -78, duration: 0.6, immediateRender: false }, 2.76);
+      tl.fromTo("#s06p-remote", { y: 0 }, { y: -56, duration: 0.6, immediateRender: false }, 2.82);
+      tl.to(["#s06d-enc", "#s06p-enc"], { opacity: 0, duration: 0.15 }, 2.88);
+      tl.fromTo(["#s06d-ok", "#s06p-ok"], { opacity: 0, scale: 0.85 }, { opacity: 1, scale: 1, duration: 0.4, ease: "expo.out", immediateRender: false }, 3.0);
+      QG.lift(tl, "#s06-chip-tap", 3.0, { duration: 0.45 });
+
+      window.__timelines["s06-calls"] = tl;
+    })();
+  </script>
+</template>

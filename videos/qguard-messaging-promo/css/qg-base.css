@@ -8,22 +8,8 @@
    Android (Modernist) skin. Both ship as local variable files (SIL OFL 1.1,
    licences beside them). Inter and JetBrains Mono are the desktop app's UI and
    mono faces and are embedded by the HyperFrames compiler. */
-@font-face {
-  font-family: "Geist";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: block;
-  src: url("assets/fonts/geist-latin-wght-normal.woff2") format("woff2");
-}
-
-@font-face {
-  font-family: "Archivo";
-  font-style: normal;
-  font-weight: 100 900;
-  font-stretch: 100%;
-  font-display: block;
-  src: url("assets/fonts/archivo-latin.woff2") format("woff2");
-}
+/* The two @font-face rules for Geist and Archivo live in index.html, where a
+   root-relative url() is correct for both the renderer and Studio. */
 
 :root {
   /* Day */
@@ -161,6 +147,20 @@ body {
   color: transparent;
 }
 
+/* A headline set as stacked lines. Each line is a flex item, so the lines are
+   placed by the layout engine, one under the other, and cannot collide. */
+.qg-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+/* each line carries the same side room as the word masks inside it */
+.qg-stack > * {
+  padding: 0 0.06em;
+  margin: 0 -0.06em;
+}
+
 /* --- Word masks (built by QG.split) ----------------------------------------
    Each word sits in an overflow-hidden mask so it can rise into place. The
    padding / negative margin pair gives ascenders and descenders room inside the
@@ -189,7 +189,7 @@ body {
   border-radius: 999px;
   border: 2px solid var(--line);
   background: var(--cyan);
-  color: #ffffff;
+  color: #04121a;
   font-family: var(--f-mono);
   font-size: 21px;
   font-weight: 700;
@@ -203,7 +203,7 @@ body {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: #ffffff;
+  background: #04121a;
 }
 
 .is-night .qg-kicker {
@@ -222,14 +222,14 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 12px;
-  height: 52px;
-  padding: 0 22px;
+  height: 58px;
+  padding: 0 24px;
   border-radius: 999px;
   border: 2px solid var(--line);
   background: #ffffff;
   color: var(--ink-soft);
   font-family: var(--f-mono);
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -363,6 +363,7 @@ body {
 .qg-ico {
   display: inline-flex;
   flex: none;
+  stroke-width: 2;
 }
 
 .qg-ico svg {
@@ -371,7 +372,7 @@ body {
   height: 100%;
   fill: none;
   stroke: currentColor;
-  stroke-width: 2;
+  stroke-width: inherit;
   stroke-linecap: round;
   stroke-linejoin: round;
 }

@@ -1,0 +1,255 @@
+<template>
+  <style>
+    #root {
+      position: absolute;
+      inset: 0;
+    }
+    /* The app's Vault Crypto Terminal, at reading size. */
+    #s09-term {
+      position: absolute;
+      left: 96px;
+      top: 180px;
+      width: 1190px;
+      height: 716px;
+      border-radius: 16px;
+      border: 2px solid rgba(124, 163, 255, 0.3);
+      background: #0b1120;
+      overflow: hidden;
+      box-shadow:
+        14px 14px 0 rgba(76, 141, 255, 0.3),
+        0 50px 110px -30px rgba(0, 0, 0, 0.9);
+      font-family: "Inter", sans-serif;
+      color: #f8fafc;
+    }
+    #s09-term-h {
+      height: 66px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 26px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+      font-size: 24px;
+      font-weight: 700;
+    }
+    #s09-term-h span {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    #s09-term-h em {
+      font-style: normal;
+      font-size: 20px;
+      font-weight: 600;
+      color: #a5f3fc;
+    }
+    #s09-live {
+      padding: 20px 26px 22px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    #s09-live-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 22px;
+      font-weight: 700;
+    }
+    #s09-phase {
+      color: #a5f3fc;
+    }
+    #s09-pct {
+      font-family: "JetBrains Mono", monospace;
+      color: #a5f3fc;
+      font-variant-numeric: tabular-nums;
+    }
+    #s09-bar {
+      margin-top: 14px;
+      height: 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.1);
+      overflow: hidden;
+    }
+    #s09-bar-fill {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #22d3ee, #8b5cf6);
+      transform-origin: left center;
+    }
+    #s09-stats {
+      margin-top: 14px;
+      height: 26px;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 19px;
+      color: rgba(207, 250, 254, 0.85);
+      font-variant-numeric: tabular-nums;
+      white-space: pre;
+    }
+    #s09-logs {
+      padding: 18px 26px;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 20.5px;
+      line-height: 1.5;
+      color: #cffafe;
+    }
+    .s09-log {
+      margin-bottom: 10px;
+    }
+    .s09-log i {
+      font-style: normal;
+      color: rgba(255, 255, 255, 0.52);
+    }
+    .s09-log.is-ok {
+      color: #6ee7b7;
+    }
+    #s09-copy {
+      position: absolute;
+      left: 1366px;
+      top: 196px;
+      width: 470px;
+    }
+    #s09-h {
+      margin-top: 28px;
+      font-size: 62px;
+    }
+    .s09-l {
+      display: block;
+      white-space: nowrap;
+    }
+    #s09-tags {
+      margin-top: 56px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 22px;
+    }
+  </style>
+
+  <div id="root" data-composition-id="s09-terminal" data-width="1920" data-height="1080" data-duration="4">
+    <div id="s09-stage" class="clip is-night" data-start="0" data-duration="4" data-track-index="0">
+      <div id="s09-term">
+        <div id="s09-term-h"><span id="s09-term-title"></span><em>On-device vault logs</em></div>
+        <div id="s09-live">
+          <div id="s09-live-row"><span>Encrypting <span id="s09-phase">· Initializing</span></span><span id="s09-pct">0%</span></div>
+          <div id="s09-bar"><span id="s09-bar-fill"></span></div>
+          <div id="s09-stats"></div>
+        </div>
+        <div id="s09-logs"></div>
+      </div>
+
+      <div id="s09-copy">
+        <div id="s09-kicker" class="qg-kicker">Live crypto terminal</div>
+        <h1 id="s09-h" class="qg-md qg-stack">
+          <span class="s09-l" id="s09-l1">Watch the real</span>
+          <span class="s09-l" id="s09-l2"><span class="qg-grad">pipeline</span> run.</span>
+        </h1>
+        <div id="s09-tags">
+          <span id="s09-tag-rec" class="qg-chip"><span class="qg-dot"></span>Offline recovery key</span>
+          <span id="s09-tag-dual" class="qg-chip"><span class="qg-dot"></span>Enterprise dual-control</span>
+          <span id="s09-tag-seal" class="qg-chip is-emerald"><span class="qg-dot"></span>Tamper-evident</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const QG = window.QG;
+      const tl = gsap.timeline({ paused: true, defaults: { ease: "power3.out" } });
+      document.getElementById("s09-term-title").innerHTML = QG.icon("terminal", 26) + "Vault Crypto Terminal";
+
+      /* The pipeline, verbatim from the app: phase labels from
+         src/lib/vault-progress.ts, messages from src-tauri/src/vault_stream.rs.
+         A 64 MB file is 64 one-megabyte chunks. Every figure on screen — percent,
+         bytes, chunk, throughput, ETA — is computed from this scene's own clock. */
+      const TOTAL_MB = 64;
+      const STEPS = [
+        { at: 0.12, text: "Crypto suite: X25519+ML-KEM-1024 / AES-256-GCM / HKDF-SHA3-256 / Ed25519+ML-DSA-87 (VMK envelope, on-device)" },
+        { at: 0.3, text: "Encrypting board-pack-q4.pdf → board-pack-q4.pdf.qvault in Documents" },
+        { at: 0.5, phase: "Initializing", pct: 3, text: "▸ Initializing quantum-safe vault container" },
+        { at: 0.75, phase: "File key · AES-256-GCM", pct: 10, text: "▸ Per-file key generated · AES-256-GCM (256-bit) · wrapped under VMK" },
+        { at: 1.0, phase: "VMK seal · X25519 + ML-KEM-1024", pct: 19, text: "▸ Vault Master Key sealed to device · X25519 + ML-KEM-1024" },
+        { at: 1.25, phase: "Recovery wrap · ML-KEM-1024", pct: 27, text: "▸ VMK sealed to recovery recipient · ML-KEM-1024 / HKDF-SHA3-256" },
+        { at: 1.5, phase: "Signing · ML-DSA-87", pct: 34, text: "▸ Header signed · Ed25519 + ML-DSA-87 (FIPS 204 L5)" },
+        { at: 1.75, phase: "Header written", pct: 40, text: "▸ Signed header written · streaming encrypted chunks" },
+        { at: 2.5, phase: "Complete", pct: 100, ok: true, text: "▸ Vault container sealed · integrity protected per chunk" },
+        { at: 2.7, ok: true, text: "Encrypted board-pack-q4.pdf (64.0 MB, 64 chunks) → Documents" },
+      ];
+      const STREAM_FROM = 1.8;
+      const STREAM_TO = 2.5;
+      const OP_START = 0.5;
+
+      const logs = document.getElementById("s09-logs");
+      const rows = STEPS.map(function (s, i) {
+        const row = document.createElement("div");
+        row.className = "s09-log" + (s.ok ? " is-ok" : "");
+        const sec = 14 + Math.floor(s.at * 2);
+        row.innerHTML = "<i>[09:41:" + sec + "]</i> " + s.text;
+        logs.appendChild(row);
+        return row;
+      });
+
+      const phaseEl = document.getElementById("s09-phase");
+      const pctEl = document.getElementById("s09-pct");
+      const statsEl = document.getElementById("s09-stats");
+      const fill = document.getElementById("s09-bar-fill");
+
+      function draw(t) {
+        let phase = "Initializing";
+        let pct = 0;
+        for (let i = 0; i < STEPS.length; i++) {
+          rows[i].style.opacity = QG.ramp(t, STEPS[i].at, STEPS[i].at + 0.12).toFixed(3);
+          if (t >= STEPS[i].at && STEPS[i].phase) {
+            phase = STEPS[i].phase;
+            pct = STEPS[i].pct;
+          }
+        }
+        // streaming: the bar fills in proportion to bytes actually processed
+        const k = QG.clamp((t - STREAM_FROM) / (STREAM_TO - STREAM_FROM), 0, 1);
+        const done = t >= STREAM_TO;
+        let mb = 0;
+        if (t >= STREAM_FROM) {
+          mb = done ? TOTAL_MB : Math.floor(k * TOTAL_MB);
+          if (!done) {
+            phase = "Streaming · AES-256-GCM";
+            pct = Math.round(42 + (98 - 42) * (mb / TOTAL_MB));
+          }
+        }
+        const phaseText = "· " + phase;
+        if (phaseEl.textContent !== phaseText) phaseEl.textContent = phaseText;
+        const pctText = pct + "%";
+        if (pctEl.textContent !== pctText) pctEl.textContent = pctText;
+        fill.style.transform = "scaleX(" + (pct / 100).toFixed(4) + ")";
+
+        let stats = "";
+        if (t >= STREAM_FROM) {
+          const elapsed = Math.max(0.05, Math.min(t, STREAM_TO) - OP_START);
+          const rate = mb / elapsed;
+          const eta = done || rate <= 0 ? "—" : Math.max(1, Math.round((TOTAL_MB - mb) / rate)) + "s";
+          stats = mb.toFixed(1) + " MB / 64.0 MB   " + Math.round(rate) + " MB/s   ETA " + eta + "   chunk " + mb + "/64";
+        }
+        if (statsEl.textContent !== stats) statsEl.textContent = stats;
+      }
+      const clock = QG.proxy(draw);
+      clock.t = 0;
+      tl.fromTo(clock, { t: 0 }, { t: 4, duration: 4, ease: "none" }, 0);
+
+      /* Scene 1 — the terminal is already up when the cut lands; the copy rises. */
+      tl.fromTo("#s09-kicker", { y: 20, opacity: 0 }, { y: 0, opacity: 1, duration: 0.5 }, 0.06);
+      QG.rise(tl, QG.split(document.getElementById("s09-l1")), 0.12, { stagger: 0.07 });
+      QG.rise(tl, QG.split(document.getElementById("s09-l2")), 0.34, { stagger: 0.07 });
+
+      /* What the container guarantees, each named as the pipeline reaches it:
+         the recovery wrap, the optional enterprise key, and the seal itself. */
+      const NIGHT_SHADOW = "rgba(76, 141, 255, 0.35)";
+      QG.lift(tl, "#s09-tag-rec", 1.25, { duration: 0.45, color: NIGHT_SHADOW });
+      QG.lift(tl, "#s09-tag-dual", 2.0, { duration: 0.45, color: NIGHT_SHADOW });
+
+      /* Scene 2 — sealed. */
+      tl.fromTo("#s09-term", { borderColor: "rgba(124, 163, 255, 0.3)" }, { borderColor: "#2de1c2", duration: 0.35, immediateRender: false }, 2.5);
+      QG.lift(tl, "#s09-tag-seal", 2.55, { duration: 0.45, color: NIGHT_SHADOW });
+
+      window.__timelines["s09-terminal"] = tl;
+    })();
+  </script>
+</template>

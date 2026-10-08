@@ -38,13 +38,23 @@
       height: 640px;
       display: block;
     }
+    /* One soft pass of light across the mark, masked to the logo's own alpha. */
+    #s02-sheen-mask {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      -webkit-mask-image: url("assets/img/logo-feather.png");
+      mask-image: url("assets/img/logo-feather.png");
+      -webkit-mask-size: 640px 640px;
+      mask-size: 640px 640px;
+    }
     #s02-sheen {
       position: absolute;
-      top: -80px;
+      top: -120px;
       left: 0;
-      width: 240px;
-      height: 800px;
-      background: linear-gradient(100deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.8) 50%, rgba(255, 255, 255, 0) 100%);
+      width: 150px;
+      height: 900px;
+      background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.5) 50%, rgba(255, 255, 255, 0) 100%);
     }
     #s02-ring {
       position: absolute;
@@ -73,21 +83,21 @@
       position: absolute;
       left: 0;
       right: 0;
-      top: 862px;
+      top: 858px;
       display: flex;
       justify-content: center;
-      gap: 24px;
+      gap: 26px;
     }
   </style>
 
   <div id="root" data-composition-id="s02-brand" data-width="1920" data-height="1080" data-duration="6">
     <div id="s02-stage" class="clip" data-start="0" data-duration="6" data-track-index="0">
       <div id="s02-logo-pos">
-        <div id="s02-logo-move">
+        <div id="s02-logo-move" data-layout-allow-overflow>
           <div id="s02-plate" data-layout-ignore></div>
           <div id="s02-logo-iris">
             <img id="s02-logo" src="assets/img/logo-feather.png" alt="Qguard Helix" />
-            <div id="s02-sheen" data-layout-ignore></div>
+            <div id="s02-sheen-mask" data-layout-ignore><div id="s02-sheen"></div></div>
           </div>
           <svg id="s02-ring" viewBox="0 0 720 720" data-layout-ignore>
             <defs>
@@ -104,7 +114,7 @@
 
       <div id="s02-copy">
         <div id="s02-kicker" class="qg-kicker">QGuard Messaging</div>
-        <h1 id="s02-h1" class="qg-xl">
+        <h1 id="s02-h1" class="qg-xl qg-stack">
           <span class="s02-l" id="s02-l1">One app.</span>
           <span class="s02-l" id="s02-l2">Quantum-safe</span>
           <span class="s02-l" id="s02-l3"><span class="qg-grad">chat</span> &amp; <span class="qg-grad">vault.</span></span>
@@ -142,7 +152,7 @@
       tl.fromTo("#s02-ring-c", { strokeDashoffset: RING, opacity: 1 }, { strokeDashoffset: 0, duration: 1.0, ease: "power2.inOut" }, 0.12);
       tl.to("#s02-ring-c", { opacity: 0, duration: 0.45, ease: "power1.in" }, 1.12);
 
-      tl.fromTo("#s02-sheen", { x: -300, opacity: 1 }, { x: 760, duration: 0.75, ease: "power2.inOut" }, 0.85);
+      tl.fromTo("#s02-sheen", { x: -260, rotation: 16, opacity: 1 }, { x: 760, rotation: 16, duration: 0.8, ease: "power2.inOut" }, 0.8);
       tl.set("#s02-sheen", { opacity: 0 }, 1.62);
 
       /* Scene 2 — the logo steps left and the name and promise land beside it. */

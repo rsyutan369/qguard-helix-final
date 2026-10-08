@@ -9,8 +9,25 @@
     <link rel="stylesheet" href="css/qg-desktop.css" />
     <link rel="stylesheet" href="css/qg-phone.css" />
     <script src="js/qg.js"></script>
+    <script src="js/qg-draw.js"></script>
     <script src="js/qg-ui.js"></script>
     <style>
+      /* Geist is the face of the three source pages; Archivo is the face of the
+         Android (Modernist) skin. Both are local variable files, SIL OFL 1.1. */
+      @font-face {
+        font-family: "Geist";
+        font-style: normal;
+        font-weight: 100 900;
+        font-display: block;
+        src: url("assets/fonts/geist-latin-wght-normal.woff2") format("woff2");
+      }
+      @font-face {
+        font-family: "Archivo";
+        font-style: normal;
+        font-weight: 100 900;
+        font-display: block;
+        src: url("assets/fonts/archivo-latin.woff2") format("woff2");
+      }
       #root {
         position: relative;
         width: 1920px;
@@ -69,6 +86,19 @@
       <!-- Tracks 1–2 — the twelve scenes, back to back, each starting on a bar line (120 BPM, 2s bars). -->
       <div id="el-s01" class="scene-slot" data-composition-id="s01-threat" data-composition-src="compositions/01-threat.html" data-start="0" data-duration="6" data-track-index="1"></div>
       <div id="el-s02" class="scene-slot" data-composition-id="s02-brand" data-composition-src="compositions/02-brand.html" data-start="6" data-duration="6" data-track-index="2"></div>
+      <div id="el-s03" class="scene-slot" data-composition-id="s03-devices" data-composition-src="compositions/03-devices.html" data-start="12" data-duration="6" data-track-index="1"></div>
+      <div id="el-s04" class="scene-slot" data-composition-id="s04-chat" data-composition-src="compositions/04-chat.html" data-start="18" data-duration="4" data-track-index="2"></div>
+      <div id="el-s05" class="scene-slot" data-composition-id="s05-inside" data-composition-src="compositions/05-chat-inside.html" data-start="22" data-duration="4" data-track-index="1"></div>
+      <div id="el-s06" class="scene-slot" data-composition-id="s06-calls" data-composition-src="compositions/06-calls.html" data-start="26" data-duration="4" data-track-index="2"></div>
+      <div id="el-s07" class="scene-slot" data-composition-id="s07-vault" data-composition-src="compositions/07-vault.html" data-start="30" data-duration="4" data-track-index="1"></div>
+      <div id="el-s08" class="scene-slot" data-composition-id="s08-envelope" data-composition-src="compositions/08-envelope.html" data-start="34" data-duration="4" data-track-index="2"></div>
+      <div id="el-s09" class="scene-slot" data-composition-id="s09-terminal" data-composition-src="compositions/09-terminal.html" data-start="38" data-duration="4" data-track-index="1"></div>
+      <div id="el-s10" class="scene-slot" data-composition-id="s10-suite" data-composition-src="compositions/10-suite.html" data-start="42" data-duration="8" data-track-index="2"></div>
+      <div id="el-s11" class="scene-slot" data-composition-id="s11-principles" data-composition-src="compositions/11-principles.html" data-start="50" data-duration="4" data-track-index="1"></div>
+      <div id="el-s12" class="scene-slot" data-composition-id="s12-close" data-composition-src="compositions/12-close.html" data-start="54" data-duration="6" data-track-index="2"></div>
+
+      <!-- Track 10 — soundtrack: original score + effects, built by tools/make-audio.mjs. -->
+      <audio id="soundtrack" src="assets/audio/soundtrack.wav" data-start="0" data-duration="60" data-track-index="10" data-volume="1"></audio>
 
       <!-- Track 3 — overlay: the bloom bookends, film grain, chapter rail. -->
       <div id="el-fx" data-composition-id="fx-overlay" data-composition-src="compositions/fx-overlay.html" data-start="0" data-duration="60" data-track-index="3"></div>
@@ -106,6 +136,16 @@
       }
 
       bloom("#el-s01", "#el-s02", 6);
+      cutCurve("#el-s02", "#el-s03", 12);
+      zoomThrough("#el-s03", "#el-s04", 18);
+      zoomThrough("#el-s04", "#el-s05", 22);
+      cutCurve("#el-s05", "#el-s06", 26);
+      zoomThrough("#el-s06", "#el-s07", 30);
+      zoomThrough("#el-s07", "#el-s08", 34);
+      cutCurve("#el-s08", "#el-s09", 38);
+      zoomThrough("#el-s09", "#el-s10", 42);
+      // 10 → 11 is the one hard cut, on the downbeat at 50s
+      bloom("#el-s11", "#el-s12", 54);
 
       window.__timelines["main"] = tl;
     </script>

@@ -1,1 +1,714 @@
-/* phone + Android Modernist skin — filled in with scene 03 */
+/* =============================================================================
+   Android app — QGuard Messaging, Modernist skin (ink theme)
+   A vector rebuild of qguard-messaging/src/components/mobile/* under
+   styles/android-modernist.css: one grotesque (Archivo), zero radius, hairline
+   rules instead of shadows, ink-on-paper with a single vermilion accent.
+   Tokens are the skin's own. Markup comes from js/qg-ui.js.
+   The phone is authored at 430 × 900 and scaled by each scene.
+   ========================================================================== */
+
+.ph {
+  position: relative;
+  width: 430px;
+  height: 900px;
+  border-radius: 56px;
+  background: #0b0b0c;
+  border: 2px solid #3a3a3d;
+  box-shadow:
+    inset 0 0 0 3px #1c1c1e,
+    14px 14px 0 rgba(9, 13, 22, 0.88),
+    0 60px 120px rgba(15, 23, 42, 0.28);
+}
+
+.ph-screen {
+  position: absolute;
+  left: 13px;
+  top: 13px;
+  width: 400px;
+  height: 870px;
+  border-radius: 44px;
+  overflow: hidden;
+  background: #131211;
+  color: #f3f2f2;
+  font-family: "Archivo", "Inter", sans-serif;
+}
+
+.ph-cam {
+  position: absolute;
+  left: 50%;
+  top: 14px;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  border-radius: 50%;
+  background: #0b0b0c;
+  box-shadow: 0 0 0 2px #232325;
+  z-index: 5;
+}
+
+.ph svg {
+  display: block;
+}
+
+/* --- Status bar --- */
+.ph-status {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 26px 0;
+  background: #201e1d;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #f3f2f2;
+}
+
+.ph-status-r {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ph-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 12px;
+}
+
+.ph-bars i {
+  width: 3px;
+  background: #f3f2f2;
+}
+
+.ph-batt {
+  width: 25px;
+  height: 12px;
+  border: 1.5px solid #f3f2f2;
+  padding: 1.5px;
+}
+
+.ph-batt i {
+  display: block;
+  width: 78%;
+  height: 100%;
+  background: #f3f2f2;
+}
+
+/* --- Masthead --- */
+.ph-mast {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 42px;
+  height: 84px;
+  padding: 12px 22px 0;
+  background: #201e1d;
+  border-bottom: 2px solid #ec3013;
+  background-image:
+    linear-gradient(rgba(243, 242, 242, 0.05) 1px, rgba(243, 242, 242, 0) 1px),
+    linear-gradient(90deg, rgba(243, 242, 242, 0.05) 1px, rgba(243, 242, 242, 0) 1px);
+  background-size: 34px 34px;
+}
+
+.ph-mast-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ph-word {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 25px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: #f3f2f2;
+}
+
+.ph-tally {
+  width: 11px;
+  height: 11px;
+  background: #ec3013;
+}
+
+.ph-mast-r {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ph-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  color: #d7d3d3;
+}
+
+.ph-live i {
+  width: 7px;
+  height: 7px;
+  background: #9b9797;
+}
+
+.ph-sq {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(243, 242, 242, 0.38);
+  color: #f3f2f2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ph-kick {
+  margin-top: 9px;
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #d7d3d3;
+  white-space: nowrap;
+}
+
+/* --- Page head --- */
+.ph-head {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 128px;
+  height: 74px;
+  padding: 13px 22px 0;
+  background: #1b1a19;
+  border-bottom: 2px solid rgba(243, 242, 242, 0.38);
+}
+
+.ph-title {
+  margin-top: 6px;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1;
+  text-transform: uppercase;
+  color: #f3f2f2;
+}
+
+/* --- Body --- */
+.ph-body {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 204px;
+  bottom: 74px;
+  padding: 14px 16px 0;
+  background: #131211;
+  overflow: hidden;
+}
+
+.ph-greet-name {
+  margin-top: 4px;
+  font-size: 25px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.ph-card {
+  margin-top: 12px;
+  border: 1px solid rgba(243, 242, 242, 0.38);
+  background: #1b1a19;
+  padding: 16px;
+}
+
+.ph-core {
+  display: flex;
+  gap: 13px;
+  align-items: flex-start;
+}
+
+.ph-core-mark {
+  width: 46px;
+  height: 46px;
+  flex: none;
+  border: 2px solid #ec3013;
+  color: #ff563c;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ph-core-mark svg {
+  width: 26px;
+  height: 26px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+}
+
+.ph-core-h {
+  margin-top: 5px;
+  font-size: 18.5px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ph-meter {
+  margin-top: 8px;
+  height: 4px;
+  background: rgba(243, 242, 242, 0.2);
+}
+
+.ph-meter i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: #ec3013;
+  transform-origin: left center;
+}
+
+.ph-core-cap {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #eae7e7;
+}
+
+.ph-reactor {
+  position: relative;
+  width: 214px;
+  height: 214px;
+  margin: 10px auto 0;
+}
+
+.ph-reactor svg {
+  position: absolute;
+  inset: 0;
+  width: 214px;
+  height: 214px;
+}
+
+.ph-reactor-read {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  padding-top: 82px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.ph-reactor-read b {
+  font-size: 46px;
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.ph-reactor-read i {
+  font-style: normal;
+  font-size: 17px;
+  color: #d7d3d3;
+}
+
+.ph-legend {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+}
+
+.ph-legend span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: #d7d3d3;
+}
+
+.ph-legend i {
+  width: 6px;
+  height: 6px;
+  background: #f3f2f2;
+}
+
+.ph-legend span.is-accent i {
+  background: #ff563c;
+}
+
+.ph-pills {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ph-pill {
+  padding: 5px 9px;
+  border: 1px solid rgba(243, 242, 242, 0.38);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #eae7e7;
+  white-space: nowrap;
+}
+
+.ph-eyebrow {
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #d7d3d3;
+  white-space: nowrap;
+}
+
+.ph-eyebrow.is-accent {
+  color: #ffe0d9;
+}
+
+/* --- Tab rail --- */
+.ph-tabs {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 74px;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  background: #1b1a19;
+  border-top: 1px solid rgba(243, 242, 242, 0.38);
+}
+
+.ph-tab {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding-bottom: 6px;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #d7d3d3;
+}
+
+.ph-tab.is-on {
+  color: #ff563c;
+  box-shadow: inset 0 2px 0 #ec3013;
+}
+
+.ph-tab-badge {
+  position: absolute;
+  left: 50%;
+  top: 9px;
+  margin-left: 6px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  background: #c9270d;
+  color: #f3f2f2;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* --- Chat thread (phone) --- */
+.ph-thread-h {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px;
+  border: 1px solid rgba(243, 242, 242, 0.38);
+  background: #1b1a19;
+}
+
+.ph-av {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  background: #f3f2f2;
+  color: #201e1d;
+  font-size: 13px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ph-thread-h b {
+  display: block;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+.ph-thread-h i {
+  display: block;
+  margin-top: 3px;
+  font-style: normal;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: #eae7e7;
+  white-space: nowrap;
+}
+
+.ph-bub {
+  margin-top: 12px;
+  max-width: 84%;
+  padding: 11px 13px;
+  border: 1px solid rgba(243, 242, 242, 0.38);
+  background: #1b1a19;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #f3f2f2;
+}
+
+.ph-bub.is-mine {
+  margin-left: auto;
+  border-color: #ec3013;
+  background: #ec3013;
+}
+
+.ph-bub small {
+  display: block;
+  margin-top: 6px;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: #d7d3d3;
+  white-space: nowrap;
+}
+
+.ph-bub.is-mine small {
+  color: #ffe0d9;
+}
+
+/* --- Call screen (phone) --- */
+.ph-call {
+  position: absolute;
+  inset: 0;
+  background: #131211;
+}
+
+.ph-call-top {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 42px;
+  height: 70px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 16px;
+  background: #201e1d;
+  border-bottom: 2px solid #ec3013;
+}
+
+.ph-call-top b {
+  display: block;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+.ph-call-top i {
+  display: block;
+  margin-top: 3px;
+  font-style: normal;
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #d7d3d3;
+}
+
+.ph-call-state {
+  position: relative;
+  margin-left: auto;
+  width: 132px;
+  height: 30px;
+}
+
+.ph-call-state span {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ph-call-state .is-enc {
+  border: 1px solid rgba(243, 242, 242, 0.38);
+  color: #eae7e7;
+}
+
+.ph-call-state .is-ok {
+  background: #f3f2f2;
+  color: #201e1d;
+}
+
+.ph-call-video {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 114px;
+  bottom: 96px;
+  background:
+    linear-gradient(rgba(243, 242, 242, 0.05) 1px, rgba(243, 242, 242, 0) 1px),
+    linear-gradient(90deg, rgba(243, 242, 242, 0.05) 1px, rgba(243, 242, 242, 0) 1px),
+    #1b1a19;
+  background-size: 34px 34px;
+}
+
+.ph-call-remote {
+  position: absolute;
+  left: 50%;
+  top: 330px;
+  width: 132px;
+  height: 132px;
+  margin-left: -66px;
+  background: #f3f2f2;
+  color: #201e1d;
+  font-size: 44px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ph-sas {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 16px;
+  padding: 15px 14px;
+  border: 1px solid rgba(243, 242, 242, 0.38);
+  background: #1b1a19;
+  text-align: center;
+}
+
+.ph-sas-h {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #f3f2f2;
+}
+
+.ph-sas-n {
+  margin-top: 9px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 1.3;
+  color: #f3f2f2;
+  white-space: nowrap;
+}
+
+.ph-sas p {
+  margin-top: 8px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: #eae7e7;
+  text-wrap: balance;
+}
+
+.ph-sas-in {
+  margin-top: 10px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(243, 242, 242, 0.38);
+  background: #262423;
+  font-size: 11.5px;
+  letter-spacing: 0.12em;
+  color: #bab6b6;
+}
+
+.ph-sas-row {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.ph-sas-copy,
+.ph-sas-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 13px;
+  border: 1px solid rgba(243, 242, 242, 0.26);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ph-sas-copy {
+  background: #1b1a19;
+  color: #eae7e7;
+}
+
+/* a confirmed fill is ink in this skin; it inverts under the finger */
+.ph-sas-btn {
+  background: #201e1d;
+  color: #f3f2f2;
+}
+
+.ph-call-ctrls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: #201e1d;
+  border-top: 1px solid rgba(243, 242, 242, 0.38);
+}
+
+.ph-call-ctrls > span {
+  width: 52px;
+  height: 52px;
+  border: 1px solid rgba(243, 242, 242, 0.38);
+  color: #f3f2f2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ph-call-ctrls > span.is-end {
+  border-color: #ec3013;
+  background: #ec3013;
+}

@@ -121,10 +121,12 @@
 
       /* Bloom A crests on the bar line at 6.0s, bloom B at 54.0s. */
       function bloom(burst, flat, peak) {
-        tl.fromTo(burst, { scale: 0.03, opacity: 0 }, { scale: 1.32, opacity: 1, duration: 0.5, ease: "power3.in" }, peak - 0.5);
-        tl.fromTo(flat, { opacity: 0 }, { opacity: 1, duration: 0.2, ease: "power2.in" }, peak - 0.2);
-        tl.to(burst, { opacity: 0, duration: 0.2, ease: "none" }, peak);
-        tl.to(flat, { opacity: 0, duration: 0.6, ease: "power2.out" }, peak + 0.04);
+        // a solid core of light that opens from the centre, rimmed in blue
+        tl.fromTo(burst, { opacity: 0 }, { opacity: 1, duration: 0.1, ease: "none" }, peak - 0.52);
+        tl.fromTo(burst, { scale: 0.015 }, { scale: 1.36, duration: 0.52, ease: "power3.in" }, peak - 0.52);
+        tl.fromTo(flat, { opacity: 0 }, { opacity: 1, duration: 0.12, ease: "power1.in" }, peak - 0.12);
+        tl.set(burst, { opacity: 0 }, peak + 0.02);
+        tl.to(flat, { opacity: 0, duration: 0.55, ease: "power2.out" }, peak + 0.04);
       }
       bloom("#fxo-burst-a", "#fxo-flat-a", 6.0);
       bloom("#fxo-burst-b", "#fxo-flat-b", 54.0);

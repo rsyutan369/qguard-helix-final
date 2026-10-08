@@ -38,22 +38,58 @@ export interface RelayConfig {
 }
 
 /**
+ * Who is asking for the configuration, which decides whether an UNPROVEN relay
+ * may be included.
+ */
+export type RelayAdmission =
+  /**
+   * A live call. The relay is included only once it has been proven able to
+   * allocate.
+   *
+   * This inverts the rule that stood here before ("never drop a relay on
+   * suspicion, only on evidence"), because that rule optimised the wrong
+   * direction. The costs are wildly asymmetric:
+   *
+   *   - Including a relay that turns out to be dead breaks EVERY call, local
+   *     ones included, because an unallocatable TURN entry stops ICE gathering
+   *     from ever completing. Measured on one machine against the relay this
+   *     deployment actually shipped: STUN alone completed gathering in 2.9s;
+   *     STUN plus that relay never completed at all.
+   *   - Excluding a relay that would have worked costs only CROSS-NETWORK
+   *     calls, and only until the probe confirms it — the probe is prewarmed on
+   *     mount and on resume, takes at most 5s, and is cached for 10 minutes, so
+   *     by the time anyone dials the answer is normally already known. A call
+   *     that does start before the verdict lands still gets the relay on its
+   *     ICE restart.
+   *
+   * So an unproven relay is withheld from the call path: the downside is a
+   * narrower set of reachable peers for a few seconds, instead of a total
+   * failure of calling.
+   */
+  | "proven-only"
+  /**
+   * The health probe itself, which must include the relay in order to measure
+   * it — this is the one caller that may use an unproven relay.
+   */
+  | "probe";
+
+/**
  * Pure assembly of an RTCConfiguration from resolved servers (unit-tested).
  *
- * `relayUsable === false` means a relay was configured but PROVED unable to
- * allocate (see `probeRelayHealth`). It is then left out entirely: a dead TURN
- * entry contributes no relay candidate and stops gathering from completing, so
- * carrying it can only make every call slower. Unknown health still tries it —
- * a relay is never dropped on suspicion, only on evidence.
+ * `relayUsable` is the probe's verdict: `true` proven able to allocate, `false`
+ * proven unable, `null` not yet known. Under `proven-only` admission only
+ * `true` admits the relay; see `RelayAdmission` for why `null` does not.
  */
 export function buildRtcConfiguration(
   relay?: RelayConfig | null,
   relayUsable: boolean | null = null,
+  admission: RelayAdmission = "proven-only",
 ): RTCConfiguration {
   const iceServers: RTCIceServer[] = [{ urls: relay?.stunUrls?.length ? relay.stunUrls : DEFAULT_STUN }];
 
   const envTurnUrl = import.meta.env.VITE_TURN_URL as string | undefined;
-  if (relayUsable !== false) {
+  const admitRelay = admission === "probe" ? relayUsable !== false : relayUsable === true;
+  if (admitRelay) {
     if (relay?.turnUrls?.length) {
       iceServers.push({ urls: relay.turnUrls, username: relay.turnUsername, credential: relay.turnCredential });
     } else if (envTurnUrl) {
@@ -145,10 +181,11 @@ export async function probeRelayHealth(force = false): Promise<RelayHealth> {
     if (!hasConfiguredRelay(relay) || typeof RTCPeerConnection === "undefined") {
       return { status: "not-configured", checkedAt: Date.now() };
     }
-    // Build with health forced back to "unknown": a previously failed probe
-    // would otherwise produce a config with the relay already stripped out, and
-    // the relay could never be found working again.
-    const config = buildRtcConfiguration(relay, null);
+    // "probe" admission with health forced back to unknown: this is the one
+    // caller that must include an unproven relay, and a previously failed probe
+    // must not strip the relay out of its own re-test — otherwise a relay that
+    // came back up could never be found working again.
+    const config = buildRtcConfiguration(relay, null, "probe");
     const pc = new RTCPeerConnection({ ...config, iceTransportPolicy: "relay" });
     let relayCandidates = 0;
     let lastError = "";
@@ -238,13 +275,31 @@ async function resolveRelayConfig(): Promise<RelayConfig | null> {
  * fast: a short timeout + 5-minute cache, and any failure degrades to public
  * STUN so a missing table or an offline config can never block a call.
  *
- * A relay whose last probe proved it cannot allocate is left out — see
- * `buildRtcConfiguration`.
+ * Only a relay PROVEN able to allocate is included — see `RelayAdmission` for
+ * the measured reason an unproven one is withheld from a live call. When a
+ * relay is configured but unproven, a probe is kicked off here so the verdict
+ * is ready for this call's ICE restart and for the next call.
  */
 export async function resolveRtcConfiguration(): Promise<RTCConfiguration> {
   const relay = await resolveRelayConfig();
-  const usable = relayHealth?.status === "unreachable" ? false : null;
-  return buildRtcConfiguration(relay, usable);
+  if (hasConfiguredRelay(relay) && relayHealth === null) {
+    // Off the critical path on purpose: never await the probe here, or every
+    // cold call pays up to the probe timeout before it can even gather.
+    void probeRelayHealth().catch(() => undefined);
+  }
+  return buildRtcConfiguration(relay, relayHealth?.status === "healthy", "proven-only");
+}
+
+/**
+ * Whether a relay is available to a call RIGHT NOW, i.e. configured and proven.
+ *
+ * The call engine uses this to decide whether an ICE restart has anything new
+ * to offer: a restart that re-gathers with exactly the same servers will
+ * reproduce exactly the same failure, whereas one that can now add a proven
+ * relay has a genuine chance of connecting peers that direct paths could not.
+ */
+export function relayProvenForCalls(): boolean {
+  return relayHealth?.status === "healthy";
 }
 
 /**

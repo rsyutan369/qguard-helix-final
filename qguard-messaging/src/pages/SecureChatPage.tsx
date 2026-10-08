@@ -12,7 +12,22 @@ import {
   wipeBytes,
   type DecryptionStatus,
 } from "@/lib/secure-decryption";
-import { chatControlCache, chatMessageCache, ensureChatCacheOwner } from "@/lib/chat-plaintext-cache";
+import {
+  chatControlCache,
+  chatHistorySnapshot,
+  chatMessageCache,
+  ensureChatCacheOwner,
+  setChatHistorySnapshot,
+} from "@/lib/chat-plaintext-cache";
+import {
+  HISTORY_STAGES,
+  completeTimeline,
+  createTimeline,
+  describeTimeline,
+  markTimeline,
+  publishTimeline,
+  type Timeline,
+} from "@/lib/perf-timeline";
 import { deriveReadState } from "@/lib/chat-read-state";
 import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import { parseMessageAad } from "@/lib/message-envelope-identity";
@@ -625,7 +640,45 @@ function chatGridTemplate(widths: ChatColumnWidths): string {
 // so retrying transient failures once or twice recovers the common case.
 function isTransientNetworkError(error: unknown): boolean {
   const message = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase();
-  return /failed to fetch|networkerror|network error|load failed|timed out|timeout|connection|fetch failed|err_/i.test(message);
+  return /failed to fetch|networkerror|network error|load failed|timed out|timeout|connection|fetch failed|abort|err_/i.test(message);
+}
+
+/**
+ * Run one PostgREST query under an explicit deadline.
+ *
+ * The Supabase client's own 30s global fetch timeout is a last-resort guard,
+ * not a user-facing deadline: a request that is going to fail usually fails
+ * long before it, and one that stalls holds the caller for the full half
+ * minute. Pairing a short per-attempt deadline with `withFetchRetry` turns a
+ * stalled round trip into a fast retry instead of a long wait, which is what
+ * actually recovers a dropped mobile connection.
+ *
+ * The in-flight request is aborted on expiry rather than merely abandoned, so a
+ * retry does not leave its predecessor consuming a connection — on a
+ * constrained project, abandoned requests are themselves a source of stalling.
+ * The rejection carries a message `isTransientNetworkError` recognises, so the
+ * retry loop treats a deadline the same way it treats a dropped connection.
+ */
+async function queryWithDeadline<T>(
+  build: (signal: AbortSignal) => PromiseLike<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: number | undefined;
+  try {
+    return await Promise.race([
+      build(controller.signal),
+      new Promise<never>((_resolve, reject) => {
+        timer = window.setTimeout(() => {
+          controller.abort();
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer);
+  }
 }
 
 async function withFetchRetry<T>(task: () => Promise<T>, attempts = 3, delayMs = 600): Promise<T> {
@@ -653,11 +706,40 @@ const DIRECTORY_UNREACHABLE_MESSAGE = "Couldn't reach the directory service. Che
 // a reload — which reads to the user as "messages aren't showing up".
 const CHAT_IDLE_POLL_MS = 12_000;
 
-// Upper bound on a single message decrypt round-trip. Generous on purpose: the
-// portable (non-NEON) ML-KEM/ML-DSA build is slower on mobile and every decrypt
-// queues behind the global Rust key-scope mutex, so this must only ever catch a
-// genuine stall, never a merely slow device.
-const DECRYPT_TIMEOUT_MS = 25_000;
+// Upper bound on a single message decrypt round-trip. Generous enough for the
+// portable (non-NEON) ML-KEM/ML-DSA build on a slow phone, where every decrypt
+// also queues behind the global Rust key-scope mutex — but no longer so
+// generous that a single stalled decrypt can hold the thread past the point a
+// user has given up. A group that exceeds it falls through to the next
+// candidate envelope and finally to a visible "failed" bubble, so overshooting
+// costs one bubble, never the whole conversation.
+const DECRYPT_TIMEOUT_MS = 9_000;
+
+// Per-attempt deadline for the history fetch itself.
+//
+// This is the gap that produced the "Loading encrypted history..." hang. The
+// Supabase client has a 30s global fetch timeout and this query was not
+// retried, so one stalled round trip — routine on mobile, and routine against a
+// resource-constrained project — pinned the thread for half a minute with
+// nothing on screen. The deadline is per attempt and `withFetchRetry` gives
+// three of them, which recovers from a dropped connection far faster than a
+// single long wait ever could.
+const HISTORY_FETCH_TIMEOUT_MS = 6_000;
+
+// Hard ceiling on how long the "Loading encrypted history..." gate may be shown
+// before the UI must say something actionable instead.
+//
+// Every individual step below is bounded now, but bounded steps still compose:
+// a retried fetch plus a page of slow decrypts can legitimately add up. This is
+// the backstop that makes "stuck forever" unrepresentable regardless of how the
+// steps compose — it never cancels the load (which may still be making
+// progress and will paint when it lands), it just refuses to keep claiming that
+// loading is all that is happening.
+const HISTORY_RENDER_DEADLINE_MS = 10_000;
+
+// How long the first paint may wait on a sender-identity anchor it does not yet
+// have cached. See the call site in `hydrateMessageRows`.
+const SENDER_IDENTITY_PRIME_BUDGET_MS = 2_500;
 
 // How long the send path may trust its cached recipient-device list before it
 // must re-read the authoritative one.
@@ -1042,6 +1124,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const [newChatBusyId, setNewChatBusyId] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  // True once the history render deadline has passed with nothing to show, so
+  // the pane can offer recovery instead of an endless spinner.
+  const [historyStalled, setHistoryStalled] = useState(false);
   const [sending, setSending] = useState(false);
   const [messageAction, setMessageAction] = useState<string | null>(null);
   const [openMessageMenuId, setOpenMessageMenuId] = useState<string | null>(null);
@@ -1285,6 +1370,30 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     if (!activeConversation) return [];
     return devices.filter((device) => activeRecipientUserIds.includes(device.user_id) && isTrustedDeviceForDelivery(device));
   }, [activeConversation, activeRecipientUserIds, devices]);
+
+  // Every device id this client already knows — the peers' and its own, since
+  // a sent message also arrives as a self-sync envelope from one of my devices.
+  // Held in a ref ON PURPOSE: `devices` is rebuilt by every dashboard refresh,
+  // so taking it as a dependency of the history loader would re-create that
+  // callback constantly and, through it, re-fire the load and tear down the
+  // realtime channel — the exact churn the loader's dependency list was
+  // narrowed to a string to avoid.
+  const knownDeviceIds = useMemo(() => devices.map((device) => device.device_id), [devices]);
+  const knownDeviceIdsRef = useRef<string[]>(knownDeviceIds);
+  knownDeviceIdsRef.current = knownDeviceIds;
+
+  /**
+   * Warm the sender-identity anchors for the devices already known here.
+   *
+   * Runs concurrently with the envelope fetch so verification costs nothing on
+   * the first-paint path. A failure is swallowed deliberately: the anchors
+   * decide the "Verified" vs "Sender unverified" badge, and a missing anchor
+   * must degrade the badge, never block the message.
+   */
+  const prewarmSenderIdentities = useCallback(
+    (): Promise<void> => primeSenderIdentities(knownDeviceIdsRef.current).catch(() => undefined),
+    [],
+  );
   const sendableRecipientDevices = useMemo(
     () => selectDeliveryDevicesForUsers(recipientDevices, activeRecipientUserIds, localDeviceId),
     [activeRecipientUserIds, localDeviceId, recipientDevices],
@@ -1802,6 +1911,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     rows: MessageEnvelopeRow[],
     userStates: Map<string, MessageUserState>,
     onPartial?: (messages: ChatMessage[]) => void,
+    timeline?: Timeline,
   ): Promise<ChatMessage[]> {
     const groups = new Map<string, MessageEnvelopeRow[]>();
     rows
@@ -1819,9 +1929,21 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     // decrypt below can hand the backend the identity it must match the
     // envelope's signing keys against. Best-effort: a failure here degrades
     // messages to "sender unverified", never to undecryptable.
-    await primeSenderIdentities(
-      rows.filter((row) => !row.deleted_at).map((row) => buildTauriEnvelope(row).sender_device_id),
-    ).catch(() => undefined);
+    //
+    // Normally free: `primeSenderIdentitiesForConversation` has already warmed
+    // these ids concurrently with the envelope fetch, so this resolves from the
+    // session cache without touching the network. It can still cost a round
+    // trip when a peer has registered a device this client has never seen, so
+    // it is bounded — a sender anchor is worth a short wait (it decides
+    // "Verified" vs "Sender unverified") but never worth holding the whole
+    // thread behind. Past the bound the page renders and the next reload, by
+    // then primed, upgrades the badges.
+    await Promise.race([
+      primeSenderIdentities(
+        rows.filter((row) => !row.deleted_at).map((row) => buildTauriEnvelope(row).sender_device_id),
+      ).catch(() => undefined),
+      new Promise((resolve) => window.setTimeout(resolve, SENDER_IDENTITY_PRIME_BUDGET_MS)),
+    ]);
 
     // Controls (edits/reactions) are re-applied on every partial flush; both
     // operations are idempotent per (actor, target), so repeats are safe.
@@ -2076,12 +2198,25 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         list.reduce((max, row) => Math.max(max, new Date(row.created_at).getTime()), 0);
       return newest(b[1]) - newest(a[1]);
     });
-    const chunkSize = 6;
-    for (let index = 0; index < entries.length; index += chunkSize) {
-      const chunk = entries.slice(index, index + chunkSize);
+    // The FIRST chunk is deliberately smaller than the rest. Time-to-first-paint
+    // is what the user experiences as "did it load?", and it is gated on the
+    // slowest decrypt in the first chunk — so a narrow first chunk paints the
+    // newest messages sooner, after which wider chunks give better throughput
+    // for the rest of the page.
+    const firstChunkSize = 3;
+    const chunkSize = 8;
+    if (timeline) markTimeline(timeline, HISTORY_STAGES.decryptStart, performance.now());
+    let index = 0;
+    let isFirstChunk = true;
+    while (index < entries.length) {
+      const take = isFirstChunk ? firstChunkSize : chunkSize;
+      const chunk = entries.slice(index, index + take);
       await Promise.all(chunk.map(([groupId, groupRows]) => hydrateGroup(groupId, groupRows)));
-      if (onPartial && index + chunkSize < entries.length) onPartial(applyControlsAndSort());
+      index += take;
+      isFirstChunk = false;
+      if (onPartial && index < entries.length) onPartial(applyControlsAndSort());
     }
+    if (timeline) markTimeline(timeline, HISTORY_STAGES.decryptComplete, performance.now());
 
     return applyControlsAndSort();
   }
@@ -2224,26 +2359,74 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     // fast switch to another thread can't misroute the "mark read" write.
     const conversationForLoad = activeConversationLoadId;
     const loadSeq = ++messageLoadSeqRef.current;
-    setMessagesLoading(true);
+    const timeline = createTimeline("history", conversationForLoad, performance.now());
+    markTimeline(timeline, HISTORY_STAGES.loadStart, performance.now());
     setMessageAction(null);
+
+    // Paint from memory FIRST, then reconcile with the backend.
+    //
+    // This is the structural fix for the "Loading encrypted history..." hang.
+    // Rendering used to be a precondition of the network: nothing appeared
+    // until a 250-envelope fetch and a page of decrypts had both finished, so
+    // every stalled round trip was indistinguishable from a broken app. A
+    // thread that was already decrypted in this session is re-shown
+    // immediately, the spinner is never raised over content the user can
+    // already read, and the fetch below becomes a background refresh whose
+    // slowness is invisible.
+    const cachedThread = chatHistorySnapshot<ChatMessage>(conversationForLoad);
+    if (cachedThread !== null) {
+      // Non-destructive on purpose. This loader also runs for every realtime
+      // reload of the conversation already on screen, and by then the thread
+      // can legitimately hold things the snapshot does not — above all the
+      // optimistic echo of a message just sent. Overwriting would make that
+      // message vanish and reappear on every incoming event. So the snapshot
+      // fills an EMPTY pane (the "Loading encrypted history..." case this is
+      // here to eliminate) and never overwrites a populated one; the fetch
+      // below is what reconciles a populated thread.
+      setChatMessages((current) => (current.length > 0 ? current : cachedThread));
+      setMessagesLoading(false);
+      markTimeline(timeline, HISTORY_STAGES.cacheRendered, performance.now());
+      markTimeline(timeline, HISTORY_STAGES.rendered, performance.now());
+    } else {
+      setMessagesLoading(true);
+    }
+    describeTimeline(timeline, { cache: cachedThread !== null });
+
+    // Warm the sender anchors concurrently with the fetch, from the device
+    // registry this client already has. Priming used to run only AFTER the
+    // envelopes arrived, which put a second serial network round trip in front
+    // of the first paint; the senders in a conversation are its members'
+    // devices, which are already known here, so the post-fetch prime is
+    // normally a cache hit costing nothing.
+    const identityPrewarm = prewarmSenderIdentities();
+
     try {
+      markTimeline(timeline, HISTORY_STAGES.fetchStart, performance.now());
       const [{ data, error }, statesResult] = await Promise.all([
-        supabase
-        .from("messaging_message_envelopes")
-        .select("id,conversation_id,client_message_id,parent_client_message_id,sender_user_id,sender_device_id,recipient_user_id,recipient_device_id,message_kind,sealed_sender_envelope,ciphertext,nonce,auth_tag,aad,ratchet_counter,suite,lifecycle,verification_state,threat_result,deleted_at,created_at")
-        .eq("conversation_id", conversationForLoad)
-        .is("deleted_at", null)
-        // Newest 250 — ascending+limit returned the OLDEST page, so long
-        // conversations could never even see their recent messages.
-        .order("created_at", { ascending: false })
-        .limit(250),
-        supabase
+        withFetchRetry(() => queryWithDeadline((signal) => supabase
+          .from("messaging_message_envelopes")
+          .select("id,conversation_id,client_message_id,parent_client_message_id,sender_user_id,sender_device_id,recipient_user_id,recipient_device_id,message_kind,sealed_sender_envelope,ciphertext,nonce,auth_tag,aad,ratchet_counter,suite,lifecycle,verification_state,threat_result,deleted_at,created_at")
+          .eq("conversation_id", conversationForLoad)
+          .is("deleted_at", null)
+          // Newest 250 — ascending+limit returned the OLDEST page, so long
+          // conversations could never even see their recent messages.
+          .order("created_at", { ascending: false })
+          .limit(250)
+          .abortSignal(signal), HISTORY_FETCH_TIMEOUT_MS, "encrypted history fetch")),
+        withFetchRetry(() => queryWithDeadline((signal) => supabase
           .from("messaging_message_user_states")
           .select("client_message_id,first_read_at,hidden_at,verification_state,threat_score,threat_flags")
           .eq("conversation_id", conversationForLoad)
-          .eq("user_id", userId),
+          .eq("user_id", userId)
+          .abortSignal(signal), HISTORY_FETCH_TIMEOUT_MS, "read-state fetch"))
+          // Read state decides badges and burn-on-read timing, not whether a
+          // message can be shown. Losing it must degrade the thread, never
+          // block it.
+          .catch((stateError) => ({ data: null, error: stateError })),
       ]);
+      markTimeline(timeline, HISTORY_STAGES.fetchComplete, performance.now());
       if (error) throw error;
+      await identityPrewarm;
 
       const rows = ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
         id: String(row.id),
@@ -2293,12 +2476,21 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         if (messageLoadSeqRef.current !== loadSeq) return;
         setChatMessages(partial);
         setMessagesLoading(false);
-      });
+        markTimeline(timeline, HISTORY_STAGES.rendered, performance.now());
+      }, timeline);
       // Only the current load may repaint the thread, so a slow earlier load
       // can never overwrite the conversation now on screen.
       if (messageLoadSeqRef.current === loadSeq) {
         setChatMessages(hydrated);
+        markTimeline(timeline, HISTORY_STAGES.rendered, performance.now());
       }
+      // Remember the rendered thread so reopening this conversation — or a
+      // realtime reload of it — paints instantly instead of waiting on the
+      // network again. Recorded even when this load lost the repaint race: it
+      // is still the freshest decrypted view of `conversationForLoad`, and the
+      // conversation now on screen keeps its own snapshot.
+      setChatHistorySnapshot(conversationForLoad, hydrated);
+      describeTimeline(timeline, { rows: rows.length, messages: hydrated.length });
       // Read-state persistence is deliberately NOT gated on winning that repaint
       // race. These messages were decrypted and shown for `conversationForLoad`,
       // so they are genuinely read — recording that is what clears the unread
@@ -2317,13 +2509,23 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       // The realtime subscription reloads on every envelope change, so a transient
       // reload failure must not flash a banner over an already-rendered conversation;
       // the next realtime tick retries. Surface it only when there is nothing to show.
-      if (messageLoadSeqRef.current !== loadSeq) return;
+      if (messageLoadSeqRef.current !== loadSeq) {
+        publishTimeline(completeTimeline(timeline, "abandoned", performance.now()));
+        return;
+      }
       console.error("[secure-chat] Failed to load conversation messages:", error);
+      completeTimeline(timeline, "error", performance.now());
+      describeTimeline(timeline, { error: error instanceof Error ? error.message : String(error) });
       if (decryptedMessageCacheRef.current.size === 0 && decryptedControlCacheRef.current.size === 0) {
         setMessageAction(describeMessageError(error));
       }
     } finally {
       if (messageLoadSeqRef.current === loadSeq) setMessagesLoading(false);
+      publishTimeline(completeTimeline(
+        timeline,
+        messageLoadSeqRef.current === loadSeq ? "ok" : "abandoned",
+        performance.now(),
+      ));
     }
     // Deliberately keyed on the conversation ID (a string), never the
     // conversation OBJECT. The dashboard refresh that follows every send and
@@ -2333,7 +2535,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     // (a full 250-envelope re-fetch) AND tore down + re-subscribed the realtime
     // channel below, losing any insert that landed in the gap. Keying on the id
     // makes both effects stable for the lifetime of the open conversation.
-  }, [activeConversationLoadId, currentDevice?.device_id, localDeviceId, localSignedPrekeyId, userId, onSent]);
+  }, [activeConversationLoadId, currentDevice?.device_id, localDeviceId, localSignedPrekeyId, userId, onSent, prewarmSenderIdentities]);
 
   // Switching conversations must instantly show a clean slate. Clearing in a
   // layout effect (keyed on the conversation id, so it only fires on a real
@@ -2341,16 +2543,55 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   // chat's messages before the browser paints, so no other user's history is
   // ever shown in a different conversation.
   useLayoutEffect(() => {
-    setChatMessages([]);
+    const switchingTo = activeConversation?.id ?? null;
+    // Seed the incoming thread from its own snapshot in the SAME layout effect
+    // that wipes the outgoing one, so switching between warm conversations
+    // never flashes an empty pane or a spinner. Only this conversation's own
+    // snapshot is ever used, so no other thread's plaintext can be shown here.
+    const warm = switchingTo ? chatHistorySnapshot<ChatMessage>(switchingTo) : null;
+    setChatMessages(warm ?? []);
     setMessageAction(null);
     decryptInFlightRef.current.clear();
-    setMessagesLoading(Boolean(activeConversation));
+    setMessagesLoading(Boolean(activeConversation) && warm === null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeConversation?.id]);
 
   useEffect(() => {
     loadConversationMessages();
   }, [loadConversationMessages]);
+
+  /**
+   * Watchdog: "Loading encrypted history..." must never be a terminal state.
+   *
+   * Every step of the load is individually bounded now, but bounded steps still
+   * compose — a retried fetch followed by a page of slow decrypts can
+   * legitimately run long, and a bug in any future step could run longer. This
+   * makes "stuck forever" unrepresentable rather than merely unlikely: past the
+   * deadline with nothing on screen, the UI stops claiming that loading is all
+   * that is happening and one automatic recovery attempt is made.
+   *
+   * It deliberately does NOT cancel the in-flight load. That load may still be
+   * making progress and will paint the moment it lands; cancelling would throw
+   * away work and could turn a slow success into a guaranteed failure. The
+   * retry counter resets as soon as anything renders, so a thread that
+   * recovers on its own leaves no trace.
+   */
+  const historyAutoRetriesRef = useRef(0);
+  useEffect(() => {
+    if (!messagesLoading || chatMessages.length > 0) {
+      setHistoryStalled(false);
+      historyAutoRetriesRef.current = 0;
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      setHistoryStalled(true);
+      if (historyAutoRetriesRef.current >= 1) return;
+      historyAutoRetriesRef.current += 1;
+      console.warn("[secure-chat] History render deadline exceeded; retrying load.");
+      void loadConversationMessages();
+    }, HISTORY_RENDER_DEADLINE_MS);
+    return () => window.clearTimeout(timer);
+  }, [messagesLoading, chatMessages.length, loadConversationMessages]);
 
   useEffect(() => {
     const conversationId = activeConversationLoadId;
@@ -4133,8 +4374,29 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               </div>
             </div>
           )}
-          {messagesLoading && chatMessages.length === 0 && (
+          {messagesLoading && chatMessages.length === 0 && !historyStalled && (
             <div className="rounded-lg border border-line bg-white p-4 text-sm text-ink-600">Loading encrypted history...</div>
+          )}
+          {messagesLoading && chatMessages.length === 0 && historyStalled && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div className="space-y-2">
+                  <div className="font-medium">Encrypted history is taking longer than expected.</div>
+                  <div className="text-amber-800">
+                    Your messages are safe — this device just hasn&apos;t been able to reach the message
+                    store yet. Retrying automatically; check your connection if it persists.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setHistoryStalled(false); void loadConversationMessages(); }}
+                    className="rounded-md border border-amber-400 bg-white px-3 py-1.5 text-xs font-medium text-amber-900 transition hover:bg-amber-100"
+                  >
+                    Retry now
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
           {!messagesLoading && activeConversation && chatMessages.length === 0 && (
             <div className="rounded-lg border border-dashed border-line bg-white/70 p-6 text-center text-sm text-ink-500">

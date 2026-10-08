@@ -26,7 +26,7 @@ tempo: 120 BPM · 1 beat = 0.5s · 1 bar = 2s · every scene change lands on a b
 - scene: A wall of ciphertext is swept and copied; then time jumps and it reads as plaintext
 - duration: 6s
 - transition_in: cut
-- status: outline
+- status: animated
 - src: compositions/01-threat.html
 - type: hook
 - persuasion: Pain agitation
@@ -48,7 +48,7 @@ Scene 3 (4.6–6.0s): a two-strand helix (violet, cyan) sweeps the frame left to
 - scene: The real logo forms on paper; the name and the promise land beside it
 - duration: 6s
 - transition_in: bloom
-- status: outline
+- status: animated
 - src: compositions/02-brand.html
 - type: product_intro
 - persuasion: Future pacing
@@ -71,7 +71,7 @@ Scene 3 (3.4–6.0s): five mono chips lift off their shadows one per half-beat �
 - scene: The Windows app and the Android app rise together; the phone's reactor fills to 100%
 - duration: 6s
 - transition_in: cut-the-curve LEFT
-- status: outline
+- status: animated
 - src: compositions/03-devices.html
 - type: product_intro
 - persuasion: Show-don't-tell proof
@@ -93,7 +93,7 @@ Scene 3 (4.2–6.0s): chip `NATIVE RUST CRYPTO CORE` lifts under the headline; t
 - scene: A message is written and sent in the real chat surface
 - duration: 4s
 - transition_in: zoom-through
-- status: outline
+- status: animated
 - src: compositions/04-chat.html
 - type: feature_showcase
 - persuasion: Show-don't-tell proof
@@ -107,14 +107,14 @@ keyMessage: conversations the quantum era can't crack — with lifecycle control
 
 Scene 1 (0.0–1.4s): kicker `01 — SECURE CHAT`; "Conversations the quantum era can't crack." rises on the left. The chat window holds right, thread header reading `E2EE active - ML-KEM-1024 - Forward secrecy`.
 Scene 2 (1.4–2.8s): a reply types in the composer and sends; the violet bubble lands with `09:41 · Verified · Replay-safe`.
-Scene 3 (2.8–4.0s): "Message options" opens; four chips lift — READ ONCE · VIEW ONCE · DISAPPEAR 1H · TIME-LOCKED.
+Scene 3 (2.8–4.0s): "Message options" opens; four chips lift — READ ONCE · VIEW ONCE · DISAPPEARING · TIME-LOCKED.
 
 ## Frame 5 — Inside one message
 
 - scene: The message travels device → relay → device, sealed the whole way
 - duration: 4s
 - transition_in: zoom-through
-- status: outline
+- status: animated
 - src: compositions/05-chat-inside.html
 - type: feature_showcase
 - persuasion: Feature-to-benefit translation
@@ -135,7 +135,7 @@ Scene 3 (2.6–4.0s): the packet reaches the contact and resolves to readable te
 - scene: A call connects and is verified with one tap
 - duration: 4s
 - transition_in: cut-the-curve LEFT
-- status: outline
+- status: animated
 - src: compositions/06-calls.html
 - type: feature_showcase
 - persuasion: Risk reversal
@@ -147,16 +147,16 @@ Scene 3 (2.6–4.0s): the packet reaches the contact and resolves to readable te
 narrativeRole: extend the promise from messages to live voice and video.
 keyMessage: per-frame encryption, a fresh post-quantum key per call, verified in one tap.
 
-Scene 1 (0.0–1.4s): kicker `QUANTUM-ENCRYPTED CALLS`; "Voice and video, sealed frame by frame." The call window lands right — Connected, Low / Auto / HD, pill `Quantum-encrypted`.
-Scene 2 (1.4–2.8s): the card VERIFY THIS CALL IS PRIVATE decodes its safety number; "They match — continue" is pressed.
-Scene 3 (2.8–4.0s): the pill flips to `Verified` in emerald. Chips: PER-FRAME E2EE · FRESH POST-QUANTUM KEY PER CALL.
+Scene 1 (0.0–1.4s): kicker `QUANTUM-ENCRYPTED CALLS`; "Voice and video, sealed frame by frame." Both ends of the call face each other — the desktop window and the Android screen — Connected, Low / Auto / HD, pill `Quantum-encrypted`. Chip: A FRESH POST-QUANTUM KEY PER CALL.
+Scene 2 (1.4–2.8s): the card VERIFY THIS CALL IS PRIVATE decodes the same safety number on both devices; a MATCH connector joins them; "They match — continue" is pressed.
+Scene 3 (2.8–4.0s): the cards clear, the other person takes the stage, and the pill flips to `Verified` on both. Chip: VERIFIED IN ONE TAP.
 
 ## Frame 7 — Quantum Vault
 
 - scene: A file is dropped into the real vault workspace and sealed on the device
 - duration: 4s
 - transition_in: zoom-through
-- status: outline
+- status: animated
 - src: compositions/07-vault.html
 - type: feature_showcase
 - persuasion: Show-don't-tell proof
@@ -177,7 +177,7 @@ Scene 3 (2.8–4.0s): chips lift — 100% ON-DEVICE · ZERO-KNOWLEDGE · ANY FIL
 - scene: Four layers close around the file and it becomes a .qvault container
 - duration: 4s
 - transition_in: zoom-through
-- status: outline
+- status: animated
 - src: compositions/08-envelope.html
 - type: feature_showcase
 - persuasion: Feature-to-benefit translation
@@ -197,7 +197,7 @@ Scene 2 (2.6–4.0s): the stack closes into one sealed block labelled `board-pac
 - scene: The vault's own terminal streams the real pipeline to "sealed"
 - duration: 4s
 - transition_in: cut-the-curve LEFT
-- status: outline
+- status: animated
 - src: compositions/09-terminal.html
 - type: feature_showcase
 - persuasion: Show-don't-tell proof
@@ -218,7 +218,7 @@ Scene 2 (2.6–4.0s): the last line lands in emerald — "Vault container sealed
 - scene: The four-line specification, set like a specimen sheet
 - duration: 8s
 - transition_in: zoom-through
-- status: outline
+- status: animated
 - src: compositions/10-suite.html
 - type: benefit_highlight
 - persuasion: Authority by association
@@ -237,29 +237,29 @@ Scene 3 (5.6–8.0s): footnote rises: "ML-KEM protects the keys. AES-256-GCM enc
 
 ## Frame 11 — Principles
 
-- scene: Four statements, one per beat pair
+- scene: Three statements, one per bar
 - duration: 4s
 - transition_in: cut
-- status: outline
+- status: animated
 - src: compositions/11-principles.html
 - type: benefit_highlight
-- persuasion: Rule of three (plus one)
+- persuasion: Rule of three
 - beat: power
 - blueprint: kinetic-type-beats (Reproduce)
 - mode: alternating
 - sfx: impact-bass-1
 
-narrativeRole: compress everything into four phrases before the close.
-keyMessage: end-to-end, zero-knowledge, forward secrecy, post-quantum by default.
+narrativeRole: compress everything into three phrases before the close.
+keyMessage: end-to-end, zero-knowledge, post-quantum by default.
 
-Scene 1–4 (one second each): "End-to-end." · "Zero-knowledge." · "Forward secrecy." · "Post-quantum by default." Full-frame, display-hero, hard cut on the beat, ground flipping night / day / night / day.
+Scene 1–3 (0s, 1s, 2s): "End-to-end." · "Zero-knowledge." · "Post-quantum by default." Full-frame, display-hero, hard cut on the beat, ground flipping night / day / night. The third statement holds until the bloom takes the frame.
 
 ## Frame 12 — Close
 
 - scene: The logo, the line, the download
 - duration: 6s
 - transition_in: bloom
-- status: outline
+- status: animated
 - src: compositions/12-close.html
 - type: cta
 - persuasion: Friction reduction
@@ -274,4 +274,4 @@ keyMessage: private by default, quantum-safe by design — download for Windows.
 
 Scene 1 (0.0–1.4s): bloom to paper; the logo lands centre on the spring.
 Scene 2 (1.4–3.0s): "Private by default." then "Quantum-safe by design." rise beneath it.
-Scene 3 (3.0–6.0s): the blue button `DOWNLOAD FOR WINDOWS  v1.3.9` lifts, then `qguardhelix.com/qguard-messaging` in mono and `WINDOWS · ANDROID`. Hold to the end.
+Scene 3 (2.5–6.0s): the blue button `DOWNLOAD FOR WINDOWS  v1.3.9` and the outline button `LAUNCH THE APP` lift, then `qguardhelix.com/qguard-messaging` in mono and `WINDOWS · ANDROID`. Hold to the end.
