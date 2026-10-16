@@ -608,12 +608,12 @@ export default function PortableIdentityPanel({
       setInspection(result);
       appendLog(
         "info",
-        `Inspected ${result.name} · sealed for ${result.sealed_for.length} identity/identities${result.verified_sender ? ` · sender verified ${result.verified_sender.fingerprint.slice(0, 16)}` : ""}`,
+        `Inspected ${result.name} · sealed for ${result.sealed_for.length} identity/identities${result.verified_sender ? ` · attested by identity ${result.verified_sender.fingerprint.slice(0, 16)}` : " · no sender attestation"}`,
       );
       if (result.sealed_for.length === 0) {
         setNotice({
           tone: "info",
-          message: `${result.name} is a device-sealed container, not a shared one. Open it from the Decrypt workspace above.`,
+          message: `${result.name} is an owner-only container, not a shared one. Open it from the Decrypt workspace above.`,
         });
       }
     });
@@ -1013,7 +1013,7 @@ export default function PortableIdentityPanel({
             className={`flex items-center gap-2 text-xs font-semibold ${identity?.can_attest ? "text-ink-600" : "text-ink-400"}`}
             title={
               identity?.can_attest
-                ? "Sign the container with your identity so the recipient sees a verified sender"
+                ? "Sign the container with your identity so the recipient can check it came from your fingerprint"
                 : "Unlock an ML-DSA-87 identity generated in this app to sign as the sender"
             }
           >
@@ -1085,20 +1085,40 @@ export default function PortableIdentityPanel({
             </div>
             <div className="mt-1 text-xs text-ink-600">
               {inspection.kind === "folder" ? "Folder archive" : "File"} · {formatBytes(inspection.original_size)} ·{" "}
-              {inspection.total_chunks} chunk{inspection.total_chunks === 1 ? "" : "s"} · header signature verified
+              {inspection.total_chunks} chunk{inspection.total_chunks === 1 ? "" : "s"} · header intact
             </div>
             {inspection.verified_sender ? (
-              <div className="mt-2 flex items-start gap-1.5 rounded-md border border-emerald-100 bg-emerald-50 px-2.5 py-2 text-xs font-semibold text-emerald-700">
-                <BadgeCheck size={14} className="mt-px shrink-0" />
-                <span>
-                  Verified sender{inspection.verified_sender.label ? ` · ${inspection.verified_sender.label}` : ""}
-                  <span className="ml-1 font-mono font-normal">{inspection.verified_sender.fingerprint.slice(0, 32)}…</span>
-                  <span className="ml-1 font-normal">
-                    ({inspection.verified_sender.signature_algorithm} signature valid). Check this fingerprint against the
-                    one they gave you directly.
-                  </span>
-                </span>
-              </div>
+              (() => {
+                // A valid attestation proves the container was sealed by the
+                // holder of THIS identity. Whose identity it is only becomes
+                // known by matching the fingerprint to one the user has already
+                // vetted — a label is whatever the sender typed. So "known
+                // contact" is decided by fingerprint alone, never by name.
+                const attested = inspection.verified_sender;
+                const known = recipients.find(
+                  (saved) => saved.fingerprint.toLowerCase() === attested.fingerprint.toLowerCase(),
+                );
+                return (
+                  <div
+                    className={`mt-2 flex items-start gap-1.5 rounded-md border px-2.5 py-2 text-xs font-semibold ${
+                      known ? "border-emerald-100 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-800"
+                    }`}
+                  >
+                    {known ? <BadgeCheck size={14} className="mt-px shrink-0" /> : <AlertTriangle size={14} className="mt-px shrink-0" />}
+                    <span>
+                      {known
+                        ? `Sealed by your saved contact ${known.label || known.short_fingerprint}`
+                        : `Sealed by an identity that is not in your saved contacts${attested.label ? ` (it calls itself "${attested.label}")` : ""}`}
+                      <span className="ml-1 font-mono font-normal">{attested.fingerprint.slice(0, 32)}…</span>
+                      <span className="ml-1 font-normal">
+                        {known
+                          ? `(${attested.signature_algorithm} signature valid; the fingerprint matches the one you saved).`
+                          : `(${attested.signature_algorithm} signature valid, but anyone can create an identity and name it anything). Compare this fingerprint with the one the sender gave you directly before trusting the contents.`}
+                      </span>
+                    </span>
+                  </div>
+                );
+              })()
             ) : (
               <div className="mt-2 flex items-start gap-1.5 rounded-md border border-line bg-white px-2.5 py-2 text-xs text-ink-600">
                 <AlertTriangle size={14} className="mt-px shrink-0 text-amber-600" />

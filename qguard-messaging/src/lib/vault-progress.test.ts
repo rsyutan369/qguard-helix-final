@@ -21,7 +21,13 @@ describe("vault-progress helpers", () => {
   });
 
   it("maps phases and ops to human labels", () => {
-    expect(phaseLabel("vmk_wrap")).toMatch(/ML-KEM-1024/);
+    // The owner envelope is a symmetric seal under the PIN-bound vault key;
+    // ML-KEM belongs to the recipient/recovery wraps and must be labelled there.
+    expect(phaseLabel("vmk_wrap")).toMatch(/Vault key/);
+    expect(phaseLabel("vmk_wrap")).not.toMatch(/ML-KEM/);
+    expect(phaseLabel("recipient_wrap")).toMatch(/ML-KEM-1024/);
+    // An unknown phase id falls back to itself rather than to a made-up label.
+    expect(phaseLabel("some_future_phase")).toBe("some_future_phase");
     expect(opLabel("encrypt")).toBe("Encrypting");
     expect(opLabel("rewrap")).toBe("Re-protecting");
   });

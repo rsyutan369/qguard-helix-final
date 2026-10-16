@@ -149,7 +149,9 @@ async function resolveUsers() {
 
 async function listStorageFiles(bucket, prefix = "") {
   const { data, error } = await sb.storage.from(bucket).list(prefix, { limit: 1000 });
-  if (error) return [];
+  // A folder that could not be listed must never read as an empty one: the
+  // purge would skip its objects and still report the bucket as handled.
+  if (error) throw new Error(`storage:${bucket} could not list "${prefix || "/"}": ${error.message}`);
   const files = [];
   for (const entry of data) {
     const path = prefix ? `${prefix}/${entry.name}` : entry.name;

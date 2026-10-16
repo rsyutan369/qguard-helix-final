@@ -7,9 +7,10 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
 
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::crypto::hybrid_kex::LocalKemKeypair;
+use crate::crypto::symmetric::KEY_SIZE;
 use crate::crypto::vault_recovery;
 use crate::crypto::AlgorithmSuite;
 use crate::error::{QGuardError, Result};
@@ -37,6 +38,12 @@ pub struct VaultLocalStreamSummary {
     pub source_path: String,
     pub output_path: String,
     pub suite: AlgorithmSuite,
+    /// Container format version on disk.
+    pub container_version: u8,
+    /// False for a legacy container whose owner envelope hangs off the device
+    /// key instead of the vault unlock secret. The UI uses it to recommend
+    /// re-protecting the file.
+    pub pin_bound: bool,
 }
 
 impl VaultLocalStreamSummary {
@@ -51,22 +58,33 @@ impl VaultLocalStreamSummary {
             source_path,
             output_path,
             suite: summary.suite,
+            container_version: summary.container_version,
+            pin_bound: summary.pin_bound,
         }
     }
 }
 
-/// Local device crypto material: signer + the device KEM keys (current first,
-/// then any rotated/legacy keys) used to wrap/unwrap vault objects on-device.
+/// Everything a vault operation needs from the vault unlocked on this device.
+///
+/// Built only while the Quantum Vault workspace is unlocked: the PIN-bound vault
+/// key is derived from the in-session master, which exists nowhere else.
 pub(crate) struct LocalVaultContext {
     pub(crate) user_id: String,
     pub(crate) device_id: String,
-    /// Vault Master Key + the ML-DSA-87 vault signing key (loaded-or-created).
-    pub(crate) vault_master: PersistedVaultMaster,
-    pub(crate) kem_x25519_public: Vec<u8>,
-    pub(crate) kem_mlkem_public: Vec<u8>,
-    pub(crate) recipient_kems: Vec<LocalKemKeypair>,
+    /// The unlocked Vault Master Key + ML-DSA-87 vault signing key.
+    vault_master: PersistedVaultMaster,
+    /// The PIN-bound vault key (v5 containers). See
+    /// `PersistedVaultMaster::vault_key` for why it is not the raw VMK.
+    vault_key: Zeroizing<[u8; KEY_SIZE]>,
+    /// Device KEM keys — current first, then rotated ones. Used ONLY to read
+    /// legacy v1–v4 containers; nothing new is ever sealed to them.
+    device_kems: Vec<LocalKemKeypair>,
+    /// The device identity's signing public keys: the signer a legacy v1/v2
+    /// container is expected to carry.
+    device_signer_ed25519_public: Vec<u8>,
+    device_signer_mldsa_public: Vec<u8>,
     /// Personal-mode recovery wrap key for this user, if configured.
-    pub(crate) recovery_wrap_key: Option<[u8; crate::crypto::symmetric::KEY_SIZE]>,
+    recovery_wrap_key: Option<Zeroizing<[u8; KEY_SIZE]>>,
     /// Enterprise/hybrid recovery recipient, if configured.
     enterprise_recipient: Option<EnterpriseRecipientOwned>,
 }
@@ -76,19 +94,35 @@ struct EnterpriseRecipientOwned {
     mlkem_public: Vec<u8>,
     /// Set (hybrid mode) means files require both the recovery key and the
     /// enterprise ML-KEM key to recover.
-    recovery_secret: Option<[u8; crate::crypto::symmetric::KEY_SIZE]>,
+    recovery_secret: Option<Zeroizing<[u8; KEY_SIZE]>>,
 }
 
-pub(crate) fn local_vault_context(state: &AppState) -> Result<LocalVaultContext> {
+/// What an operation is going to do with the vault, which decides how much of
+/// it has to be loaded.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VaultNeed {
+    /// Open or verify an existing container: keys only.
+    Open,
+    /// Write a container (encrypt, seal, re-protect): also the recovery
+    /// configuration, so the new header gets its recovery wraps. Asking for it
+    /// only here means a recovery record that cannot be opened blocks writing a
+    /// file that would silently lack its recovery wrap — but never blocks
+    /// reading the files the user already has.
+    Seal,
+}
+
+pub(crate) fn local_vault_context(state: &AppState, need: VaultNeed) -> Result<LocalVaultContext> {
     state.require_auth()?;
     let user_id = state.user_id()?;
     let identity_bundle = state.ensure_identity(&user_id, platform_device_label())?;
     // The Vault Master Key + ML-DSA-87 signing key are only available while the
-    // Quantum Vault workspace is unlocked (password/PIN). Locked => this errors,
-    // gating every vault operation behind the workspace unlock.
+    // Quantum Vault workspace is unlocked (password/PIN). Locked => this errors.
+    // That check used to be the WHOLE gate; the keys below are what make it a
+    // cryptographic one for every container written from now on.
     let vault_master = state.unlocked_vault_master()?;
+    let vault_key = Zeroizing::new(vault_master.vault_key()?);
 
-    let (kem_x25519_public, kem_mlkem_public, current_kem) = {
+    let (mut device_kems, device_signer_ed25519_public, device_signer_mldsa_public) = {
         let guard = state
             .identity
             .lock()
@@ -96,70 +130,95 @@ pub(crate) fn local_vault_context(state: &AppState) -> Result<LocalVaultContext>
         let identity = guard
             .as_ref()
             .ok_or_else(|| QGuardError::NotFound("identity".to_string()))?;
-        let current_kem = LocalKemKeypair {
-            x25519_secret: identity.kem.x25519_secret,
-            x25519_public: identity.kem.x25519_public.clone(),
-            mlkem_secret: identity.kem.mlkem_secret.clone(),
-            mlkem_public: identity.kem.mlkem_public.clone(),
-            // Carry the source identity's algorithm marker rather than assuming
-            // the current suite: this is a copy of the live keypair, so it must
-            // not claim to be something the original was not.
-            kem: identity.kem.kem.clone(),
-        };
         (
-            identity.kem.x25519_public.clone(),
-            identity.kem.mlkem_public.clone(),
-            current_kem,
+            vec![identity.kem.clone()],
+            identity.signing.ed25519_public.clone(),
+            identity.signing.mldsa_public.clone(),
         )
     };
-
-    let mut recipient_kems = vec![current_kem];
     if let Ok(legacy) = state.legacy_kem_keypairs.lock() {
-        recipient_kems.extend(legacy.iter().cloned());
+        device_kems.extend(legacy.iter().cloned());
     }
 
-    let (recovery_wrap_key, enterprise_recipient) = match state.load_vault_recovery(&user_id)? {
-        Some(material) => match material.recovery_mode() {
-            "enterprise" => (
-                None,
-                Some(EnterpriseRecipientOwned {
-                    x25519_public: material.enterprise_x25519_public.clone().unwrap_or_default(),
-                    mlkem_public: material.enterprise_mlkem_public.clone().unwrap_or_default(),
-                    recovery_secret: None,
-                }),
-            ),
-            "hybrid" => (
-                None,
-                Some(EnterpriseRecipientOwned {
-                    x25519_public: material.enterprise_x25519_public.clone().unwrap_or_default(),
-                    mlkem_public: material.enterprise_mlkem_public.clone().unwrap_or_default(),
-                    recovery_secret: material.recovery_root,
-                }),
-            ),
-            _ => (Some(material.wrap_key), None),
-        },
-        None => (None, None),
+    let (recovery_wrap_key, enterprise_recipient) = if need == VaultNeed::Seal {
+        match state.load_vault_recovery(&user_id, &vault_key)? {
+            Some(material) => match material.recovery_mode() {
+                "enterprise" => (
+                    None,
+                    Some(EnterpriseRecipientOwned {
+                        x25519_public: material.enterprise_x25519_public.clone().unwrap_or_default(),
+                        mlkem_public: material.enterprise_mlkem_public.clone().unwrap_or_default(),
+                        recovery_secret: None,
+                    }),
+                ),
+                "hybrid" => (
+                    None,
+                    Some(EnterpriseRecipientOwned {
+                        x25519_public: material.enterprise_x25519_public.clone().unwrap_or_default(),
+                        mlkem_public: material.enterprise_mlkem_public.clone().unwrap_or_default(),
+                        recovery_secret: material.recovery_root.map(Zeroizing::new),
+                    }),
+                ),
+                _ => (Some(Zeroizing::new(material.wrap_key)), None),
+            },
+            None => (None, None),
+        }
+    } else {
+        (None, None)
     };
 
     Ok(LocalVaultContext {
         user_id,
         device_id: identity_bundle.device_id,
         vault_master,
-        kem_x25519_public,
-        kem_mlkem_public,
-        recipient_kems,
+        vault_key,
+        device_kems,
+        device_signer_ed25519_public,
+        device_signer_mldsa_public,
         recovery_wrap_key,
         enterprise_recipient,
     })
 }
 
 impl LocalVaultContext {
-    pub(crate) fn enterprise(&self) -> Option<vault_stream::EnterpriseRecipient<'_>> {
-        self.enterprise_recipient.as_ref().map(|e| vault_stream::EnterpriseRecipient {
-            x25519_public: &e.x25519_public,
-            mlkem_public: &e.mlkem_public,
-            recovery_secret: e.recovery_secret.as_ref(),
-        })
+    /// What a container written now is sealed with.
+    pub(crate) fn owner_seal(&self) -> vault_stream::OwnerSeal<'_> {
+        vault_stream::OwnerSeal {
+            user_id: &self.user_id,
+            device_id: &self.device_id,
+            vault_key: &*self.vault_key,
+            vault_signer: &self.vault_master.signer,
+            recovery_wrap_key: self.recovery_wrap_key.as_deref(),
+            enterprise: self.enterprise_recipient.as_ref().map(|recipient| {
+                vault_stream::EnterpriseRecipient {
+                    x25519_public: &recipient.x25519_public,
+                    mlkem_public: &recipient.mlkem_public,
+                    recovery_secret: recipient.recovery_secret.as_deref(),
+                }
+            }),
+        }
+    }
+
+    /// What this vault can open, and what it accepts as its own.
+    ///
+    /// `allow_unrecognized_legacy_signer` is the user's explicit, per-operation
+    /// consent to open a v1/v2 container whose signer is not this device's
+    /// identity. It never loosens anything for v3 and later.
+    pub(crate) fn owner_access(
+        &self,
+        allow_unrecognized_legacy_signer: bool,
+    ) -> vault_stream::OwnerAccess<'_> {
+        vault_stream::OwnerAccess {
+            vault_key: &*self.vault_key,
+            legacy_vmk: &self.vault_master.vmk,
+            vault_signer: &self.vault_master.signer,
+            device_kems: &self.device_kems,
+            device_signer: Some((
+                self.device_signer_ed25519_public.as_slice(),
+                self.device_signer_mldsa_public.as_slice(),
+            )),
+            allow_unrecognized_legacy_signer,
+        }
     }
 }
 
@@ -268,7 +327,7 @@ pub async fn vault_encrypt_path(
     dest_path: String,
     on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
-    let ctx = local_vault_context(&state)?;
+    let ctx = local_vault_context(&state, VaultNeed::Seal)?;
     let source_for_result = source_path.clone();
     let dest_for_result = dest_path.clone();
     let summary = run_stream_blocking(move || {
@@ -312,14 +371,7 @@ pub async fn vault_encrypt_path(
                 &name,
                 "application/octet-stream",
                 original_size,
-                &ctx.user_id,
-                &ctx.device_id,
-                &ctx.kem_x25519_public,
-                &ctx.kem_mlkem_public,
-                &ctx.vault_master.vmk,
-                &ctx.vault_master.signer,
-                ctx.recovery_wrap_key.as_ref(),
-                ctx.enterprise().as_ref(),
+                &ctx.owner_seal(),
                 None, // sharing: owner-sealed container, no portable-identity recipients
                 &mut |p| { let _ = on_progress.send(p); },
             ) {
@@ -345,66 +397,79 @@ pub async fn vault_encrypt_path(
 
     state.audit_info(
         "vault_local_encrypt",
-        "File encrypted to a local quantum-safe vault stream",
+        "File encrypted to a local PIN-bound vault container",
     );
     state.touch_telemetry(
         "vault",
-        "Local file sealed with X25519+ML-KEM-1024 / AES-256-GCM streaming container",
+        "Local file sealed · AES-256-GCM under the PIN-bound vault key · Ed25519 + ML-DSA-87 header",
         100,
     );
     Ok(VaultLocalStreamSummary::from_stream(summary, source_for_result, dest_for_result))
 }
 
+/// `allow_unverified_legacy` is the user's explicit consent, given in the UI for
+/// this one operation, to open a legacy v1/v2 container whose signer this device
+/// does not recognise (see `vault_stream::UNRECOGNIZED_SIGNER_MARKER`). It has
+/// no effect on v3 and later, which are authenticated against the vault itself.
 #[tauri::command]
 pub async fn vault_decrypt_path(
     state: State<'_, AppState>,
     source_path: String,
     dest_path: String,
+    allow_unverified_legacy: Option<bool>,
     on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
-    let ctx = local_vault_context(&state)?;
+    let ctx = local_vault_context(&state, VaultNeed::Open)?;
     state.check_decrypt_rate_limit("vault_local_file", &source_path, 60, 300)?;
+    let allow_unverified = allow_unverified_legacy.unwrap_or(false);
 
     let source_for_result = source_path.clone();
     let dest_for_result = dest_path.clone();
     let summary = run_stream_blocking(move || {
-        let mut last_error: Option<QGuardError> = None;
-        for kem in &ctx.recipient_kems {
-            let mut reader =
-                BufReader::new(open_vault_source(&source_path, "open encrypted source")?);
-            let (dest_file, dest) = VaultDest::create(&dest_path)?;
-            let mut writer = BufWriter::new(dest_file);
-            match vault_stream::decrypt_stream_with_progress(&mut reader, &mut writer, kem, &mut |p| { let _ = on_progress.send(p); }) {
-                Ok(summary) => {
-                    if let Err(e) = writer.flush() {
-                        drop(writer);
-                        dest.abort();
-                        return Err(QGuardError::Storage(format!("flush output: {e}")));
-                    }
-                    drop(writer);
-                    dest.commit()?;
-                    return Ok(summary);
-                }
-                Err(error) => {
+        let mut reader =
+            BufReader::new(open_vault_source(&source_path, "open encrypted source")?);
+        let (dest_file, dest) = VaultDest::create(&dest_path)?;
+        let mut writer = BufWriter::new(dest_file);
+        match vault_stream::decrypt_stream_owner_with_progress(
+            &mut reader,
+            &mut writer,
+            &ctx.owner_access(allow_unverified),
+            &mut |p| { let _ = on_progress.send(p); },
+        ) {
+            Ok(summary) => {
+                if let Err(e) = writer.flush() {
                     drop(writer);
                     dest.abort();
-                    last_error = Some(error);
+                    return Err(QGuardError::Storage(format!("flush output: {e}")));
                 }
+                drop(writer);
+                dest.commit()?;
+                Ok(summary)
+            }
+            Err(error) => {
+                drop(writer);
+                dest.abort();
+                Err(error)
             }
         }
-        Err(last_error.unwrap_or_else(|| {
-            QGuardError::Crypto("local vault stream could not be decrypted on this device".to_string())
-        }))
     })
     .await?;
 
     state.audit_info(
         "vault_local_decrypt",
-        "Local quantum-safe vault stream decrypted on-device",
+        if summary.pin_bound {
+            "Local vault container decrypted with the PIN-bound vault key"
+        } else {
+            "Legacy device-bound vault container decrypted (not yet re-protected)"
+        },
     );
     state.touch_telemetry(
         "vault_decrypt",
-        "Local vault stream decrypted with device-bound ML-KEM-1024 key",
+        if summary.pin_bound {
+            "Local vault container decrypted · authenticated against this vault"
+        } else {
+            "Legacy vault container decrypted · re-protect it to bind it to the vault PIN"
+        },
         100,
     );
     Ok(VaultLocalStreamSummary::from_stream(summary, source_for_result, dest_for_result))
@@ -417,7 +482,7 @@ pub async fn vault_encrypt_folder_path(
     dest_path: String,
     on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
-    let ctx = local_vault_context(&state)?;
+    let ctx = local_vault_context(&state, VaultNeed::Seal)?;
     let source_for_result = source_dir.clone();
     let dest_for_result = dest_path.clone();
     let summary = run_stream_blocking(move || {
@@ -449,14 +514,7 @@ pub async fn vault_encrypt_folder_path(
                 &name,
                 "application/qguard-folder-archive",
                 total,
-                &ctx.user_id,
-                &ctx.device_id,
-                &ctx.kem_x25519_public,
-                &ctx.kem_mlkem_public,
-                &ctx.vault_master.vmk,
-                &ctx.vault_master.signer,
-                ctx.recovery_wrap_key.as_ref(),
-                ctx.enterprise().as_ref(),
+                &ctx.owner_seal(),
                 None, // sharing: owner-sealed container, no portable-identity recipients
                 &mut |p| { let _ = on_progress.send(p); },
             ) {
@@ -482,60 +540,66 @@ pub async fn vault_encrypt_folder_path(
 
     state.audit_info(
         "vault_local_encrypt_folder",
-        "Folder archived into a local quantum-safe vault stream",
+        "Folder archived into a local PIN-bound vault container",
     );
     state.touch_telemetry(
         "vault",
-        "Local folder sealed into a single X25519+ML-KEM-1024 / AES-256-GCM archive",
+        "Local folder sealed into one archive · AES-256-GCM under the PIN-bound vault key",
         100,
     );
     Ok(VaultLocalStreamSummary::from_stream(summary, source_for_result, dest_for_result))
 }
 
+/// See [`vault_decrypt_path`] for `allow_unverified_legacy`.
 #[tauri::command]
 pub async fn vault_decrypt_folder_path(
     state: State<'_, AppState>,
     source_path: String,
     dest_dir: String,
+    allow_unverified_legacy: Option<bool>,
     on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
-    let ctx = local_vault_context(&state)?;
+    let ctx = local_vault_context(&state, VaultNeed::Open)?;
     state.check_decrypt_rate_limit("vault_local_folder", &source_path, 30, 300)?;
+    let allow_unverified = allow_unverified_legacy.unwrap_or(false);
 
     let source_for_result = source_path.clone();
     let dest_for_result = dest_dir.clone();
     let summary = run_stream_blocking(move || {
-        std::fs::create_dir_all(&dest_dir)
-            .map_err(|e| QGuardError::Storage(format!("create destination folder: {e}")))?;
-
-        let mut last_error: Option<QGuardError> = None;
-        for kem in &ctx.recipient_kems {
-            let mut reader =
-                BufReader::new(open_vault_source(&source_path, "open encrypted source")?);
-            let mut writer = FolderWriter::new(PathBuf::from(&dest_dir));
-            match vault_stream::decrypt_stream_with_progress(&mut reader, &mut writer, kem, &mut |p| { let _ = on_progress.send(p); }) {
-                Ok(summary) => {
-                    writer
-                        .flush()
-                        .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
-                    return Ok(summary);
-                }
-                Err(error) => last_error = Some(error),
-            }
-        }
-        Err(last_error.unwrap_or_else(|| {
-            QGuardError::Crypto("local vault folder archive could not be decrypted on this device".to_string())
-        }))
+        let mut reader =
+            BufReader::new(open_vault_source(&source_path, "open encrypted source")?);
+        // The writer creates the destination itself, and only once the container
+        // has been authenticated as this vault's own — a refused archive leaves
+        // nothing behind, not even an empty folder.
+        let mut writer = FolderWriter::new(PathBuf::from(&dest_dir));
+        let summary = vault_stream::decrypt_stream_owner_with_progress(
+            &mut reader,
+            &mut writer,
+            &ctx.owner_access(allow_unverified),
+            &mut |p| { let _ = on_progress.send(p); },
+        )?;
+        writer
+            .flush()
+            .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
+        Ok(summary)
     })
     .await?;
 
     state.audit_info(
         "vault_local_decrypt_folder",
-        "Local quantum-safe folder archive decrypted on-device",
+        if summary.pin_bound {
+            "Local vault folder archive decrypted with the PIN-bound vault key"
+        } else {
+            "Legacy device-bound folder archive decrypted (not yet re-protected)"
+        },
     );
     state.touch_telemetry(
         "vault_decrypt",
-        "Local folder archive restored with device-bound ML-KEM-1024 key",
+        if summary.pin_bound {
+            "Local folder archive restored · authenticated against this vault"
+        } else {
+            "Legacy folder archive restored · re-protect it to bind it to the vault PIN"
+        },
         100,
     );
     Ok(VaultLocalStreamSummary::from_stream(summary, source_for_result, dest_for_result))
@@ -579,13 +643,15 @@ pub struct VaultRecoverySetup {
 pub fn vault_recovery_status(state: State<'_, AppState>) -> Result<VaultRecoveryStatus> {
     state.require_auth()?;
     let user_id = state.user_id()?;
-    Ok(match state.load_vault_recovery(&user_id)? {
-        Some(material) => VaultRecoveryStatus {
+    // Answerable while the vault is LOCKED: only the public half of the
+    // configuration is read here, never a key.
+    Ok(match state.load_vault_recovery_public(&user_id)? {
+        Some(public) => VaultRecoveryStatus {
             enabled: true,
-            mode: Some(material.recovery_mode().to_string()),
-            recipient_key_id: material.recipient_key_id.clone(),
-            configured_at: Some(material.configured_at.to_rfc3339()),
-            verifier: Some(material.verifier.clone()),
+            mode: Some(public.mode),
+            recipient_key_id: public.recipient_key_id,
+            configured_at: Some(public.configured_at.to_rfc3339()),
+            verifier: Some(public.verifier),
         },
         None => VaultRecoveryStatus {
             enabled: false,
@@ -597,6 +663,14 @@ pub fn vault_recovery_status(state: State<'_, AppState>) -> Result<VaultRecovery
     })
 }
 
+/// The PIN-bound vault key of the vault unlocked in this session. Recovery
+/// secrets are sealed under a key derived from it, so configuring recovery is —
+/// like every other vault operation — only possible while the vault is open.
+fn unlocked_vault_key(state: &AppState) -> Result<Zeroizing<[u8; KEY_SIZE]>> {
+    let master = state.unlocked_vault_master()?;
+    Ok(Zeroizing::new(master.vault_key()?))
+}
+
 /// Configure vault recovery in one of three modes:
 /// * `personal`   — returns a recovery key to store offline.
 /// * `enterprise` — returns an ML-KEM-1024 enterprise recovery private key file.
@@ -605,7 +679,8 @@ pub fn vault_recovery_status(state: State<'_, AppState>) -> Result<VaultRecovery
 pub fn vault_setup_recovery(state: State<'_, AppState>, mode: String) -> Result<VaultRecoverySetup> {
     state.require_auth()?;
     let user_id = state.user_id()?;
-    if state.load_vault_recovery(&user_id)?.is_some() {
+    let vault_key = unlocked_vault_key(&state)?;
+    if state.load_vault_recovery_public(&user_id)?.is_some() {
         return Err(QGuardError::InvalidInput(
             "Recovery is already configured for this account.".to_string(),
         ));
@@ -617,7 +692,11 @@ pub fn vault_setup_recovery(state: State<'_, AppState>, mode: String) -> Result<
             let wrap_key = vault_recovery::derive_wrap_key(&root)?;
             let verifier = vault_recovery::derive_verifier(&root)?;
             root.zeroize();
-            state.save_vault_recovery(&user_id, &PersistedVaultRecovery::personal(wrap_key, verifier.clone()))?;
+            state.save_vault_recovery(
+                &user_id,
+                &PersistedVaultRecovery::personal(wrap_key, verifier.clone()),
+                &vault_key,
+            )?;
             VaultRecoverySetup {
                 mode: "personal".to_string(),
                 recovery_key: Some(recovery_key),
@@ -634,8 +713,8 @@ pub fn vault_setup_recovery(state: State<'_, AppState>, mode: String) -> Result<
             state.save_vault_recovery(
                 &user_id,
                 &PersistedVaultRecovery {
-                    version: 1,
-                    wrap_key: [0u8; crate::crypto::symmetric::KEY_SIZE],
+                    version: 2,
+                    wrap_key: [0u8; KEY_SIZE],
                     verifier: fingerprint.clone(),
                     configured_at: chrono::Utc::now(),
                     mode: Some("enterprise".to_string()),
@@ -644,6 +723,7 @@ pub fn vault_setup_recovery(state: State<'_, AppState>, mode: String) -> Result<
                     enterprise_mlkem_public: Some(keypair.mlkem_public.clone()),
                     recipient_key_id: Some(fingerprint.clone()),
                 },
+                &vault_key,
             )?;
             VaultRecoverySetup {
                 mode: "enterprise".to_string(),
@@ -664,8 +744,8 @@ pub fn vault_setup_recovery(state: State<'_, AppState>, mode: String) -> Result<
             state.save_vault_recovery(
                 &user_id,
                 &PersistedVaultRecovery {
-                    version: 1,
-                    wrap_key: [0u8; crate::crypto::symmetric::KEY_SIZE],
+                    version: 2,
+                    wrap_key: [0u8; KEY_SIZE],
                     verifier: verifier.clone(),
                     configured_at: chrono::Utc::now(),
                     mode: Some("hybrid".to_string()),
@@ -674,6 +754,7 @@ pub fn vault_setup_recovery(state: State<'_, AppState>, mode: String) -> Result<
                     enterprise_mlkem_public: Some(keypair.mlkem_public.clone()),
                     recipient_key_id: Some(fingerprint.clone()),
                 },
+                &vault_key,
             )?;
             VaultRecoverySetup {
                 mode: "hybrid".to_string(),
@@ -712,6 +793,7 @@ pub fn vault_enable_recovery_with_phrase(
 ) -> Result<VaultRecoveryStatus> {
     state.require_auth()?;
     let user_id = state.user_id()?;
+    let vault_key = unlocked_vault_key(&state)?;
     let mut root = vault_recovery::decode_recovery_key(&recovery_key)?;
     let wrap_key = vault_recovery::derive_wrap_key(&root)?;
     let verifier = vault_recovery::derive_verifier(&root)?;
@@ -723,14 +805,25 @@ pub fn vault_enable_recovery_with_phrase(
             ));
         }
     }
-    if let Some(existing) = state.load_vault_recovery(&user_id)? {
+    if let Some(existing) = state.load_vault_recovery_public(&user_id)? {
+        // Saving below writes a PERSONAL configuration. Doing that over an
+        // enterprise or hybrid one would quietly drop the enterprise factor and
+        // leave every later file recoverable with the personal key alone.
+        if existing.mode != "personal" {
+            return Err(QGuardError::InvalidInput(format!(
+                "Recovery on this device is already configured in {} mode; a personal recovery key cannot replace it.",
+                existing.mode
+            )));
+        }
         if existing.verifier != verifier {
             return Err(QGuardError::InvalidInput(
                 "This recovery key does not match the one already configured on this device.".to_string(),
             ));
         }
     }
-    state.save_vault_recovery(&user_id, &PersistedVaultRecovery::personal(wrap_key, verifier.clone()))?;
+    let material = PersistedVaultRecovery::personal(wrap_key, verifier.clone());
+    let configured_at = material.configured_at.to_rfc3339();
+    state.save_vault_recovery(&user_id, &material, &vault_key)?;
     state.audit_info(
         "vault_recovery_enabled_on_device",
         "Vault recovery key enabled on this device",
@@ -739,25 +832,29 @@ pub fn vault_enable_recovery_with_phrase(
         enabled: true,
         mode: Some("personal".to_string()),
         recipient_key_id: None,
-        configured_at: state
-            .load_vault_recovery(&user_id)?
-            .map(|material| material.configured_at.to_rfc3339()),
+        configured_at: Some(configured_at),
         verifier: Some(verifier),
     })
 }
 
-/// Re-protect an existing `.qvault` container by rebuilding it as a v3 VMK
-/// envelope (ML-KEM-1024-protected VMK + ML-DSA-87 signature) in place, adding
-/// the recovery / enterprise wraps when configured. Chunks are copied unchanged.
-/// Use this on a working device to upgrade older v1/v2 files (and to make files
-/// that predate recovery setup recoverable).
+/// Re-protect an existing `.qvault` container in place by rebuilding its header
+/// as a v5 PIN-bound envelope: the legacy device wrap is removed, the per-file
+/// key is re-sealed under the vault key, the recovery / enterprise wraps are
+/// added when configured, and the header is re-signed with ML-DSA-87. Chunks
+/// are copied unchanged. This is how a file made by an older build becomes
+/// genuinely protected by the vault password / PIN (and how files that predate
+/// recovery setup become recoverable).
+///
+/// See [`vault_decrypt_path`] for `allow_unverified_legacy`.
 #[tauri::command]
 pub async fn vault_rewrap_path(
     state: State<'_, AppState>,
     source_path: String,
+    allow_unverified_legacy: Option<bool>,
     on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
-    let ctx = local_vault_context(&state)?;
+    let ctx = local_vault_context(&state, VaultNeed::Seal)?;
+    let allow_unverified = allow_unverified_legacy.unwrap_or(false);
 
     let source_for_result = source_path.clone();
     let summary = run_stream_blocking(move || {
@@ -778,24 +875,24 @@ pub async fn vault_rewrap_path(
             let mut writer = BufWriter::new(
                 File::create(&tmp).map_err(|e| QGuardError::Storage(format!("create output: {e}")))?,
             );
-            match vault_stream::rewrap_stream_to_v3_with_progress(
+            let outcome = vault_stream::rewrap_stream_with_progress(
                 &mut reader,
                 &mut writer,
-                &ctx.recipient_kems,
-                &ctx.kem_x25519_public,
-                &ctx.kem_mlkem_public,
-                &ctx.vault_master.vmk,
-                &ctx.vault_master.signer,
-                ctx.recovery_wrap_key.as_ref(),
-                ctx.enterprise().as_ref(),
+                &ctx.owner_access(allow_unverified),
+                &ctx.owner_seal(),
                 &mut |p| { let _ = on_progress.send(p); },
-            ) {
-                Ok(summary) => {
-                    writer
-                        .flush()
-                        .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
-                    summary
-                }
+            )
+            .and_then(|summary| {
+                // The rename below replaces the user's ONLY copy of this
+                // container, so the new bytes must be on disk first.
+                writer
+                    .flush()
+                    .and_then(|_| writer.get_ref().sync_all())
+                    .map_err(|e| QGuardError::Storage(format!("flush output: {e}")))?;
+                Ok(summary)
+            });
+            match outcome {
+                Ok(summary) => summary,
                 Err(error) => {
                     drop(writer);
                     let _ = std::fs::remove_file(&tmp);
@@ -811,11 +908,11 @@ pub async fn vault_rewrap_path(
     .await?;
     state.audit_info(
         "vault_recovery_rewrap",
-        "Existing vault container upgraded to the v3 VMK envelope (ML-DSA-87)",
+        "Existing vault container re-protected as a v5 PIN-bound envelope (ML-DSA-87)",
     );
     state.touch_telemetry(
         "vault",
-        "Existing vault file re-protected with the v3 VMK envelope (ML-KEM-1024 / ML-DSA-87)",
+        "Existing vault file re-protected · device wrap removed · sealed under the PIN-bound vault key",
         100,
     );
     Ok(VaultLocalStreamSummary::from_stream(
@@ -825,40 +922,40 @@ pub async fn vault_rewrap_path(
     ))
 }
 
-/// Fully verify a local `.qvault` container on-device: the ML-DSA-signed header,
-/// the device KEM unwrap, and every chunk's AES-256-GCM tag. Plaintext is never
-/// written anywhere — this proves the container is complete and untampered.
+/// Fully verify a local `.qvault` container on-device: that it is authentically
+/// this vault's own, and that every chunk's AES-256-GCM tag holds. Plaintext is
+/// never written anywhere — this proves the container is complete, untampered,
+/// and was produced by this vault rather than merely self-consistent.
+///
+/// See [`vault_decrypt_path`] for `allow_unverified_legacy`.
 #[tauri::command]
 pub async fn vault_verify_path(
     state: State<'_, AppState>,
     source_path: String,
+    allow_unverified_legacy: Option<bool>,
     on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
-    let ctx = local_vault_context(&state)?;
+    let ctx = local_vault_context(&state, VaultNeed::Open)?;
+    let allow_unverified = allow_unverified_legacy.unwrap_or(false);
     let source_for_result = source_path.clone();
     let summary = run_stream_blocking(move || {
-        let mut last_error: Option<QGuardError> = None;
-        for kem in &ctx.recipient_kems {
-            let mut reader =
-                BufReader::new(open_vault_source(&source_path, "open encrypted source")?);
-            match vault_stream::verify_stream_with_progress(&mut reader, kem, &mut |p| { let _ = on_progress.send(p); }) {
-                Ok(summary) => return Ok(summary),
-                Err(error) => last_error = Some(error),
-            }
-        }
-        Err(last_error.unwrap_or_else(|| {
-            QGuardError::Crypto("vault container could not be verified with this device's keys".to_string())
-        }))
+        let mut reader =
+            BufReader::new(open_vault_source(&source_path, "open encrypted source")?);
+        vault_stream::verify_stream_owner_with_progress(
+            &mut reader,
+            &ctx.owner_access(allow_unverified),
+            &mut |p| { let _ = on_progress.send(p); },
+        )
     })
     .await?;
 
     state.audit_info(
         "vault_verify",
-        "Local vault container integrity verified on-device",
+        "Local vault container verified as this vault's own, chunk by chunk",
     );
     state.touch_telemetry(
         "vault",
-        "Vault container verified · signed header + per-chunk AES-256-GCM tags intact",
+        "Vault container verified · authenticated against this vault + per-chunk AES-256-GCM tags intact",
         100,
     );
     Ok(VaultLocalStreamSummary::from_stream(

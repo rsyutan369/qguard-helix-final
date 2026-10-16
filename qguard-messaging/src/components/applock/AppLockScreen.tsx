@@ -13,6 +13,7 @@ interface AppLockScreenProps {
   onSubmit: (pin: string, digits: number) => Promise<void>; // throws on failure
   onUsePassword?: () => void; // full email/password auth escape hatch
   busy?: boolean;
+  busyLabel?: string; // shown while `busy`, e.g. restoring the session after a correct PIN
 }
 
 function useLockoutCountdown(lockoutUntil?: string | null): number {
@@ -31,7 +32,7 @@ function useLockoutCountdown(lockoutUntil?: string | null): number {
 }
 
 export function AppLockScreen(props: AppLockScreenProps) {
-  const { mode, attemptsRemaining, lockoutUntil, rootWarning, onSubmit, onUsePassword, busy } = props;
+  const { mode, attemptsRemaining, lockoutUntil, rootWarning, onSubmit, onUsePassword, busy, busyLabel } = props;
   const [chosenDigits, setChosenDigits] = useState<number>(props.digits ?? 6);
   const [stage, setStage] = useState<"choose" | "enter" | "confirm">(mode === "setup" ? "choose" : "enter");
   const [entry, setEntry] = useState("");
@@ -72,6 +73,7 @@ export function AppLockScreen(props: AppLockScreenProps) {
       setError(null);
       try {
         await onSubmit(pin, digits);
+        setEntry("");
       } catch (e) {
         setError(e instanceof Error ? e.message : "Incorrect PIN.");
         setEntry("");
@@ -97,11 +99,14 @@ export function AppLockScreen(props: AppLockScreenProps) {
   // setEntry updater above — updaters must be pure, and under
   // React.StrictMode (main.tsx double-invokes updaters in dev) a side effect
   // there would schedule commit() twice, burning two attempts for one PIN.
+  // `disabled` matters after a correct PIN: the screen can stay mounted (busy)
+  // while the session restores, and `commit` changes identity on every parent
+  // render — without the guard the same full entry would be re-submitted.
   useEffect(() => {
-    if (entry.length !== digits) return;
+    if (entry.length !== digits || disabled) return;
     const id = window.setTimeout(() => void commit(entry), 80);
     return () => window.clearTimeout(id);
-  }, [entry, digits, commit]);
+  }, [entry, digits, commit, disabled]);
 
   const back = useCallback(() => {
     if (disabled) return;
@@ -188,21 +193,10 @@ export function AppLockScreen(props: AppLockScreenProps) {
               <span>
                 <span className="qg-display block text-[14px]">6-digit PIN</span>
                 <span className="mt-0.5 block text-[11.5px]" style={{ color: "var(--qg-text-3)" }}>
-                  A million combinations. Recommended.
+                  A million combinations. Required for new PINs.
                 </span>
               </span>
-              <span className="qg-pill qg-tone-info">Recommended</span>
-            </button>
-            <button
-              onClick={() => { setChosenDigits(4); setStage("enter"); }}
-              className="qg-card qg-card-press qg-focusable flex items-center justify-between px-4 py-4 text-left"
-            >
-              <span>
-                <span className="qg-display block text-[14px]">4-digit PIN</span>
-                <span className="mt-0.5 block text-[11.5px]" style={{ color: "var(--qg-text-3)" }}>
-                  Faster to enter, easier to guess.
-                </span>
-              </span>
+              <span className="qg-pill qg-tone-info">Continue</span>
             </button>
           </div>
         ) : (
@@ -231,6 +225,11 @@ export function AppLockScreen(props: AppLockScreenProps) {
             <div className="flex min-h-[18px] flex-col items-center gap-1">
               {error && (
                 <p className="text-center text-[12.5px] font-semibold" style={{ color: "var(--qg-alert)" }}>{error}</p>
+              )}
+              {busy && busyLabel && !error && (
+                <p role="status" className="qg-mono text-center text-[11.5px]" style={{ color: "var(--qg-text-2)" }}>
+                  {busyLabel}
+                </p>
               )}
               {lockoutRemaining > 0 && (
                 <p className="text-center text-[12.5px] font-semibold" style={{ color: "var(--qg-warn)" }}>
@@ -288,7 +287,7 @@ export function AppLockScreen(props: AppLockScreenProps) {
           </>
         )}
 
-        {mode === "unlock" && onUsePassword && (
+        {mode === "unlock" && onUsePassword && !busy && (
           <button
             onClick={onUsePassword}
             className="qg-focusable text-[13px] font-semibold"

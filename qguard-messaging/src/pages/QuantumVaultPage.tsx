@@ -29,7 +29,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Channel } from "@tauri-apps/api/core";
-import { open as openDialog } from "@/lib/tauri-dialog";
+import { ask as askDialog, open as openDialog } from "@/lib/tauri-dialog";
 import { withNativeDialog } from "@/lib/native-dialog-guard";
 import { isAndroidRuntime, isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import { loadAccountRecovery, publishAccountRecovery, type AccountRecoveryRecord } from "@/lib/account-recovery";
@@ -38,6 +38,7 @@ import PortableIdentityPanel from "@/components/vault/PortableIdentityPanel";
 import { supabase } from "@/lib/supabase";
 import type { QuantumSecurityReport, TelemetryEvent } from "@/lib/types";
 import { type VaultProgress, phaseLabel, opLabel, formatThroughput, formatEta, overallPercent } from "@/lib/vault-progress";
+import { classifyVaultOpenError, describeVaultOpenError, withLegacySignerConsent } from "@/lib/vault-errors";
 
 // ---------------------------------------------------------------------------
 // Quantum Vault — strictly LOCAL, zero-knowledge, post-quantum file vault.
@@ -47,9 +48,16 @@ import { type VaultProgress, phaseLabel, opLabel, formatThroughput, formatEta, o
 // QGuard server. The Vault Explorer is driven by a device-local, metadata-only
 // registry (no plaintext, no keys) so the UI can list what you've sealed.
 //
-// Crypto (Rust `vault_stream` v3): File -> AES-256-GCM (FEK) -> FEK wrapped by
-// the Vault Master Key (VMK) -> VMK protected by X25519 + ML-KEM-1024 -> header
-// signed with Ed25519 + ML-DSA-87. The recovery key protects a backup of the VMK.
+// Crypto (Rust `vault_stream` v5): File -> AES-256-GCM (FEK) -> FEK sealed under
+// the PIN-bound vault key, which exists only while the vault is unlocked -> header
+// signed with Ed25519 + ML-DSA-87. When configured, the FEK is also sealed to the
+// recovery key / enterprise recipient, and (for a share) to each recipient's
+// identity via X25519 + ML-KEM-1024.
+//
+// Containers written by older builds (v1-v4) hang their owner envelope off the
+// DEVICE key instead, so they open without the vault PIN to anyone holding that
+// key. They still decrypt here, are shown as "Device-bound (legacy)", and
+// "Re-protect" rewrites their header as v5.
 // ---------------------------------------------------------------------------
 
 interface VaultLocalStreamSummary {
@@ -62,6 +70,10 @@ interface VaultLocalStreamSummary {
   source_path: string;
   output_path: string;
   suite: Record<string, string>;
+  /** Container format version on disk. */
+  container_version?: number;
+  /** False for a legacy container whose owner envelope hangs off the device key. */
+  pin_bound?: boolean;
 }
 
 type LocalVaultAction = "encrypt-file" | "encrypt-folder" | "decrypt-file" | "decrypt-folder";
@@ -83,7 +95,16 @@ interface VaultRegistryEntry {
   qvaultPath: string;
   sourcePath: string;
   suite: Record<string, string>;
+  /** Container format version, once an operation on the file has reported it. */
+  containerVersion?: number;
+  /**
+   * Whether the owner's way into the container needs the vault PIN. Absent on
+   * entries recorded before this was tracked — and every container from back
+   * then is a legacy one, so absent is treated the same as `false`.
+   */
+  pinBound?: boolean;
   status: "encrypted" | "decrypted";
+  /** "verified" only after a verify or decrypt actually authenticated the file. */
   integrity: "verified" | "pending";
   hidden: boolean;
   createdAt: string;
@@ -149,6 +170,9 @@ const vaultSecurityFallback: QuantumSecurityReport = {
 
 function describeError(error: unknown): string {
   if (!error) return "Unknown error";
+  // The two vault authentication refusals carry a marker for the code to match
+  // on; the user sees the explanation that follows it.
+  if (classifyVaultOpenError(error) !== "other") return describeVaultOpenError(error);
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   if (typeof error === "object") {
@@ -164,6 +188,19 @@ function describeError(error: unknown): string {
     }
   }
   return String(error);
+}
+
+/**
+ * How a registry entry is protected, from what the Rust core last reported.
+ * Never assumed: an entry nothing has reported on is a legacy container.
+ */
+function protectionLabel(entry: VaultRegistryEntry | null | undefined): string {
+  if (!entry) return "—";
+  return entry.pinBound === true ? "PIN-bound" : "Device-bound (legacy)";
+}
+
+function isLegacyContainer(entry: VaultRegistryEntry): boolean {
+  return entry.pinBound !== true;
 }
 
 function formatBytes(bytes: number): string {
@@ -184,12 +221,6 @@ function cleanExplorerPath(value: string): string {
 
 function pathBasename(value: string): string {
   return value.split(/[\\/]/).filter(Boolean).pop() ?? value;
-}
-
-function shortSuiteLabel(suite?: Record<string, string> | null): string {
-  if (!suite) return "ML-KEM-1024";
-  const kem = suite.pq_kem;
-  return typeof kem === "string" && kem ? kem : "ML-KEM-1024";
 }
 
 function suiteLabel(suite?: Record<string, string> | null): string {
@@ -486,6 +517,27 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
     [appendLog],
   );
 
+  // Owner-side operations (decrypt / verify / re-protect). The Rust core
+  // authenticates the container as THIS vault's own before touching it; the one
+  // refusal the user may override is a legacy v1/v2 file whose signer this
+  // device does not recognise. The first attempt never carries the override,
+  // and consent is asked per file, per operation — see lib/vault-errors.ts.
+  const runOwnerVaultStream = useCallback(
+    (command: string, args: Record<string, unknown>, fileLabel: string): Promise<VaultLocalStreamSummary> =>
+      withLegacySignerConsent(
+        (allowUnverifiedLegacy) =>
+          runVaultStream(command, allowUnverifiedLegacy ? { ...args, allowUnverifiedLegacy: true } : args),
+        () => {
+          appendLog("error", `${fileLabel}: signed by a key this device does not recognise — asking before opening`);
+          return askDialog(
+            `"${fileLabel}" is an older vault file signed by a key this device does not recognise.\n\nThat is expected if the file predates a device key reset. It is also exactly what a file created by someone else would look like.\n\nOpen it only if you know where it came from.`,
+            { title: "Unverified vault file", okLabel: "Open anyway", cancelLabel: "Don't open" },
+          );
+        },
+      ),
+    [appendLog, runVaultStream],
+  );
+
   // Load device-local registry + activity once per user.
   useEffect(() => {
     setStoreReady(false);
@@ -557,6 +609,9 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
 
   const upsertRegistryFromSummary = useCallback(
     (summary: VaultLocalStreamSummary, status: VaultRegistryEntry["status"]) => {
+      // A container that was only just WRITTEN has not been verified by anyone:
+      // it is recorded as pending and becomes "verified" when a verify or a
+      // decrypt has authenticated it. An existing entry keeps what it earned.
       const now = new Date().toISOString();
       setRegistry((current) => {
         const name = cleanExplorerPath(summary.name) || pathBasename(summary.output_path) || summary.file_id.slice(0, 8);
@@ -573,8 +628,10 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
           qvaultPath: summary.output_path,
           sourcePath: summary.source_path,
           suite: summary.suite,
+          containerVersion: summary.container_version,
+          pinBound: summary.pin_bound === true,
           status,
-          integrity: "verified",
+          integrity: existingIndex >= 0 ? current[existingIndex].integrity : "pending",
           hidden: false,
           createdAt: existingIndex >= 0 ? current[existingIndex].createdAt : now,
           updatedAt: now,
@@ -781,7 +838,24 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
   }, [loadVaultSecurity, vaultStatusModalOpen, registry.length, recoveryStatus?.enabled]);
 
   const localSuiteLine =
-    "Crypto suite: X25519+ML-KEM-1024 / AES-256-GCM / HKDF-SHA3-256 / Ed25519+ML-DSA-87 (VMK envelope, on-device)";
+    "Crypto suite: AES-256-GCM per chunk · file key sealed under your PIN-bound vault key · Ed25519+ML-DSA-87 signed header · recovery/sharing wraps use X25519+ML-KEM-1024 / HKDF-SHA3-256 (on-device)";
+
+  // What the UI needs to remember about a container after the Rust core has
+  // authenticated it (decrypt / verify / re-protect all do).
+  const protectionPatch = (summary: VaultLocalStreamSummary): Partial<VaultRegistryEntry> => ({
+    containerVersion: summary.container_version,
+    pinBound: summary.pin_bound === true,
+    integrity: "verified",
+  });
+
+  /** Tell the user, once per operation, when a file is still in the old format. */
+  function noteLegacyContainer(summary: VaultLocalStreamSummary) {
+    if (summary.pin_bound === true) return;
+    appendLog(
+      "info",
+      `${summary.name} uses the older device-bound format (v${summary.container_version ?? "?"}): it opens without your vault PIN to anyone holding this device's keys. Use Re-protect to bind it to your vault PIN.`,
+    );
+  }
 
   async function runLocalVault(action: LocalVaultAction, task: () => Promise<void>) {
     if (localVaultBusy) {
@@ -879,7 +953,8 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
       const dest = await prepareDestination(folder.path, suggested);
       appendLog("info", `Decrypting ${sourceName} on this device → ${folder.label}`);
       setStatus("Decrypting local vault file");
-      const summary = await runVaultStream("vault_decrypt_path", { sourcePath: source, destPath: dest });
+      const summary = await runOwnerVaultStream("vault_decrypt_path", { sourcePath: source, destPath: dest }, sourceName);
+      noteLegacyContainer(summary);
       const line = `Decrypted ${summary.name} (${formatBytes(summary.original_size)}) → ${folder.label}`;
       appendLog("success", line);
       pushActivity({ source: "decrypt", title: "File decrypted", detail: line, status: "success" });
@@ -905,7 +980,8 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
       if (typeof dest !== "string") return;
       appendLog("info", `Decrypting folder archive ${pathBasename(source)} into ${dest}`);
       setStatus("Restoring encrypted folder archive locally");
-      const summary = await runVaultStream("vault_decrypt_folder_path", { sourcePath: source, destDir: dest });
+      const summary = await runOwnerVaultStream("vault_decrypt_folder_path", { sourcePath: source, destDir: dest }, pathBasename(source));
+      noteLegacyContainer(summary);
       const line = `Restored folder ${summary.name} (${formatBytes(summary.original_size)}) → ${dest}`;
       appendLog("success", line);
       pushActivity({ source: "decrypt", title: "Folder decrypted", detail: line, status: "success" });
@@ -924,8 +1000,9 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
         const dest = await openDialog({ multiple: false, directory: true, title: "Choose a folder to restore into" });
         if (typeof dest !== "string") return;
         setStatus(`Decrypting ${entry.name}`);
-        const summary = await runVaultStream("vault_decrypt_folder_path", { sourcePath: entry.qvaultPath, destDir: dest });
-        updateRegistryEntry(entry.id, { status: "decrypted" });
+        const summary = await runOwnerVaultStream("vault_decrypt_folder_path", { sourcePath: entry.qvaultPath, destDir: dest }, entry.name);
+        updateRegistryEntry(entry.id, { status: "decrypted", ...protectionPatch(summary) });
+        noteLegacyContainer(summary);
         const line = `Restored folder ${summary.name} (${formatBytes(summary.original_size)}) → ${dest}`;
         appendLog("success", line);
         pushActivity({ source: "decrypt", title: "Folder decrypted", detail: line, status: "success" });
@@ -939,8 +1016,9 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
         }
         const dest = await prepareDestination(folder.path, pathBasename(suggested));
         setStatus(`Decrypting ${entry.name}`);
-        const summary = await runVaultStream("vault_decrypt_path", { sourcePath: entry.qvaultPath, destPath: dest });
-        updateRegistryEntry(entry.id, { status: "decrypted" });
+        const summary = await runOwnerVaultStream("vault_decrypt_path", { sourcePath: entry.qvaultPath, destPath: dest }, entry.name);
+        updateRegistryEntry(entry.id, { status: "decrypted", ...protectionPatch(summary) });
+        noteLegacyContainer(summary);
         const line = `Decrypted ${summary.name} (${formatBytes(summary.original_size)}) → ${dest}`;
         appendLog("success", line);
         pushActivity({ source: "decrypt", title: "File decrypted", detail: line, status: "success" });
@@ -961,10 +1039,10 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
     setActionBusy(`reprotect-${entry.id}`);
     try {
       setStatus(`Re-protecting ${entry.name}`);
-      const summary = await runVaultStream("vault_rewrap_path", { sourcePath: entry.qvaultPath });
-      updateRegistryEntry(entry.id, { suite: summary.suite, integrity: "verified" });
-      appendLog("success", `Re-protected ${summary.name} (v3 VMK envelope / ML-DSA-87)`);
-      pushActivity({ source: "reprotect", title: "File re-protected", detail: `${entry.name} upgraded to the v3 VMK envelope`, status: "success" });
+      const summary = await runOwnerVaultStream("vault_rewrap_path", { sourcePath: entry.qvaultPath }, entry.name);
+      updateRegistryEntry(entry.id, { suite: summary.suite, ...protectionPatch(summary) });
+      appendLog("success", `Re-protected ${summary.name} · now bound to your vault PIN (v${summary.container_version ?? 5} envelope / ML-DSA-87)`);
+      pushActivity({ source: "reprotect", title: "File re-protected", detail: `${entry.name} is now sealed under the PIN-bound vault key; its device-key wrap was removed`, status: "success" });
       setStatus("Vault file re-protected");
     } catch (error) {
       const message = describeError(error);
@@ -981,10 +1059,11 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
     setActionBusy(`verify-${entry.id}`);
     try {
       setStatus(`Verifying ${entry.name}`);
-      appendLog("info", `Verifying ${pathBasename(entry.qvaultPath)} · signed header + every chunk tag (nothing is written to disk)`);
-      const summary = await runVaultStream("vault_verify_path", { sourcePath: entry.qvaultPath });
-      updateRegistryEntry(entry.id, { integrity: "verified", sizeBytes: summary.original_size, totalChunks: summary.total_chunks });
-      const line = `Verified ${summary.name} (${formatBytes(summary.original_size)}, ${summary.total_chunks} chunk${summary.total_chunks === 1 ? "" : "s"}) · container intact`;
+      appendLog("info", `Verifying ${pathBasename(entry.qvaultPath)} · that it is this vault's own + every chunk tag (nothing is written to disk)`);
+      const summary = await runOwnerVaultStream("vault_verify_path", { sourcePath: entry.qvaultPath }, entry.name);
+      updateRegistryEntry(entry.id, { ...protectionPatch(summary), sizeBytes: summary.original_size, totalChunks: summary.total_chunks });
+      noteLegacyContainer(summary);
+      const line = `Verified ${summary.name} (${formatBytes(summary.original_size)}, ${summary.total_chunks} chunk${summary.total_chunks === 1 ? "" : "s"}) · authentic and intact`;
       appendLog("success", line);
       pushActivity({ source: "verify", title: "Integrity verified", detail: line, status: "success" });
       setStatus("Vault container verified");
@@ -1069,7 +1148,7 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
         <button type="button" disabled={disabled} onClick={() => verifyRegistryEntry(entry)} className="icon-button disabled:cursor-not-allowed disabled:opacity-50" title="Verify integrity (checks every chunk, writes nothing)">
           {verifyBusy ? <Loader2 className="animate-spin" size={16} /> : <FileCheck2 size={16} />}
         </button>
-        <button type="button" disabled={disabled} onClick={() => reprotectRegistryEntry(entry)} className="icon-button disabled:cursor-not-allowed disabled:opacity-50" title="Re-protect (upgrade to v3 / add recovery)">
+        <button type="button" disabled={disabled} onClick={() => reprotectRegistryEntry(entry)} className="icon-button disabled:cursor-not-allowed disabled:opacity-50" title={isLegacyContainer(entry) ? "Re-protect — bind this older file to your vault PIN (and add recovery)" : "Re-protect (refresh the envelope / add recovery)"}>
           {reprotectBusy ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />}
         </button>
         <button type="button" disabled={disabled} onClick={() => setConfirmDialog({ kind: "remove", entry })} className="icon-button disabled:cursor-not-allowed disabled:opacity-50" title="Remove from list (keeps the file on disk)">
@@ -1352,8 +1431,16 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
       const failures: string[] = [];
       for (const path of paths) {
         try {
-          const summary = await runVaultStream("vault_rewrap_path", { sourcePath: path });
+          const summary = await runOwnerVaultStream("vault_rewrap_path", { sourcePath: path }, pathBasename(path));
           protectedCount += 1;
+          // Keep the Explorer in step when the file is one it already lists.
+          setRegistry((current) =>
+            current.map((item) =>
+              item.qvaultPath === path
+                ? { ...item, suite: summary.suite, ...protectionPatch(summary), updatedAt: new Date().toISOString() }
+                : item,
+            ),
+          );
           appendLog("success", `Re-protected ${summary.name}`);
         } catch (error) {
           failures.push(`${pathBasename(path)}: ${describeError(error)}`);
@@ -1477,7 +1564,7 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
           >
             {localVaultBusy?.startsWith("encrypt") ? <Loader2 className="vault-dropzone-icon mb-3 animate-spin" size={44} /> : <LockKeyhole className="vault-dropzone-icon mb-3" size={44} />}
             <div className="vault-dropzone-title text-lg font-bold">{localVaultBusy?.startsWith("encrypt") ? "Encryption running" : IS_ANDROID ? "Choose a file to encrypt" : "Choose a file or folder to encrypt"}</div>
-            <div className="vault-dropzone-subtitle mt-1 text-sm font-medium">Sealed on-device with the VMK envelope · X25519 + ML-KEM-1024 / AES-256-GCM / HKDF-SHA3-256 / ML-DSA-87</div>
+            <div className="vault-dropzone-subtitle mt-1 text-sm font-medium">Sealed on-device · AES-256-GCM under your PIN-bound vault key · ML-DSA-87 signed · X25519 + ML-KEM-1024 for recovery and sharing</div>
             <div className="mt-5 flex flex-wrap justify-center gap-2">
               <button
                 type="button"
@@ -1552,11 +1639,11 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {[
-            { algo: "ML-KEM-1024", label: "Key encapsulation", sub: "Protects the VMK · X25519", Icon: KeyRound, tone: "text-cyan-600" },
+            { algo: "ML-KEM-1024", label: "Key encapsulation", sub: "Recovery & sharing · X25519", Icon: KeyRound, tone: "text-cyan-600" },
             { algo: "AES-256-GCM", label: "Bulk cipher", sub: "FEK · authenticated", Icon: LockKeyhole, tone: "text-cyan-600" },
             { algo: "HKDF-SHA3-256", label: "Key derivation", sub: "Wrap & recovery keys", Icon: Terminal, tone: "text-cyan-600" },
             { algo: "ML-DSA-87", label: "Signature", sub: "FIPS 204 L5 · Ed25519", Icon: FileCheck2, tone: "text-cyan-600" },
-            { algo: "Quantum Safe", label: "FIPS 203 / 204", sub: "VMK envelope", Icon: ShieldCheck, tone: "text-emerald-600" },
+            { algo: "PIN-bound", label: "Owner envelope", sub: "FIPS 203 / 204 suite", Icon: ShieldCheck, tone: "text-emerald-600" },
           ].map((card) => (
             <div key={card.algo} className="rounded-lg border border-line bg-white p-3">
               <card.Icon className={card.tone} size={18} />
@@ -1696,8 +1783,8 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
             <dl className="mt-4 grid gap-2 text-xs">
               {([
                 ["Profile", "High security (Quantum Vault)"],
-                ["Envelope", "FEK → VMK → ML-KEM-1024"],
-                ["Key exchange", "X25519 + ML-KEM-1024"],
+                ["Envelope", "File key → PIN-bound vault key"],
+                ["Recovery / sharing", "X25519 + ML-KEM-1024"],
                 ["Signature", "Ed25519 + ML-DSA-87"],
                 ["Cipher", "AES-256-GCM"],
                 ["Key derivation", "HKDF-SHA3-256"],
@@ -1913,7 +2000,7 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
                     type="button"
                     disabled={recoveryBusy !== null}
                     onClick={reprotectExistingFiles}
-                    title="Upgrade existing .qvault files to the v3 VMK envelope and add the recovery key"
+                    title="Rewrite existing .qvault headers as PIN-bound v5 envelopes and add the recovery key"
                     className="flex items-center gap-2 rounded-lg border border-cyan-200 bg-white px-4 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {recoveryBusy === "rewrap" ? <Loader2 className="animate-spin" size={16} /> : <ShieldCheck size={16} />}
@@ -2156,7 +2243,12 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
                   {entry.status}
                 </span>
                 <div className="text-xs text-ink-600">{formatBytes(entry.sizeBytes)}</div>
-                <div className="truncate font-mono text-[11px] text-ink-500">{shortSuiteLabel(entry.suite)}</div>
+                <div
+                  className={`truncate text-[11px] font-semibold ${isLegacyContainer(entry) ? "text-amber-700" : "text-emerald-700"}`}
+                  title={isLegacyContainer(entry) ? "Older format: it opens without your vault PIN to anyone holding this device's keys. Use Re-protect to bind it to your vault PIN." : "The file key is sealed under your PIN-bound vault key."}
+                >
+                  {protectionLabel(entry)}
+                </div>
                 <div className="text-xs text-ink-500">{new Date(entry.updatedAt).toLocaleDateString()}</div>
                 {renderEntryActions(entry)}
               </div>
@@ -2233,13 +2325,23 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
                           <span className="status-pill justify-center bg-ink-50 text-ink-600"><Folder size={13} />folder</span>
                         )}
                       </div>
-                      <span className="status-pill justify-center bg-emerald-50 text-emerald-600">
-                        <FileCheck2 size={13} />
-                        {node.entry ? (node.entry.integrity === "verified" ? "Verified" : "Pending") : "Verified"}
-                      </span>
+                      {node.entry ? (
+                        <span
+                          className={`status-pill justify-center ${node.entry.integrity === "verified" ? "bg-emerald-50 text-emerald-600" : "bg-ink-50 text-ink-600"}`}
+                          title={node.entry.integrity === "verified" ? "Authenticated as this vault's own, chunk by chunk" : "Not verified yet — use Verify to check it"}
+                        >
+                          <FileCheck2 size={13} />
+                          {node.entry.integrity === "verified" ? "Verified" : "Not verified"}
+                        </span>
+                      ) : (
+                        <span className="text-center text-xs text-ink-400">—</span>
+                      )}
                       <div className="text-xs font-semibold text-ink-600">{nodeItemText(node)}</div>
-                      <div className="truncate font-mono text-[11px] text-ink-500">
-                        {node.type === "file" ? shortSuiteLabel(node.entry?.suite ?? null) : "—"}
+                      <div
+                        className={`truncate text-[11px] font-semibold ${node.entry ? (isLegacyContainer(node.entry) ? "text-amber-700" : "text-emerald-700") : "text-ink-400"}`}
+                        title={node.entry ? (isLegacyContainer(node.entry) ? "Older format: it opens without your vault PIN to anyone holding this device's keys. Use Re-protect to bind it to your vault PIN." : "The file key is sealed under your PIN-bound vault key.") : undefined}
+                      >
+                        {node.type === "file" ? protectionLabel(node.entry) : "—"}
                       </div>
                       <div className="text-xs text-ink-500">{new Date(node.updated_at).toLocaleDateString()}</div>
                       <div onClick={(event) => event.stopPropagation()}>

@@ -6,6 +6,8 @@ pub mod error;
 pub mod fingerprints;
 pub mod identity;
 pub mod message_crypto;
+pub mod device_pins;
+pub mod message_keys;
 pub mod messaging;
 pub mod prekeys;
 pub mod ratchet;
@@ -191,6 +193,10 @@ pub fn run() {
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
                 let state = window.state::<AppState>();
                 commands::calls::clear_call_marker(&state.data_dir);
+                // Message keys recorded since the last periodic write would
+                // otherwise be lost with the process; losing them only costs a
+                // repeat decrypt, but there is no reason to pay it.
+                state.flush_loaded_message_keys();
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -201,17 +207,25 @@ pub fn run() {
             devices_approve_qr,
             devices_revoke,
             devices_delete,
+            devices_assess_pins,
+            devices_approve_pins,
             keys_upload_identity_bundle,
             keys_upload_signed_prekey,
             keys_upload_one_time_prekeys,
             keys_replenish_one_time_prekeys,
             keys_unlock_private_key,
             keys_rotate_prekeys,
+            keys_prekey_status,
+            keys_purge_retired_prekeys,
             keys_reset_device_identity,
             keys_ack_superseded_device,
             messaging_send_encrypted_message,
             messaging_receive_encrypted_message,
             messaging_delete_encrypted_message,
+            messaging_cache_envelope_key,
+            messaging_message_keys_lookup,
+            messaging_flush_message_keys,
+            messaging_forget_message_keys,
             vault_encrypt_path,
             vault_decrypt_path,
             vault_encrypt_folder_path,
@@ -267,6 +281,7 @@ pub fn run() {
             security_hardening_status,
             security_quantum_report,
             call_caller_setup,
+            call_callee_prepare,
             call_callee_setup,
             call_watchdog_begin,
             call_watchdog_end,

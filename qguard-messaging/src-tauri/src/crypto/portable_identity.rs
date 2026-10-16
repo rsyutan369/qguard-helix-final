@@ -52,6 +52,12 @@ pub const BUNDLE_VERSION_LEGACY: &str = "1.1";
 pub const BUNDLE_KDF_CURRENT: &str = "Argon2id-HKDF-SHA3-256";
 pub const BUNDLE_KDF_LEGACY: &str = "PBKDF2-SHA3-256";
 const LEGACY_PBKDF2_ITERATIONS: u32 = 310_000;
+/// The fewest PBKDF2 iterations a bundle may declare and still be opened. The
+/// count is read from the bundle itself, and it used to be accepted down to 1 —
+/// so a bundle could be (re)written to make its passphrase trivially
+/// guessable and this app would open it without a word. The web vault writes
+/// 310 000; nothing genuine is anywhere near this floor.
+const MIN_LEGACY_PBKDF2_ITERATIONS: u64 = 100_000;
 /// Shortest passphrase accepted for a new bundle. Matches the web vault's rule;
 /// the bundle is an offline artefact, so length is the only real defence.
 pub const MIN_PASSPHRASE_LEN: usize = 12;
@@ -315,9 +321,13 @@ impl PortableIdentity {
                     let iterations = secrets_node
                         .get("iterations")
                         .and_then(|v| v.as_u64())
-                        .unwrap_or(LEGACY_PBKDF2_ITERATIONS as u64)
-                        .clamp(1, 5_000_000) as u32;
-                    derive_bundle_key_pbkdf2(passphrase, &salt, iterations)?
+                        .unwrap_or(LEGACY_PBKDF2_ITERATIONS as u64);
+                    if !(MIN_LEGACY_PBKDF2_ITERATIONS..=5_000_000).contains(&iterations) {
+                        return Err(QGuardError::InvalidInput(format!(
+                            "this identity bundle declares {iterations} key-stretching iterations, outside what this app accepts ({MIN_LEGACY_PBKDF2_ITERATIONS} to 5000000); it was not produced by QGuard"
+                        )));
+                    }
+                    derive_bundle_key_pbkdf2(passphrase, &salt, iterations as u32)?
                 }
                 other => {
                     return Err(QGuardError::InvalidInput(format!(
@@ -341,7 +351,13 @@ impl PortableIdentity {
             plain.zeroize();
             parsed?
         } else {
-            secrets_node.clone()
+            // A bundle whose private keys sit in the file in clear. Opening one
+            // would treat keys that anything on the machine could have read as
+            // an identity worth sealing to. QGuard never writes such a file.
+            return Err(QGuardError::InvalidInput(
+                "this identity bundle stores its private keys unencrypted and cannot be imported; export it again with a passphrase"
+                    .to_string(),
+            ));
         };
 
         let x25519_secret_bytes = decode_b64(json_str(&secrets, "x25519").unwrap_or_default(), "secrets.x25519")?;
@@ -767,12 +783,11 @@ mod tests {
         // sealed with AES-256-GCM and NO additional authenticated data.
         //
         // The bundle declares its own iteration count and the importer honours
-        // it, so a low count here exercises exactly the same code path at a
-        // fraction of the debug-build cost. The production default is asserted
-        // separately below.
+        // it down to its floor, so the floor is what is used here: the same
+        // code path as the web vault's default at a third of the cost.
         let identity = PortableIdentity::generate(Some("web identity".to_string()));
         let salt = [7u8; 32];
-        let iterations = 1_000u32;
+        let iterations = MIN_LEGACY_PBKDF2_ITERATIONS as u32;
         let key = derive_bundle_key_pbkdf2("web passphrase!", &salt, iterations).unwrap();
         let payload = serde_json::json!({
             "x25519": b64().encode(identity.kem.x25519_secret),
@@ -812,6 +827,31 @@ mod tests {
         // A bundle with no stated iteration count must fall back to the web
         // vault's real default, not to the value used above.
         assert_eq!(LEGACY_PBKDF2_ITERATIONS, 310_000);
+
+        // A bundle that declares a weakened stretch is refused before any
+        // key is derived, whatever the passphrase.
+        for weakened in [1u64, 1_000, MIN_LEGACY_PBKDF2_ITERATIONS - 1, 5_000_001] {
+            let mut parsed: serde_json::Value = serde_json::from_str(&bundle).unwrap();
+            parsed["secrets"]["iterations"] = serde_json::json!(weakened);
+            let error = PortableIdentity::import_bundle(&parsed.to_string(), "web passphrase!")
+                .err()
+                .expect("a weakened iteration count must be refused");
+            assert!(format!("{error}").contains("iterations"), "{error}");
+        }
+
+        // And so is a bundle whose private keys are not encrypted at all.
+        let mut plain: serde_json::Value = serde_json::from_str(&bundle).unwrap();
+        plain["secrets"] = serde_json::json!({
+            "encrypted": false,
+            "x25519": b64().encode(identity.kem.x25519_secret),
+            "mlkem": b64().encode(&identity.kem.mlkem_secret),
+            "ed25519": b64().encode(identity.signer.ed25519_secret),
+            "mldsa": b64().encode(&identity.signer.mldsa87_secret),
+        });
+        let error = PortableIdentity::import_bundle(&plain.to_string(), "")
+            .err()
+            .expect("an unencrypted bundle must be refused");
+        assert!(format!("{error}").contains("unencrypted"), "{error}");
     }
 
     #[test]

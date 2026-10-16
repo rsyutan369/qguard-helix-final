@@ -14,6 +14,7 @@ import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { useSubscription } from "@/lib/use-subscription";
 import { useIsMobile } from "@/lib/use-mobile";
 import { useAppLock } from "@/lib/use-app-lock";
+import { settlePinRestore, type PinRestorePhase } from "@/lib/pin-restore";
 import { upsertTrustedDevice, isDeviceRevoked } from "@/lib/trusted-devices";
 import { buildChecklist, buildTourSteps, useOnboarding } from "@/lib/onboarding";
 import { useDashboardData } from "@/lib/use-dashboard-data";
@@ -84,6 +85,8 @@ function ProtectedMessagingApp() {
   const android = isAndroidRuntime();
   const appLock = useAppLock(auth.user?.id ?? null);
   const [forcePasswordLogin, setForcePasswordLogin] = useState(false);
+  // Keeps the PIN gate up through a cold-launch session restore (see pin-restore.ts).
+  const [pinRestore, setPinRestore] = useState<PinRestorePhase>("idle");
   const appVersion = (window as unknown as { __APP_VERSION__?: string }).__APP_VERSION__ ?? "0.0.0";
   const isMobile = useIsMobile();
   const [showMobileOnboarding, setShowMobileOnboarding] = useState(isMobileOnboardingPending);
@@ -141,6 +144,12 @@ function ProtectedMessagingApp() {
     };
   }, []);
 
+  useEffect(() => {
+    setPinRestore((phase) =>
+      settlePinRestore(phase, { signedIn: Boolean(auth.user && auth.session), loading: auth.loading }),
+    );
+  }, [pinRestore, auth.user, auth.session, auth.loading]);
+
   // Whether vault recovery is configured (for the lock-gate telemetry chip).
   useEffect(() => {
     if (page !== "vault") return;
@@ -177,7 +186,9 @@ function ProtectedMessagingApp() {
   // ring reaches a locked-but-running app. Call media renders above the lock;
   // message history stays behind it.
   const renderShell = (): ReactNode => {
-    if (auth.loading) {
+    // During a PIN session restore the (busy) PIN gate below stays on screen
+    // instead of swapping to this splash mid-unlock.
+    if (auth.loading && pinRestore === "idle") {
       return (
         <div className="flex h-screen w-screen items-center justify-center bg-canvas">
           <div className="h-24 w-80 animate-pulse rounded-lg border border-line bg-white" />
@@ -197,18 +208,38 @@ function ProtectedMessagingApp() {
     }
 
     // ---- Android app-entry PIN gate (banking-grade) ----
-    if (android && !appLock.loading && appLock.status?.configured && appLock.status.locked && !forcePasswordLogin) {
+    // Stays up through a cold-launch session restore (pinRestore) so the
+    // LoginPage never flashes between "PIN accepted" and "auth.user ready".
+    if (
+      android &&
+      !appLock.loading &&
+      appLock.status?.configured &&
+      (appLock.status.locked || pinRestore !== "idle") &&
+      !forcePasswordLogin
+    ) {
       // No live session yet (cold launch) -> unlocking restores it; else the app
       // is merely re-locked (background/inactivity) and unlock just clears the flag.
       const restoreFromUnlock = async (pin: string) => {
+        const coldLaunch = !auth.user || !auth.session;
+        if (coldLaunch) setPinRestore("restoring");
+        try {
+          const restored = await unlockAndRestore(pin, coldLaunch);
+          setPinRestore(coldLaunch && restored ? "applied" : "idle");
+        } catch (error) {
+          setPinRestore("idle");
+          throw error;
+        }
+      };
+      // Resolves true once the session is live, false when full auth is required.
+      const unlockAndRestore = async (pin: string, coldLaunch: boolean): Promise<boolean> => {
         const result = await appLock.unlock(pin);
         // 5th wrong attempt wiped the store -> fall back to full auth.
         if (result.status.requiresFullAuth || !result.session) {
           setForcePasswordLogin(true);
           await appLock.refresh();
-          return;
+          return false;
         }
-        if (!auth.user || !auth.session) {
+        if (coldLaunch) {
           const { error } = await supabase.auth.setSession({
             access_token: result.session.accessToken,
             refresh_token: result.session.refreshToken,
@@ -239,6 +270,7 @@ function ProtectedMessagingApp() {
           }
           await upsertTrustedDevice(supabase, result.session.userId, appLock.status.device).catch(() => undefined);
         }
+        return true;
       };
       return (
         <AppLockScreen
@@ -247,6 +279,8 @@ function ProtectedMessagingApp() {
           digits={appLock.status.digits}
           attemptsRemaining={appLock.status.attemptsRemaining}
           lockoutUntil={appLock.status.lockoutUntil}
+          busy={pinRestore !== "idle"}
+          busyLabel="Unlocking your secure session…"
           onSubmit={async (pin) => {
             await restoreFromUnlock(pin);
           }}

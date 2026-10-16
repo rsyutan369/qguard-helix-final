@@ -20,9 +20,10 @@ pub struct SecurityReport {
 /// Build the quantum security report from real runtime evidence only.
 ///
 /// Every field is derived from state that actually exists in this session:
-/// the loaded hybrid identity, signed/one-time prekeys, active ratchet
-/// sessions, device trust state, and the tamper-evident audit chain. No
-/// status string or score is hardcoded, so exported reports stay traceable.
+/// the loaded hybrid identity, signed/one-time prekeys and how recently the
+/// signed prekey was rotated, conversations opened this session, device trust
+/// state, and the tamper-evident audit chain. No status string or score is
+/// hardcoded, so exported reports stay traceable.
 fn quantum_report_from_state(state: &AppState) -> QuantumSecurityReport {
     let identity_present = state.identity.lock().map(|g| g.is_some()).unwrap_or(false);
     let signed_prekey_present = state
@@ -41,6 +42,12 @@ fn quantum_report_from_state(state: &AppState) -> QuantumSecurityReport {
         .any(|d| d.trust_state == DeviceTrustState::Revoked);
     let active_sessions = state.ratchets.lock().map(|r| r.len()).unwrap_or(0);
     let audit_chain_valid = state.audit.lock().map(|a| a.verify()).unwrap_or(false);
+    // Forward secrecy is a property of prekey rotation, not of how many
+    // conversations happen to be open: it is read from the prekeys themselves.
+    let forward_secrecy = match state.user_id() {
+        Ok(user_id) => crate::commands::keys::forward_secrecy_posture(state, &user_id),
+        Err(_) => crate::commands::keys::describe_forward_secrecy(None, 0, false),
+    };
 
     // Real key-rotation history pulled from the verified audit hash chain.
     let key_rotation_history: Vec<String> = state
@@ -79,6 +86,9 @@ fn quantum_report_from_state(state: &AppState) -> QuantumSecurityReport {
     if !audit_chain_valid {
         warnings.push("Local audit hash chain failed verification".to_string());
     }
+    if signed_prekey_present && !forward_secrecy.healthy {
+        warnings.push(format!("Forward secrecy: {}", forward_secrecy.summary));
+    }
 
     // Evidence-based score: each verified control contributes; no fabricated constant.
     let mut score: u32 = 0;
@@ -91,7 +101,7 @@ fn quantum_report_from_state(state: &AppState) -> QuantumSecurityReport {
     if one_time_prekeys > 0 {
         score += 15;
     }
-    if active_sessions > 0 {
+    if forward_secrecy.healthy {
         score += 10;
     }
     if active_devices > 0 {
@@ -119,13 +129,8 @@ fn quantum_report_from_state(state: &AppState) -> QuantumSecurityReport {
         } else {
             "No active device keys".to_string()
         },
-        forward_secrecy: if active_sessions > 0 {
-            "Per-message ratchet keys active".to_string()
-        } else if signed_prekey_present {
-            "Signed prekey ready; awaiting active session".to_string()
-        } else {
-            "Awaiting prekey material".to_string()
-        },
+        forward_secrecy_healthy: forward_secrecy.healthy,
+        forward_secrecy: forward_secrecy.summary,
         hndl_protection: if hybrid_ready {
             "Enabled".to_string()
         } else {

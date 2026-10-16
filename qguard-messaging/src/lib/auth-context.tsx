@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { sha3_256Hex } from "@/lib/sha3";
 import type { Session, User } from "@supabase/supabase-js";
 import { clearChatPlaintextCaches } from "@/lib/chat-plaintext-cache";
 import { getSupabaseConfigError, isSupabaseConfigured, requireSupabase, supabase } from "@/lib/supabase";
@@ -139,11 +140,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }), desktopSessionSyncTimeoutMs, "Desktop session sync");
   }, []);
 
-  const hashEmail = useCallback(async (email: string) => {
-    const data = new TextEncoder().encode(email.trim().toLowerCase());
-    const digest = await crypto.subtle.digest("SHA-256", data);
-    return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  }, []);
+  const hashEmail = useCallback((email: string) => sha3_256Hex(email.trim().toLowerCase()), []);
 
   const auditAuthEvent = useCallback(async (
     eventType: string,
@@ -157,7 +154,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         p_event_type: eventType,
         p_severity: severity,
         p_metadata: metadata,
-        p_email_hash: await hashEmail(email),
+        p_email_hash: hashEmail(email),
         p_user_id: userId ?? null,
       }), auditRequestTimeoutMs, "Auth audit");
     } catch {
@@ -169,7 +166,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const { data, error: limitError } = await withTimeout(supabase.rpc("check_qguard_profile_rate_limit", {
         p_action: action,
-        p_email_hash: await hashEmail(email),
+        p_email_hash: hashEmail(email),
         p_limit: 8,
         p_window_seconds: 300,
       }), authRequestTimeoutMs, "Auth rate limit check");

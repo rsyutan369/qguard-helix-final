@@ -134,3 +134,73 @@ export function buildCallPeer(
     }));
   return { userId, displayName, devices };
 }
+
+/** The `CallPeerIdentity` argument of the Rust call commands. */
+export interface CallPeerIdentityPayload {
+  user_id: string;
+  device_id: string;
+  x25519_identity_public: number[];
+  mlkem_identity_public: number[];
+  ed25519_identity_public: number[];
+  mldsa_identity_public: number[];
+  identity_signature: { ed25519: number[]; ml_dsa_65: number[] };
+}
+
+export function callPeerIdentityPayload(userId: string, device: CallPeerDevice): CallPeerIdentityPayload {
+  return {
+    user_id: userId,
+    device_id: device.deviceId,
+    x25519_identity_public: device.x25519,
+    mlkem_identity_public: device.mlkem,
+    ed25519_identity_public: device.ed25519,
+    mldsa_identity_public: device.mldsa,
+    identity_signature: device.identitySignature,
+  };
+}
+
+/**
+ * A callee's per-call public key, signed by its device identity (mirror of
+ * `commands::calls::CallEphemeralKey`). It rides in the `accept` signal and is
+ * what gives the call forward secrecy.
+ */
+export interface CallEphemeralKey {
+  x25519Public: number[];
+  mlkemPublic: number[];
+  signature: { ed25519: number[]; ml_dsa_65: number[] };
+}
+
+function byteList(value: unknown): number[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const bytes: number[] = [];
+  for (const item of value) {
+    if (typeof item !== "number" || !Number.isInteger(item) || item < 0 || item > 255) return null;
+    bytes.push(item);
+  }
+  return bytes;
+}
+
+/**
+ * Read a per-call key out of an `accept` payload.
+ *
+ * The payload comes from the relay, so this only decides whether it has the
+ * SHAPE of a key: whether it is genuine is decided by the Rust core, which
+ * checks its signature against the callee's registered identity before
+ * anything is encapsulated to it. Returns null when there is no usable key —
+ * an `accept` from a build that predates per-call keys has none.
+ */
+export function parseCallEphemeralKey(value: unknown): CallEphemeralKey | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const signature = record.signature;
+  if (!signature || typeof signature !== "object" || Array.isArray(signature)) return null;
+  const signatureRecord = signature as Record<string, unknown>;
+  const x25519Public = byteList(record.x25519Public);
+  const mlkemPublic = byteList(record.mlkemPublic);
+  const ed25519 = byteList(signatureRecord.ed25519);
+  const mlDsa65 = byteList(signatureRecord.ml_dsa_65);
+  if (!x25519Public || !mlkemPublic || !ed25519 || !mlDsa65) return null;
+  // X25519 public keys are 32 bytes and ML-KEM-1024 encapsulation keys 1568;
+  // anything else is not a key this build would use.
+  if (x25519Public.length !== 32 || mlkemPublic.length !== 1568) return null;
+  return { x25519Public, mlkemPublic, signature: { ed25519, ml_dsa_65: mlDsa65 } };
+}

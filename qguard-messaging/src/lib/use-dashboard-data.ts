@@ -3,7 +3,9 @@ import type { Session, User } from "@supabase/supabase-js";
 import { ensureMessagingWorkspace, ensurePrekeyReadiness } from "@/lib/messaging-bootstrap";
 import { byteaToBytes } from "@/lib/encoding";
 import { requireSupabase } from "@/lib/supabase";
+import { isTauriRuntime } from "@/lib/tauri";
 import { useQGuardLiveSse } from "@/lib/live-sse";
+import { fetchPrekeyStatus } from "@/lib/prekey-hygiene";
 import { fallbackHardeningStatus, loadSecurityHardeningStatus } from "@/lib/security-hardening";
 import { buildSecurityPosture, ONE_TIME_PREKEY_MIN, SIGNED_PREKEY_MIN } from "@/lib/security-score";
 import { countUnreadGroups, type UnreadEnvelope } from "@/lib/chat-unread";
@@ -212,6 +214,7 @@ export function useDashboardData(user: User | null, session: Session | null) {
         cryptoTelemetryResult,
         vaultOperationsResult,
         hardeningStatus,
+        prekeyStatus,
       ] = await Promise.all([
         client.from("messaging_devices").select("id,user_id,device_label,fingerprint,trust_state,suite,last_seen_at,created_at,revoked_at,approved_by_device_id,x25519_identity_public,mlkem_identity_public,ed25519_identity_public,mldsa_identity_public,identity_signature").order("last_seen_at", { ascending: false }),
         client.from("messaging_conversations").select("id,owner_user_id,conversation_type,encrypted_title,updated_at,created_at").order("updated_at", { ascending: false }).limit(100),
@@ -228,6 +231,10 @@ export function useDashboardData(user: User | null, session: Session | null) {
         client.from("messaging_crypto_telemetry").select("id,user_id,device_id,event_scope,stage,detail,progress,status,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(50),
         emptyResult(),
         loadSecurityHardeningStatus(),
+        // How this device's prekeys are really rotating — the evidence behind
+        // the forward-secrecy readout. Null outside the app shell or when the
+        // core does not answer, and then it is reported as not measured.
+        isTauriRuntime() ? fetchPrekeyStatus(user.id).catch(() => null) : Promise.resolve(null),
       ]);
 
       const firstQueryError = [
@@ -500,13 +507,13 @@ export function useDashboardData(user: User | null, session: Session | null) {
       const { snapshot, report } = buildSecurityPosture({
         profile,
         devices,
-        conversations,
         vaultFiles,
         keyInventory,
         telemetry,
         securityEvents,
         hardening: hardeningStatus,
         vaultStorageLabel: bytesToDisplay(totalVaultBytes),
+        prekeyStatus,
       });
 
       const nextData = {

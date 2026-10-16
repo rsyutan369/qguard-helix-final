@@ -8,7 +8,8 @@ use zeroize::Zeroize;
 use crate::error::{QGuardError, Result};
 
 use super::{
-    kdf::derive_32, AlgorithmSuite, HybridCiphertext, CURRENT_PQ_KEM, CURRENT_PQ_KEM_STANDARD,
+    kdf::{derive_32, sha3_256},
+    AlgorithmSuite, HybridCiphertext, CURRENT_KEM_COMBINER, CURRENT_PQ_KEM, CURRENT_PQ_KEM_STANDARD,
     LEGACY_PQ_KEM_PRE_FIPS,
 };
 
@@ -79,10 +80,144 @@ impl Drop for LocalKemKeypair {
     }
 }
 
+/// How the X25519 and ML-KEM shared secrets become one key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KemCombiner {
+    /// `HKDF(ss_x25519 || ss_mlkem, info)`. What every build before the bound
+    /// combiner produced. Still spoken to peers that have not advertised more,
+    /// and still read so existing envelopes and containers keep opening.
+    LegacyConcat,
+    /// `HKDF(ss_mlkem || ss_x25519, info || transcript)`, where the transcript
+    /// is the X25519 ephemeral key, the recipient's X25519 public key and a
+    /// hash of the ML-KEM ciphertext.
+    ///
+    /// The legacy form derives the key from the two secrets alone, so nothing
+    /// ties it to the exchange that produced them. That is not a break while
+    /// ML-KEM holds (its own shared secret already depends on its ciphertext
+    /// and public key), but a hybrid exists precisely for the day one half
+    /// fails — and X25519 alone gives no such binding. Mixing the X25519
+    /// transcript in is what X-Wing and the IETF hybrid-KEM drafts do for the
+    /// same reason. A non-contributory X25519 result (a low-order peer key) is
+    /// also refused here instead of silently contributing nothing.
+    BoundV2,
+}
+
+impl KemCombiner {
+    /// The wire label carried in `AlgorithmSuite::kem_combiner`.
+    pub fn label(self) -> &'static str {
+        match self {
+            KemCombiner::LegacyConcat => "",
+            KemCombiner::BoundV2 => CURRENT_KEM_COMBINER,
+        }
+    }
+
+    /// The combiner a ciphertext says it was made with. An unknown label is an
+    /// error, never a fallback: guessing would derive a wrong key at best.
+    pub fn from_label(label: &str) -> Result<Self> {
+        match label {
+            "" => Ok(KemCombiner::LegacyConcat),
+            CURRENT_KEM_COMBINER => Ok(KemCombiner::BoundV2),
+            other => Err(QGuardError::Crypto(format!(
+                "unsupported hybrid KEM combiner: {other} — update QGuard Messaging"
+            ))),
+        }
+    }
+
+    /// The strongest combiner a peer's PUBLISHED suite says it can open.
+    ///
+    /// A suite with no declaration belongs to a build that predates the bound
+    /// combiner, and sealing to it with anything else would produce a message
+    /// that device can never read.
+    pub fn for_peer_suite(suite: Option<&AlgorithmSuite>) -> Self {
+        match suite {
+            Some(suite) if suite.kem_combiner == CURRENT_KEM_COMBINER => KemCombiner::BoundV2,
+            _ => KemCombiner::LegacyConcat,
+        }
+    }
+}
+
+/// Derive the hybrid shared key from both halves under `combiner`.
+fn combine_shared_secrets(
+    combiner: KemCombiner,
+    classical: &x25519_dalek::SharedSecret,
+    pq: &[u8],
+    ephemeral_x25519_public: &[u8; 32],
+    recipient_x25519_public: &[u8; 32],
+    mlkem_ciphertext: &[u8],
+    info: &[u8],
+) -> Result<[u8; 32]> {
+    match combiner {
+        KemCombiner::LegacyConcat => {
+            let mut combined = Vec::with_capacity(64);
+            combined.extend_from_slice(classical.as_bytes());
+            combined.extend_from_slice(pq);
+            let shared = derive_32(&combined, info);
+            combined.zeroize();
+            shared
+        }
+        KemCombiner::BoundV2 => {
+            if !classical.was_contributory() {
+                return Err(QGuardError::Crypto(
+                    "X25519 key agreement was non-contributory (low-order public key); refusing it"
+                        .to_string(),
+                ));
+            }
+            let mut ikm = Vec::with_capacity(64);
+            ikm.extend_from_slice(pq);
+            ikm.extend_from_slice(classical.as_bytes());
+            // Every transcript field is fixed-length, and the caller's `info`
+            // is closed off by a separator before them, so the context string
+            // cannot be made ambiguous by a crafted `info`.
+            let mut context = Vec::with_capacity(info.len() + 1 + CURRENT_KEM_COMBINER.len() + 96);
+            context.extend_from_slice(info);
+            context.push(0x1f);
+            context.extend_from_slice(CURRENT_KEM_COMBINER.as_bytes());
+            context.extend_from_slice(ephemeral_x25519_public);
+            context.extend_from_slice(recipient_x25519_public);
+            context.extend_from_slice(&sha3_256(mlkem_ciphertext));
+            let shared = derive_32(&ikm, &context);
+            ikm.zeroize();
+            shared
+        }
+    }
+}
+
+/// Encapsulate with the LEGACY combiner. Use [`encapsulate_with`] wherever the
+/// peer's capability is known; this stays for call sites that must remain
+/// readable by builds that predate the bound combiner.
 pub fn encapsulate(
     peer_x25519_public: &[u8],
     peer_mlkem_public: &[u8],
     info: &[u8],
+) -> Result<(HybridCiphertext, [u8; 32])> {
+    encapsulate_with(
+        peer_x25519_public,
+        peer_mlkem_public,
+        info,
+        KemCombiner::LegacyConcat,
+    )
+}
+
+/// Encapsulate with the transcript-bound combiner. For formats and peers that
+/// are known to understand it (new vault containers, devices advertising it).
+pub fn encapsulate_bound(
+    peer_x25519_public: &[u8],
+    peer_mlkem_public: &[u8],
+    info: &[u8],
+) -> Result<(HybridCiphertext, [u8; 32])> {
+    encapsulate_with(
+        peer_x25519_public,
+        peer_mlkem_public,
+        info,
+        KemCombiner::BoundV2,
+    )
+}
+
+pub fn encapsulate_with(
+    peer_x25519_public: &[u8],
+    peer_mlkem_public: &[u8],
+    info: &[u8],
+    combiner: KemCombiner,
 ) -> Result<(HybridCiphertext, [u8; 32])> {
     if peer_x25519_public.len() != 32 {
         return Err(QGuardError::InvalidInput(
@@ -97,7 +232,6 @@ pub fn encapsulate(
     let eph_public = X25519PublicKey::from(&eph_secret);
     let peer_public = X25519PublicKey::from(peer_x_arr);
     let classical_shared = eph_secret.diffie_hellman(&peer_public);
-    let mut classical = classical_shared.as_bytes().to_vec();
 
     // ML-KEM-1024 ONLY. The previous build chose its parameter set from the
     // LENGTH of the peer's public key and silently fell back to a weaker one,
@@ -115,16 +249,24 @@ pub fn encapsulate(
     let (pq_shared, pq_ciphertext_raw) = mlkem1024::encapsulate(&pq_public);
     let mut pq = mlkem1024::SharedSecret::as_bytes(&pq_shared).to_vec();
     let pq_ciphertext = mlkem1024::Ciphertext::as_bytes(&pq_ciphertext_raw).to_vec();
-    let suite = AlgorithmSuite::default();
+    // The ciphertext records the combiner it was ACTUALLY made with, which is
+    // not necessarily the newest one this build knows.
+    let suite = AlgorithmSuite {
+        kem_combiner: combiner.label().to_string(),
+        ..AlgorithmSuite::default()
+    };
 
-    let mut combined = Vec::with_capacity(64);
-    combined.extend_from_slice(&classical);
-    combined.extend_from_slice(&pq);
-    let shared = derive_32(&combined, info)?;
-
-    classical.zeroize();
+    let shared = combine_shared_secrets(
+        combiner,
+        &classical_shared,
+        &pq,
+        eph_public.as_bytes(),
+        &peer_x_arr,
+        &pq_ciphertext,
+        info,
+    );
     pq.zeroize();
-    combined.zeroize();
+    let shared = shared?;
 
     Ok((
         HybridCiphertext {
@@ -148,12 +290,16 @@ pub fn decapsulate(
         ));
     }
 
+    // Decided before any key is touched: an unknown combiner is refused, never
+    // guessed at.
+    let combiner = KemCombiner::from_label(&ciphertext.suite.kem_combiner)?;
+
     let our_secret = StaticSecret::from(*our_x25519_secret);
+    let our_public = X25519PublicKey::from(&our_secret);
     let mut peer_arr = [0u8; 32];
     peer_arr.copy_from_slice(&ciphertext.x25519_ephemeral_public);
     let peer_public = X25519PublicKey::from(peer_arr);
     let classical_shared = our_secret.diffie_hellman(&peer_public);
-    let mut classical = classical_shared.as_bytes().to_vec();
 
     let mut pq = decapsulate_pq_secret(
         our_mlkem_secret,
@@ -161,16 +307,17 @@ pub fn decapsulate(
         &ciphertext.suite,
     )?;
 
-    let mut combined = Vec::with_capacity(64);
-    combined.extend_from_slice(&classical);
-    combined.extend_from_slice(&pq);
-    let shared = derive_32(&combined, info)?;
-
-    classical.zeroize();
+    let shared = combine_shared_secrets(
+        combiner,
+        &classical_shared,
+        &pq,
+        &peer_arr,
+        our_public.as_bytes(),
+        &ciphertext.ml_kem_ciphertext,
+        info,
+    );
     pq.zeroize();
-    combined.zeroize();
-
-    Ok(shared)
+    shared
 }
 
 fn decapsulate_pq_secret(
@@ -228,6 +375,74 @@ mod tests {
         assert!(LocalKemKeypair::is_current_public_key(&bob.mlkem_public));
         assert!(LocalKemKeypair::is_current_secret_key(&bob.mlkem_secret));
         assert_eq!(alice_secret, bob_secret);
+    }
+
+    #[test]
+    fn legacy_encapsulation_stays_unlabelled_and_bound_encapsulation_says_so() {
+        let bob = LocalKemKeypair::generate();
+        // The legacy combiner must serialise exactly as it always has: no
+        // `kem_combiner` key at all, so builds that predate it see nothing new.
+        let (legacy, _) = encapsulate(&bob.x25519_public, &bob.mlkem_public, b"ctx").unwrap();
+        assert_eq!(legacy.suite.kem_combiner, "");
+        let json = serde_json::to_string(&legacy).unwrap();
+        assert!(!json.contains("kem_combiner"), "legacy ciphertext grew a field: {json}");
+
+        let (bound, _) = encapsulate_bound(&bob.x25519_public, &bob.mlkem_public, b"ctx").unwrap();
+        assert_eq!(bound.suite.kem_combiner, CURRENT_KEM_COMBINER);
+        // ...and a suite written before the field existed reads back as legacy.
+        let old: AlgorithmSuite = serde_json::from_str(
+            r#"{"classical_kex":"X25519","pq_kem":"ML-KEM-1024","kdf":"HKDF-SHA3-256",
+                "symmetric":"AES-256-GCM","classical_signature":"Ed25519",
+                "pq_signature":"ML-DSA-65","pq_kem_standard":"FIPS-203"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.kem_combiner, "");
+        assert_eq!(KemCombiner::for_peer_suite(Some(&old)), KemCombiner::LegacyConcat);
+        assert_eq!(KemCombiner::for_peer_suite(None), KemCombiner::LegacyConcat);
+        assert_eq!(
+            KemCombiner::for_peer_suite(Some(&AlgorithmSuite::default())),
+            KemCombiner::BoundV2
+        );
+    }
+
+    #[test]
+    fn bound_combiner_round_trips_and_is_tied_to_its_transcript() {
+        let bob = LocalKemKeypair::generate();
+        let (ct, alice_secret) =
+            encapsulate_bound(&bob.x25519_public, &bob.mlkem_public, b"bound").unwrap();
+        let bob_secret = decapsulate(&bob.x25519_secret, &bob.mlkem_secret, &ct, b"bound").unwrap();
+        assert_eq!(alice_secret, bob_secret);
+
+        // Different caller context -> different key.
+        let other_ctx = decapsulate(&bob.x25519_secret, &bob.mlkem_secret, &ct, b"other").unwrap();
+        assert_ne!(other_ctx, bob_secret);
+
+        // Relabelling the SAME ciphertext as legacy must not reproduce the key:
+        // the two combiners are domain separated, so a stripped label cannot
+        // quietly move a session onto the unbound derivation.
+        let mut stripped = ct.clone();
+        stripped.suite.kem_combiner.clear();
+        let downgraded =
+            decapsulate(&bob.x25519_secret, &bob.mlkem_secret, &stripped, b"bound").unwrap();
+        assert_ne!(downgraded, bob_secret);
+
+        // An unknown combiner is refused outright rather than guessed at.
+        let mut unknown = ct.clone();
+        unknown.suite.kem_combiner = "QGuard-HybridKEM-v9".to_string();
+        let err = decapsulate(&bob.x25519_secret, &bob.mlkem_secret, &unknown, b"bound").unwrap_err();
+        assert!(format!("{err:?}").contains("unsupported hybrid KEM combiner"), "got {err:?}");
+    }
+
+    #[test]
+    fn bound_combiner_refuses_a_low_order_x25519_key() {
+        // The all-zero point is low order: X25519 against it yields an all-zero
+        // "shared secret" that an attacker also knows. The legacy combiner let
+        // that pass (the ML-KEM half still protected the key); the bound one
+        // refuses to pretend the classical half contributed anything.
+        let bob = LocalKemKeypair::generate();
+        let low_order = [0u8; 32];
+        let err = encapsulate_bound(&low_order, &bob.mlkem_public, b"low").unwrap_err();
+        assert!(format!("{err:?}").contains("non-contributory"), "got {err:?}");
     }
 
     #[test]

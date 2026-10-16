@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 use crate::crypto::signatures::dual_sign;
 use crate::crypto::symmetric;
@@ -39,6 +40,7 @@ pub struct EncryptedMessageEnvelope {
     pub created_at: DateTime<Utc>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn encrypt_message(
     session: &mut RatchetSession,
     conversation_id: &str,
@@ -53,8 +55,51 @@ pub fn encrypt_message(
     plaintext: &[u8],
     signing: MessageSigningContext<'_>,
 ) -> Result<EncryptedMessageEnvelope> {
+    encrypt_message_with_key(
+        session,
+        conversation_id,
+        sender_user_id,
+        recipient_user_id,
+        sender_device_id,
+        recipient_device_id,
+        hybrid_ciphertext,
+        prekey_id,
+        prekey_kind,
+        kind,
+        plaintext,
+        signing,
+    )
+    .map(|(envelope, mut message_key)| {
+        message_key.zeroize();
+        envelope
+    })
+}
+
+/// Seal a message and also hand back the AES key it was sealed under.
+///
+/// The key is returned so the SENDER can record it in the message-key ledger
+/// for its own archive copy (see `crate::message_keys`): its own history then
+/// never depends on a prekey surviving. The caller owns the key and wipes it.
+#[allow(clippy::too_many_arguments)]
+pub fn encrypt_message_with_key(
+    session: &mut RatchetSession,
+    conversation_id: &str,
+    sender_user_id: &str,
+    recipient_user_id: &str,
+    sender_device_id: &str,
+    recipient_device_id: &str,
+    hybrid_ciphertext: HybridCiphertext,
+    prekey_id: &str,
+    prekey_kind: &str,
+    kind: MessageKind,
+    plaintext: &[u8],
+    signing: MessageSigningContext<'_>,
+) -> Result<(EncryptedMessageEnvelope, [u8; 32])> {
     let message_id = Uuid::new_v4().to_string();
     let message_key = session.next_send_key()?;
+    // The envelope's suite describes the encapsulation it actually carries
+    // (including which hybrid combiner), not this build's newest capability.
+    let suite = hybrid_ciphertext.suite.clone();
     let aad = message_aad(
         &message_id,
         conversation_id,
@@ -75,7 +120,12 @@ pub fn encrypt_message(
         recipient_device_id: recipient_device_id.to_string(),
         counter: message_key.counter,
         kind,
-        sealed_sender: true,
+        // Kept for wire compatibility only, and deliberately FALSE. This is not
+        // a sealed-sender design: the sender's user and device ids travel in
+        // the clear in this very envelope (and in its AAD), so the relay always
+        // knows who is talking to whom. Claiming otherwise on the wire was
+        // simply untrue; nothing reads the flag to make a decision.
+        sealed_sender: false,
         envelope,
         aad,
         hybrid_ciphertext,
@@ -87,21 +137,34 @@ pub fn encrypt_message(
         },
         sender_ed25519_public: signing.ed25519_public.to_vec(),
         sender_mldsa_public: signing.mldsa_public.to_vec(),
-        suite: AlgorithmSuite::default(),
+        suite,
         created_at: Utc::now(),
     };
     let signable = message_signable(&encrypted);
     encrypted.message_signature =
         dual_sign(signing.ed25519_secret, signing.mldsa_secret, &signable)?;
-    Ok(encrypted)
+    Ok((encrypted, message_key.key))
 }
 
 pub fn decrypt_message(
     session: &mut RatchetSession,
     envelope: &EncryptedMessageEnvelope,
 ) -> Result<Vec<u8>> {
+    decrypt_message_with_key(session, envelope).map(|(plaintext, mut message_key)| {
+        message_key.zeroize();
+        plaintext
+    })
+}
+
+/// Open a message and also hand back the AES key that opened it, so the
+/// receiver can record it in the message-key ledger. The caller wipes the key.
+pub fn decrypt_message_with_key(
+    session: &mut RatchetSession,
+    envelope: &EncryptedMessageEnvelope,
+) -> Result<(Vec<u8>, [u8; 32])> {
     let key = session.receive_key(&envelope.message_id, envelope.counter)?;
-    symmetric::decrypt(&key.key, &envelope.envelope, &envelope.aad)
+    let plaintext = symmetric::decrypt(&key.key, &envelope.envelope, &envelope.aad)?;
+    Ok((plaintext, key.key))
 }
 
 pub fn message_aad(

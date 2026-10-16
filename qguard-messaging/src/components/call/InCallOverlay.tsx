@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Activity, BadgeCheck, Check, Copy, Maximize2, Mic, MicOff, Move, PhoneOff, ShieldCheck, Video, VideoOff } from "lucide-react";
+import { Activity, AlertTriangle, BadgeCheck, Check, Copy, Maximize2, Mic, MicOff, Move, PhoneOff, ShieldCheck, Video, VideoOff } from "lucide-react";
+import { callSecurityNeedsAttention, describeCallSecurity } from "@/lib/call-security";
 import type { CallState } from "@/lib/call-state";
 import { qualityLabel, type CallQuality } from "@/lib/call-quality";
 import type { CallStatsSample } from "@/lib/call-stats";
@@ -189,6 +190,10 @@ export function InCallOverlay(props: {
     }
   };
 
+  // What the core established for this call. Empty until media connects.
+  const securityLines = describeCallSecurity(props.state, props.peerName);
+  const securityAttention = callSecurityNeedsAttention(securityLines);
+
   const phaseLabel = props.reconnecting ? "Reconnecting…"
     : props.state.phase === "connected" ? "Connected"
     : props.state.phase === "connecting" ? "Connecting..."
@@ -229,11 +234,17 @@ export function InCallOverlay(props: {
           <button
             type="button"
             onClick={() => setShowSas((v) => !v)}
-            title={sasAcknowledged ? "Safety number verified — click to view again" : "Show the safety number to verify this call"}
-            className={`flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold transition ${sasAcknowledged ? "bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/40" : "bg-white/10 text-emerald-300"}`}
+            title={securityAttention
+              ? "This call is encrypted, but something about it is weaker than it could be — click for details"
+              : sasAcknowledged ? "Safety number verified — click to view again" : "Show the safety number to verify this call"}
+            className={`flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold transition ${
+              securityAttention
+                ? "bg-amber-500/20 text-amber-200 ring-1 ring-amber-300/40"
+                : sasAcknowledged ? "bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/40" : "bg-white/10 text-emerald-300"
+            }`}
           >
-            {sasAcknowledged ? <BadgeCheck size={14} /> : <ShieldCheck size={14} />}
-            {sasAcknowledged ? "Verified" : "Quantum-encrypted"}
+            {securityAttention ? <AlertTriangle size={14} /> : sasAcknowledged ? <BadgeCheck size={14} /> : <ShieldCheck size={14} />}
+            {securityAttention ? "Encrypted — check details" : sasAcknowledged ? "Verified" : "Quantum-encrypted"}
           </button>
         </div>
       </div>
@@ -282,6 +293,18 @@ export function InCallOverlay(props: {
             <p className="mt-2 text-[11px] leading-relaxed text-ink-600">
               Confirm this matches {props.peerName}'s screen — read it to each other aloud, or copy yours and paste the number they send you below. It must match exactly.
             </p>
+            {securityLines.length > 0 && (
+              <ul className="mt-3 space-y-1.5 border-t border-line pt-3 text-left text-[11px] leading-relaxed">
+                {securityLines.map((line) => (
+                  <li key={line.text} className={`flex items-start gap-1.5 ${line.ok ? "text-ink-600" : "font-semibold text-amber-700"}`}>
+                    {line.ok
+                      ? <Check className="mt-0.5 shrink-0 text-emerald-600" size={12} />
+                      : <AlertTriangle className="mt-0.5 shrink-0 text-amber-600" size={12} />}
+                    <span>{line.text}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
             {autoReveal ? (
               <>
                 <input

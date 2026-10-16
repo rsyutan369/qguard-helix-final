@@ -36,6 +36,17 @@ pub const LEGACY_PQ_KEM_PRE_FIPS: &str = "Kyber-1024 (pre-FIPS-203)";
 /// identifiable rather than merely indistinguishable.
 pub const CURRENT_PQ_KEM_STANDARD: &str = "FIPS-203";
 
+/// The transcript-bound hybrid combiner (see `hybrid_kex::KemCombiner`).
+///
+/// It plays two roles depending on where the suite appears:
+///   * in a device's PUBLISHED suite it is a capability — "I can open
+///     ciphertexts made with this combiner (and the legacy one)";
+///   * in a `HybridCiphertext` it names the combiner that ciphertext was
+///     actually made with.
+/// Absent/empty means the legacy concatenation combiner, which is what every
+/// build before this field existed produced and expected.
+pub const CURRENT_KEM_COMBINER: &str = "QGuard-HybridKEM-v2";
+
 /// Digital signature used by the messaging identity (shared with other devices).
 pub const MESSAGING_PQ_SIGNATURE: &str = "ML-DSA-65";
 /// High-security signature used by the Quantum Vault (`.qvault` v3) only. Kept
@@ -59,6 +70,13 @@ pub struct AlgorithmSuite {
     /// `#[serde(default)]` keeps every already-persisted envelope decodable.
     #[serde(default)]
     pub pq_kem_standard: String,
+    /// Hybrid-KEM combiner — see `CURRENT_KEM_COMBINER` for its two meanings.
+    ///
+    /// Skipped when empty so a legacy-combiner ciphertext serialises to exactly
+    /// the bytes it always did, and defaulted so every suite written before the
+    /// field existed reads back as "legacy".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kem_combiner: String,
 }
 
 impl Default for AlgorithmSuite {
@@ -71,6 +89,7 @@ impl Default for AlgorithmSuite {
             classical_signature: "Ed25519".to_string(),
             pq_signature: "ML-DSA-65".to_string(),
             pq_kem_standard: CURRENT_PQ_KEM_STANDARD.to_string(),
+            kem_combiner: CURRENT_KEM_COMBINER.to_string(),
         }
     }
 }

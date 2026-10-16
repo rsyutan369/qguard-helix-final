@@ -30,7 +30,20 @@ import {
 } from "@/lib/perf-timeline";
 import { deriveReadState } from "@/lib/chat-read-state";
 import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
+import {
+  approveDevicePins,
+  assessDevicePins,
+  devicePinInputKey,
+  isDeliverableStanding,
+  mergeVerdicts,
+  pendingDeviceReviews,
+  pinsUnavailable,
+  type DevicePinIndex,
+} from "@/lib/device-pins";
+import { ENVELOPE_INDEX_COLUMNS, EnvelopeBodyCache, envelopeIndexEntry, planBodyFetch } from "@/lib/envelope-history";
+import { attributedSenderUserId, describeRejectedEnvelopes, screenEnvelopeRows } from "@/lib/envelope-integrity";
 import { parseMessageAad } from "@/lib/message-envelope-identity";
+import { asRecord, hybridCiphertextFromSealed, numberArray, prekeyReferenceFromSealed } from "@/lib/message-envelope-rows";
 import { guardNativeFileInput } from "@/lib/native-dialog-guard";
 import { describeSavedFile, saveFileToDevice } from "@/lib/save-file";
 import { supabase } from "@/lib/supabase";
@@ -118,7 +131,6 @@ interface DecryptedChatEnvelope {
   plaintext: string;
   /** True only when `sender_verification` is `registered_device`. */
   authenticated: boolean;
-  replay_protected: boolean;
   /**
    * How the backend proved who sent this message.
    *
@@ -127,7 +139,12 @@ interface DecryptedChatEnvelope {
    * `unverified_device` — the signature is self-consistent, but no registered
    * identity was available to anchor it to, so the sender is unproven.
    */
-  sender_verification: "registered_device" | "unverified_device";
+  /**
+   * `unapproved_device` — the keys match the directory's row for the sender
+   * device, but that device was added after this device first recorded the
+   * sender's devices and has not been approved here. Not authenticated.
+   */
+  sender_verification: "registered_device" | "unverified_device" | "unapproved_device";
 }
 
 /**
@@ -178,6 +195,8 @@ interface ChatMessage {
   threat: ThreatAssessment;
   status: "decrypted" | "sealed" | "failed" | "retired";
   authenticated: boolean;
+  /** Unverified specifically because the sending device awaits approval here. */
+  sender_unapproved?: boolean;
   replay_protected: boolean;
   created_at: string;
   error: string | null;
@@ -326,7 +345,14 @@ function emptyThreat(): ThreatAssessment {
 }
 
 const maxChatAttachmentBytes = 25 * 1024 * 1024;
-const chatProtectionIterations = 210_000;
+// The conversation gate is a privacy SCREEN, not encryption: messages are
+// already end-to-end encrypted, and the workspace lock (Argon2id, in the Rust
+// core) is what protects them at rest. Its verifier lives in the WebView, whose
+// crypto offers PBKDF2 but neither Argon2id nor SHA-3, so it uses
+// PBKDF2-HMAC-SHA-256 at the iteration count OWASP currently recommends for it.
+const chatProtectionIterations = 600_000;
+// A stored verifier weaker than this was not written by any released build.
+const chatProtectionMinIterations = 100_000;
 const protectedConversationUnlockMs = 5 * 60 * 1000;
 
 function formatBytes(bytes: number): string {
@@ -376,6 +402,7 @@ function readChatProtectionConfig(userId: string): ChatProtectionConfig | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<ChatProtectionConfig>;
     if (!parsed.salt_b64 || !parsed.verifier_b64 || !parsed.iterations) return null;
+    if (!Number.isInteger(parsed.iterations) || parsed.iterations < chatProtectionMinIterations) return null;
     return {
       salt_b64: parsed.salt_b64,
       verifier_b64: parsed.verifier_b64,
@@ -726,6 +753,18 @@ const DECRYPT_TIMEOUT_MS = 9_000;
 // single long wait ever could.
 const HISTORY_FETCH_TIMEOUT_MS = 6_000;
 
+// Per-attempt deadline for one chunk of envelope bodies. A chunk is about
+// 0.7 MB (see `envelope-history.ts`), so it gets longer than the listing: a
+// deadline shorter than the link needs to carry the chunk fails every attempt.
+const HISTORY_BODY_TIMEOUT_MS = 15_000;
+
+// Body chunks requested at once after the first. Kept low: the WebView shares
+// its connections with the realtime socket and the dashboard refresh.
+const HISTORY_BODY_PARALLEL_REQUESTS = 3;
+
+// Everything the verifier and the decrypt path read from an envelope row.
+const ENVELOPE_BODY_COLUMNS = "id,conversation_id,client_message_id,parent_client_message_id,sender_user_id,sender_device_id,recipient_user_id,recipient_device_id,message_kind,sealed_sender_envelope,ciphertext,nonce,auth_tag,aad,ratchet_counter,suite,lifecycle,verification_state,threat_result,deleted_at,created_at";
+
 // Hard ceiling on how long the "Loading encrypted history..." gate may be shown
 // before the UI must say something actionable instead.
 //
@@ -768,14 +807,6 @@ function mapDeviceTrustState(value: string): TrustedDevice["trust_state"] {
   return "Suspicious";
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function numberArray(value: unknown): number[] {
-  return Array.isArray(value) ? value.map((item) => Number(item) & 0xff) : [];
-}
-
 function normalizeSignature(value: unknown): DualSignature {
   const signature = asRecord(value);
   return {
@@ -795,10 +826,13 @@ function envelopeString(row: MessageEnvelopeRow, key: string): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
-function originalSenderUserId(row: MessageEnvelopeRow): string {
-  return envelopeString(row, "sync_original_sender_user_id")
-    ?? envelopeString(row, "original_sender_user_id")
-    ?? row.sender_user_id;
+/**
+ * Whose message this is. Decided from what the sender SIGNED; the unsigned
+ * author note is believed only on an envelope this account's own devices
+ * re-sealed for sync. See `attributedSenderUserId`.
+ */
+function originalSenderUserId(row: MessageEnvelopeRow, localUserId: string): string {
+  return attributedSenderUserId(row, localUserId);
 }
 
 function originalSenderDeviceId(row: MessageEnvelopeRow): string | null {
@@ -811,9 +845,24 @@ function envelopeControlType(row: MessageEnvelopeRow): string | null {
   return envelopeString(row, "control_type");
 }
 
+/**
+ * The envelope id a realtime change says was deleted — soft (an UPDATE that
+ * sets `deleted_at`) or hard (a DELETE) — or null for any other change.
+ */
+function deletedEnvelopeId(payload: { eventType?: string; new?: unknown; old?: unknown }): string | null {
+  if (payload.eventType === "DELETE") {
+    const id = asRecord(payload.old).id;
+    return id ? String(id) : null;
+  }
+  if (payload.eventType === "UPDATE") {
+    const next = asRecord(payload.new);
+    return next.deleted_at && next.id ? String(next.id) : null;
+  }
+  return null;
+}
+
 function buildTauriEnvelope(row: MessageEnvelopeRow): EncryptedMessageEnvelope {
   const sealed = row.sealed_sender_envelope;
-  const hybrid = asRecord(sealed.hybrid_ciphertext);
   // The identity fields the SENDER signed, taken from the AAD rather than from
   // the row's columns. `sender_device_id` / `recipient_device_id` are FK columns
   // declared ON DELETE SET NULL, so retiring a device nulls them in messages
@@ -838,13 +887,8 @@ function buildTauriEnvelope(row: MessageEnvelopeRow): EncryptedMessageEnvelope {
       tag: byteaToBytes(row.auth_tag),
     },
     aad: byteaToBytes(row.aad),
-    hybrid_ciphertext: {
-      x25519_ephemeral_public: numberArray(hybrid.x25519_ephemeral_public),
-      ml_kem_ciphertext: numberArray(hybrid.ml_kem_ciphertext),
-      suite: asRecord(hybrid.suite),
-    },
-    prekey_id: String(sealed.prekey_id ?? ""),
-    prekey_kind: String(sealed.prekey_kind ?? "signed_prekey"),
+    hybrid_ciphertext: hybridCiphertextFromSealed(sealed),
+    ...prekeyReferenceFromSealed(sealed),
     message_signature: normalizeSignature(sealed.message_signature),
     sender_ed25519_public: numberArray(sealed.sender_ed25519_public),
     sender_mldsa_public: numberArray(sealed.sender_mldsa_public),
@@ -914,8 +958,18 @@ function selectDeliveryDevicesForUsers(
   userIds: string[],
   localDeviceId: string | null = null,
   policy: DeliverySelectionPolicy = MESSAGE_DELIVERY_POLICY,
+  // The device-pin gate (lib/device-pins.ts): a device that appeared after
+  // first use and has not been approved, or whose keys changed, is never
+  // addressed. The Rust core refuses such a device too; filtering here keeps a
+  // send from failing on it.
+  accept: (device: TrustedDevice) => boolean = () => true,
 ): TrustedDevice[] {
-  return selectDeliveryDevices(devices.filter(isSendableDevice), userIds, localDeviceId, policy);
+  return selectDeliveryDevices(devices.filter((device) => isSendableDevice(device) && accept(device)), userIds, localDeviceId, policy);
+}
+
+/** The pin gate for one judged index. */
+function pinGate(index: DevicePinIndex): (device: TrustedDevice) => boolean {
+  return (device) => isDeliverableStanding(index.get(device.device_id)?.standing);
 }
 
 function envelopePrekeyId(row: MessageEnvelopeRow): string | null {
@@ -1201,7 +1255,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   // Newest envelope `created_at` the open thread has loaded, used by the idle
   // catch-up probe to avoid reloading when nothing new exists.
   const newestEnvelopeAtRef = useRef<string>("");
+  // Envelope bodies already downloaded for the open thread, so a reload fetches
+  // only the rows it does not hold. Holds one conversation at a time.
+  const envelopeBodyCacheRef = useRef(new EnvelopeBodyCache<MessageEnvelopeRow>());
   const syncedEnvelopeTargetsRef = useRef<Set<string>>(new Set());
+  // Refused envelope rows already reported, so a reload does not report the
+  // same replayed copy again every few seconds.
+  const reportedRejectedRowsRef = useRef<Set<string>>(new Set());
   const searchRequestRef = useRef(0);
   const messageLoadSeqRef = useRef(0);
   const threatTelemetryRef = useRef<Set<string>>(new Set());
@@ -1394,9 +1454,45 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     (): Promise<void> => primeSenderIdentities(knownDeviceIdsRef.current).catch(() => undefined),
     [],
   );
+  // ---- Device pins -------------------------------------------------------
+  // What the core has recorded about each listed device. Re-asked whenever a
+  // device appears, disappears or changes a key — not on every refresh.
+  const [pinIndex, setPinIndex] = useState<DevicePinIndex>(() => new Map());
+  const pinIndexRef = useRef<DevicePinIndex>(pinIndex);
+  pinIndexRef.current = pinIndex;
+  const refreshDevicePins = useCallback(async (list: TrustedDevice[]): Promise<DevicePinIndex> => {
+    const assessment = await assessDevicePins(list);
+    if (!assessment) return pinIndexRef.current;
+    const next = mergeVerdicts(pinIndexRef.current, assessment);
+    pinIndexRef.current = next;
+    setPinIndex(next);
+    return next;
+  }, []);
+  const devicesRef = useRef<TrustedDevice[]>(devices);
+  devicesRef.current = devices;
+  const devicePinKey = useMemo(() => devicePinInputKey(devices), [devices]);
+  useEffect(() => {
+    void refreshDevicePins(devicesRef.current);
+  }, [devicePinKey, refreshDevicePins]);
+  const acceptsDelivery = useMemo(() => pinGate(pinIndex), [pinIndex]);
+  // Devices of the people in this conversation (and of this account) that the
+  // user has to decide about before anything is sent to them.
+  const deviceReviews = useMemo(
+    () => pendingDeviceReviews(devices, pinIndex, [...activeRecipientUserIds, userId], userId),
+    [activeRecipientUserIds, devices, pinIndex, userId],
+  );
+  const devicePinsUnavailable = useMemo(() => pinsUnavailable(pinIndex), [pinIndex]);
+  // The contact's devices that could be delivered to the moment the user
+  // approves them. Counted separately because the remedy is on THIS screen.
+  const recipientDevicesAwaitingApproval = useMemo(
+    () => deviceReviews.filter((review) => review.owner === "contact" && review.approvable && hasSendableKeyBundle(review.device)).length,
+    [deviceReviews],
+  );
+  const [approvingDeviceId, setApprovingDeviceId] = useState<string | null>(null);
+
   const sendableRecipientDevices = useMemo(
-    () => selectDeliveryDevicesForUsers(recipientDevices, activeRecipientUserIds, localDeviceId),
-    [activeRecipientUserIds, localDeviceId, recipientDevices],
+    () => selectDeliveryDevicesForUsers(recipientDevices, activeRecipientUserIds, localDeviceId, MESSAGE_DELIVERY_POLICY, acceptsDelivery),
+    [acceptsDelivery, activeRecipientUserIds, localDeviceId, recipientDevices],
   );
   const recipientDevicesMissingPrekeys = activeRecipientUserIds.length > 0 && sendableRecipientDevices.length === 0 && recipientDevices.length > 0;
   const recipientDevicesReady = sendableRecipientDevices.length > 0;
@@ -1424,8 +1520,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   // merely away. Both come from the same selector, so a device that can receive
   // a message can always be rung.
   const callableRecipientDevices = useMemo(
-    () => selectDeliveryDevicesForUsers(recipientDevices, activeRecipientUserIds, localDeviceId, CALL_RING_POLICY),
-    [activeRecipientUserIds, localDeviceId, recipientDevices],
+    () => selectDeliveryDevicesForUsers(recipientDevices, activeRecipientUserIds, localDeviceId, CALL_RING_POLICY, acceptsDelivery),
+    [acceptsDelivery, activeRecipientUserIds, localDeviceId, recipientDevices],
   );
 
   const callPeer = useMemo(() => {
@@ -1562,11 +1658,14 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     else if (activeConversation && activeRecipientUserIds.length === 0) setStatus("Open a contact chat before sending");
     else if (activeConversation && recipientDevices.length === 0) setStatus("Add a trusted contact device");
     else if (activeConversation && !recipientDevicesReady && recipientDevicesOnStaleBuild.length > 0) setStatus("Recipient device is on an older build - it must update before messages can be delivered");
+    // Before "waiting for prekeys": a device held back for the user's decision
+    // has its prekeys, and waiting will never change anything.
+    else if (activeConversation && !recipientDevicesReady && recipientDevicesAwaitingApproval > 0) setStatus("Approve your contact's new device to send");
     else if (activeConversation && !recipientDevicesReady) setStatus("Waiting for recipient PQC prekeys");
     else if (recipientDevicesOnStaleBuild.length > 0) setStatus("Ready - some recipient devices are on an older build and are not being delivered to");
     else if (recipientDevicesMissingPrekeys) setStatus("Ready - some trusted devices need PQC prekeys");
     else setStatus("Ready");
-  }, [activeConversation, activeRecipientUserIds.length, currentDevice, localDeviceId, localSignedPrekeyId, myDevices.length, rawLocalDevice, recipientDevices.length, recipientDevicesMissingPrekeys, recipientDevicesOnStaleBuild.length, recipientDevicesReady]);
+  }, [activeConversation, activeRecipientUserIds.length, currentDevice, localDeviceId, localSignedPrekeyId, myDevices.length, rawLocalDevice, recipientDevices.length, recipientDevicesAwaitingApproval, recipientDevicesMissingPrekeys, recipientDevicesOnStaleBuild.length, recipientDevicesReady]);
 
   useEffect(() => {
     attachmentPreviewUrlsRef.current = attachmentPreviewUrls;
@@ -1738,13 +1837,19 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       const participantUserIds = Array.from(new Set([
         userId,
         ...activeConversation.member_user_ids,
-        originalSenderUserId(sourceRow),
+        originalSenderUserId(sourceRow, userId),
         sourceRow.recipient_user_id,
       ].filter(Boolean)));
+      // History is only ever re-sealed to devices this device has accepted.
+      // This path fills in ANY listed device that lacks a copy, so without the
+      // gate a device the directory added would be handed the whole thread.
+      const participantCandidates = await loadTrustedDevicesForUsers(participantUserIds);
       const participantDevices = selectDeliveryDevicesForUsers(
-        await loadTrustedDevicesForUsers(participantUserIds),
+        participantCandidates,
         participantUserIds,
         localDeviceId,
+        MESSAGE_DELIVERY_POLICY,
+        pinGate(await refreshDevicePins(participantCandidates)),
       );
       const existingTargets = new Set(
         orderedRows
@@ -1828,7 +1933,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             control_type: envelopeControlType(sourceRow),
             local_archive: targetDevice.user_id === userId,
             synced_from_envelope_id: sourceRow.id,
-            sync_original_sender_user_id: originalSenderUserId(sourceRow),
+            sync_original_sender_user_id: originalSenderUserId(sourceRow, userId),
             sync_original_sender_device_id: originalSenderDeviceId(sourceRow),
             sync_rewrapped_by_user_id: userId,
             sync_rewrapped_by_device_id: currentDevice.device_id,
@@ -1913,13 +2018,41 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     onPartial?: (messages: ChatMessage[]) => void,
     timeline?: Timeline,
   ): Promise<ChatMessage[]> {
+    // Before anything is decrypted: every row must sit where its envelope was
+    // signed to be. A genuine envelope copied into a new row (a replay), or
+    // into another conversation, verifies perfectly on its own — only its
+    // position gives it away. Refused rows are never shown.
+    const screening = screenEnvelopeRows(rows.filter((row) => !row.deleted_at));
+    const newlyRefused = screening.rejected.filter(({ row }) => !reportedRejectedRowsRef.current.has(row.id));
+    if (newlyRefused.length > 0) {
+      newlyRefused.forEach(({ row }) => reportedRejectedRowsRef.current.add(row.id));
+      console.warn(
+        "[secure-chat] Ignored envelope rows that do not match what their sender signed:",
+        newlyRefused.map(({ row, reason }) => ({ id: row.id, reason })),
+      );
+      setMessageAction(describeRejectedEnvelopes(screening.rejected.length));
+      void recordCryptoTelemetry({
+        userId,
+        deviceId: currentDevice?.device_id ?? null,
+        scope: "message",
+        stage: "message_integrity_rejected",
+        detail: "Envelope rows refused: they do not match the identity their sender signed",
+        progress: 0,
+        status: "failed",
+        metadata: {
+          conversation_id: rows[0]?.conversation_id ?? null,
+          refused: newlyRefused.length,
+          envelope_ids: newlyRefused.map(({ row }) => row.id).join(","),
+          reasons: Array.from(new Set(newlyRefused.map(({ reason }) => reason))).join(","),
+        },
+      }).catch(() => undefined);
+    }
+
     const groups = new Map<string, MessageEnvelopeRow[]>();
-    rows
-      .filter((row) => !row.deleted_at)
-      .forEach((row) => {
-        const groupId = messageGroupId(row);
-        groups.set(groupId, [...(groups.get(groupId) ?? []), row]);
-      });
+    screening.accepted.forEach((row) => {
+      const groupId = messageGroupId(row);
+      groups.set(groupId, [...(groups.get(groupId) ?? []), row]);
+    });
 
     const hydrated: ChatMessage[] = [];
     const controls: Array<SecureControlMessage & { sender_user_id: string; created_at: string }> = [];
@@ -1940,7 +2073,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     // then primed, upgrades the badges.
     await Promise.race([
       primeSenderIdentities(
-        rows.filter((row) => !row.deleted_at).map((row) => buildTauriEnvelope(row).sender_device_id),
+        screening.accepted.map((row) => buildTauriEnvelope(row).sender_device_id),
       ).catch(() => undefined),
       new Promise((resolve) => window.setTimeout(resolve, SENDER_IDENTITY_PRIME_BUDGET_MS)),
     ]);
@@ -1989,7 +2122,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         });
       const userRow = candidateRows[0] ?? null;
       const displayRow = exactLocalRow ?? userRow ?? orderedRows[0];
-      const isMine = originalSenderUserId(displayRow) === userId;
+      const isMine = originalSenderUserId(displayRow, userId) === userId;
       const state = userStates.get(groupId);
       const cachedControl = decryptedControlCacheRef.current.get(groupId);
       if (cachedControl) {
@@ -2036,7 +2169,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             }).catch(() => undefined);
           }
           const decrypted = await decryptedPromise;
-          const localRowSenderUserId = originalSenderUserId(localRow);
+          const localRowSenderUserId = originalSenderUserId(localRow, userId);
           const localRowIsMine = localRowSenderUserId === userId;
           const control = parseSecureControl(decrypted.plaintext);
           if (control) {
@@ -2084,7 +2217,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             threat,
             status: "decrypted",
             authenticated: decrypted.authenticated,
-            replay_protected: decrypted.replay_protected,
+            sender_unapproved: decrypted.sender_verification === "unapproved_device",
+            // Checked, not assumed: this row's id and conversation are the ones
+            // the sender signed, so it is not a copy of an older envelope.
+            replay_protected: screening.positionVerified.has(localRow.id),
             created_at: localRow.created_at,
             error: null,
             can_delete: localRowIsMine,
@@ -2120,7 +2256,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         }
         if (handledGroup) return;
         const failedRow = decryptRows[0];
-        const failedRowSenderUserId = originalSenderUserId(failedRow);
+        const failedRowSenderUserId = originalSenderUserId(failedRow, userId);
         const retiredKey = Boolean(lastDecryptError && isRetiredKeyError(lastDecryptError));
           hydrated.push({
             id: failedRow.id,
@@ -2164,7 +2300,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           client_message_id: groupId,
           row_ids: orderedRows.map((row) => row.id),
           conversation_id: userRow.conversation_id,
-          sender_user_id: originalSenderUserId(userRow),
+          sender_user_id: originalSenderUserId(userRow, userId),
           recipient_user_id: userRow.recipient_user_id,
           kind: userRow.message_kind,
           plaintext: messageKindLabel(userRow.message_kind),
@@ -2402,17 +2538,22 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
     try {
       markTimeline(timeline, HISTORY_STAGES.fetchStart, performance.now());
+      const bodyCache = envelopeBodyCacheRef.current;
+      bodyCache.bind(conversationForLoad);
+      // The listing: which envelopes exist, and whom each is sealed to. A few
+      // kilobytes, so it stays cheap on every realtime reload. The bodies are
+      // fetched below, and only the ones this session does not hold yet.
       const [{ data, error }, statesResult] = await Promise.all([
         withFetchRetry(() => queryWithDeadline((signal) => supabase
           .from("messaging_message_envelopes")
-          .select("id,conversation_id,client_message_id,parent_client_message_id,sender_user_id,sender_device_id,recipient_user_id,recipient_device_id,message_kind,sealed_sender_envelope,ciphertext,nonce,auth_tag,aad,ratchet_counter,suite,lifecycle,verification_state,threat_result,deleted_at,created_at")
+          .select(ENVELOPE_INDEX_COLUMNS)
           .eq("conversation_id", conversationForLoad)
           .is("deleted_at", null)
           // Newest 250 — ascending+limit returned the OLDEST page, so long
           // conversations could never even see their recent messages.
           .order("created_at", { ascending: false })
           .limit(250)
-          .abortSignal(signal), HISTORY_FETCH_TIMEOUT_MS, "encrypted history fetch")),
+          .abortSignal(signal), HISTORY_FETCH_TIMEOUT_MS, "encrypted history listing")),
         withFetchRetry(() => queryWithDeadline((signal) => supabase
           .from("messaging_message_user_states")
           .select("client_message_id,first_read_at,hidden_at,verification_state,threat_score,threat_flags")
@@ -2424,42 +2565,41 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           // block it.
           .catch((stateError) => ({ data: null, error: stateError })),
       ]);
-      markTimeline(timeline, HISTORY_STAGES.fetchComplete, performance.now());
       if (error) throw error;
-      await identityPrewarm;
+      const index = ((data ?? []) as unknown as Array<Record<string, unknown>>).map(envelopeIndexEntry);
 
-      const rows = ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
-        id: String(row.id),
-        conversation_id: String(row.conversation_id),
-        client_message_id: row.client_message_id ? String(row.client_message_id) : null,
-        parent_client_message_id: row.parent_client_message_id ? String(row.parent_client_message_id) : null,
-        sender_user_id: String(row.sender_user_id),
-        sender_device_id: row.sender_device_id ? String(row.sender_device_id) : null,
-        recipient_user_id: String(row.recipient_user_id),
-        recipient_device_id: row.recipient_device_id ? String(row.recipient_device_id) : null,
-        message_kind: String(row.message_kind ?? "text"),
-        sealed_sender_envelope: asRecord(row.sealed_sender_envelope),
-        ciphertext: row.ciphertext,
-        nonce: row.nonce,
-        auth_tag: row.auth_tag,
-        aad: row.aad,
-        ratchet_counter: Number(row.ratchet_counter ?? 0),
-        suite: asRecord(row.suite),
-        lifecycle: asRecord(row.lifecycle),
-        verification_state: String(row.verification_state ?? "pending") as MessageEnvelopeRow["verification_state"],
-        threat_result: asRecord(row.threat_result),
-        deleted_at: row.deleted_at ? String(row.deleted_at) : null,
-        created_at: String(row.created_at),
-      } satisfies MessageEnvelopeRow));
-      // Watermark for the idle catch-up probe: the newest envelope this load
-      // actually saw. The probe compares against it so the 250-row reload only
-      // runs when the server genuinely has something newer.
-      if (conversationForLoad === activeConversationIdRef.current) {
-        newestEnvelopeAtRef.current = rows.reduce(
-          (newest, row) => (row.created_at > newest ? row.created_at : newest),
-          "",
-        );
-      }
+      const fetchBodies = async (ids: string[]): Promise<void> => {
+        const { data: bodyData, error: bodyError } = await withFetchRetry(() => queryWithDeadline((signal) => supabase
+          .from("messaging_message_envelopes")
+          .select(ENVELOPE_BODY_COLUMNS)
+          .in("id", ids)
+          .abortSignal(signal), HISTORY_BODY_TIMEOUT_MS, "encrypted history fetch"));
+        if (bodyError) throw bodyError;
+        bodyCache.store(conversationForLoad, ((bodyData ?? []) as unknown as Array<Record<string, unknown>>).map((row) => ({
+          id: String(row.id),
+          conversation_id: String(row.conversation_id),
+          client_message_id: row.client_message_id ? String(row.client_message_id) : null,
+          parent_client_message_id: row.parent_client_message_id ? String(row.parent_client_message_id) : null,
+          sender_user_id: String(row.sender_user_id),
+          sender_device_id: row.sender_device_id ? String(row.sender_device_id) : null,
+          recipient_user_id: String(row.recipient_user_id),
+          recipient_device_id: row.recipient_device_id ? String(row.recipient_device_id) : null,
+          message_kind: String(row.message_kind ?? "text"),
+          sealed_sender_envelope: asRecord(row.sealed_sender_envelope),
+          ciphertext: row.ciphertext,
+          nonce: row.nonce,
+          auth_tag: row.auth_tag,
+          aad: row.aad,
+          ratchet_counter: Number(row.ratchet_counter ?? 0),
+          suite: asRecord(row.suite),
+          lifecycle: asRecord(row.lifecycle),
+          verification_state: String(row.verification_state ?? "pending") as MessageEnvelopeRow["verification_state"],
+          threat_result: asRecord(row.threat_result),
+          deleted_at: row.deleted_at ? String(row.deleted_at) : null,
+          created_at: String(row.created_at),
+        } satisfies MessageEnvelopeRow)));
+      };
+
       const stateRows = statesResult.error ? [] : (statesResult.data ?? []) as Array<Record<string, unknown>>;
       const userStates = new Map(stateRows.map((row) => [String(row.client_message_id), {
         client_message_id: String(row.client_message_id),
@@ -2472,12 +2612,66 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       // Progressive render: each decrypted chunk flushes to the screen
       // immediately (newest messages first) instead of holding the whole
       // conversation behind one long "Loading encrypted history..." gate.
-      const hydrated = await hydrateMessageRows(rows, userStates, (partial) => {
+      const hydrateHeld = () => hydrateMessageRows(bodyCache.resolve(conversationForLoad, index), userStates, (partial) => {
         if (messageLoadSeqRef.current !== loadSeq) return;
         setChatMessages(partial);
         setMessagesLoading(false);
         markTimeline(timeline, HISTORY_STAGES.rendered, performance.now());
       }, timeline);
+
+      // Bodies still to download: this device's copies first, then in small
+      // parallel groups. The first chunk alone is enough to paint, so the
+      // thread appears after one small request instead of after all of them.
+      const pendingChunks = planBodyFetch(
+        index,
+        (id) => bodyCache.has(id),
+        { userId, deviceId: localDeviceId ?? currentDevice?.device_id ?? null },
+      );
+      const stages: string[][][] = pendingChunks.length > 0 ? [[pendingChunks[0]]] : [];
+      for (let start = 1; start < pendingChunks.length; start += HISTORY_BODY_PARALLEL_REQUESTS) {
+        stages.push(pendingChunks.slice(start, start + HISTORY_BODY_PARALLEL_REQUESTS));
+      }
+      let bodyFetchError: unknown = null;
+      for (let stage = 0; stage < stages.length; stage += 1) {
+        const settled = await Promise.allSettled(stages[stage].map(fetchBodies));
+        if (stage === 0) markTimeline(timeline, HISTORY_STAGES.fetchComplete, performance.now());
+        const failure = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failure) {
+          // Stop at the first failed group: what has arrived is shown, and the
+          // next reload asks only for what is still missing.
+          bodyFetchError = failure.reason;
+          break;
+        }
+        // A newer load of this thread has started; it plans from what is held
+        // now, so continuing here would download the same rows twice.
+        if (messageLoadSeqRef.current !== loadSeq) break;
+        if (stage < stages.length - 1) {
+          if (stage === 0) await identityPrewarm;
+          const partial = await hydrateHeld();
+          if (messageLoadSeqRef.current === loadSeq) setChatMessages(partial);
+        }
+      }
+      if (stages.length === 0) markTimeline(timeline, HISTORY_STAGES.fetchComplete, performance.now());
+      await identityPrewarm;
+
+      const rows = bodyCache.resolve(conversationForLoad, index);
+      if (bodyFetchError) {
+        // Nothing at all to show is a failed load. Anything less is a partial
+        // one: show it rather than hide readable messages behind an error.
+        if (rows.length === 0) throw bodyFetchError;
+        console.warn("[secure-chat] Part of the encrypted history has not arrived yet:", bodyFetchError);
+      }
+      // Watermark for the idle catch-up probe: the newest envelope this load
+      // actually holds. The probe compares against it, so a reload runs when
+      // the server has something newer — including a row that failed to
+      // download just now.
+      if (conversationForLoad === activeConversationIdRef.current) {
+        newestEnvelopeAtRef.current = rows.reduce(
+          (newest, row) => (row.created_at > newest ? row.created_at : newest),
+          "",
+        );
+      }
+      const hydrated = await hydrateHeld();
       // Only the current load may repaint the thread, so a slow earlier load
       // can never overwrite the conversation now on screen.
       if (messageLoadSeqRef.current === loadSeq) {
@@ -2633,7 +2827,16 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         .on(
           "postgres_changes",
           { event: "*", schema: "public", table: "messaging_message_envelopes", filter: `conversation_id=eq.${conversationId}` },
-          () => scheduleReload(),
+          (payload) => {
+            // A message its sender just deleted: destroy this device's recorded
+            // key for it now, not only stop listing it. (Deletions that happen
+            // while this screen is closed are reconciled by prekey-hygiene.)
+            const deletedId = deletedEnvelopeId(payload);
+            if (deletedId) {
+              void safeInvoke<number>("messaging_forget_message_keys", { userId, messageIds: [deletedId] }, 0);
+            }
+            scheduleReload();
+          },
         )
         .on(
           "postgres_changes",
@@ -2663,7 +2866,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     // screen turns off; on resume the channel is often dead with no event to
     // prove it. Re-open and re-read on every return to the foreground.
     const onResume = () => {
-      if (disposed || document.visibilityState !== "visible") return;
+      if (disposed) return;
+      if (document.visibilityState !== "visible") {
+        // Heading to the background, where Android may end the process without
+        // warning: write out the message keys recorded since the last save.
+        void safeInvoke<boolean>("messaging_flush_message_keys", { userId }, false);
+        return;
+      }
       open();
       scheduleReload(0);
     };
@@ -2713,7 +2922,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       if (idlePollTimer !== undefined) window.clearInterval(idlePollTimer);
       if (channel) void supabase.removeChannel(channel);
     };
-  }, [activeConversationLoadId, loadConversationMessages]);
+  }, [activeConversationLoadId, loadConversationMessages, userId]);
 
   useEffect(() => {
     const viewport = messageViewportRef.current;
@@ -3766,11 +3975,21 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     // recover a row that was never written for them.
     const recipientCacheKey = [...recipientUserIds].sort().join(",");
     const lastFetchedAt = deviceListFetchedAtRef.current.get(recipientCacheKey) ?? 0;
+    // Judged before anything is sealed: a device the core has no verdict for
+    // yet is assessed now rather than assumed.
+    let sendPins = pinIndexRef.current;
+    if (recipientDevices.some((device) => !sendPins.has(device.device_id))) {
+      sendPins = await refreshDevicePins(recipientDevices);
+    }
     let deliveryRecipientDevices = selectDeliveryDevicesForUsers(
       recipientDevices,
       recipientUserIds,
       localDeviceId,
+      MESSAGE_DELIVERY_POLICY,
+      pinGate(sendPins),
     );
+    let awaitingApproval = selectDeliveryDevicesForUsers(recipientDevices, recipientUserIds, localDeviceId).length
+      > deliveryRecipientDevices.length;
     if (
       deliveryRecipientDevices.length === 0 ||
       Date.now() - lastFetchedAt > DEVICE_LIST_MAX_STALENESS_MS
@@ -3781,7 +4000,11 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       } catch {
         fetched = [];
       }
-      const fresh = selectDeliveryDevicesForUsers(fetched, recipientUserIds, localDeviceId);
+      if (fetched.length > 0) sendPins = await refreshDevicePins(fetched);
+      const fresh = selectDeliveryDevicesForUsers(fetched, recipientUserIds, localDeviceId, MESSAGE_DELIVERY_POLICY, pinGate(sendPins));
+      if (fetched.length > 0) {
+        awaitingApproval = selectDeliveryDevicesForUsers(fetched, recipientUserIds, localDeviceId).length > fresh.length;
+      }
       // Keep the cached list when the refresh yields nothing (offline, transient
       // failure) — a stale addressee set still delivers to the devices we know,
       // whereas an empty one would abort a send that could have succeeded.
@@ -3791,7 +4014,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       }
     }
     if (deliveryRecipientDevices.length === 0) {
-      throw new Error("Recipient device is missing signed PQC prekeys");
+      throw new Error(awaitingApproval
+        ? "This contact's device is new and is waiting for your approval above. Nothing is sent to it until you approve it."
+        : "Recipient device is missing signed PQC prekeys");
     }
     const clientMessageId = options.clientMessageId ?? crypto.randomUUID();
     const deliveryDevices = Array.from(new Map([...deliveryRecipientDevices, senderDevice].map((device) => [device.device_id, device])).values());
@@ -4031,6 +4256,41 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     }
   }
 
+  /**
+   * The user has looked at a newly listed device and accepts it. The core
+   * records it; from then on messages are sealed to it, history is synced to
+   * it, and what it signs can be verified.
+   */
+  async function approveDevice(device: TrustedDevice) {
+    setApprovingDeviceId(device.device_id);
+    try {
+      const assessment = await approveDevicePins([device]);
+      const next = mergeVerdicts(pinIndexRef.current, assessment);
+      pinIndexRef.current = next;
+      setPinIndex(next);
+      // Messages from this device were decrypted as unverified; drop those
+      // cached copies so the reload re-checks them against the new record.
+      decryptedMessageCacheRef.current.forEach((cached, key) => {
+        if (cached.sender_unapproved) decryptedMessageCacheRef.current.delete(key);
+      });
+      void recordCryptoTelemetry({
+        userId,
+        deviceId: currentDevice?.device_id ?? null,
+        scope: "verification",
+        stage: "device_pin_approved",
+        detail: "Newly listed device approved on this device",
+        progress: 100,
+        status: "complete",
+        metadata: { approved_device_id: device.device_id, approved_user_id: device.user_id },
+      }).catch(() => undefined);
+      void loadConversationMessages();
+    } catch (error) {
+      setMessageAction(describeMessageError(error));
+    } finally {
+      setApprovingDeviceId(null);
+    }
+  }
+
   function startReply(chatMessage: ChatMessage) {
     setReplyToMessage(chatMessage);
     setEditingMessage(null);
@@ -4053,7 +4313,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     setOpenMessageMenuId(null);
     setMessageAction(null);
     try {
-      await safeInvoke<boolean>("messaging_delete_encrypted_message", { messageId: chatMessage.id }, true);
+      // Every envelope of this message that this device may have opened: its
+      // recorded message keys are destroyed, not just the relay row marked.
+      await safeInvoke<boolean>(
+        "messaging_delete_encrypted_message",
+        { messageId: chatMessage.id, messageIds: chatMessage.row_ids },
+        true,
+      );
       const deletedAt = new Date().toISOString();
       const baseMutation = supabase
         .from("messaging_message_envelopes")
@@ -4316,7 +4582,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               <h2 className="truncate text-sm font-bold text-ink-950">{activeConversation ? conversationTitle(activeConversation) : "Select or start a private chat"}</h2>
               <div className="mt-1 flex items-center gap-2 text-xs font-semibold text-emerald-600">
                 <ShieldCheck size={14} />
-                E2EE active - ML-KEM-1024 - Forward secrecy
+                E2EE active - X25519 + ML-KEM-1024 - AES-256-GCM
               </div>
             </div>
           </div>
@@ -4340,6 +4606,65 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           )}
           {messageAction && (
             <div className="rounded-lg border border-line bg-white p-3 text-sm text-ink-600">{messageAction}</div>
+          )}
+          {/* Devices the directory lists that this device has not accepted.
+              Shown with the fingerprint the core computed from the device's
+              own keys, so the user has something real to compare. */}
+          {deviceReviews.length > 0 && (
+            // Pinned to the top of the thread while it is the reason nothing
+            // can be sent: the thread opens scrolled to its newest message, so
+            // an unpinned card sits out of sight above a long history.
+            <div className={`rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 ${!recipientDevicesReady && recipientDevicesAwaitingApproval > 0 ? "sticky top-0 z-10 shadow-md" : ""}`}>
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <div className="min-w-0 flex-1 space-y-3">
+                  <div>
+                    <div className="font-bold">
+                      {deviceReviews.length === 1 ? "A device needs your decision" : `${deviceReviews.length} devices need your decision`}
+                    </div>
+                    <div className="mt-1 leading-6">
+                      {deviceReviews.length === 1 ? "This device was" : "These devices were"} not there when you first exchanged keys.
+                      Nothing is sent to {deviceReviews.length === 1 ? "it" : "them"}, and messages from{" "}
+                      {deviceReviews.length === 1 ? "it" : "them"} are marked unverified, until you approve here. If you were not
+                      expecting a new device, compare the fingerprint with its owner over a channel you trust first.
+                    </div>
+                  </div>
+                  {deviceReviews.map((review) => (
+                    <div key={review.device.device_id} className="rounded-md border border-amber-200 bg-white/70 p-3">
+                      <div className="font-semibold">
+                        {review.owner === "self"
+                          ? "Your account"
+                          : contacts.find((contact) => contact.contact_user_id === review.device.user_id)?.display_name ?? "Contact"}
+                        {" - "}{review.device.label}
+                      </div>
+                      <div className="mt-1 break-all font-mono text-xs">{review.verdict.fingerprint}</div>
+                      {review.approvable ? (
+                        <button
+                          type="button"
+                          className="mt-2 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-bold text-amber-900 hover:bg-amber-100 disabled:opacity-60"
+                          disabled={approvingDeviceId !== null}
+                          onClick={() => void approveDevice(review.device)}
+                        >
+                          {approvingDeviceId === review.device.device_id ? "Approving..." : "Approve this device"}
+                        </button>
+                      ) : (
+                        <div className="mt-2 text-xs font-semibold text-rose-700">
+                          {review.verdict.standing === "key_changed"
+                            ? "This device is presenting different identity keys than the ones recorded for it. It cannot be approved, and nothing is sent to it."
+                            : "This device's identity does not verify. Nothing is sent to it."}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+          {devicePinsUnavailable && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              Device changes cannot be checked right now: this device&apos;s own record of your contacts&apos; devices could not be
+              opened. It is retried automatically.
+            </div>
           )}
           {/* Explain a re-keyed history ONCE, here, instead of leaving the user
               to infer it from a wall of identical failure bubbles. Driven by
@@ -4512,10 +4837,12 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                             unanchored message read exactly like a verified one. */}
                         {!chatMessage.authenticated && chatMessage.status === "decrypted" && (
                           <span
-                            title="This message decrypted, but the sender's device identity could not be checked against the device registry, so the sender is unproven."
+                            title={chatMessage.sender_unapproved
+                              ? "This message decrypted and is signed by a device listed for the sender, but that device was added after you first exchanged keys and you have not approved it on this device."
+                              : "This message decrypted, but the sender's device identity could not be checked against the device registry, so the sender is unproven."}
                             className={mine ? "font-bold text-amber-100" : "font-bold text-amber-600"}
                           >
-                            Sender unverified
+                            {chatMessage.sender_unapproved ? "New device - not approved" : "Sender unverified"}
                           </span>
                         )}
                         {chatMessage.replay_protected && <span>Replay-safe</span>}

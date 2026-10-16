@@ -30,6 +30,7 @@ import type { Profile, SecurityEvent, TelemetryEvent } from "@/lib/types";
 import { useAppLock } from "@/lib/use-app-lock";
 import type { ThemeMode } from "@/lib/use-theme";
 import { INACTIVITY_OPTIONS, type WorkspaceStatus } from "@/lib/use-workspace-lock";
+import { sha3_256Hex } from "@/lib/sha3";
 
 interface GpuSafeModeStatus {
   active: boolean;
@@ -174,7 +175,9 @@ function randomHex(bytes: number) {
   return Array.from(values).map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function sha256Hex(value: string) {
+// Recovery codes only: `qguard_consume_mfa_recovery_code` recomputes this digest
+// in Postgres with pgcrypto SHA-256, so the two sides must change together.
+async function recoveryCodeSha256Hex(value: string) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -352,7 +355,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
         p_event_type: eventType,
         p_severity: severity,
         p_metadata: metadata,
-        p_email_hash: await sha256Hex((user.email ?? email).trim().toLowerCase()),
+        p_email_hash: sha3_256Hex((user.email ?? email).trim().toLowerCase()),
         p_user_id: user.id,
       });
     } catch {
@@ -363,7 +366,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
   async function enforceRateLimit(action: string, limit = 5) {
     const { data, error: limitError } = await supabase.rpc("check_qguard_profile_rate_limit", {
       p_action: action,
-      p_email_hash: await sha256Hex((user?.email ?? email).trim().toLowerCase()),
+      p_email_hash: sha3_256Hex((user?.email ?? email).trim().toLowerCase()),
       p_limit: limit,
       p_window_seconds: 300,
     });
@@ -428,7 +431,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
       await confirmSensitive("email_change");
       const { error: updateError } = await supabase.auth.updateUser({ email: target }, { emailRedirectTo: window.location.origin });
       if (updateError) throw updateError;
-      await audit("email_change_requested", "warning", { target_email_hash: await sha256Hex(target) });
+      await audit("email_change_requested", "warning", { target_email_hash: sha3_256Hex(target) });
       setStepUpCode("");
       setCurrentPassword("");
       setNewEmail("");
@@ -528,7 +531,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
       return {
         user_id: user.id,
         salt,
-        code_hash: await sha256Hex(salt + normalizedRecoveryCode(code)),
+        code_hash: await recoveryCodeSha256Hex(salt + normalizedRecoveryCode(code)),
       };
     }));
     const { error: insertError } = await supabase.from("qguard_mfa_recovery_codes").insert(rows);

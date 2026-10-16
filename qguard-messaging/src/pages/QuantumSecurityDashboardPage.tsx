@@ -261,8 +261,10 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
     {
       label: "Forward Secrecy",
       value: report.forward_secrecy,
-      active: signedPrekeysReady && oneTimePrekeysReady,
-      detail: `${keyInventory.active_signed_prekeys}/${signedPrekeyTarget} signed prekeys, ${keyInventory.available_one_time_prekeys}/${oneTimePrekeyTarget} one-time prekeys`,
+      // Rotation actually happening on this device, as the core reports it —
+      // not the mere presence of published prekeys.
+      active: signedPrekeysReady && report.forward_secrecy_healthy === true,
+      detail: `${keyInventory.active_signed_prekeys}/${signedPrekeyTarget} signed prekey published; it is replaced daily and retired ones are destroyed once their messages are accounted for`,
     },
     {
       label: "Tamper Evidence",
@@ -272,7 +274,7 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
     },
     {
       label: "Web Asset Integrity",
-      value: "SHA-256 asset manifest",
+      value: "SHA3-256 asset manifest",
       active: webIntegrityActive,
       detail: hardeningCheck(hardeningChecks, "web_asset_integrity")?.detail ?? "Security manifest pending",
     },
@@ -292,7 +294,7 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
     { icon: Gauge, label: "Quantum-safe Score", value: `${quantumStackScore}%`, caption: scoreStatus, tone: quantumStackScore >= 95 ? "emerald" : "amber" },
     { icon: ShieldCheck, label: "Hybrid Session", value: report.hybrid_session_status, caption: `${trustedMyDevices.length}/${Math.max(1, activeMyDevices.length)} trusted active devices`, tone: hybridKexReady && hybridSignatureReady ? "violet" : "amber" },
     { icon: Zap, label: "HNDL Protection", value: report.hndl_protection, caption: deviceSuiteReady ? "Hybrid non-decrypt-later posture enabled" : "Awaiting full suite evidence", tone: report.hndl_protection === "Enabled" ? "cyan" : "amber" },
-    { icon: RefreshCcw, label: "Forward Secrecy", value: report.forward_secrecy, caption: `${keyInventory.available_one_time_prekeys}/${oneTimePrekeyTarget} one-time prekeys ready`, tone: signedPrekeysReady && oneTimePrekeysReady ? "emerald" : "amber" },
+    { icon: RefreshCcw, label: "Forward Secrecy", value: report.forward_secrecy, caption: report.forward_secrecy_healthy === true ? "Per rotation period, not per message" : "Needs attention", tone: signedPrekeysReady && report.forward_secrecy_healthy === true ? "emerald" : "amber" },
   ];
 
   async function recordQuantumTelemetry(stage: string, detail: string, progress: number, statusValue: "started" | "progress" | "verified" | "failed" | "complete") {

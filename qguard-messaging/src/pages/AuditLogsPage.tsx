@@ -21,6 +21,7 @@ import { describeSavedFile, saveFileToDevice } from "@/lib/save-file";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
 import type { SecurityEvent, TelemetryEvent } from "@/lib/types";
+import { sha3_256Hex } from "@/lib/sha3";
 
 interface AuditLogsPageProps {
   userId: string;
@@ -124,10 +125,6 @@ function integrityTone(row: AuditRow): string {
   return "text-emerald-600";
 }
 
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
 
 const AUDIT_PAGE_SIZE = 5;
 
@@ -246,7 +243,7 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
   ) {
     try {
       const createdAt = new Date().toISOString();
-      const eventHash = await sha256Hex(JSON.stringify({ eventType, severity, metadata, createdAt }));
+      const eventHash = sha3_256Hex(JSON.stringify({ eventType, severity, metadata, createdAt }));
       await supabase.from("messaging_security_events").insert({
         user_id: userId,
         device_id: null,

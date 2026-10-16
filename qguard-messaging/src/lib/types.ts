@@ -157,6 +157,11 @@ export interface QuantumSecurityReport {
   hybrid_session_status: string;
   pqc_algorithm: string;
   forward_secrecy: string;
+  /**
+   * Whether prekey rotation and clean-up are really happening on this device.
+   * Absent on a report that predates the field: treat that as not established.
+   */
+  forward_secrecy_healthy?: boolean;
   hndl_protection: string;
   quantum_safe_score: number;
   key_rotation_history: string[];
@@ -194,13 +199,7 @@ export interface SecurityHardeningStatus {
   expected_binary_sha3: string | null;
   build_profile: string;
   debug_assertions: boolean;
-  plaintext_logging_disabled: boolean;
-  aead_required: boolean;
-  nonce_uniqueness_checked: boolean;
-  replay_protection_enabled: boolean;
-  strict_cors_required_for_relay: boolean;
-  secure_headers_documented: boolean;
-  dependency_scanning_documented: boolean;
+  // Each boolean below mirrors a row of `checks`, derived the same way.
   anti_debugger_protection: boolean;
   anti_tampering_detection: boolean;
   binary_integrity_verification: boolean;

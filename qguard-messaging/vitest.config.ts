@@ -3,5 +3,5 @@ import path from "path";
 
 export default defineConfig({
   resolve: { alias: { "@": path.resolve(__dirname, "src") } },
-  test: { environment: "happy-dom", include: ["src/**/*.test.ts"], globals: true },
+  test: { environment: "happy-dom", include: ["src/**/*.test.ts"], globals: true, setupFiles: ["src/test-setup.ts"] },
 });

@@ -8,6 +8,121 @@ website download label in `../src/app/qguard-messaging/_shared.tsx` — all thre
 are kept in lock-step by `tools/release.ps1`, because a mismatch silently breaks
 auto-update.
 
+## [1.3.12] — 2026-10-14
+
+Android fix release. Built locally; not yet published. No database migration;
+the desktop app is unchanged from 1.3.11.
+
+### Fixed
+
+- **Android: every Quantum Vault folder action failed with "vault folder picker
+  needs the app activity".** Encrypting or decrypting a file and creating a
+  Portable Hybrid Identity all stopped at the destination-folder step. The
+  Tauri 2.12 runtime (tao 0.37) hands native code the application context
+  instead of the activity, and the folder picker needs the activity to open.
+  The app now registers its activity for the picker. Google Play purchases had
+  the same fault and are fixed with it.
+- **Android: after the right PIN, the email/password sign-in screen flashed
+  before the app opened.** The PIN screen used to close as soon as the PIN was
+  accepted, before the session behind it was restored. It now stays up, showing
+  "Unlocking your secure session…", until the app is ready.
+
+## [1.3.11] — 2026-10-13
+
+Security release. Desktop and Android. Built locally; not yet published.
+
+This release adds no database migration. The new hybrid-KEM combiner and call
+protocol v2 are used only with peers that advertise them; the previous forms
+are still spoken and read. Interoperation with a 1.3.10 device is covered by
+unit tests, not yet by a two-device test.
+
+### Security
+
+- **Device pins — the relay can no longer add a device to someone's account.**
+  The relay is the device directory, and a row it invents is as self-consistent
+  as a real one. A device added that way received every new message, had
+  history re-sealed to it by trusted-device sync, and had its own messages shown
+  as verified. This device now keeps its own record of which devices belong to
+  whom (trust on first use, encrypted at rest). A device that appears later is
+  **new**: nothing is sealed to it and nothing from it is shown as verified
+  until the user approves it. A device id that returns with different identity
+  keys is never accepted.
+- **Forward secrecy for Secure Chat, per rotation epoch.** A device used to keep
+  every prekey it had ever published, so one copy of its key file opened every
+  message ever sent to it. Message keys are now remembered in an encrypted
+  ledger the first time an envelope opens, prekeys rotate on a schedule, and
+  retired prekeys are destroyed once everything sealed to them is accounted
+  for. This is not a per-message ratchet: messages sealed to the currently
+  active prekey share it until the next rotation.
+- **Replayed, relocated and re-attributed messages are refused.** A genuine
+  envelope copied into a new row, into another conversation, or shown under
+  another person's name used to verify. The row is now checked against the
+  fields its sender signed.
+- **Calls: per-call keys and an authenticated caller (call protocol v2).** The
+  media key now also depends on a key pair that exists only for that call, so a
+  later compromise of a device's long-term identity plus a recording of the
+  exchange does not yield it. The caller signs the call's key material with its
+  registered Ed25519 + ML-DSA-65 identity; a signature that is present and does
+  not verify ends the call instead of downgrading it. The call screen states
+  only what was proven for that call.
+- **Hybrid KEM combiner bound to its transcript (`QGuard-HybridKEM-v2`).** The
+  X25519 ephemeral key, the recipient key and a hash of the ML-KEM ciphertext
+  are mixed into HKDF-SHA3-256, and a non-contributory X25519 result is
+  refused. Used with peers that advertise it; the previous combiner is still
+  read so existing envelopes and containers keep opening.
+- **Quantum Vault containers are bound to the vault PIN (`.qvault` v5).** Older
+  containers carried their key wrapped to the device's KEM key, which is
+  protected only by the OS keychain, so the vault lock was a check in the UI
+  rather than in the cryptography. v5 wraps the file key under the PIN-bound
+  vault key. Older containers stay readable, are reported as not PIN-bound, and
+  "re-protect" rewrites their header. A container is authenticated as this
+  vault's own before a byte is written.
+- **The hardening report is measured, not asserted.** "Post-quantum protection",
+  "secure memory" and "rate limiting" were constants. Each is now the outcome of
+  a start-up self-test of the primitives in this binary: X25519 + ML-KEM-1024,
+  Ed25519 + ML-DSA-65, AES-256-GCM, SHA3-256 against the FIPS 202 vectors,
+  zeroisation and the rate limiter.
+- **SHA3-256 in the WebView.** Audit event digests, the web asset integrity
+  manifest and the rate-limit e-mail key were SHA-256, because WebCrypto has no
+  SHA-3. They now use SHA3-256, matching the approved stack and the Rust core.
+  Three SHA-256 uses remain on purpose and are listed under Known limitations.
+
+### Fixed
+
+- **"Encrypted history is taking longer than expected" on a long thread.** One
+  envelope row is about 27 KB (ML-KEM ciphertext, ML-DSA signature and sender
+  keys as JSON), and the thread downloaded 250 whole rows — about 7 MB — in one
+  request with a six-second deadline, again on every realtime event. On a phone
+  that request did not finish in time. The thread now fetches a small listing,
+  then only the envelope bodies it does not already hold, in chunks of 24 with
+  this device's copies first. Measured on a 250-row thread: first chunk after
+  1.3 s instead of one 7 MB request; a reload with nothing new is 52 KB.
+- **A contact's new device read as "Waiting for recipient PQC prekeys".** When
+  the only deliverable device of a contact is one waiting for approval (as after
+  they reinstall), the status now says to approve it, and the approval card
+  stays pinned to the top of the thread instead of sitting above the history.
+- `tools/messaging-reset.mjs` treated a storage folder it could not list as
+  empty, so a reset could leave attachments behind and say it had handled them.
+  It now stops with the error.
+
+### Changed
+
+- Tauri 2.10 → 2.12 (runtime, CLI and plugins), `webview2-com` 0.39,
+  `windows` 0.62, Supabase client 2.117, React 19.3. The cryptographic crates
+  are unchanged.
+
+### Known limitations
+
+- MFA recovery-code hashes stay SHA-256: Postgres recomputes them with
+  pgcrypto, so client and database must change together in a migration.
+- The chat attachment `sha256_b64` field stays: it is a transfer checksum that
+  released clients verify. Integrity comes from AES-256-GCM.
+- The conversation privacy screen verifier stays PBKDF2-HMAC-SHA-256 (WebCrypto).
+  It is a screen, not encryption; the workspace lock (Argon2id → HKDF-SHA3-256,
+  in the Rust core) protects data at rest.
+- The auto-update signature is Ed25519 (minisign) — the Tauri updater has no
+  post-quantum signature option.
+
 ## [1.3.9] — 2026-09-21
 
 Desktop and Android. Built locally; not yet published.

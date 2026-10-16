@@ -20,8 +20,9 @@ import {
 import { connectDeadlineMs, shouldAttemptIceRecovery } from "@/lib/call-deadline";
 import { callReducer, INITIAL_CALL_STATE } from "@/lib/call-state";
 import { sendCallSignal, sendCallSignals, subscribeCallSignals, type CallSignalChannel } from "@/lib/call-signaling";
-import { applyDecline } from "@/lib/call-targets";
-import type { CallPeer, CallPeerDevice } from "@/lib/call-targets";
+import { fetchCallPeerIdentity } from "@/lib/call-peer-identity";
+import { applyDecline, callPeerIdentityPayload, parseCallEphemeralKey } from "@/lib/call-targets";
+import type { CallEphemeralKey, CallPeer, CallPeerDevice } from "@/lib/call-targets";
 import type { CallSignalRow } from "@/lib/call-types";
 import { safeInvoke } from "@/lib/tauri";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
@@ -39,7 +40,36 @@ import { startCallStatsMonitor, type CallStatsSample } from "@/lib/call-stats";
 import { releaseCallWakeLock, requestCallWakeLock } from "@/lib/call-wake-lock";
 import { makeFrameTransform, type FrameCryptoOptions } from "@/lib/call-media-transform";
 
-interface CallSetup { hybridCiphertext: unknown; sendKeyB64: string; recvKeyB64: string; safetyNumber: string; }
+/** Mirror of `commands::calls::CallSetup`. */
+interface CallSetup {
+  hybridCiphertext: unknown;
+  /** Second encapsulation, to the callee's per-call key (caller side, forward-secret calls). */
+  ephemeralCiphertext?: unknown;
+  /** The caller's signature over the call's key material (caller side, forward-secret calls). */
+  callerProof?: unknown;
+  sendKeyB64: string;
+  recvKeyB64: string;
+  safetyNumber: string;
+  forwardSecret?: boolean;
+  peerAuthenticated?: boolean;
+}
+
+/**
+ * How long the callee waits for the caller's registered identity before
+ * answering without it. The call must not hang on a registry read; a caller
+ * that could not be checked in time is reported as unverified.
+ */
+const CALLER_IDENTITY_WAIT_MS = 4_000;
+
+function settleWithin<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const timer = window.setTimeout(() => resolve(fallback), ms);
+    promise.then(
+      (value) => { window.clearTimeout(timer); resolve(value); },
+      () => { window.clearTimeout(timer); resolve(fallback); },
+    );
+  });
+}
 
 /**
  * Outgoing-call target: one person and EVERY device they can be reached on.
@@ -203,6 +233,9 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   // setup is the one that gets attached to the peer connection. Pre-computing
   // keeps the post-answer path as fast as the old single-device flow.
   const setupsByDeviceRef = useRef<Map<string, CallSetup>>(new Map());
+  // The identity material of every device being rung, so that when one answers
+  // with a per-call key the key agreement can be redone against it.
+  const peerDevicesRef = useRef<Map<string, { userId: string; device: CallPeerDevice }>>(new Map());
   // First device to accept wins; later accepts are told to stop ringing. Guards
   // the race where two of the peer's devices answer within the same tick.
   const answeredDeviceRef = useRef<string | null>(null);
@@ -210,7 +243,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   // finished. The ring is sent first precisely so the peer can answer instantly,
   // so a fast tap legitimately beats our own setup; without this the accept
   // would be dropped and the call would hang until the give-up.
-  const pendingAcceptDeviceRef = useRef<string | null>(null);
+  const pendingAcceptDeviceRef = useRef<{ deviceId: string; ephemeralKey: CallEphemeralKey | null } | null>(null);
   const pendingOfferRef = useRef<CallSignalRow | null>(null);
   // The `ring` that opened the incoming-call modal. It carries the caller's
   // ids + conversation, so the callee can answer (and address `accept`/`reject`)
@@ -376,6 +409,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     routeRef.current = null;
     ringTargetsRef.current = [];
     setupsByDeviceRef.current.clear();
+    peerDevicesRef.current.clear();
     answeredDeviceRef.current = null;
     pendingAcceptDeviceRef.current = null;
     pendingOfferRef.current = null;
@@ -676,8 +710,19 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
         markCallStage(CALL_STAGES.mediaConnected);
         if (setupRef.current) {
           markCallStage(CALL_STAGES.established);
-          dispatch({ type: "media-connected", safetyNumber: setupRef.current.safetyNumber });
-          void recordCryptoTelemetry({ userId: args.userId, scope: "call", stage: "call_connected", detail: "Quantum-encrypted call connected", progress: 100, status: "complete", metadata: { call_id: callId } });
+          // Reported exactly as the core established them; an older peer leaves
+          // both false and the call screen says so.
+          const forwardSecret = setupRef.current.forwardSecret === true;
+          const peerVerified = setupRef.current.peerAuthenticated === true;
+          dispatch({ type: "media-connected", safetyNumber: setupRef.current.safetyNumber, forwardSecret, peerVerified });
+          void recordCryptoTelemetry({
+            userId: args.userId, scope: "call", stage: "call_connected",
+            detail: forwardSecret
+              ? "Quantum-encrypted call connected (per-call key, forward secret)"
+              : "Quantum-encrypted call connected (identity key only, no forward secrecy: peer runs an older build)",
+            progress: 100, status: "complete",
+            metadata: { call_id: callId, forward_secret: forwardSecret, peer_verified: peerVerified },
+          });
         }
         // Encoder ceilings can be ignored when set pre-ICE; re-assert them on
         // the established connection so the negotiated path runs at full tier.
@@ -796,16 +841,16 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
    * Only the first accept wins — two of the peer's devices can answer within
    * the same tick, and the loser must be hung up rather than left half-joined.
    */
-  const bindAcceptedDevice = useCallback(async (callId: string, deviceId: string) => {
+  const bindAcceptedDevice = useCallback(async (callId: string, deviceId: string, ephemeralKey: CallEphemeralKey | null) => {
     if (answeredDeviceRef.current) return;
     const route = ringTargetsRef.current.find((r) => r.toDeviceId === deviceId);
-    const setup = setupsByDeviceRef.current.get(deviceId);
+    const precomputed = setupsByDeviceRef.current.get(deviceId);
     const stream = localStreamRef.current;
     // Key material or media not ready yet (a very fast accept, which the
     // ring-first design makes likely): park it. startCall replays it the moment
     // the camera and the per-device KEM setups are ready.
-    if (!route || !setup || !stream) {
-      if (route) pendingAcceptDeviceRef.current = deviceId;
+    if (!route || !precomputed || !stream) {
+      if (route) pendingAcceptDeviceRef.current = { deviceId, ephemeralKey };
       return;
     }
     answeredDeviceRef.current = deviceId;
@@ -814,6 +859,22 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     signalRoutes(callId, ringTargetsRef.current.filter((r) => r.toDeviceId !== deviceId), "hangup");
     ringTargetsRef.current = [route];
     try {
+      // The answering device sent a key pair made for THIS call. Agree the
+      // media key against it (as well as its identity key) so the call is
+      // forward secret, and sign the result so the callee can tell who is
+      // calling. The core verifies the per-call key's signature first; if that
+      // fails the call fails — it must never quietly fall back to the
+      // identity-only agreement, or stripping the key would be a downgrade.
+      // An accept WITHOUT a key comes from a build that predates this, and
+      // uses the agreement pre-computed while it rang.
+      const answering = peerDevicesRef.current.get(deviceId);
+      const setup = ephemeralKey && answering
+        ? await safeInvoke<CallSetup>("call_caller_setup", {
+          peer: callPeerIdentityPayload(answering.userId, answering.device),
+          callId,
+          ephemeral: ephemeralKey,
+        })
+        : precomputed;
       setupRef.current = setup;
       const pc = await buildPeerConnection(callId, route);
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
@@ -830,7 +891,12 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
         call_id: callId, conversation_id: route.conversationId,
         from_user_id: args.userId, from_device_id: args.deviceId,
         to_user_id: route.toUserId, to_device_id: route.toDeviceId,
-        signal_type: "offer", payload: { sdp: offer.sdp, hybridCiphertext: setup.hybridCiphertext },
+        signal_type: "offer",
+        payload: {
+          sdp: offer.sdp,
+          hybridCiphertext: setup.hybridCiphertext,
+          ...(setup.ephemeralCiphertext ? { ephemeralCiphertext: setup.ephemeralCiphertext, callerProof: setup.callerProof } : {}),
+        },
       });
       // Answered and negotiating: the wall clock hands over to the
       // progress-based deadline for the rest of the connect.
@@ -854,6 +920,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       conversationId, toUserId: peer.userId, toDeviceId: device.deviceId,
     }));
     ringTargetsRef.current = routes;
+    peerDevicesRef.current = new Map(peer.devices.map((device) => [device.deviceId, { userId: peer.userId, device }]));
     // Provisionally address the most likely device (the caller's ordering puts
     // the most-recently-seen first) so a reject/timeout before anyone answers
     // still has somewhere to go; rebound for real on the winning accept.
@@ -889,17 +956,14 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
         getMedia(),
         resolveRtcConfiguration().catch(() => undefined),
         ...peer.devices.map(async (device: CallPeerDevice) => {
+          // Verifies each device's registered identity now, and is the
+          // agreement used if the device that answers runs a build without
+          // per-call keys. A device that answers WITH one gets a fresh
+          // agreement in bindAcceptedDevice.
           const setup = await safeInvoke<CallSetup>("call_caller_setup", {
-            peer: {
-              user_id: peer.userId,
-              device_id: device.deviceId,
-              x25519_identity_public: device.x25519,
-              mlkem_identity_public: device.mlkem,
-              ed25519_identity_public: device.ed25519,
-              mldsa_identity_public: device.mldsa,
-              identity_signature: device.identitySignature,
-            },
+            peer: callPeerIdentityPayload(peer.userId, device),
             callId,
+            ephemeral: null,
           });
           setupsByDeviceRef.current.set(device.deviceId, setup);
         }),
@@ -914,7 +978,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       const early = pendingAcceptDeviceRef.current;
       if (early) {
         pendingAcceptDeviceRef.current = null;
-        await bindAcceptedDevice(callId, early);
+        await bindAcceptedDevice(callId, early.deviceId, early.ephemeralKey);
       }
     } catch (e) {
       signalRoutes(callId, routes, "hangup");
@@ -948,20 +1012,42 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       // is still consumed by the Promise.all when the accept succeeds).
       mediaPromise.catch(() => undefined);
       const configPromise = resolveRtcConfiguration().catch(() => undefined);
+      // Who the registry says this caller device is: started now so it is
+      // ready by the time the offer needs checking against it.
+      const callerIdentityPromise = fetchCallPeerIdentity(route.toUserId, route.toDeviceId);
+      // A key pair made for this call alone. Its public half goes to the caller
+      // inside `accept`; the private half stays in the core's memory until the
+      // offer arrives and is then destroyed, which is what makes the call
+      // forward secret. If it cannot be made, the accept goes out without one
+      // and the call is reported as not forward secret.
+      const ephemeralKey = await safeInvoke<CallEphemeralKey>("call_callee_prepare", {
+        callId, callerUserId: route.toUserId, callerDeviceId: route.toDeviceId,
+      }).catch(() => null);
       // Tell the caller we are answering, so it can stop ringing us and (on a
       // build that waits for it) start pushing media setup immediately.
       void sendCallSignal({
         call_id: callId, conversation_id: route.conversationId,
         from_user_id: args.userId, from_device_id: args.deviceId,
         to_user_id: route.toUserId, to_device_id: route.toDeviceId,
-        signal_type: "accept", payload: {},
+        signal_type: "accept", payload: ephemeralKey ? { ephemeralKey } : {},
       }).catch(() => undefined);
       markCallStage(CALL_STAGES.signalingStarted);
 
       const offer = await waitForOffer(callId);
       pendingOfferRef.current = offer;
+      const offered = offer.payload as { hybridCiphertext: unknown; ephemeralCiphertext?: unknown; callerProof?: unknown };
+      // Only a forward-secret offer carries a caller signature to check.
+      const callerIdentity = offered.ephemeralCiphertext
+        ? await settleWithin(callerIdentityPromise, CALLER_IDENTITY_WAIT_MS, null)
+        : null;
       const [setup, stream] = await Promise.all([
-        safeInvoke<CallSetup>("call_callee_setup", { hybridCiphertext: (offer.payload as { hybridCiphertext: unknown }).hybridCiphertext, callId }),
+        safeInvoke<CallSetup>("call_callee_setup", {
+          hybridCiphertext: offered.hybridCiphertext,
+          callId,
+          ephemeralCiphertext: offered.ephemeralCiphertext ?? null,
+          callerProof: offered.callerProof ?? null,
+          caller: callerIdentity,
+        }),
         mediaPromise,
         configPromise,
       ]);
@@ -1173,7 +1259,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
             if (row.call_id === callIdRef.current && isSignalFromCallPeer(row)) {
               signalChannelRef.current?.boost();
               if (roleRef.current === "caller") {
-                void bindAcceptedDevice(row.call_id, row.from_device_id);
+                void bindAcceptedDevice(row.call_id, row.from_device_id, parseCallEphemeralKey(row.payload?.ephemeralKey));
               }
             }
             break;

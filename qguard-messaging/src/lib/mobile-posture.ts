@@ -1,11 +1,12 @@
 import type { DashboardData, TrustedDevice } from "@/lib/types";
 import type { ReactorRing } from "@/components/mobile/HelixReactor";
-import { ONE_TIME_PREKEY_MIN, liveHardeningChecks } from "@/lib/security-score";
+import { liveHardeningChecks } from "@/lib/security-score";
 
 /**
  * One layer of the cryptographic stack, in the order it is exercised when a
- * message is sent: identity is proven, a hybrid handshake derives a session,
- * the session ratchets forward, and the runtime that holds the keys is itself
+ * message is sent: identity is proven, a hybrid handshake derives the message
+ * key, the prekey behind that handshake is rotated and retired so old traffic
+ * stops being decryptable, and the runtime that holds the keys is itself
  * hardened.
  *
  * The ordering is real, which is why the UI is allowed to number these — it is
@@ -132,11 +133,17 @@ export function buildCryptoPosture(data: DashboardData): CryptoPosture {
   // reporting the truth instead of a stale assumption.
   const handshakeReady = enrolled.filter(hasHybridHandshakeMaterial).length;
 
-  // Forward secrecy is ready at the MIN, which is the same threshold the
-  // headline score treats as ready. Measuring against a higher aspirational
-  // target here is what made a fully-ready device read as incomplete.
-  const oneTimePool = data.keyInventory.available_one_time_prekeys;
-  const sessionValue = ratio(oneTimePool, ONE_TIME_PREKEY_MIN);
+  // The Session layer answers "do past messages stay unreadable if a key
+  // leaks?", i.e. forward secrecy. It used to be measured by the size of the
+  // one-time prekey pool, which the send path does not use — a full pool said
+  // nothing about the claim printed beside it. It is now two real things: a
+  // signed prekey is published (messages can be sealed to this device at all),
+  // and that prekey is actually being rotated and retired on schedule, as the
+  // core reports it. A report that could not measure rotation earns only the
+  // first half.
+  const signedPrekeyPublished = data.keyInventory.active_signed_prekeys > 0;
+  const rotationHealthy = signedPrekeyPublished && data.report?.forward_secrecy_healthy === true;
+  const sessionValue = (signedPrekeyPublished ? 0.5 : 0) + (rotationHealthy ? 0.5 : 0);
 
   // Build-provenance gates (binary pinning, code signing, obfuscation,
   // control-flow flattening, string encryption) are evidence about how the
@@ -181,7 +188,9 @@ export function buildCryptoPosture(data: DashboardData): CryptoPosture {
       label: "Session",
       caption: "Keeps past messages unreadable if a key leaks",
       value: sessionValue,
-      detail: `${oneTimePool} one-time keys ready`,
+      detail: !signedPrekeyPublished
+        ? "No signed prekey published"
+        : rotationHealthy ? "Prekey rotating daily" : "Prekey rotation not confirmed",
       tone: toneFor(sessionValue),
     },
     {

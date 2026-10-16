@@ -120,7 +120,7 @@ function qguardSecurityManifest(): Plugin {
           return {
             path: `/${relativePath}`,
             bytes: bytes.length,
-            sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+            sha3_256: crypto.createHash("sha3-256").update(bytes).digest("hex"),
           };
         })
         .sort((a, b) => a.path.localeCompare(b.path));
@@ -128,9 +128,9 @@ function qguardSecurityManifest(): Plugin {
       fs.writeFileSync(
         path.join(distDir, "security-manifest.json"),
         JSON.stringify({
-          version: 1,
+          version: 2,
           generated_at: new Date().toISOString(),
-          algorithm: "SHA-256",
+          algorithm: "SHA3-256",
           assets,
         }, null, 2),
       );

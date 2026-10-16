@@ -23,9 +23,22 @@ const DEFAULT_INACTIVITY_MINUTES: u32 = 10;
 const MIN_INACTIVITY_MINUTES: u32 = 1;
 const MAX_INACTIVITY_MINUTES: u32 = 60;
 
+/// Length every NEW app PIN must have.
+///
+/// Four digits used to be offered as well. The PIN is the only thing between
+/// someone holding the unlocked phone and the stored session, and it derives
+/// the key that wraps it: 10,000 possibilities against five tries is a 1-in-
+/// 2,000 guess, and gives the Argon2id stretch nothing to work with. A
+/// four-digit PIN that already exists still unlocks (that path does not come
+/// through here); it just cannot be chosen again.
+const NEW_PIN_DIGITS: u8 = 6;
+
+/// Validate a PIN that is being SET (first setup, change, or reset).
 fn validate_pin(digits: u8, pin: &str) -> Result<()> {
-    if digits != 4 && digits != 6 {
-        return Err(QGuardError::InvalidInput("PIN length must be 4 or 6 digits.".to_string()));
+    if digits != NEW_PIN_DIGITS {
+        return Err(QGuardError::InvalidInput(format!(
+            "A new PIN must be {NEW_PIN_DIGITS} digits."
+        )));
     }
     if pin.chars().count() != digits as usize || !pin.chars().all(|c| c.is_ascii_digit()) {
         return Err(QGuardError::InvalidInput(format!("PIN must be exactly {digits} digits.")));
@@ -663,8 +676,9 @@ mod tests {
     }
 
     #[test]
-    fn pin_validation_enforces_4_or_6_digits() {
-        assert!(validate_pin(4, "1234").is_ok());
+    fn a_new_pin_must_be_six_digits() {
+        // Four digits can no longer be chosen...
+        assert!(validate_pin(4, "1234").is_err());
         assert!(validate_pin(6, "123456").is_ok());
         assert!(validate_pin(4, "123").is_err());
         assert!(validate_pin(6, "12345").is_err());

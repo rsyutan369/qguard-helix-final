@@ -1,5 +1,5 @@
+import type { PrekeyStatus } from "@/lib/prekey-hygiene";
 import type {
-  ConversationSummary,
   DashboardSnapshot,
   KeyInventory,
   Profile,
@@ -15,13 +15,19 @@ import type {
 interface SecurityPostureInput {
   profile: Profile;
   devices: TrustedDevice[];
-  conversations: ConversationSummary[];
   vaultFiles: VaultFileSummary[];
   keyInventory: KeyInventory;
   telemetry: TelemetryEvent[];
   securityEvents: SecurityEvent[];
   hardening: SecurityHardeningStatus;
   vaultStorageLabel: string;
+  /**
+   * Rotation state of this device's prekeys, as read from the Rust core. Null
+   * (or absent) when it could not be read — outside the app shell, or the core
+   * did not answer. Forward secrecy is then reported as not measured; it is
+   * never assumed.
+   */
+  prekeyStatus?: PrekeyStatus | null;
 }
 
 interface SecurityPostureResult {
@@ -29,9 +35,11 @@ interface SecurityPostureResult {
   report: QuantumSecurityReport;
 }
 
-// Per-device prekey readiness floors (see buildSecurityPosture). A device is
-// forward-secrecy-ready with one active signed prekey and a healthy one-time
-// prekey pool; these are NOT multiplied by the number of registered devices.
+// Per-device prekey readiness floors (see buildSecurityPosture). A device can
+// receive messages with one active signed prekey and a healthy one-time prekey
+// pool; these are NOT multiplied by the number of registered devices.
+// (Whether it has FORWARD SECRECY is a different question, answered by
+// describeForwardSecrecy from how its prekeys are actually rotating.)
 // Exported so every prekey readout uses the same thresholds.
 export const SIGNED_PREKEY_MIN = 1;
 export const ONE_TIME_PREKEY_MIN = 16;
@@ -186,6 +194,31 @@ export function isPostureAffectingEvent(event: SecurityEvent, now: number = Date
   return now - occurredAt <= POSTURE_EVENT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 }
 
+/**
+ * What can truthfully be said about Secure Chat forward secrecy.
+ *
+ * Secure Chat has no per-message ratchet: every message is sealed to the
+ * recipient device's signed prekey. Forward secrecy comes from replacing that
+ * prekey daily and destroying the retired ones once their messages are
+ * accounted for — so it holds exactly to the extent that is really happening,
+ * which only the device itself can report. The words come from the Rust core
+ * (`describe_forward_secrecy`) so every screen says the same thing.
+ */
+export function describeForwardSecrecy(
+  signedPrekeyPublished: boolean,
+  prekeyStatus: PrekeyStatus | null | undefined,
+): { healthy: boolean; summary: string } {
+  if (!prekeyStatus) {
+    return {
+      healthy: false,
+      summary: signedPrekeyPublished
+        ? "Not measured: prekey rotation status is only available inside the app"
+        : "Awaiting prekey material",
+    };
+  }
+  return { healthy: prekeyStatus.forwardSecrecyHealthy, summary: prekeyStatus.forwardSecrecySummary };
+}
+
 function hardeningWarnings(checks: SecurityHardeningCheck[]): string[] {
   return checks
     .filter((check) => check.status !== "active")
@@ -195,13 +228,13 @@ function hardeningWarnings(checks: SecurityHardeningCheck[]): string[] {
 export function buildSecurityPosture({
   profile,
   devices,
-  conversations,
   vaultFiles,
   keyInventory,
   telemetry,
   securityEvents,
   hardening,
   vaultStorageLabel,
+  prekeyStatus,
 }: SecurityPostureInput): SecurityPostureResult {
   const myDevices = devices.filter((device) => device.user_id === profile.id);
   const activeMyDevices = myDevices.filter(isActiveDevice);
@@ -219,7 +252,10 @@ export function buildSecurityPosture({
   const signedPrekeysReady = activeMyDevices.length > 0 && keyInventory.active_signed_prekeys >= SIGNED_PREKEY_MIN;
   const oneTimePrekeysNeeded = ONE_TIME_PREKEY_MIN;
   const oneTimePrekeysReady = keyInventory.available_one_time_prekeys >= oneTimePrekeysNeeded;
-  const forwardSecrecyReady = signedPrekeysReady && (oneTimePrekeysReady || conversations.length > 0);
+  // Read from the device's real rotation state — not inferred from the fact
+  // that prekeys exist, which says nothing about whether old ones ever go away.
+  const forwardSecrecy = describeForwardSecrecy(signedPrekeysReady, prekeyStatus);
+  const forwardSecrecyReady = signedPrekeysReady && forwardSecrecy.healthy;
   const allActiveDevicesTrusted = activeMyDevices.length > 0 && trustedMyDevices.length === activeMyDevices.length;
   const recentHeartbeatReady = activeMyDevices.some(isRecentDevice);
   const liveHardening = liveHardeningChecks(hardening);
@@ -261,7 +297,7 @@ export function buildSecurityPosture({
     ...(!vaultStackReady ? ["One or more vault records do not report the required AES-256-GCM / HKDF-SHA3-256 hybrid suite"] : []),
     ...(!signedPrekeysReady ? ["Signed prekeys are missing or below active device count"] : []),
     ...(!oneTimePrekeysReady ? [`One-time prekeys below readiness target (${keyInventory.available_one_time_prekeys}/${oneTimePrekeysNeeded})`] : []),
-    ...(!forwardSecrecyReady ? ["Forward secrecy ratchet material is not ready"] : []),
+    ...(!forwardSecrecyReady ? [`Forward secrecy: ${forwardSecrecy.summary}`] : []),
     ...(!allActiveDevicesTrusted ? ["One or more active devices are pending or suspicious"] : []),
     ...hardeningWarnings(liveHardening),
     ...warningEvents.map((event) => `Security warning: ${event.event_type}`),
@@ -287,11 +323,8 @@ export function buildSecurityPosture({
   const report: QuantumSecurityReport = {
     hybrid_session_status: hybridKexReady && hybridSignatureReady ? "Hybrid Active" : activeMyDevices.length > 0 ? "Hybrid Partial" : "No Active Session",
     pqc_algorithm: algorithms.length > 0 ? algorithms.join(" / ") : "No active device keys",
-    forward_secrecy: forwardSecrecyReady
-      ? "Per-message ratchet keys active"
-      : signedPrekeysReady
-        ? "Signed prekeys active; replenish one-time prekeys"
-        : "Awaiting prekey material",
+    forward_secrecy: forwardSecrecy.summary,
+    forward_secrecy_healthy: forwardSecrecyReady,
     hndl_protection: snapshot.hndl_status,
     quantum_safe_score: snapshot.quantum_safe_score,
     key_rotation_history: securityEvents

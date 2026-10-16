@@ -28,6 +28,11 @@ pub struct QuantumSecurityReport {
     pub hybrid_session_status: String,
     pub pqc_algorithm: String,
     pub forward_secrecy: String,
+    /// Whether prekey rotation and retired-prekey clean-up are really
+    /// happening on this device (see `commands::keys::describe_forward_secrecy`).
+    /// `forward_secrecy` is the same finding in words.
+    #[serde(default)]
+    pub forward_secrecy_healthy: bool,
     pub hndl_protection: String,
     pub quantum_safe_score: u8,
     pub key_rotation_history: Vec<String>,
@@ -37,14 +42,15 @@ pub struct QuantumSecurityReport {
 impl Default for QuantumSecurityReport {
     /// Zero-evidence baseline. This is intentionally NOT a "healthy" posture:
     /// a real report must be derived from runtime evidence (loaded identity,
-    /// prekeys, active ratchet sessions, device trust state, and the verified
-    /// audit chain). Returning fabricated scores or status here would put
+    /// prekeys and their rotation, device trust state, and the verified audit
+    /// chain). Returning fabricated scores or status here would put
     /// untraceable metrics into exported security reports.
     fn default() -> Self {
         Self {
             hybrid_session_status: "No Active Session".to_string(),
             pqc_algorithm: "No active device keys".to_string(),
             forward_secrecy: "Awaiting prekey material".to_string(),
+            forward_secrecy_healthy: false,
             hndl_protection: "Not Ready".to_string(),
             quantum_safe_score: 0,
             key_rotation_history: Vec::new(),

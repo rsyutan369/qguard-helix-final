@@ -7,6 +7,16 @@ export interface CallState {
   peerUserId: string | null;
   peerDeviceId: string | null;
   safetyNumber: string | null;
+  /**
+   * How this call's key was agreed, as reported by the Rust core once media
+   * connects (null until then — never assumed):
+   *   - `forwardSecret`: the key also depends on a key pair that existed only
+   *     for this call. False when the other side runs a build that predates it.
+   *   - `peerVerified`: the other party proved it holds the identity registered
+   *     for its device. For an incoming call, false means the caller is unproven.
+   */
+  forwardSecret: boolean | null;
+  peerVerified: boolean | null;
   error: string | null;
 }
 
@@ -15,12 +25,13 @@ export type CallAction =
   | { type: "incoming"; callId: string; peerUserId: string; peerDeviceId: string }
   | { type: "accept" }
   | { type: "remote-answered" }
-  | { type: "media-connected"; safetyNumber: string }
+  | { type: "media-connected"; safetyNumber: string; forwardSecret?: boolean; peerVerified?: boolean }
   | { type: "failed"; error: string }
   | { type: "ended" };
 
 export const INITIAL_CALL_STATE: CallState = {
-  phase: "idle", callId: null, role: null, peerUserId: null, peerDeviceId: null, safetyNumber: null, error: null,
+  phase: "idle", callId: null, role: null, peerUserId: null, peerDeviceId: null, safetyNumber: null,
+  forwardSecret: null, peerVerified: null, error: null,
 };
 
 const ACTIVE: CallPhase[] = ["ringing", "calling", "connecting", "connected"];
@@ -38,7 +49,17 @@ export function callReducer(state: CallState, action: CallAction): CallState {
     case "remote-answered":
       return state.phase === "calling" ? { ...state, phase: "connecting" } : state;
     case "media-connected":
-      return ACTIVE.includes(state.phase) ? { ...state, phase: "connected", safetyNumber: action.safetyNumber } : state;
+      return ACTIVE.includes(state.phase)
+        ? {
+          ...state,
+          phase: "connected",
+          safetyNumber: action.safetyNumber,
+          // Absent means the core did not say — which must read as "not
+          // established", never as a default of true.
+          forwardSecret: action.forwardSecret ?? false,
+          peerVerified: action.peerVerified ?? false,
+        }
+        : state;
     case "failed":
       return { ...state, phase: "ended", error: action.error };
     case "ended":

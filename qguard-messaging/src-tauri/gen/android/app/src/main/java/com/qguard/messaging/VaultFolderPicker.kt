@@ -50,8 +50,9 @@ object VaultFolderPicker {
     /** Open the system folder picker. Returns "ok" or "error:<reason>". */
     @JvmStatic
     fun launch(context: Context): String {
-        val activity = context as? Activity
-            ?: return "error:vault folder picker needs the app activity"
+        // Rust passes the Application context (tao >= 0.37), never the Activity.
+        val activity = CurrentActivity.resolve(context)
+            ?: return "error:the app is not in the foreground — reopen QGuard and try again"
         publish("pending")
         return try {
             activity.runOnUiThread {

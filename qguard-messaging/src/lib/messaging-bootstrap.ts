@@ -1,5 +1,6 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { byteaToBytes, bytesToBytea, randomHex } from "@/lib/encoding";
+import { rotateSignedPrekeyIfDue, schedulePrekeyHygiene } from "@/lib/prekey-hygiene";
 import { ONE_TIME_PREKEY_MIN, ONE_TIME_PREKEY_TARGET } from "@/lib/security-score";
 import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 
@@ -85,9 +86,42 @@ export function startMessagingWorkspaceBootstrap(client: SupabaseClient, user: U
     })
     .finally(() => {
       bootstrapPromises.delete(user.id);
+      startPrekeyUpkeep(client, user.id);
     });
   bootstrapPromises.set(user.id, bootstrap);
   return bootstrap;
+}
+
+const prekeyUpkeepTimers = new Map<string, ReturnType<typeof setInterval>>();
+const prekeyUpkeepIntervalMs = 60 * 60 * 1000;
+
+/**
+ * Keep the signed prekey rotating while the app stays open.
+ *
+ * The bootstrap above runs once per app session, so on its own a device left
+ * running for a week would publish one prekey for the whole week — and every
+ * message sent to it that week would share that key. Once an hour this re-runs
+ * the registration pass, which rotates a day-old prekey, publishes the new one
+ * and then lets the retired-prekey clean-up run. (It is also a retry for a
+ * bootstrap that failed.) The timer stops itself when another account signs in.
+ */
+function startPrekeyUpkeep(client: SupabaseClient, userId: string): void {
+  if (!isTauriRuntime() || prekeyUpkeepTimers.has(userId)) return;
+  const timer = setInterval(() => {
+    void client.auth.getSession()
+      .then(({ data }) => {
+        if (data.session?.user.id !== userId) {
+          clearInterval(timer);
+          prekeyUpkeepTimers.delete(userId);
+          return undefined;
+        }
+        return ensurePrekeyReadiness(client, userId);
+      })
+      .catch(() => {
+        // Offline or mid sign-out: the next tick tries again.
+      });
+  }, prekeyUpkeepIntervalMs);
+  prekeyUpkeepTimers.set(userId, timer);
 }
 
 export async function ensureMessagingProfile(client: SupabaseClient, user: User): Promise<void> {
@@ -219,9 +253,16 @@ async function ensureDesktopDevice(client: SupabaseClient, userId: string): Prom
   if (deviceError) throw deviceError;
 
   await reinstateConversationMembership(client, bundle.device_id);
+  // Mint tomorrow's signed prekey when today's is a day old. It has to happen
+  // before the publish below, which is what puts the new one on the relay and
+  // deactivates the old one (the device keeps the old private half until
+  // everything sealed to it is accounted for — see prekey-hygiene.ts).
+  await rotateSignedPrekeyIfDue(userId);
   await ensureSignedPrekey(client, userId, bundle.device_id);
   await ensureOneTimePrekeys(client, userId, bundle.device_id);
   await retireSupersededDevice(client, bundle);
+  // Background, throttled, and unable to fail this registration.
+  schedulePrekeyHygiene(client, userId, bundle.device_id);
   return bundle;
 }
 

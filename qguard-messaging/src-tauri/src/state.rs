@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::Utc;
@@ -9,14 +9,52 @@ use zeroize::Zeroize;
 use crate::audit::{AuditChain, AuditSeverity};
 use crate::crypto::hybrid_kex::LocalKemKeypair;
 use crate::crypto::signatures::VaultSigningKeypair;
+use crate::device_pins::{DevicePinBook, DeviceStanding, PinSubject};
 use crate::device_trust::TrustedDevice;
 use crate::error::{QGuardError, Result};
 use crate::identity::{LocalIdentity, PublicIdentityBundle};
+use crate::message_keys::MessageKeyLedger;
 use crate::prekeys::{
     generate_one_time_prekeys, generate_signed_prekey, LocalOneTimePrekey, LocalSignedPrekey,
 };
 use crate::ratchet::RatchetSession;
 use crate::telemetry::TelemetryEvent;
+
+/// Replace `path` with `bytes` so that a crash, power cut or full disk leaves
+/// either the complete old file or the complete new one — never a torn mix.
+///
+/// Every file written through here is key material that exists in exactly one
+/// place. `std::fs::write` truncates the target first and then writes, so an
+/// interruption between those two steps leaves a half-written file where the
+/// only copy of the device keys used to be. `ensure_identity` then (correctly)
+/// refuses to replace material it cannot open, and the device is stuck until
+/// the user resets its identity and loses its history. Writing a sibling temp
+/// file, flushing it to disk and renaming it over the target removes the
+/// window: a rename within one directory is atomic on every platform this app
+/// ships on.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let temp = directory.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+
+    let written = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(bytes)?;
+        // Data must be on disk BEFORE the rename makes it the live copy.
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
 
 
 /// On-disk container for the AES-256-GCM-encrypted device key material.
@@ -42,6 +80,13 @@ struct PersistedDeviceKeyMaterial {
     legacy_signed_prekeys: Vec<LocalSignedPrekey>,
     #[serde(default)]
     legacy_one_time_prekeys: Vec<LocalOneTimePrekey>,
+    /// prekey id -> unix seconds at which that signed prekey stopped being the
+    /// published one. A retired prekey is kept for a grace period (a sender may
+    /// still be holding the bundle it fetched) and then destroyed; without the
+    /// timestamp there is no way to know when that period is over, which is why
+    /// retired prekeys used to be kept indefinitely.
+    #[serde(default)]
+    retired_prekeys: HashMap<String, i64>,
     persisted_at: chrono::DateTime<Utc>,
 }
 
@@ -97,20 +142,148 @@ impl PersistedVaultRecovery {
     pub fn recovery_mode(&self) -> &str {
         self.mode.as_deref().unwrap_or("personal")
     }
+
+    /// True when this configuration holds a secret the device must not be able
+    /// to reach while the vault is locked (personal: the recovery wrapping key;
+    /// hybrid: the recovery root). Enterprise mode keeps public keys only.
+    pub fn holds_secrets(&self) -> bool {
+        self.recovery_mode() != "enterprise"
+    }
 }
 
-/// Device-local, encrypted-at-rest Vault Master Key (VMK) + the vault's ML-DSA-87
-/// signing keypair. The VMK wraps every per-file key (FEK) in the user's vault;
-/// it is generated once and reused so it acts as a true master key. Both live
-/// under the same OS-keychain-held DEK as the device key material — never sent to
-/// a server. Mirrors the `PersistedVaultRecovery` storage pattern (no `Drop` impl,
-/// matching that type; `VaultSigningKeypair` zeroizes its own secrets on drop).
+impl Drop for PersistedVaultRecovery {
+    fn drop(&mut self) {
+        self.wrap_key.zeroize();
+        if let Some(root) = self.recovery_root.as_mut() {
+            root.zeroize();
+        }
+    }
+}
+
+/// The part of the recovery configuration that is safe to read while the vault
+/// is LOCKED: which mode is configured, the one-way verifier, and (enterprise)
+/// the recipient's public keys. No key that can open a file.
+#[derive(Clone, Debug)]
+pub struct VaultRecoveryPublic {
+    pub mode: String,
+    pub verifier: String,
+    pub configured_at: chrono::DateTime<Utc>,
+    pub recipient_key_id: Option<String>,
+    pub enterprise_x25519_public: Option<Vec<u8>>,
+    pub enterprise_mlkem_public: Option<Vec<u8>>,
+}
+
+/// On-disk layout of the recovery configuration (v2).
+///
+/// The record as a whole is encrypted under the device storage key like every
+/// other key file. The SECRET half is additionally sealed under a key derived
+/// from the PIN-bound vault key, so the device can only reach it while the
+/// vault is unlocked.
+///
+/// That second layer is the point. In the v1 layout the personal recovery
+/// wrapping key sat under the device storage key alone — and every vault file
+/// carries a recovery wrap. So whoever held the storage key could open any file
+/// through its recovery wrap without the vault password, which made the vault
+/// lock decorative no matter what else was fixed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct VaultRecoveryRecordV2 {
+    version: u8,
+    mode: String,
+    verifier: String,
+    configured_at: chrono::DateTime<Utc>,
+    #[serde(default)]
+    enterprise_x25519_public: Option<Vec<u8>>,
+    #[serde(default)]
+    enterprise_mlkem_public: Option<Vec<u8>>,
+    #[serde(default)]
+    recipient_key_id: Option<String>,
+    /// `VaultRecoverySecrets`, AES-256-GCM under the vault-key-derived seal key.
+    /// Absent for enterprise mode, which has nothing secret to keep.
+    #[serde(default)]
+    sealed_secrets: Option<crate::crypto::EncryptedEnvelope>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct VaultRecoverySecrets {
+    wrap_key: [u8; crate::crypto::symmetric::KEY_SIZE],
+    #[serde(default)]
+    recovery_root: Option<[u8; crate::crypto::symmetric::KEY_SIZE]>,
+}
+
+impl Drop for VaultRecoverySecrets {
+    fn drop(&mut self) {
+        self.wrap_key.zeroize();
+        if let Some(root) = self.recovery_root.as_mut() {
+            root.zeroize();
+        }
+    }
+}
+
+/// AAD for the message-key ledger file (see `crate::message_keys`).
+const MESSAGE_KEY_LEDGER_AAD: &[u8] = b"QGuard-Messaging-Message-Key-Ledger-v1";
+/// How long to wait before trying again to open a ledger that would not open.
+const MESSAGE_KEY_LEDGER_RETRY_SECS: i64 = 60;
+
+const DEVICE_PIN_BOOK_AAD: &[u8] = b"QGuard-Messaging-Device-Pins-v1";
+/// How long to wait before trying again to open a device record that would not open.
+const DEVICE_PIN_BOOK_RETRY_SECS: i64 = 60;
+
+/// Domain separation for the PIN-bound vault key and the keys derived from it.
+const VAULT_KEY_INFO: &[u8] = b"QGuard-Vault-PIN-Bound-Key-v1";
+const VAULT_RECOVERY_SEAL_INFO: &[u8] = b"QGuard-Vault-Recovery-Material-Seal-v1";
+
+/// The Vault Master Key (VMK) and the vault's ML-DSA-87 signing keypair.
+///
+/// Stored ONLY wrapped under the user's vault password / PIN (see
+/// `commands::workspace`); held in memory while the vault is unlocked; never
+/// sent to a server. Zeroized on drop (`VaultSigningKeypair` wipes its own
+/// secrets).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PersistedVaultMaster {
     pub version: u8,
     pub vmk: [u8; crate::crypto::symmetric::KEY_SIZE],
     pub signer: VaultSigningKeypair,
     pub configured_at: chrono::DateTime<Utc>,
+}
+
+impl Drop for PersistedVaultMaster {
+    fn drop(&mut self) {
+        self.vmk.zeroize();
+    }
+}
+
+impl PersistedVaultMaster {
+    /// The PIN-bound vault key: what wraps every per-file key in a v5 container.
+    ///
+    /// WHY THIS IS NOT SIMPLY `vmk`
+    /// ---------------------------------------------------------------------
+    /// Every v3/v4 container ever written carries the VMK wrapped to the
+    /// device's hybrid KEM key in its header, and the device KEM secret is
+    /// protected only by the OS-keychain storage key. So the raw VMK must be
+    /// treated as recoverable WITHOUT the vault password by anyone who holds
+    /// that storage key and a single old container. Wrapping new files under it
+    /// would carry the bypass forward to every file made from now on.
+    ///
+    /// The signing secrets in this struct have a different history: they have
+    /// only ever existed inside the password-wrapped master blob and in the
+    /// memory of an unlocked session. Deriving the working key from the VMK
+    /// *and* those secrets therefore yields a key that genuinely cannot be
+    /// reproduced without the vault password — while staying a pure function of
+    /// the stored master. That matters: the master is wrapped separately under
+    /// the password and the PIN, so introducing a fresh random key would need
+    /// both secrets at once to re-wrap. A derived key needs neither, changes no
+    /// stored state, and comes out identical whichever credential unlocked it.
+    pub fn vault_key(&self) -> Result<[u8; crate::crypto::symmetric::KEY_SIZE]> {
+        let mut ikm = Vec::with_capacity(
+            self.vmk.len() + self.signer.ed25519_secret.len() + self.signer.mldsa87_secret.len(),
+        );
+        ikm.extend_from_slice(&self.vmk);
+        ikm.extend_from_slice(&self.signer.ed25519_secret);
+        ikm.extend_from_slice(&self.signer.mldsa87_secret);
+        let key = crate::crypto::kdf::derive_32(&ikm, VAULT_KEY_INFO);
+        ikm.zeroize();
+        key
+    }
 }
 
 /// One unlock credential (password or PIN) for a protected workspace scope.
@@ -223,6 +396,39 @@ pub struct AuthSession {
     pub expires_at: i64,
 }
 
+/// Sliding-window rate limit: admit (and record) an attempt at `now` unless
+/// `limit` attempts already fall inside the last `window_seconds`.
+///
+/// Kept as a free function so the start-up self-test can exercise the very
+/// logic the key commands rely on (see `security::selftest`).
+pub(crate) fn rate_window_admit(
+    attempts: &mut Vec<i64>,
+    now: i64,
+    limit: usize,
+    window_seconds: i64,
+) -> bool {
+    let floor = now - window_seconds;
+    attempts.retain(|timestamp| *timestamp >= floor);
+    if attempts.len() >= limit {
+        return false;
+    }
+    attempts.push(now);
+    true
+}
+
+/// The private half of a per-call hybrid KEM key pair, generated when this
+/// device accepts an incoming call and held only until the caller's offer
+/// arrives (see `commands::calls`). It is what gives a call forward secrecy:
+/// it never touches disk, and `LocalKemKeypair` wipes itself when dropped.
+pub struct PendingCallKey {
+    pub keypair: LocalKemKeypair,
+    /// Who the ring came from. The key is only ever used for a call from
+    /// exactly this device.
+    pub caller_user_id: String,
+    pub caller_device_id: String,
+    pub created_at: i64,
+}
+
 pub struct AppState {
     pub data_dir: PathBuf,
     pub key_scope: Mutex<()>,
@@ -235,6 +441,18 @@ pub struct AppState {
     /// See `PublicIdentityBundle::replaced_device_id`.
     pub superseded_device_id: Mutex<Option<String>>,
     pub legacy_one_time_prekeys: Mutex<Vec<LocalOneTimePrekey>>,
+    /// When each retired signed prekey was retired (unix seconds). Persisted
+    /// with the device key material; see `PersistedDeviceKeyMaterial`.
+    pub prekey_retirements: Mutex<HashMap<String, i64>>,
+    /// Per-message keys for envelopes this device has already opened — what
+    /// allows retired prekeys to be destroyed. See `crate::message_keys`.
+    pub message_keys: Mutex<MessageKeyLedger>,
+    /// This device's own record of which devices belong to whom, so a device
+    /// the relay lists for someone later is noticed. See `crate::device_pins`.
+    pub device_pins: Mutex<DevicePinBook>,
+    /// Per-call key pairs for calls this device is in the middle of answering,
+    /// by call id. Memory only, and each is removed the moment it is used.
+    pub pending_call_keys: Mutex<HashMap<String, PendingCallKey>>,
     pub ratchets: Mutex<HashMap<String, RatchetSession>>,
     pub decrypted_message_cache: Mutex<HashMap<String, String>>,
     pub devices: Mutex<HashMap<String, TrustedDevice>>,
@@ -275,6 +493,10 @@ impl AppState {
             legacy_signed_prekeys: Mutex::new(Vec::new()),
             superseded_device_id: Mutex::new(None),
             legacy_one_time_prekeys: Mutex::new(Vec::new()),
+            prekey_retirements: Mutex::new(HashMap::new()),
+            message_keys: Mutex::new(MessageKeyLedger::default()),
+            device_pins: Mutex::new(DevicePinBook::default()),
+            pending_call_keys: Mutex::new(HashMap::new()),
             ratchets: Mutex::new(HashMap::new()),
             decrypted_message_cache: Mutex::new(HashMap::new()),
             devices: Mutex::new(HashMap::new()),
@@ -310,6 +532,11 @@ impl AppState {
                 material_status,
             ) = match self.load_device_key_material(user_id) {
                 Ok(Some(material)) => {
+                    // Must happen before ANY persist below: persisting writes
+                    // the retirement times held in memory, and writing an empty
+                    // map here would restart the grace period of every retired
+                    // prekey on every launch — so none would ever be destroyed.
+                    self.install_prekey_retirements(&material.retired_prekeys);
                     if Self::key_material_uses_current_pq_suite(&material) {
                         // Builds before this one registered EVERY platform as
                         // "Windows Desktop", so an Android install carries a
@@ -317,12 +544,23 @@ impl AppState {
                         // next launch: `device_label` is not covered by
                         // `identity_signable`, so the device signature and every
                         // key stay valid and the device id never changes.
+                        //
+                        // Retired prekeys written by a build that did not record
+                        // WHEN they were retired get their clock started now —
+                        // and that has to be written down, or "now" would be a
+                        // later moment on every launch.
+                        let needs_retirement_backfill = material
+                            .legacy_signed_prekeys
+                            .iter()
+                            .any(|prekey| !material.retired_prekeys.contains_key(&prekey.public.prekey_id));
                         let mut identity = material.identity;
-                        if identity.device_label.trim().is_empty()
+                        let relabel = identity.device_label.trim().is_empty()
                             || (crate::identity::is_legacy_hardcoded_label(&identity.device_label)
-                                && !crate::identity::is_legacy_hardcoded_label(label))
-                        {
+                                && !crate::identity::is_legacy_hardcoded_label(label));
+                        if relabel {
                             identity.device_label = label.to_string();
+                        }
+                        if relabel || needs_retirement_backfill {
                             // Best effort: a failed rewrite must never stop the
                             // user signing in -- the label is cosmetic, the keys
                             // in memory are already correct.
@@ -409,6 +647,7 @@ impl AppState {
                     }
                 }
                 Ok(None) => {
+                    self.install_prekey_retirements(&HashMap::new());
                     let identity = LocalIdentity::generate(user_id, label)?;
                     let signed = generate_signed_prekey(&identity)?;
                     let otks = generate_one_time_prekeys(&identity, 24)?;
@@ -719,6 +958,7 @@ impl AppState {
             legacy_kem_keypairs: legacy_kem_keypairs.to_vec(),
             legacy_signed_prekeys: legacy_signed_prekeys.to_vec(),
             legacy_one_time_prekeys: legacy_one_time_prekeys.to_vec(),
+            retired_prekeys: self.retained_prekey_retirements(legacy_signed_prekeys),
             persisted_at: Utc::now(),
         };
         let mut encoded = serde_json::to_vec(&material)
@@ -733,12 +973,298 @@ impl AppState {
         let serialized = serde_json::to_vec(&file).map_err(|e| {
             QGuardError::Storage(format!("encode encrypted device key material: {e}"))
         })?;
-        std::fs::write(self.encrypted_key_material_path(user_id), &serialized).map_err(|e| {
+        write_atomic(&self.encrypted_key_material_path(user_id), &serialized).map_err(|e| {
             QGuardError::Storage(format!("write encrypted device key material: {e}"))
         })?;
         // Remove any legacy plaintext material now that the encrypted copy is authoritative.
         let _ = std::fs::remove_file(self.key_material_path(user_id));
         Ok(())
+    }
+
+    /// Replace the in-memory retirement times with the ones just loaded.
+    fn install_prekey_retirements(&self, retirements: &HashMap<String, i64>) {
+        if let Ok(mut map) = self.prekey_retirements.lock() {
+            *map = retirements.clone();
+        }
+    }
+
+    /// Retirement times for exactly the retired signed prekeys being persisted.
+    ///
+    /// Entries for prekeys that no longer exist are dropped, and a retired
+    /// prekey with no recorded time (it was retired by an older build, or just
+    /// now) starts its grace period at this moment. The result is also
+    /// installed in memory, so what is on disk and what the status commands
+    /// report never drift apart.
+    fn retained_prekey_retirements(
+        &self,
+        legacy_signed_prekeys: &[LocalSignedPrekey],
+    ) -> HashMap<String, i64> {
+        let now = Utc::now().timestamp();
+        let known = self
+            .prekey_retirements
+            .lock()
+            .map(|map| map.clone())
+            .unwrap_or_default();
+        let retained: HashMap<String, i64> = legacy_signed_prekeys
+            .iter()
+            .map(|prekey| {
+                let id = prekey.public.prekey_id.clone();
+                let retired_at = known.get(&id).copied().unwrap_or(now);
+                (id, retired_at)
+            })
+            .collect();
+        self.install_prekey_retirements(&retained);
+        retained
+    }
+
+    /// When `prekey_id` was retired, if it is a retired signed prekey.
+    pub fn prekey_retired_at(&self, prekey_id: &str) -> Option<i64> {
+        self.prekey_retirements
+            .lock()
+            .ok()
+            .and_then(|map| map.get(prekey_id).copied())
+    }
+
+    // ---- Message-key ledger (see crate::message_keys) -----------------------
+
+    fn message_key_ledger_path(&self, user_id: &str) -> PathBuf {
+        let safe_user_id = Self::safe_user_key(user_id);
+        self.data_dir
+            .join("keys")
+            .join(format!("{safe_user_id}.message-keys.enc"))
+    }
+
+    /// Load the ledger for `user_id`.
+    ///
+    /// Three outcomes, and telling them apart is the whole job:
+    ///   * no file            -> a fresh, usable ledger;
+    ///   * file opens         -> that ledger;
+    ///   * file will not open -> an UNAVAILABLE placeholder that caches nothing
+    ///     and is never written. Treating that case as "empty" would overwrite
+    ///     every cached key with nothing on the next flush, on what may be no
+    ///     more than a momentary keychain fault.
+    fn load_message_keys(&self, user_id: &str) -> MessageKeyLedger {
+        let now = Utc::now().timestamp();
+        match self.read_storage_sealed_file(
+            user_id,
+            &self.message_key_ledger_path(user_id),
+            MESSAGE_KEY_LEDGER_AAD,
+            "message key ledger",
+        ) {
+            Ok(None) => MessageKeyLedger::empty(user_id, now),
+            Ok(Some(plaintext)) => MessageKeyLedger::decode(user_id, &plaintext, now)
+                .unwrap_or_else(|_| MessageKeyLedger::unavailable(user_id, now + MESSAGE_KEY_LEDGER_RETRY_SECS)),
+            Err(_) => MessageKeyLedger::unavailable(user_id, now + MESSAGE_KEY_LEDGER_RETRY_SECS),
+        }
+    }
+
+    /// Run `f` against the ledger belonging to `user_id`, loading it first if
+    /// another user's (or none) is in memory, or if an earlier load failed long
+    /// enough ago to be worth retrying.
+    pub fn with_message_keys<T>(
+        &self,
+        user_id: &str,
+        f: impl FnOnce(&mut MessageKeyLedger) -> T,
+    ) -> Result<T> {
+        let mut ledger = self
+            .message_keys
+            .lock()
+            .map_err(|_| QGuardError::Storage("message key ledger lock poisoned".to_string()))?;
+        if ledger.owner() != Some(user_id) || ledger.should_retry_load(Utc::now().timestamp()) {
+            // Another account's ledger is about to leave memory: save what it
+            // learned first. Best effort — losing it only costs repeat work.
+            let _ = self.write_message_keys(&mut *ledger);
+            *ledger = self.load_message_keys(user_id);
+        }
+        Ok(f(&mut *ledger))
+    }
+
+    /// Write `ledger` to its owner's file if it is usable and has unsaved
+    /// changes. Returns whether the copy on disk is now known to be complete.
+    fn write_message_keys(&self, ledger: &mut MessageKeyLedger) -> Result<bool> {
+        let Some(owner) = ledger.owner().map(str::to_string) else {
+            return Ok(false);
+        };
+        if !ledger.is_available() {
+            return Ok(false);
+        }
+        if ledger.unflushed() == 0 {
+            return Ok(true);
+        }
+        let mut encoded = ledger.encode()?;
+        let written = self.write_storage_sealed_file(
+            &owner,
+            &self.message_key_ledger_path(&owner),
+            MESSAGE_KEY_LEDGER_AAD,
+            &encoded,
+            "message key ledger",
+        );
+        encoded.zeroize();
+        written?;
+        ledger.mark_flushed();
+        Ok(true)
+    }
+
+    /// The key that already opened this exact envelope, if this device has one.
+    pub fn cached_message_key(
+        &self,
+        user_id: &str,
+        message_id: &str,
+        nonce: &[u8],
+        tag: &[u8],
+    ) -> Option<[u8; crate::crypto::symmetric::KEY_SIZE]> {
+        self.with_message_keys(user_id, |ledger| ledger.lookup(message_id, nonce, tag))
+            .ok()
+            .flatten()
+    }
+
+    /// Record the key that just opened (or sealed) an envelope. Best effort by
+    /// design: a ledger that cannot be used costs a repeat prekey decrypt later,
+    /// never the message.
+    pub fn remember_message_key(
+        &self,
+        user_id: &str,
+        message_id: &str,
+        nonce: &[u8],
+        tag: &[u8],
+        key: &[u8; crate::crypto::symmetric::KEY_SIZE],
+    ) {
+        let now = Utc::now().timestamp();
+        let flush_due = self
+            .with_message_keys(user_id, |ledger| {
+                ledger.remember(message_id, nonce, tag, key, now);
+                ledger.unflushed() >= crate::message_keys::FLUSH_EVERY
+            })
+            .unwrap_or(false);
+        if flush_due {
+            let _ = self.flush_message_keys(user_id);
+        }
+    }
+
+    /// Note that an envelope had to be opened with `prekey_id` because its key
+    /// was not in the ledger. A retired prekey that keeps being needed is not
+    /// ready to be destroyed, whatever else says so.
+    pub fn note_prekey_needed(&self, user_id: &str, prekey_id: &str) {
+        let now = Utc::now().timestamp();
+        let _ = self.with_message_keys(user_id, |ledger| ledger.note_prekey_needed(prekey_id, now));
+    }
+
+    /// Write the ledger out if it has unsaved changes. Returns whether the
+    /// ledger on disk is now known to be complete — false when it is
+    /// unavailable or belongs to another user, in which case nothing may be
+    /// destroyed on the strength of it.
+    pub fn flush_message_keys(&self, user_id: &str) -> Result<bool> {
+        let mut ledger = self
+            .message_keys
+            .lock()
+            .map_err(|_| QGuardError::Storage("message key ledger lock poisoned".to_string()))?;
+        if ledger.owner() != Some(user_id) {
+            return Ok(false);
+        }
+        self.write_message_keys(&mut ledger)
+    }
+
+    // ---- Device pins (see crate::device_pins) ------------------------------
+
+    fn device_pin_book_path(&self, user_id: &str) -> PathBuf {
+        let safe_user_id = Self::safe_user_key(user_id);
+        self.data_dir
+            .join("keys")
+            .join(format!("{safe_user_id}.device-pins.enc"))
+    }
+
+    /// Load the device record for `user_id`. As with the message-key ledger,
+    /// "no file" (a fresh, usable book) and "a file that will not open" (an
+    /// UNAVAILABLE placeholder that is never written) must not be confused:
+    /// treating the second as the first would re-record whatever the directory
+    /// lists right now as trusted.
+    fn load_device_pins(&self, user_id: &str) -> DevicePinBook {
+        let retry_after = Utc::now().timestamp() + DEVICE_PIN_BOOK_RETRY_SECS;
+        match self.read_storage_sealed_file(
+            user_id,
+            &self.device_pin_book_path(user_id),
+            DEVICE_PIN_BOOK_AAD,
+            "device record",
+        ) {
+            Ok(None) => DevicePinBook::empty(user_id),
+            Ok(Some(plaintext)) => DevicePinBook::decode(user_id, &plaintext)
+                .unwrap_or_else(|_| DevicePinBook::unavailable(user_id, retry_after)),
+            Err(_) => DevicePinBook::unavailable(user_id, retry_after),
+        }
+    }
+
+    /// Run `f` against `user_id`'s device record, loading it first if needed,
+    /// and write the record out if `f` changed it. A change that cannot be
+    /// saved is an error: an approval that exists only in memory would be
+    /// silently forgotten at the next start.
+    pub fn with_device_pins<T>(
+        &self,
+        user_id: &str,
+        f: impl FnOnce(&mut DevicePinBook) -> T,
+    ) -> Result<T> {
+        let mut book = self
+            .device_pins
+            .lock()
+            .map_err(|_| QGuardError::Storage("device record lock poisoned".to_string()))?;
+        if book.owner() != Some(user_id) || book.should_retry_load(Utc::now().timestamp()) {
+            *book = self.load_device_pins(user_id);
+        }
+        let outcome = f(&mut *book);
+        if book.is_available() && book.is_dirty() {
+            let encoded = book.encode()?;
+            self.write_storage_sealed_file(
+                user_id,
+                &self.device_pin_book_path(user_id),
+                DEVICE_PIN_BOOK_AAD,
+                &encoded,
+                "device record",
+            )?;
+            book.mark_saved();
+        }
+        Ok(outcome)
+    }
+
+    /// How a device stands against `user_id`'s record, without recording
+    /// anything. `None` means there is nothing to judge it against yet.
+    pub fn device_standing(&self, user_id: &str, subject: &PinSubject) -> Option<DeviceStanding> {
+        self.with_device_pins(user_id, |book| book.standing(subject))
+            .ok()
+            .flatten()
+    }
+
+    /// Refuse to seal anything to a device this device has not accepted.
+    ///
+    /// A device nobody has been judged against yet (no record for its owner)
+    /// passes: first use is established by `devices_assess_pins`, which sees
+    /// the owner's whole device list, not by whichever device happens to be
+    /// addressed first.
+    pub fn require_accepted_device(&self, user_id: &str, subject: &PinSubject) -> Result<()> {
+        match self.device_standing(user_id, subject) {
+            None | Some(DeviceStanding::Pinned) => Ok(()),
+            Some(DeviceStanding::New) => Err(QGuardError::Trust(format!(
+                "device {} was added to this contact after you first exchanged keys and has not been approved on this device; nothing is sent to it until it is",
+                subject.device_id
+            ))),
+            Some(DeviceStanding::KeyChanged) => Err(QGuardError::Trust(format!(
+                "device {} is presenting different identity keys than the ones recorded for it; nothing is sent to it",
+                subject.device_id
+            ))),
+        }
+    }
+
+    /// Write out whichever ledger is in memory, whoever owns it (window close).
+    pub fn flush_loaded_message_keys(&self) {
+        if let Ok(mut ledger) = self.message_keys.lock() {
+            let _ = self.write_message_keys(&mut ledger);
+        }
+    }
+
+    /// Save and then drop the in-memory ledger (sign-out).
+    fn unload_message_keys(&self) {
+        if let Ok(mut ledger) = self.message_keys.lock() {
+            let _ = self.write_message_keys(&mut ledger);
+            *ledger = MessageKeyLedger::default();
+        }
     }
 
     pub fn persist_current_device_key_material(&self) -> Result<()> {
@@ -808,6 +1334,15 @@ impl AppState {
         let _ = crate::security::keystore::delete_secret(&account, &self.data_dir);
         let _ = std::fs::remove_file(self.encrypted_key_material_path(user_id));
         let _ = std::fs::remove_file(self.key_material_path(user_id));
+        // The message-key ledger was encrypted under the storage key that has
+        // just been discarded, so it is unreadable from here on. Drop it from
+        // memory WITHOUT flushing (a flush would re-create it under a new key
+        // with the old contents) and remove the dead file.
+        if let Ok(mut ledger) = self.message_keys.lock() {
+            *ledger = MessageKeyLedger::default();
+        }
+        let _ = std::fs::remove_file(self.message_key_ledger_path(user_id));
+        self.install_prekey_retirements(&HashMap::new());
 
         // Drop every cached artefact of the old identity so `ensure_identity`
         // rebuilds from scratch instead of handing back what is still in RAM.
@@ -842,49 +1377,259 @@ impl AppState {
         self.ensure_identity(user_id, label)
     }
 
-    fn vault_recovery_path(&self, user_id: &str) -> PathBuf {
+    /// Pre-v2 recovery file: secrets protected by the device storage key only.
+    /// Read for migration, never written.
+    fn vault_recovery_legacy_path(&self, user_id: &str) -> PathBuf {
         let safe_user_id = Self::safe_user_key(user_id);
         self.data_dir
             .join("keys")
             .join(format!("{safe_user_id}.vault-recovery.enc"))
     }
 
-    /// Persist the derived recovery wrapping key + verifier for this user,
-    /// encrypted at rest under the same OS-keychain-held DEK as the device keys.
-    pub fn save_vault_recovery(&self, user_id: &str, material: &PersistedVaultRecovery) -> Result<()> {
-        let mut encoded = serde_json::to_vec(material)
-            .map_err(|e| QGuardError::Storage(format!("encode vault recovery material: {e}")))?;
-        let key = self.device_storage_key(user_id, true)?;
-        let envelope = crate::crypto::symmetric::encrypt(&key, &encoded, &crate::security::obf::vault_recovery_material_aad());
-        encoded.zeroize();
+    /// v2 recovery file. A new NAME, not just a new version field, so a build
+    /// that predates it sees "no recovery configured" instead of mis-reading a
+    /// sealed record as an all-zero wrapping key.
+    fn vault_recovery_path(&self, user_id: &str) -> PathBuf {
+        let safe_user_id = Self::safe_user_key(user_id);
+        self.data_dir
+            .join("keys")
+            .join(format!("{safe_user_id}.vault-recovery.v2.enc"))
+    }
+
+    /// Read a JSON document that was encrypted under the device storage key.
+    /// `Ok(None)` when the file does not exist.
+    fn read_storage_sealed_file(
+        &self,
+        user_id: &str,
+        path: &Path,
+        aad: &[u8],
+        what: &str,
+    ) -> Result<Option<zeroize::Zeroizing<Vec<u8>>>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(path)
+            .map_err(|e| QGuardError::Storage(format!("read {what}: {e}")))?;
+        let file: EncryptedKeyMaterialFile = serde_json::from_slice(&bytes)
+            .map_err(|e| QGuardError::Storage(format!("decode {what}: {e}")))?;
+        let mut key = self.device_storage_key(user_id, false)?;
+        let plaintext = crate::crypto::symmetric::decrypt(&key, &file.envelope, aad);
+        key.zeroize();
+        Ok(Some(zeroize::Zeroizing::new(plaintext?)))
+    }
+
+    /// Encrypt `plaintext` under the device storage key and write it atomically.
+    fn write_storage_sealed_file(
+        &self,
+        user_id: &str,
+        path: &Path,
+        aad: &[u8],
+        plaintext: &[u8],
+        what: &str,
+    ) -> Result<()> {
+        let mut key = self.device_storage_key(user_id, true)?;
+        let envelope = crate::crypto::symmetric::encrypt(&key, plaintext, aad);
+        key.zeroize();
         let file = EncryptedKeyMaterialFile {
             version: 1,
             envelope: envelope?,
         };
-        let serialized = serde_json::to_vec(&file).map_err(|e| {
-            QGuardError::Storage(format!("encode encrypted vault recovery: {e}"))
-        })?;
-        std::fs::write(self.vault_recovery_path(user_id), &serialized)
-            .map_err(|e| QGuardError::Storage(format!("write vault recovery material: {e}")))?;
+        let serialized = serde_json::to_vec(&file)
+            .map_err(|e| QGuardError::Storage(format!("encode {what}: {e}")))?;
+        write_atomic(path, &serialized)
+            .map_err(|e| QGuardError::Storage(format!("write {what}: {e}")))
+    }
+
+    fn vault_recovery_seal_key(
+        vault_key: &[u8; crate::crypto::symmetric::KEY_SIZE],
+    ) -> Result<[u8; crate::crypto::symmetric::KEY_SIZE]> {
+        crate::crypto::kdf::derive_32(vault_key, VAULT_RECOVERY_SEAL_INFO)
+    }
+
+    fn vault_recovery_seal_aad(user_id: &str) -> Vec<u8> {
+        format!("QGuard-Vault-Recovery-Secrets-v1:{user_id}").into_bytes()
+    }
+
+    fn load_vault_recovery_record(&self, user_id: &str) -> Result<Option<VaultRecoveryRecordV2>> {
+        let Some(plaintext) = self.read_storage_sealed_file(
+            user_id,
+            &self.vault_recovery_path(user_id),
+            &crate::security::obf::vault_recovery_material_aad(),
+            "vault recovery material",
+        )?
+        else {
+            return Ok(None);
+        };
+        let record: VaultRecoveryRecordV2 = serde_json::from_slice(&plaintext)
+            .map_err(|e| QGuardError::Storage(format!("decode vault recovery payload: {e}")))?;
+        Ok(Some(record))
+    }
+
+    fn load_vault_recovery_legacy(&self, user_id: &str) -> Result<Option<PersistedVaultRecovery>> {
+        let Some(plaintext) = self.read_storage_sealed_file(
+            user_id,
+            &self.vault_recovery_legacy_path(user_id),
+            &crate::security::obf::vault_recovery_material_aad(),
+            "vault recovery material",
+        )?
+        else {
+            return Ok(None);
+        };
+        let material: PersistedVaultRecovery = serde_json::from_slice(&plaintext)
+            .map_err(|e| QGuardError::Storage(format!("decode vault recovery payload: {e}")))?;
+        Ok(Some(material))
+    }
+
+    /// What can be known about recovery while the vault is LOCKED: whether it is
+    /// configured, in which mode, and the one-way verifier. Never a key.
+    pub fn load_vault_recovery_public(&self, user_id: &str) -> Result<Option<VaultRecoveryPublic>> {
+        if let Some(record) = self.load_vault_recovery_record(user_id)? {
+            return Ok(Some(VaultRecoveryPublic {
+                mode: record.mode,
+                verifier: record.verifier,
+                configured_at: record.configured_at,
+                recipient_key_id: record.recipient_key_id,
+                enterprise_x25519_public: record.enterprise_x25519_public,
+                enterprise_mlkem_public: record.enterprise_mlkem_public,
+            }));
+        }
+        // Not migrated yet (the vault has not been unlocked since the upgrade).
+        Ok(self.load_vault_recovery_legacy(user_id)?.map(|material| VaultRecoveryPublic {
+            mode: material.recovery_mode().to_string(),
+            verifier: material.verifier.clone(),
+            configured_at: material.configured_at,
+            recipient_key_id: material.recipient_key_id.clone(),
+            enterprise_x25519_public: material.enterprise_x25519_public.clone(),
+            enterprise_mlkem_public: material.enterprise_mlkem_public.clone(),
+        }))
+    }
+
+    /// Persist the recovery configuration. The secret half (personal: the
+    /// wrapping key; hybrid: the recovery root) is sealed under a key derived
+    /// from the PIN-bound vault key, so this needs the vault unlocked.
+    pub fn save_vault_recovery(
+        &self,
+        user_id: &str,
+        material: &PersistedVaultRecovery,
+        vault_key: &[u8; crate::crypto::symmetric::KEY_SIZE],
+    ) -> Result<()> {
+        let sealed_secrets = if material.holds_secrets() {
+            let secrets = VaultRecoverySecrets {
+                wrap_key: material.wrap_key,
+                recovery_root: material.recovery_root,
+            };
+            let mut encoded = serde_json::to_vec(&secrets)
+                .map_err(|e| QGuardError::Storage(format!("encode vault recovery secrets: {e}")))?;
+            let mut seal_key = Self::vault_recovery_seal_key(vault_key)?;
+            let envelope = crate::crypto::symmetric::encrypt(
+                &seal_key,
+                &encoded,
+                &Self::vault_recovery_seal_aad(user_id),
+            );
+            seal_key.zeroize();
+            encoded.zeroize();
+            Some(envelope?)
+        } else {
+            None
+        };
+        let record = VaultRecoveryRecordV2 {
+            version: 2,
+            mode: material.recovery_mode().to_string(),
+            verifier: material.verifier.clone(),
+            configured_at: material.configured_at,
+            enterprise_x25519_public: material.enterprise_x25519_public.clone(),
+            enterprise_mlkem_public: material.enterprise_mlkem_public.clone(),
+            recipient_key_id: material.recipient_key_id.clone(),
+            sealed_secrets,
+        };
+        let encoded = serde_json::to_vec(&record)
+            .map_err(|e| QGuardError::Storage(format!("encode vault recovery material: {e}")))?;
+        self.write_storage_sealed_file(
+            user_id,
+            &self.vault_recovery_path(user_id),
+            &crate::security::obf::vault_recovery_material_aad(),
+            &encoded,
+            "vault recovery material",
+        )?;
+        // The sealed copy is authoritative; the old layout kept the same secret
+        // under the device storage key alone and must not outlive it.
+        let _ = std::fs::remove_file(self.vault_recovery_legacy_path(user_id));
         Ok(())
     }
 
-    pub fn load_vault_recovery(&self, user_id: &str) -> Result<Option<PersistedVaultRecovery>> {
-        let path = self.vault_recovery_path(user_id);
-        if !path.exists() {
-            return Ok(None);
+    /// The full recovery configuration, INCLUDING its secret half. Requires the
+    /// PIN-bound vault key — i.e. the vault must be unlocked.
+    ///
+    /// A record still in the pre-v2 layout is migrated here, the first time the
+    /// vault is unlocked after the upgrade.
+    pub fn load_vault_recovery(
+        &self,
+        user_id: &str,
+        vault_key: &[u8; crate::crypto::symmetric::KEY_SIZE],
+    ) -> Result<Option<PersistedVaultRecovery>> {
+        if let Some(record) = self.load_vault_recovery_record(user_id)? {
+            let (wrap_key, recovery_root) = match record.sealed_secrets.as_ref() {
+                Some(envelope) => {
+                    let mut seal_key = Self::vault_recovery_seal_key(vault_key)?;
+                    let opened = crate::crypto::symmetric::decrypt(
+                        &seal_key,
+                        envelope,
+                        &Self::vault_recovery_seal_aad(user_id),
+                    );
+                    seal_key.zeroize();
+                    let plaintext = zeroize::Zeroizing::new(opened.map_err(|_| {
+                        QGuardError::Trust(
+                            "The recovery key stored on this device was sealed under a different vault unlock key, so it cannot be used. Re-enter your recovery key under Recovery to enable it again."
+                                .to_string(),
+                        )
+                    })?);
+                    let secrets: VaultRecoverySecrets = serde_json::from_slice(&plaintext)
+                        .map_err(|e| {
+                            QGuardError::Storage(format!("decode vault recovery secrets: {e}"))
+                        })?;
+                    (secrets.wrap_key, secrets.recovery_root)
+                }
+                None => ([0u8; crate::crypto::symmetric::KEY_SIZE], None),
+            };
+            return Ok(Some(PersistedVaultRecovery {
+                version: 2,
+                wrap_key,
+                verifier: record.verifier,
+                configured_at: record.configured_at,
+                mode: Some(record.mode),
+                recovery_root,
+                enterprise_x25519_public: record.enterprise_x25519_public,
+                enterprise_mlkem_public: record.enterprise_mlkem_public,
+                recipient_key_id: record.recipient_key_id,
+            }));
         }
-        let bytes = std::fs::read(&path)
-            .map_err(|e| QGuardError::Storage(format!("read vault recovery material: {e}")))?;
-        let file: EncryptedKeyMaterialFile = serde_json::from_slice(&bytes)
-            .map_err(|e| QGuardError::Storage(format!("decode vault recovery material: {e}")))?;
-        let key = self.device_storage_key(user_id, false)?;
-        let mut plaintext =
-            crate::crypto::symmetric::decrypt(&key, &file.envelope, &crate::security::obf::vault_recovery_material_aad())?;
-        let material: PersistedVaultRecovery = serde_json::from_slice(&plaintext)
-            .map_err(|e| QGuardError::Storage(format!("decode vault recovery payload: {e}")))?;
-        plaintext.zeroize();
-        Ok(Some(material))
+
+        let Some(legacy) = self.load_vault_recovery_legacy(user_id)? else {
+            return Ok(None);
+        };
+        // Best effort: a failed rewrite must not stop the vault working — the
+        // material in hand is correct, and the next unlock retries the move.
+        let _ = self.save_vault_recovery(user_id, &legacy, vault_key);
+        Ok(Some(legacy))
+    }
+
+    /// Move a pre-v2 recovery record under the vault key. Called on unlock so the
+    /// storage-key-only copy disappears as soon as the vault is next opened,
+    /// rather than waiting for the next encryption.
+    pub fn migrate_vault_recovery(
+        &self,
+        user_id: &str,
+        vault_key: &[u8; crate::crypto::symmetric::KEY_SIZE],
+    ) {
+        if self.vault_recovery_legacy_path(user_id).exists() {
+            let _ = self.load_vault_recovery(user_id, vault_key);
+        }
+    }
+
+    /// Forget the recovery configuration on this device (both layouts).
+    pub fn delete_vault_recovery(&self, user_id: &str) {
+        let _ = std::fs::remove_file(self.vault_recovery_path(user_id));
+        let _ = std::fs::remove_file(self.vault_recovery_legacy_path(user_id));
     }
 
     fn vault_master_path(&self, user_id: &str) -> PathBuf {
@@ -959,7 +1704,7 @@ impl AppState {
         let file = EncryptedKeyMaterialFile { version: 1, envelope };
         let serialized = serde_json::to_vec(&file)
             .map_err(|e| QGuardError::Storage(format!("encode encrypted workspace scope: {e}")))?;
-        std::fs::write(self.workspace_scope_path(user_id, &material.scope), &serialized)
+        write_atomic(&self.workspace_scope_path(user_id, &material.scope), &serialized)
             .map_err(|e| QGuardError::Storage(format!("write workspace scope: {e}")))?;
         Ok(())
     }
@@ -1000,7 +1745,7 @@ impl AppState {
     /// app can't tell whose PIN to prompt for and falls back to full email/
     /// password login. The value is an opaque account UUID — not a secret.
     pub fn save_applock_user_pointer(&self, user_id: &str) -> Result<()> {
-        std::fs::write(self.applock_pointer_path(), user_id.as_bytes())
+        write_atomic(&self.applock_pointer_path(), user_id.as_bytes())
             .map_err(|e| QGuardError::Storage(format!("write applock pointer: {e}")))
     }
 
@@ -1028,7 +1773,7 @@ impl AppState {
         let file = EncryptedKeyMaterialFile { version: 1, envelope: envelope? };
         let serialized = serde_json::to_vec(&file)
             .map_err(|e| QGuardError::Storage(format!("encode encrypted applock: {e}")))?;
-        std::fs::write(self.applock_path(user_id), &serialized)
+        write_atomic(&self.applock_path(user_id), &serialized)
             .map_err(|e| QGuardError::Storage(format!("write applock: {e}")))?;
         // Point this device at the enrolled user so a cold-launch PIN prompt
         // can find the config before any session is restored.
@@ -1277,6 +2022,10 @@ impl AppState {
     }
 
     fn clear_volatile_key_state(&self) -> Result<()> {
+        // Before the keys go: anything opened this session but not yet written
+        // to the ledger is saved, then the ledger leaves memory with them.
+        self.unload_message_keys();
+        self.install_prekey_retirements(&HashMap::new());
         *self
             .identity
             .lock()
@@ -1301,6 +2050,17 @@ impl AppState {
             .lock()
             .map_err(|_| QGuardError::Storage("legacy one-time prekey lock poisoned".to_string()))?
             .clear();
+        self.pending_call_keys
+            .lock()
+            .map_err(|_| QGuardError::Storage("pending call key lock poisoned".to_string()))?
+            .clear();
+        // Already on disk (every change is written as it is made); only the
+        // in-memory copy leaves with the session.
+        *self
+            .device_pins
+            .lock()
+            .map_err(|_| QGuardError::Storage("device record lock poisoned".to_string()))? =
+            DevicePinBook::default();
         self.ratchets
             .lock()
             .map_err(|_| QGuardError::Storage("ratchet lock poisoned".to_string()))?
@@ -1397,20 +2157,16 @@ impl AppState {
         window_seconds: i64,
     ) -> Result<()> {
         let now = Utc::now().timestamp();
-        let floor = now - window_seconds;
         let key = format!("{scope}:{target}");
         let mut attempts = self
             .decrypt_attempts
             .lock()
             .map_err(|_| QGuardError::Storage("decrypt attempt lock poisoned".to_string()))?;
-        let entry = attempts.entry(key).or_default();
-        entry.retain(|timestamp| *timestamp >= floor);
-        if entry.len() >= limit {
+        if !rate_window_admit(attempts.entry(key).or_default(), now, limit, window_seconds) {
             return Err(QGuardError::Trust(
                 "Too many secure key operations. Wait a few minutes and try again.".to_string(),
             ));
         }
-        entry.push(now);
         Ok(())
     }
 
@@ -1585,5 +2341,309 @@ mod tests {
             "a suite with no FIPS 203 marker must never be treated as interoperable"
         );
         assert!(crate::crypto::AlgorithmSuite::default().kem_interoperates());
+    }
+
+    fn test_master() -> PersistedVaultMaster {
+        PersistedVaultMaster {
+            version: 1,
+            vmk: crate::crypto::symmetric::random_key(),
+            signer: VaultSigningKeypair::generate(),
+            configured_at: Utc::now(),
+        }
+    }
+
+    /// The PIN-bound vault key must not be reachable from the raw VMK, because
+    /// the raw VMK is recoverable from any legacy container by whoever holds
+    /// the device storage key. It must also be a stable function of the stored
+    /// master, so both unlock credentials arrive at the same key.
+    #[test]
+    fn the_vault_key_needs_more_than_the_master_key() {
+        let master = test_master();
+        let key = master.vault_key().unwrap();
+        assert_eq!(key, master.vault_key().unwrap(), "must be deterministic");
+        assert_ne!(key, master.vmk, "the vault key must not be the raw VMK");
+
+        // Same VMK, different signing secrets: an attacker who recovered the VMK
+        // from an old header but never saw the password-wrapped master blob.
+        let same_vmk_only = PersistedVaultMaster {
+            version: 1,
+            vmk: master.vmk,
+            signer: VaultSigningKeypair::generate(),
+            configured_at: master.configured_at,
+        };
+        assert_ne!(same_vmk_only.vault_key().unwrap(), key);
+
+        // It survives the serialise -> wrap -> unwrap -> deserialise round trip
+        // the master goes through on every lock/unlock.
+        let restored: PersistedVaultMaster =
+            serde_json::from_slice(&serde_json::to_vec(&master).unwrap()).unwrap();
+        assert_eq!(restored.vault_key().unwrap(), key);
+    }
+
+    #[test]
+    fn recovery_secrets_are_only_reachable_with_the_vault_key() {
+        let dir = unique_temp_dir();
+        let user_id = format!("test-user-{}", uuid::Uuid::new_v4());
+        let state = AppState::new(dir.clone()).expect("create state");
+        let vault_key = crate::crypto::symmetric::random_key();
+        let wrap_key = crate::crypto::symmetric::random_key();
+        state
+            .save_vault_recovery(
+                &user_id,
+                &PersistedVaultRecovery::personal(wrap_key, "verifier-1".to_string()),
+                &vault_key,
+            )
+            .expect("save recovery");
+
+        // Locked: mode and verifier are visible, and nothing else.
+        let public = state
+            .load_vault_recovery_public(&user_id)
+            .expect("public load")
+            .expect("configured");
+        assert_eq!(public.mode, "personal");
+        assert_eq!(public.verifier, "verifier-1");
+
+        // Unlocked with the right vault key: the wrapping key comes back.
+        let loaded = state
+            .load_vault_recovery(&user_id, &vault_key)
+            .expect("load")
+            .expect("configured");
+        assert_eq!(loaded.wrap_key, wrap_key);
+
+        // A different vault key (i.e. after a vault reset) is REFUSED — it must
+        // not read as "no recovery configured", or new files would silently be
+        // written without their recovery wrap.
+        let other_vault_key = crate::crypto::symmetric::random_key();
+        assert!(state.load_vault_recovery(&user_id, &other_vault_key).is_err());
+
+        // The regression itself: open the file with the device storage key
+        // alone, as an attacker holding only that key would, and look for the
+        // recovery wrapping key. It must not be there in any encoding serde
+        // would have produced for the old layout.
+        let outer = state
+            .read_storage_sealed_file(
+                &user_id,
+                &state.vault_recovery_path(&user_id),
+                &crate::security::obf::vault_recovery_material_aad(),
+                "vault recovery material",
+            )
+            .expect("outer layer opens with the storage key")
+            .expect("file exists");
+        let outer_text = String::from_utf8_lossy(&outer).to_string();
+        let as_json_array = serde_json::to_string(&wrap_key).unwrap();
+        assert!(
+            !outer_text.contains(as_json_array.trim_matches(|c| c == '[' || c == ']')),
+            "the recovery wrapping key is readable with the device storage key alone"
+        );
+
+        cleanup(&user_id, &dir);
+    }
+
+    #[test]
+    fn a_pre_v2_recovery_record_moves_under_the_vault_key_on_unlock() {
+        let dir = unique_temp_dir();
+        let user_id = format!("test-user-{}", uuid::Uuid::new_v4());
+        let state = AppState::new(dir.clone()).expect("create state");
+        let vault_key = crate::crypto::symmetric::random_key();
+        let wrap_key = crate::crypto::symmetric::random_key();
+
+        // Exactly what an older build left behind: the whole record, secret
+        // included, under the device storage key only.
+        let legacy = PersistedVaultRecovery::personal(wrap_key, "legacy-verifier".to_string());
+        state
+            .write_storage_sealed_file(
+                &user_id,
+                &state.vault_recovery_legacy_path(&user_id),
+                &crate::security::obf::vault_recovery_material_aad(),
+                &serde_json::to_vec(&legacy).unwrap(),
+                "legacy vault recovery material",
+            )
+            .expect("write legacy record");
+
+        // Still reported while locked, before any migration.
+        let public = state
+            .load_vault_recovery_public(&user_id)
+            .expect("public load")
+            .expect("configured");
+        assert_eq!(public.verifier, "legacy-verifier");
+
+        state.migrate_vault_recovery(&user_id, &vault_key);
+        assert!(
+            !state.vault_recovery_legacy_path(&user_id).exists(),
+            "the storage-key-only copy must not outlive the first unlock"
+        );
+        assert!(state.vault_recovery_path(&user_id).exists());
+        let migrated = state
+            .load_vault_recovery(&user_id, &vault_key)
+            .expect("load")
+            .expect("configured");
+        assert_eq!(migrated.wrap_key, wrap_key);
+        assert_eq!(migrated.verifier, "legacy-verifier");
+
+        cleanup(&user_id, &dir);
+    }
+
+    #[test]
+    fn enterprise_recovery_keeps_no_secret_and_needs_no_vault_key_to_survive_a_reset() {
+        let dir = unique_temp_dir();
+        let user_id = format!("test-user-{}", uuid::Uuid::new_v4());
+        let state = AppState::new(dir.clone()).expect("create state");
+        let vault_key = crate::crypto::symmetric::random_key();
+        let enterprise = LocalKemKeypair::generate();
+        state
+            .save_vault_recovery(
+                &user_id,
+                &PersistedVaultRecovery {
+                    version: 2,
+                    wrap_key: [0u8; crate::crypto::symmetric::KEY_SIZE],
+                    verifier: "fingerprint".to_string(),
+                    configured_at: Utc::now(),
+                    mode: Some("enterprise".to_string()),
+                    recovery_root: None,
+                    enterprise_x25519_public: Some(enterprise.x25519_public.clone()),
+                    enterprise_mlkem_public: Some(enterprise.mlkem_public.clone()),
+                    recipient_key_id: Some("fingerprint".to_string()),
+                },
+                &vault_key,
+            )
+            .expect("save");
+
+        // Public keys only, so ANY vault key (a new one after a reset included)
+        // can keep wrapping new files to the enterprise recipient.
+        let after_reset = crate::crypto::symmetric::random_key();
+        let loaded = state
+            .load_vault_recovery(&user_id, &after_reset)
+            .expect("load")
+            .expect("configured");
+        assert_eq!(loaded.recovery_mode(), "enterprise");
+        assert_eq!(
+            loaded.enterprise_mlkem_public.as_deref(),
+            Some(enterprise.mlkem_public.as_slice())
+        );
+
+        cleanup(&user_id, &dir);
+    }
+
+    #[test]
+    fn atomic_write_replaces_the_target_and_leaves_nothing_behind() {
+        let dir = unique_temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("material.enc");
+
+        write_atomic(&path, b"first").unwrap();
+        write_atomic(&path, b"second version, longer than the first").unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"second version, longer than the first"
+        );
+        // A shorter rewrite must not leave the tail of the previous content.
+        write_atomic(&path, b"3").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"3");
+
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name != "material.enc")
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+
+        // A failed write (no such directory) must not disturb anything or leave
+        // a stray temp file where the directory would have been.
+        assert!(write_atomic(&dir.join("missing").join("x.enc"), b"y").is_err());
+        assert!(!dir.join("missing").exists());
+        assert_eq!(std::fs::read(&path).unwrap(), b"3");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn contact_device(device: &str, keys: &str) -> PinSubject {
+        PinSubject {
+            user_id: "contact-user".to_string(),
+            device_id: device.to_string(),
+            digest: crate::device_pins::identity_digest(keys.as_bytes(), b"mldsa", b"x25519", b"mlkem"),
+        }
+    }
+
+    /// The device record is what stands between a directory row and a sealed
+    /// message. It has to gate delivery, survive a restart, and — the part
+    /// that is easy to get wrong — never be replaced by a fresh "first use"
+    /// record just because the stored one could not be read.
+    #[test]
+    fn device_pins_gate_delivery_persist_and_are_never_silently_reset() {
+        let dir = unique_temp_dir();
+        let user_id = format!("test-user-{}", uuid::Uuid::new_v4());
+        let phone = contact_device("phone", "k1");
+        let tablet = contact_device("tablet", "k2");
+
+        {
+            let state = AppState::new(dir.clone()).expect("create state");
+            // Nobody recorded yet: there is nothing to refuse against.
+            assert!(state.require_accepted_device(&user_id, &phone).is_ok());
+
+            let standings = state
+                .with_device_pins(&user_id, |book| book.assess(&[phone.clone()], 100))
+                .expect("assess");
+            assert_eq!(standings, vec![Some(DeviceStanding::Pinned)]);
+
+            assert!(state.require_accepted_device(&user_id, &phone).is_ok());
+            // A device the directory lists later, and the same id with other keys.
+            let added = state.require_accepted_device(&user_id, &tablet).unwrap_err();
+            assert!(format!("{added}").contains("has not been approved"), "{added}");
+            let swapped = state
+                .require_accepted_device(&user_id, &contact_device("phone", "attacker"))
+                .unwrap_err();
+            assert!(format!("{swapped}").contains("different identity keys"), "{swapped}");
+        }
+
+        {
+            // Restart: the record, not the directory, still decides.
+            let state = AppState::new(dir.clone()).expect("create state");
+            assert!(state.require_accepted_device(&user_id, &phone).is_ok());
+            assert!(state.require_accepted_device(&user_id, &tablet).is_err());
+
+            state
+                .with_device_pins(&user_id, |book| book.approve(&tablet, 200))
+                .expect("store approval")
+                .expect("approve");
+            assert!(state.require_accepted_device(&user_id, &tablet).is_ok());
+        }
+
+        let path = {
+            // Restart again: the approval was written, not just remembered.
+            let state = AppState::new(dir.clone()).expect("create state");
+            assert!(state.require_accepted_device(&user_id, &tablet).is_ok());
+            state.device_pin_book_path(&user_id)
+        };
+
+        // The stored record becomes unreadable (a truncated write, a restored
+        // backup): still valid JSON of the right shape, but it no longer
+        // authenticates under the storage key.
+        let mut file: EncryptedKeyMaterialFile =
+            serde_json::from_slice(&std::fs::read(&path).expect("read record")).expect("decode record");
+        file.envelope.ciphertext[0] ^= 0xff;
+        let corrupted = serde_json::to_vec(&file).expect("encode");
+        std::fs::write(&path, &corrupted).expect("write");
+
+        {
+            let state = AppState::new(dir.clone()).expect("create state");
+            let stranger = contact_device("stranger", "k9");
+            // It answers nothing...
+            let standings = state
+                .with_device_pins(&user_id, |book| book.assess(&[stranger.clone()], 300))
+                .expect("assess against an unreadable record");
+            assert_eq!(standings, vec![None]);
+            assert_eq!(state.device_standing(&user_id, &stranger), None);
+            // ...approves nothing...
+            assert!(state
+                .with_device_pins(&user_id, |book| book.approve(&stranger, 300))
+                .expect("approval attempt")
+                .is_err());
+            // ...and above all is NOT overwritten with a record that would
+            // make whatever is listed right now look like first use.
+            assert_eq!(std::fs::read(&path).expect("read record"), corrupted);
+        }
+
+        cleanup(&user_id, &dir);
     }
 }

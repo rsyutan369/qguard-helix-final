@@ -1,6 +1,5 @@
 package com.qguard.messaging
 
-import android.app.Activity
 import android.content.Context
 import com.android.billingclient.api.AcknowledgePurchaseParams
 import com.android.billingclient.api.BillingClient
@@ -174,7 +173,8 @@ object PlayBilling {
         accountId: String,
         oldPurchaseToken: String?,
     ) {
-        val activity = context as? Activity
+        // Rust passes the Application context (tao >= 0.37), never the Activity.
+        val activity = CurrentActivity.resolve(context)
         if (activity == null) {
             setEvent("purchase_error:no_activity")
             return

@@ -117,18 +117,23 @@ export function WorkspaceLockGate(props: {
     }
   }
 
+  // Green ("ok") is reserved for something this screen actually knows to be
+  // true right now: the lock state, whether recovery is set, whether auto-lock
+  // is on. The algorithm pills say how the workspace is BUILT — they are
+  // neutral, because a lock screen has measured nothing about them and a green
+  // tick would read as a live check that passed.
   const chips =
     scope === "vault"
       ? [
           { label: status.unlocked ? "Unlocked" : "Locked", tone: status.unlocked ? "ok" : "muted" },
           { label: props.recoveryEnabled ? "Recovery Protected" : "Recovery not set", tone: props.recoveryEnabled ? "ok" : "warn" },
-          { label: "ML-KEM-1024 Protected", tone: "ok" },
-          { label: "AES-256-GCM Active", tone: "ok" },
+          { label: "ML-KEM-1024 key wrapping", tone: "muted" },
+          { label: "AES-256-GCM", tone: "muted" },
           { label: props.inactivityMinutes > 0 ? "Auto-Lock Enabled" : "Auto-Lock Off", tone: props.inactivityMinutes > 0 ? "ok" : "warn" },
         ]
       : [
           { label: status.unlocked ? "Unlocked" : "Locked", tone: status.unlocked ? "ok" : "muted" },
-          { label: "End-to-end Encrypted", tone: "ok" },
+          { label: "End-to-end encrypted", tone: "muted" },
           { label: props.inactivityMinutes > 0 ? "Auto-Lock Enabled" : "Auto-Lock Off", tone: props.inactivityMinutes > 0 ? "ok" : "warn" },
         ];
 
@@ -245,7 +250,10 @@ export function WorkspaceLockGate(props: {
             {setupMode && scope === "vault" && (
               <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] font-semibold text-amber-800">
                 <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                This {method === "pin" ? "PIN" : "password"} decrypts your Vault Master Key. If you forget it, the only way back in is your recovery key — QGuard cannot reset it.
+                <span>
+                  This {method === "pin" ? "PIN" : "password"} decrypts your Vault Master Key. If you forget it, the only way back in is your recovery key — QGuard cannot reset it.
+                  {method === "pin" && " A PIN is short: someone holding a copy of this device's data could try every combination offline, so choose a password if the files need to withstand that."}
+                </span>
               </div>
             )}
 
@@ -515,7 +523,7 @@ function WorkspaceRecoveryPanel(props: {
               <div className="mt-4">
                 <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 p-3 text-[11px] font-semibold text-rose-700">
                   <ShieldAlert size={14} className="mt-0.5 shrink-0" />
-                  Without your PIN or recovery key, files already encrypted in this vault cannot be recovered — their keys were sealed by the forgotten secret. This creates a new, empty vault. Existing <span className="font-mono">.qvault</span> files remain on disk but stay locked forever.
+                  Without your PIN or recovery key, files already encrypted in this vault cannot be recovered — their keys were sealed by the forgotten secret. This creates a new, empty vault. Existing <span className="font-mono">.qvault</span> files remain on disk and stay locked unless you find your recovery key.
                 </div>
                 <label className="mt-3 block text-xs font-bold text-ink-700">Confirm your account password</label>
                 <input

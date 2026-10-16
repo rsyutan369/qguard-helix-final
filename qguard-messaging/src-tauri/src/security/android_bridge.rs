@@ -4,8 +4,13 @@
 //! `(Context, String...) -> String`. Two rules hold for all of them, and both
 //! have already broken a feature once:
 //!
-//! - App classes are loaded through the ACTIVITY's class loader. `FindClass` on
-//!   a native thread only sees framework classes, so it cannot find ours.
+//! - App classes are loaded through the app context's class loader. `FindClass`
+//!   on a native thread only sees framework classes, so it cannot find ours.
+//! - The context passed to Kotlin is the APPLICATION context (tao >= 0.37
+//!   initialises `ndk-context` with it), not the Activity. A helper that must
+//!   launch an Activity resolves it via `CurrentActivity.resolve(context)`;
+//!   casting `context as? Activity` always fails (the vault folder picker
+//!   shipped exactly that bug).
 //! - The Kotlin method must return String, never Unit. The lookup uses a
 //!   String-returning descriptor; a void method has a different one and fails
 //!   with NoSuchMethodError (VaultFolderPicker.reset shipped exactly that bug).
@@ -43,10 +48,10 @@ mod android {
 
     use super::context_string_descriptor;
 
-    /// Run `f` on a JNI-attached thread with the app activity. Commands reach
+    /// Run `f` on a JNI-attached thread with the app context. Commands reach
     /// this from blocking-pool threads; Tauri initialises `ndk-context` with the
-    /// app's JavaVM and activity before any command can run.
-    fn with_activity<T>(
+    /// app's JavaVM and Application context before any command can run.
+    fn with_app_context<T>(
         f: impl FnOnce(&mut JNIEnv, &JObject) -> std::result::Result<T, String>,
     ) -> std::result::Result<T, String> {
         let ctx = ndk_context::android_context();
@@ -56,8 +61,8 @@ mod android {
             .attach_current_thread()
             .map_err(|e| format!("attach JNI thread: {e}"))?;
         // ndk-context owns this global ref; JObject does not delete on drop.
-        let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
-        let result = f(&mut env, &activity);
+        let context = unsafe { JObject::from_raw(ctx.context().cast()) };
+        let result = f(&mut env, &context);
         // A pending Java exception aborts the process on the next JNI call.
         if env.exception_check().unwrap_or(false) {
             let _ = env.exception_clear();
@@ -67,11 +72,11 @@ mod android {
 
     fn load_app_class<'a>(
         env: &mut JNIEnv<'a>,
-        activity: &JObject,
+        context: &JObject,
         class_name: &str,
     ) -> std::result::Result<JClass<'a>, String> {
         let loader = env
-            .call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
+            .call_method(context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
             .and_then(|v| v.l())
             .map_err(|e| format!("getClassLoader: {e}"))?;
         let name = env
@@ -97,8 +102,8 @@ mod android {
         method: &str,
         args: &[&str],
     ) -> std::result::Result<String, String> {
-        with_activity(|env, activity| {
-            let class = load_app_class(env, activity, class_name)?;
+        with_app_context(|env, context| {
+            let class = load_app_class(env, context, class_name)?;
             let mut locals = Vec::with_capacity(args.len());
             for arg in args {
                 locals.push(
@@ -106,7 +111,7 @@ mod android {
                         .map_err(|e| format!("alloc argument: {e}"))?,
                 );
             }
-            let mut values = vec![JValue::Object(activity)];
+            let mut values = vec![JValue::Object(context)];
             for local in &locals {
                 values.push(JValue::Object(local));
             }

@@ -14,16 +14,22 @@ export interface VaultProgress {
   level: "info" | "success";
 }
 
+// The phase ids are the Rust streamer's; only the wording lives here. Since the
+// v5 container, the owner's envelope is the per-file key sealed under the
+// PIN-bound vault key — ML-KEM is no longer on that path at all (it is used for
+// recovery recipients and for sharing), so the labels say what actually ran.
 const PHASE_LABELS: Record<string, string> = {
   init: "Initializing",
   fek: "File key · AES-256-GCM",
-  vmk_wrap: "VMK seal · X25519 + ML-KEM-1024",
-  recovery_wrap: "Recovery wrap · ML-KEM-1024",
+  vmk_wrap: "Vault key seal · AES-256-GCM",
+  recovery_wrap: "Recovery wrap",
+  recipient_wrap: "Recipient wrap · X25519 + ML-KEM-1024",
+  attest: "Sender attestation · ML-DSA-87",
   sign: "Signing · ML-DSA-87",
   header: "Header written",
   chunk: "Streaming · AES-256-GCM",
-  verify: "Verifying signature · ML-DSA-87",
-  decapsulate: "VMK recover · ML-KEM-1024",
+  verify: "Authenticating container · ML-DSA-87",
+  decapsulate: "Opening owner envelope",
   unwrap_fek: "Unwrapping file key",
   finalize: "Finalizing",
   done: "Complete",
@@ -50,10 +56,12 @@ const PHASE_RANGE: Record<string, [number, number]> = {
   init: [0, 5],
   verify: [0, 8], // decrypt: header signature verified
   fek: [5, 14],
-  decapsulate: [8, 18], // decrypt: VMK recovered
+  decapsulate: [8, 18], // decrypt: owner envelope opened
+  attest: [8, 14], // open: sender attestation checked
   vmk_wrap: [14, 24],
   unwrap_fek: [18, 26], // decrypt: per-file key unwrapped
-  recovery_wrap: [24, 30],
+  recovery_wrap: [24, 28],
+  recipient_wrap: [28, 30],
   sign: [30, 38],
   header: [38, 42],
   chunk: [42, 98],

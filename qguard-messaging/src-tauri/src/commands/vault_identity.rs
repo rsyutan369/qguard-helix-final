@@ -14,7 +14,7 @@ use crate::vault_stream::{self, FolderReader, FolderWriter, SharingOptions};
 
 use super::vault::{
     local_vault_context, open_vault_source, run_stream_blocking, VaultDest,
-    VaultLocalStreamSummary,
+    VaultLocalStreamSummary, VaultNeed,
 };
 
 // ---------------------------------------------------------------------------
@@ -281,10 +281,11 @@ fn resolve_recipients(bundles: &[String]) -> Result<Vec<RecipientPublicKeys>> {
 /// Encrypt a file into a `.qvault` container sealed to one or more Portable
 /// Hybrid Identities.
 ///
-/// The container also keeps the owner's own device wrap, so the sender can still
-/// open what they sent. `attest` adds a signature by the sender's unlocked
-/// identity so the recipient sees a verified origin rather than an unattributed
-/// file.
+/// The container also keeps the owner's own (PIN-bound) way in, so the sender can
+/// still open what they sent. `attest` adds a signature by the sender's unlocked
+/// identity, so the recipient is shown which identity sealed the file — a
+/// fingerprint they can compare with the one the sender gave them — instead of
+/// an unattributed file.
 #[tauri::command]
 pub async fn vault_seal_path(
     state: State<'_, AppState>,
@@ -294,7 +295,7 @@ pub async fn vault_seal_path(
     attest: bool,
     on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
-    let ctx = local_vault_context(&state)?;
+    let ctx = local_vault_context(&state, VaultNeed::Seal)?;
     let resolved = resolve_recipients(&recipients)?;
     let sender = if attest {
         let identity = state.unlocked_portable_identity()?;
@@ -351,14 +352,7 @@ pub async fn vault_seal_path(
                 &name,
                 "application/octet-stream",
                 original_size,
-                &ctx.user_id,
-                &ctx.device_id,
-                &ctx.kem_x25519_public,
-                &ctx.kem_mlkem_public,
-                &ctx.vault_master.vmk,
-                &ctx.vault_master.signer,
-                ctx.recovery_wrap_key.as_ref(),
-                ctx.enterprise().as_ref(),
+                &ctx.owner_seal(),
                 Some(&SharingOptions {
                     recipients: &resolved,
                     sender: sender.as_ref(),
@@ -411,7 +405,7 @@ pub async fn vault_seal_folder_path(
     attest: bool,
     on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
-    let ctx = local_vault_context(&state)?;
+    let ctx = local_vault_context(&state, VaultNeed::Seal)?;
     let resolved = resolve_recipients(&recipients)?;
     let sender = if attest {
         let identity = state.unlocked_portable_identity()?;
@@ -452,14 +446,7 @@ pub async fn vault_seal_folder_path(
                 &name,
                 "application/qguard-folder-archive",
                 total,
-                &ctx.user_id,
-                &ctx.device_id,
-                &ctx.kem_x25519_public,
-                &ctx.kem_mlkem_public,
-                &ctx.vault_master.vmk,
-                &ctx.vault_master.signer,
-                ctx.recovery_wrap_key.as_ref(),
-                ctx.enterprise().as_ref(),
+                &ctx.owner_seal(),
                 Some(&SharingOptions {
                     recipients: &resolved,
                     sender: sender.as_ref(),
@@ -653,7 +640,6 @@ mod tests {
     /// recipient parsing, atomic destination handling) actually composes.
     #[test]
     fn identity_files_seal_and_open_a_real_container_end_to_end() {
-        use crate::crypto::hybrid_kex::LocalKemKeypair;
         use crate::crypto::signatures::VaultSigningKeypair;
         use crate::crypto::symmetric;
         use std::io::Cursor;
@@ -691,9 +677,8 @@ mod tests {
 
         let alice = PortableIdentity::generate(Some("Alice".to_string()));
         let plaintext = vec![42u8; 3 * 1024 * 1024 + 17]; // spans several chunks
-        let alice_device = LocalKemKeypair::generate();
         let alice_signer = VaultSigningKeypair::generate();
-        let alice_vmk = symmetric::random_key();
+        let alice_vault_key = symmetric::random_key();
 
         let mut container = Vec::new();
         vault_stream::encrypt_stream_with_progress(
@@ -703,14 +688,14 @@ mod tests {
             "quarterly-report.pdf",
             "application/pdf",
             plaintext.len() as u64,
-            "alice-user",
-            "alice-device",
-            &alice_device.x25519_public,
-            &alice_device.mlkem_public,
-            &alice_vmk,
-            &alice_signer,
-            None,
-            None,
+            &vault_stream::OwnerSeal {
+                user_id: "alice-user",
+                device_id: "alice-device",
+                vault_key: &alice_vault_key,
+                vault_signer: &alice_signer,
+                recovery_wrap_key: None,
+                enterprise: None,
+            },
             Some(&SharingOptions {
                 recipients: &recipients,
                 sender: Some(&alice),

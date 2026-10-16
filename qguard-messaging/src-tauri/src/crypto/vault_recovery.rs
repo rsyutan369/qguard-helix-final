@@ -22,7 +22,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
-use crate::crypto::hybrid_kex::{decapsulate, encapsulate, LocalKemKeypair};
+use crate::crypto::hybrid_kex::{decapsulate, encapsulate_with, KemCombiner, LocalKemKeypair};
 use crate::crypto::kdf;
 use crate::crypto::symmetric::{self, KEY_SIZE};
 use crate::crypto::{EncryptedEnvelope, HybridCiphertext};
@@ -160,7 +160,30 @@ fn wrap_aad(file_id: &str, owner_user_id: &str) -> Vec<u8> {
     format!("QGuard-Vault-Recovery-FileKey-v1:{file_id}:{owner_user_id}").into_bytes()
 }
 
-/// Seal a per-file AES key under the recovery wrapping key.
+/// AAD for the recovery wrap of a v5 (PIN-bound) container.
+///
+/// A different label from [`wrap_aad`] on purpose. In v1–v4 containers that
+/// envelope holds the per-file key (v1/v2) or the Vault Master Key (v3/v4); in
+/// v5 it holds the per-file key and nothing above it. Separating the labels
+/// means a wrap can never be lifted between the two meanings by relabelling a
+/// header's version — it simply fails to authenticate.
+fn fek_wrap_aad_v5(file_id: &str, owner_user_id: &str) -> Vec<u8> {
+    format!("QGuard-Vault-Recovery-FEK-v5:{file_id}:{owner_user_id}").into_bytes()
+}
+
+fn unwrap_32(wrap_key: &[u8; KEY_SIZE], envelope: &EncryptedEnvelope, aad: &[u8]) -> Result<[u8; KEY_SIZE]> {
+    let mut bytes = symmetric::decrypt(wrap_key, envelope, aad)?;
+    if bytes.len() != KEY_SIZE {
+        bytes.zeroize();
+        return Err(QGuardError::Crypto("recovery-unwrapped key is invalid".to_string()));
+    }
+    let mut key = [0u8; KEY_SIZE];
+    key.copy_from_slice(&bytes);
+    bytes.zeroize();
+    Ok(key)
+}
+
+/// Seal a key under the recovery wrapping key (v1–v4 container layout).
 pub fn wrap_file_key(
     wrap_key: &[u8; KEY_SIZE],
     file_key: &[u8; KEY_SIZE],
@@ -170,22 +193,34 @@ pub fn wrap_file_key(
     symmetric::encrypt(wrap_key, file_key, &wrap_aad(file_id, owner_user_id))
 }
 
-/// Recover a per-file AES key from its recovery-wrapped envelope.
+/// Recover a key from its recovery-wrapped envelope (v1–v4 container layout).
 pub fn unwrap_file_key(
     wrap_key: &[u8; KEY_SIZE],
     envelope: &EncryptedEnvelope,
     file_id: &str,
     owner_user_id: &str,
 ) -> Result<[u8; KEY_SIZE]> {
-    let mut bytes = symmetric::decrypt(wrap_key, envelope, &wrap_aad(file_id, owner_user_id))?;
-    if bytes.len() != KEY_SIZE {
-        bytes.zeroize();
-        return Err(QGuardError::Crypto("recovery-unwrapped key is invalid".to_string()));
-    }
-    let mut key = [0u8; KEY_SIZE];
-    key.copy_from_slice(&bytes);
-    bytes.zeroize();
-    Ok(key)
+    unwrap_32(wrap_key, envelope, &wrap_aad(file_id, owner_user_id))
+}
+
+/// Seal the per-file key of a v5 container under the recovery wrapping key.
+pub fn wrap_fek_v5(
+    wrap_key: &[u8; KEY_SIZE],
+    file_key: &[u8; KEY_SIZE],
+    file_id: &str,
+    owner_user_id: &str,
+) -> Result<EncryptedEnvelope> {
+    symmetric::encrypt(wrap_key, file_key, &fek_wrap_aad_v5(file_id, owner_user_id))
+}
+
+/// Recover the per-file key of a v5 container with the recovery wrapping key.
+pub fn unwrap_fek_v5(
+    wrap_key: &[u8; KEY_SIZE],
+    envelope: &EncryptedEnvelope,
+    file_id: &str,
+    owner_user_id: &str,
+) -> Result<[u8; KEY_SIZE]> {
+    unwrap_32(wrap_key, envelope, &fek_wrap_aad_v5(file_id, owner_user_id))
 }
 
 // --- Enterprise (ML-KEM-1024) and Hybrid recovery --------------------------
@@ -287,8 +322,76 @@ fn derive_kem_wrap_key(
     }
 }
 
-/// Seal a per-file key to an enterprise ML-KEM recipient. Pass `recovery_secret`
-/// (the personal recovery root) for hybrid mode; pass `None` for enterprise-only.
+/// AAD for the enterprise/hybrid wrap of a v5 container's per-file key. See
+/// [`fek_wrap_aad_v5`] for why it is not the v1–v4 label.
+fn kem_fek_wrap_aad_v5(file_id: &str, owner_user_id: &str, mode: &str) -> Vec<u8> {
+    format!("QGuard-Vault-Recovery-KEM-FEK-v5:{mode}:{file_id}:{owner_user_id}").into_bytes()
+}
+
+fn recovery_mode_for(recovery_secret: Option<&[u8; RECOVERY_ROOT_SIZE]>) -> &'static str {
+    if recovery_secret.is_some() {
+        RECOVERY_MODE_HYBRID
+    } else {
+        RECOVERY_MODE_ENTERPRISE
+    }
+}
+
+fn wrap_kem_with(
+    recipient_x25519_public: &[u8],
+    recipient_mlkem_public: &[u8],
+    recovery_secret: Option<&[u8; RECOVERY_ROOT_SIZE]>,
+    key: &[u8; KEY_SIZE],
+    mode: &'static str,
+    aad: &[u8],
+    combiner: KemCombiner,
+) -> Result<RecoveryKemWrap> {
+    let (kem_ciphertext, mut shared) = encapsulate_with(
+        recipient_x25519_public,
+        recipient_mlkem_public,
+        KEM_ENCAPS_INFO,
+        combiner,
+    )?;
+    let mut salt = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut salt);
+    let wrap_key = derive_kem_wrap_key(mode, &salt, &shared, recovery_secret);
+    shared.zeroize();
+    let mut wrap_key = wrap_key?;
+    let wrapped_key = symmetric::encrypt(&wrap_key, key, aad);
+    wrap_key.zeroize();
+    Ok(RecoveryKemWrap {
+        mode: mode.to_string(),
+        recipient_key_id: enterprise_key_fingerprint(recipient_x25519_public, recipient_mlkem_public),
+        kem_ciphertext,
+        salt: salt.to_vec(),
+        wrapped_key: wrapped_key?,
+    })
+}
+
+fn unwrap_kem_with(
+    recipient: &LocalKemKeypair,
+    recovery_secret: Option<&[u8; RECOVERY_ROOT_SIZE]>,
+    wrap: &RecoveryKemWrap,
+    aad: &[u8],
+) -> Result<[u8; KEY_SIZE]> {
+    // `decapsulate` reads the combiner the ciphertext was made with from the
+    // ciphertext itself, so one unwrap serves both container generations.
+    let mut shared = decapsulate(
+        &recipient.x25519_secret,
+        &recipient.mlkem_secret,
+        &wrap.kem_ciphertext,
+        KEM_ENCAPS_INFO,
+    )?;
+    let wrap_key = derive_kem_wrap_key(&wrap.mode, &wrap.salt, &shared, recovery_secret);
+    shared.zeroize();
+    let mut wrap_key = wrap_key?;
+    let key = unwrap_32(&wrap_key, &wrap.wrapped_key, aad);
+    wrap_key.zeroize();
+    key
+}
+
+/// Seal a key to an enterprise ML-KEM recipient (v1–v4 container layout). Pass
+/// `recovery_secret` (the personal recovery root) for hybrid mode; pass `None`
+/// for enterprise-only.
 pub fn wrap_file_key_kem(
     recipient_x25519_public: &[u8],
     recipient_mlkem_public: &[u8],
@@ -297,30 +400,21 @@ pub fn wrap_file_key_kem(
     file_id: &str,
     owner_user_id: &str,
 ) -> Result<RecoveryKemWrap> {
-    let mode = if recovery_secret.is_some() {
-        RECOVERY_MODE_HYBRID
-    } else {
-        RECOVERY_MODE_ENTERPRISE
-    };
-    let (kem_ciphertext, mut shared) =
-        encapsulate(recipient_x25519_public, recipient_mlkem_public, KEM_ENCAPS_INFO)?;
-    let mut salt = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut salt);
-    let mut wrap_key = derive_kem_wrap_key(mode, &salt, &shared, recovery_secret)?;
-    shared.zeroize();
-    let wrapped_key = symmetric::encrypt(&wrap_key, file_key, &kem_wrap_aad(file_id, owner_user_id, mode))?;
-    wrap_key.zeroize();
-    Ok(RecoveryKemWrap {
-        mode: mode.to_string(),
-        recipient_key_id: enterprise_key_fingerprint(recipient_x25519_public, recipient_mlkem_public),
-        kem_ciphertext,
-        salt: salt.to_vec(),
-        wrapped_key,
-    })
+    let mode = recovery_mode_for(recovery_secret);
+    wrap_kem_with(
+        recipient_x25519_public,
+        recipient_mlkem_public,
+        recovery_secret,
+        file_key,
+        mode,
+        &kem_wrap_aad(file_id, owner_user_id, mode),
+        KemCombiner::LegacyConcat,
+    )
 }
 
-/// Recover a per-file key from an enterprise/hybrid wrap. Hybrid mode requires
-/// `recovery_secret` *and* the enterprise private key; enterprise needs only the key.
+/// Recover a key from an enterprise/hybrid wrap (v1–v4 container layout).
+/// Hybrid mode requires `recovery_secret` *and* the enterprise private key;
+/// enterprise needs only the key.
 pub fn unwrap_file_key_kem(
     recipient: &LocalKemKeypair,
     recovery_secret: Option<&[u8; RECOVERY_ROOT_SIZE]>,
@@ -328,28 +422,50 @@ pub fn unwrap_file_key_kem(
     file_id: &str,
     owner_user_id: &str,
 ) -> Result<[u8; KEY_SIZE]> {
-    let mut shared = decapsulate(
-        &recipient.x25519_secret,
-        &recipient.mlkem_secret,
-        &wrap.kem_ciphertext,
-        KEM_ENCAPS_INFO,
-    )?;
-    let mut wrap_key = derive_kem_wrap_key(&wrap.mode, &wrap.salt, &shared, recovery_secret)?;
-    shared.zeroize();
-    let mut bytes = symmetric::decrypt(
-        &wrap_key,
-        &wrap.wrapped_key,
+    unwrap_kem_with(
+        recipient,
+        recovery_secret,
+        wrap,
         &kem_wrap_aad(file_id, owner_user_id, &wrap.mode),
-    )?;
-    wrap_key.zeroize();
-    if bytes.len() != KEY_SIZE {
-        bytes.zeroize();
-        return Err(QGuardError::Crypto("recovery-unwrapped key is invalid".to_string()));
-    }
-    let mut key = [0u8; KEY_SIZE];
-    key.copy_from_slice(&bytes);
-    bytes.zeroize();
-    Ok(key)
+    )
+}
+
+/// Seal the per-file key of a v5 container to an enterprise ML-KEM recipient,
+/// using the transcript-bound hybrid combiner.
+pub fn wrap_fek_kem_v5(
+    recipient_x25519_public: &[u8],
+    recipient_mlkem_public: &[u8],
+    recovery_secret: Option<&[u8; RECOVERY_ROOT_SIZE]>,
+    file_key: &[u8; KEY_SIZE],
+    file_id: &str,
+    owner_user_id: &str,
+) -> Result<RecoveryKemWrap> {
+    let mode = recovery_mode_for(recovery_secret);
+    wrap_kem_with(
+        recipient_x25519_public,
+        recipient_mlkem_public,
+        recovery_secret,
+        file_key,
+        mode,
+        &kem_fek_wrap_aad_v5(file_id, owner_user_id, mode),
+        KemCombiner::BoundV2,
+    )
+}
+
+/// Recover the per-file key of a v5 container from its enterprise/hybrid wrap.
+pub fn unwrap_fek_kem_v5(
+    recipient: &LocalKemKeypair,
+    recovery_secret: Option<&[u8; RECOVERY_ROOT_SIZE]>,
+    wrap: &RecoveryKemWrap,
+    file_id: &str,
+    owner_user_id: &str,
+) -> Result<[u8; KEY_SIZE]> {
+    unwrap_kem_with(
+        recipient,
+        recovery_secret,
+        wrap,
+        &kem_fek_wrap_aad_v5(file_id, owner_user_id, &wrap.mode),
+    )
 }
 
 #[cfg(test)]
@@ -456,6 +572,60 @@ mod tests {
         assert!(unwrap_file_key_kem(&enterprise, Some(&wrong_root), &wrap, "file-1", "user-1").is_err());
         let other = generate_enterprise_keypair();
         assert!(unwrap_file_key_kem(&other, Some(&root), &wrap, "file-1", "user-1").is_err());
+    }
+
+    #[test]
+    fn v5_wraps_round_trip_and_cannot_be_read_as_the_older_layout() {
+        // The v5 envelope holds the per-file key; the v1–v4 envelope holds a
+        // file key or the Vault Master Key. The labels differ so one can never
+        // be passed off as the other by relabelling a header's version.
+        let root = generate_recovery_root();
+        let wrap_key = derive_wrap_key(&root).unwrap();
+        let file_key = symmetric::random_key();
+
+        let v5 = wrap_fek_v5(&wrap_key, &file_key, "file-1", "user-1").unwrap();
+        assert_eq!(unwrap_fek_v5(&wrap_key, &v5, "file-1", "user-1").unwrap(), file_key);
+        assert!(unwrap_file_key(&wrap_key, &v5, "file-1", "user-1").is_err());
+        assert!(unwrap_fek_v5(&wrap_key, &v5, "file-2", "user-1").is_err());
+
+        let legacy = wrap_file_key(&wrap_key, &file_key, "file-1", "user-1").unwrap();
+        assert!(unwrap_fek_v5(&wrap_key, &legacy, "file-1", "user-1").is_err());
+
+        // Same separation for the enterprise / hybrid KEM wraps, which also move
+        // to the transcript-bound combiner in v5.
+        let enterprise = generate_enterprise_keypair();
+        for secret in [None, Some(&root)] {
+            let wrap = wrap_fek_kem_v5(
+                &enterprise.x25519_public,
+                &enterprise.mlkem_public,
+                secret,
+                &file_key,
+                "file-1",
+                "user-1",
+            )
+            .unwrap();
+            assert_eq!(
+                wrap.kem_ciphertext.suite.kem_combiner,
+                crate::crypto::CURRENT_KEM_COMBINER
+            );
+            assert_eq!(
+                unwrap_fek_kem_v5(&enterprise, secret, &wrap, "file-1", "user-1").unwrap(),
+                file_key
+            );
+            assert!(unwrap_file_key_kem(&enterprise, secret, &wrap, "file-1", "user-1").is_err());
+            assert!(unwrap_fek_kem_v5(&enterprise, secret, &wrap, "file-9", "user-1").is_err());
+        }
+        // Hybrid still needs BOTH factors in v5.
+        let hybrid = wrap_fek_kem_v5(
+            &enterprise.x25519_public,
+            &enterprise.mlkem_public,
+            Some(&root),
+            &file_key,
+            "file-1",
+            "user-1",
+        )
+        .unwrap();
+        assert!(unwrap_fek_kem_v5(&enterprise, None, &hybrid, "file-1", "user-1").is_err());
     }
 
     #[test]

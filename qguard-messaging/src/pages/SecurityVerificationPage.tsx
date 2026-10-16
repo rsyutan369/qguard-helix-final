@@ -19,6 +19,7 @@ import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
 import type { SecurityEvent, TelemetryEvent, TrustedDevice } from "@/lib/types";
+import { sha3_256Hex } from "@/lib/sha3";
 
 interface SafetyNumberResult {
   display?: string;
@@ -175,10 +176,6 @@ function formatSuite(device: TrustedDevice): string {
   return `${pqKem} + ${classical}`;
 }
 
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
 
 function verificationStorageKey(userId: string, deviceId: string): string {
   return `${VERIFICATION_STORAGE_PREFIX}:${userId}:${deviceId}`;
@@ -409,7 +406,7 @@ export default function SecurityVerificationPage({
   ) {
     try {
       const createdAt = new Date().toISOString();
-      const eventHash = await sha256Hex(JSON.stringify({ eventType, severity, deviceId, metadata, createdAt }));
+      const eventHash = sha3_256Hex(JSON.stringify({ eventType, severity, deviceId, metadata, createdAt }));
       await supabase.from("messaging_security_events").insert({
         user_id: userId,
         device_id: deviceId,

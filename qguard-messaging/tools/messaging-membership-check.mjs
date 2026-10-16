@@ -62,7 +62,11 @@ console.log(`project: ${env.VITE_SUPABASE_URL}\n`);
 const probe = await sb.rpc("reinstate_messaging_conversation_membership", {
   p_device_id: "00000000-0000-0000-0000-000000000000",
 });
-const guardTripped = /authentication required/i.test(probe.error?.message ?? "");
+// `42501 permission denied for function` is the same proof from one layer up:
+// EXECUTE is granted to signed-in users only, so the service role is turned
+// away before the body runs. A function that did not exist could not deny it.
+const guardTripped = /authentication required/i.test(probe.error?.message ?? "")
+  || (probe.error?.code === "42501" && /permission denied for function/i.test(probe.error.message ?? ""));
 if (probe.error?.code === "PGRST202") {
   failures += 1;
   console.log("FAIL  migration 033 is NOT applied — reinstate_messaging_conversation_membership() is missing.");

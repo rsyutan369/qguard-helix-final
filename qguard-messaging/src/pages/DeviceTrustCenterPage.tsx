@@ -18,11 +18,13 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
+import { approveDevicePins } from "@/lib/device-pins";
 import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import { supabase } from "@/lib/supabase";
 import type { SecurityEvent, TelemetryEvent, TrustedDevice } from "@/lib/types";
 import { safeInvoke } from "@/lib/tauri";
 import { CURRENT_PQ_KEM, CURRENT_PQ_KEM_STANDARD, kemInteroperates } from "@/lib/kem-suite";
+import { sha3_256Hex } from "@/lib/sha3";
 
 interface DeviceTrustCenterPageProps {
   userId: string;
@@ -209,10 +211,6 @@ function parsePairingPayload(raw: string, fallbackLabel: string): ParsedPairingP
   };
 }
 
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
 
 function Field({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -395,7 +393,7 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
   ) {
     try {
       const createdAt = new Date().toISOString();
-      const eventHash = await sha256Hex(JSON.stringify({ eventType, severity, deviceId, metadata, createdAt }));
+      const eventHash = sha3_256Hex(JSON.stringify({ eventType, severity, deviceId, metadata, createdAt }));
       await supabase.from("messaging_security_events").insert({
         user_id: userId,
         device_id: deviceId,
@@ -576,6 +574,11 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
           fingerprint: device.fingerprint,
         },
       }, null);
+      // Approving a device here IS the user's decision about it, so it is also
+      // recorded in this device's own record of the account's devices — the
+      // record that actually gates delivery and sync (lib/device-pins.ts).
+      // A device whose keys changed is refused there and stays refused.
+      await approveDevicePins([device]).catch(() => undefined);
 
       const matchingRequest = linkRequests.find((request) => request.status === "pending" && request.requested_fingerprint === device.fingerprint);
       if (matchingRequest) {
@@ -619,7 +622,8 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
       const verification = await safeInvoke<QrVerification>("devices_verify_qr", { remoteFingerprint: parsed.fingerprint }, {
         qr_payload: `qguard-device-link:v1:${parsed.token}:${encodeURIComponent(parsed.label)}:${encodeURIComponent(parsed.fingerprint)}`,
         safety_number: "Desktop verifier unavailable in browser preview",
-        verified: true,
+        // Nothing was verified in this context, so nothing is claimed.
+        verified: false,
       });
 
       const result = await supabase.rpc("create_messaging_device_link_request", {

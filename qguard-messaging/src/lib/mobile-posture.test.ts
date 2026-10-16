@@ -50,6 +50,8 @@ function check(id: string, status: SecurityHardeningCheck["status"]): SecurityHa
 function dashboard(devices: TrustedDevice[], opts: {
   oneTimeKeys?: number;
   checks?: SecurityHardeningCheck[];
+  /** What the core reported about prekey rotation; omit for "could not measure". */
+  rotationHealthy?: boolean;
 } = {}): DashboardData {
   return {
     profile: { id: "me" },
@@ -60,6 +62,7 @@ function dashboard(devices: TrustedDevice[], opts: {
       algorithms: [],
     },
     hardening: { checks: opts.checks ?? [check("post_quantum_protection", "active")] },
+    report: opts.rotationHealthy === undefined ? {} : { forward_secrecy_healthy: opts.rotationHealthy },
   } as unknown as DashboardData;
 }
 
@@ -111,13 +114,29 @@ describe("buildCryptoPosture", () => {
     expect(posture.enrolledDevices).toBe(0);
   });
 
-  it("treats the session layer as complete at the readiness threshold", () => {
-    // Measuring against a higher aspirational target made a device the headline
-    // model considered ready read as incomplete.
-    const ready = buildCryptoPosture(dashboard([liveDevice("phone")], { oneTimeKeys: ONE_TIME_PREKEY_MIN }));
-    expect(ready.layers.find((l) => l.id === "session")!.value).toBe(1);
-    const low = buildCryptoPosture(dashboard([liveDevice("phone")], { oneTimeKeys: 4 }));
-    expect(low.layers.find((l) => l.id === "session")!.value).toBeLessThan(1);
+  it("measures the session layer by prekey rotation, not by the one-time key pool", () => {
+    // The layer's claim is forward secrecy. The one-time prekey pool is not
+    // used by the send path, so a full pool proved nothing about it — and an
+    // empty one disproved nothing.
+    const session = (data: DashboardData) => buildCryptoPosture(data).layers.find((l) => l.id === "session")!;
+
+    const rotating = session(dashboard([liveDevice("phone")], { rotationHealthy: true, oneTimeKeys: 0 }));
+    expect(rotating.value).toBe(1);
+    expect(rotating.detail).toBe("Prekey rotating daily");
+
+    // Rotation stalled: a full one-time pool must not paper over it.
+    const stalled = session(dashboard([liveDevice("phone")], { rotationHealthy: false, oneTimeKeys: ONE_TIME_PREKEY_MIN }));
+    expect(stalled.value).toBe(0.5);
+    expect(stalled.detail).toBe("Prekey rotation not confirmed");
+
+    // Rotation could not be measured at all: not assumed healthy.
+    const unmeasured = session(dashboard([liveDevice("phone")]));
+    expect(unmeasured.value).toBe(0.5);
+
+    // No signed prekey published: nothing to rotate, whatever a report says.
+    const none = session(dashboard([strandedDevice("old-1")], { rotationHealthy: true }));
+    expect(none.value).toBe(0);
+    expect(none.detail).toBe("No signed prekey published");
   });
 
   it("excludes build-provenance gates from the runtime layer", () => {

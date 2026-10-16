@@ -1,13 +1,15 @@
+import { sha3_256Hex } from "./sha3";
+
 interface SecurityManifestAsset {
   path: string;
   bytes: number;
-  sha256: string;
+  sha3_256: string;
 }
 
 interface SecurityManifest {
   version: number;
   generated_at: string;
-  algorithm: "SHA-256";
+  algorithm: "SHA3-256";
   assets: SecurityManifestAsset[];
 }
 
@@ -18,17 +20,6 @@ export interface RuntimeAssetIntegrity {
   failed_assets: string[];
   generated_at: string | null;
   detail: string;
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return bytesToHex(new Uint8Array(digest));
 }
 
 async function fetchArrayBuffer(path: string): Promise<ArrayBuffer> {
@@ -55,7 +46,7 @@ export async function verifyRuntimeAssetIntegrity(): Promise<RuntimeAssetIntegri
         failed_assets: [],
         generated_at: null,
         detail: import.meta.env.DEV
-          ? "Development build — the signed SHA-256 asset manifest is generated for production builds only"
+          ? "Development build — the SHA3-256 asset manifest is generated for production builds only"
           : "Security manifest is not available in this build",
       };
     }
@@ -63,8 +54,8 @@ export async function verifyRuntimeAssetIntegrity(): Promise<RuntimeAssetIntegri
     const manifest = JSON.parse(manifestText) as SecurityManifest;
     const failedAssets: string[] = [];
     for (const asset of manifest.assets) {
-      const digest = await sha256Hex(await fetchArrayBuffer(asset.path));
-      if (digest !== asset.sha256.toLowerCase()) failedAssets.push(asset.path);
+      const digest = sha3_256Hex(await fetchArrayBuffer(asset.path));
+      if (digest !== asset.sha3_256?.toLowerCase()) failedAssets.push(asset.path);
     }
 
     return {

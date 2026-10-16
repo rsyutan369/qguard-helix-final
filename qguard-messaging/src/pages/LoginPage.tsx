@@ -134,7 +134,7 @@ export default function LoginPage({ loading, error, notice, pendingMfa, onSignIn
                 <div className="flex items-start gap-3"><LockKeyhole size={16} className="mt-0.5 shrink-0 text-violet-300" /> End-to-end encrypted chat, calls &amp; file vault</div>
                 <div className="flex items-start gap-3"><Atom size={16} className="mt-0.5 shrink-0 text-sky-300" /> Hybrid key exchange · X25519 + ML-KEM-1024 (FIPS 203)</div>
                 <div className="flex items-start gap-3"><Fingerprint size={16} className="mt-0.5 shrink-0 text-violet-300" /> Dual-signature device identity · Ed25519 + ML-DSA (FIPS 204)</div>
-                <div className="flex items-start gap-3"><RefreshCcw size={16} className="mt-0.5 shrink-0 text-sky-300" /> Forward secrecy with continuous signed-prekey rotation</div>
+                <div className="flex items-start gap-3"><RefreshCcw size={16} className="mt-0.5 shrink-0 text-sky-300" /> Forward secrecy from daily signed-prekey rotation</div>
                 <div className="flex items-start gap-3"><FileLock2 size={16} className="mt-0.5 shrink-0 text-violet-300" /> Zero-knowledge vault · AES-256-GCM key wrapping</div>
                 <div className="flex items-start gap-3"><ShieldCheck size={16} className="mt-0.5 shrink-0 text-sky-300" /> Device trust, safety-number verification &amp; audit</div>
               </div>

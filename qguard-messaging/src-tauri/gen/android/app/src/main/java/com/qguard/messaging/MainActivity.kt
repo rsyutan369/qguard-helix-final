@@ -14,7 +14,20 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    // JNI helpers that launch Activities (vault folder picker, Play Billing)
+    // need this instance — Rust only holds the Application context.
+    CurrentActivity.set(this)
     requestCorePermissions()
+  }
+
+  override fun onResume() {
+    super.onResume()
+    CurrentActivity.set(this)
+  }
+
+  override fun onDestroy() {
+    CurrentActivity.clear(this)
+    super.onDestroy()
   }
 
   /**

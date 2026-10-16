@@ -25,7 +25,10 @@ use crate::crypto::signatures::VaultSigningKeypair;
 use crate::crypto::symmetric::{self, KEY_SIZE};
 use crate::crypto::{vault_recovery, EncryptedEnvelope};
 use crate::error::{QGuardError, Result};
-use crate::state::{AppState, PersistedVaultMaster, PersistedWorkspaceScope, WorkspaceCredential};
+use crate::state::{
+    AppState, PersistedVaultMaster, PersistedVaultRecovery, PersistedWorkspaceScope,
+    VaultRecoveryPublic, WorkspaceCredential,
+};
 
 const SCOPE_CHAT: &str = "chat";
 const SCOPE_VAULT: &str = "vault";
@@ -137,6 +140,43 @@ fn wrap_master_under_ikm(
     wrap_key.zeroize();
     serialized.zeroize();
     wrapped
+}
+
+/// Rebuild the device's recovery configuration after a vault reset, from the
+/// public half that is readable while locked plus the recovery root the user
+/// has just proven they hold. The caller seals it under the NEW vault key.
+fn reseal_recovery_after_reset(
+    public: &VaultRecoveryPublic,
+    root: &[u8; KEY_SIZE],
+) -> Result<PersistedVaultRecovery> {
+    let hybrid = public.mode == "hybrid";
+    Ok(PersistedVaultRecovery {
+        version: 2,
+        // Personal mode keeps the derived wrapping key; hybrid keeps the root
+        // itself, because its wrap key also depends on the enterprise secret.
+        wrap_key: if hybrid {
+            [0u8; KEY_SIZE]
+        } else {
+            vault_recovery::derive_wrap_key(root)?
+        },
+        verifier: public.verifier.clone(),
+        configured_at: public.configured_at,
+        mode: Some(public.mode.clone()),
+        recovery_root: if hybrid { Some(*root) } else { None },
+        enterprise_x25519_public: public.enterprise_x25519_public.clone(),
+        enterprise_mlkem_public: public.enterprise_mlkem_public.clone(),
+        recipient_key_id: public.recipient_key_id.clone(),
+    })
+}
+
+/// Move a recovery record written by an older build under the vault key. Runs
+/// the moment the vault key exists (unlock / first setup), so the copy that was
+/// protected by the device storage key alone does not outlive this session.
+fn migrate_recovery_material(state: &AppState, user_id: &str, master: &PersistedVaultMaster) {
+    if let Ok(vault_key) = master.vault_key() {
+        let vault_key = zeroize::Zeroizing::new(vault_key);
+        state.migrate_vault_recovery(user_id, &vault_key);
+    }
 }
 
 fn credential_for<'a>(scope: &'a PersistedWorkspaceScope, method: &str) -> Option<&'a WorkspaceCredential> {
@@ -281,6 +321,7 @@ pub async fn workspace_setup_credential(
 
         if first_vault_setup {
             state.delete_vault_master_file(&user_id)?;
+            migrate_recovery_material(&state, &user_id, &master);
             state.set_vault_session(master)?;
         }
     }
@@ -453,6 +494,7 @@ async fn unlock_with_secret(
     }
 
     if let Some(master) = unlocked_master {
+        migrate_recovery_material(state, user_id, &master);
         state.set_vault_session(master)?;
     }
 
@@ -550,9 +592,15 @@ pub async fn workspace_reset_vault(
     // this device has it, falling back to the ACCOUNT recovery registry
     // (fetched by the frontend) — so the one account recovery key also unlocks
     // a vault reset on a brand-new device that never stored local material.
+    // Only the PUBLIC half of the local recovery record is readable here: the
+    // vault is locked, which is the whole reason for this call.
+    let local_recovery = state.load_vault_recovery_public(&user_id)?;
+    // The verified recovery root, kept until the new master exists so the
+    // device's recovery secrets can be re-sealed under the NEW vault key.
+    let mut verified_root: Option<zeroize::Zeroizing<[u8; KEY_SIZE]>> = None;
     if let Some(ref key) = recovery_key {
-        let expected_verifier = match state.load_vault_recovery(&user_id)? {
-            Some(material) => material.verifier.clone(),
+        let expected_verifier = match local_recovery.as_ref() {
+            Some(public) => public.verifier.clone(),
             None => account_verifier.clone().unwrap_or_default(),
         };
         if expected_verifier.is_empty() {
@@ -562,21 +610,26 @@ pub async fn workspace_reset_vault(
             ));
         }
         let root = match vault_recovery::decode_recovery_key(key) {
-            Ok(root) => root,
+            Ok(root) => zeroize::Zeroizing::new(root),
             Err(_) => {
                 secret.zeroize();
                 return Err(QGuardError::Trust("That recovery key isn't valid.".to_string()));
             }
         };
-        let mut root = root;
-        let verifier = vault_recovery::derive_verifier(&root)?;
-        root.zeroize();
+        let verifier = match vault_recovery::derive_verifier(&root) {
+            Ok(verifier) => verifier,
+            Err(e) => {
+                secret.zeroize();
+                return Err(e);
+            }
+        };
         if verifier != expected_verifier {
             secret.zeroize();
             return Err(QGuardError::Trust(
                 "That recovery key doesn't match this account.".to_string(),
             ));
         }
+        verified_root = Some(root);
     }
 
     // Fresh master: a new VMK + new ML-DSA-87 signer, wrapped under the new secret.
@@ -613,6 +666,29 @@ pub async fn workspace_reset_vault(
     // Legacy keychain VMK (if any) must not linger — the VMK stays password-wrapped.
     state.delete_vault_master_file(&user_id)?;
     state.save_workspace_scope(&user_id, &record)?;
+
+    // The recovery secrets this device held were sealed under the OLD vault key,
+    // which is gone with the forgotten secret. Carry them over when the user has
+    // just proven they hold the recovery key; otherwise drop them, so the device
+    // reports recovery as "not enabled here" instead of claiming a protection it
+    // can no longer apply to new files. Enterprise mode holds public keys only
+    // and is unaffected. Non-fatal either way: the new lock is already in place.
+    let new_vault_key = zeroize::Zeroizing::new(new_master.vault_key()?);
+    if let Some(public) = local_recovery.as_ref().filter(|public| public.mode != "enterprise") {
+        match verified_root.as_ref() {
+            Some(root) => {
+                let resealed = reseal_recovery_after_reset(public, root).and_then(|material| {
+                    state.save_vault_recovery(&user_id, &material, &new_vault_key)
+                });
+                if resealed.is_err() {
+                    state.delete_vault_recovery(&user_id);
+                }
+            }
+            None => state.delete_vault_recovery(&user_id),
+        }
+    }
+    drop(verified_root);
+
     state.set_vault_session(new_master)?;
     state.mark_workspace_unlocked(SCOPE_VAULT)?;
 

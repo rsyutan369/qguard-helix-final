@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { PrekeyStatus } from "@/lib/prekey-hygiene";
 import { buildSecurityPosture } from "@/lib/security-score";
 import type { SecurityEvent, SecurityHardeningCheck, TrustedDevice } from "@/lib/types";
 
@@ -92,12 +93,36 @@ function event(type: string, severity: SecurityEvent["severity"], daysAgo = 0): 
   };
 }
 
-function posture(opts: { events?: SecurityEvent[]; failingChecks?: string[] } = {}) {
+/** A device whose signed prekey was rotated a few hours ago: the healthy case. */
+function rotatingPrekeys(overrides: Partial<PrekeyStatus> = {}): PrekeyStatus {
+  return {
+    signedPrekeyId: "prekey-1",
+    signedPrekeyCreatedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+    signedPrekeyAgeSeconds: 5 * 60 * 60,
+    rotationIntervalSeconds: 24 * 60 * 60,
+    rotationDue: false,
+    rotationBlocked: false,
+    retainedSignedPrekeys: 2,
+    oldestRetiredAt: null,
+    retiredGraceSeconds: 7 * 24 * 60 * 60,
+    retiredQuietSeconds: 3 * 24 * 60 * 60,
+    pastGraceSignedPrekeyIds: [],
+    purgeableSignedPrekeyIds: [],
+    pastGraceOneTimePrekeyIds: [],
+    ledgerAvailable: true,
+    ledgerEntries: 12,
+    forwardSecrecyHealthy: true,
+    forwardSecrecySummary: "Signed prekey rotates every 24 hours; current one in use for 5 hours; 2 retired awaiting clean-up",
+    ...overrides,
+  };
+}
+
+function posture(opts: { events?: SecurityEvent[]; failingChecks?: string[]; prekeyStatus?: PrekeyStatus | null } = {}) {
   return buildSecurityPosture({
     profile: { id: "me" } as never,
     devices: [liveDevice()],
-    conversations: [],
     vaultFiles: [],
+    prekeyStatus: opts.prekeyStatus === undefined ? rotatingPrekeys() : opts.prekeyStatus,
     keyInventory: {
       available_one_time_prekeys: 24,
       active_signed_prekeys: 1,
@@ -113,6 +138,35 @@ function posture(opts: { events?: SecurityEvent[]; failingChecks?: string[] } = 
 describe("buildSecurityPosture", () => {
   it("scores a fully healthy account at 100", () => {
     expect(posture().snapshot.quantum_safe_score).toBe(100);
+  });
+
+  it("reports forward secrecy in the device's own words, never as a ratchet", () => {
+    const result = posture();
+    expect(result.report.forward_secrecy).toBe(rotatingPrekeys().forwardSecrecySummary);
+    expect(result.report.forward_secrecy.toLowerCase()).not.toContain("ratchet");
+    expect(result.report.warnings).toHaveLength(0);
+  });
+
+  it("does not credit forward secrecy it could not measure", () => {
+    // Prekeys are published, but nothing says whether old ones are ever
+    // destroyed. Published prekeys alone used to be reported as
+    // "Per-message ratchet keys active".
+    const result = posture({ prekeyStatus: null });
+    expect(result.snapshot.quantum_safe_score).toBe(96);
+    expect(result.report.forward_secrecy).toMatch(/^Not measured/);
+    expect(result.report.warnings.some((warning) => warning.startsWith("Forward secrecy:"))).toBe(true);
+  });
+
+  it("withholds the forward-secrecy points when rotation has stalled", () => {
+    const stalled = rotatingPrekeys({
+      signedPrekeyAgeSeconds: 9 * 24 * 60 * 60,
+      forwardSecrecyHealthy: false,
+      forwardSecrecySummary: "Degraded: the signed prekey has been in use for 9 days (it should rotate every 24 hours)",
+    });
+    const result = posture({ prekeyStatus: stalled });
+    expect(result.snapshot.quantum_safe_score).toBe(96);
+    expect(result.report.forward_secrecy).toBe(stalled.forwardSecrecySummary);
+    expect(result.report.warnings).toContain(`Forward secrecy: ${stalled.forwardSecrecySummary}`);
   });
 
   it("does not punish the account for retiring its own dormant devices", () => {

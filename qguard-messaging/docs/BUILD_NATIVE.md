@@ -20,6 +20,20 @@ Install the NDK once:
 & "$env:LOCALAPPDATA\Android\Sdk\cmdline-tools\latest\bin\sdkmanager.bat" --install "ndk;27.2.12479018"
 ```
 
+### Without Android Studio
+
+Android Studio is not required. A JDK 21 archive (Temurin) plus the SDK
+command-line tools is enough, and neither needs admin rights. Current
+command-line tools ship `android.exe`; `sdkmanager.bat` is a deprecated wrapper
+around it and splits `package;version` arguments, so install with:
+
+```powershell
+& "$env:LOCALAPPDATAAndroidSdkcmdline-toolslatestinandroid.exe" --no-metrics `
+  --sdk="$env:LOCALAPPDATAAndroidSdk" sdk install platforms/android-36 build-tools/36.0.0 ndk/27.2.12479018
+```
+
+Point `JAVA_HOME` at the unpacked JDK instead of the Studio JBR below.
+
 ## Environment (every build shell)
 
 ```powershell

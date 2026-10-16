@@ -145,7 +145,9 @@ mod android {
         QGuardError::Storage(format!("Play Billing {context}: {detail}"))
     }
 
-    /// Runs `f` with a JNIEnv + the app Activity object attached to this thread.
+    /// Runs `f` with a JNIEnv + the ndk-context object attached to this thread.
+    /// That object is the APPLICATION context (tao >= 0.37), not the Activity;
+    /// PlayBilling.launchPurchase resolves the Activity via CurrentActivity.
     fn with_env<T>(f: impl FnOnce(&mut JNIEnv, &JObject) -> Result<T>) -> Result<T> {
         let ctx = ndk_context::android_context();
         let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }
