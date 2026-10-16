@@ -30,6 +30,24 @@ Messages use a Double Ratchet-style model:
 - AEAD tags are verified before plaintext is returned.
 - Nonces are generated with the OS CSPRNG.
 
+## Conversation Protection Status
+
+Each conversation header shows what can be proven about its protection
+(`src/lib/pq-status.ts`), built only from evidence the client holds:
+
+- the contact devices the next message will be sealed to, and the hybrid
+  combiner their published suite selects (`KemCombiner::for_peer_suite`);
+- the combiner label of messages that actually opened on this device (the
+  core refuses an unknown label, so an opened envelope proves it);
+- the core's device-pin verdicts and its own forward-secrecy summary.
+
+Levels: *Not measured yet* (no evidence), *Needs attention* (a weaker form is
+in use, or nothing can be delivered), *Quantum-safe* (hybrid with the bound
+combiner everywhere measured) and *Quantum-safe* with every receiving device
+pinned. Devices excluded from delivery are reported but do not lower the
+level, since nothing is sealed to them. "Pinned" proves the device, not the
+person.
+
 ## Call Media Encryption
 
 Voice/video calls are end-to-end encrypted independently of the transport

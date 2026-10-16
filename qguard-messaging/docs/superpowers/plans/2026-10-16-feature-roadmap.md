@@ -20,8 +20,8 @@ Later phases have a scope paragraph only; each gets its own spec when its phase 
 
 | Phase | What | Size | Status |
 | --- | --- | --- | --- |
-| 0 | Research, code inventory, specs, baseline | S | **in progress** (planning done, baseline needs a decision) |
-| 1 | PQ Status badge | S–M | not started |
+| 0 | Research, code inventory, specs, baseline | S | **done** (baseline `449c918`) |
+| 1 | PQ Status badge | S–M | **done** (2026-10-16) |
 | 2 | Post-quantum session ratchet | L | not started |
 | 3 | Call verification | M | not started |
 | 4 | Privacy & lock hardening (quick wins) | S–M | not started |
@@ -52,13 +52,13 @@ Order rationale: the badge goes **before** the ratchet because it reports today'
 
 ## Phase 1 — PQ Status badge  *(spec: pq-status-badge)*
 
-- [ ] 1.1 `src/lib/pq-status.ts` — pure derivation (evidence in → level + plain-English lines out), no I/O
-- [ ] 1.2 Unit tests incl. negative controls (legacy combiner never reads "verified"; pre-FIPS KEM never reads "hybrid"; key-changed device blocks)
-- [ ] 1.3 Per-conversation evidence collector (peer device suites, recent envelope suites, pin standing, local prekey health)
-- [ ] 1.4 Chat-header chip + explainer popover in `SecureChatPage`
-- [ ] 1.5 Quantum Security dashboard: "conversations by PQ level" from real data, with empty state
-- [ ] 1.6 Include in the security report export
-- [ ] 1.7 Gate: vitest + tsc + build pass · live check in the real UI (headless Chrome/CDP, QA accounts) for each level reachable · no console errors
+- [x] 1.1 `src/lib/pq-status.ts` — pure derivation (evidence in → level + plain-English lines out), no I/O
+- [x] 1.2 Unit tests incl. negative controls — 20 tests (legacy combiner never reads quantum-safe; pre-FIPS "ML-KEM-1024" label never passes; outgoing copies are not evidence; history alone never vouches for the next message)
+- [x] 1.3 Evidence assembly in `SecureChatPage` from the same device lists and pin verdicts that decide delivery; opened envelopes now record the combiner they were made with (`ChatMessage.kem_combiner`)
+- [x] 1.4 Chat-header chip + explainer (`src/components/PqStatusBadge.tsx`); replaced the hard-coded always-green "E2EE active" line
+- [x] 1.5 Quantum Security dashboard: **"Your Contacts' Devices"** (device-level — see spec §0 for why not conversation-level), with empty state
+- [x] 1.6 Security report export: `contact_device_protection`
+- [x] 1.7 Gate passed 2026-10-16: vitest 317/317 · tsc clean · build OK · live render of 6 scenarios in the real app (light, dark, 390 px) — one defect found and fixed (explainer ran 99 px off-screen on phones)
 
 ## Phase 2 — Post-quantum session ratchet  *(spec: pq-ratchet)*
 

@@ -20,6 +20,7 @@ import { useMemo, useState } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import { isAdminEmail } from "@/lib/admin";
 import { ONE_TIME_PREKEY_MIN, SIGNED_PREKEY_MIN } from "@/lib/security-score";
+import { summarizeContactDeviceProtection } from "@/lib/pq-status";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import type { DashboardData, SecurityHardeningCheck, TelemetryEvent, TrustedDevice, VaultFileSummary } from "@/lib/types";
 
@@ -215,6 +216,12 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
   const measuredArtifact = hardening.binary_path?.split(/[\\/]/).pop() ?? null;
   const activeMyDevices = useMemo(() => devices.filter((device) => device.user_id === userId && isActiveDevice(device)), [devices, userId]);
   const trustedMyDevices = useMemo(() => activeMyDevices.filter(isTrustedDevice), [activeMyDevices]);
+  // Contacts' devices that messages can be addressed to (same trust filter the
+  // chat uses for delivery), by the form their published suite gets sealed with.
+  const contactProtection = useMemo(
+    () => summarizeContactDeviceProtection(devices.filter((device) => isActiveDevice(device) && isTrustedDevice(device)), userId),
+    [devices, userId],
+  );
   const hybridKexReady = activeMyDevices.some(deviceHasHybridKex);
   const hybridSignatureReady = activeMyDevices.some(deviceHasHybridSignatures);
   const deviceSuiteReady = activeMyDevices.some(deviceSuiteUsesRequiredStack);
@@ -399,6 +406,34 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
             </div>
           )}
         </div>
+      </section>
+
+      <section className="shell-card p-5">
+        <h2 className="text-sm font-bold text-ink-950">Your Contacts&apos; Devices</h2>
+        <div className="mt-1 text-xs text-ink-600">
+          How messages to each trusted contact device are sealed, from the keys that device published. A device waiting
+          for your approval in a chat is counted here but receives nothing until you approve it there.
+        </div>
+        {contactProtection.total === 0 ? (
+          <div className="mt-4 rounded-lg border border-line p-4 text-sm text-ink-600">
+            No contact devices yet. Start a secure chat with someone, and their devices show up here once they have
+            published their keys.
+          </div>
+        ) : (
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            {[
+              { label: "Strongest form", value: contactProtection.strongest, tone: "text-emerald-600", detail: "ML-KEM-1024 + X25519, bound combiner" },
+              { label: "Older app version", value: contactProtection.olderCombiner, tone: contactProtection.olderCombiner > 0 ? "text-amber-600" : "text-ink-950", detail: "Post-quantum, earlier key-combining method" },
+              { label: "Cannot receive", value: contactProtection.cannotReceive, tone: contactProtection.cannotReceive > 0 ? "text-rose-600" : "text-ink-950", detail: "Pre-FIPS 203 keys: must update before messages reach it" },
+            ].map((item) => (
+              <div key={item.label} className="rounded-lg border border-line p-3">
+                <div className="text-xs font-semibold text-ink-600">{item.label}</div>
+                <div className={`mt-1 text-2xl font-bold ${item.tone}`}>{item.value}<span className="ml-1 text-sm font-semibold text-ink-500">/ {contactProtection.total}</span></div>
+                <div className="mt-1 text-xs text-ink-500">{item.detail}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       {isAdmin && (

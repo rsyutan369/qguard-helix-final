@@ -8,6 +8,27 @@ website download label in `../src/app/qguard-messaging/_shared.tsx` — all thre
 are kept in lock-step by `tools/release.ps1`, because a mismatch silently breaks
 auto-update.
 
+## [Unreleased]
+
+### Added
+
+- **Conversation protection badge.** The chat header now says what can actually
+  be shown about the conversation's protection — *Quantum-safe*, *Needs
+  attention* or *Not measured yet* — with an explainer listing each piece of
+  evidence: the devices the next message is sealed to and the hybrid form their
+  keys select, the form recent incoming messages arrived in, which devices are
+  held back and why, whether every receiving device is the one recorded for the
+  contact, and this device's forward-secrecy state in the core's own words.
+- **Quantum Security dashboard: "Your Contacts' Devices".** How many of your
+  contacts' trusted devices get the strongest hybrid form, the earlier key
+  combiner, or cannot receive at all (pre-FIPS 203 keys). The same counts are in
+  the exported security report (`contact_device_protection`).
+
+### Changed
+
+- The chat header no longer shows a fixed, always-green "E2EE active - X25519 +
+  ML-KEM-1024 - AES-256-GCM" line regardless of evidence; the badge replaces it.
+
 ## [1.3.12] — 2026-10-14
 
 Android fix release. Built locally; not yet published. No database migration;

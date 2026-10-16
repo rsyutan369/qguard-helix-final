@@ -20,11 +20,14 @@ import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import { describeSavedFile, saveFileToDevice } from "@/lib/save-file";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
-import type { SecurityEvent, TelemetryEvent } from "@/lib/types";
+import type { SecurityEvent, TelemetryEvent, TrustedDevice } from "@/lib/types";
 import { sha3_256Hex } from "@/lib/sha3";
+import { summarizeContactDeviceProtection } from "@/lib/pq-status";
 
 interface AuditLogsPageProps {
   userId: string;
+  /** Every device row visible to this account; the report summarizes contacts' ones. */
+  devices: TrustedDevice[];
   events: TelemetryEvent[];
   securityEvents: SecurityEvent[];
   liveEvents: QGuardLiveEvent[];
@@ -151,7 +154,7 @@ function pageWindow(current: number, total: number): Array<number | "ellipsis"> 
   return items;
 }
 
-export default function AuditLogsPage({ userId, events, securityEvents, liveEvents, liveStatus, onRefresh }: AuditLogsPageProps) {
+export default function AuditLogsPage({ userId, devices, events, securityEvents, liveEvents, liveStatus, onRefresh }: AuditLogsPageProps) {
   const isAdmin = useIsAdmin();
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState<StatusState>(null);
@@ -274,6 +277,12 @@ export default function AuditLogsPage({ userId, events, securityEvents, liveEven
         live_events: liveEvents.length,
         integrity_posture: integrityPosture,
       },
+      // From the suites contacts' trusted devices published: the form the next
+      // message to each would be sealed with. Device counts, not conversations.
+      contact_device_protection: summarizeContactDeviceProtection(
+        devices.filter((device) => device.trust_state === "ThisDevice" || device.trust_state === "Trusted"),
+        userId,
+      ),
       telemetry: events.map((event) => ({
         id: event.id,
         stage: event.stage,

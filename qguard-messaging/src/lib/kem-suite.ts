@@ -34,6 +34,20 @@ export const CURRENT_PQ_KEM_STANDARD = "FIPS-203";
 /** How a pre-cutover device's real KEM is described to the user. */
 export const LEGACY_PQ_KEM_PRE_FIPS = "Kyber-1024 (pre-FIPS-203)";
 
+/**
+ * Must match `CURRENT_KEM_COMBINER` in src-tauri/src/crypto/mod.rs.
+ *
+ * A device that publishes this is sealed to with the transcript-bound combiner
+ * (`KemCombiner::for_peer_suite`); anything else gets the legacy one. A
+ * ciphertext that carries no label was made with the legacy combiner.
+ */
+export const CURRENT_KEM_COMBINER = "QGuard-HybridKEM-v2";
+
+/** Whether a published suite or a ciphertext suite names the bound combiner. */
+export function usesBoundCombiner(suite: PublishedSuite): boolean {
+  return Boolean(suite && typeof suite === "object" && suite.kem_combiner === CURRENT_KEM_COMBINER);
+}
+
 /** The `suite` JSON a device publishes to `messaging_devices.suite`. */
 export type PublishedSuite = Record<string, unknown> | null | undefined;
 

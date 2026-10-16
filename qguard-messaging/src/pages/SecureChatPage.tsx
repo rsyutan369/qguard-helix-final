@@ -47,7 +47,10 @@ import { asRecord, hybridCiphertextFromSealed, numberArray, prekeyReferenceFromS
 import { guardNativeFileInput } from "@/lib/native-dialog-guard";
 import { describeSavedFile, saveFileToDevice } from "@/lib/save-file";
 import { supabase } from "@/lib/supabase";
-import { safeInvoke, invokeWithTimeout } from "@/lib/tauri";
+import { isTauriRuntime, safeInvoke, invokeWithTimeout } from "@/lib/tauri";
+import { fetchPrekeyStatus } from "@/lib/prekey-hygiene";
+import { derivePqStatus, type PqExcludedDevice } from "@/lib/pq-status";
+import { PqStatusBadge } from "@/components/PqStatusBadge";
 import type { ContactSummary, ConversationSummary, DualSignature, SignedPrekeySummary, TrustedDevice, UserSearchResult } from "@/lib/types";
 import { useCall } from "@/components/call/CallProvider";
 import { buildCallPeer } from "@/lib/call-targets";
@@ -198,6 +201,12 @@ interface ChatMessage {
   /** Unverified specifically because the sending device awaits approval here. */
   sender_unapproved?: boolean;
   replay_protected: boolean;
+  /**
+   * The hybrid combiner the envelope that OPENED was made with ("" = legacy).
+   * Set only on decrypted messages: the core refuses an unknown combiner, so
+   * an envelope that opened proves its label. Evidence for the PQ status badge.
+   */
+  kem_combiner?: string;
   created_at: string;
   error: string | null;
   can_delete: boolean;
@@ -741,6 +750,9 @@ const CHAT_IDLE_POLL_MS = 12_000;
 // candidate envelope and finally to a visible "failed" bubble, so overshooting
 // costs one bubble, never the whole conversation.
 const DECRYPT_TIMEOUT_MS = 9_000;
+// How often the protection badge re-reads this device's prekey rotation state.
+// Rotation is daily, so minutes are ample; each read is one small core call.
+const FORWARD_SECRECY_REFRESH_MS = 5 * 60_000;
 
 // Per-attempt deadline for the history fetch itself.
 //
@@ -1514,6 +1526,70 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     [activeConversationId, chatMessages],
   );
 
+  // This device's forward-secrecy state in the core's own words, for the
+  // protection badge. Null outside the app or when the core does not answer:
+  // the badge then says "not measured" instead of guessing.
+  const [forwardSecrecy, setForwardSecrecy] = useState<{ healthy: boolean; summary: string } | null>(null);
+  useEffect(() => {
+    if (!isTauriRuntime() || !userId) return undefined;
+    let cancelled = false;
+    const read = () => {
+      fetchPrekeyStatus(userId)
+        .then((prekeys) => {
+          if (!cancelled) setForwardSecrecy({ healthy: prekeys.forwardSecrecyHealthy, summary: prekeys.forwardSecrecySummary });
+        })
+        .catch(() => { if (!cancelled) setForwardSecrecy(null); });
+    };
+    read();
+    const timer = window.setInterval(read, FORWARD_SECRECY_REFRESH_MS);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [userId]);
+
+  // The conversation's protection badge (lib/pq-status.ts), from the same
+  // device lists and verdicts that decide delivery — so the badge cannot say
+  // something different from what the next send will actually do.
+  const pqStatus = useMemo(() => {
+    if (!activeConversation) return null;
+    const excluded = new Map<string, PqExcludedDevice>();
+    for (const device of recipientDevicesOnStaleBuild) {
+      excluded.set(device.device_id, { label: device.label, reason: "older_build" });
+    }
+    for (const review of deviceReviews) {
+      if (review.owner !== "contact" || excluded.has(review.device.device_id)) continue;
+      const standing = review.verdict.standing;
+      excluded.set(review.device.device_id, {
+        label: review.device.label,
+        reason: standing === "new" ? "awaiting_approval" : standing === "key_changed" ? "key_changed" : "invalid_identity",
+      });
+    }
+    const openedMessages = chatMessages
+      // Only messages that opened HERE and recorded the combiner that opened
+      // them; anything else is no evidence either way.
+      .filter((item) => item.conversation_id === activeConversation.id && item.status === "decrypted" && item.kem_combiner !== undefined)
+      .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
+      .map((item) => ({
+        incoming: item.sender_user_id !== userId,
+        kemCombiner: item.kem_combiner ?? "",
+        authenticated: item.authenticated,
+      }));
+    return derivePqStatus({
+      inApp: isTauriRuntime(),
+      peerName: conversationTitle(activeConversation),
+      deliveryDevices: sendableRecipientDevices.map((device) => ({
+        deviceId: device.device_id,
+        label: device.label,
+        suite: device.suite,
+        standing: pinIndex.get(device.device_id)?.standing,
+      })),
+      excludedDevices: [...excluded.values()],
+      openedMessages,
+      pinsUnavailable: devicePinsUnavailable,
+      forwardSecrecy,
+    });
+    // conversationTitle reads contacts; it is a plain function of this render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversation, chatMessages, contacts, deviceReviews, devicePinsUnavailable, forwardSecrecy, pinIndex, recipientDevicesOnStaleBuild, sendableRecipientDevices, userId]);
+
   // Ring targets are chosen with the CALL policy, not the message policy: a
   // ring is real time, so it goes to the devices that could actually answer
   // now, while messages fan out to a wider set that includes devices which are
@@ -2221,6 +2297,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             // Checked, not assumed: this row's id and conversation are the ones
             // the sender signed, so it is not a copy of an older envelope.
             replay_protected: screening.positionVerified.has(localRow.id),
+            kem_combiner: String(hybridCiphertextFromSealed(localRow.sealed_sender_envelope).suite.kem_combiner ?? ""),
             created_at: localRow.created_at,
             error: null,
             can_delete: localRowIsMine,
@@ -4580,10 +4657,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             )}
             <div className="min-w-0">
               <h2 className="truncate text-sm font-bold text-ink-950">{activeConversation ? conversationTitle(activeConversation) : "Select or start a private chat"}</h2>
-              <div className="mt-1 flex items-center gap-2 text-xs font-semibold text-emerald-600">
-                <ShieldCheck size={14} />
-                E2EE active - X25519 + ML-KEM-1024 - AES-256-GCM
-              </div>
+              {pqStatus && <PqStatusBadge status={pqStatus} />}
             </div>
           </div>
           <div className="flex items-center gap-2">

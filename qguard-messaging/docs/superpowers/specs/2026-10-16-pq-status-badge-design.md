@@ -1,6 +1,25 @@
 # PQ Status Badge — Design
 
-**Date:** 2026-10-16 · **Roadmap:** Phase 1 · **Scope:** Desktop + Android (shared React UI)
+**Date:** 2026-10-16 · **Roadmap:** Phase 1 · **Scope:** Desktop + Android (shared React UI) · **Status:** BUILT 2026-10-16
+
+---
+
+## 0. As built — deviations from the design below
+
+The design below is kept as written; this section records where the build differs and why.
+
+| Design said | Built | Why |
+| --- | --- | --- |
+| Levels `unknown / classical / degraded / hybrid / verified-hybrid` | `unknown / attention / protected / protected-pinned` (`src/lib/pq-status.ts`) | No code path can produce a non-hybrid envelope (the core refuses it), so a `classical` level would be dead code. "Verified" is reserved for Phase 3, when the user — not trust-on-first-use — has verified the person; until then "pinned" is the honest word. |
+| Pre-FIPS / key-changed / unapproved devices lower the level | They are reported as lines but **do not lower confidentiality** | The chat already drops them from delivery (`isSendableDevice`, `isDeliverableStanding`), so nothing is sealed to them: they are an availability problem. The chip shows "N notes" so it never reads cleaner than the explainer. With no deliverable device at all, the level is `attention`. |
+| `weakest` field and `forwardSecrecy` enum on the result | Not built | Each weak device is named in its own line; forward secrecy is quoted from the core (`PrekeyStatus.forwardSecrecySummary`), not re-classified. |
+| Dashboard: "conversations by PQ level" | Dashboard: **"Your Contacts' Devices"** — counts by the form their published suite gets sealed with (`summarizeContactDeviceProtection`) | Per-conversation levels need pin verdicts and opened envelopes; the dashboard has neither, and asking the core for pin verdicts there would record first-use pins as a side effect. Device counts are real and side-effect free. Cross-conversation rollup moves to Phase 10 (Helix posture feed). |
+| Report export: list conversations and levels | Report (`AuditLogsPage` export) gains `contact_device_protection` with the same device counts | Same reason. |
+| Chip label differs per level | Both protected levels read "Quantum-safe"; the icon (`ShieldCheck` vs `Shield`) and the headline distinguish them | The longer label truncated to "Quant…" in a 390 px phone header (found in the live check). |
+
+Also replaced: the chat header's hard-coded, always-green `E2EE active - X25519 + ML-KEM-1024 - AES-256-GCM` line — a fixed security claim shown regardless of evidence.
+
+**Verification (2026-10-16):** 20 unit tests in `src/lib/pq-status.test.ts` (each rule plus negative controls); full vitest 317/317; `tsc --noEmit` clean; `npm run build` succeeds. Live: the real app (Vite dev server, real React/CSS) in headless Chrome with Supabase and the Rust core's IPC replaced by fixtures, scenarios `pinned`, `attention` (legacy-combiner device), `notes` (device awaiting approval), `unknown` (no device), `incoming-ok` and `incoming-legacy` (envelopes that open, one with a legacy combiner label) — every one rendered the expected chip and explainer; `aria-expanded` toggles; Escape and outside-click close; light and dark themes; at 390 px the explainer was found running 99 px off-screen and was fixed (now 16–374 px of 390); no console errors other than the harness's own 404 for avatar images. Harness: scratchpad `uiharness/pq-badge-check.mjs` (not in the repo).
 
 ---
 
@@ -104,4 +123,4 @@ Integration: chip renders each level; popover text matches `lines`; dashboard ag
 
 ## 10. Checklist
 
-- [ ] `pq-status.ts` + tests · [ ] `usePqStatus` · [ ] header chip + popover · [ ] dashboard section · [ ] report export · [ ] docs (`docs/cryptographic-design.md` §Status) · [ ] gate passed
+- [x] `pq-status.ts` + tests · [x] evidence assembly (in `SecureChatPage`, from the same lists that decide delivery — no separate hook) · [x] header chip + explainer · [x] dashboard section (device-level, see §0) · [x] report export (device-level) · [x] docs (`docs/cryptographic-design.md` §Conversation protection status) · [x] gate passed
