@@ -1,4 +1,6 @@
 import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, BadgeCheck, Ban, ChevronDown, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, Users, X, Sparkles, Megaphone, LogIn } from "lucide-react";
+import { MobileComposeButton, MobileConversationRow, MobileFilterTabs, MobileSheet, MobileThreadHeader, SheetAction } from "@/components/chat/MobileChat";
+import { formatThreadTime } from "@/lib/thread-time";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import { inlineMediaKind } from "@/lib/attachment-media";
@@ -29,7 +31,7 @@ import {
   type Timeline,
 } from "@/lib/perf-timeline";
 import { deriveReadState } from "@/lib/chat-read-state";
-import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
+import { ensurePrekeyReadiness, syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import {
   approveDevicePins,
   assessDevicePins,
@@ -1344,6 +1346,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const [membersPanelOpen, setMembersPanelOpen] = useState(false);
   // AI assistant (roadmap 8): per-device setting, per-conversation allowance.
   const [assistantOpen, setAssistantOpen] = useState(false);
+  // Phone layout: the compose sheet (new chat / group / channel / join) and the
+  // open conversation's options sheet, which replace rows of header buttons.
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [threadMenuOpen, setThreadMenuOpen] = useState(false);
   const [assistantConsentVersion, setAssistantConsentVersion] = useState(0);
   const groupNameRequestsRef = useRef(new Set<string>());
   // Offline delivery (roadmap 9.1): rows a nearby phone handed over, and the
@@ -1979,6 +1985,32 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       cancelled = true;
     };
   }, [userId]);
+
+  // The signed prekey rotates while this page is open (the start-up
+  // registration and the hourly upkeep in messaging-bootstrap.ts), so the id
+  // read at mount goes stale. Without this, `localDevice` stayed null for good:
+  // the header was stuck on "Refreshing this desktop signed prekey" and new
+  // groups/channels were refused as "still publishing". Whenever the published
+  // id differs from ours, ask the core which one is current; if the relay is
+  // the one behind, republish (ensurePrekeyReadiness is throttled and deduped).
+  const publishedLocalPrekeyId = rawLocalDevice?.signed_prekey?.prekey_id ?? null;
+  useEffect(() => {
+    if (!localDeviceId || !publishedLocalPrekeyId || publishedLocalPrekeyId === localSignedPrekeyId) return;
+    let cancelled = false;
+    void safeInvoke<LocalSignedPrekeyBundle | null>("keys_upload_signed_prekey", { userId }, null).then((current) => {
+      if (cancelled || !current?.prekey_id) return;
+      if (current.prekey_id !== localSignedPrekeyId) setLocalSignedPrekeyId(current.prekey_id);
+      if (current.prekey_id !== publishedLocalPrekeyId) {
+        void ensurePrekeyReadiness(supabase, userId).then(() => {
+          if (!cancelled) onSent();
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localDeviceId, localSignedPrekeyId, publishedLocalPrekeyId, userId]);
 
   useEffect(() => {
     if (!localDeviceId) return;
@@ -5177,6 +5209,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     { id: "archived", label: "Archived", count: archivedConversations.length, protected: true },
     { id: "hidden", label: "Hidden", count: hiddenConversations.length, protected: true },
   ];
+  const mobileMenuThread = isMobile && openConversationMenuId
+    ? visibleConversations.find((thread) => thread.id === openConversationMenuId) ?? null
+    : null;
+  const mobileMenuBusy = mobileMenuThread ? conversationBusyId?.startsWith(`${mobileMenuThread.id}:`) ?? false : false;
   const emptyConversationText = conversationView === "active"
     ? "Add a trusted contact to start a private encrypted chat."
     : conversationView === "archived"
@@ -5190,7 +5226,66 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       className="grid h-full min-h-0 gap-0"
       style={{ gridTemplateColumns: isMobile ? "minmax(0, 1fr)" : chatGridTemplate(chatColumnWidths) }}
     >
-      <section className={`shell-card overflow-hidden ${isMobile && mobilePane !== "list" ? "hidden" : ""}`}>
+      {isMobile ? (
+      <section className={`-mx-3.5 flex min-h-0 flex-col pb-24 ${mobilePane !== "list" ? "hidden" : ""}`}>
+        <MobileFilterTabs
+          tabs={conversationViews.map((view) => {
+            const locked = view.id !== "active" && !protectedViewUnlocked(view.id as ProtectedConversationView);
+            // A locked folder does not reveal how many conversations it holds.
+            return { id: view.id, label: view.id === "active" ? "Chats" : view.label, count: locked ? 0 : view.count, locked };
+          })}
+          active={conversationView}
+          onSelect={switchConversationView}
+        />
+        {conversationAction && (
+          <div className="mx-4 mb-2 rounded-lg border border-line px-3 py-2 text-xs font-semibold text-ink-600">{conversationAction}</div>
+        )}
+        {visibleConversations.length === 0 ? (
+          <div className="px-6 py-14 text-center">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-violet-50 text-violet-600">
+              <MessageSquarePlus size={24} />
+            </div>
+            <p className="mx-auto mt-4 max-w-[240px] text-sm text-ink-600">{emptyConversationText}</p>
+            {conversationView === "active" && (
+              <button
+                type="button"
+                onClick={() => setComposeOpen(true)}
+                className="mx-auto mt-5 flex h-11 items-center gap-2 rounded-xl bg-violet-600 px-5 text-sm font-bold text-white"
+              >
+                <MessageSquarePlus size={16} />
+                Start a conversation
+              </button>
+            )}
+          </div>
+        ) : (
+          <ul aria-label="Conversations">
+            {visibleConversations.map((thread) => (
+              <MobileConversationRow
+                key={thread.id}
+                avatar={conversationPeerUserId(thread) ? (
+                  <UserAvatar userId={conversationPeerUserId(thread)} name={conversationTitle(thread)} size={48} />
+                ) : (
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-violet-500 text-white">
+                    {thread.conversation_type === "channel" ? <Megaphone size={20} /> : <Users size={20} />}
+                  </div>
+                )}
+                title={conversationTitle(thread)}
+                preview={thread.last_activity}
+                time={formatThreadTime(thread.updated_at)}
+                unread={thread.unread_count}
+                archived={Boolean(thread.archived_at)}
+                hidden={Boolean(thread.hidden_at)}
+                busy={conversationBusyId?.startsWith(`${thread.id}:`) ?? false}
+                onOpen={() => openConversation(thread)}
+                onActions={() => setOpenConversationMenuId(thread.id)}
+              />
+            ))}
+          </ul>
+        )}
+        {conversationView === "active" && <MobileComposeButton onClick={() => setComposeOpen(true)} />}
+      </section>
+      ) : (
+      <section className="shell-card overflow-hidden">
         <div className="border-b border-line p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2">
@@ -5373,6 +5468,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           })}
         </div>
       </section>
+      )}
 
       <div
         role="separator"
@@ -5384,7 +5480,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           setChatColumnWidths(reset);
           persistChatColumnWidths(reset);
         }}
-        className="group relative z-20 flex cursor-col-resize touch-none items-center justify-center"
+        className={`group relative z-20 flex cursor-col-resize touch-none items-center justify-center ${isMobile ? "hidden" : ""}`}
         title="Drag to resize · double-click to reset"
       >
         {/* Widened, finger-sized touch target that overhangs both panels;
@@ -5393,7 +5489,32 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         <div className="h-20 w-1.5 rounded-full bg-line transition group-hover:h-24 group-hover:w-2 group-hover:bg-violet-400 group-active:bg-violet-500" />
       </div>
 
-      <section className={`shell-card flex min-h-0 flex-col overflow-hidden ${isMobile && mobilePane !== "thread" ? "hidden" : ""}`}>
+      <section className={isMobile ? `-mx-3.5 flex min-h-0 flex-col overflow-hidden ${mobilePane !== "thread" ? "hidden" : ""}` : "shell-card flex min-h-0 flex-col overflow-hidden"}>
+        {isMobile ? (
+        <MobileThreadHeader
+          onBack={() => setMobilePane("list")}
+          avatar={activeConversation && (
+            conversationPeerUserId(activeConversation) ? (
+              <UserAvatar userId={conversationPeerUserId(activeConversation)} name={conversationTitle(activeConversation)} size={38} />
+            ) : (
+              <div className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-full bg-violet-500 text-white">
+                {activeConversation.conversation_type === "channel" ? <Megaphone size={17} /> : <Users size={17} />}
+              </div>
+            )
+          )}
+          title={activeConversation ? conversationTitle(activeConversation) : "Select a conversation"}
+          badge={pqStatus ? <PqStatusBadge status={pqStatus} /> : undefined}
+          call={activeConversation?.conversation_type !== "channel" ? (
+            <CallButton
+              disabled={!call.supported || !callPeer || !activeConversation || call.state.phase !== "idle" && call.state.phase !== "ended"}
+              title={call.supported ? "Start quantum-encrypted video call" : "Video calling requires the desktop app"}
+              onClick={() => { if (callPeer && activeConversation) void call.startCall(callPeer, activeConversation.id); }}
+            />
+          ) : undefined}
+          onOptions={activeConversation ? () => setThreadMenuOpen(true) : undefined}
+          notice={status !== "Ready" ? status : null}
+        />
+        ) : (
         <div className="flex items-center justify-between border-b border-line p-4">
           <div className="flex min-w-0 items-center gap-3">
             {isMobile && (
@@ -5475,11 +5596,19 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             <span className="status-pill bg-emerald-50 text-emerald-600">{status}</span>
           </div>
         </div>
-        <div ref={messageViewportRef} className="flex-1 space-y-4 overflow-y-auto bg-canvas p-5">
+        )}
+        <div ref={messageViewportRef} className={`flex-1 overflow-y-auto bg-canvas ${isMobile ? "space-y-3 px-3 py-4" : "space-y-4 p-5"}`}>
+          {isMobile ? (
+            <p className="mx-auto flex max-w-[280px] items-center justify-center gap-1.5 text-center text-[11px] leading-snug text-ink-500">
+              <LockKeyhole size={12} className="shrink-0" />
+              Messages are sealed on this device for each trusted recipient device.
+            </p>
+          ) : (
           <div className="rounded-lg border border-line bg-white p-4 text-sm text-ink-600">
             Private messages are sealed locally for each trusted recipient device.
           </div>
-          {activeContact && (
+          )}
+          {activeContact && !isMobile && (
             <div className="max-w-md rounded-lg bg-violet-600 p-4 text-sm text-white shadow-tight">
               Private channel with {visibleContactName(activeContact)}
             </div>
@@ -6052,7 +6181,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           setChatColumnWidths(reset);
           persistChatColumnWidths(reset);
         }}
-        className="group relative z-20 flex cursor-col-resize touch-none items-center justify-center"
+        className={`group relative z-20 flex cursor-col-resize touch-none items-center justify-center ${isMobile ? "hidden" : ""}`}
         title="Drag to resize · double-click to reset"
       >
         <span className="absolute inset-y-0 -left-3 -right-3" aria-hidden="true" />
@@ -6386,6 +6515,74 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     )}
     {showNewChannel && <NewChannelDialog onCreate={createChannel} onClose={() => setShowNewChannel(false)} />}
     {showJoinChannel && <JoinChannelDialog onJoin={joinChannel} onClose={() => setShowJoinChannel(false)} />}
+    {isMobile && composeOpen && (
+      <MobileSheet title="Start something new" subtitle="Everything here is end-to-end encrypted" onClose={() => setComposeOpen(false)}>
+        <SheetAction icon={<MessageSquarePlus size={18} />} label="New chat" detail="Message one person" onClick={() => { setComposeOpen(false); openNewChat(); }} />
+        <SheetAction icon={<Users size={18} />} label="New group" detail="Each message is sealed to every member's devices" onClick={() => { setComposeOpen(false); setShowNewGroup(true); }} />
+        <SheetAction icon={<Megaphone size={18} />} label="New channel" detail="You post, readers read" onClick={() => { setComposeOpen(false); setShowNewChannel(true); }} />
+        <SheetAction icon={<LogIn size={18} />} label="Join a channel" detail="With an invite code someone shared" onClick={() => { setComposeOpen(false); setShowJoinChannel(true); }} />
+      </MobileSheet>
+    )}
+    {isMobile && mobileMenuThread && (
+      <MobileSheet title={conversationTitle(mobileMenuThread)} subtitle={mobileMenuThread.last_activity} onClose={() => setOpenConversationMenuId(null)}>
+        {!mobileMenuThread.archived_at && !mobileMenuThread.hidden_at && (
+          <SheetAction icon={<Archive size={18} />} label="Archive" detail="Move it to the Archived folder" disabled={mobileMenuBusy} onClick={() => void updateConversationPrivacyState(mobileMenuThread, "archive")} />
+        )}
+        {mobileMenuThread.archived_at && (
+          <SheetAction icon={<ArchiveRestore size={18} />} label="Unarchive" detail="Back to Chats" disabled={mobileMenuBusy} onClick={() => void updateConversationPrivacyState(mobileMenuThread, "unarchive")} />
+        )}
+        {!mobileMenuThread.hidden_at && (
+          <SheetAction icon={<EyeOff size={18} />} label="Hide" detail="Only visible after unlocking the Hidden folder" disabled={mobileMenuBusy} onClick={() => void updateConversationPrivacyState(mobileMenuThread, "hide")} />
+        )}
+        {mobileMenuThread.hidden_at && (
+          <SheetAction icon={<Eye size={18} />} label="Unhide" detail="Back to Chats" disabled={mobileMenuBusy} onClick={() => void updateConversationPrivacyState(mobileMenuThread, "unhide")} />
+        )}
+        <SheetAction icon={<Trash2 size={18} />} label="Delete" detail="Removes it from your view; others keep their copy" danger disabled={mobileMenuBusy} onClick={() => void updateConversationPrivacyState(mobileMenuThread, "delete")} />
+      </MobileSheet>
+    )}
+    {isMobile && threadMenuOpen && activeConversation && (
+      <MobileSheet title={conversationTitle(activeConversation)} subtitle="Conversation options" onClose={() => setThreadMenuOpen(false)}>
+        {isTauriRuntime() && (
+          <SheetAction
+            icon={<BadgeCheck size={18} />}
+            label={verifyPanelOpen ? "Hide verification" : "Verify safety number"}
+            detail="Compare the numbers with them in person or on a call"
+            onClick={() => { setThreadMenuOpen(false); setVerifyPanelOpen((open) => !open); }}
+          />
+        )}
+        {isMultiParty(activeConversation) && (
+          <SheetAction
+            icon={<Users size={18} />}
+            label={membersPanelOpen ? "Hide members" : "Members"}
+            detail="Who is in this conversation, and their roles"
+            onClick={() => { setThreadMenuOpen(false); setMembersPanelOpen((open) => !open); }}
+          />
+        )}
+        {activeConversation.conversation_type === "group" && groupCallPeers && (
+          <SheetAction
+            icon={<Users size={18} />}
+            label="Group video call"
+            detail={call.supported ? "A separately encrypted link to each person" : "Video calling requires the desktop app"}
+            disabled={!call.supported || call.groupCallActive || (call.state.phase !== "idle" && call.state.phase !== "ended")}
+            onClick={() => {
+              setThreadMenuOpen(false);
+              void call.startGroupCall(activeConversation.id, groupCallPeers).catch((error) => setStatus(describeMessageError(error)));
+            }}
+          />
+        )}
+        {isTauriRuntime() && assistantSettings.enabled && (
+          <SheetAction
+            icon={<Sparkles size={18} />}
+            label={assistantOpen ? "Close AI assistant" : "AI assistant"}
+            detail="Sends the messages it reads to your chosen provider"
+            onClick={() => { setThreadMenuOpen(false); setAssistantOpen((open) => !open); }}
+          />
+        )}
+        {!isTauriRuntime() && !isMultiParty(activeConversation) && (
+          <p className="px-3 py-4 text-sm text-ink-500">No options for this conversation here.</p>
+        )}
+      </MobileSheet>
+    )}
     {showNewGroup && (
       <NewGroupDialog
         candidates={contacts

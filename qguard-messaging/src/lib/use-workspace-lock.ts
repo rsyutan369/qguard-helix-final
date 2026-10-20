@@ -20,6 +20,12 @@ export interface ScopeStatus {
   failedAttempts: number;
   lockoutUntil: string | null;
   lockdown: boolean;
+  /**
+   * The lock record exists but no longer opens (sealed under a device storage
+   * key this device no longer holds). Configured and locked; only the
+   * re-authenticated resets can replace it.
+   */
+  unreadable?: boolean;
 }
 
 export interface WorkspaceStatus {
@@ -35,6 +41,7 @@ const EMPTY_SCOPE: ScopeStatus = {
   failedAttempts: 0,
   lockoutUntil: null,
   lockdown: false,
+  unreadable: false,
 };
 
 export const INACTIVITY_OPTIONS = [5, 15, 30, 60, 0] as const; // 0 = Never
@@ -57,6 +64,9 @@ function readInactivityMinutes(userId: string): number {
 
 export function useWorkspaceLock(userId: string | null) {
   const [status, setStatus] = useState<WorkspaceStatus | null>(null);
+  // Why the status could not be read. Without it a failed read left both
+  // workspaces on their loading skeleton with nothing to act on.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [inactivityMinutes, setInactivityMinutesState] = useState<number>(() =>
     userId ? readInactivityMinutes(userId) : DEFAULT_INACTIVITY_MINUTES,
   );
@@ -64,13 +74,18 @@ export function useWorkspaceLock(userId: string | null) {
 
   const refresh = useCallback(async () => {
     if (!userId) return;
-    const next = await safeInvoke<WorkspaceStatus | null>("workspace_status", undefined, null);
-    if (next) setStatus(next);
+    try {
+      setStatus(await safeInvoke<WorkspaceStatus>("workspace_status"));
+      setLoadError(null);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : typeof error === "string" ? error : "The workspace lock status could not be read.");
+    }
   }, [userId]);
 
   useEffect(() => {
     if (!userId) {
       setStatus(null);
+      setLoadError(null);
       return;
     }
     setInactivityMinutesState(readInactivityMinutes(userId));
@@ -227,6 +242,7 @@ export function useWorkspaceLock(userId: string | null) {
 
   return {
     status,
+    loadError,
     refresh,
     unlock,
     setup,

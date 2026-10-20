@@ -49,6 +49,10 @@ pub struct ScopeStatus {
     pub failed_attempts: u32,
     pub lockout_until: Option<String>,
     pub lockdown: bool,
+    /// The lock record exists but no longer opens: it was sealed under a device
+    /// storage key this device no longer holds. Still configured and locked;
+    /// only the re-authenticated resets can replace it.
+    pub unreadable: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -225,6 +229,7 @@ fn scope_status(state: &AppState, scope_name: &str, scope: &Option<PersistedWork
             failed_attempts: s.failed_attempts,
             lockout_until: s.lockout_until.map(|t| t.to_rfc3339()),
             lockdown: s.lockdown,
+            unreadable: false,
         },
         None => ScopeStatus {
             configured: false,
@@ -234,6 +239,7 @@ fn scope_status(state: &AppState, scope_name: &str, scope: &Option<PersistedWork
             failed_attempts: 0,
             lockout_until: None,
             lockdown: false,
+            unreadable: false,
         },
     }
 }
@@ -242,12 +248,31 @@ fn scope_status(state: &AppState, scope_name: &str, scope: &Option<PersistedWork
 pub fn workspace_status(state: State<'_, AppState>) -> Result<WorkspaceStatus> {
     state.require_auth()?;
     let user_id = state.user_id()?;
-    let chat = state.load_workspace_scope(&user_id, SCOPE_CHAT)?;
-    let vault = state.load_workspace_scope(&user_id, SCOPE_VAULT)?;
     Ok(WorkspaceStatus {
-        chat: scope_status(&state, SCOPE_CHAT, &chat),
-        vault: scope_status(&state, SCOPE_VAULT, &vault),
+        chat: status_of_record(&state, &user_id, SCOPE_CHAT),
+        vault: status_of_record(&state, &user_id, SCOPE_VAULT),
     })
+}
+
+/// The status of one scope, even when its record will not open. Failing the
+/// whole call left both workspaces on a loading skeleton for good after a
+/// device storage key change. An unopenable record is reported as configured,
+/// locked and `unreadable` -- never as "no lock", which would let anyone able
+/// to corrupt the file set a new lock and walk in.
+fn status_of_record(state: &AppState, user_id: &str, scope_name: &str) -> ScopeStatus {
+    match state.load_workspace_scope(user_id, scope_name) {
+        Ok(record) => scope_status(state, scope_name, &record),
+        Err(_) => ScopeStatus {
+            configured: true,
+            has_password: false,
+            has_pin: false,
+            unlocked: false,
+            failed_attempts: 0,
+            lockout_until: None,
+            lockdown: false,
+            unreadable: true,
+        },
+    }
 }
 
 #[tauri::command]
@@ -594,7 +619,13 @@ pub async fn workspace_reset_vault(
     // a vault reset on a brand-new device that never stored local material.
     // Only the PUBLIC half of the local recovery record is readable here: the
     // vault is locked, which is the whole reason for this call.
-    let local_recovery = state.load_vault_recovery_public(&user_id)?;
+    // Local material that no longer opens (sealed under a storage key this
+    // device no longer holds) counts as absent: the account registry still
+    // verifies the recovery key, and the dead file goes once the new lock is set.
+    let (local_recovery, local_recovery_unreadable) = match state.load_vault_recovery_public(&user_id) {
+        Ok(public) => (public, false),
+        Err(_) => (None, true),
+    };
     // The verified recovery root, kept until the new master exists so the
     // device's recovery secrets can be re-sealed under the NEW vault key.
     let mut verified_root: Option<zeroize::Zeroizing<[u8; KEY_SIZE]>> = None;
@@ -666,6 +697,9 @@ pub async fn workspace_reset_vault(
     // Legacy keychain VMK (if any) must not linger — the VMK stays password-wrapped.
     state.delete_vault_master_file(&user_id)?;
     state.save_workspace_scope(&user_id, &record)?;
+    if local_recovery_unreadable {
+        state.delete_vault_recovery(&user_id);
+    }
 
     // The recovery secrets this device held were sealed under the OLD vault key,
     // which is gone with the forgotten secret. Carry them over when the user has
@@ -811,6 +845,39 @@ mod tests {
         // The legacy derivation can no longer open the upgraded envelope.
         let stale_key = derive_vault_wrap_key_from_ikm(&new_salt, secret).unwrap();
         assert!(symmetric::decrypt(&stale_key, &upgraded_env, &aad).is_err());
+    }
+
+    /// A lock record that no longer opens must keep the workspace locked and
+    /// say why -- it must not fail the whole status call (both workspaces then
+    /// never loaded) nor read as "no lock set" (anyone able to corrupt the file
+    /// could then set their own lock and walk in).
+    #[test]
+    fn an_unopenable_lock_record_reports_locked_and_unreadable() {
+        let dir = std::env::temp_dir().join(format!("qguard-ws-test-{}", uuid::Uuid::new_v4()));
+        let user_id = format!("test-user-{}", uuid::Uuid::new_v4());
+        let state = AppState::new(dir.clone()).expect("create state");
+        let mut record = PersistedWorkspaceScope::new(SCOPE_CHAT);
+        record.pin = Some(WorkspaceCredential {
+            salt: random_salt(),
+            verifier: "stand-in".to_string(),
+            wrapped_master: None,
+            kdf_version: KDF_ARGON2ID_V1,
+        });
+        state.save_workspace_scope(&user_id, &record).expect("save");
+
+        let readable = status_of_record(&state, &user_id, SCOPE_CHAT);
+        assert!(readable.configured && readable.has_pin && !readable.unreadable);
+        let absent = status_of_record(&state, &user_id, SCOPE_VAULT);
+        assert!(!absent.configured && !absent.unreadable, "no record is not an unreadable one");
+
+        crate::security::keystore::delete_secret(&AppState::safe_user_key(&user_id), &dir)
+            .expect("lose the storage key");
+        let status = status_of_record(&state, &user_id, SCOPE_CHAT);
+        assert!(status.unreadable, "must say the record will not open");
+        assert!(status.configured && !status.unlocked, "must stay configured and locked");
+        assert!(!status.has_pin && !status.has_password, "must offer no unlock method it cannot check");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -84,8 +84,18 @@ const sb = createClient(env.VITE_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
  * envelope, a contact edge) goes when either side is reset.
  * `notNull` is a column with a NOT NULL guarantee, used to build the
  * "match everything" filter PostgREST requires on a DELETE.
+ * `optional` marks a table from a migration that may not be applied to the
+ * project yet (036+): absent, it is reported and skipped, never "0 rows".
  */
 const TABLES = [
+  { name: "messaging_channel_posts", users: ["sender_user_id"], notNull: "id", optional: true },
+  { name: "messaging_channel_invites", users: ["created_by"], notNull: "id", optional: true },
+  { name: "messaging_conversation_owner_history", users: ["owner_user_id"], notNull: "conversation_id", optional: true },
+  { name: "messaging_recovery_releases", users: ["owner_user_id", "guardian_user_id"], notNull: "id", optional: true },
+  { name: "messaging_recovery_shares", users: ["owner_user_id", "guardian_user_id"], notNull: "id", optional: true },
+  { name: "messaging_recovery_requests", users: ["user_id"], notNull: "request_id", optional: true },
+  { name: "messaging_social_recovery", users: ["user_id"], notNull: "user_id", optional: true },
+  { name: "messaging_directory_search_log", users: ["user_id"], notNull: "user_id", optional: true },
   { name: "messaging_message_user_states", users: ["user_id"], notNull: "user_id" },
   { name: "messaging_delivery_receipts", users: ["recipient_user_id"], notNull: "id" },
   { name: "messaging_message_envelopes", users: ["sender_user_id", "recipient_user_id"], notNull: "id" },
@@ -115,18 +125,27 @@ const PRESERVED = [
   ["messaging_user_settings", "UI preferences"],
   ["messaging_user_modules", "module enablement"],
   ["messaging_call_relay", "deployment-wide TURN/STUN config"],
+  ["messaging_app_roles", "operator role grants (account configuration)"],
 ];
+
+// PostgREST "table not in the schema cache" / Postgres "relation does not exist".
+function isMissingTable(error) {
+  return error?.code === "PGRST205" || error?.code === "42P01";
+}
 
 async function countRows(table, ids) {
   const spec = [...TABLES, ...VAULT_TABLES].find((t) => t.name === table.name) ?? table;
   let query = sb.from(spec.name).select("*", { count: "exact", head: true });
   query = applyScope(query, spec, ids);
   const { count, error } = await query;
+  if (error && spec.optional && isMissingTable(error)) return { count: 0, error: null, absent: true };
   // A failed count must never render as 0 — that would report a purge as
   // complete when the table was simply unreadable.
   if (error) return { count: null, error: error.message };
   return { count, error: null };
 }
+
+const ABSENT = "not on this project (migration not applied) - skipped";
 
 function applyScope(query, spec, ids) {
   if (!ids) return query.not(spec.notNull, "is", null);
@@ -193,11 +212,11 @@ async function main() {
   }
 
   heading("Chat state to purge");
-  const before = new Map();
+  const absent = new Set();
   for (const table of tables) {
-    const { count, error } = await countRows(table, ids);
-    before.set(table.name, count);
-    console.log(` ${table.name.padEnd(42)} ${error ? `UNREADABLE (${error})` : count}`);
+    const { count, error, absent: isAbsent } = await countRows(table, ids);
+    if (isAbsent) absent.add(table.name);
+    console.log(` ${table.name.padEnd(42)} ${isAbsent ? ABSENT : error ? `UNREADABLE (${error})` : count}`);
   }
 
   const storage = await storageTargets(ids);
@@ -222,6 +241,10 @@ async function main() {
   heading("Purging");
   let failed = false;
   for (const table of tables) {
+    if (absent.has(table.name)) {
+      console.log(` ${table.name.padEnd(42)} ${ABSENT}`);
+      continue;
+    }
     let query = sb.from(table.name).delete({ count: "exact" });
     query = applyScope(query, table, ids);
     const { count, error } = await query;
@@ -252,7 +275,11 @@ async function main() {
   heading("Verification (rows remaining)");
   let residual = 0;
   for (const table of tables) {
-    const { count, error } = await countRows(table, ids);
+    const { count, error, absent: isAbsent } = await countRows(table, ids);
+    if (isAbsent) {
+      console.log(` ${table.name.padEnd(42)} ${ABSENT}`);
+      continue;
+    }
     if (error) {
       failed = true;
       console.log(` ${table.name.padEnd(42)} UNREADABLE (${error})`);

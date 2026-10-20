@@ -25,6 +25,7 @@ Private keys remain local and are persisted through the device OS keychain / sec
 - Signed prekeys rotate at least every 30 days.
 - One-time prekeys are replenished when inventory is low.
 - Identity keys rotate only on explicit device reset or security incident.
+- An explicit device reset (Device Trust Center → Reset Device Keys) replaces the identity, its prekeys, the message-key ledger, ratchet sessions and queued outbox sends. It keeps the device storage key when that key still loads, because the key also seals the Secure Chat and Quantum Vault lock records, vault recovery material, device pins and the app-entry PIN. A storage key that no longer loads is replaced; a workspace lock sealed under the lost key then reports as unreadable and can only be replaced through the re-authenticated reset (account password for Secure Chat; recovery key or start-fresh for the vault), never treated as "no lock set".
 - Existing sessions report key changes and require user verification.
 
 ## Revocation

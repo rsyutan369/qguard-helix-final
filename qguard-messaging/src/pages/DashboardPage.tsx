@@ -35,8 +35,14 @@ function scoreColor(score: number): string {
 
 function statusTone(value: string): string {
   if (/failed|critical|no devices|needs device|not ready|missing|below|awaiting/i.test(value)) return "text-rose-600";
-  if (/review|warning|partial|needs verification|replenish/i.test(value)) return "text-amber-600";
+  if (/review|warning|partial|needs verification|needs attention|replenish/i.test(value)) return "text-amber-600";
   return "text-emerald-600";
+}
+
+function forwardSecrecyLabel(healthy: boolean | undefined, summary: string): string {
+  if (healthy === true) return "Prekey rotation active";
+  if (healthy === false) return "Needs attention";
+  return summary;
 }
 
 function liveTone(state: QGuardLiveStatus["state"]): string {
@@ -145,7 +151,10 @@ export default function DashboardPage({ data, liveEvents, liveStatus, onNavigate
   const securityRows = [
     ["End-to-End Encryption", snapshot.e2ee_status],
     ["Quantum Protection", snapshot.pqc_status],
-    ["Forward Secrecy", report.forward_secrecy],
+    // The core's summary is a full sentence (and "1 retired awaiting clean-up"
+    // is healthy, yet matched the red "awaiting" tone): show a short verdict
+    // from the health flag, and the sentence on hover.
+    ["Forward Secrecy", forwardSecrecyLabel(report.forward_secrecy_healthy, report.forward_secrecy), report.forward_secrecy],
     ["Signed Prekeys", keyInventory.active_signed_prekeys >= SIGNED_PREKEY_MIN ? `${keyInventory.active_signed_prekeys} active` : "Awaiting"],
     ["One-Time Prekeys", `${oneTimePrekeyLabel} ready`],
     ["Device Security", activeMyDevices.length > 0 ? `${trustedDevices.length}/${activeMyDevices.length} trusted` : "No Devices"],
@@ -297,10 +306,10 @@ export default function DashboardPage({ data, liveEvents, liveStatus, onNavigate
             <div className="text-sm text-ink-600">{scoreCaption}</div>
           </div>
           <div className="mt-5 space-y-2 text-sm">
-            {securityRows.map(([item, value]) => (
+            {securityRows.map(([item, value, detail]) => (
               <div key={item} className="flex items-center justify-between gap-3">
                 <span className="flex min-w-0 items-center gap-2 text-ink-600"><ShieldCheck size={14} className="shrink-0 text-emerald-500" /><span className="truncate">{item}</span></span>
-                <span className={`truncate text-right text-xs font-semibold ${statusTone(value)}`}>{value}</span>
+                <span className={`truncate text-right text-xs font-semibold ${statusTone(value)}`} title={detail ?? value}>{value}</span>
               </div>
             ))}
           </div>

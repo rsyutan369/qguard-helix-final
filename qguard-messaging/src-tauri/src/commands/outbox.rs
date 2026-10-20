@@ -15,7 +15,7 @@ use zeroize::Zeroizing;
 use crate::error::{QGuardError, Result};
 use crate::state::AppState;
 
-const OUTBOX_DOC: &str = "outbox";
+pub(crate) const OUTBOX_DOC: &str = "outbox";
 const OUTBOX_DOC_AAD: &[u8] = b"QGuard-Outbox-v1";
 /// Messages waiting at once; beyond this, sending fails visibly instead.
 pub const OUTBOX_MAX_ITEMS: usize = 200;

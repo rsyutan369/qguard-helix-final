@@ -77,6 +77,9 @@ export function WorkspaceLockGate(props: {
 
   const recoverySupported =
     scope === "chat" ? Boolean(props.onRecoverChat) : Boolean(props.onRecoverVaultWithKey || props.onRecoverVaultWithAccount);
+  // A lock record that no longer opens cannot be unlocked, only replaced
+  // through the re-authenticated reset, so that is the only screen offered.
+  const unreadable = Boolean(status.unreadable);
 
   // Tick once a second so the lockout countdown stays live.
   useEffect(() => {
@@ -140,12 +143,13 @@ export function WorkspaceLockGate(props: {
   // Recovery view — placed AFTER every hook above so switching views never
   // changes the hook count (an early return before the hooks violates the
   // Rules of Hooks and blanks the whole app).
-  if (view === "recover" && recoverySupported) {
+  if ((view === "recover" || unreadable) && recoverySupported) {
     return (
       <WorkspaceRecoveryPanel
         scope={scope}
         recoveryEnabled={props.recoveryEnabled}
-        onBack={() => setView("unlock")}
+        unreadable={unreadable}
+        onBack={unreadable ? props.onCancel : () => setView("unlock")}
         onRecoverChat={props.onRecoverChat}
         onRecoverVaultWithKey={props.onRecoverVaultWithKey}
         onRecoverVaultWithAccount={props.onRecoverVaultWithAccount}
@@ -346,6 +350,8 @@ function MethodToggle({ method, onChange }: { method: UnlockMethod; onChange: (m
 function WorkspaceRecoveryPanel(props: {
   scope: WorkspaceScope;
   recoveryEnabled?: boolean;
+  /** The saved lock no longer opens on this device (see ScopeStatus.unreadable). */
+  unreadable?: boolean;
   onBack: () => void;
   onRecoverChat?: (accountPassword: string) => Promise<unknown>;
   onRecoverVaultWithKey?: (recoveryKey: string, method: UnlockMethod, secret: string) => Promise<unknown>;
@@ -402,7 +408,7 @@ function WorkspaceRecoveryPanel(props: {
 
   const backLink = (
     <button type="button" onClick={props.onBack} className="flex items-center gap-1 text-xs font-bold text-ink-500 hover:text-ink-700">
-      <ArrowLeft size={13} /> Back to unlock
+      <ArrowLeft size={13} /> {props.unreadable ? "Back to dashboard" : "Back to unlock"}
     </button>
   );
 
@@ -442,12 +448,23 @@ function WorkspaceRecoveryPanel(props: {
             <LifeBuoy size={22} />
           </span>
           <div className="min-w-0">
-            <h2 className="text-lg font-bold text-ink-950">Recover {COPY[props.scope].title}</h2>
+            <h2 className="text-lg font-bold text-ink-950">{props.unreadable ? `Set up ${COPY[props.scope].title} again` : `Recover ${COPY[props.scope].title}`}</h2>
             <p className="mt-0.5 text-sm text-ink-600">
               {isChat ? "Reset your workspace lock without losing any messages." : "Regain access when you've forgotten your vault PIN or password."}
             </p>
           </div>
         </div>
+
+        {props.unreadable && (
+          <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] font-semibold text-amber-800">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <span>
+              {isChat
+                ? "This device's storage key was replaced when its keys were reset, so the Secure Chat lock saved before can no longer be opened. Confirm your account password to set a new one."
+                : "This device's storage key was replaced when its keys were reset, so the vault lock saved before — and the vault key it protected — can no longer be opened here. Use your recovery key, or start a fresh vault."}
+            </span>
+          </div>
+        )}
 
         {isChat ? (
           <div className="mt-5">

@@ -441,6 +441,17 @@ function ProtectedMessagingApp() {
 
       const renderProtected = (scope: WorkspaceScope, pageElement: ReactNode): ReactNode => {
         const scopeStatus = lockState.status?.[scope];
+        if (!scopeStatus && lockState.loadError) {
+          return (
+            <div className="shell-card border-rose-100 bg-rose-50 p-6">
+              <div className="text-sm font-bold text-rose-600">Could not read the {titles[scope][0]} lock</div>
+              <div className="mt-2 text-sm text-rose-600">{lockState.loadError}</div>
+              <button onClick={() => void lockState.refresh()} className="mt-4 rounded-lg bg-rose-500 px-4 py-2 text-sm font-bold text-white">
+                Retry
+              </button>
+            </div>
+          );
+        }
         if (!scopeStatus) return <ModuleFallback />;
         if (!scopeStatus.unlocked) {
           return (

@@ -1535,22 +1535,33 @@ impl AppState {
                 self.remember_superseded_device_id(previous.device_id.clone());
             }
         }
-        // Clearing the DEK first means a crash between the two steps leaves an
-        // unopenable file rather than material encrypted under a key that has
-        // already been thrown away with no record.
-        let _ = crate::security::keystore::delete_secret(&account, &self.data_dir);
+        // The device storage key is NOT part of the identity: it also seals the
+        // Secure Chat and Quantum Vault lock records, the vault recovery
+        // material, the device pins and the app-entry PIN. Discarding a working
+        // one left all of those unopenable (both workspaces then never loaded).
+        // Only a key that can no longer be read -- the fault this reset exists
+        // for -- is thrown away, before the files, so a crash in between leaves
+        // an unopenable file rather than one under a key with no record.
+        match self.device_storage_key(user_id, false) {
+            Ok(mut key) => key.zeroize(),
+            Err(_) => {
+                let _ = crate::security::keystore::delete_secret(&account, &self.data_dir);
+            }
+        }
         let _ = std::fs::remove_file(self.encrypted_key_material_path(user_id));
         let _ = std::fs::remove_file(self.key_material_path(user_id));
-        // The message-key ledger was encrypted under the storage key that has
-        // just been discarded, so it is unreadable from here on. Drop it from
-        // memory WITHOUT flushing (a flush would re-create it under a new key
-        // with the old contents) and remove the dead file.
+        // Queued sends were sealed and signed by the identity being replaced,
+        // whose device row is about to be revoked: the relay would refuse them.
+        self.delete_user_secret_doc(user_id, crate::commands::outbox::OUTBOX_DOC);
+        // The message-key ledger holds keys for the old identity's prekeys only,
+        // so it is useless from here on. Drop it from memory WITHOUT flushing
+        // (a flush would write the old contents back) and remove the file.
         if let Ok(mut ledger) = self.message_keys.lock() {
             *ledger = MessageKeyLedger::default();
         }
         let _ = std::fs::remove_file(self.message_key_ledger_path(user_id));
-        // Same for the ratchet sessions: sealed under the discarded key, and
-        // dead anyway — peers will address the new device id.
+        // Same for the ratchet sessions: they belong to the old identity
+        // and peers will address the new device id.
         if let Ok(mut sessions) = self.ratchet_sessions.lock() {
             *sessions = SessionBook::default();
         }
@@ -2647,6 +2658,63 @@ mod tests {
         assert_ne!(
             reset.device_id, original_device_id,
             "an explicit reset must produce a new device identity"
+        );
+
+        cleanup(&user_id, &dir);
+    }
+
+    /// Reset Device Keys replaces the identity, not the device storage key.
+    /// 1.4.1 discarded a working key, so the Secure Chat and Quantum Vault lock
+    /// records sealed under it no longer opened and both workspaces sat on
+    /// their loading skeleton for good.
+    #[test]
+    fn identity_reset_keeps_records_sealed_under_a_working_storage_key() {
+        let dir = unique_temp_dir();
+        let user_id = format!("test-user-{}", uuid::Uuid::new_v4());
+        let state = AppState::new(dir.clone()).expect("create state");
+        let original = state.ensure_identity(&user_id, "Test Device").expect("ensure").device_id;
+        let mut chat = PersistedWorkspaceScope::new("chat");
+        chat.failed_attempts = 2;
+        state.save_workspace_scope(&user_id, &chat).expect("save chat lock");
+
+        let reset = state.reset_device_identity(&user_id, "Test Device").expect("reset");
+        assert_ne!(reset.device_id, original, "the identity must still be replaced");
+        let reopened = state
+            .load_workspace_scope(&user_id, "chat")
+            .expect("the chat lock record must still open after an identity reset")
+            .expect("and must still exist");
+        assert_eq!(reopened.failed_attempts, 2);
+        let restarted = AppState::new(dir.clone()).expect("restart");
+        assert!(restarted
+            .load_workspace_scope(&user_id, "chat")
+            .expect("and after a restart")
+            .is_some());
+
+        cleanup(&user_id, &dir);
+    }
+
+    /// Control: a storage key that is already gone is replaced, so the reset
+    /// still works, and what the lost key sealed reports as a fault -- never
+    /// as an absent record a caller could mistake for "no lock set".
+    #[test]
+    fn identity_reset_replaces_a_storage_key_that_is_gone() {
+        let dir = unique_temp_dir();
+        let user_id = format!("test-user-{}", uuid::Uuid::new_v4());
+        let state = AppState::new(dir.clone()).expect("create state");
+        let original = state.ensure_identity(&user_id, "Test Device").expect("ensure").device_id;
+        state
+            .save_workspace_scope(&user_id, &PersistedWorkspaceScope::new("chat"))
+            .expect("save chat lock");
+        crate::security::keystore::delete_secret(&AppState::safe_user_key(&user_id), &dir)
+            .expect("lose the storage key");
+
+        let reset = state
+            .reset_device_identity(&user_id, "Test Device")
+            .expect("a reset must work without the old storage key");
+        assert_ne!(reset.device_id, original);
+        assert!(
+            state.load_workspace_scope(&user_id, "chat").is_err(),
+            "a record sealed under the lost key must report as unreadable"
         );
 
         cleanup(&user_id, &dir);

@@ -10,6 +10,67 @@ auto-update.
 
 ## [Unreleased]
 
+## [1.4.3] — 2026-10-20
+
+### Changed
+
+- **Secure Chat on phones, laid out like Signal and Telegram.** The list and
+  the open conversation no longer crowd and overlap at phone width:
+  - the conversation list is full-width: name and time on one line, the last
+    activity and an unread count on the next;
+  - New chat / Group / Channel / Join became one compose button that opens a
+    sheet saying what each does;
+  - Chats / Archived / Hidden are folder tabs that scroll instead of
+    truncating; a locked folder no longer shows how many conversations it
+    holds;
+  - a conversation's Archive / Hide / Delete open with a long press, in a
+    sheet;
+  - the conversation header keeps back, name, protection badge, call and one
+    options button (verify, members, group call, AI assistant); a status other
+    than "Ready" gets its own line under the header instead of a squeezed chip;
+  - the column-resize handles no longer show on phones.
+  Desktop keeps its layout.
+
+## [1.4.2] — 2026-10-20
+
+### Fixed
+
+- **Secure Chat and Quantum Vault stayed on a loading skeleton after Device
+  Trust Center → Reset Device Keys.** The reset threw away this device's
+  storage key along with the identity, but that key also seals the two
+  workspace lock records (and the vault recovery material, device pins and the
+  app-entry PIN). Afterwards the lock records no longer opened, the status
+  call failed, and the failure was swallowed, so neither workspace ever
+  loaded. Now:
+  - the reset keeps a storage key that still loads, and replaces only one that
+    no longer does; queued outbox sends signed by the old identity are dropped;
+  - a lock record that no longer opens is reported as such, and the workspace
+    goes straight to its re-authenticated reset with an explanation —
+    Secure Chat: your account password, then a new PIN or password; Quantum
+    Vault: your recovery key, or a fresh vault. It is never treated as "no lock
+    set", which would let anyone able to corrupt the file set their own lock;
+  - the vault reset no longer fails on unreadable local recovery material (the
+    account recovery registry still verifies the recovery key) and removes it;
+  - if the lock status cannot be read at all, the workspace shows the error
+    and a Retry button instead of an endless skeleton.
+
+## [1.4.1] — 2026-10-20
+
+### Fixed
+
+- **"Refreshing this desktop signed prekey" never cleared, and New group / New
+  channel said "This device is still publishing its quantum-safe keys".** The
+  chat page read this device's signed-prekey id once when it opened; the app
+  then rotated and published a new prekey (at start-up or in the hourly
+  upkeep), so the page kept comparing the published key with a stale id and
+  treated this device as not ready. It now re-reads the current id from the
+  core whenever the published one changes, and republishes if the relay is
+  the one behind.
+- **Home → Security Overview showed the forward-secrecy sentence in red.** A
+  healthy "1 retired awaiting clean-up" matched the red "awaiting" rule. The
+  row now shows *Prekey rotation active* or *Needs attention* from the core's
+  health verdict, with the full sentence on hover.
+
 ## [1.4.0] — 2026-10-20
 
 ### Added
