@@ -6,6 +6,7 @@ use crate::crypto::kdf::sha3_hex;
 
 pub mod android_bridge;
 pub mod content_uri;
+pub mod device_privacy;
 pub mod keystore;
 pub mod obf;
 pub mod public_downloads;

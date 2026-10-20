@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CURRENT_KEM_COMBINER, CURRENT_PQ_KEM, CURRENT_PQ_KEM_STANDARD } from "@/lib/kem-suite";
+import { RATCHET_PROTOCOL, type RatchetSessionSummary } from "@/lib/ratchet-status";
 import {
   PQ_STATUS_MESSAGE_WINDOW,
   derivePqStatus,
@@ -162,5 +163,80 @@ describe("summarizeContactDeviceProtection", () => {
   it("is all zeros with no contacts", () => {
     expect(summarizeContactDeviceProtection([{ user_id: "me", suite: BOUND_SUITE }], "me"))
       .toEqual({ total: 0, strongest: 0, olderCombiner: 0, cannotReceive: 0 });
+  });
+});
+
+describe("derivePqStatus — per-message ratchet", () => {
+  const RATCHET_SUITE = { ...BOUND_SUITE, ratchet: RATCHET_PROTOCOL };
+  const session = (overrides: Partial<RatchetSessionSummary> = {}): RatchetSessionSummary => ({
+    session_id: "ab".repeat(16),
+    created_at: 1,
+    last_used_at: 2,
+    ratcheted: true,
+    pq_steps: 1,
+    last_pq_at: 2,
+    init_combiner: CURRENT_KEM_COMBINER,
+    ...overrides,
+  });
+  const ratchetLine = (status: ReturnType<typeof derivePqStatus>) => status.lines.find((line) => line.text.startsWith("Per-message ratchet"));
+
+  it("claims the ratchet only when the core holds a ratcheted session with every device", () => {
+    const status = derivePqStatus(evidence({
+      deliveryDevices: [device({ suite: RATCHET_SUITE })],
+      ratchet: { enabledHere: true, available: true, sessions: { d1: session() } },
+    }));
+    expect(ratchetLine(status)?.ok).toBe(true);
+    expect(ratchetLine(status)?.text).toContain("every message to Ana gets its own key");
+    expect(status.level).toBe("protected-pinned");
+  });
+
+  it("says nothing about a ratchet when this device does not run it (negative control)", () => {
+    for (const ratchet of [null, undefined, { enabledHere: false, available: true, sessions: { d1: session() } }]) {
+      const status = derivePqStatus(evidence({ deliveryDevices: [device({ suite: RATCHET_SUITE })], ratchet }));
+      expect(status.lines.some((line) => /ratchet/i.test(line.text))).toBe(false);
+    }
+  });
+
+  it("an advertised capability without a session is not a ratchet (negative control)", () => {
+    const status = derivePqStatus(evidence({
+      deliveryDevices: [device({ suite: RATCHET_SUITE })],
+      ratchet: { enabledHere: true, available: true, sessions: {} },
+    }));
+    expect(ratchetLine(status)).toBeUndefined();
+    expect(status.lines.some((line) => line.text.includes("starts with the next message"))).toBe(true);
+    // Nor is a session that has not completed a round trip.
+    const unanswered = derivePqStatus(evidence({
+      deliveryDevices: [device({ suite: RATCHET_SUITE })],
+      ratchet: { enabledHere: true, available: true, sessions: { d1: session({ ratcheted: false }) } },
+    }));
+    expect(ratchetLine(unanswered)).toBeUndefined();
+  });
+
+  it("names the devices that fall back to one-shot sealing, without lowering the level", () => {
+    const status = derivePqStatus(evidence({
+      deliveryDevices: [device({ suite: RATCHET_SUITE }), device({ deviceId: "d2", label: "Old laptop" })],
+      ratchet: { enabledHere: true, available: true, sessions: { d1: session() } },
+    }));
+    expect(ratchetLine(status)?.text).toContain("Pixel");
+    expect(status.lines.some((line) => line.text.startsWith("Old laptop does not support the per-message ratchet"))).toBe(true);
+    expect(status.level).toBe("protected-pinned");
+  });
+
+  it("an unreadable session file is said plainly", () => {
+    const status = derivePqStatus(evidence({
+      deliveryDevices: [device({ suite: RATCHET_SUITE })],
+      ratchet: { enabledHere: true, available: false, sessions: {} },
+    }));
+    expect(warnLines(status).some((line) => line.text.includes("secure sessions could not be opened"))).toBe(true);
+  });
+
+  it("counts incoming ratchet messages, and a forgotten session's combiner is no evidence of a legacy one", () => {
+    const status = derivePqStatus(evidence({
+      openedMessages: [opened({ protocol: "ratchet", kemCombiner: null }), opened({ protocol: "ratchet" }), opened()],
+    }));
+    expect(status.lines.some((line) => line.text.startsWith("2 of the last 3 messages from Ana arrived on a per-message ratchet"))).toBe(true);
+    expect(status.level).toBe("protected-pinned");
+    // Whereas a real legacy combiner still counts.
+    expect(derivePqStatus(evidence({ openedMessages: [opened({ kemCombiner: "" })] })).level).toBe("attention");
   });
 });

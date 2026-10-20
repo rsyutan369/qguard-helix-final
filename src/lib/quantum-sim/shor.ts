@@ -414,15 +414,15 @@ export const SHOR_DEFAULT_MAX_QUBITS = 22;
 /** Odd composites small enough to simulate, with their factorisations. */
 export const SHOR_TARGETS: Array<{ N: number; factors: [number, number]; qubits: number; note: string }> = [
   { N: 15, factors: [3, 5], qubits: 12, note: 'The canonical demonstration. 8 control + 4 work qubits.' },
-  { N: 21, factors: [3, 7], qubits: 15, note: 'First case where the period can exceed the register width if you shrink t.' },
+  { N: 21, factors: [3, 7], qubits: 15, note: 'Orders up to 6 (a = 2 has order 6). The first target where r is not a power of two, so the peaks are not exact and continued fractions must do real work.' },
   { N: 33, factors: [3, 11], qubits: 18, note: 'Six work qubits. State vector crosses 4 MB.' },
-  { N: 35, factors: [5, 7], qubits: 18, note: 'Both factors above 3 — no trivial gcd shortcut.' },
-  { N: 39, factors: [3, 13], qubits: 18, note: 'Order of most bases here is 12 (8 of the 23 coprime bases), giving a twelve-tooth comb.' },
+  { N: 35, factors: [5, 7], qubits: 18, note: 'Both factors above 3. Orders up to 12; 10 of the 34 nonzero residues share a factor with 35 and fall to the gcd check alone.' },
+  { N: 39, factors: [3, 13], qubits: 18, note: '12 is the most common order here (8 of the 24 units mod 39), giving a twelve-tooth comb.' },
   { N: 51, factors: [3, 17], qubits: 18, note: 'Larger prime factor stresses the continued-fraction step.' },
   { N: 55, factors: [5, 11], qubits: 18, note: 'Order 20 for many bases — a dense comb.' },
   { N: 65, factors: [5, 13], qubits: 21, note: 'Seven work qubits. 33 MB of amplitudes.' },
   { N: 77, factors: [7, 11], qubits: 21, note: 'The largest target that stays comfortable in a browser tab.' },
-  { N: 91, factors: [7, 13], qubits: 21, note: 'Order 12 for most bases, but only 6 for a = 3 (3^6 = 729 = 8·91 + 1). Runs in about a second.' },
+  { N: 91, factors: [7, 13], qubits: 21, note: '12 is the most common order (32 of the 72 units mod 91), but a = 3 has order 6 (3^6 = 729 = 8·91 + 1). Runs in about a second.' },
 ];
 
 function pickBase(N: number, random: () => number): number {
@@ -545,7 +545,7 @@ export function runShor(options: ShorOptions): ShorResult {
     id: 'iqft',
     title: 'Interfere the exponents',
     detail:
-      'The inverse quantum Fourier transform makes every branch whose exponent is not a multiple of the period cancel destructively. What survives is a comb of sharp peaks at y ≈ k·2^t / r. The period was never measured — it was made to be the only thing left.',
+      'The inverse quantum Fourier transform makes every measurement outcome y that is not close to a multiple of 2^t / r cancel destructively. What survives is a comb of sharp peaks at y ≈ k·2^t / r. The period was never measured — it was made to be the only thing left.',
     registerState: 'peaked at multiples of 2^t / r',
   });
 
@@ -603,7 +603,7 @@ export function runShor(options: ShorOptions): ShorResult {
   if (!recoveredPeriod) {
     failureReason = 'The measured peak did not resolve to a period. Re-run: a different measurement outcome will.';
   } else if (recoveredPeriod % 2 !== 0) {
-    failureReason = `The period r = ${recoveredPeriod} is odd, so a^(r/2) is not an integer power and the factoring step does not apply. Roughly half of all bases fail this way — pick another a.`;
+    failureReason = `The period r = ${recoveredPeriod} is odd, so a^(r/2) is not an integer power and the factoring step does not apply. Odd periods and the a^(r/2) ≡ -1 case together sink at most half of all bases when N has two distinct odd prime factors — pick another a.`;
   } else {
     const half = modPow(a, recoveredPeriod / 2, N);
     if (half === N - 1) {

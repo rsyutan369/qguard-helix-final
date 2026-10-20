@@ -11,12 +11,25 @@
 
 import type { ExposureFinding } from '../types';
 import type { EngineContext, EngineResult, ExposureEngine } from '../engine-contract';
-import { buildEvidence, buildFinding, completed, notApplicable } from '../engine-contract';
+import { buildEvidence, buildFinding, completed, inventoryObservations, notApplicable } from '../engine-contract';
 import { buildCbom, summariseCbom } from '../cbom';
 import { classifyQuantum } from '../algorithms';
 
 function accumulatedFindings(context: EngineContext): ExposureFinding[] {
   return (context.workspace.meta.findings as ExposureFinding[] | undefined) ?? [];
+}
+
+/**
+ * Everything the CBOM is composed from: the findings AND the inventory
+ * observations — cryptography that is present but raised nothing to act on.
+ * The orchestrator's fallback builds from the same union, so the bill of
+ * materials is identical whether or not this engine was selected.
+ */
+export function cbomSources(context: { workspace: EngineContext['workspace'] }): ExposureFinding[] {
+  return [
+    ...((context.workspace.meta.findings as ExposureFinding[] | undefined) ?? []),
+    ...inventoryObservations(context.workspace),
+  ];
 }
 
 /* ──────────────────────────────────────────────────────────── CBOM engine ── */
@@ -34,21 +47,21 @@ export const cbomEngine: ExposureEngine = {
   },
 
   appliesTo(context) {
-    return accumulatedFindings(context).length > 0
+    return cbomSources(context).length > 0
       ? { applicable: true }
-      : { applicable: false, reason: 'No findings were produced, so there is no cryptographic inventory to compose.' };
+      : { applicable: false, reason: 'No cryptographic observation was produced, so there is no cryptographic inventory to compose.' };
   },
 
   async execute(context: EngineContext): Promise<EngineResult> {
-    const findings = accumulatedFindings(context);
-    context.report('Composing cryptographic inventory', { done: 0, total: findings.length, unit: 'findings' });
+    const sources = cbomSources(context);
+    context.report('Composing cryptographic inventory', { done: 0, total: sources.length, unit: 'observations' });
 
-    const components = buildCbom(findings);
+    const components = buildCbom(sources);
     const summary = summariseCbom(components);
 
     context.workspace.meta.cbom = components;
     context.workspace.meta.cbomSummary = summary;
-    context.report('Cryptographic inventory composed', { done: findings.length, total: findings.length, unit: 'findings' });
+    context.report('Cryptographic inventory composed', { done: sources.length, total: sources.length, unit: 'observations' });
 
     return completed([], { cryptoComponents: components.length }, { components: components.length, summary });
   },
@@ -69,7 +82,7 @@ export const quantumEngine: ExposureEngine = {
   },
 
   appliesTo(context) {
-    return accumulatedFindings(context).length > 0
+    return cbomSources(context).length > 0
       ? { applicable: true }
       : { applicable: false, reason: 'No cryptographic evidence was collected, so no quantum verdict is published.' };
   },
@@ -123,9 +136,13 @@ export const quantumEngine: ExposureEngine = {
              DES, the platform published that sentence about primitives it had
              itself flagged as classically broken. Resistant is a verdict about
              Shor's algorithm; it is not a clean bill of health. */
+          /* "at adequate key sizes" used to close this sentence unconditionally.
+             The resistant bucket now carries the whole inventory — AES-128
+             included — so the claim is limited to what the verdict means. */
+          `${summary.resistant} symmetric, hash, MAC and key-derivation component${summary.resistant === 1 ? ' is' : 's are'} not broken by Shor's algorithm and ${summary.resistant === 1 ? 'is' : 'are'} excluded from the readiness ratio, because ${summary.resistant === 1 ? 'its' : 'their'} presence says nothing about the state of the asymmetric cryptography that actually needs migrating.`,
           summary.classicallyWeak > 0
-            ? `${summary.resistant} symmetric and hash components are not broken by Shor's algorithm and are excluded from the readiness ratio, because their presence says nothing about the state of the asymmetric cryptography that actually needs migrating. ${summary.classicallyWeak} of them are nevertheless broken by classical cryptanalysis (MD5, SHA-1, RC4, DES and similar) and need replacing on their own merits, independently of any quantum timeline.`
-            : `${summary.resistant} symmetric and hash components are quantum-resistant at adequate key sizes; they are deliberately excluded from the readiness ratio, because their presence says nothing about the state of the asymmetric cryptography that actually needs migrating.`,
+            ? `${summary.classicallyWeak} of them ${summary.classicallyWeak === 1 ? 'is' : 'are'} nevertheless broken by classical cryptanalysis (MD5, SHA-1, RC4, DES and similar) and need${summary.classicallyWeak === 1 ? 's' : ''} replacing on ${summary.classicallyWeak === 1 ? 'its' : 'their'} own merits, independently of any quantum timeline.`
+            : '',
         ].filter(Boolean).join(' '),
         severity: summary.vulnerable > 0 && summary.readiness !== null && summary.readiness < 25 ? 'high' : 'medium',
         confidence: 'high',

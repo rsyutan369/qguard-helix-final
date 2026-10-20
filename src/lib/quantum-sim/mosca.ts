@@ -83,10 +83,10 @@ export function evaluateMosca(inputs: MoscaInputs): MoscaResult {
 
   const guidance =
     verdict === 'exposed'
-      ? `Migration needed to start in ${latestStartYear} to protect data captured today. That deadline passed ${alreadyLostYears} year${alreadyLostYears === 1 ? '' : 's'} ago, so traffic recorded now will be inside a quantum adversary's reach before its confidentiality period ends. Prioritise the long-shelf-life data first: rotating a short-lived session key later costs nothing, re-encrypting twenty years of archived records costs everything.`
+      ? `Migration needed to start in ${latestStartYear} for every record to stay protected for its full shelf life. That deadline passed ${alreadyLostYears} year${alreadyLostYears === 1 ? '' : 's'} ago, so roughly the last ${alreadyLostYears} year${alreadyLostYears === 1 ? '' : 's'} of traffic sent under classical cryptography before migration finishes will be within a quantum adversary's reach before its confidentiality period ends. Prioritise the long-shelf-life data first: rotating a short-lived session key later costs nothing, re-encrypting twenty years of archived records costs everything.`
       : verdict === 'marginal'
         ? `Migration must begin no later than ${latestStartYear} — effectively immediately. Any slip in the ${migrationYears}-year migration estimate moves this into the exposed band, and migration estimates historically slip.`
-        : `Data captured today stops needing protection in ${baseYear + shelfLifeYears}, before a CRQC is expected in ${breachYear}. Re-check whenever Z moves: this is the only variable an adversary controls.`;
+        : `Data captured today stops needing protection in ${baseYear + shelfLifeYears}, before a CRQC is expected in ${breachYear}. Re-check whenever Z moves: it is the one variable you do not control.`;
 
   return {
     shelfLifeYears,
@@ -124,7 +124,7 @@ export const SHELF_LIFE_PRESETS: ShelfLifePreset[] = [
   { id: 'patent', label: 'Patent and R&D material', years: 20, basis: 'Standard patent term; pre-filing disclosure destroys the claim.' },
   { id: 'health', label: 'Health records', years: 50, basis: 'Retention rules vary by jurisdiction — HIPAA requires 6 years for documentation, while many national and state rules run to the patient’s lifetime or decades past last contact. 50 years is the long end of that range.' },
   { id: 'genomic', label: 'Genomic data', years: 100, basis: 'A genome identifies the subject and their relatives permanently. It cannot be rotated.' },
-  { id: 'classified', label: 'Classified government material', years: 75, basis: 'The outer limit under E.O. 13526: automatic declassification falls at 25 years, with exemptions to 50 and — for narrow categories such as confidential human sources — 75 years, which requires ISCAP approval. 75 is the worst case, not the typical one.' },
+  { id: 'classified', label: 'Classified government material', years: 75, basis: 'E.O. 13526: automatic declassification falls at 25 years; exemptions can extend to 50 years and, for confidential human sources and key WMD design concepts, to 75 years. Keeping information classified beyond 75 years requires ISCAP approval. 75 is the long end, not the typical case.' },
   { id: 'ot', label: 'Industrial control system keys', years: 25, basis: 'Field device lifetimes routinely exceed two decades, and firmware is rarely re-keyed.' },
 ];
 

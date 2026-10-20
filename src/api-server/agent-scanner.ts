@@ -49,6 +49,7 @@ import { approvalRefusal, isSimulationJob, jobApproval, jobPlanId } from '@/lib/
 import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
 import { LIBRARY_EVIDENCE_TYPES } from '@/lib/scanner/scanner_2/modules'
 import type { ScannerEvidenceRecord, ScanFinding, FindingSeverity } from '@/types/scanner.types'
+import { messagingDeviceEvidence, type MessagingDeviceRow } from '@/lib/messaging-posture-evidence'
 
 const router = Router()
 
@@ -3475,6 +3476,51 @@ router.post('/connectors/:id/evidence', requireUserAuth, async (req: AuthedReque
     alertThreshold: policy.alertThreshold,
   })
   res.json({ data: { ...result, rejectedEvidenceCount } })
+})
+
+/*
+ * QGuard Messaging posture (messenger roadmap 10.1). The messenger shares this
+ * Supabase project and login, so the posture is DERIVED here from the user's own
+ * `messaging_devices` rows (the keys each device actually publishes), never
+ * accepted from a client. The explicit user filter matters: req.client may be
+ * the service client when no user-scoped client could be built.
+ */
+const messagingSyncAt = new Map<string, number>()
+const MESSAGING_SYNC_COOLDOWN_MS = 60_000
+
+router.post('/integrations/qguard-messaging/sync', requireUserAuth, async (req: AuthedRequest, res) => {
+  const client = req.client || null
+  const user = req.user!
+  if (!client) {
+    jsonError(res, 503, 'MESSAGING_SYNC_UNAVAILABLE', 'Importing QGuard Messaging posture needs the database connection.')
+    return
+  }
+  const last = messagingSyncAt.get(user.id) ?? 0
+  if (Date.now() - last < MESSAGING_SYNC_COOLDOWN_MS) {
+    jsonError(res, 429, 'MESSAGING_SYNC_TOO_SOON', 'QGuard Messaging was imported less than a minute ago.')
+    return
+  }
+  const { data, error } = await client
+    .from('messaging_devices')
+    .select('id, device_label, suite, trust_state, revoked_at, last_seen_at')
+    .eq('user_id', user.id)
+  if (error) {
+    jsonError(res, 502, 'MESSAGING_DEVICES_UNREADABLE', 'QGuard Messaging devices could not be read.')
+    return
+  }
+  messagingSyncAt.set(user.id, Date.now())
+  const devices = (data || []) as MessagingDeviceRow[]
+  const inputs = messagingDeviceEvidence(devices, new Date().toISOString())
+  const deviceCount = new Set(inputs.map((item) => item.target)).size
+  if (inputs.length === 0) {
+    res.json({ data: { devices: 0, evidenceCount: 0, findingCount: 0, message: 'No active QGuard Messaging devices on this account yet. Sign in to the messenger once, then import again.' } })
+    return
+  }
+  const evidence = inputs
+    .map((item) => normalizeEvidence(item, 'connector', null, null))
+    .filter(Boolean) as ScannerEvidenceRecord[]
+  const result = await processEvidenceBatch(client, user.id, evidence, 'connector:qguard-messaging')
+  res.json({ data: { devices: deviceCount, evidenceCount: result.evidenceCount, findingCount: result.findingCount, links: result.links } })
 })
 
 router.get('/remediation/patch-options', requireUserAuth, async (req: AuthedRequest, res) => {

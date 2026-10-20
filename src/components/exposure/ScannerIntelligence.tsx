@@ -36,9 +36,12 @@ import { QUANTUM_COLOR, QUANTUM_LABEL } from './shared';
    derivation the panel renders. It used to live here, which is how it keyed
    asset rows on `layer|name` for months without a single check noticing. */
 
+/* `partial` covers a FAILED and a CANCELLED engine alike (see `deriveAssets`),
+   so its badge says "Incomplete" — the word the exported inventory uses. It
+   read "Engine failed" beside a row whose own kind said "Engine cancelled". */
 const ASSET_STATE_STYLE: Record<AssetRow['state'], { color: string; label: string }> = {
   scanned: { color: ACCENT.emerald, label: 'Scanned' },
-  partial: { color: ACCENT.rose, label: 'Engine failed' },
+  partial: { color: ACCENT.rose, label: 'Incomplete' },
   'not-assessed': { color: ACCENT.amber, label: 'Not assessed' },
 };
 
@@ -457,7 +460,9 @@ export function DetectionSummary({ assessment }: { assessment: ExposureAssessmen
           { label: 'Potential', value: stats.potential, color: ACCENT.amber, hint: 'Evidence is suggestive, not conclusive' },
           { label: 'Not established', value: stats.notEstablished, color: ACCENT.slate, hint: 'The engine recorded no determination state for these findings' },
           { label: 'Detection layers', value: stats.layers.length, color: ACCENT.cyan, hint: 'Independent methods that contributed' },
-          { label: 'With caveats', value: stats.withCaveats, color: ACCENT.slate, hint: 'Observations carrying a recorded doubt' },
+          /* Named for its unit: it counts OBSERVATIONS (evidence records), so it
+             can exceed the finding total the three tiles beside it partition. */
+          { label: 'Observations with caveats', value: stats.withCaveats, color: ACCENT.slate, hint: 'Evidence records carrying a recorded doubt — a finding can carry several' },
         ].map((tile) => (
           <div key={tile.label} className="bg-[#080d1a] px-4 py-3" title={tile.hint}>
             <p className="font-mono text-[9px] font-bold uppercase tracking-[0.14em] text-slate-500">{tile.label}</p>
@@ -538,7 +543,10 @@ export function ReconciliationPanel({
         label: 'Findings',
         count: assessment.findings.length,
         destination: 'Vulnerabilities · Scanner history',
-        note: 'One row per distinct issue after correlation.',
+        /* Findings are written BEFORE correlation — one row per finding an
+           engine raised. The note used to say "after correlation", which is
+           what the Correlated exposures row below counts. */
+        note: 'One row per finding the engines raised — before correlation merges them into exposures.',
       },
       {
         label: 'Quantum-vulnerable exposures',
@@ -550,7 +558,7 @@ export function ReconciliationPanel({
         label: 'Correlated exposures',
         count: assessment.exposures.length,
         destination: 'Exposure Graph',
-        note: 'Findings that several engines proved to be the same underlying issue.',
+        note: 'Distinct underlying issues after correlation — including those observed by only one finding.',
       },
     ];
   }, [assessment]);

@@ -31,6 +31,17 @@ export interface AppLockStatus {
   inactivityMinutes: number;
   device: AppLockDevice | null;
   requiresFullAuth: boolean;
+  /** A duress PIN is set (reported only while unlocked). */
+  duressConfigured: boolean;
+  /** Biometric unlock is set up on this device. */
+  biometricEnabled: boolean;
+}
+
+export type BiometricAvailability = "available" | "none_enrolled" | "no_hardware" | "unavailable" | "unsupported";
+
+export interface BiometricStatus {
+  availability: BiometricAvailability;
+  enabled: boolean;
 }
 
 export interface AppLockUnlockResult {
@@ -78,6 +89,44 @@ export function useAppLock(userId: string | null) {
       await refresh();
       throw error;
     }
+  }, [refresh]);
+
+  /** Same result as a correct PIN. A cancelled prompt throws and changes nothing. */
+  const unlockWithBiometric = useCallback(async () => {
+    try {
+      const result = await safeInvoke<AppLockUnlockResult>("applock_biometric_unlock");
+      setStatus(result.status);
+      return result;
+    } catch (error) {
+      await refresh();
+      throw error;
+    }
+  }, [refresh]);
+
+  const setDuressPin = useCallback(async (pin: string) => {
+    const result = await safeInvoke<AppLockStatus>("applock_set_duress_pin", { pin });
+    setStatus(result);
+    return result;
+  }, []);
+
+  const clearDuressPin = useCallback(async () => {
+    const result = await safeInvoke<AppLockStatus>("applock_clear_duress_pin");
+    setStatus(result);
+    return result;
+  }, []);
+
+  const biometricStatus = useCallback(() => safeInvoke<BiometricStatus>("applock_biometric_status"), []);
+
+  const enableBiometric = useCallback(async () => {
+    const result = await safeInvoke<BiometricStatus>("applock_biometric_enable");
+    await refresh();
+    return result;
+  }, [refresh]);
+
+  const disableBiometric = useCallback(async () => {
+    const result = await safeInvoke<BiometricStatus>("applock_biometric_disable");
+    await refresh();
+    return result;
   }, [refresh]);
 
   const lock = useCallback(async () => {
@@ -171,5 +220,8 @@ export function useAppLock(userId: string | null) {
     };
   }, [enabled, unlocked, inactivityMinutes, lock]);
 
-  return { status, loading, enabled, refresh, setup, unlock, lock, changePin, remove, reset, setInactivity };
+  return {
+    status, loading, enabled, refresh, setup, unlock, unlockWithBiometric, lock, changePin, remove, reset, setInactivity,
+    setDuressPin, clearDuressPin, biometricStatus, enableBiometric, disableBiometric,
+  };
 }

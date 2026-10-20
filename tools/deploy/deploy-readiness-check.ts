@@ -85,6 +85,8 @@ function check(name: string, condition: boolean, detail = '') {
   check('override never waives REQUIRED', checkProductionConfig({ QGUARD_ALLOW_UNSAFE_CONFIG: 'true' }).errors.length > 0)
   const noSecretValues = JSON.stringify(checkProductionConfig({ ...complete, GITHUB_TOKEN: 'ghp_SECRETVALUE' }))
   check('preflight never echoes values', !noSecretValues.includes('ghp_SECRETVALUE'))
+  const overCeiling = checkProductionConfig({ ...complete, PUBLIC_SCAN_MAX_CONCURRENT: '64' })
+  check('public scan concurrency above the measured ceiling warns', overCeiling.warnings.some((w) => w.includes('PUBLIC_SCAN_MAX_CONCURRENT=64')) && overCeiling.errors.length === checkProductionConfig(complete).errors.length)
 }
 
 // 4. Trusted client IP --------------------------------------------------------------
@@ -183,6 +185,8 @@ async function probeChecks() {
   const grace = Number(/terminationGracePeriodSeconds: (\d+)/.exec(deployment)?.[1] || 0)
   const drainMs = Number(/SHUTDOWN_DRAIN_MS: "(\d+)"/.exec(config)?.[1] || 0)
   check('grace period covers preStop + delay + drain', grace * 1000 > 10_000 + 5_000 + drainMs, `${grace}s vs ${drainMs}ms`)
+  const publicScanConcurrency = Number(/PUBLIC_SCAN_MAX_CONCURRENT: "(\d+)"/.exec(config)?.[1] || 0)
+  check('public scan capacity set, within the measured ceiling (48)', publicScanConcurrency >= 1 && publicScanConcurrency <= 48, `${publicScanConcurrency}`)
 }
 
 await probeChecks()

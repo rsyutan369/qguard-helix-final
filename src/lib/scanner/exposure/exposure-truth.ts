@@ -278,8 +278,12 @@ export function reconcileExposure(assessment: ExposureAssessment): ExposureTruth
      conditional on the numbers differing: a reader looking at a risk score is
      entitled to know what it was computed over even when the two populations
      happen to coincide. */
+  /* Two populations, both named. Quantum risk used to be weighed over
+     exposures too, which let a library 88% post-quantum by component read
+     "quantum risk: high"; it is now a share of the components readiness is a
+     share of, so the two can never point in opposite directions. */
   const scoreUnitNote = assessment.exposures.length > 0
-    ? `Risk scores are computed over CORRELATED EXPOSURES, not raw findings: ${assessment.findings.length} finding${assessment.findings.length === 1 ? '' : 's'} correlated into ${assessment.exposures.length} exposure${assessment.exposures.length === 1 ? '' : 's'} (${describeSeverity(exposureSeverity)}). Each is weighted by severity and discounted by detection confidence, so a small number of high-severity exposures can produce a high score.`
+    ? `Security and migration risk are computed over CORRELATED EXPOSURES, not raw findings: ${assessment.findings.length} finding${assessment.findings.length === 1 ? '' : 's'} correlated into ${assessment.exposures.length} exposure${assessment.exposures.length === 1 ? '' : 's'} (${describeSeverity(exposureSeverity)}). Each is weighted by severity and discounted by detection confidence, so a small number of high-severity exposures can produce a high score. Quantum risk is a share of the ${components.quantumRelevant} quantum-relevant COMPONENT${components.quantumRelevant === 1 ? '' : 'S'} — the population post-quantum readiness is computed over.`
     : null;
 
   return {

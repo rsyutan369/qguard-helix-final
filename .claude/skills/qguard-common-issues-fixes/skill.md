@@ -2661,6 +2661,417 @@ callback/effect on them (they depend on `call` → `authHeaders` → token). Mea
 
 ---
 
+## 51. QGuard Messaging after a reinstall: "Encrypted history is taking longer than expected", "Sealed to a retired device key", "Waiting for recipient PQC prekeys"
+
+**Problem**
+
+After uninstalling and reinstalling the desktop and Android apps, a long thread
+never loads on the phone, the newest messages read "Sealed to a retired device
+key", and the desktop cannot send ("Waiting for recipient PQC prekeys") although
+the contact's Security Overview shows active signed and one-time prekeys.
+
+**Root Cause**
+
+Three separate things, only one of them a server fault:
+
+1. **Row size (issue #15 again).** `messaging_message_envelopes` rows are ~27 KB:
+   `sealed_sender_envelope` holds an ML-KEM-1024 ciphertext, an ML-DSA-65
+   signature and sender keys as JSON number arrays. The thread selected 250
+   whole rows — 6.9 MB measured — under a 6 s deadline, and again on every
+   realtime event. Fine on desktop (2–3 s), a guaranteed timeout on a phone.
+2. **An uninstall destroys the device's private keys.** The reinstall registers
+   a NEW device. Envelopes sealed to the old one can never be opened — that
+   bubble is correct, not a bug, and no resend or rewrap from the dead device
+   can fix it.
+3. **Device pins.** The peer's new device is `new` until approved, so nothing is
+   sealed to it. With no other deliverable device the status fell through to
+   "Waiting for recipient PQC prekeys", and the approval card sat at the top of
+   the thread, above the scroll position.
+
+**Solution**
+
+- `qguard-messaging/src/lib/envelope-history.ts`: a listing query
+  (`ENVELOPE_INDEX_COLUMNS`, ~52 KB for 250 rows) plus body fetches only for ids
+  not held (`EnvelopeBodyCache`, `planBodyFetch`: chunks of 24, this device's
+  copies first). First chunk at 1.3 s; a reload with nothing new is 52 KB.
+- `SecureChatPage.tsx`: status "Approve your contact's new device to send" and
+  a sticky approval card while that is what blocks sending.
+- Account reset: `node tools/messaging-reset.mjs --users a@x,b@y` (report), then
+  `--reset --confirm "RESET SECURE CHAT DATA"`. Export the in-scope rows first.
+  Devices re-register themselves on next launch; contacts must be re-added.
+
+**Prevention Checklist**
+
+- [ ] Measure payload bytes of any query that selects `sealed_sender_envelope`.
+      Split listing from body; never re-download immutable rows.
+- [ ] A deadline must be sized from payload ÷ a phone's link speed, not from
+      what a desktop on Wi-Fi does.
+- [ ] Diagnose a "cannot send" from `messaging_crypto_telemetry.detail` (stage
+      `message_encryption_failed`) before believing the status pill.
+- [ ] Tell users to UPDATE over the installed app, never uninstall: uninstall
+      wipes the device keys. Same signing key + same/higher versionCode updates
+      in place.
+- [ ] `messaging-membership-check.mjs` runs as service role: `42501 permission
+      denied for function` proves the RPC exists (granted to `authenticated`
+      only); only `PGRST202` means migration 033 is missing.
+- [ ] A storage `list()` error is not an empty folder (`messaging-reset.mjs`).
+
+---
+
+## 52. A page outside the dashboard has no theme toggle, and in light mode its text is white-on-white
+
+**Problem**
+
+`/downloads` (Agent Center) had no Light/Dark control. Flipping the theme from
+another page (it is persisted) left this one a dark page with a light
+`<body>`: every `text-white/NN`, `border-white/10`, `bg-black/NN` and
+`text-cyan-200` was authored for a dark ground.
+
+**Root Cause**
+
+The light theme is not a token system the page can opt into — it is a CSS bridge
+scoped to `.dashboard-theme-scope` and `.qg-docs-shell` (index.css, "Dashboard
+and docs theme compatibility bridge"). A route that renders under neither scope
+gets `html.qg-theme-light` and no restyling. Plausible assumption that was
+wrong: "ThemeProvider is app-wide, so every page themes itself."
+
+**Solution**
+
+- Scope class `qg-agent-center` on the page root, and the shared
+  `components/theme/ThemeToggle` in a utility bar that renders in EVERY state
+  (loading, plan gate, console) — one provider, so the choice is shared and
+  applied pre-paint by the script in `index.html`.
+- Light mode is a **palette remap**, not new classes. Tailwind v4 compiles
+  `text-white/45` to `color-mix(in oklab, var(--color-white) 45%, transparent)`,
+  so re-pointing `--color-white` and the `--color-{cyan,emerald,amber,rose,
+  violet}-{100..400}` variables inside the scope re-themes every utility,
+  alpha included. Dark mode is untouched (every rule is gated on
+  `html.qg-theme-light`).
+- What a remap cannot express is explicit: `.ac-surface` (elevated panels),
+  `bg-black/NN` wells and fields, the drawer's hex fills, native `<option>`,
+  and `.qg-force-dark` islands that restore the dark palette for code blocks.
+
+**Prevention Checklist**
+
+- [ ] A new route outside `DashboardLayout` needs its own scope + the shared
+      toggle; do not assume it inherits the bridge.
+- [ ] The remap alone does not make alpha-dimmed text readable: pale-on-dark has
+      contrast headroom that dark-on-pale lacks (a 70% amber-950 lands near
+      4:1). The `text-white/NN` ramp and the alpha-hue overrides in the AGENT
+      CENTER block exist for that reason — a new alpha level needs a rung.
+- [ ] Verify with real contrast numbers, not by eye (see
+      `qguard-testing-validation` -> "Rendering a gated page in both themes").
+- [ ] Use `.qg-force-dark` for terminals; it is an existing opt-out marker,
+      not a new convention.
+
+---
+
+## 53. QGuard Messaging Android: "vault folder picker needs the app activity" — vault encrypt and Portable Hybrid Identity both fail
+
+**Problem**
+
+On Android every Quantum Vault action that asks for a destination folder
+(encrypt, decrypt, Portable Hybrid Identity create/export, seal/open for
+recipients) failed with `storage error: vault folder picker launch: vault folder
+picker needs the app activity`. Google Play purchases failed the same way
+(`purchase_error:no_activity`), silently.
+
+**Root Cause**
+
+The Tauri runtime upgrade moved `tao` 0.34.8 -> 0.37.1 (Cargo.lock). tao 0.37
+initialises `ndk-context` with the **Application** context
+(`getApplicationContext()` in `ndk_glue.rs::onCreate`); 0.34 used the Activity.
+`src-tauri/src/security/android_bridge.rs` passes that object to every Kotlin
+helper, so `context as? Activity` in `VaultFolderPicker.launch` and
+`PlayBilling.launchPurchase` became null on every call. Everything that only
+needs a Context (content resolver, class loader, Keystore, MediaStore) kept
+working, which hid the change. Plausible assumption that was wrong: "the
+ndk-context object is the Activity" — it was written in the bridge's comments.
+
+**Solution**
+
+- `gen/android/.../CurrentActivity.kt`: weak reference to the live
+  MainActivity (set in `onCreate`/`onResume`, cleared in `onDestroy`);
+  `resolve(context)` returns the context if it is an Activity, else that one.
+- `VaultFolderPicker.launch` and `PlayBilling.launchPurchase` use
+  `CurrentActivity.resolve(context)`.
+- `android_bridge.rs` / `billing.rs` comments corrected; `with_activity`
+  renamed `with_app_context`.
+
+**Prevention Checklist**
+
+- [ ] A Kotlin helper that starts an Activity must use
+      `CurrentActivity.resolve(context)`, never `context as? Activity`.
+- [ ] After any `tauri` / `tao` / `wry` bump, diff `ndk_glue.rs` for what
+      `initialize_android_context` receives.
+- [ ] Desktop `cargo test` never compiles `#[cfg(target_os = "android")]`
+      modules or Kotlin — verify with the Android build
+      (`build-android.ps1`), not the desktop suite.
+
+---
+
+## 54. QGuard Messaging Android: after a correct PIN the email/password login screen flashes, then disappears
+
+**Problem**
+
+On a cold launch, entering the right app PIN briefly showed the "Welcome back"
+email/password LoginPage before the app opened.
+
+**Root Cause**
+
+The session lives only in the PIN-wrapped app-lock store (Supabase uses
+`sessionStorage`, gone with the process). `App.tsx` rendered the PIN gate only
+while `appLock.status.locked`. `applock_unlock` returns `locked: false` at once,
+but `auth.user` arrives only after `supabase.auth.setSession`, the revocation
+check and the auth context's async `onAuthStateChange` -> `completeAuthenticatedSession`
+(MFA assurance + `auth_sync_session`). For that whole window `!auth.user`
+selected the LoginPage.
+
+**Solution**
+
+- `src/lib/pin-restore.ts` (`PinRestorePhase`, `settlePinRestore`, tested in
+  `pin-restore.test.ts`): `restoring` -> `applied` -> `idle`.
+- `App.tsx`: the PIN gate stays mounted (busy, "Unlocking your secure
+  session…") while the phase is not `idle`; the `auth.loading` splash is
+  skipped during a restore. The phase returns to `idle` once `auth.user` lands,
+  or once auth processing ends without one so the LoginPage shows the real error.
+- `AppLockScreen.tsx`: the auto-submit effect is skipped while `disabled`, and
+  the entry clears after success — otherwise a still-mounted screen re-submits
+  the same PIN whenever its `onSubmit` prop changes identity.
+
+**Prevention Checklist**
+
+- [ ] A gate must not drop on the FIRST of several async steps; key it off the
+      state the next screen needs (`auth.user`), not an intermediate flag.
+- [ ] Any screen kept mounted after success must not have effects that
+      re-fire on prop identity changes.
+
+---
+
+## 55. A post-quantum codebase scans as full of "ElGamal", Ed25519 signatures and no AES at all
+
+**Problem**
+
+`/dashboard/scanner?mode=local|dev` over QGuard Messaging's Rust crypto (ML-KEM-1024,
+ML-DSA-65/87, X25519, AES-256-GCM, HKDF-SHA3) published 20 "ElGamal for key
+establishment" components, every `LocalKemKeypair::generate()` (an ML-KEM keypair) as
+"Ed25519-255 on Ed25519 for digital signature", `use x25519_dalek` as Ed25519, and
+"Resistant 0" — no AES/HKDF/SHA3 anywhere in the CBOM. The quantum roll-up said
+"0 symmetric and hash components are quantum-resistant". Readiness read 46% for a
+codebase that is ~65% post-quantum. noble-post-quantum (an ML-DSA library) and
+liboqs-python showed the same ElGamal phantoms. All 600+ existing exposure checks passed,
+because they only ever scanned this repository's own TypeScript.
+
+**Root Cause**
+
+Four independent faults in the source-crypto lexical/API layers and the CBOM hand-off:
+
+1. Catalogue pattern 65 `/\bDSA\b|…|ElGamal/i` — the hyphen in `ML-DSA`, `SLH-DSA`,
+   `FN-DSA` is a word boundary, and `/i` made every identifier named `dsa` an algorithm.
+2. Compound labels (`DSA/ElGamal`, `ECC/EdDSA`, `MD5/SHA-1` …) were handed to the
+   classifier verbatim; `findAlgorithm` resolves free text to its LONGEST alias, so
+   every match took the longest name in the LABEL, not what the line said.
+3. KB API rule `rust-ed25519` `/(?:SigningKey|Keypair)::generate/` had no leading
+   `\b` — `LocalKemKeypair::generate(` matched at STRONG API-layer confidence.
+4. `buildCbom` reads findings only, and source-crypto deliberately raises no finding
+   for a strong primitive. Its comment said those "reach the CBOM through the
+   component key" — a set put in `EngineResult.output`, which the orchestrator never reads.
+
+Also found on the same path: File Discovery AND the specialised engines both wrote
+`configFiles`/`iacFiles`/`cicdWorkflows`/`certificates`; `mergeCoverage` SUMS numbers, so
+every one was doubled (4 config files → "Config files 8" on panel and report).
+
+**Solution**
+
+- Pattern 65: case-sensitive `DSA` with a `(?<!(?:ML|SLH|FN|…)[-_ ]?)` lookbehind.
+- `lexicalAlgorithmFor(label, regex, line)` (source-crypto.ts): resolve a compound
+  label from the MATCHED TEXT (non-protocol `findAlgorithm` hit first, then the longest
+  alias of a label alternative found in the match).
+- `\b` on the Rust API rules; source-crypto `ENGINE_VERSION` 3.1.0.
+- Inventory observations: `recordInventory()` / `inventoryObservations()`
+  (engine-contract.ts) carry present-but-unremarkable primitives; `cbomSources()` and the
+  orchestrator fallback build the CBOM from findings + inventory; the assessment carries
+  `inventory` so `/exposure/local/sync` re-derives the same CBOM (sanitised, capped at
+  5,000, never written as findings).
+- File Discovery no longer publishes the per-class counts the engines own.
+
+Measured before → after: messaging ElGamal 21→0, resistant 0→36, readiness 46→65%,
+config files 8→4; noble ElGamal 16→0, FN-DSA 0→4, readiness 65→77%; oqs readiness 44→67%.
+
+**Prevention Checklist**
+
+- [ ] Run detection changes against a REAL post-quantum corpus, not only this repo
+      (`npx tsx <scratch>/dump-assessment.mts <dir> local deep out.json` pattern, or
+      `tools/exposure-dev-live-check.ts` against noble-post-quantum).
+- [ ] Any `\bX\b` where X is the tail of a PQC name (DSA, KEM) needs a PQC-prefix
+      lookbehind and a negative control.
+- [ ] A compound catalogue label must never reach the classifier as text.
+- [ ] Type/identifier patterns (`Foo::generate`) need a leading `\b`.
+- [ ] A component is something PRESENT; a finding is something WRONG. If a builder
+      reads only findings, the inventory is incomplete by construction.
+- [ ] A numeric coverage key has exactly ONE writer — `mergeCoverage` sums.
+- [ ] `npx tsx tools/exposure-detection-accuracy-check.ts` (57, positive + negative).
+
+---
+
+## 56. "Quantum risk 74 — high" beside "Post-quantum readiness 88%"
+
+**Problem**
+
+A library that is 51 post-quantum components of 58 quantum-relevant ones published
+HIGH quantum risk next to 88% readiness, on the panel and in every report.
+
+**Root Cause**
+
+`risk.ts` documented quantum risk as "computed ONLY from quantum-relevant components",
+but `computeQuantumRisk` weighed correlated EXPOSURES. Correlation merges by algorithm,
+so 51 PQC components became ~4 exposures while each classical algorithm kept its own:
+7 of 11 "exposures" vulnerable → 64 + role escalation → 74.
+
+**Solution**
+
+`computeScores({ …, components })` — quantum risk is a share of the CBOM's
+quantum-relevant components (the population readiness uses); exposures only as a legacy
+fallback. All three callers (orchestrator, persistence, history) pass the CBOM. Basis,
+`scoreUnitNote` and report copy now name both populations. Live: 74 high → 28 low.
+
+**Prevention Checklist**
+
+- [ ] Two figures about one estate must share a population or say why they don't.
+      "Risk high / readiness 88%" on one page is the symptom.
+- [ ] When a doc comment names a unit, assert it: the basis string now states it.
+- [ ] `tools/exposure-detection-accuracy-check.ts` §5b keeps the exposure-weighted
+      figure as a negative control.
+
+---
+
+## 57. Dev mode CBOM export downloads an error page; Coverage panel calls unread dimensions "measured zero"
+
+**Problem**
+
+- Dev → CBOM JSON / CSV / CycloneDX (and the "CycloneDX CBOM" button) opened
+  `/api/v1/exposure/scans/:id/cbom` by `<a href>` / `window.open` → HTTP 401.
+- Assessment Coverage printed every zero under "Read, none found — measurements of
+  zero", including Cloud resources on a Local scan and dimensions whose engine failed.
+  The Dev posture strip kept its own engine list and said engines "did not reach a
+  reporting state" when they were never selected.
+
+**Root Cause**
+
+The export route is header-auth only (correctly — tokens in URLs are refused); a
+browser navigation carries no bearer token. The coverage panel had no notion of which
+engine measures which dimension.
+
+**Solution**
+
+- `exportCbomFile()` / `downloadText()` in `components/exposure/shared.tsx` — one
+  client-side exporter for Local, Dev and History, generated from the components on
+  screen; object URLs revoked on a timer, not synchronously.
+- `COVERAGE_DIMENSIONS` + `coverageReadings()` in `panel-model.ts`:
+  measured / measured-zero / not-reported / not-selected, read by the Coverage panel,
+  the Dev posture strip and the report's Coverage Ledger (`Reading` column).
+
+**Prevention Checklist**
+
+- [ ] Never `<a href>` / `window.open` an authenticated `/api/v1` route. Fetch with the
+      header, or generate client-side from data already on screen.
+- [ ] A zero is a measurement only if an engine that measures it reported.
+- [ ] `tools/exposure-detection-accuracy-check.ts` §5 and §8.
+
+---
+
+## 58. Exported exposure reports promised rows they did not contain
+
+**Problem**
+
+Remediation dossiers said "N further evidence records … are in the Excel, CSV and JSON
+exports" — no register held per-exposure evidence. The Engine Recommendations register
+carried the panel's capped 10 rows while the Studio promised "every row". The panel's
+"the 10 highest-priority of N" was neither (4 urgent + 8 migration, urgent first, cut at
+10). The executive summary said exposure was "concentrated in ECDSA (30)" using the
+group TOTAL and the dominant status. The CBOM register worded PQ targets differently
+from the findings it came from (a second target table).
+
+**Solution**
+
+`rankRecommendations()` (`lib/scanner/exposure/recommendations.ts`, pure) — ONE ranked
+list: severity, then urgent work, then migration priority score; panel = head, report
+register = whole, reconciled in the document. New `Exposure Evidence` register.
+`componentPqcTarget()` / `classicalReplacementFor()` in `cbom.ts` (engine's recorded
+target carried on `CbomComponent.migrationTarget`, persisted and restored by History).
+Concentration paragraph counts vulnerable members. Three new reconciliation rows.
+
+**Prevention Checklist**
+
+- [ ] Every "see the Excel/CSV/JSON export" sentence names a register that exists —
+      grep the register titles.
+- [ ] A capped list's label states its real order ("most severe"), and the register
+      behind it is uncapped.
+- [ ] `npx tsx tools/exposure-dev-live-check.ts` reads every format's BYTES back (PDF
+      text streams, DOCX/PPTX XML, XLSX sheets) — 87 checks on a live scan.
+
+---
+
+## 59. /public-scan: "Connection to the assessment service was lost" whenever more than six people scan
+
+**Problem**
+
+With several visitors at once, most saw "Connection to the assessment service was
+lost". Measured on the dev server, everyone arriving together: 10 visitors → 4 refused,
+100 → 88, 1,000 → 987. Six visitors who closed their tab after 1.5 s kept the scanner
+full, so a new visitor was refused while nobody was watching anything. A hundred
+visitors of one site each needed a slot of their own. The hero still read "Scanning ·
+Collecting edge evidence" after a refusal.
+
+**Root Cause**
+
+- `MAX_CONCURRENT_SCANS = 6`, then an instant 503: there was no waiting line.
+- An `EventSource` cannot read the body of a non-200 response, so every 429/503/400
+  arrived as a bare `error` and rendered as "connection lost", whatever the cause.
+- `assess.ts` declared a `signal` option that nothing read, so an abandoned scan ran
+  to completion.
+- No single-flight per target. The cache was checked AFTER the busy gate. The rate
+  limit was charged before capacity and cache checks, so refusals and cache hits
+  spent a visitor's minute.
+- `use-scan-event-bridge.ts` handled only the `scanning` and `idle` transitions. A
+  run-level `error` never reached the QVE store, so its `run` stayed `scanning`.
+
+**Solution**
+
+- `src/api-server/public-scan-queue.ts` — `PublicScanCoordinator` (pure, injected
+  `run`): bounded FIFO line with positions and estimates; one job per `host:port`
+  with stage and observation replay for late joiners; withdraw a queued job or
+  abort a running one 4 s after its last viewer leaves; timeout and abort are both
+  raced, so a scan that ignores its signal still frees the slot; a cancellation is
+  never counted as a failure; the per-client share applies only when a scan must
+  WAIT (a NAT office on an idle server is limited only by the rate limit).
+- `public-scan.ts` → `createPublicScanRouter(config)`. Order: cache → join → rate
+  limit (charged only on creation) → start or queue. Refusals go IN-STREAM as
+  `scan-refused` with `retry: 86400000`. Non-EventSource callers still get status
+  and JSON. Limits come from `PUBLIC_SCAN_*` env vars; production sets 24
+  concurrent (measured, docs/deployment/02-ENVIRONMENT.md).
+- `signal` threaded through `runScanEngines` → `runTlsEngine` → `analyzeTls`
+  (checked between probe waves; `ScanCancelledError`).
+- UI: `QueueNotice`, shared-scan note, the refusal text in full, and a "Try again
+  in Ns" countdown. The bridge dispatches `scanEndedEvent` on `error`; the hero
+  reads "Waiting in Line" and "Not Started".
+
+**Prevention Checklist**
+
+- [ ] Any SSE endpoint a browser opens with `EventSource` delivers refusals as an
+      event on a 200 stream, never as a status code the browser cannot read.
+- [ ] A capacity cap without a line is a refusal generator. Cap + bounded line +
+      position + reason.
+- [ ] Check the cache BEFORE any gate, and charge a limit only for work actually
+      created.
+- [ ] Every long-running anonymous job stops when its last viewer leaves.
+- [ ] A presentation store fed by a bridge must handle EVERY terminal state of
+      the source hook, `error` included.
+- [ ] `npx tsx tools/public-scan-load-check.ts` — 73 checks: coordinator rules plus
+      10/100/1,000 visitors through the real HTTP layer.
+
+---
+
 ## Adding an entry
 
 Use exactly this shape — Problem, Root Cause, Solution, Prevention Checklist.

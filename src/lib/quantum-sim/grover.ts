@@ -128,7 +128,7 @@ export function groverFeasibility(keyBits: number, gateRateHz = 1e9, machines = 
   } else if (exceedsMaxDepth.plausible) {
     explanation += ` The circuit depth also exceeds NIST's plausible MAXDEPTH bound of 2^64 gates.`;
   } else if (exceedsMaxDepth.conservative) {
-    explanation += ` The circuit depth exceeds NIST's conservative MAXDEPTH bound of 2^40 gates but sits inside the plausible 2^64 bound — which is exactly why NIST places this key length at security Category 1 rather than calling it safe or broken.`;
+    explanation += ` The iteration count exceeds NIST's conservative MAXDEPTH bound of 2^40 but sits inside the plausible 2^64 bound. Each iteration is itself a full AES circuit, so the real depth is far higher — NIST defines security Category 1 as the cost of exactly this search and continues to approve AES-128.`;
   }
 
   return {

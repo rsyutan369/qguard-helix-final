@@ -993,6 +993,39 @@ function OperationsSection({ collector, onToast }: { collector: CollectorApi; on
         )}
       </div>
 
+      {/* QGuard Messaging (same login): the server reads this account's device rows. */}
+      <div className={`${PANEL} p-5`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="text-sm font-black uppercase tracking-wide text-white/80">QGuard Messaging</h3>
+            <p className="mt-1 text-sm text-white/50">
+              Import the key-establishment, signature and encryption algorithms your messenger devices publish. Read from your own
+              account on the server — no message content, contacts or conversations.
+            </p>
+            <p className="mt-1 text-[11px] text-white/40">
+              {(() => {
+                const rows = collector.evidence.filter((e) => e.evidence_type === 'messaging-device-crypto');
+                if (!rows.length) return 'Not imported yet.';
+                const devices = new Set(rows.map((e) => e.asset_name)).size;
+                const latest = rows.map((e) => e.observed_at || e.created_at).filter(Boolean).sort().pop();
+                return `${devices} device${devices === 1 ? '' : 's'} · last imported ${relTime(latest)}`;
+              })()}
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={collector.busy}
+            onClick={async () => {
+              const result = await collector.syncMessagingPosture();
+              onToast(result.ok ? 'ok' : 'bad', result.message || (result.ok ? 'Imported.' : 'Import failed.'));
+            }}
+            className="rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs font-bold text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50"
+          >
+            Import messenger devices
+          </button>
+        </div>
+      </div>
+
       {/* Recent operator actions */}
       <div className={`${PANEL} p-5`}>
         <h3 className="mb-3 text-sm font-black uppercase tracking-wide text-white/80">Remediation Actions</h3>

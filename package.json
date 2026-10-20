@@ -27,7 +27,8 @@
     "agent:check:rollback": "tsx tools/rollback-check.ts",
     "agent:check:rollback:live": "tsx tools/rollback-live-check.ts",
     "check:boundary": "tsx tools/client-bundle-boundary-check.ts",
-    "check:deploy": "tsx tools/deploy/deploy-readiness-check.ts"
+    "check:deploy": "tsx tools/deploy/deploy-readiness-check.ts",
+    "check:messaging-posture": "tsx tools/messaging-posture-check.ts"
   },
   "dependencies": {
     "@aws-sdk/client-elastic-load-balancing-v2": "^3.1068.0",

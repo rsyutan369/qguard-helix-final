@@ -42,7 +42,7 @@ strings to factories.
 ## Case sensitivity — deliberate, not uniform
 
 Add `/i` for distinctive tokens: RSA, MD5, ECDSA, RC4, SHA-1, secp256*, Blowfish,
-Twofish, DSA, Camellia.
+Twofish, Camellia.
 
 **Do NOT** make these case-insensitive:
 
@@ -51,6 +51,18 @@ Twofish, DSA, Camellia.
 | `SEED` | matches "random seed", "setSeed" — extremely common |
 | `IDEA` | matches the English word |
 | `DES` | matches "des" in prose and identifiers |
+| `DSA` | `dsa` is a common identifier (`const dsa = ml_dsa44`) in ML-DSA code — issue #55 |
+
+**Post-quantum names END in classical tokens.** `ML-DSA`, `SLH-DSA`, `FN-DSA` end in
+`DSA`, and `-` is a word boundary, so `\bDSA\b` matches all three. Any rule on a token a
+PQC name ends with needs a prefix lookbehind (`(?<!(?:ML|SLH|FN)[-_ ]?)\bDSA\b`) and a
+negative control. Identifier rules (`Keypair::generate`) need a leading `\b`, or
+`LocalKemKeypair::generate` matches.
+
+**Compound labels** (`algorithm: 'DSA/ElGamal'`) are resolved to the alternative the
+MATCHED TEXT names by `lexicalAlgorithmFor` in `exposure/content/source-crypto.ts`.
+Never let one reach the classifier as text: `findAlgorithm` takes the longest alias in
+the string, so `DSA/ElGamal` always meant ElGamal.
 
 For those, keep the case-sensitive name rule and add explicit cipher-string
 idioms (`'des-ede3-cbc'`, `createCipheriv('des'`) to get the real coverage.

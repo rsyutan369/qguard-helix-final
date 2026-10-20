@@ -284,6 +284,13 @@ export interface CbomComponent {
   evidence: ExposureEvidence[];
   /** Ids of the components this one depends on (dependency → library → algo). */
   dependsOn?: string[];
+  /**
+   * The role-appropriate post-quantum target the ENGINE recorded on the
+   * finding this component came from. Carried so the CBOM register and the
+   * migration priorities name the same target in the same words, instead of
+   * the register re-deriving one from a second table.
+   */
+  migrationTarget?: string;
 }
 
 /* ────────────────────────────────────────────────────────────── coverage ── */
@@ -575,6 +582,22 @@ export interface ExposureAssessment {
   findings: ExposureFinding[];
   exposures: CorrelatedExposure[];
   cbom: CbomComponent[];
+  /**
+   * Cryptography that was OBSERVED but is not a finding.
+   *
+   * A finding is something worth acting on; a component is something present.
+   * AES-256-GCM, SHA3-256 or HKDF used correctly raise no finding — and the
+   * CBOM used to be built from findings alone, so every one of them vanished
+   * from the bill of materials: a codebase built on AES-256-GCM published
+   * "Resistant 0" and "0 symmetric and hash components are quantum-resistant".
+   *
+   * These records share the finding SHAPE only so the one CBOM builder can read
+   * both. They are never counted, scored, correlated or listed as findings.
+   * Carried on the assessment so the sync endpoint can re-derive the CBOM from
+   * raw observations (it never trusts a client-supplied component list).
+   * Absent on assessments produced before inventory was published.
+   */
+  inventory?: ExposureFinding[];
   /** Mode-specific structured intelligence the panels render. */
   intelligence: ExposureIntelligence;
   /** Generated at composition time; stable for export. */

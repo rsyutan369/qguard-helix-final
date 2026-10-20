@@ -280,7 +280,29 @@ describe("envelope row views", () => {
   it("defaults the prekey kind for rows written before it was recorded", () => {
     const request = envelopeKeyRequestFromRow(row(8, { sealed_sender_envelope: { prekey_id: PREKEY } }));
     expect(request.prekey_kind).toBe("signed_prekey");
-    expect(request.hybrid_ciphertext.ml_kem_ciphertext).toEqual([]);
+    // No encapsulation on the row: the core is told so (null), never handed
+    // an empty placeholder it would fail to decode.
+    expect(request.hybrid_ciphertext).toBeNull();
+  });
+
+  it("carries a ratchet seed's header, and nothing extra for a one-shot row", () => {
+    const header = { v: 1, kind: "init", session: "ab".repeat(16), dh: [1, 2], pn: 0, n: 0 };
+    const seeded = envelopeKeyRequestFromRow(row(9, {
+      sealed_sender_envelope: {
+        prekey_id: PREKEY,
+        prekey_kind: "signed_prekey",
+        hybrid_ciphertext: { x25519_ephemeral_public: [1], ml_kem_ciphertext: [2], suite: {} },
+        ratchet: header,
+      },
+    }));
+    expect(seeded.ratchet).toEqual(header);
+    expect(seeded.hybrid_ciphertext?.ml_kem_ciphertext).toEqual([2]);
+    const ordinary = envelopeKeyRequestFromRow(row(10, {
+      sealed_sender_envelope: { prekey_id: "", prekey_kind: "", hybrid_ciphertext: null, ratchet: { ...header, kind: "msg" } },
+    }));
+    expect(ordinary.hybrid_ciphertext).toBeNull();
+    expect(ordinary.prekey_id).toBe("");
+    expect(envelopeKeyRequestFromRow(row(11))).not.toHaveProperty("ratchet");
   });
 });
 

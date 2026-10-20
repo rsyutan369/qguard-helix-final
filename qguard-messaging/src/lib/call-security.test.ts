@@ -5,7 +5,10 @@ import { callReducer, INITIAL_CALL_STATE, type CallState } from "@/lib/call-stat
 import { callPeerIdentityPayload, parseCallEphemeralKey } from "@/lib/call-targets";
 import { bytesToBytea } from "@/lib/encoding";
 
-function connected(role: "caller" | "callee", flags: { forwardSecret?: boolean; peerVerified?: boolean }): CallState {
+function connected(
+  role: "caller" | "callee",
+  flags: { forwardSecret?: boolean; peerVerified?: boolean; peerVerifiedAt?: number | null; peerPaired?: boolean },
+): CallState {
   const started = role === "caller"
     ? callReducer(INITIAL_CALL_STATE, { type: "start-outgoing", callId: "c1", peerUserId: "u2", peerDeviceId: "d2" })
     : callReducer(INITIAL_CALL_STATE, { type: "incoming", callId: "c1", peerUserId: "u2", peerDeviceId: "d2" });
@@ -28,12 +31,45 @@ describe("call security reporting", () => {
     expect(callSecurityNeedsAttention(lines)).toBe(true);
   });
 
-  it("reports a forward-secret, verified incoming call without warnings", () => {
-    const lines = describeCallSecurity(connected("callee", { forwardSecret: true, peerVerified: true }), "Ana");
-    expect(lines).toHaveLength(2);
+  it("reports a forward-secret call from a device the user verified, without warnings", () => {
+    const lines = describeCallSecurity(
+      connected("callee", { forwardSecret: true, peerVerified: true, peerVerifiedAt: 1_790_000_000, peerPaired: true }),
+      "Ana",
+    );
+    expect(lines).toHaveLength(3);
     expect(callSecurityNeedsAttention(lines)).toBe(false);
     expect(lines[0].text).toContain("Forward secret");
     expect(lines[1].text).toContain("Caller verified");
+    expect(lines[2].text).toContain("You verified Ana's device on");
+    expect(lines[2].text).toContain("Ask them for their phrase");
+  });
+
+  it("a registered device is not a verified person: warns until the user verifies them", () => {
+    const lines = describeCallSecurity(connected("callee", { forwardSecret: true, peerVerified: true }), "Ana");
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toMatchObject({ ok: false });
+    expect(lines[2].text).toContain("haven't verified Ana");
+    expect(lines[2].text).toContain("cloned voice");
+    expect(callSecurityNeedsAttention(lines)).toBe(true);
+  });
+
+  it("verified but not yet paired: no phrase is promised", () => {
+    const lines = describeCallSecurity(
+      connected("caller", { forwardSecret: true, peerVerified: true, peerVerifiedAt: 1_790_000_000, peerPaired: false }),
+      "Ana",
+    );
+    expect(lines[2]).toMatchObject({ ok: true });
+    expect(lines[2].text).toContain("becomes available once");
+    expect(lines[2].text).not.toContain("Ask them for their phrase");
+  });
+
+  it("never vouches for the person on an unproven device, whatever the record says (negative control)", () => {
+    const lines = describeCallSecurity(
+      connected("callee", { forwardSecret: true, peerVerified: false, peerVerifiedAt: 1_790_000_000, peerPaired: true }),
+      "Ana",
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines.some((line) => line.text.includes("You verified"))).toBe(false);
   });
 
   it("warns when the peer's build has no per-call key", () => {

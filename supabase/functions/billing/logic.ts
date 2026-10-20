@@ -95,6 +95,10 @@ export function configurationReport(env: EnvGetter) {
   return {
     configured: isPaypalConfigured(env),
     webhookConfigured: Boolean((env("PAYPAL_WEBHOOK_ID") ?? "").trim()),
+    // The Android app launches Google Play purchases only when this is true
+    // (billingSupportsPlayVerification in qguard-messaging/src/lib/billing-api.ts).
+    playVerification: isPlayConfigured(env),
+    playRtdn: Boolean((env("PLAY_RTDN_TOKEN") ?? "").trim()),
     env: paypalApiBase(env).includes("sandbox") ? "sandbox" : "live",
     plans,
   };
@@ -447,4 +451,225 @@ export function webhookClaimDecision(
   const claimedAt = Date.parse(String(existing.claimed_at ?? existing.processed_at ?? ""));
   if (!Number.isFinite(claimedAt)) return "run";
   return nowMs - claimedAt > WEBHOOK_CLAIM_STALE_MS ? "run" : "in-progress";
+}
+
+// ---- Google Play Billing (roadmap 4.6) --------------------------------------
+//
+// Mirrors src/api-server/play-billing.ts, the Express implementation: the
+// same env names, product-id convention, state mapping and ledger rows, so the
+// two can never disagree about what a Play purchase grants.
+
+/** List prices (USD) for Play invoices — Google does not return the charged
+ *  amount. MUST equal src/lib/billing/plan-pricing.ts PLAN_PRICING;
+ *  tools/billing-edge-check.ts asserts it. */
+export const PLAY_LIST_PRICING: Record<Tier, { monthly: number; yearlyPerMonth: number }> = {
+  Starter: { monthly: 1, yearlyPerMonth: 1 },
+  Basic: { monthly: 8, yearlyPerMonth: 5 },
+  Pro: { monthly: 30, yearlyPerMonth: 20 },
+  Elite: { monthly: 199, yearlyPerMonth: 150 },
+};
+
+export function playPackageName(env: EnvGetter): string {
+  return (env("GOOGLE_PLAY_PACKAGE_NAME") ?? "").trim();
+}
+
+export function playServiceAccount(env: EnvGetter): { email: string; privateKey: string } | null {
+  const raw = env("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON");
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed?.client_email && parsed?.private_key) {
+        return { email: String(parsed.client_email), privateKey: String(parsed.private_key) };
+      }
+    } catch {
+      // fall through to the pair form
+    }
+  }
+  const email = env("GOOGLE_PLAY_SA_EMAIL");
+  const privateKey = env("GOOGLE_PLAY_SA_PRIVATE_KEY")?.replace(/\\n/g, "\n");
+  return email && privateKey ? { email, privateKey } : null;
+}
+
+export function isPlayConfigured(env: EnvGetter): boolean {
+  return Boolean(playPackageName(env) && playServiceAccount(env));
+}
+
+/** Play product id for a tier: `qguard_<tier>` unless PLAY_PRODUCT_<TIER> overrides it. */
+export function playProductIdFor(env: EnvGetter, tier: Tier): string {
+  return (env(`PLAY_PRODUCT_${tier.toUpperCase()}`) ?? "").trim() || `qguard_${tier.toLowerCase()}`;
+}
+
+export function tierForPlayProduct(env: EnvGetter, productId: string): Tier | null {
+  return TIERS.find((tier) => playProductIdFor(env, tier) === productId) ?? null;
+}
+
+/** basePlanId → billing cycle. Convention: 'monthly' / 'yearly' (or 'annual'). */
+export function cycleForPlayBasePlan(basePlanId: unknown): DbCycle {
+  const text = String(basePlanId ?? "").toLowerCase();
+  return text.includes("year") || text.includes("annual") ? "annual" : "monthly";
+}
+
+/**
+ * Google subscriptionState → our status. Per Play policy the user KEEPS the
+ * entitlement in a grace period and while CANCELED but not yet expired
+ * (cancellation only turns off auto-renew).
+ */
+export function mapPlayState(state: unknown): { status: DbStatus; entitled: boolean; autoRenew: boolean } {
+  switch (String(state ?? "")) {
+    case "SUBSCRIPTION_STATE_ACTIVE":
+      return { status: "active", entitled: true, autoRenew: true };
+    case "SUBSCRIPTION_STATE_IN_GRACE_PERIOD":
+      return { status: "pending_renewal", entitled: true, autoRenew: true };
+    case "SUBSCRIPTION_STATE_CANCELED":
+      return { status: "active", entitled: true, autoRenew: false };
+    case "SUBSCRIPTION_STATE_ON_HOLD":
+    case "SUBSCRIPTION_STATE_PAUSED":
+      return { status: "suspended", entitled: false, autoRenew: false };
+    case "SUBSCRIPTION_STATE_EXPIRED":
+      return { status: "expired", entitled: false, autoRenew: false };
+    default:
+      return { status: "incomplete", entitled: false, autoRenew: false };
+  }
+}
+
+export class PlayPurchaseError extends Error {
+  constructor(readonly code: "NOT_BOUND" | "ACCOUNT_MISMATCH" | "UNKNOWN_PRODUCT", message: string) {
+    super(message);
+  }
+}
+
+/**
+ * What a verified subscriptionsv2 resource grants, and the rows that record it.
+ * `expectedUserId` is the authenticated caller on /verify and must equal the
+ * obfuscatedExternalAccountId the app set at checkout (the anti-spoof binding);
+ * RTDN passes null and relies on the binding Google recorded.
+ */
+export function playSubscriptionRows(
+  env: EnvGetter,
+  resource: Record<string, any>,
+  tokenHash: string,
+  expectedUserId: string | null,
+  nowIso: string,
+): {
+  userId: string;
+  tier: Tier;
+  cycle: DbCycle;
+  mapped: ReturnType<typeof mapPlayState>;
+  productId: string;
+  expiryTime: string | null;
+  subscription: Record<string, unknown>;
+  invoice: Record<string, unknown> | null;
+} {
+  const boundUserId = String(resource?.externalAccountIdentifiers?.obfuscatedExternalAccountId ?? "");
+  const userId = expectedUserId || boundUserId;
+  if (!userId) throw new PlayPurchaseError("NOT_BOUND", "purchase is not bound to a QGuard account (missing obfuscatedExternalAccountId)");
+  if (expectedUserId && boundUserId && boundUserId !== expectedUserId) {
+    throw new PlayPurchaseError("ACCOUNT_MISMATCH", "purchase belongs to a different QGuard account");
+  }
+  const line = Array.isArray(resource?.lineItems) ? resource.lineItems[0] : null;
+  const productId = String(line?.productId ?? "");
+  const tier = tierForPlayProduct(env, productId);
+  if (!tier) throw new PlayPurchaseError("UNKNOWN_PRODUCT", `unrecognized Play product: ${productId || "(none)"}`);
+  const cycle = cycleForPlayBasePlan(line?.offerDetails?.basePlanId);
+  const mapped = mapPlayState(resource?.subscriptionState);
+  const expiryTime: string | null = line?.expiryTime ?? null;
+  const subscription = {
+    user_id: userId,
+    subscription_id: `gp_${tokenHash.slice(0, 48)}`,
+    provider: "google_play",
+    provider_customer_id: boundUserId || userId,
+    provider_subscription_id: tokenHash,
+    plan: tier,
+    status: mapped.status,
+    billing_cycle: cycle,
+    auto_renew: mapped.autoRenew,
+    cancel_at_period_end: !mapped.autoRenew && mapped.entitled,
+    current_period_start: resource?.startTime ?? nowIso,
+    current_period_end: expiryTime,
+    renewal_date: mapped.autoRenew ? expiryTime : null,
+    cancelled_at: mapped.status === "cancelled" ? nowIso : null,
+    metadata: {
+      playProductId: productId,
+      playBasePlanId: line?.offerDetails?.basePlanId ?? null,
+      latestOrderId: resource?.latestOrderId ?? null,
+      subscriptionState: resource?.subscriptionState ?? null,
+    },
+    updated_at: nowIso,
+  };
+  const orderId = resource?.latestOrderId ? String(resource.latestOrderId) : null;
+  const price = PLAY_LIST_PRICING[tier];
+  const amountCents = Math.round((cycle === "annual" ? price.yearlyPerMonth * 12 : price.monthly) * 100);
+  const invoice = orderId && mapped.entitled
+    ? {
+      user_id: userId,
+      invoice_id: orderId,
+      provider_invoice_id: orderId,
+      transaction_id: orderId,
+      amount_paid_cents: amountCents,
+      tax_cents: 0,
+      currency: "USD",
+      status: "paid",
+      payment_method_summary: "Google Play",
+      subscription_plan: tier,
+      // subscriptionsv2 carries no per-order charge time; the call that first
+      // sees an order is the closest recorded moment of payment.
+      payment_date: nowIso,
+      metadata: { playOrderId: orderId, purchaseTokenHash: tokenHash, amountSource: "catalog_list_price" },
+    }
+    : null;
+  return { userId, tier, cycle, mapped, productId, expiryTime, subscription, invoice };
+}
+
+/** Decode a Pub/Sub push envelope into the RTDN payload; null when malformed. */
+export function parseRtdnMessage(body: unknown): { messageId: string; payload: any } | null {
+  const message = (body as any)?.message;
+  if (!message?.data) return null;
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(base64ToBytes(String(message.data))));
+    return { messageId: String(message.messageId ?? message.message_id ?? ""), payload };
+  } catch {
+    return null;
+  }
+}
+
+/** Constant-time string comparison for the RTDN shared secret. */
+export function timingSafeEqualText(a: string, b: string): boolean {
+  const left = new TextEncoder().encode(a);
+  const right = new TextEncoder().encode(b);
+  if (left.length !== right.length) return false;
+  let diff = 0;
+  for (let index = 0; index < left.length; index += 1) diff |= left[index] ^ right[index];
+  return diff === 0;
+}
+
+export function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value.replace(/-/g, "+").replace(/_/g, "/").replace(/\s+/g, ""));
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+export function base64Url(bytes: Uint8Array | string): string {
+  const data = typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes;
+  let binary = "";
+  for (const byte of data) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** The DER body of a PEM private key ("-----BEGIN PRIVATE KEY-----" PKCS#8). */
+export function pemToDer(pem: string): Uint8Array {
+  const body = pem.replace(/-----BEGIN [^-]+-----/, "").replace(/-----END [^-]+-----/, "").replace(/\s+/g, "");
+  if (!body) throw new Error("empty private key");
+  return base64ToBytes(body);
+}
+
+/** Header + claims of the service-account JWT that buys an androidpublisher token. */
+export function playJwtSigningInput(serviceAccountEmail: string, nowSeconds: number): string {
+  const header = base64Url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const claims = base64Url(JSON.stringify({
+    iss: serviceAccountEmail,
+    scope: "https://www.googleapis.com/auth/androidpublisher",
+    aud: "https://oauth2.googleapis.com/token",
+    iat: nowSeconds,
+    exp: nowSeconds + 3600,
+  }));
+  return `${header}.${claims}`;
 }

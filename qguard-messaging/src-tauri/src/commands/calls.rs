@@ -85,6 +85,12 @@ pub struct CallSetup {
     /// identity); for a callee it is true only when the caller's signature
     /// verified against its registered identity.
     pub peer_authenticated: bool,
+    /// When the user verified this exact device here (safety number compared),
+    /// or None. Read from this device's own record for the keys the call was
+    /// agreed with — never from the relay. See `commands::contact_verification`.
+    pub peer_verified_at: Option<i64>,
+    /// A call challenge phrase can be shown with this device.
+    pub peer_paired: bool,
 }
 
 /// Derive the two directional 32-byte keys + safety number from the shared secret.
@@ -111,6 +117,8 @@ fn derive_call_setup(
         safety_number: safety_number(shared),
         forward_secret: false,
         peer_authenticated: false,
+        peer_verified_at: None,
+        peer_paired: false,
     };
     Ok(setup)
 }
@@ -466,14 +474,14 @@ fn callee_agree(
     Ok((shared, caller_authenticated))
 }
 
-fn validate_call_id(call_id: &str) -> Result<()> {
+pub(crate) fn validate_call_id(call_id: &str) -> Result<()> {
     if call_id.is_empty() || call_id.len() > MAX_CALL_ID_LEN {
         return Err(QGuardError::InvalidInput("invalid call id".to_string()));
     }
     Ok(())
 }
 
-fn local_identity(state: &AppState) -> Result<LocalIdentity> {
+pub(crate) fn local_identity(state: &AppState) -> Result<LocalIdentity> {
     let user_id = state.user_id()?;
     state.ensure_identity(&user_id, platform_device_label())?;
     state
@@ -566,6 +574,7 @@ pub async fn call_caller_setup(
         let mut setup = result?;
         // The key is encapsulated to the identity that was just verified.
         setup.peer_authenticated = true;
+        (setup.peer_verified_at, setup.peer_paired) = crate::commands::contact_verification::verification_of(&state, &peer);
         state.audit_info(
             "call_caller_setup",
             "Peer identity verified (Ed25519 + ML-DSA-65); call media key established (caller, version 1: no forward secrecy)",
@@ -580,6 +589,7 @@ pub async fn call_caller_setup(
     setup.caller_proof = Some(agreement.proof);
     setup.forward_secret = true;
     setup.peer_authenticated = true;
+    (setup.peer_verified_at, setup.peer_paired) = crate::commands::contact_verification::verification_of(&state, &peer);
     state.audit_info(
         "call_caller_setup",
         "Peer identity and per-call key verified (Ed25519 + ML-DSA-65); forward-secret call media key established (caller)",
@@ -672,6 +682,13 @@ pub async fn call_callee_setup(
     let mut setup = derive_call_setup(&shared, "callee", None)?;
     setup.forward_secret = true;
     setup.peer_authenticated = caller_authenticated;
+    // Only for a caller proven to hold the recorded keys: an unproven caller
+    // is never described as someone the user verified.
+    if caller_authenticated {
+        if let Some(caller) = caller.as_ref() {
+            (setup.peer_verified_at, setup.peer_paired) = crate::commands::contact_verification::verification_of(&state, caller);
+        }
+    }
     state.audit_info(
         "call_callee_setup",
         if caller_authenticated {

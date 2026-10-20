@@ -34,6 +34,30 @@ export function hybridCiphertextFromSealed(sealed: Record<string, unknown>): Hyb
   };
 }
 
+/**
+ * The hybrid ciphertext as the Rust core expects it: `null` when the row has
+ * none. An ordinary post-quantum ratchet message carries no encapsulation (its
+ * key comes from the session), and handing the core an empty placeholder in
+ * its place would fail to decode rather than open.
+ */
+export function hybridCiphertextForCore(sealed: Record<string, unknown>): HybridCiphertextPayload | null {
+  const hybrid = sealed.hybrid_ciphertext;
+  if (!hybrid || typeof hybrid !== "object" || Array.isArray(hybrid)) return null;
+  return hybridCiphertextFromSealed(sealed);
+}
+
+/**
+ * A row's post-quantum ratchet header (`sealed_sender_envelope.ratchet`), or
+ * undefined for a one-shot envelope. Passed through untouched: the core
+ * validates it, and both signatures and the AEAD tag cover it, so a value
+ * edited here could only make the envelope fail, never change what it says.
+ */
+export function ratchetHeaderFromSealed(sealed: Record<string, unknown>): Record<string, unknown> | undefined {
+  const header = sealed.ratchet;
+  if (!header || typeof header !== "object" || Array.isArray(header)) return undefined;
+  return header as Record<string, unknown>;
+}
+
 /** Which prekey a row says it was sealed to. */
 export function prekeyReferenceFromSealed(sealed: Record<string, unknown>): { prekey_id: string; prekey_kind: string } {
   return {
@@ -94,9 +118,10 @@ export interface EnvelopeKeyRequest {
   counter: number;
   envelope: { nonce: number[]; ciphertext: number[]; tag: number[] };
   aad: number[];
-  hybrid_ciphertext: HybridCiphertextPayload;
+  hybrid_ciphertext: HybridCiphertextPayload | null;
   prekey_id: string;
   prekey_kind: string;
+  ratchet?: Record<string, unknown>;
 }
 
 /**
@@ -124,7 +149,8 @@ export function envelopeKeyRequestFromRow(row: EnvelopeKeyRow): EnvelopeKeyReque
       tag: byteaToBytes(row.auth_tag),
     },
     aad: byteaToBytes(row.aad),
-    hybrid_ciphertext: hybridCiphertextFromSealed(sealed),
+    hybrid_ciphertext: hybridCiphertextForCore(sealed),
     ...prekeyReferenceFromSealed(sealed),
+    ...(ratchetHeaderFromSealed(sealed) ? { ratchet: ratchetHeaderFromSealed(sealed) } : {}),
   };
 }

@@ -157,11 +157,13 @@ async function connectTlsAny(
   options: Partial<tls.ConnectionOptions>,
   timeoutMs: number,
   connectHosts: string[],
-  deadline = Number.POSITIVE_INFINITY
+  deadline = Number.POSITIVE_INFINITY,
+  signal?: AbortSignal
 ): Promise<{ result: TlsAnalysisResult; connectHost: string }> {
   let lastError: Error | null = null
 
   for (const connectHost of connectHosts) {
+    if (signal?.aborted) throw new Error(`TLS analysis of ${hostname}:${port} was cancelled`)
     const remaining = deadline - Date.now()
     if (remaining <= 0) {
       throw lastError || new Error(`TLS connection to ${hostname}:${port} ran out of time budget`)
@@ -437,6 +439,7 @@ async function confirmProtocolNegatives(
   discovered: TlsProtocolProbe[],
   negotiatedProtocol: string | null,
   deadline: number,
+  signal?: AbortSignal,
 ): Promise<TlsProtocolProbe[]> {
   const probes = discovered.map((probe) => ({ ...probe }))
 
@@ -472,7 +475,7 @@ async function confirmProtocolNegatives(
   for (const probe of refused) {
     const attempts = probe.answered === false ? ATTEMPTS_FOR_SILENCE : 1
     for (let attempt = 0; attempt < attempts; attempt += 1) {
-      if (Date.now() >= deadline) break
+      if (Date.now() >= deadline || signal?.aborted) break
       const retry = await probeProtocol(hostname, port, probe.protocol as tls.SecureVersion, connectHost)
       if (retry.supported) {
         probe.supported = true
@@ -551,6 +554,7 @@ async function enumerateTls12CipherSuites(
   port: number,
   connectHost = hostname,
   deadline = Number.POSITIVE_INFINITY,
+  signal?: AbortSignal,
 ): Promise<CipherSuiteDetail[]> {
   /* CONCURRENCY IS NOT THE VARIABLE THAT MATTERS — measured, not assumed.
      Sweeping www.cloudflare.com at concurrency 10/4/2/1, twice each: the
@@ -568,7 +572,7 @@ async function enumerateTls12CipherSuites(
   const acceptedCount = results.filter((suite) => suite !== null).length
   /* Nothing answered: systemic, not per-suite. Re-probing would add ten
      timeouts to a sweep that already knows the endpoint refused everything. */
-  if (acceptedCount > 0 && Date.now() < deadline) {
+  if (acceptedCount > 0 && Date.now() < deadline && !signal?.aborted) {
     const unanswered = results
       .map((suite, index) => (suite === null ? index : -1))
       .filter((index) => index >= 0)
@@ -605,6 +609,12 @@ export interface TlsAnalysisOptions {
    * run once the endpoint has proven it answers.
    */
   deadline?: number
+  /**
+   * Stops the analysis between probe waves. Set when nobody is waiting for the
+   * result any more (a public visitor closed the tab), so the connection slot
+   * goes to someone who is. Optional: callers without one behave as before.
+   */
+  signal?: AbortSignal
 }
 
 /**
@@ -627,14 +637,18 @@ export async function analyzeTls(
     },
     Math.max(1_000, options.handshakeTimeoutMs ?? CONNECTION_TIMEOUT),
     connectHosts,
-    options.deadline ?? Number.POSITIVE_INFINITY
+    options.deadline ?? Number.POSITIVE_INFINITY,
+    options.signal
   )
   const primary = primaryConnection.result
   const connectHost = primaryConnection.connectHost
+  /* The protocol and cipher sweeps are a dozen-plus handshakes; nobody waiting
+     for them is the cheapest moment to stop. */
+  if (options.signal?.aborted) throw new Error(`TLS analysis of ${hostname}:${port} was cancelled`)
 
   const [discoveredProtocols, enumeratedTls12Suites] = await Promise.all([
     Promise.all(TLS_PROTOCOLS.map((protocol) => probeProtocol(hostname, port, protocol, connectHost))),
-    enumerateTls12CipherSuites(hostname, port, connectHost, options.deadline ?? Number.POSITIVE_INFINITY),
+    enumerateTls12CipherSuites(hostname, port, connectHost, options.deadline ?? Number.POSITIVE_INFINITY, options.signal),
   ])
 
   const protocolSupport = await confirmProtocolNegatives(
@@ -644,6 +658,7 @@ export async function analyzeTls(
     discoveredProtocols,
     primary.tlsVersion,
     options.deadline ?? Number.POSITIVE_INFINITY,
+    options.signal,
   )
 
   const supportedProtocols = protocolSupport

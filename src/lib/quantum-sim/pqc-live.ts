@@ -5,7 +5,7 @@
  * ---------------
  * Everything else on this page is either a published fact or a model. This
  * module is the third provenance tier: MEASURED. It runs genuine FIPS 203/204/205
- * operations in the visitor's own browser, using the same audited
+ * operations in the visitor's own browser, using the same open-source
  * `@noble/post-quantum` implementation the platform's Quantum Vault and
  * certification engine depend on, and reports the byte lengths and timings it
  * actually observed.
@@ -324,7 +324,7 @@ export interface ConformanceResult {
  * implementation produced against the values tabulated in the FIPS documents.
  *
  * This is the page keeping itself honest: if the published table in
- * `nist-standards.ts` and the audited implementation ever disagree, the UI
+ * `nist-standards.ts` and the implementation ever disagree, the UI
  * shows a failed row rather than a confident number.
  */
 export function verifyAgainstStandard(): ConformanceResult[] {

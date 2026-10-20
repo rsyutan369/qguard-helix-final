@@ -56,6 +56,12 @@ export interface AssessOptions {
    * its limits stated, never a spinner that ends in an error.
    */
   budgetMs?: number
+  /**
+   * Stops the assessment when nobody is waiting for it. Declared here for a
+   * long time and never read — an abandoned public scan ran to completion and
+   * held its capacity slot throughout. It now reaches every engine phase; a
+   * cancelled assessment rejects with `ScanCancelledError` and yields no report.
+   */
   signal?: AbortSignal
 }
 
@@ -209,6 +215,7 @@ export async function assessPublicTarget(options: AssessOptions): Promise<Public
     },
     onObservation: options.onObservation,
     budgetMs: options.budgetMs,
+    signal: options.signal,
   })
 
   const evidence = toReportEvidence(bundle)

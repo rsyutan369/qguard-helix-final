@@ -118,13 +118,38 @@ export interface OrchestratorOptions {
    * expires — they never throw, so the report is always composable.
    */
   budgetMs?: number
+  /**
+   * Cancels the scan. Unlike the budget this is NOT a degrade-by: a cancelled
+   * scan has nobody waiting for it, so it produces no report at all and rejects
+   * with {@link ScanCancelledError} at the next phase boundary. The TLS engine
+   * also checks it between handshakes, which is where the time goes.
+   */
+  signal?: AbortSignal
+}
+
+/**
+ * The scan was stopped because nobody is waiting for its result any more.
+ *
+ * A distinct type so the caller can never confuse it with a measured failure:
+ * a cancelled scan says nothing about the target and must not be cached,
+ * reported or logged as an outcome.
+ */
+export class ScanCancelledError extends Error {
+  constructor(host: string, port: number) {
+    super(`The assessment of ${host}:${port} was cancelled.`)
+    this.name = 'ScanCancelledError'
+  }
 }
 
 export async function runScanEngines(options: OrchestratorOptions): Promise<ScanEvidenceBundle> {
-  const { host, port, onEngine, onEngineStart } = options
+  const { host, port, onEngine, onEngineStart, signal } = options
   const startedAt = Date.now()
   const deadline = startedAt + (options.budgetMs ?? DEFAULT_SCAN_BUDGET_MS)
   const emit = observationEmitter(options.onObservation)
+  const stopIfCancelled = () => {
+    if (signal?.aborted) throw new ScanCancelledError(host, port)
+  }
+  stopIfCancelled()
 
 /** CAA is answered only when a resolver replied AND the RFC 8659 climb reached
     the registrable domain. Either gap leaves issuance policy Unknown. */
@@ -210,6 +235,7 @@ const caaAnswered = (dns: { caaQueryable: boolean; caaClimbComplete: boolean }) 
     ...(reachability.reachable ? {} : { verdict: 'Unreachable' }),
   })
 
+  stopIfCancelled()
   if (!reachability.reachable) {
     return unreachableBundle(host, port, startedAt, reachabilityResult, dnsPromise, onEngineStart, onEngine, emit)
   }
@@ -252,7 +278,10 @@ const caaAnswered = (dns: { caaQueryable: boolean; caaClimbComplete: boolean }) 
   /* TLS is the critical path and the reason the bundle has a budget at all, so
      it is handed everything left after reserving a slice for the certificate
      and crypto engines that must still run after it. */
-  const tlsResult = await runTlsEngine(host, port, options.onObservation, deadline - 6_000)
+  const tlsResult = await runTlsEngine(host, port, options.onObservation, deadline - 6_000, signal)
+  /* Before the stage is published: a cancelled TLS phase stopped early, and its
+     partial result must not be painted as a measurement anywhere. */
+  stopIfCancelled()
   onEngine?.(
     'tls-intelligence',
     tlsResult.ok,
@@ -276,6 +305,7 @@ const caaAnswered = (dns: { caaQueryable: boolean; caaClimbComplete: boolean }) 
   )
 
   const [dnsResult, httpResult] = await Promise.all([dnsPromise, httpPromise])
+  stopIfCancelled()
 
   onEngineStart?.('cryptographic-intelligence')
   const cryptoResult = await runCryptoEngine(

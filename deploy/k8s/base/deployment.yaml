@@ -70,9 +70,12 @@ spec:
                 name: qguard-api-config
             - secretRef:
                 name: qguard-api-secrets
+          # 500m: 24 concurrent public scans measured at ~0.16 core on a
+          # desktop CPU (more on a shared vCPU), on top of ordinary API
+          # traffic. No CPU limit, so bursts are not throttled.
           resources:
             requests:
-              cpu: 250m
+              cpu: 500m
               memory: 512Mi
             limits:
               memory: 1536Mi

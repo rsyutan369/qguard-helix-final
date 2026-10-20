@@ -7,13 +7,15 @@ import MobileOnboarding, { isMobileOnboardingPending } from "@/components/mobile
 import { CallProvider } from "@/components/call/CallProvider";
 import { PaywallGate } from "@/components/PaywallGate";
 import { UpdateBanner } from "@/components/UpdateBanner";
+import { RelayHealthBanner } from "@/components/RelayHealthBanner";
+import { OutboxCourier } from "@/components/OutboxCourier";
 import { WorkspaceLockGate } from "@/components/workspace/WorkspaceLockGate";
 import { AppLockScreen } from "@/components/applock/AppLockScreen";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { useSubscription } from "@/lib/use-subscription";
 import { useIsMobile } from "@/lib/use-mobile";
-import { useAppLock } from "@/lib/use-app-lock";
+import { useAppLock, type AppLockUnlockResult } from "@/lib/use-app-lock";
 import { settlePinRestore, type PinRestorePhase } from "@/lib/pin-restore";
 import { upsertTrustedDevice, isDeviceRevoked } from "@/lib/trusted-devices";
 import { buildChecklist, buildTourSteps, useOnboarding } from "@/lib/onboarding";
@@ -21,6 +23,7 @@ import { useDashboardData } from "@/lib/use-dashboard-data";
 import { useWorkspaceLock, type UnlockMethod, type WorkspaceScope } from "@/lib/use-workspace-lock";
 import { createEphemeralSupabaseClient, supabase } from "@/lib/supabase";
 import { isAndroidRuntime, safeInvoke } from "@/lib/tauri";
+import { APP_VERSION } from "@/lib/app-update";
 import { useTheme } from "@/lib/use-theme";
 import LoginPage from "@/pages/LoginPage";
 import type { Page } from "@/lib/types";
@@ -87,7 +90,9 @@ function ProtectedMessagingApp() {
   const [forcePasswordLogin, setForcePasswordLogin] = useState(false);
   // Keeps the PIN gate up through a cold-launch session restore (see pin-restore.ts).
   const [pinRestore, setPinRestore] = useState<PinRestorePhase>("idle");
-  const appVersion = (window as unknown as { __APP_VERSION__?: string }).__APP_VERSION__ ?? "0.0.0";
+  // The build-time constant (vite define), not a window global: the window
+  // lookup always missed, so every Android device was registered as "0.0.0".
+  const appVersion = APP_VERSION;
   const isMobile = useIsMobile();
   const [showMobileOnboarding, setShowMobileOnboarding] = useState(isMobileOnboardingPending);
   const { theme, toggleTheme } = useTheme();
@@ -219,11 +224,11 @@ function ProtectedMessagingApp() {
     ) {
       // No live session yet (cold launch) -> unlocking restores it; else the app
       // is merely re-locked (background/inactivity) and unlock just clears the flag.
-      const restoreFromUnlock = async (pin: string) => {
+      const restoreFromUnlock = async (unlockWith: () => Promise<AppLockUnlockResult>) => {
         const coldLaunch = !auth.user || !auth.session;
         if (coldLaunch) setPinRestore("restoring");
         try {
-          const restored = await unlockAndRestore(pin, coldLaunch);
+          const restored = await unlockAndRestore(unlockWith, coldLaunch);
           setPinRestore(coldLaunch && restored ? "applied" : "idle");
         } catch (error) {
           setPinRestore("idle");
@@ -231,10 +236,13 @@ function ProtectedMessagingApp() {
         }
       };
       // Resolves true once the session is live, false when full auth is required.
-      const unlockAndRestore = async (pin: string, coldLaunch: boolean): Promise<boolean> => {
-        const result = await appLock.unlock(pin);
-        // 5th wrong attempt wiped the store -> fall back to full auth.
+      const unlockAndRestore = async (unlockWith: () => Promise<AppLockUnlockResult>, coldLaunch: boolean): Promise<boolean> => {
+        const result = await unlockWith();
+        // The store was wiped (5th wrong attempt, or the duress PIN) -> fall
+        // back to full auth, looking exactly like an expired session: the
+        // WebView's own copy of the session goes too.
         if (result.status.requiresFullAuth || !result.session) {
+          await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
           setForcePasswordLogin(true);
           await appLock.refresh();
           return false;
@@ -282,8 +290,11 @@ function ProtectedMessagingApp() {
           busy={pinRestore !== "idle"}
           busyLabel="Unlocking your secure session…"
           onSubmit={async (pin) => {
-            await restoreFromUnlock(pin);
+            await restoreFromUnlock(() => appLock.unlock(pin));
           }}
+          onBiometric={appLock.status.biometricEnabled ? async () => {
+            await restoreFromUnlock(() => appLock.unlockWithBiometric());
+          } : undefined}
           onUsePassword={() => setForcePasswordLogin(true)}
         />
       );
@@ -521,6 +532,8 @@ function ProtectedMessagingApp() {
       return (
         <>
           <UpdateBanner />
+          <RelayHealthBanner />
+          <OutboxCourier />
           <MobileShell
             activePage={page}
             title={title}
@@ -544,6 +557,8 @@ function ProtectedMessagingApp() {
       // settings, locked chat, PIN screen), not only while Secure Chat is open.
       <>
         <UpdateBanner />
+        <RelayHealthBanner />
+        <OutboxCourier />
         <div className="flex h-screen w-screen overflow-hidden bg-canvas">
           <Sidebar activePage={page} modules={navModules} snapshot={data.snapshot} unreadMessages={unreadMessages} onNavigate={navigate} />
           <div className="flex min-w-0 flex-1 flex-col">

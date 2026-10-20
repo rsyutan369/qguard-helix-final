@@ -40,6 +40,8 @@ import {
   QuantumExposureSummary,
   ScanEngineSelector,
   ScanProfileRail,
+  downloadText,
+  exportCbomFile,
 } from './shared';
 import { EngineHealthPanel, ScannerIntelligenceSection } from './ScannerIntelligence';
 import { ScanTheatre, formatBytes, type TheatreStatus } from './ScanTheatre';
@@ -47,20 +49,8 @@ import { ExposureWorkflowGraph } from './ExposureWorkflowGraph';
 import { useScannerEngines } from '@/hooks/use-scanner-engines';
 import { useExposureAccess } from '@/hooks/use-exposure-access';
 import { ModeAccessGate, ModeAccessSkeleton } from './ModeAccessGate';
-import { cbomToCsv, cbomToCycloneDx, cbomToJson } from '@/lib/scanner/exposure/cbom';
+import { assessmentTargetLabel } from '@/lib/scanner/exposure/panel-model';
 import { ExposureReportButton, ExposureReportPanel, type ExposureReportAuthor } from './ExposureReportLauncher';
-
-/* ─────────────────────────────────────────────────────────────── download ─── */
-
-function downloadBlob(filename: string, content: string, mime: string) {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
 
 /* ──────────────────────────────────────────────────────────────── the panel ── */
 
@@ -565,19 +555,15 @@ export function LocalAssessmentPanel({ onSync, upsellSlot, reports }: LocalAsses
           <ExposureRecommendations assessment={scan.assessment} />
           <CbomViewer
             components={scan.assessment.cbom}
-            onExport={(format) => {
-              const meta = {
+            onExport={(format) =>
+              exportCbomFile(scan.assessment!.cbom, format, {
                 scanId: scan.assessment!.task.scanId,
-                target: scan.fingerprint?.rootName ?? 'local',
+                target: assessmentTargetLabel(scan.assessment!.task.target),
                 generatedAt: scan.assessment!.generatedAt,
-              };
-              const slug = meta.target.replace(/[^a-z0-9.-]/gi, '_');
-              if (format === 'csv') downloadBlob(`qguard-cbom-${slug}.csv`, cbomToCsv(scan.assessment!.cbom), 'text/csv');
-              else if (format === 'cyclonedx') downloadBlob(`qguard-cbom-${slug}.cdx.json`, cbomToCycloneDx(scan.assessment!.cbom, meta), 'application/json');
-              else downloadBlob(`qguard-cbom-${slug}.json`, cbomToJson(scan.assessment!.cbom, meta), 'application/json');
-            }}
+              })
+            }
           />
-          <CoveragePanel coverage={scan.assessment.task.coverage} mode="local" />
+          <CoveragePanel assessment={scan.assessment} mode="local" />
           {/* Reporting closes the stack: a reader exports after reading, and the
               card names what each document is for rather than being a bare
               button. The status bar carries the same entry point for anyone who
@@ -587,7 +573,7 @@ export function LocalAssessmentPanel({ onSync, upsellSlot, reports }: LocalAsses
       )}
 
       {/* ── empty state (§69) ──────────────────────────────────────────── */}
-      {!scan.collection && !scan.assessment && <LocalEmptyState />}
+      {!scan.collection && !scan.assessment && <LocalEmptyState engineCount={engines.length} />}
     </div>
   );
 }
@@ -667,7 +653,7 @@ function ExportRow({ assessment }: { assessment: NonNullable<ReturnType<typeof u
   return (
     <button
       type="button"
-      onClick={() => downloadBlob(`qguard-local-assessment-${slug}.json`, JSON.stringify(assessment, null, 2), 'application/json')}
+      onClick={() => downloadText(`qguard-local-assessment-${slug}.json`, JSON.stringify(assessment, null, 2), 'application/json')}
       className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-3 py-1.5 text-[11.5px] font-semibold text-slate-300 transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
     >
       Export assessment JSON
@@ -732,7 +718,7 @@ function LocalEmptyRail() {
   );
 }
 
-function LocalEmptyState() {
+function LocalEmptyState({ engineCount }: { engineCount: number }) {
   const cards = [
     {
       icon: ShieldCheck,
@@ -741,7 +727,9 @@ function LocalEmptyState() {
     },
     {
       icon: HardDrive,
-      title: 'Fourteen engines, one corpus',
+      /* Read from the registry. A hard-coded "Fourteen" counted the Dev-only
+         supply-chain engine, which a Local assessment never runs. */
+      title: `${engineCount} engines, one corpus`,
       body: 'Cryptography, secrets, dependencies, configuration, certificates, containers, Kubernetes, IaC, CI/CD and Git history all read the same set of files.',
     },
     {

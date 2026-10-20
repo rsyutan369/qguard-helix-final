@@ -46,11 +46,16 @@ import { cn } from '@/lib/utils';
 import { ACCENT, Panel, SectionLabel } from '@/components/quantum-scan/ui';
 import { useExposureHistory, type ExposureHistoryDetail } from '@/hooks/use-exposure-history';
 import { ExposureReportButton, type ExposureReportAuthor } from './ExposureReportLauncher';
-import { exposureRecordFromProvenance } from '@/services/reporting/ExposureReport';
+/* From the catalogue module, NOT the builder: `ExposureReport` re-exports this,
+   but importing it from there statically pulls the whole report engine (zod,
+   jose, @noble/hashes) into the main bundle from an always-mounted panel —
+   exactly what `ExposureReportSpec` exists to prevent. */
+import { exposureRecordFromProvenance } from '@/services/reporting/ExposureReportSpec';
 import type { ExposureHistoryEntry, ExposureHistoryMode } from '@/lib/scanner/exposure/history';
 import type { FindingSeverity } from '@/lib/scanner/exposure/types';
-import { cbomToCsv, cbomToCycloneDx, cbomToJson } from '@/lib/scanner/exposure/cbom';
 import {
+  exportCbomFile,
+  type CbomExportFormat,
   CbomViewer,
   CorrelatedExposures,
   CoveragePanel,
@@ -107,16 +112,6 @@ function formatDuration(ms: number | null): string {
   if (minutes < 60) return rest === 0 ? `${minutes}m` : `${minutes}m ${rest}s`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${minutes % 60}m`;
-}
-
-function downloadBlob(filename: string, content: string, mime: string) {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(url);
 }
 
 const STATUS_TONE: Record<string, { color: string; label: string }> = {
@@ -1179,7 +1174,7 @@ function HistoryDetailView({
             components={detail.assessment.cbom}
             onExport={(format) => exportCbom(detail, format)}
           />
-          <CoveragePanel coverage={detail.assessment.task.coverage} mode={mode} />
+          <CoveragePanel assessment={detail.assessment} mode={mode} />
         </>
       )}
     </>
@@ -1223,17 +1218,12 @@ function ChangeStat({
   );
 }
 
-function exportCbom(detail: ExposureHistoryDetail, format: string) {
-  const meta = {
+function exportCbom(detail: ExposureHistoryDetail, format: CbomExportFormat) {
+  exportCbomFile(detail.assessment.cbom, format, {
     scanId: detail.entry.scanId,
     target: detail.entry.target,
     generatedAt: detail.assessment.generatedAt,
-  };
-  const slug = meta.target.replace(/[^a-z0-9.-]/gi, '_');
-  if (format === 'csv') downloadBlob(`qguard-cbom-${slug}.csv`, cbomToCsv(detail.assessment.cbom), 'text/csv');
-  else if (format === 'cyclonedx')
-    downloadBlob(`qguard-cbom-${slug}.cdx.json`, cbomToCycloneDx(detail.assessment.cbom, meta), 'application/json');
-  else downloadBlob(`qguard-cbom-${slug}.json`, cbomToJson(detail.assessment.cbom, meta), 'application/json');
+  });
 }
 
 function ExportRow({ detail }: { detail: ExposureHistoryDetail }) {

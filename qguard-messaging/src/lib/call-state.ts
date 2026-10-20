@@ -17,6 +17,16 @@ export interface CallState {
    */
   forwardSecret: boolean | null;
   peerVerified: boolean | null;
+  /**
+   * The person, not just the device (null until media connects):
+   *   - `peerVerifiedAt`: when the user verified this exact device here by
+   *     comparing safety numbers (unix seconds), or null if never;
+   *   - `peerPaired`: a challenge phrase can be shown with this device.
+   * Both come from this device's own record, checked against the keys the
+   * call was agreed with — never from the relay.
+   */
+  peerVerifiedAt: number | null;
+  peerPaired: boolean | null;
   error: string | null;
 }
 
@@ -25,13 +35,13 @@ export type CallAction =
   | { type: "incoming"; callId: string; peerUserId: string; peerDeviceId: string }
   | { type: "accept" }
   | { type: "remote-answered" }
-  | { type: "media-connected"; safetyNumber: string; forwardSecret?: boolean; peerVerified?: boolean }
+  | { type: "media-connected"; safetyNumber: string; forwardSecret?: boolean; peerVerified?: boolean; peerVerifiedAt?: number | null; peerPaired?: boolean }
   | { type: "failed"; error: string }
   | { type: "ended" };
 
 export const INITIAL_CALL_STATE: CallState = {
   phase: "idle", callId: null, role: null, peerUserId: null, peerDeviceId: null, safetyNumber: null,
-  forwardSecret: null, peerVerified: null, error: null,
+  forwardSecret: null, peerVerified: null, peerVerifiedAt: null, peerPaired: null, error: null,
 };
 
 const ACTIVE: CallPhase[] = ["ringing", "calling", "connecting", "connected"];
@@ -58,6 +68,8 @@ export function callReducer(state: CallState, action: CallAction): CallState {
           // established", never as a default of true.
           forwardSecret: action.forwardSecret ?? false,
           peerVerified: action.peerVerified ?? false,
+          peerVerifiedAt: action.peerVerifiedAt ?? null,
+          peerPaired: action.peerPaired ?? false,
         }
         : state;
     case "failed":

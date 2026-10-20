@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Activity, AlertTriangle, BadgeCheck, Check, Copy, Maximize2, Mic, MicOff, Move, PhoneOff, ShieldCheck, Video, VideoOff } from "lucide-react";
-import { callSecurityNeedsAttention, describeCallSecurity } from "@/lib/call-security";
+import { Activity, AlertTriangle, BadgeCheck, Check, Copy, Maximize2, MessageSquareQuote, Mic, MicOff, Monitor, MonitorOff, Move, PhoneOff, ShieldCheck, Video, VideoOff } from "lucide-react";
+import { callSecurityNeedsAttention, describeCallSecurity, formatVerifiedDate } from "@/lib/call-security";
+import { checkCallPhrase, describePairing, fetchCallPhrase, type CallPhrase } from "@/lib/contact-verification";
 import type { CallState } from "@/lib/call-state";
 import { qualityLabel, type CallQuality } from "@/lib/call-quality";
 import type { CallStatsSample } from "@/lib/call-stats";
@@ -75,14 +76,150 @@ function CallStatsPanel({ stats }: { stats: CallStatsSample }) {
   );
 }
 
+/**
+ * "Ask for their phrase" (call verification, roadmap Phase 3). Both devices of
+ * a verified, paired contact derive the same four words for this call and this
+ * 30-second window. One person asks, the other reads THEIR screen aloud, the
+ * first compares — nothing is sent, so there is nothing on the wire to copy,
+ * and a phrase heard in another call is useless here. The words are typed back
+ * for the core to check (it accepts the window before and after, for clock
+ * skew). Proves possession of the verified device, not the human — the copy
+ * says so.
+ */
+function PhrasePanel({ state, peerName, onClose }: { state: CallState; peerName: string; onClose: () => void }) {
+  const [phrase, setPhrase] = useState<CallPhrase | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [spoken, setSpoken] = useState("");
+  const [verdict, setVerdict] = useState<"match" | "mismatch" | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [secondsLeft, setSecondsLeft] = useState(0);
+  const { callId, peerUserId, peerDeviceId } = state;
+  const name = peerName.trim() || "them";
+
+  const load = useCallback(() => {
+    if (!callId || !peerUserId || !peerDeviceId) return;
+    fetchCallPhrase(peerUserId, peerDeviceId, callId)
+      .then((next) => { setPhrase(next); setSecondsLeft(next.secondsLeft); setError(null); })
+      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+  }, [callId, peerDeviceId, peerUserId]);
+  useEffect(() => { load(); }, [load]);
+  // Count down locally; fetch the next phrase when the window turns over.
+  useEffect(() => {
+    if (!phrase || phrase.words.length === 0) return undefined;
+    const timer = window.setInterval(() => {
+      setSecondsLeft((left) => {
+        if (left <= 1) { load(); return 0; }
+        return left - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [load, phrase]);
+
+  const check = async () => {
+    if (!callId || !peerUserId || !peerDeviceId) return;
+    setChecking(true);
+    try {
+      setVerdict(await checkCallPhrase(peerUserId, peerDeviceId, callId, spoken) ? "match" : "mismatch");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const unproven = !state.peerVerified;
+  return (
+    <div className="absolute left-1/2 top-4 z-10 w-[min(92vw,420px)] -translate-x-1/2 rounded-xl border border-cyan-300/50 bg-white/95 p-4 text-left shadow-soft backdrop-blur">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wide text-cyan-700">
+          <MessageSquareQuote size={14} /> Is it really {name}?
+        </div>
+        <button type="button" onClick={onClose} className="text-xs font-bold text-ink-500 hover:text-ink-900">Close</button>
+      </div>
+      {unproven ? (
+        <p className="mt-2 text-[12px] leading-relaxed text-amber-700">
+          The other device could not be proven to be {name}&apos;s recorded device, so no phrase can vouch for it. Don&apos;t share anything sensitive.
+        </p>
+      ) : error ? (
+        <p className="mt-2 text-[12px] text-rose-700">{error}</p>
+      ) : !phrase ? (
+        <p className="mt-2 text-[12px] text-ink-600">Loading…</p>
+      ) : phrase.words.length === 0 ? (
+        <p className="mt-2 text-[12px] leading-relaxed text-ink-700">
+          {phrase.verifiedAt === null
+            ? `You haven't verified ${name} yet, so there is no phrase to ask for. Compare safety numbers with them in your chat (Verify contact), then ask a question only they would know for this call.`
+            : describePairing(phrase.pairing, name)}
+        </p>
+      ) : (
+        <>
+          <p className="mt-2 text-[12px] leading-relaxed text-ink-700">
+            Ask {name} to read the four words on <em>their</em> screen. Don&apos;t read yours first. They should match:
+          </p>
+          <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 font-mono text-lg font-bold text-ink-950">
+            {phrase.words.map((word) => <span key={word}>{word}</span>)}
+          </div>
+          <div className="mt-1 text-[11px] text-ink-500">Changes in {secondsLeft}s — the previous and next phrase also count.</div>
+          <div className="mt-3 flex gap-2">
+            <input
+              value={spoken}
+              onChange={(event) => { setSpoken(event.target.value); setVerdict(null); }}
+              placeholder="Or type the words they say"
+              aria-label="Type the phrase your contact reads to you"
+              autoComplete="off"
+              className="min-w-0 flex-1 rounded-lg border border-line bg-canvas px-3 py-1.5 text-sm outline-none focus:border-cyan-300"
+            />
+            <button
+              type="button"
+              disabled={checking || spoken.trim().split(/\s+/).length < 4}
+              onClick={() => void check()}
+              className="rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-cyan-700 disabled:opacity-50"
+            >
+              Check
+            </button>
+          </div>
+          {verdict === "match" && (
+            <div className="mt-2 flex items-start gap-1.5 text-[12px] font-semibold text-emerald-700">
+              <Check size={13} className="mt-0.5 shrink-0" />
+              It matches: the other side holds the device you verified for {name}
+              {phrase.verifiedAt ? ` on ${formatVerifiedDate(phrase.verifiedAt)}` : ""}.
+            </div>
+          )}
+          {verdict === "mismatch" && (
+            <div className="mt-2 flex items-start gap-1.5 text-[12px] font-semibold text-rose-700">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+              Doesn&apos;t match. Don&apos;t share anything sensitive — this may not be {name}&apos;s device.
+            </div>
+          )}
+          <p className="mt-3 border-t border-line pt-2 text-[11px] leading-relaxed text-ink-500">
+            Proves the other side holds the device you verified — not who is holding it, and not whether a voice is real.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function InCallOverlay(props: {
   state: CallState; localStream: MediaStream | null; remoteStream: MediaStream | null;
   micEnabled: boolean; cameraEnabled: boolean; reconnecting?: boolean; peerName: string; peerUserId: string | null;
   quality: CallQuality; onSetQuality: (quality: CallQuality) => void;
   stats?: CallStatsSample | null;
   onHangup: () => void; onToggleMic: () => void; onToggleCamera: () => void;
+  /** Absent where the platform cannot capture a screen (Android). */
+  screenShare?: { active: boolean; start: () => Promise<void>; stop: () => Promise<void> };
 }) {
   const localRef = useRef<HTMLVideoElement>(null);
+  const [screenShareError, setScreenShareError] = useState<string | null>(null);
+  const toggleScreenShare = () => {
+    const share = props.screenShare;
+    if (!share) return;
+    setScreenShareError(null);
+    (share.active ? share.stop() : share.start()).catch((error: unknown) => {
+      // Dismissing the system picker is a choice, not a failure.
+      if (error instanceof DOMException && error.name === "NotAllowedError") return;
+      setScreenShareError(error instanceof Error ? error.message : String(error));
+    });
+  };
   const remoteRef = useRef<HTMLVideoElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const pipRef = useRef<HTMLDivElement>(null);
@@ -90,6 +227,7 @@ export function InCallOverlay(props: {
   const [sasAcknowledged, setSasAcknowledged] = useState(false);
   const [typedSas, setTypedSas] = useState("");
   const [sasCopied, setSasCopied] = useState(false);
+  const [showPhrase, setShowPhrase] = useState(false);
   // Whether the remote frame is cropped to fill (cover) or shown whole (contain).
   // "contain" answers "I can't see the caller's entire picture".
   const [remoteFit, setRemoteFit] = useState<"cover" | "contain">("cover");
@@ -152,7 +290,7 @@ export function InCallOverlay(props: {
     window.addEventListener("pointerup", onUp);
   }, [clampPip]);
   // Re-prompt verification for each new call (each call derives a fresh number).
-  useEffect(() => { setSasAcknowledged(false); setTypedSas(""); setSasCopied(false); }, [props.state.safetyNumber]);
+  useEffect(() => { setSasAcknowledged(false); setTypedSas(""); setSasCopied(false); setShowPhrase(false); }, [props.state.safetyNumber]);
 
   // Copy the safety number so users can paste it to the peer instead of
   // reading it aloud. The peer pastes it into their typed-confirmation field.
@@ -173,7 +311,8 @@ export function InCallOverlay(props: {
   // optional step. The badge can re-open it afterwards.
   const hasSas = Boolean(props.state.safetyNumber);
   const autoReveal = props.state.phase === "connected" && hasSas && !sasAcknowledged;
-  const sasVisible = hasSas && (autoReveal || showSas);
+  // The phrase panel takes the same spot; while it is open it wins.
+  const sasVisible = hasSas && (autoReveal || showSas) && !showPhrase;
 
   // Typed confirmation: the user types the number their PEER reads to them over
   // the call (the out-of-band channel), and we check it equals OUR own number.
@@ -216,6 +355,17 @@ export function InCallOverlay(props: {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {props.state.phase === "connected" && (
+            <button
+              type="button"
+              onClick={() => setShowPhrase((open) => !open)}
+              aria-pressed={showPhrase}
+              title="Check it's really them: ask for the phrase on their screen"
+              className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold transition ${showPhrase ? "bg-cyan-400 text-ink-950" : "bg-white/10 text-cyan-200 hover:text-white"}`}
+            >
+              <MessageSquareQuote size={14} /> <span className="hidden sm:inline">Ask for their phrase</span>
+            </button>
+          )}
           <div className="flex items-center rounded-full bg-white/10 p-0.5" role="radiogroup" aria-label="Call quality">
             {QUALITY_OPTIONS.map((option) => (
               <button
@@ -284,6 +434,9 @@ export function InCallOverlay(props: {
             <Move size={10} /> You
           </div>
         </div>
+        {showPhrase && props.state.phase === "connected" && (
+          <PhrasePanel state={props.state} peerName={props.peerName} onClose={() => setShowPhrase(false)} />
+        )}
         {sasVisible && props.state.safetyNumber && (
           <div className="absolute left-1/2 top-4 z-10 w-[min(92vw,420px)] -translate-x-1/2 rounded-xl border border-emerald-300/50 bg-white/95 p-4 text-center shadow-soft backdrop-blur">
             <div className="flex items-center justify-center gap-2 text-[11px] font-bold uppercase tracking-wide text-emerald-600">
@@ -368,6 +521,11 @@ export function InCallOverlay(props: {
           End-to-end encrypted. The server and network cannot see this call; only the person you called can see what you share.
         </div>
         {props.stats && props.state.phase === "connected" && <CallStatsPanel stats={props.stats} />}
+        {(props.screenShare?.active || screenShareError) && (
+          <div className={`absolute left-1/2 top-4 -translate-x-1/2 rounded-full px-3 py-1 text-xs font-semibold ${screenShareError ? "bg-rose-600 text-white" : "bg-cyan-600 text-white"}`}>
+            {screenShareError ?? `${props.peerName} can see your screen — still end-to-end encrypted`}
+          </div>
+        )}
       </div>
       <div
         className="flex items-center justify-center gap-4 py-5"
@@ -375,6 +533,17 @@ export function InCallOverlay(props: {
       >
         <button type="button" onClick={props.onToggleMic} title={props.micEnabled ? "Mute microphone" : "Unmute microphone"} className={`flex h-12 w-12 items-center justify-center rounded-full ${props.micEnabled ? "bg-white/15 text-white" : "bg-rose-500 text-white"}`}>{props.micEnabled ? <Mic size={20} /> : <MicOff size={20} />}</button>
         <button type="button" onClick={props.onToggleCamera} title={props.cameraEnabled ? "Turn camera off" : "Turn camera on"} className={`flex h-12 w-12 items-center justify-center rounded-full ${props.cameraEnabled ? "bg-white/15 text-white" : "bg-rose-500 text-white"}`}>{props.cameraEnabled ? <Video size={20} /> : <VideoOff size={20} />}</button>
+        {props.screenShare && props.state.phase === "connected" && (
+          <button
+            type="button"
+            onClick={toggleScreenShare}
+            title={props.screenShare.active ? "Stop sharing your screen" : "Share your screen"}
+            aria-pressed={props.screenShare.active}
+            className={`flex h-12 w-12 items-center justify-center rounded-full ${props.screenShare.active ? "bg-cyan-500 text-white" : "bg-white/15 text-white"}`}
+          >
+            {props.screenShare.active ? <MonitorOff size={20} /> : <Monitor size={20} />}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setRemoteFit((fit) => (fit === "cover" ? "contain" : "cover"))}

@@ -76,12 +76,20 @@ export async function persistExposureAssessment(input: {
 
   /* ── re-derive, never trust ────────────────────────────────────────────── */
   const findings = sanitiseFindings(input.assessment.findings);
-  const cbom = buildCbom(findings);
+  /* Inventory observations — cryptography present but raising nothing to act
+     on — are sanitised exactly like findings and are composed into the CBOM by
+     the same builder the scan used, so the components written here are the
+     components the panel showed. They are never written as findings. */
+  const findingIds = new Set(findings.map((finding) => finding.id));
+  const inventory = sanitiseFindings(Array.isArray(input.assessment.inventory) ? input.assessment.inventory : [])
+    .filter((observation) => !findingIds.has(observation.id));
+  const cbom = buildCbom([...findings, ...inventory]);
   const exposures = correlateFindings(findings);
   const summary = summariseCbom(cbom);
   const scores = computeScores({
     findings,
     exposures,
+    components: cbom,
     coverage: input.assessment.task.coverage,
     runs: input.assessment.task.runs,
   });
@@ -323,6 +331,9 @@ export function buildInventoryRow(component: CbomComponent, context: RowContext)
       quantumStatus: component.quantumStatus,
       evidence: component.evidence.slice(0, 3).map((entry) => entry.summary),
       dependsOn: component.dependsOn ?? [],
+      /* So a report rebuilt from this record names the same post-quantum
+         target, in the same words, as the report built from the live run. */
+      migrationTarget: component.migrationTarget ?? null,
     },
     discovered_at: context.now,
   };

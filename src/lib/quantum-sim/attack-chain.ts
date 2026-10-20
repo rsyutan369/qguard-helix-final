@@ -99,7 +99,7 @@ export const ATTACK_CHAIN: AttackStage[] = [
     title: "Run Shor's order-finding on the recorded public value",
     action: 'A cryptographically relevant quantum computer prepares a superposition over exponents, computes the modular exponential into an entangled register, and applies an inverse quantum Fourier transform.',
     mechanism:
-      'Every branch whose exponent is not a multiple of the period interferes destructively. What survives is a comb of peaks at y ≈ k·2^t / r. Continued fractions on the measured y recover the period r; for RSA that yields the factors, for elliptic curves the discrete logarithm variant yields the private scalar directly.',
+      'Every measurement outcome that is not close to a multiple of 2^t / r interferes destructively. What survives is a comb of peaks at y ≈ k·2^t / r. Continued fractions on the measured y recover the period r; for RSA that yields the factors, for elliptic curves the discrete logarithm variant yields the private scalar directly.',
     enabler:
       "Periodicity. RSA and every discrete-log system are built on functions with hidden periodic structure, and period-finding is exactly what quantum interference is good at. This is why key-size escalation fails: Shor's cost grows polynomially, not exponentially.",
     countermeasure:
@@ -147,7 +147,7 @@ export const ATTACK_CHAIN: AttackStage[] = [
     title: 'Re-establish the channel on FIPS 203 key encapsulation',
     action: 'Re-negotiate with a hybrid group, re-issue certificates under ML-DSA, and re-key the long-lived material.',
     mechanism:
-      'ML-KEM encapsulates a 32-byte shared secret to a module-lattice public key. Recovering it requires solving Module Learning With Errors, which has no known quantum algorithm and no periodic structure for Shor to exploit. The hybrid construction keeps X25519 alongside it, so the session is safe if either component holds.',
+      'ML-KEM encapsulates a 32-byte shared secret to a module-lattice public key. Recovering it requires solving Module Learning With Errors, for which no efficient classical or quantum algorithm is known, and which has no periodic structure for Shor to exploit. The hybrid construction keeps X25519 alongside it, so the session is safe if either component holds.',
     enabler:
       'The migration is a key-agreement change, not a cipher change. AES-256, SHA-384 and the whole record layer stay exactly as they are, which is why the change is tractable.',
     countermeasure:
@@ -227,7 +227,7 @@ export const SCENARIO_CRYPTO: ScenarioCryptoProfile[] = [
     protocol: 'Interbank messaging over mutually authenticated TLS',
     groupId: 0x0017,
     shelfLifeYears: 7,
-    shelfLifeBasis: 'Statutory retention for financial transaction records in most jurisdictions.',
+    shelfLifeBasis: 'A common statutory retention period for financial transaction records; the exact period varies by jurisdiction, typically 5–10 years.',
     sessionsPerDay: 45_000_000,
     weakestLink: 'RSA-2048 signing keys authenticating payment instructions — forgery, not just disclosure.',
   },
@@ -298,7 +298,7 @@ export const SCENARIO_CRYPTO: ScenarioCryptoProfile[] = [
     groupId: 0x0018,
     shelfLifeYears: 75,
     shelfLifeBasis:
-      'The outer limit under E.O. 13526 rather than the typical one: automatic declassification falls at 25 years, with exemptions to 50 and — for narrow categories — 75 years subject to ISCAP approval. National security traffic is modelled against that worst case.',
+      'The long end under E.O. 13526 rather than the typical case: automatic declassification falls at 25 years, with exemptions to 50 and — for confidential human sources and key WMD design concepts — 75 years; anything longer requires ISCAP approval. National security traffic is modelled against that 75-year horizon.',
     sessionsPerDay: 250_000,
     weakestLink: 'Everything transmitted before the CNSA 2.0 exclusive-use deadlines.',
   },
@@ -311,7 +311,7 @@ export const SCENARIO_CRYPTO: ScenarioCryptoProfile[] = [
     shelfLifeBasis: 'Firmware signed today is verified by devices still in the field two decades later.',
     sessionsPerDay: 5_000,
     weakestLink:
-      'Signature forgery, which is worse than disclosure: a forged update is accepted as genuine, and the verifying device has no way to know. This is why CNSA 2.0 puts firmware signing on the earliest deadline.',
+      'Signature forgery, which is worse than disclosure: a forged update is accepted as genuine, and the verifying device has no way to know. This is why CNSA 2.0 puts software and firmware signing among its earliest deadlines (support by 2025, exclusive use by 2030).',
   },
   {
     scenarioId: 'risk-sandbox',

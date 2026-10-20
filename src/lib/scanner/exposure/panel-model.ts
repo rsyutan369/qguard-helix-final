@@ -41,8 +41,119 @@
  * `tools/exposure-panel-accuracy-check.ts` asserts it, over the same numbers.
  */
 
-import type { CorrelatedExposure, ExposureAssessment, ExposureFinding } from './types';
+import type { CorrelatedExposure, EngineRun, ExposureAssessment, ExposureFinding, ScanCoverage, ScanTarget } from './types';
 import { layerLabel } from './correlate';
+
+/**
+ * The short name an assessment target is known by — on the report cover, in
+ * every export filename and in the CBOM metadata.
+ *
+ * One rule, so a Dev CBOM, a Local CBOM and the report built from the same
+ * assessment name the target identically.
+ */
+export function assessmentTargetLabel(target: ScanTarget): string {
+  switch (target.kind) {
+    case 'local':
+      return target.label || target.rootName || 'Authorised folder';
+    case 'repository':
+      return `${target.owner}/${target.repo}`;
+    case 'container':
+      return target.image;
+    case 'kubernetes':
+      return target.cluster;
+    case 'cloud':
+      return `${target.provider.toUpperCase()} ${target.account}`;
+    case 'web':
+      return target.host;
+    default:
+      return 'Assessment target';
+  }
+}
+
+/**
+ * The exclusion RULES in force.
+ *
+ * Assessments recorded before binary files were counted separately carry the
+ * sentence "Binary files are discovered and classified but not
+ * content-analysed." in this list. It is a statement about `filesUnsupported`,
+ * not a rule, so it is filtered here rather than tabled as "Excluded by
+ * policy" beside the real binary-file count.
+ */
+export function policyExclusions(coverage: ScanCoverage): string[] {
+  return coverage.exclusions.filter((entry) => !/^Binary files are discovered/i.test(entry));
+}
+
+/* ═════════════════════════════════════════════════ coverage dimensions ════ */
+
+/**
+ * The measurable dimensions of a scan, each with the engines that MEASURE it.
+ *
+ * A coverage figure of 0 is three different statements and the panels used to
+ * make only one of them. "Kubernetes workloads 0" after the Kubernetes engine
+ * read the corpus is a measurement; the same 0 when that engine was not in the
+ * profile, or ran and failed, is not — yet all three printed as "Read, none
+ * found … measurements of zero". The producer list is what tells them apart.
+ *
+ * ONE table, read by the Assessment Coverage panel, the Dev posture strip and
+ * the report's Coverage Ledger, so they cannot classify the same zero
+ * differently.
+ */
+export interface CoverageDimension {
+  key: Exclude<keyof ScanCoverage, 'exclusions' | 'notAssessed' | 'truncated' | 'truncationNote' | 'truncatedBy'>;
+  label: string;
+  /** Engines whose completion makes a zero in this dimension a measurement. */
+  producers: string[];
+}
+
+export const COVERAGE_DIMENSIONS: CoverageDimension[] = [
+  { key: 'filesDiscovered', label: 'Files discovered', producers: ['file-discovery'] },
+  { key: 'filesAnalyzed', label: 'Files analysed', producers: ['file-discovery'] },
+  { key: 'filesUnsupported', label: 'Binary / unsupported', producers: ['file-discovery'] },
+  { key: 'filesSkipped', label: 'Files skipped', producers: ['file-discovery'] },
+  { key: 'dependencies', label: 'Dependencies', producers: ['dependency-analysis'] },
+  { key: 'cryptoComponents', label: 'Crypto components', producers: ['source-crypto', 'certificate-material', 'dependency-analysis', 'cbom-generator'] },
+  { key: 'certificates', label: 'Certificates', producers: ['certificate-material'] },
+  { key: 'secrets', label: 'Secrets', producers: ['secret-discovery'] },
+  { key: 'configFiles', label: 'Config files', producers: ['configuration-security'] },
+  { key: 'containers', label: 'Containers', producers: ['container-security', 'registry-scan', 'k8s-live'] },
+  { key: 'images', label: 'Images', producers: ['container-security', 'registry-scan'] },
+  { key: 'kubernetesNamespaces', label: 'K8s namespaces', producers: ['kubernetes-security', 'k8s-live'] },
+  { key: 'kubernetesWorkloads', label: 'K8s workloads', producers: ['kubernetes-security', 'k8s-live'] },
+  { key: 'iacFiles', label: 'IaC files', producers: ['iac-security'] },
+  { key: 'cicdWorkflows', label: 'CI/CD workflows', producers: ['cicd-security'] },
+  { key: 'cloudResources', label: 'Cloud resources', producers: ['cloud-inventory', 'cloud-crypto'] },
+  { key: 'branches', label: 'Branches', producers: ['git-history'] },
+  { key: 'commitsAnalyzed', label: 'Commits analysed', producers: ['git-history'] },
+];
+
+/**
+ * What a dimension's number means in THIS run.
+ *
+ *   measured        a positive count
+ *   measured-zero   an engine that measures it completed (or found nothing in
+ *                   scope to read) and counted none
+ *   not-selected    no engine that measures it was part of the run
+ *   not-reported    an engine that measures it was selected but failed, was
+ *                   cancelled, skipped or could not assess — the zero is a gap
+ */
+export type CoverageReadingState = 'measured' | 'measured-zero' | 'not-selected' | 'not-reported';
+
+export interface CoverageReading extends CoverageDimension {
+  value: number;
+  state: CoverageReadingState;
+}
+
+export function coverageReadings(coverage: ScanCoverage, runs: EngineRun[]): CoverageReading[] {
+  const stateOf = new Map(runs.map((run) => [run.engineId, run.state]));
+  return COVERAGE_DIMENSIONS.map((dimension) => {
+    const value = Number(coverage[dimension.key] ?? 0) || 0;
+    if (value > 0) return { ...dimension, value, state: 'measured' };
+    const selected = dimension.producers.filter((id) => stateOf.has(id));
+    if (selected.length === 0) return { ...dimension, value, state: 'not-selected' };
+    const reported = selected.some((id) => stateOf.get(id) === 'completed' || stateOf.get(id) === 'not-applicable');
+    return { ...dimension, value, state: reported ? 'measured-zero' : 'not-reported' };
+  });
+}
 
 /* ═══════════════════════════════════════════════════════ scanned assets ═══ */
 
@@ -119,13 +230,23 @@ export function summariseAssets(assessment: ExposureAssessment): AssetSummary {
  * drifted apart when they were, and a file named by `reference` on one side and
  * `file` on the other became two assets.
  */
-function findingAssetName(finding: ExposureFinding): string {
+export function findingAssetName(finding: ExposureFinding): string {
   const evidence = finding.evidence[0];
-  return evidence?.file ?? evidence?.reference ?? evidence?.scope ?? layerLabel(finding.layer);
+  return evidence?.file ?? evidence?.reference ?? evidence?.scope ?? assessmentWide(finding.layer);
 }
 
 function componentAssetName(component: ExposureAssessment['cbom'][number]): string {
-  return component.file ?? component.evidence[0]?.reference ?? layerLabel(component.layer);
+  return component.file ?? component.evidence[0]?.reference ?? assessmentWide(component.layer);
+}
+
+/**
+ * The row for an observation that names no file, reference or scope — the
+ * estate-wide quantum roll-ups, chiefly. It used to be the bare layer label,
+ * so the inventory listed an asset called "Source code" that read as a file
+ * the scan had opened.
+ */
+function assessmentWide(layer: ExposureFinding['layer']): string {
+  return `Assessment-wide (${layerLabel(layer)})`;
 }
 
 /**

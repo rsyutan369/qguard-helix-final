@@ -99,6 +99,8 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
     report,
     observations: scan.observations,
     progress: scan.progress,
+    error: scan.error,
+    refused: scan.refusal !== null,
     asset: report?.target.displayUrl ?? target.trim(),
     reducedMotion: !budget.animate,
   });
@@ -271,28 +273,39 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
    */
   const accent = qveAccentOn(state.quantumDetected ? QVE_COLOR.quantum : QVE_COLOR.cyan, palette);
 
+  /* Neither waiting in line nor being refused is a finding about the target,
+     so neither may wear a verdict colour or claim evidence is being collected. */
+  const refused = state.run === 'error' && scan.refusal !== null;
+  const waiting = state.run === 'scanning' && scan.queue !== null;
+
   const verdictColor = React.useMemo(() => {
     const published =
-      state.run === 'error'
-        ? QVE_COLOR.critical
-        : state.run === 'complete'
-          ? (state.gradeColor ?? QVE_COLOR.pass)
-          : QVE_COLOR.cyan;
+      refused
+        ? QVE_COLOR.idle
+        : state.run === 'error'
+          ? QVE_COLOR.critical
+          : state.run === 'complete'
+            ? (state.gradeColor ?? QVE_COLOR.pass)
+            : QVE_COLOR.cyan;
     /* The published grade colour, re-lit for the ground it is printed on. The
        grade itself never changes — only the lightness it is rendered at. */
     return readableOn(published, palette.surface);
-  }, [state.run, state.gradeColor, palette.surface]);
+  }, [refused, state.run, state.gradeColor, palette.surface]);
 
   const runningStage = scan.stages.find((stage) => stage.state === 'running');
 
   const statusLabel =
     state.run === 'complete'
       ? 'Scan Complete'
-      : state.run === 'error'
-        ? 'Scan Failed'
-        : state.run === 'scanning'
-          ? 'Scanning'
-          : 'Standby';
+      : refused
+        ? 'Not Started'
+        : state.run === 'error'
+          ? 'Scan Failed'
+          : waiting
+            ? 'Waiting in Line'
+            : state.run === 'scanning'
+              ? 'Scanning'
+              : 'Standby';
 
   const statusDetail =
     state.run === 'complete'
@@ -301,9 +314,11 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
         : null
       : state.run === 'error'
         ? (state.errorMessage ?? scan.error)
-        : state.run === 'scanning'
-          ? (runningStage?.label ?? 'Collecting edge evidence')
-          : 'Enter a domain to begin';
+        : waiting && scan.queue
+          ? `${scan.queue.position === 1 ? 'Next in line' : `#${scan.queue.position} in line`} · ${scan.queue.running} of ${scan.queue.capacity} assessments running`
+          : state.run === 'scanning'
+            ? (runningStage?.label ?? 'Collecting edge evidence')
+            : 'Enter a domain to begin';
 
   const latestEntry = state.timeline.length ? state.timeline[state.timeline.length - 1] : null;
   const infraTiles = React.useMemo(() => buildInfraTiles(report), [report]);

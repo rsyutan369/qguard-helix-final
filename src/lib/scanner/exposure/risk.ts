@@ -24,6 +24,7 @@
  */
 
 import type {
+  CbomComponent,
   CorrelatedExposure,
   ExposureFinding,
   ExposureScores,
@@ -117,11 +118,15 @@ function computeSecurityRisk(exposures: CorrelatedExposure[]): { score: number |
   const volume = Math.min(1, Math.log10(1 + equivalents) / Math.log10(1 + VOLUME_REFERENCE));
   const score = Math.max(0, Math.min(100, Math.round(floor + (ceiling - floor) * volume)));
 
+  /* Every band, informational included: the parenthesis is read as the
+     breakdown of the count beside it, and "11 exposures (3 high, 2 medium,
+     1 low)" left five of them unaccounted for. */
   const parts: string[] = [];
   if (counts.critical) parts.push(`${counts.critical} critical`);
   if (counts.high) parts.push(`${counts.high} high`);
   if (counts.medium) parts.push(`${counts.medium} medium`);
   if (counts.low) parts.push(`${counts.low} low`);
+  if (counts.info) parts.push(`${counts.info} informational`);
 
   const confidenceNote = worst.confidence === 'high'
     ? ''
@@ -135,9 +140,25 @@ function computeSecurityRisk(exposures: CorrelatedExposure[]): { score: number |
 
 /* ─────────────────────────────────────────────────────────── quantum risk ── */
 
-function computeQuantumRisk(exposures: CorrelatedExposure[]): { score: number | null; basis: string } {
-  const relevant = exposures.filter(
-    (exposure) => exposure.quantumStatus === 'vulnerable' || exposure.quantumStatus === 'hybrid' || exposure.quantumStatus === 'pqc',
+/**
+ * Quantum risk — over quantum-relevant COMPONENTS, the unit readiness uses.
+ *
+ * The module comment always said components; the code weighed correlated
+ * EXPOSURES. Correlation merges by algorithm, so 51 post-quantum components
+ * collapsed into a handful of exposures while every distinct classical
+ * algorithm kept one of its own: a library that is 88% post-quantum by
+ * component published "Quantum risk 74/100 — high" beside "Readiness 88%".
+ * Both are now shares of one population and cannot point in opposite
+ * directions. Exposures remain the fallback for a caller with no CBOM.
+ */
+interface QuantumSubject {
+  quantumStatus: CorrelatedExposure['quantumStatus'];
+  role?: CorrelatedExposure['role'];
+}
+
+function computeQuantumRisk(subjects: QuantumSubject[], unit: 'component' | 'exposure'): { score: number | null; basis: string } {
+  const relevant = subjects.filter(
+    (subject) => subject.quantumStatus === 'vulnerable' || subject.quantumStatus === 'hybrid' || subject.quantumStatus === 'pqc',
   );
 
   if (relevant.length === 0) {
@@ -148,9 +169,9 @@ function computeQuantumRisk(exposures: CorrelatedExposure[]): { score: number | 
     };
   }
 
-  const vulnerable = relevant.filter((exposure) => exposure.quantumStatus === 'vulnerable');
-  const hybrid = relevant.filter((exposure) => exposure.quantumStatus === 'hybrid');
-  const pqc = relevant.filter((exposure) => exposure.quantumStatus === 'pqc');
+  const vulnerable = relevant.filter((subject) => subject.quantumStatus === 'vulnerable');
+  const hybrid = relevant.filter((subject) => subject.quantumStatus === 'hybrid');
+  const pqc = relevant.filter((subject) => subject.quantumStatus === 'pqc');
 
   /* The proportion vulnerable is the base. Exposure to the Internet and
      long-lived assertions (certificates, code signing) escalate it, because
@@ -159,7 +180,7 @@ function computeQuantumRisk(exposures: CorrelatedExposure[]): { score: number | 
   let score = proportion * 100;
 
   const exposedRoles = new Set(['tls', 'certificate', 'key-exchange', 'code-signing', 'token-signing']);
-  const exposedVulnerable = vulnerable.filter((exposure) => exposure.role && exposedRoles.has(exposure.role));
+  const exposedVulnerable = vulnerable.filter((subject) => subject.role && exposedRoles.has(subject.role));
   if (exposedVulnerable.length > 0) {
     score = Math.min(100, score + 10 + Math.min(15, exposedVulnerable.length * 3));
   }
@@ -170,7 +191,7 @@ function computeQuantumRisk(exposures: CorrelatedExposure[]): { score: number | 
   const rounded = Math.round(score);
   return {
     score: rounded,
-    basis: `Quantum risk ${rounded}/100: ${vulnerable.length} of ${relevant.length} quantum-relevant exposure${relevant.length === 1 ? '' : 's'} are broken by Shor's algorithm${hybrid.length ? `, ${hybrid.length} are hybrid` : ''}${pqc.length ? `, ${pqc.length} are post-quantum` : ''}${exposedVulnerable.length ? `; ${exposedVulnerable.length} sit in an Internet-facing or long-lived-assertion role` : ''}. Symmetric and hash primitives are excluded from both sides of this ratio.`,
+    basis: `Quantum risk ${rounded}/100: ${vulnerable.length} of ${relevant.length} quantum-relevant ${unit}${relevant.length === 1 ? '' : 's'} ${vulnerable.length === 1 ? 'is' : 'are'} broken by Shor's algorithm${hybrid.length ? `, ${hybrid.length} ${hybrid.length === 1 ? 'is' : 'are'} hybrid` : ''}${pqc.length ? `, ${pqc.length} ${pqc.length === 1 ? 'is' : 'are'} post-quantum` : ''}${exposedVulnerable.length ? `; ${exposedVulnerable.length} ${exposedVulnerable.length === 1 ? 'sits' : 'sit'} in an Internet-facing or long-lived-assertion role` : ''}. Symmetric and hash primitives are excluded from both sides of this ratio.`,
   };
 }
 
@@ -347,11 +368,16 @@ function computeConfidence(findings: ExposureFinding[]): { score: number | null;
 export function computeScores(input: {
   findings: ExposureFinding[];
   exposures: CorrelatedExposure[];
+  /** The CBOM. Quantum risk is a share of its quantum-relevant components;
+   *  without it (a legacy caller) the exposures stand in. */
+  components?: CbomComponent[];
   coverage: ScanCoverage;
   runs: EngineRun[];
 }): ExposureScores {
   const security = computeSecurityRisk(input.exposures);
-  const quantum = computeQuantumRisk(input.exposures);
+  const quantum = input.components
+    ? computeQuantumRisk(input.components.map((component) => ({ quantumStatus: component.quantumStatus, role: component.usage })), 'component')
+    : computeQuantumRisk(input.exposures, 'exposure');
   const migration = computeMigrationRisk(input.exposures);
   const coverage = computeCoverage(input.coverage, input.runs);
   const confidence = computeConfidence(input.findings);

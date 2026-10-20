@@ -161,7 +161,12 @@ Use the IP and CNAME values the Vercel dashboard shows for your project.
 - **Security:**
   - Bot Fight Mode **off** for `api.`: agents, PayPal and Google push are
     machines and would be challenged.
-  - Add one rate-limiting rule on `api.qguardhelix.com/api/v1/public-scan*`.
+  - Add one rate-limiting rule on `api.qguardhelix.com/api/v1/public-scan*`,
+    per IP and looser than the app's own limits (at least 20 requests a
+    minute). The app already queues, shares and rate-limits public scans, and
+    tells the visitor why. A tighter edge rule refuses visitors the app would
+    have queued, and they see a bare error instead. See `02-ENVIRONMENT.md`,
+    *Public scanner capacity*.
 - **Caching:** add a *Cache Rule* "Bypass cache" for `api.qguardhelix.com/*`.
 - **After the API answers through Cloudflare, lock the origin:**
   - Uncomment `../../components/cloudflare-origin-lock` in

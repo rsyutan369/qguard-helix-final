@@ -22,7 +22,8 @@ import { approveDevicePins } from "@/lib/device-pins";
 import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import { supabase } from "@/lib/supabase";
 import type { SecurityEvent, TelemetryEvent, TrustedDevice } from "@/lib/types";
-import { safeInvoke } from "@/lib/tauri";
+import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
+import { describeRatchetSession, fetchRatchetStatus, resetRatchetSession, type RatchetStatus } from "@/lib/ratchet-status";
 import { CURRENT_PQ_KEM, CURRENT_PQ_KEM_STANDARD, kemInteroperates } from "@/lib/kem-suite";
 import { sha3_256Hex } from "@/lib/sha3";
 
@@ -211,6 +212,64 @@ function parsePairingPayload(raw: string, fallbackLabel: string): ParsedPairingP
   };
 }
 
+
+/**
+ * The post-quantum ratchet session this device holds with another of the
+ * account's devices, in the core's words, with a manual reset (ratchet spec
+ * §4.6). Hidden for this device itself (no session with itself) and outside
+ * the app; says "cannot tell" rather than "none" when the core cannot answer.
+ */
+function SecureSessionPanel({ userId, device, isThisDevice }: { userId: string; device: TrustedDevice; isThisDevice: boolean }) {
+  const [status, setStatus] = useState<RatchetStatus | null | "error">(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const load = useCallback(() => {
+    fetchRatchetStatus(userId, [device.device_id])
+      .then((next) => setStatus(next ?? "error"))
+      .catch(() => setStatus("error"));
+  }, [device.device_id, userId]);
+  useEffect(() => {
+    if (isThisDevice || !isTauriRuntime()) return;
+    load();
+  }, [isThisDevice, load]);
+  if (isThisDevice || !isTauriRuntime() || status === null) return null;
+  const summary = status === "error" ? undefined : status.sessions[device.device_id];
+  const reset = async () => {
+    setBusy(true);
+    try {
+      const forgotten = await resetRatchetSession(userId, device.device_id);
+      setNote(forgotten ? "Reset. The next message to this device starts a new secure session." : "There was no secure session to reset.");
+      load();
+    } catch (error) {
+      setNote(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="md:col-span-2 rounded-lg border border-line bg-canvas p-3">
+      <div className="flex items-center gap-2 text-xs font-bold uppercase text-ink-400"><RefreshCcw size={13} />Secure session (per-message ratchet)</div>
+      <p className="mt-2 text-xs text-ink-600">
+        {status === "error"
+          ? "This device's secure sessions cannot be read right now."
+          : !status.available
+            ? "This device's secure sessions could not be opened right now."
+            : describeRatchetSession(summary)}
+      </p>
+      {summary && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void reset()}
+          className="mt-2 rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-bold text-ink-700 hover:bg-white/70 disabled:opacity-60"
+        >
+          Reset secure session
+        </button>
+      )}
+      {note && <p className="mt-2 text-xs font-semibold text-ink-700">{note}</p>}
+    </div>
+  );
+}
 
 function Field({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -957,6 +1016,13 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
                   <div>ML-DSA public: {selectedDevice.mldsa_identity_public.length} bytes</div>
                 </div>
               </div>
+              {userId && (
+                <SecureSessionPanel
+                  userId={userId}
+                  device={selectedDevice}
+                  isThisDevice={selectedDevice.device_id === thisDevice?.device_id}
+                />
+              )}
               <div className="md:col-span-2 rounded-lg border border-line bg-canvas p-3">
                 <div className="flex items-center gap-2 text-xs font-bold uppercase text-ink-400"><Clock3 size={13} />Recent trust activity</div>
                 <div className="mt-3 grid gap-2">

@@ -2,6 +2,7 @@ pub mod hybrid_kex;
 pub mod kdf;
 pub mod passcode;
 pub mod portable_identity;
+pub mod shamir;
 pub mod signatures;
 pub mod symmetric;
 pub mod vault_recovery;
@@ -77,6 +78,14 @@ pub struct AlgorithmSuite {
     /// field existed reads back as "legacy".
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kem_combiner: String,
+    /// Session ratchet (see `crate::pq_ratchet`). Same two meanings as
+    /// `kem_combiner`: in a device's PUBLISHED suite it is a capability ("send
+    /// me ratchet envelopes"); in an envelope's suite it names the protocol the
+    /// envelope was sealed with. Empty = one-shot envelopes only, which is what
+    /// every build before the ratchet published and sent. Skipped when empty
+    /// so no existing suite serialises differently.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ratchet: String,
 }
 
 impl Default for AlgorithmSuite {
@@ -90,6 +99,9 @@ impl Default for AlgorithmSuite {
             pq_signature: "ML-DSA-65".to_string(),
             pq_kem_standard: CURRENT_PQ_KEM_STANDARD.to_string(),
             kem_combiner: CURRENT_KEM_COMBINER.to_string(),
+            // Advertised only while the ratchet is switched on — see
+            // `AppState::ratchet_enabled`, which sets it on the published bundle.
+            ratchet: String::new(),
         }
     }
 }

@@ -96,6 +96,7 @@ The audit found per-process state that breaks, or weakens security, when request
 | Vault share alerts (`lib/vault/share-events.ts`) | Owner misses failed-attempt alerts | **No** |
 | Admin token revocation (`supabase-server.ts`) | Revoked token still works on other pods | **Mitigated:** `TOKEN_REVOCATION_REFRESH_MS=30000` re-reads revocations every 30 s |
 | In-memory rate limiters (auth, public-scan, exposure, share) | Limits multiply by the replica count | No |
+| Public-scan line, shared jobs and result cache (`public-scan-queue.ts`) | Each pod has its own line and positions; two pods may each scan the same site once | Nothing breaks: a visitor's stream stays on one pod. Not a global queue until Phase 2 |
 | Schedulers in `createApiServer()` (agent offline sweep, sandbox tick) | Run N times, with occasional duplicate alerts | No |
 
 **Phase 1 decision:** one API pod. The `RollingUpdate` (`maxSurge: 1`,

@@ -994,7 +994,10 @@ function FindingsConsole({
         )}
       </header>
 
-      <div className="flex h-[15.5rem] flex-col justify-between px-2 py-2">
+      {/* A FLOOR, not a fixed height: six two-line rows plus the "and N more"
+          note need ~290px, and a fixed 15.5rem let the last row and the note
+          spill over the engine-status bar beneath the stage. */}
+      <div className="flex min-h-[15.5rem] flex-col justify-between px-2 py-2">
         {shown.length === 0 ? (
           <p className="pt-8 text-center font-mono text-[11px] leading-relaxed text-slate-600">
             No finding yet.

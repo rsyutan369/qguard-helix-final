@@ -98,6 +98,18 @@ See `qguard-data-integrity`.
 - Tooltips carry supplementary provenance, never the only copy of a reason.
 - Maintain contrast in both themes; never assume a single theme.
 
+## Theming a page
+
+- Every page ships a Light/Dark control: the shared `ThemeToggle`, placed in a
+  bar that exists in **every** state of the page, not only the happy path.
+- The light theme is a scoped CSS bridge, not an app-wide token system. A route
+  outside `DashboardLayout` needs its own scope class; see the "AGENT CENTER"
+  block in `src/index.css` for the pattern (palette remap via Tailwind v4
+  `--color-*` variables, so dark mode stays byte-for-byte unchanged).
+- Code, commands and tokens stay dark in both themes (`.qg-force-dark`).
+- Alpha-dimmed text is a dark-ground idiom; on light, carry de-emphasis with
+  size and weight and hold >= 4.5:1.
+
 ## Checklist
 
 - [ ] Surface answers the seven questions.

@@ -38,7 +38,10 @@ import {
   QuantumExposureSummary,
   ScanEngineSelector,
   ScanProfileRail,
+  exportCbomFile,
+  type CbomExportFormat,
 } from './shared';
+import { assessmentTargetLabel, coverageReadings, type CoverageReading } from '@/lib/scanner/exposure/panel-model';
 import { EngineHealthPanel, ScannerIntelligenceSection } from './ScannerIntelligence';
 import { ScanTheatre, type TheatreStatus } from './ScanTheatre';
 import { ExposureWorkflowGraph } from './ExposureWorkflowGraph';
@@ -630,14 +633,16 @@ export function DevAssessmentPanel({ authenticated = false, upsellSlot, onSync, 
             extra={
               <>
                 {reports && <ExposureReportButton assessment={scan.assessment} author={reports} />}
-                {scan.scanId ? (
-                  <a
-                    href={`/api/v1/exposure/scans/${encodeURIComponent(scan.scanId)}/cbom?format=cyclonedx`}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-3 py-1.5 text-[11.5px] font-semibold text-slate-300 no-underline transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
-                  >
-                    CycloneDX CBOM
-                  </a>
-                ) : null}
+                {/* Generated from the assessment on screen. This was a link to
+                    the API's export route, which needs a bearer token a plain
+                    navigation cannot carry — it downloaded a 401 error body. */}
+                <button
+                  type="button"
+                  onClick={() => exportDevCbom(scan.assessment!, 'cyclonedx')}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-3 py-1.5 text-[11.5px] font-semibold text-slate-300 transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
+                >
+                  CycloneDX CBOM
+                </button>
               </>
             }
           />
@@ -655,12 +660,9 @@ export function DevAssessmentPanel({ authenticated = false, upsellSlot, onSync, 
           <ExposureRecommendations assessment={scan.assessment} />
           <CbomViewer
             components={scan.assessment.cbom}
-            onExport={(format) => {
-              if (!scan.scanId) return;
-              window.open(`/api/v1/exposure/scans/${encodeURIComponent(scan.scanId)}/cbom?format=${format}`, '_blank');
-            }}
+            onExport={(format) => exportDevCbom(scan.assessment!, format)}
           />
-          <CoveragePanel coverage={scan.assessment.task.coverage} mode="dev" />
+          <CoveragePanel assessment={scan.assessment} mode="dev" />
           {/* Reporting closes the stack: a reader exports after reading, and the
               card names what each document is for rather than being a bare
               button. The status bar carries the same entry point for anyone who
@@ -674,6 +676,16 @@ export function DevAssessmentPanel({ authenticated = false, upsellSlot, onSync, 
   );
 }
 
+/* ─────────────────────────────────────────────────────────────── exports ─── */
+
+function exportDevCbom(assessment: NonNullable<ReturnType<typeof useExposureScan>['assessment']>, format: CbomExportFormat) {
+  exportCbomFile(assessment.cbom, format, {
+    scanId: assessment.task.scanId,
+    target: assessmentTargetLabel(assessment.task.target),
+    generatedAt: assessment.generatedAt,
+  });
+}
+
 /* ────────────────────────────────────────────────────── posture dashboard ─── */
 
 /** Spec-2 §36. Every number here is a count from the completed assessment. */
@@ -681,39 +693,45 @@ function DevPostureDashboard({ assessment }: { assessment: NonNullable<ReturnTyp
   const { coverage } = assessment.task;
   const { intelligence } = assessment;
 
+  /* What each coverage zero MEANS, from the one shared model: measured, never
+     examined by this profile, or selected and not reported. This strip used to
+     keep its own engine list, so a Dev scan whose profile had no registry or
+     cloud engine said "did not reach a reporting state" about engines that were
+     never selected. */
+  const readings = React.useMemo(
+    () => new Map(coverageReadings(coverage, assessment.task.runs).map((reading) => [reading.key, reading.state])),
+    [coverage, assessment.task.runs],
+  );
+
   /* Every tile names its UNIT, because this strip mixes three of them: the
      estate the scan read, the cryptographic components it inventoried, and the
      findings it raised. Read side by side without labels, "Quantum vulnerable
      6" (components) beside "Critical findings 1" (findings) invites the reader
      to treat them as one series. */
-  const tiles: Array<{ label: string; unit: string; value: number; accent?: string; engineId?: string }> = [
+  const tiles: Array<{ label: string; unit: string; value: number; accent?: string; dimension?: CoverageReading['key'] }> = [
     { label: 'Repositories', unit: 'in scope', value: coverage.repositories || (assessment.task.target.kind === 'repository' ? 1 : 0) },
-    { label: 'Files analysed', unit: `of ${coverage.filesDiscovered.toLocaleString()} discovered`, value: coverage.filesAnalyzed },
-    { label: 'Dependencies', unit: 'resolved', value: coverage.dependencies, engineId: 'dependency-analysis' },
-    { label: 'Containers', unit: 'definitions read', value: coverage.containers, engineId: 'container-security' },
-    { label: 'Images', unit: 'inspected', value: coverage.images, engineId: 'registry-scan' },
-    { label: 'K8s workloads', unit: 'read', value: coverage.kubernetesWorkloads, engineId: 'kubernetes-security' },
-    { label: 'Cloud resources', unit: 'enumerated', value: coverage.cloudResources, engineId: 'cloud-inventory' },
-    { label: 'Crypto components', unit: 'in the CBOM', value: assessment.cbom.length, engineId: 'cbom-generator' },
-    { label: 'Quantum vulnerable', unit: 'components', value: intelligence.quantum.vulnerable, accent: ACCENT.rose, engineId: 'quantum-assessment' },
-    { label: 'Secrets', unit: 'findings', value: intelligence.secrets.length, accent: ACCENT.amber, engineId: 'secret-discovery' },
+    { label: 'Files analysed', unit: `of ${coverage.filesDiscovered.toLocaleString()} discovered`, value: coverage.filesAnalyzed, dimension: 'filesAnalyzed' },
+    { label: 'Dependencies', unit: 'resolved', value: coverage.dependencies, dimension: 'dependencies' },
+    { label: 'Containers', unit: 'definitions read', value: coverage.containers, dimension: 'containers' },
+    { label: 'Images', unit: 'inspected', value: coverage.images, dimension: 'images' },
+    { label: 'K8s workloads', unit: 'read', value: coverage.kubernetesWorkloads, dimension: 'kubernetesWorkloads' },
+    { label: 'Cloud resources', unit: 'enumerated', value: coverage.cloudResources, dimension: 'cloudResources' },
+    { label: 'Crypto components', unit: 'in the CBOM', value: assessment.cbom.length, dimension: 'cryptoComponents' },
+    { label: 'Quantum vulnerable', unit: 'components', value: intelligence.quantum.vulnerable, accent: ACCENT.rose, dimension: 'cryptoComponents' },
+    { label: 'Secrets', unit: 'findings', value: intelligence.secrets.length, accent: ACCENT.amber, dimension: 'secrets' },
     { label: 'Critical findings', unit: 'findings', value: intelligence.severity.critical, accent: ACCENT.rose },
     { label: 'High findings', unit: 'findings', value: intelligence.severity.high, accent: '#fb923c' },
   ];
 
   /* A dimension whose engine never reported is NOT zero — it is unmeasured, and
-     the two must stay distinguishable (§43). Hiding both behind `value > 0`
-     made "no containers in this repository" and "the container engine never
-     ran" render identically: as absence. */
-  const measured = new Set(
-    assessment.task.runs
-      .filter((run) => run.state === 'completed' || run.state === 'not-applicable')
-      .map((run) => run.engineId),
-  );
-  const visible = tiles.filter((tile) => tile.value > 0 || !tile.engineId || measured.has(tile.engineId));
-  const unmeasured = tiles.filter((tile) => tile.value === 0 && tile.engineId && !measured.has(tile.engineId));
+     the two must stay distinguishable (§43). A dimension no selected engine
+     measures is a third thing again, and is named as outside the profile. */
+  const stateOf = (tile: (typeof tiles)[number]) => (tile.value > 0 || !tile.dimension ? 'measured' : readings.get(tile.dimension) ?? 'measured');
+  const visible = tiles.filter((tile) => stateOf(tile) === 'measured' || stateOf(tile) === 'measured-zero');
+  const unmeasured = tiles.filter((tile) => stateOf(tile) === 'not-reported');
+  const outside = tiles.filter((tile) => stateOf(tile) === 'not-selected');
 
-  if (visible.length === 0 && unmeasured.length === 0) return null;
+  if (visible.length === 0 && unmeasured.length === 0 && outside.length === 0) return null;
 
   return (
     <Panel className="overflow-hidden">
@@ -737,7 +755,15 @@ function DevPostureDashboard({ assessment }: { assessment: NonNullable<ReturnTyp
         <p className="border-t border-amber-400/20 bg-amber-400/[0.05] px-5 py-2.5 text-[11px] leading-relaxed text-amber-100/85">
           Not measured, so not shown as zero:{' '}
           <strong className="font-bold">{unmeasured.map((tile) => tile.label).join(', ')}</strong>. The engine that would
-          have read {unmeasured.length === 1 ? 'it' : 'them'} did not reach a reporting state in this run.
+          have read {unmeasured.length === 1 ? 'it' : 'them'} was selected but did not complete in this run.
+        </p>
+      )}
+      {outside.length > 0 && (
+        <p className="border-t border-white/[0.06] px-5 py-2.5 text-[11px] leading-relaxed text-slate-500">
+          Outside this profile, so not shown:{' '}
+          <span className="font-bold text-slate-400">{outside.map((tile) => tile.label).join(', ')}</span>. No engine that
+          measures {outside.length === 1 ? 'it' : 'them'} was selected — choose a profile that includes{' '}
+          {outside.length === 1 ? 'it' : 'them'}, or connect the matching source, to assess {outside.length === 1 ? 'it' : 'them'}.
         </p>
       )}
       {(intelligence.languages.length > 0 || intelligence.frameworks.length > 0) && (

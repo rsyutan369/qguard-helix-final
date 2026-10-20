@@ -7,8 +7,12 @@ pub mod fingerprints;
 pub mod identity;
 pub mod message_crypto;
 pub mod device_pins;
+pub mod history_backup;
 pub mod message_keys;
 pub mod messaging;
+pub mod pq_ratchet;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod prekeys;
 pub mod ratchet;
 pub mod relay;
@@ -25,8 +29,15 @@ use commands::devices::*;
 use commands::downloads::*;
 use commands::keys::*;
 use commands::messaging::*;
+use commands::nearby::*;
+use commands::outbox::*;
+use commands::privacy::*;
+use commands::recovery::*;
 use commands::security::*;
+use commands::assistant::*;
 use commands::calls::*;
+use commands::channels::*;
+use commands::contact_verification::*;
 use commands::vault::*;
 use commands::vault_identity::*;
 use commands::workspace::*;
@@ -226,6 +237,17 @@ pub fn run() {
             messaging_message_keys_lookup,
             messaging_flush_message_keys,
             messaging_forget_message_keys,
+            messaging_ratchet_status,
+            messaging_set_ratchet_enabled,
+            messaging_reset_ratchet_session,
+            contact_verification_status,
+            contact_mark_verified,
+            contact_clear_verification,
+            contact_pairing_offer,
+            contact_pairing_receive,
+            contact_assurance,
+            call_phrase,
+            call_phrase_check,
             vault_encrypt_path,
             vault_decrypt_path,
             vault_encrypt_folder_path,
@@ -276,6 +298,48 @@ pub fn run() {
             applock_set_inactivity,
             applock_wipe,
             applock_device_integrity,
+            applock_set_duress_pin,
+            applock_clear_duress_pin,
+            applock_biometric_status,
+            applock_biometric_enable,
+            applock_biometric_unlock,
+            applock_biometric_disable,
+            privacy_recents_masking_status,
+            privacy_set_recents_masking,
+            privacy_panic_wipe,
+            privacy_screen_seal,
+            privacy_screen_verify,
+            history_backup_export,
+            history_backup_import,
+            social_recovery_setup,
+            social_recovery_hold_share,
+            social_recovery_held,
+            social_recovery_request,
+            social_recovery_request_code,
+            social_recovery_release,
+            social_recovery_finish,
+            assistant_key_status,
+            assistant_key_set,
+            assistant_key_clear,
+            assistant_key_for_request,
+            channel_status,
+            channel_new_epoch,
+            channel_key_export,
+            channel_key_import,
+            channel_mark_distributed,
+            channel_seal_post,
+            channel_open_post,
+            channel_forget,
+            outbox_put,
+            outbox_list,
+            outbox_remove,
+            nearby_status,
+            nearby_start,
+            nearby_stop,
+            nearby_request_permissions,
+            nearby_send,
+            nearby_clear_outgoing,
+            nearby_take_received,
             security_verify_fingerprint,
             security_export_report,
             security_hardening_status,

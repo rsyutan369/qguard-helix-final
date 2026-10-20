@@ -64,16 +64,22 @@ import {
 } from '@/lib/scanner/exposure/exposure-truth'
 import {
   algorithmChipCoverage,
+  assessmentTargetLabel,
+  coverageReadings,
   evidencePopulation,
+  findingAssetName,
+  policyExclusions,
   summariseAssets,
   summariseCorrelation,
   summariseStandards,
   type AssetRow,
+  type CoverageReadingState,
 } from '@/lib/scanner/exposure/panel-model'
-import { summariseCbom, type CbomSummary } from '@/lib/scanner/exposure/cbom'
+import { classicalReplacementFor, componentPqcTarget, summariseCbom, type CbomSummary } from '@/lib/scanner/exposure/cbom'
 import { prioritiseMigration } from '@/lib/scanner/exposure/risk'
 import { layerLabel } from '@/lib/scanner/exposure/correlate'
-import { describeAlgorithm, migrationTargetFor } from '@/lib/scanner/exposure/algorithms'
+import { describeAlgorithm } from '@/lib/scanner/exposure/algorithms'
+import { rankRecommendations, type RankedRecommendation } from '@/lib/scanner/exposure/recommendations'
 import type { InventoryKpi, InventoryReport, ReconciliationRow } from './InventoryReport'
 import type { ReportBranding, ReportTable } from './schemas/ReportSchema'
 import {
@@ -213,6 +219,15 @@ function riskText(value: number | null, band: RiskBand | null): string {
   return `${value}/100${band ? ` — ${band}` : ''}`
 }
 
+/** ONE tone for a readiness figure, wherever a document prints it. Two KPI
+ *  blocks used to colour the same 30% as critical and as medium. */
+function readinessTone(value: number | null): BlockTone {
+  if (value === null) return 'neutral'
+  if (value >= 80) return 'good'
+  if (value >= 40) return 'medium'
+  return 'critical'
+}
+
 function shareTone(value: number | null): BlockTone {
   if (value === null) return 'neutral'
   if (value >= 80) return 'good'
@@ -234,10 +249,13 @@ export interface TargetDescription {
 }
 
 export function describeTarget(target: ScanTarget): TargetDescription {
+  /* The label is the shared rule, so the cover, the filenames and the CBOM
+     exports the panels produce all name the target identically. */
+  const label = assessmentTargetLabel(target)
   switch (target.kind) {
     case 'local':
       return {
-        label: target.label || target.rootName || 'Authorised folder',
+        label,
         kind: 'Local device, filesystem and codebase',
         facts: [
           { label: 'Authorised root', value: text(target.rootName) },
@@ -247,7 +265,7 @@ export function describeTarget(target: ScanTarget): TargetDescription {
       }
     case 'repository':
       return {
-        label: `${target.owner}/${target.repo}`,
+        label,
         kind: 'Source repository',
         facts: [
           { label: 'Repository', value: `${target.owner}/${target.repo}` },
@@ -259,7 +277,7 @@ export function describeTarget(target: ScanTarget): TargetDescription {
       }
     case 'container':
       return {
-        label: target.image,
+        label,
         kind: 'Container image',
         facts: [
           { label: 'Image', value: text(target.image) },
@@ -269,7 +287,7 @@ export function describeTarget(target: ScanTarget): TargetDescription {
       }
     case 'kubernetes':
       return {
-        label: target.cluster,
+        label,
         kind: 'Kubernetes cluster',
         facts: [
           { label: 'Cluster', value: text(target.cluster) },
@@ -279,7 +297,7 @@ export function describeTarget(target: ScanTarget): TargetDescription {
       }
     case 'cloud':
       return {
-        label: `${target.provider.toUpperCase()} ${target.account}`,
+        label,
         kind: 'Cloud account',
         facts: [
           { label: 'Provider', value: target.provider.toUpperCase() },
@@ -288,7 +306,7 @@ export function describeTarget(target: ScanTarget): TargetDescription {
         ],
       }
     default:
-      return { label: 'Assessment target', kind: 'Assessment target', facts: [] }
+      return { label, kind: 'Assessment target', facts: [] }
   }
 }
 
@@ -364,10 +382,9 @@ function tableBlock(
 /* Registers — the complete tables                                     */
 /* ================================================================== */
 
-const findingAsset = (finding: ExposureFinding): string => {
-  const evidence = finding.evidence[0]
-  return text(evidence?.file ?? evidence?.reference ?? evidence?.scope, layerLabel(finding.layer))
-}
+/* The inventory's own naming rule, so a finding's Location in the register is
+   the asset row it is counted under in the Scanned Inventory. */
+const findingAsset = (finding: ExposureFinding): string => text(findingAssetName(finding))
 
 const CITATION = /^(.+?)\s+—\s+([A-Z_]+),\s+applies to:\s+([\s\S]+)$/
 
@@ -469,7 +486,11 @@ function cbomTable(components: CbomComponent[]): ReportTable {
     ],
     rows: ordered.map((component) => {
       const entry = describeAlgorithm(component.canonicalAlgorithm)
-      const target = entry ? migrationTargetFor(entry, component.usage) : undefined
+      /* The engine's own recorded target (the one the findings and the
+         migration priorities print), not a second derivation that worded the
+         same target differently in the same document. */
+      const target = componentPqcTarget(component)
+      const classical = classicalReplacementFor(component)
       return [
         component.id,
         component.canonicalAlgorithm,
@@ -489,9 +510,44 @@ function cbomTable(components: CbomComponent[]): ReportTable {
         text(component.function),
         text(component.detection),
         text(component.confidence),
-        text(target, component.quantumStatus === 'vulnerable' ? 'No role-specific target — review manually' : 'Not required'),
+        text(
+          target,
+          component.quantumStatus === 'vulnerable'
+            ? 'No role-specific target — review manually'
+            : classical
+              ? `Not required — replace with ${classical} for its classical weakness`
+              : 'Not required',
+        ),
       ]
     }),
+  }
+}
+
+/**
+ * Every evidence record behind every correlated exposure.
+ *
+ * The worklist dossiers print the first twelve records of each exposure and
+ * point here for the rest. That pointer used to name the Excel, CSV and JSON
+ * exports while no register in them carried per-exposure evidence at all — the
+ * promise pointed at nothing.
+ */
+function exposureEvidenceTable(exposures: CorrelatedExposure[]): ReportTable {
+  return {
+    title: 'Exposure Evidence',
+    columns: ['Exposure', 'Severity', 'Location', 'Line', 'Provider', 'Rule', 'Observation', 'Redacted excerpt', 'Observed (UTC)'],
+    rows: exposures.flatMap((exposure) =>
+      exposure.evidence.map((record) => [
+        exposure.title,
+        SEVERITY_TEXT[exposure.severity],
+        text(record.file ?? record.reference ?? record.scope),
+        record.line ? nf(record.line) : '—',
+        text(record.provider),
+        text(record.ruleId),
+        oneLine(record.summary, 240),
+        oneLine(record.snippet, 160),
+        utcStamp(record.observedAt),
+      ]),
+    ),
   }
 }
 
@@ -644,34 +700,35 @@ function usageTable(summary: CbomSummary): ReportTable {
   }
 }
 
+const READING_TEXT: Record<CoverageReadingState, string> = {
+  measured: 'Measured',
+  'measured-zero': 'Read — none found',
+  'not-reported': 'Not measured — engine did not complete',
+  'not-selected': 'Outside this profile — no claim made',
+}
+
+/**
+ * Every coverage dimension with what its number MEANS in this run.
+ *
+ * Classified by `coverageReadings` — the function the Assessment Coverage
+ * panel renders — so a zero the panel calls "outside this profile" can never
+ * print as a measured zero here. The ledger used to drop every zero instead,
+ * which hid "read, none found" (a real result) along with the unmeasured.
+ */
 function coverageTable(assessment: ExposureAssessment): ReportTable {
   const { coverage } = assessment.task
-  const entries: Array<[string, number]> = [
-    ['Files discovered', coverage.filesDiscovered],
-    ['Files analysed', coverage.filesAnalyzed],
-    ['Files skipped', coverage.filesSkipped],
-    ['Files unsupported', coverage.filesUnsupported],
-    ['Bytes analysed', coverage.bytesAnalyzed],
-    ['Repositories', coverage.repositories],
-    ['Branches', coverage.branches],
-    ['Commits analysed', coverage.commitsAnalyzed],
-    ['Dependencies resolved', coverage.dependencies],
-    ['Container definitions', coverage.containers],
-    ['Images inspected', coverage.images],
-    ['Kubernetes namespaces', coverage.kubernetesNamespaces],
-    ['Kubernetes workloads', coverage.kubernetesWorkloads],
-    ['Cloud resources', coverage.cloudResources],
-    ['Infrastructure-as-code files', coverage.iacFiles],
-    ['CI/CD workflows', coverage.cicdWorkflows],
-    ['Configuration files', coverage.configFiles],
-    ['Certificates', coverage.certificates],
-    ['Cryptographic components', coverage.cryptoComponents],
-    ['Secrets', coverage.secrets],
-  ]
+  const readings = coverageReadings(coverage, assessment.task.runs)
   return {
     title: 'Coverage Ledger',
-    columns: ['Dimension', 'Measured'],
-    rows: entries.filter(([, value]) => value > 0).map(([label, value]) => [label, nf(value)]),
+    columns: ['Dimension', 'Count', 'Reading'],
+    rows: [
+      ...readings.map((reading) => [
+        reading.label,
+        reading.state === 'measured' || reading.state === 'measured-zero' ? nf(reading.value) : '—',
+        READING_TEXT[reading.state],
+      ]),
+      ['Bytes analysed', nf(coverage.bytesAnalyzed), coverage.bytesAnalyzed > 0 ? READING_TEXT.measured : READING_TEXT['measured-zero']],
+    ],
   }
 }
 
@@ -681,18 +738,36 @@ function gapsTable(assessment: ExposureAssessment, truth: ExposureTruth): Report
   for (const engine of truth.incompleteEngines) {
     rows.push([engine.state === 'cancelled' ? 'Engine cancelled' : 'Engine failed', engine.label, engine.detail])
   }
-  for (const exclusion of assessment.task.coverage.exclusions) rows.push(['Excluded by policy', exclusion, 'Excluded from collection by the assessment exclusion rules.'])
+  for (const exclusion of policyExclusions(assessment.task.coverage)) rows.push(['Excluded by policy', exclusion, 'Excluded from collection by the assessment exclusion rules.'])
+  /* Binary files are COLLECTED, not excluded — so they are their own kind of
+     gap. They used to arrive as an "Excluded by policy" row, which misstated
+     both what happened to them and how many there were. */
+  if (assessment.task.coverage.filesUnsupported > 0) {
+    rows.push([
+      'Not content-analysed',
+      `${plural(assessment.task.coverage.filesUnsupported, 'binary or unsupported file')}`,
+      'Discovered and classified, but their contents were not read by any engine, so nothing they contain is reflected in this report.',
+    ])
+  }
   if (assessment.task.coverage.truncated) {
     rows.push(['Work truncated', 'Assessment budget', text(assessment.task.coverage.truncationNote, 'A bounded budget stopped the work before every candidate was read.')])
   }
   return { title: 'Coverage Gaps', columns: ['Kind', 'Subject', 'Why this is not clean evidence'], rows }
 }
 
-function recommendationsTable(assessment: ExposureAssessment): ReportTable {
+/**
+ * Every recommended action — the COMPLETE ranked list.
+ *
+ * The panel shows the first ten of `rankRecommendations`; this register reads
+ * the same function and keeps every row, so its first ten are the panel's ten
+ * and the Excel/CSV/JSON promise ("every row") is true here as well. It used to
+ * table the panel's capped list, so a scan with 27 actions exported 10.
+ */
+function recommendationsTable(actions: RankedRecommendation[]): ReportTable {
   return {
     title: 'Engine Recommendations',
     columns: ['Recommended action', 'Severity', 'Effort', 'Findings addressed', 'Detail'],
-    rows: assessment.intelligence.recommendations.map((entry) => [
+    rows: actions.map((entry) => [
       entry.title,
       SEVERITY_TEXT[entry.severity],
       entry.effort,
@@ -793,7 +868,7 @@ function highlights(assessment: ExposureAssessment, truth: ExposureTruth, cbom: 
     {
       label: 'Quantum risk',
       value: riskText(scores.quantumRisk, scores.quantumBand),
-      detail: `${withUnit(truth.exposures.vulnerable, 'exposure')} classified quantum-vulnerable`,
+      detail: `${withUnit(truth.components.vulnerable, 'component')} of ${nf(truth.components.quantumRelevant)} quantum-relevant classified vulnerable`,
       tone: bandTone(scores.quantumBand),
     },
     {
@@ -803,7 +878,7 @@ function highlights(assessment: ExposureAssessment, truth: ExposureTruth, cbom: 
         truth.readiness === null
           ? 'No quantum-relevant cryptography in scope'
           : `of ${plural(truth.components.quantumRelevant, 'quantum-relevant component')}`,
-      tone: truth.readiness === null ? 'neutral' : truth.readiness >= 80 ? 'good' : truth.readiness >= 40 ? 'medium' : 'critical',
+      tone: readinessTone(truth.readiness),
     },
     {
       label: 'Quantum-vulnerable components',
@@ -875,13 +950,22 @@ function summaryParagraphs(
   )
 
   paragraphs.push(
-    `Risk is scored over CORRELATED EXPOSURES, not raw findings: ${plural(assessment.findings.length, 'finding')} correlated into ${plural(assessment.exposures.length, 'exposure')} (${describeSeverity(truth.exposureSeverity)}). Security risk is ${riskText(scores.securityRisk, scores.securityBand)}, quantum risk ${riskText(scores.quantumRisk, scores.quantumBand)} and migration risk ${riskText(scores.migrationRisk, scores.migrationBand)}. Each reading is published with the basis it was computed from, and none is collapsed into a single grade — they answer different questions.`,
+    `Security and migration risk are scored over CORRELATED EXPOSURES, not raw findings: ${plural(assessment.findings.length, 'finding')} correlated into ${plural(assessment.exposures.length, 'exposure')} (${describeSeverity(truth.exposureSeverity)}). Security risk is ${riskText(scores.securityRisk, scores.securityBand)}, quantum risk ${riskText(scores.quantumRisk, scores.quantumBand)} and migration risk ${riskText(scores.migrationRisk, scores.migrationBand)}; quantum risk is a share of the ${plural(truth.components.quantumRelevant, 'quantum-relevant component')}, the population readiness is computed over. Each reading is published with the basis it was computed from, and none is collapsed into a single grade — they answer different questions.`,
   )
 
-  const vulnerableAlgorithms = cbom.byAlgorithm.filter((entry) => entry.quantumStatus === 'vulnerable').slice(0, 4)
+  /* The VULNERABLE members of each group, largest first — the rule the quantum
+     roll-up finding already uses. Filtering on the group's dominant status and
+     printing the group total named a mixed group (20 vulnerable, 10 hybrid) as
+     "ECDSA (30)", and dropped a group whose dominant status was hybrid even
+     when it held vulnerable components. */
+  const vulnerableAlgorithms = cbom.byAlgorithm
+    .map((entry) => ({ algorithm: entry.algorithm, vulnerable: entry.mix.find((slice) => slice.status === 'vulnerable')?.count ?? 0 }))
+    .filter((entry) => entry.vulnerable > 0)
+    .sort((a, b) => b.vulnerable - a.vulnerable)
+    .slice(0, 4)
   paragraphs.push(
     truth.components.vulnerable > 0
-      ? `The exposure is concentrated in ${vulnerableAlgorithms.length ? vulnerableAlgorithms.map((entry) => `${entry.algorithm} (${nf(entry.count)})`).join(', ') : 'cryptography the engines could not attribute to a named primitive'}. ${
+      ? `The quantum exposure is concentrated in ${vulnerableAlgorithms.length ? `${vulnerableAlgorithms.map((entry) => `${entry.algorithm} (${nf(entry.vulnerable)})`).join(', ')} — vulnerable components per algorithm` : 'cryptography the engines could not attribute to a named primitive'}. ${
           cbom.classicallyWeak > 0
             ? `Separately, ${plural(cbom.classicallyWeak, 'component')} ${cbom.classicallyWeak === 1 ? 'is' : 'are'} broken by CLASSICAL cryptanalysis — MD5, SHA-1, RC4, DES and similar. These sit in the quantum-resistant bucket, which is a verdict about Shor's algorithm alone, and they require replacement regardless of any quantum timeline.`
             : 'No component in scope is broken by classical cryptanalysis.'
@@ -1086,7 +1170,7 @@ function validate(context: ValidationContext): ValidationEntry[] {
   add(
     'Exposure severities sum to the exposure count',
     exposureSeveritySum === assessment.exposures.length,
-    `${nf(exposureSeveritySum)} graded of ${nf(assessment.exposures.length)} exposures — the population the risk scores are weighted over.`,
+    `${nf(exposureSeveritySum)} graded of ${nf(assessment.exposures.length)} exposures — the population security and migration risk are weighted over.`,
   )
   const componentSum =
     truth.components.vulnerable +
@@ -1193,16 +1277,14 @@ function validate(context: ValidationContext): ValidationEntry[] {
       : 'The assessment read every candidate artefact within budget.',
     true,
   )
-  const unmapped = assessment.cbom.filter((component) => {
-    if (component.quantumStatus !== 'vulnerable') return false
-    const entry = describeAlgorithm(component.canonicalAlgorithm)
-    return !entry || !migrationTargetFor(entry, component.usage)
-  })
+  /* The same rule the CBOM register prints, so this check and the column it
+     is about can never disagree on which rows lack a target. */
+  const unmapped = assessment.cbom.filter((component) => component.quantumStatus === 'vulnerable' && !componentPqcTarget(component))
   add(
     'Every vulnerable component has a role-appropriate post-quantum target',
     unmapped.length === 0,
     unmapped.length
-      ? `${plural(unmapped.length, 'vulnerable component')} has no role-specific target — the role is unknown or outside the NIST mapping, so the register says "review manually" rather than naming an algorithm that may be the wrong class.`
+      ? `${plural(unmapped.length, 'vulnerable component')} ${unmapped.length === 1 ? 'has' : 'have'} no role-specific target — the role is unknown or outside the NIST mapping, so the register says "review manually" rather than naming an algorithm that may be the wrong class.`
       : 'Key establishment maps to ML-KEM (FIPS 203); signatures, certificates and code signing map to ML-DSA (FIPS 204) or SLH-DSA (FIPS 205).',
     true,
   )
@@ -1385,7 +1467,7 @@ function methodologySection(assessment: ExposureAssessment, truth: ExposureTruth
         items: [
           'COMPONENT: one cryptographic primitive in one place — the unit a migration replaces. The bill of materials counts components.',
           'FINDING: one issue worth acting on — the unit work is triaged in. Several findings can attach to one component, so the two counts legitimately differ.',
-          'EXPOSURE: several findings that are one underlying issue, merged by correlation — the unit every risk score is weighted over.',
+          'EXPOSURE: several findings that are one underlying issue, merged by correlation — the unit security and migration risk are weighted over. Quantum risk, like readiness, is a share of quantum-relevant COMPONENTS.',
           'SEVERITY is the consequence if the observation is real; CONFIDENCE is how sure the engine is that it is real. They are never collapsed into one number.',
           'DETECTION METHOD is published: observed (the artefact itself was read), inferred (derived from something observed), potential (a pattern matched but context does not prove the cryptography is used), unknown.',
           'QUANTUM STATUS is role-aware, not algorithm-alone: AES-256 protecting data at rest is resistant, while RSA-2048 signing is vulnerable. "Not applicable" exists so a non-cryptographic finding is never given a quantum verdict.',
@@ -1432,6 +1514,8 @@ export function buildExposureReport(input: BuildExposureReportInput): InventoryR
   const chips = algorithmChipCoverage(assessment)
   const detection = detectionStats(assessment)
   const prioritised = prioritiseMigration(assessment.exposures)
+  /* The complete ranked action list — the panel's ten are its first ten. */
+  const actions = rankRecommendations({ findings: assessment.findings, exposures: assessment.exposures })
   const target = describeTarget(assessment.task.target)
   const findings = sortedFindings(assessment)
 
@@ -1549,7 +1633,7 @@ export function buildExposureReport(input: BuildExposureReportInput): InventoryR
       id: 'priorities',
       title: 'Priority Exposures',
       intro: prioritised.length
-        ? `${plural(prioritised.length, 'exposure')} is a migration candidate, ordered by a score built from severity, reachability, assertion lifetime and detection confidence.`
+        ? `${plural(prioritised.length, 'exposure')} ${prioritised.length === 1 ? 'is a migration candidate' : 'are migration candidates'}, ordered by a score built from severity, reachability, assertion lifetime and detection confidence.`
         : 'No exposure in scope is a migration candidate.',
       blocks: prioritised.length
         ? [present(prioritiesTable(prioritised), { orderedBy: 'highest-priority', widths: [6, 5, 20, 8, 9, 9, 10, 12, 11, 10], emphasis: [{ column: 0, kind: 'priority' }, { column: 3, kind: 'severity' }] })]
@@ -1559,11 +1643,11 @@ export function buildExposureReport(input: BuildExposureReportInput): InventoryR
     push({
       id: 'actions',
       title: 'Recommended Actions',
-      intro: assessment.intelligence.recommendations.length
-        ? `${assessment.intelligence.recommendationCandidates > assessment.intelligence.recommendations.length ? `The ${nf(assessment.intelligence.recommendations.length)} highest-priority of ${nf(assessment.intelligence.recommendationCandidates)} distinct actions this assessment produced.` : `${plural(assessment.intelligence.recommendations.length, 'action')} produced by this assessment.`} Each is backed by the findings it addresses.`
+      intro: actions.length
+        ? `${plural(actions.length, 'distinct action')} ${actions.length === 1 ? 'was' : 'were'} produced by this assessment, most severe first — the dashboard panel shows the first ${nf(Math.min(actions.length, assessment.intelligence.recommendations.length))}. Each is backed by the findings it addresses.`
         : 'This assessment produced no recommended action.',
-      blocks: assessment.intelligence.recommendations.length
-        ? [present(recommendationsTable(assessment), { orderedBy: 'highest-severity', widths: [26, 9, 8, 9, 48], emphasis: [{ column: 1, kind: 'severity' }] })]
+      blocks: actions.length
+        ? [present(recommendationsTable(actions), { orderedBy: 'most severe', widths: [26, 9, 8, 9, 48], emphasis: [{ column: 1, kind: 'severity' }] })]
         : [{ type: 'paragraph', text: 'No recommendation was raised. With findings present this would itself be a defect; with none, it is the correct outcome for this scope.', tone: 'muted' }],
     })
     push(coverageSection(assessment, truth, rows))
@@ -1737,7 +1821,7 @@ export function buildExposureReport(input: BuildExposureReportInput): InventoryR
       id: 'priorities',
       title: 'Remediation Priorities',
       intro: prioritised.length
-        ? `${plural(prioritised.length, 'exposure')} is a migration candidate. Priority is driven by severity, Internet reachability, the lifetime of the cryptographic assertion, harvest-now-decrypt-later reach and detection confidence — never by the algorithm name alone.`
+        ? `${plural(prioritised.length, 'exposure')} ${prioritised.length === 1 ? 'is a migration candidate' : 'are migration candidates'}. Priority is driven by severity, Internet reachability, the lifetime of the cryptographic assertion, harvest-now-decrypt-later reach and detection confidence — never by the algorithm name alone.`
         : 'No exposure in scope is a migration candidate.',
       blocks: compact([
         {
@@ -1748,7 +1832,7 @@ export function buildExposureReport(input: BuildExposureReportInput): InventoryR
             { label: 'P3 — scheduled', value: nf(prioritised.filter((entry) => entry.priority === 'P3').length), detail: 'Plan into routine change', tone: 'medium' },
             { label: 'P4 — verify first', value: nf(prioritised.filter((entry) => entry.priority === 'P4').length), detail: 'Low detection confidence — confirm before scheduling', tone: 'neutral' },
             { label: 'Quantum-vulnerable components', value: nf(truth.components.vulnerable), detail: `of ${nf(truth.components.total)} observed`, tone: truth.components.vulnerable ? 'critical' : 'good' },
-            { label: 'Post-quantum readiness', value: truth.readiness === null ? 'Not measured' : `${truth.readiness}%`, detail: 'Share of the quantum-relevant components', tone: truth.readiness === null ? 'neutral' : truth.readiness >= 80 ? 'good' : 'medium' },
+            { label: 'Post-quantum readiness', value: truth.readiness === null ? 'Not measured' : `${truth.readiness}%`, detail: 'Share of the quantum-relevant components', tone: readinessTone(truth.readiness) },
           ],
         },
         prioritised.length
@@ -1773,11 +1857,11 @@ export function buildExposureReport(input: BuildExposureReportInput): InventoryR
     push({
       id: 'recommendations',
       title: 'Engine Recommendations',
-      intro: assessment.intelligence.recommendations.length
-        ? `${assessment.intelligence.recommendationCandidates > assessment.intelligence.recommendations.length ? `The ${nf(assessment.intelligence.recommendations.length)} highest-priority of ${nf(assessment.intelligence.recommendationCandidates)} distinct actions.` : `${plural(assessment.intelligence.recommendations.length, 'action')}.`}`
+      intro: actions.length
+        ? `${plural(actions.length, 'distinct action')}, most severe first.`
         : 'No recommendation was raised.',
-      blocks: assessment.intelligence.recommendations.length
-        ? [present(recommendationsTable(assessment), { orderedBy: 'highest-severity', widths: [26, 9, 8, 9, 48], emphasis: [{ column: 1, kind: 'severity' }] })]
+      blocks: actions.length
+        ? [present(recommendationsTable(actions), { orderedBy: 'most severe', widths: [26, 9, 8, 9, 48], emphasis: [{ column: 1, kind: 'severity' }] })]
         : [{ type: 'paragraph', text: 'No recommendation was raised in this scope.', tone: 'muted' }],
     })
 
@@ -1947,13 +2031,14 @@ export function buildExposureReport(input: BuildExposureReportInput): InventoryR
   pushRegister(findingsTable(findings))
   pushRegister(cbomTable(assessment.cbom))
   pushRegister(exposuresTable(assessment.exposures))
+  pushRegister(exposureEvidenceTable(assessment.exposures))
   pushRegister(prioritiesTable(prioritised))
   pushRegister(inventoryTable(assets.rows))
   pushRegister(ledgerTable(assessment.task.runs))
   pushRegister(algorithmsTable(cbom))
   pushRegister(usageTable(cbom))
   pushRegister(standardsTable(standards.rows))
-  pushRegister(recommendationsTable(assessment))
+  pushRegister(recommendationsTable(actions))
   pushRegister(secretsTable(assessment))
   pushRegister(dependenciesTable(assessment))
   pushRegister(coverageTable(assessment))
@@ -2063,6 +2148,24 @@ export function buildExposureReport(input: BuildExposureReportInput): InventoryR
   addRecon('Security risk (Risk Decomposition panel)', riskText(assessment.task.scores.securityRisk, assessment.task.scores.securityBand), riskText(assessment.task.scores.securityRisk, assessment.task.scores.securityBand))
   addRecon('Coverage (Risk Decomposition panel)', assessment.task.scores.coverage === null ? 'Not measured' : `${assessment.task.scores.coverage}%`, assessment.task.scores.coverage === null ? 'Not measured' : `${assessment.task.scores.coverage}%`)
   addRecon('Dimensions not assessed (Coverage panel) = coverage gap rows of that kind', truth.notAssessed.length, gapsTable(assessment, truth).rows.filter((row) => row[0] === 'Dimension not read').length)
+  /* The panel shows the head of the ranked action list; the register is the
+     whole list. Both halves of that claim are checked, in order. */
+  const shownActions = assessment.intelligence.recommendations
+  addRecon(
+    'Recommended actions (panel) = leading rows of the action register, in order',
+    shownActions.length,
+    shownActions.filter((entry, index) => actions[index]?.title === entry.title).length,
+  )
+  addRecon(
+    'Distinct actions (panel denominator) = action register rows',
+    assessment.intelligence.recommendationCandidates ?? shownActions.length,
+    registers.find((table) => table.title === 'Engine Recommendations')?.rows.length ?? 0,
+  )
+  addRecon(
+    'Evidence records across exposures = exposure evidence register rows',
+    assessment.exposures.reduce((sum, exposure) => sum + exposure.evidence.length, 0),
+    registers.find((table) => table.title === 'Exposure Evidence')?.rows.length ?? 0,
+  )
 
   const tables: ReportTable[] = [
     ...registers,
@@ -2144,7 +2247,7 @@ function exposureDossier(entry: ReturnType<typeof prioritiseMigration>[number]):
             widths: [24, 6, 10, 30, 18, 12],
             note:
               exposure.evidence.length > evidenceRows.length
-                ? `${nf(exposure.evidence.length - evidenceRows.length)} further evidence record(s) for this exposure are in the Excel, CSV and JSON exports.`
+                ? `${plural(exposure.evidence.length - evidenceRows.length, 'further evidence record')} for this exposure ${exposure.evidence.length - evidenceRows.length === 1 ? 'is' : 'are'} in the Exposure Evidence register of the Excel, CSV and JSON exports.`
                 : undefined,
           },
         ]

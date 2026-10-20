@@ -73,6 +73,25 @@ describe("parseMessageAad", () => {
     expect(parseMessageAad(none)).toBeNull();
   });
 
+  it("reads a ratchet envelope's QGM2 AAD (same fields plus the header digest)", () => {
+    const digest = "ab".repeat(32);
+    const text = ["QGM2", REAL.messageId, REAL.conversationId, REAL.senderUserId, REAL.recipientUserId,
+      REAL.senderDeviceId, REAL.recipientDeviceId, "7", digest].join("|");
+    const parsed = parseMessageAad(Array.from(new TextEncoder().encode(text)));
+    expect(parsed?.message_id).toBe(REAL.messageId);
+    expect(parsed?.recipient_device_id).toBe(REAL.recipientDeviceId);
+    expect(parsed?.counter).toBe(7);
+  });
+
+  it("rejects a QGM2 AAD whose header digest is not a SHA3-256 hex digest", () => {
+    const base = ["QGM2", "m", "c", "su", "ru", "sd", "rd", "0"];
+    for (const digest of ["", "zz".repeat(32), "ab".repeat(31), "AB".repeat(32)]) {
+      expect(parseMessageAad(Array.from(new TextEncoder().encode([...base, digest].join("|"))))).toBeNull();
+    }
+    // A QGM1 tag with a ninth field is not a v1 AAD either.
+    expect(parseMessageAad(Array.from(new TextEncoder().encode(["QGM1", ...base.slice(1), "ab".repeat(32)].join("|"))))).toBeNull();
+  });
+
   it("rejects a non-numeric counter", () => {
     const bad = Array.from(new TextEncoder().encode(`QGM1|a|b|c|d|e|f|nope`));
     expect(parseMessageAad(bad)).toBeNull();

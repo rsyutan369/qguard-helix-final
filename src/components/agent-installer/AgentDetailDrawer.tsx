@@ -358,7 +358,7 @@ export function AgentDetailDrawer({
 
               {pkg ? (
                 <div className="space-y-3">
-                  <div className="rounded-xl border border-white/10 bg-black/40">
+                  <div className="qg-force-dark rounded-xl border border-white/10 bg-black/40">
                     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/8 px-3 py-2">
                       <span className="font-mono text-[11px] text-white/55">{pkg.filename}</span>
                       <div className="flex items-center gap-2">
@@ -384,7 +384,7 @@ export function AgentDetailDrawer({
                     {digestOk === true ? <div className="mt-1.5 text-emerald-300">Digest verified in this browser.</div> : null}
                     {digestOk === false ? <div className="mt-1.5 text-rose-300">Digest mismatch — regenerate before running.</div> : null}
                   </div>
-                  <div className="rounded-lg border border-white/10 bg-black/40 px-3 py-2">
+                  <div className="qg-force-dark rounded-lg border border-white/10 bg-black/40 px-3 py-2">
                     <code className="break-all font-mono text-[11px] text-cyan-200">{pkg.instructions.runCommand}</code>
                   </div>
                 </div>

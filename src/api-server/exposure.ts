@@ -952,6 +952,14 @@ router.post('/local/sync', requireMode('local'), async (req: AuthedRequest, res)
   if (assessment.findings.length > 5_000) {
     return jsonError(res, 413, 'ASSESSMENT_TOO_LARGE', 'The assessment carries more findings than the sync endpoint accepts. Narrow the scan scope or the profile.');
   }
+  /* Inventory observations are composed into the CBOM server-side, so they are
+     bounded at the boundary exactly as findings are. */
+  if (assessment.inventory !== undefined && !Array.isArray(assessment.inventory)) {
+    return jsonError(res, 400, 'INVALID_ASSESSMENT', 'The assessment inventory must be a list of observations.');
+  }
+  if (Array.isArray(assessment.inventory) && assessment.inventory.length > 5_000) {
+    return jsonError(res, 413, 'ASSESSMENT_TOO_LARGE', 'The assessment carries more inventory observations than the sync endpoint accepts. Narrow the scan scope or the profile.');
+  }
 
   try {
     const result = await persistExposureAssessment({

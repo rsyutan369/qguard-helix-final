@@ -7,6 +7,7 @@ use crate::crypto::signatures::dual_sign;
 use crate::crypto::symmetric;
 use crate::crypto::{AlgorithmSuite, DualSignature, EncryptedEnvelope, HybridCiphertext};
 use crate::error::Result;
+use crate::pq_ratchet::{HeaderKind, RatchetHeader};
 use crate::ratchet::RatchetSession;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -30,14 +31,136 @@ pub struct EncryptedMessageEnvelope {
     pub sealed_sender: bool,
     pub envelope: EncryptedEnvelope,
     pub aad: Vec<u8>,
-    pub hybrid_ciphertext: HybridCiphertext,
+    /// The hybrid encapsulation the message key comes from. Present on every
+    /// one-shot envelope and on a ratchet `init`; absent (`null`) on an
+    /// ordinary ratchet message, whose key comes from the session.
+    #[serde(default)]
+    pub hybrid_ciphertext: Option<HybridCiphertext>,
+    /// Empty when there is no hybrid ciphertext.
+    #[serde(default)]
     pub prekey_id: String,
+    #[serde(default)]
     pub prekey_kind: String,
     pub message_signature: DualSignature,
     pub sender_ed25519_public: Vec<u8>,
     pub sender_mldsa_public: Vec<u8>,
     pub suite: AlgorithmSuite,
     pub created_at: DateTime<Utc>,
+    /// Session ratchet header (see `crate::pq_ratchet`). Absent on one-shot
+    /// envelopes, which therefore serialise exactly as they always have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ratchet: Option<RatchetHeader>,
+}
+
+impl EncryptedMessageEnvelope {
+    /// The AAD this envelope's fields say it was sealed under.
+    pub fn expected_aad(&self) -> Vec<u8> {
+        match &self.ratchet {
+            Some(header) => message_aad_v2(
+                &self.message_id,
+                &self.conversation_id,
+                &self.sender_user_id,
+                &self.recipient_user_id,
+                &self.sender_device_id,
+                &self.recipient_device_id,
+                self.counter,
+                header,
+            ),
+            None => message_aad(
+                &self.message_id,
+                &self.conversation_id,
+                &self.sender_user_id,
+                &self.recipient_user_id,
+                &self.sender_device_id,
+                &self.recipient_device_id,
+                self.counter,
+            ),
+        }
+    }
+}
+
+/// Who a message is from and to — the fields every seal binds into its AAD.
+#[derive(Clone, Copy)]
+pub struct MessageAddress<'a> {
+    pub conversation_id: &'a str,
+    pub sender_user_id: &'a str,
+    pub recipient_user_id: &'a str,
+    pub sender_device_id: &'a str,
+    pub recipient_device_id: &'a str,
+}
+
+/// Seal one message under a ratchet message key.
+///
+/// `hybrid_ciphertext` / `prekey_*` are the session's seeding material on an
+/// `init` header and absent otherwise. The header is bound twice: its digest is
+/// in the AAD (so the AEAD tag covers it) and its canonical bytes are in the
+/// signable (so both signatures cover it).
+#[allow(clippy::too_many_arguments)]
+pub fn encrypt_ratchet_message(
+    address: MessageAddress<'_>,
+    header: RatchetHeader,
+    message_key: &[u8; 32],
+    seed: Option<(HybridCiphertext, String, String)>,
+    session_combiner: &str,
+    kind: MessageKind,
+    plaintext: &[u8],
+    signing: MessageSigningContext<'_>,
+) -> Result<EncryptedMessageEnvelope> {
+    header.validate()?;
+    if (header.kind == HeaderKind::Init) != seed.is_some() {
+        return Err(crate::error::QGuardError::InvalidInput(
+            "a ratchet init carries its seeding encapsulation, and only an init does".to_string(),
+        ));
+    }
+    let message_id = Uuid::new_v4().to_string();
+    let counter = u64::from(header.n);
+    let aad = message_aad_v2(
+        &message_id,
+        address.conversation_id,
+        address.sender_user_id,
+        address.recipient_user_id,
+        address.sender_device_id,
+        address.recipient_device_id,
+        counter,
+        &header,
+    );
+    let envelope = symmetric::encrypt(message_key, plaintext, &aad)?;
+    let (hybrid_ciphertext, prekey_id, prekey_kind) = match seed {
+        Some((ciphertext, id, kind)) => (Some(ciphertext), id, kind),
+        None => (None, String::new(), String::new()),
+    };
+    // The envelope suite names what this envelope actually is: a ratchet
+    // envelope of a session seeded with `session_combiner`.
+    let suite = AlgorithmSuite {
+        kem_combiner: session_combiner.to_string(),
+        ratchet: crate::pq_ratchet::RATCHET_PROTOCOL.to_string(),
+        ..AlgorithmSuite::default()
+    };
+    let mut encrypted = EncryptedMessageEnvelope {
+        message_id,
+        conversation_id: address.conversation_id.to_string(),
+        sender_user_id: address.sender_user_id.to_string(),
+        recipient_user_id: address.recipient_user_id.to_string(),
+        sender_device_id: address.sender_device_id.to_string(),
+        recipient_device_id: address.recipient_device_id.to_string(),
+        counter,
+        kind,
+        sealed_sender: false,
+        envelope,
+        aad,
+        hybrid_ciphertext,
+        prekey_id,
+        prekey_kind,
+        message_signature: DualSignature { ed25519: Vec::new(), ml_dsa_65: Vec::new() },
+        sender_ed25519_public: signing.ed25519_public.to_vec(),
+        sender_mldsa_public: signing.mldsa_public.to_vec(),
+        suite,
+        created_at: Utc::now(),
+        ratchet: Some(header),
+    };
+    let signable = message_signable(&encrypted);
+    encrypted.message_signature = dual_sign(signing.ed25519_secret, signing.mldsa_secret, &signable)?;
+    Ok(encrypted)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -128,7 +251,7 @@ pub fn encrypt_message_with_key(
         sealed_sender: false,
         envelope,
         aad,
-        hybrid_ciphertext,
+        hybrid_ciphertext: Some(hybrid_ciphertext),
         prekey_id: prekey_id.to_string(),
         prekey_kind: prekey_kind.to_string(),
         message_signature: DualSignature {
@@ -139,6 +262,7 @@ pub fn encrypt_message_with_key(
         sender_mldsa_public: signing.mldsa_public.to_vec(),
         suite,
         created_at: Utc::now(),
+        ratchet: None,
     };
     let signable = message_signable(&encrypted);
     encrypted.message_signature =
@@ -182,6 +306,29 @@ pub fn message_aad(
     .into_bytes()
 }
 
+/// The AAD of a ratchet envelope: the v1 fields under a `QGM2` tag, plus the
+/// digest of the ratchet header, so the AEAD tag covers the header too.
+///
+/// A v1 reader rejects it (wrong tag) and fails closed — it never sees one,
+/// because ratchet envelopes only go to devices that advertised the ratchet.
+#[allow(clippy::too_many_arguments)]
+pub fn message_aad_v2(
+    message_id: &str,
+    conversation_id: &str,
+    sender_user_id: &str,
+    recipient_user_id: &str,
+    sender_device_id: &str,
+    recipient_device_id: &str,
+    counter: u64,
+    header: &RatchetHeader,
+) -> Vec<u8> {
+    format!(
+        "QGM2|{message_id}|{conversation_id}|{sender_user_id}|{recipient_user_id}|{sender_device_id}|{recipient_device_id}|{counter}|{}",
+        header.digest_hex()
+    )
+    .into_bytes()
+}
+
 #[derive(Clone, Copy)]
 pub struct MessageSigningContext<'a> {
     pub ed25519_secret: &'a [u8; 32],
@@ -204,12 +351,20 @@ pub fn message_signable(envelope: &EncryptedMessageEnvelope) -> Vec<u8> {
     data.extend_from_slice(&envelope.envelope.ciphertext);
     data.extend_from_slice(&envelope.envelope.tag);
     data.extend_from_slice(&envelope.aad);
-    data.extend_from_slice(&envelope.hybrid_ciphertext.x25519_ephemeral_public);
-    data.extend_from_slice(&envelope.hybrid_ciphertext.ml_kem_ciphertext);
+    if let Some(hybrid) = &envelope.hybrid_ciphertext {
+        data.extend_from_slice(&hybrid.x25519_ephemeral_public);
+        data.extend_from_slice(&hybrid.ml_kem_ciphertext);
+    }
     data.extend_from_slice(envelope.prekey_id.as_bytes());
     data.extend_from_slice(envelope.prekey_kind.as_bytes());
     data.extend_from_slice(&envelope.sender_ed25519_public);
     data.extend_from_slice(&envelope.sender_mldsa_public);
+    // Appended only when a header is present, so every one-shot envelope
+    // keeps verifying byte-for-byte against what older builds signed.
+    if let Some(header) = &envelope.ratchet {
+        data.extend_from_slice(b"|QGR-signable|");
+        data.extend_from_slice(&header.canonical_bytes());
+    }
     data
 }
 

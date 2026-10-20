@@ -3115,14 +3115,19 @@ html.qg-theme-ready,
 html.qg-theme-ready body,
 html.qg-theme-ready .qg-dashboard-shell,
 html.qg-theme-ready .qg-docs-shell,
-html.qg-theme-ready .qc-page {
+html.qg-theme-ready .qc-page,
+html.qg-theme-ready .qg-agent-center {
   transition: background-color 360ms ease, background 360ms ease, color 260ms ease, border-color 260ms ease, box-shadow 320ms ease;
 }
 
+/* `:not(.transition-all)` on the Agent Center: its progress bars animate
+   `width` through `transition-all`, and forcing the colour-only property list
+   onto them would turn a smooth fill into a jump. */
 html.qg-theme-ready .dashboard-theme-scope *,
 html.qg-theme-ready .qg-docs-shell *,
 html.qg-theme-ready .qg-theme-toggle *,
-html.qg-theme-ready .qc-page * {
+html.qg-theme-ready .qc-page *,
+html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
   transition-property: background-color, background, border-color, color, fill, stroke, box-shadow, opacity, transform;
   transition-duration: 260ms;
   transition-timing-function: ease;
@@ -3803,6 +3808,213 @@ html.qg-theme-ready .qc-page * {
 .qg-theme-dark .qg-docs-shell [class*="text-gray-600"],
 .qg-theme-dark .qg-docs-shell [class*="text-gray-700"] {
   color: var(--qg-dashboard-text-soft) !important;
+}
+
+/* ===============================================================
+   AGENT CENTER  (/downloads)  --  light / dark theme
+
+   The page and its components (DeployWizard, AgentDetailDrawer, ScopeContract)
+   are authored dark-first against Tailwind's palette: `text-white/45`,
+   `border-white/10`, `text-cyan-200`, `bg-amber-400/10`.
+
+   Tailwind v4 compiles every one of those through a CSS variable
+   (`color-mix(in oklab, var(--color-white) 45%, transparent)`), so light mode is
+   a PALETTE REMAP inside `.qg-agent-center` rather than a second set of
+   classes: "white" becomes the dashboard's ink and the pale 100-300 hue shades
+   (made for a dark ground) become their 700-950 counterparts. Alpha is kept, so
+   every hairline, wash and divider keeps its meaning.
+
+   What follows from that:
+   - Dark mode is untouched: every rule here is gated on `html.qg-theme-light`.
+   - A new `text-white/NN` or `bg-cyan-400/10` added to the Agent Center works in
+     both themes with no extra CSS.
+   - What a remap cannot express is handled explicitly below: the muted text
+     ramp, elevated surfaces (`.ac-surface`), recessed wells (`bg-black/NN`),
+     form fields, native <option>s, the drawer, and code blocks, which stay dark
+     in both themes (`.qg-force-dark`) like every terminal on the dashboard.
+
+   Semantic tokens (--qg-*) are reused, not redefined, so this page can never
+   drift from the dashboard's light theme.
+   =============================================================== */
+
+html.qg-theme-light .qg-agent-center {
+  color-scheme: light;
+  color: var(--qg-dashboard-text);
+  /* Same ground as `.qg-dashboard-shell` in light mode. */
+  background:
+    radial-gradient(circle at 18% 0%, rgba(139, 92, 246, 0.14), transparent 34%),
+    radial-gradient(circle at 82% 4%, rgba(0, 197, 235, 0.14), transparent 32%),
+    linear-gradient(180deg, #fbfdff 0%, #f7fbff 52%, #eef8ff 100%);
+
+  /* Neutrals. */
+  --color-white: var(--qg-dashboard-text);
+  --color-black: #0f172a;
+
+  /* Hues. Text shades are the dark end of each ramp so they hold AA contrast on
+     white AND on their own 10% wash; 400 is a mid tone that still reads as a
+     fill, a rule or a status dot. */
+  --color-cyan-100: #155e75;
+  --color-cyan-200: #0e7490;
+  --color-cyan-300: #0e7490;
+  --color-cyan-400: #0891b2;
+
+  --color-emerald-100: #022c22;
+  --color-emerald-200: #065f46;
+  --color-emerald-300: #047857;
+  --color-emerald-400: #059669;
+
+  --color-amber-50: #451a03;
+  --color-amber-100: #451a03;
+  --color-amber-200: #92400e;
+  --color-amber-300: #b45309;
+  --color-amber-400: #d97706;
+
+  --color-rose-100: #4c0519;
+  --color-rose-200: #9f1239;
+  --color-rose-300: #be123c;
+  --color-rose-400: #e11d48;
+
+  --color-violet-50: #2e1065;
+  --color-violet-100: #2e1065;
+  --color-violet-200: #4c1d95;
+  --color-violet-400: #7c3aed;
+}
+
+/* -- muted text ramp ---------------------------------------------
+   `text-white/NN` as ink-at-NN% falls below 3:1 under /45 on a light ground
+   (the same alpha is ~4:1 on the dark one), because relative luminance is far
+   steeper near white. This ramp holds >= 4.5:1 on white and on the page tint
+   from top to bottom; /30 and /25 (placeholders, disabled values) sit at the
+   bottom of the slate scale. Hierarchy is carried by three bands (primary
+   /85-/70, secondary /65-/45, tertiary /40-/25) plus weight and size, exactly
+   as in dark mode. */
+html.qg-theme-light .qg-agent-center .text-white\/85:not(.qg-force-dark *) { color: #0f172a; }
+html.qg-theme-light .qg-agent-center .text-white\/80:not(.qg-force-dark *) { color: #1a2438; }
+html.qg-theme-light .qg-agent-center .text-white\/75:not(.qg-force-dark *) { color: #243046; }
+html.qg-theme-light .qg-agent-center .text-white\/70:not(.qg-force-dark *) { color: #2d3a50; }
+html.qg-theme-light .qg-agent-center .text-white\/65:not(.qg-force-dark *) { color: #354359; }
+html.qg-theme-light .qg-agent-center .text-white\/60:not(.qg-force-dark *) { color: #3d4b62; }
+html.qg-theme-light .qg-agent-center .text-white\/55:not(.qg-force-dark *) { color: #45536a; }
+html.qg-theme-light .qg-agent-center .text-white\/50:not(.qg-force-dark *) { color: #4b5a70; }
+html.qg-theme-light .qg-agent-center .text-white\/45:not(.qg-force-dark *) { color: #526177; }
+html.qg-theme-light .qg-agent-center .text-white\/40:not(.qg-force-dark *) { color: #566579; }
+html.qg-theme-light .qg-agent-center .text-white\/35:not(.qg-force-dark *) { color: #5b6a80; }
+html.qg-theme-light .qg-agent-center .text-white\/30:not(.qg-force-dark *) { color: #606f85; }
+html.qg-theme-light .qg-agent-center .text-white\/25:not(.qg-force-dark *) { color: #64748b; }
+
+html.qg-theme-light .qg-agent-center ::placeholder {
+  color: #64748b;
+  opacity: 1;
+}
+
+/* Hue text dimmed with alpha (`text-amber-100/70`, `text-emerald-200/80`) is a
+   dark-ground idiom: pale-on-dark has headroom to spare, dark-on-pale does not
+   (a 70% amber-950 lands near 4:1 on its own wash). On light the de-emphasis is
+   already carried by size and weight, so these render at the ramp's full
+   strength. Listed explicitly so an unlisted class still degrades gracefully. */
+html.qg-theme-light .qg-agent-center :is(
+  .text-amber-100\/65, .text-amber-100\/70, .text-amber-100\/75, .text-amber-100\/80, .text-amber-100\/85
+):not(.qg-force-dark):not(.qg-force-dark *) { color: var(--color-amber-100); }
+
+html.qg-theme-light .qg-agent-center :is(.text-amber-200\/80):not(.qg-force-dark):not(.qg-force-dark *) { color: var(--color-amber-200); }
+html.qg-theme-light .qg-agent-center :is(.text-amber-300\/80):not(.qg-force-dark):not(.qg-force-dark *) { color: var(--color-amber-300); }
+html.qg-theme-light .qg-agent-center :is(.text-cyan-100\/80):not(.qg-force-dark):not(.qg-force-dark *) { color: var(--color-cyan-100); }
+html.qg-theme-light .qg-agent-center :is(.text-cyan-200\/70, .text-cyan-200\/80):not(.qg-force-dark):not(.qg-force-dark *) { color: var(--color-cyan-200); }
+html.qg-theme-light .qg-agent-center :is(.text-cyan-300\/70):not(.qg-force-dark):not(.qg-force-dark *) { color: var(--color-cyan-300); }
+html.qg-theme-light .qg-agent-center :is(.text-emerald-100\/65):not(.qg-force-dark):not(.qg-force-dark *) { color: var(--color-emerald-100); }
+html.qg-theme-light .qg-agent-center :is(.text-emerald-200\/80):not(.qg-force-dark):not(.qg-force-dark *) { color: var(--color-emerald-200); }
+html.qg-theme-light .qg-agent-center :is(.text-emerald-300\/80):not(.qg-force-dark):not(.qg-force-dark *) { color: var(--color-emerald-300); }
+html.qg-theme-light .qg-agent-center :is(.text-emerald-400\/80):not(.qg-force-dark):not(.qg-force-dark *) { color: var(--color-emerald-400); }
+html.qg-theme-light .qg-agent-center :is(.text-rose-100\/65, .text-rose-100\/70, .text-rose-100\/80):not(.qg-force-dark):not(.qg-force-dark *) { color: var(--color-rose-100); }
+html.qg-theme-light .qg-agent-center :is(.text-violet-100\/70):not(.qg-force-dark):not(.qg-force-dark *) { color: var(--color-violet-100); }
+html.qg-theme-light .qg-agent-center :is(.text-violet-200\/70):not(.qg-force-dark):not(.qg-force-dark *) { color: var(--color-violet-200); }
+
+/* -- elevated surfaces ------------------------------------------
+   Panel / Card / the wizard shell sit directly on the page ground, where a 2%
+   ink tint is invisible. They take the dashboard's card treatment instead;
+   nested tiles stay as hairline-bordered tints so panels do not stack shadows. */
+html.qg-theme-light .qg-agent-center .ac-surface {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.97), rgba(240, 249, 255, 0.82)),
+    #ffffff;
+  box-shadow: var(--qg-panel-shadow);
+}
+
+/* A Card inside a Panel (asset coverage) is a tile, not a second elevation. */
+html.qg-theme-light .qg-agent-center .ac-surface .ac-surface {
+  background: var(--qg-surface-inset);
+  box-shadow: none;
+}
+
+/* -- recessed wells, fields, scrim, fixed hexes ------------------
+   `bg-black/NN` is a dark-ground idiom for "a little deeper than the
+   surface". On light it becomes a faint ink tint (wells) or the dashboard's
+   input surface (fields). The two ranges are the only ones the Agent Center
+   uses: 20-30 for insets, 40-50 for fields. */
+html.qg-theme-light .qg-agent-center .bg-black\/20,
+html.qg-theme-light .qg-agent-center .bg-black\/30 {
+  background-color: rgba(15, 23, 42, 0.04);
+}
+
+html.qg-theme-light .qg-agent-center .bg-black\/40,
+html.qg-theme-light .qg-agent-center .bg-black\/50 {
+  background-color: var(--qg-input-bg);
+}
+
+html.qg-theme-light .qg-agent-center .bg-black\/70 {
+  background-color: rgba(15, 23, 42, 0.42);
+}
+
+/* The agent drawer and the sticky asset-table header are painted with fixed
+   hex values (opaque on purpose: rows scroll underneath them). */
+html.qg-theme-light .qg-agent-center .bg-\[\#080d16\] {
+  background-color: #ffffff;
+  box-shadow: -24px 0 64px rgba(15, 23, 42, 0.16);
+}
+
+html.qg-theme-light .qg-agent-center .bg-\[\#0a1020\] {
+  background-color: #eef4f9;
+}
+
+/* Native <option> popups ignore the field's background; without this the
+   dark `bg-slate-900` options render dark ink on a dark list. */
+html.qg-theme-light .qg-agent-center option {
+  background-color: #ffffff;
+  color: #0f172a;
+}
+
+html.qg-theme-light .qg-agent-center input:focus,
+html.qg-theme-light .qg-agent-center select:focus,
+html.qg-theme-light .qg-agent-center textarea:focus {
+  box-shadow: 0 0 0 3px var(--qg-focus-ring);
+}
+
+html.qg-theme-light .qg-agent-center input:disabled,
+html.qg-theme-light .qg-agent-center select:disabled,
+html.qg-theme-light .qg-agent-center textarea:disabled {
+  background-color: var(--qg-disabled-bg);
+  border-color: var(--qg-disabled-border);
+}
+
+/* -- code blocks stay dark ---------------------------------------
+   Generated installers, run commands and one-time tokens are shown on the same
+   deep ground as the dashboard's terminals in BOTH themes. The island puts the
+   dark palette back for its own subtree, so every class inside keeps working. */
+html.qg-theme-light .qg-agent-center .qg-force-dark {
+  color-scheme: dark;
+  background-color: var(--qg-code-bg);
+  border-color: rgba(148, 163, 184, 0.24);
+  color: var(--qg-code-text);
+
+  --color-white: #fff;
+  --color-black: #000;
+  --color-cyan-100: oklch(95.6% 0.045 203.388);
+  --color-cyan-200: oklch(91.7% 0.08 205.041);
+  --color-cyan-300: oklch(86.5% 0.127 207.078);
+  --color-cyan-400: oklch(78.9% 0.154 211.53);
+  --color-emerald-200: oklch(90.5% 0.093 164.15);
+  --color-emerald-300: oklch(84.5% 0.143 164.978);
+  --color-emerald-400: oklch(76.5% 0.177 163.223);
 }
 
 /* ===============================================================

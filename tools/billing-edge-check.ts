@@ -10,6 +10,8 @@
  * gates, not payment flows.
  */
 import assert from 'node:assert/strict'
+import { generateKeyPairSync, verify as verifySignature } from 'node:crypto'
+import { PLAN_PRICING } from '../src/lib/billing/plan-pricing'
 import {
   activationRow,
   appOrigin,
@@ -24,6 +26,20 @@ import {
   planInfoFromId,
   routeOf,
   webhookVerificationBody,
+  base64Url,
+  cycleForPlayBasePlan,
+  isPlayConfigured,
+  mapPlayState,
+  parseRtdnMessage,
+  pemToDer,
+  PLAY_LIST_PRICING,
+  playJwtSigningInput,
+  PlayPurchaseError,
+  playProductIdFor,
+  playServiceAccount,
+  playSubscriptionRows,
+  tierForPlayProduct,
+  timingSafeEqualText,
 } from '../supabase/functions/billing/logic'
 
 const results: Array<{ name: string; ok: boolean; detail?: string }> = []
@@ -151,6 +167,127 @@ check('approval links are read from PayPal link lists', () => {
   assert.equal(approvalLink({}), null)
 })
 
+// ---- Google Play (roadmap 4.6) ----------------------------------------------
+
+const PLAY_ENV: Record<string, string> = {
+  GOOGLE_PLAY_PACKAGE_NAME: 'com.qguard.messaging',
+  GOOGLE_PLAY_SA_EMAIL: 'play@project.iam.gserviceaccount.com',
+  GOOGLE_PLAY_SA_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\\nAAAA\\n-----END PRIVATE KEY-----',
+  PLAY_PRODUCT_PRO: 'qguard_pro_v2',
+}
+const playEnv = (key: string) => PLAY_ENV[key]
+const TOKEN_HASH = 'ab'.repeat(32)
+
+function playResource(overrides: Record<string, any> = {}) {
+  return {
+    subscriptionState: 'SUBSCRIPTION_STATE_ACTIVE',
+    startTime: '2026-10-01T00:00:00Z',
+    latestOrderId: 'GPA.1234-5678',
+    acknowledgementState: 'ACKNOWLEDGEMENT_STATE_PENDING',
+    externalAccountIdentifiers: { obfuscatedExternalAccountId: USER },
+    lineItems: [{ productId: 'qguard_starter', expiryTime: '2026-11-01T00:00:00Z', offerDetails: { basePlanId: 'monthly' } }],
+    ...overrides,
+  }
+}
+
+check('play: list prices are exactly the platform catalog', () => {
+  assert.deepEqual(PLAY_LIST_PRICING, PLAN_PRICING)
+})
+
+check('play: configured only with a package AND a service account; health shows booleans only', () => {
+  assert.equal(isPlayConfigured(playEnv), true)
+  assert.equal(isPlayConfigured((key) => (key === 'GOOGLE_PLAY_PACKAGE_NAME' ? 'x' : undefined)), false)
+  assert.equal(isPlayConfigured(env), false)
+  assert.equal(playServiceAccount(playEnv)?.privateKey.includes('\n'), true, 'escaped newlines are restored')
+  const report = configurationReport(playEnv)
+  assert.equal(report.playVerification, true)
+  assert.equal(report.playRtdn, false)
+  const text = JSON.stringify(report)
+  for (const value of Object.values(PLAY_ENV)) assert.ok(!text.includes(value), `health leaked ${value}`)
+  assert.equal(configurationReport(env).playVerification, false)
+})
+
+check('play: products, overrides and base plans map like the Express API', () => {
+  assert.equal(playProductIdFor(playEnv, 'Starter'), 'qguard_starter')
+  assert.equal(playProductIdFor(playEnv, 'Pro'), 'qguard_pro_v2')
+  assert.equal(tierForPlayProduct(playEnv, 'qguard_pro_v2'), 'Pro')
+  assert.equal(tierForPlayProduct(playEnv, 'qguard_pro'), null, 'an overridden id replaces the default')
+  assert.equal(cycleForPlayBasePlan('yearly'), 'annual')
+  assert.equal(cycleForPlayBasePlan('annual-plan'), 'annual')
+  assert.equal(cycleForPlayBasePlan('monthly'), 'monthly')
+  assert.equal(cycleForPlayBasePlan(undefined), 'monthly')
+})
+
+check('play: subscription states keep entitlement exactly when Play policy says', () => {
+  assert.deepEqual(mapPlayState('SUBSCRIPTION_STATE_ACTIVE'), { status: 'active', entitled: true, autoRenew: true })
+  assert.deepEqual(mapPlayState('SUBSCRIPTION_STATE_IN_GRACE_PERIOD'), { status: 'pending_renewal', entitled: true, autoRenew: true })
+  assert.deepEqual(mapPlayState('SUBSCRIPTION_STATE_CANCELED'), { status: 'active', entitled: true, autoRenew: false })
+  assert.equal(mapPlayState('SUBSCRIPTION_STATE_ON_HOLD').entitled, false)
+  assert.equal(mapPlayState('SUBSCRIPTION_STATE_PAUSED').entitled, false)
+  assert.deepEqual(mapPlayState('SUBSCRIPTION_STATE_EXPIRED'), { status: 'expired', entitled: false, autoRenew: false })
+  assert.deepEqual(mapPlayState('SOMETHING_NEW'), { status: 'incomplete', entitled: false, autoRenew: false })
+})
+
+check('play: a verified purchase becomes the account row and a list-price invoice', () => {
+  const applied = playSubscriptionRows(playEnv, playResource(), TOKEN_HASH, USER, '2026-10-19T00:00:00Z')
+  assert.equal(applied.userId, USER)
+  assert.equal(applied.tier, 'Starter')
+  assert.equal(applied.subscription.provider, 'google_play')
+  assert.equal(applied.subscription.provider_subscription_id, TOKEN_HASH)
+  assert.equal(applied.subscription.current_period_end, '2026-11-01T00:00:00Z')
+  assert.equal(applied.invoice?.amount_paid_cents, 100)
+  assert.equal(applied.invoice?.provider_invoice_id, 'GPA.1234-5678')
+  const yearly = playSubscriptionRows(playEnv, playResource({ lineItems: [{ productId: 'qguard_pro_v2', offerDetails: { basePlanId: 'yearly' } }] }), TOKEN_HASH, USER, 'now')
+  assert.equal(yearly.invoice?.amount_paid_cents, 20 * 12 * 100, 'a yearly plan is billed once at 12x the monthly-equivalent')
+  const expired = playSubscriptionRows(playEnv, playResource({ subscriptionState: 'SUBSCRIPTION_STATE_EXPIRED' }), TOKEN_HASH, USER, 'now')
+  assert.equal(expired.invoice, null, 'no payment is recorded for a purchase that grants nothing')
+  assert.equal(expired.subscription.status, 'expired')
+})
+
+check('play: purchases bound to another account, to nobody, or for an unknown product are refused', () => {
+  const code = (fn: () => unknown) => {
+    try { fn(); return null } catch (error) { return error instanceof PlayPurchaseError ? error.code : String(error) }
+  }
+  const other = '00000000-0000-4000-8000-000000000000'
+  assert.equal(code(() => playSubscriptionRows(playEnv, playResource(), TOKEN_HASH, other, 'now')), 'ACCOUNT_MISMATCH')
+  assert.equal(code(() => playSubscriptionRows(playEnv, playResource({ externalAccountIdentifiers: {} }), TOKEN_HASH, null, 'now')), 'NOT_BOUND')
+  assert.equal(code(() => playSubscriptionRows(playEnv, playResource({ lineItems: [{ productId: 'other_app_sub' }] }), TOKEN_HASH, USER, 'now')), 'UNKNOWN_PRODUCT')
+  // RTDN (no caller) trusts the binding Google recorded.
+  assert.equal(playSubscriptionRows(playEnv, playResource(), TOKEN_HASH, null, 'now').userId, USER)
+})
+
+check('play: RTDN envelopes decode, junk is ignored, the secret compares in constant time', () => {
+  const payload = { packageName: 'com.qguard.messaging', subscriptionNotification: { notificationType: 2, purchaseToken: 'tok' } }
+  const body = { message: { messageId: 'm-1', data: Buffer.from(JSON.stringify(payload)).toString('base64') } }
+  assert.deepEqual(parseRtdnMessage(body), { messageId: 'm-1', payload })
+  assert.equal(parseRtdnMessage({ message: { data: '%%%' } }), null)
+  assert.equal(parseRtdnMessage({}), null)
+  assert.equal(timingSafeEqualText('secret', 'secret'), true)
+  assert.equal(timingSafeEqualText('secret', 'secreT'), false)
+  assert.equal(timingSafeEqualText('secret', 'secret!'), false)
+})
+
+async function playJwtRoundTrip() {
+  // A real RSA key in the PEM form Google issues; signed the way index.ts
+  // signs (WebCrypto RSASSA-PKCS1-v1_5 / SHA-256), verified independently.
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
+  const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
+  const key = await crypto.subtle.importKey('pkcs8', new Uint8Array(pemToDer(pem)), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign'])
+  const input = playJwtSigningInput('play@project.iam.gserviceaccount.com', 1_800_000_000)
+  const signature = new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(input)))
+  check('play: the service-account JWT is a valid RS256 token Google can verify', () => {
+    const [header, claims] = input.split('.')
+    assert.deepEqual(JSON.parse(Buffer.from(header, 'base64url').toString()), { alg: 'RS256', typ: 'JWT' })
+    const decoded = JSON.parse(Buffer.from(claims, 'base64url').toString())
+    assert.equal(decoded.scope, 'https://www.googleapis.com/auth/androidpublisher')
+    assert.equal(decoded.aud, 'https://oauth2.googleapis.com/token')
+    assert.equal(decoded.exp - decoded.iat, 3600)
+    const jwtSignature = Buffer.from(base64Url(signature), 'base64url')
+    assert.ok(verifySignature('RSA-SHA256', Buffer.from(input), publicKey, jwtSignature))
+    assert.ok(!verifySignature('RSA-SHA256', Buffer.from(input + 'x'), publicKey, jwtSignature))
+  })
+}
+
 async function live() {
   const base = 'https://xsbdlahuecadzfajlvis.supabase.co/functions/v1/billing'
   const origin = 'http://tauri.localhost'
@@ -208,6 +345,7 @@ async function live() {
 }
 
 async function main() {
+  await playJwtRoundTrip()
   if (process.argv.includes('--live')) await live()
   let failed = 0
   for (const result of results) {

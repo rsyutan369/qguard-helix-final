@@ -16,7 +16,12 @@ use crate::crypto::passcode::{self, KDF_ARGON2ID_V1};
 use crate::crypto::symmetric::{self, KEY_SIZE};
 use crate::crypto::EncryptedEnvelope;
 use crate::error::{QGuardError, Result};
-use crate::state::{AppState, DeviceRegistration, PersistedAppLock, StoredSession};
+use crate::security::device_privacy::{self, BiometricAvailability, BiometricFailure};
+use crate::state::{AppState, DeviceRegistration, DuressPin, PersistedAppLock, StoredSession};
+
+/// Domain separation for the duress PIN's verifier: never the same value the
+/// real PIN's verifier context would produce.
+const DURESS_VERIFIER_INFO: &[u8] = b"QGuard-AppLock-Duress-Verifier-v1";
 
 const MAX_ATTEMPTS: u32 = 5;
 const DEFAULT_INACTIVITY_MINUTES: u32 = 10;
@@ -147,6 +152,32 @@ async fn open_with_pin(record: &PersistedAppLock, pin: &str) -> Result<Option<[u
     Ok(Some(sek))
 }
 
+/// The duress PIN's verifier: Argon2id + HKDF-SHA3-256, like the real PIN's,
+/// under its own salt and context. Nothing is wrapped under it.
+async fn seal_duress(pin: &str) -> Result<DuressPin> {
+    let salt = passcode::random_salt();
+    let mut ikm = passcode::stretch_secret(KDF_ARGON2ID_V1, salt.clone(), pin.as_bytes().to_vec()).await?;
+    let verifier = passcode::derive_verifier(&salt, &ikm, DURESS_VERIFIER_INFO);
+    ikm.zeroize();
+    Ok(DuressPin { salt, verifier: verifier? })
+}
+
+async fn duress_matches(duress: &DuressPin, pin: &str) -> Result<bool> {
+    let mut ikm = passcode::stretch_secret(KDF_ARGON2ID_V1, duress.salt.clone(), pin.as_bytes().to_vec()).await?;
+    let verifier = passcode::derive_verifier(&duress.salt, &ikm, DURESS_VERIFIER_INFO);
+    ikm.zeroize();
+    Ok(verifier? == duress.verifier)
+}
+
+/// What the lock screen gets after a wipe: no session, "sign in again" — the
+/// same answer as the fifth wrong PIN or an expired session, so a duress wipe
+/// looks like nothing special.
+fn signed_out_result() -> AppLockUnlockResult {
+    let mut status = status_from(None, false);
+    status.requires_full_auth = true;
+    AppLockUnlockResult { session: None, status }
+}
+
 fn wrap_session_under_sek(sek: &[u8; KEY_SIZE], session: &StoredSession) -> Result<EncryptedEnvelope> {
     let mut serialized = serde_json::to_vec(session)
         .map_err(|e| QGuardError::Storage(format!("encode session: {e}")))?;
@@ -176,6 +207,11 @@ pub struct AppLockStatus {
     pub inactivity_minutes: u32,
     pub device: Option<DeviceRegistration>,
     pub requires_full_auth: bool,
+    /// A duress PIN is set. Reported only while the app is unlocked, so the
+    /// lock screen never reveals that one exists.
+    pub duress_configured: bool,
+    /// Biometric unlock is set up on this device.
+    pub biometric_enabled: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -208,11 +244,14 @@ fn status_from(record: Option<&PersistedAppLock>, unlocked: bool) -> AppLockStat
             inactivity_minutes: r.inactivity_minutes,
             device: Some(r.device.clone()),
             requires_full_auth: false,
+            duress_configured: unlocked && r.duress.is_some(),
+            biometric_enabled: r.biometric_sek.is_some(),
         },
         None => AppLockStatus {
             configured: false, enabled: false, locked: false, digits: 0,
             failed_attempts: 0, attempts_remaining: MAX_ATTEMPTS, lockout_until: None,
             inactivity_minutes: DEFAULT_INACTIVITY_MINUTES, device: None, requires_full_auth: false,
+            duress_configured: false, biometric_enabled: false,
         },
     }
 }
@@ -303,6 +342,11 @@ async fn applock_setup_inner(
     state.require_auth()?;
     let user_id = state.user_id()?;
     validate_pin(digits, pin)?;
+    if let Some(duress) = state.load_applock(&user_id)?.and_then(|record| record.duress) {
+        if duress_matches(&duress, pin).await? {
+            return Err(QGuardError::InvalidInput("Choose a PIN different from your duress PIN.".to_string()));
+        }
+    }
 
     let mut sek = symmetric::random_key();
     let (salt, verifier, sek_wrapped) = match seal_pin(pin, &sek).await {
@@ -339,7 +383,13 @@ async fn applock_setup_inner(
         failed_attempts: 0, lockout_until: None,
         inactivity_minutes: existing.as_ref().map(|r| r.inactivity_minutes).unwrap_or(DEFAULT_INACTIVITY_MINUTES),
         device, created_at: existing.as_ref().map(|r| r.created_at).unwrap_or_else(Utc::now),
+        duress: existing.as_ref().and_then(|r| r.duress.clone()),
+        // A new SEK: whatever the biometric key wrapped is stale.
+        biometric_sek: None,
     };
+    if existing.as_ref().is_some_and(|r| r.biometric_sek.is_some()) {
+        device_privacy::biometric_disable();
+    }
     if let Err(e) = state.save_applock(&user_id, &record) {
         sek.zeroize();
         return Err(e);
@@ -370,7 +420,22 @@ async fn applock_unlock_inner(state: &State<'_, AppState>, pin: &str) -> Result<
         .ok_or_else(|| QGuardError::NotFound("app PIN is not configured".to_string()))?;
     check_lockout(&record)?;
 
-    match open_with_pin(&record, pin).await {
+    // With a duress PIN set, BOTH checks always run, so how long an attempt
+    // takes does not tell a duress entry from any other.
+    let outcome = open_with_pin(&record, pin).await;
+    let duress_hit = match record.duress.as_ref() {
+        Some(duress) => duress_matches(duress, pin).await.unwrap_or(false),
+        None => false,
+    };
+    if duress_hit && !matches!(outcome, Ok(Some(_))) {
+        // Erase this device's keys and sign out, leaving no record of why
+        // (nothing is audited: the log would itself be the tell).
+        let _ = state.panic_wipe(&user_id);
+        device_privacy::biometric_disable();
+        return Ok(signed_out_result());
+    }
+
+    match outcome {
         Ok(Some(mut sek)) => {
             let session = match unwrap_session_from_sek(&sek, &record.session_wrapped_by_sek) {
                 Ok(v) => v,
@@ -494,6 +559,11 @@ async fn applock_change_pin_inner(
         .load_applock(&user_id)?
         .ok_or_else(|| QGuardError::NotFound("app PIN is not configured".to_string()))?;
     check_lockout(&record)?;
+    if let Some(duress) = record.duress.as_ref() {
+        if duress_matches(duress, new_pin).await? {
+            return Err(QGuardError::InvalidInput("Choose a PIN different from your duress PIN.".to_string()));
+        }
+    }
     let mut sek = match open_with_pin(&record, old_pin).await {
         Ok(Some(sek)) => sek,
         Ok(None) => {
@@ -595,6 +665,164 @@ pub fn applock_wipe(state: State<'_, AppState>, user_id: Option<String>) -> Resu
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Duress PIN (roadmap 4.3)
+// ---------------------------------------------------------------------------
+
+/// Set (or replace) the duress PIN. Only from an unlocked app, never equal to
+/// the real PIN. Entered at the lock screen it erases this device's keys
+/// (`AppState::panic_wipe`) and lands on sign-in as if the session expired.
+#[tauri::command]
+pub async fn applock_set_duress_pin(state: State<'_, AppState>, mut pin: String) -> Result<AppLockStatus> {
+    let out = set_duress_inner(&state, &pin).await;
+    pin.zeroize();
+    out
+}
+
+async fn set_duress_inner(state: &AppState, pin: &str) -> Result<AppLockStatus> {
+    state.require_auth()?;
+    if !state.is_applock_unlocked() {
+        return Err(QGuardError::Trust("unlock the app first".to_string()));
+    }
+    validate_pin(NEW_PIN_DIGITS, pin)?;
+    let user_id = state.user_id()?;
+    let mut record = state
+        .load_applock(&user_id)?
+        .ok_or_else(|| QGuardError::NotFound("app PIN is not configured".to_string()))?;
+    if let Ok(Some(mut sek)) = open_with_pin(&record, pin).await {
+        sek.zeroize();
+        return Err(QGuardError::InvalidInput("The duress PIN must be different from your PIN.".to_string()));
+    }
+    record.duress = Some(seal_duress(pin).await?);
+    state.save_applock(&user_id, &record)?;
+    // Deliberately generic: the log must not say a duress PIN exists.
+    state.audit_info("applock_settings_changed", "App lock settings changed");
+    Ok(status_from(Some(&record), true))
+}
+
+#[tauri::command]
+pub fn applock_clear_duress_pin(state: State<'_, AppState>) -> Result<AppLockStatus> {
+    state.require_auth()?;
+    if !state.is_applock_unlocked() {
+        return Err(QGuardError::Trust("unlock the app first".to_string()));
+    }
+    let user_id = state.user_id()?;
+    let mut record = state
+        .load_applock(&user_id)?
+        .ok_or_else(|| QGuardError::NotFound("app PIN is not configured".to_string()))?;
+    record.duress = None;
+    state.save_applock(&user_id, &record)?;
+    state.audit_info("applock_settings_changed", "App lock settings changed");
+    Ok(status_from(Some(&record), true))
+}
+
+// ---------------------------------------------------------------------------
+// Biometric unlock (roadmap 4.2)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BiometricStatus {
+    pub availability: BiometricAvailability,
+    pub enabled: bool,
+}
+
+fn biometric_status_for(record: Option<&PersistedAppLock>) -> BiometricStatus {
+    BiometricStatus {
+        availability: device_privacy::biometric_availability(),
+        enabled: record.is_some_and(|record| record.biometric_sek.is_some()),
+    }
+}
+
+#[tauri::command]
+pub fn applock_biometric_status(state: State<'_, AppState>) -> Result<BiometricStatus> {
+    let record = match resolve_applock_user(&state) {
+        Some(user_id) => state.load_applock(&user_id)?,
+        None => None,
+    };
+    Ok(biometric_status_for(record.as_ref()))
+}
+
+/// Wrap the SEK under a biometric-gated Keystore key. The prompt blocks, so it
+/// runs on the blocking pool, never the async workers.
+#[tauri::command]
+pub async fn applock_biometric_enable(state: State<'_, AppState>) -> Result<BiometricStatus> {
+    state.require_auth()?;
+    let user_id = state.user_id()?;
+    let mut record = state
+        .load_applock(&user_id)?
+        .ok_or_else(|| QGuardError::NotFound("set an app PIN first".to_string()))?;
+    if device_privacy::biometric_availability() != BiometricAvailability::Available {
+        return Err(QGuardError::InvalidInput(
+            "This device has no strong biometric (fingerprint or face) set up.".to_string(),
+        ));
+    }
+    let sek = state
+        .take_applock_sek()
+        .ok_or_else(|| QGuardError::Trust("unlock the app first".to_string()))?;
+    let sek = zeroize::Zeroizing::new(sek);
+    let blob = tauri::async_runtime::spawn_blocking(move || device_privacy::biometric_enable(&sek))
+        .await
+        .map_err(|e| QGuardError::Crypto(format!("biometric worker failed: {e}")))?
+        .map_err(QGuardError::from)?;
+    record.biometric_sek = Some(blob);
+    state.save_applock(&user_id, &record)?;
+    state.audit_info("applock_biometric_enabled", "Biometric unlock turned on for the app PIN");
+    Ok(biometric_status_for(Some(&record)))
+}
+
+/// Unlock with a strong biometric instead of the PIN. Same result as a correct
+/// PIN; a cancelled prompt changes nothing (the PIN screen stays).
+#[tauri::command]
+pub async fn applock_biometric_unlock(state: State<'_, AppState>) -> Result<AppLockUnlockResult> {
+    let user_id = resolve_applock_user(&state)
+        .ok_or_else(|| QGuardError::NotFound("app PIN is not configured".to_string()))?;
+    let mut record = state
+        .load_applock(&user_id)?
+        .ok_or_else(|| QGuardError::NotFound("app PIN is not configured".to_string()))?;
+    check_lockout(&record)?;
+    let blob = record
+        .biometric_sek
+        .clone()
+        .ok_or_else(|| QGuardError::NotFound("biometric unlock is not set up".to_string()))?;
+    let opened = tauri::async_runtime::spawn_blocking(move || device_privacy::biometric_unlock(&blob))
+        .await
+        .map_err(|e| QGuardError::Crypto(format!("biometric worker failed: {e}")))?;
+    let sek = match opened {
+        Ok(sek) => sek,
+        Err(BiometricFailure::Invalidated) => {
+            // The key is gone for good: forget the blob so the PIN is used.
+            record.biometric_sek = None;
+            state.save_applock(&user_id, &record)?;
+            return Err(BiometricFailure::Invalidated.into());
+        }
+        Err(other) => return Err(other.into()),
+    };
+    let session = unwrap_session_from_sek(&sek, &record.session_wrapped_by_sek)?;
+    record.failed_attempts = 0;
+    record.lockout_until = None;
+    record.device.last_login_at = Utc::now();
+    state.save_applock(&user_id, &record)?;
+    state.set_applock_sek(*sek)?;
+    state.audit_info("applock_unlock", "App unlocked with biometric");
+    Ok(AppLockUnlockResult { session: Some(session), status: status_from(Some(&record), true) })
+}
+
+#[tauri::command]
+pub fn applock_biometric_disable(state: State<'_, AppState>) -> Result<BiometricStatus> {
+    state.require_auth()?;
+    let user_id = state.user_id()?;
+    let mut record = state.load_applock(&user_id)?;
+    if let Some(record) = record.as_mut() {
+        if record.biometric_sek.take().is_some() {
+            state.save_applock(&user_id, record)?;
+        }
+    }
+    device_privacy::biometric_disable();
+    state.audit_info("applock_biometric_disabled", "Biometric unlock turned off");
+    Ok(biometric_status_for(record.as_ref()))
+}
+
 #[tauri::command]
 #[cfg_attr(not(target_os = "android"), allow(unused_mut))]
 pub fn applock_device_integrity() -> Result<DeviceIntegrity> {
@@ -661,6 +889,8 @@ mod tests {
                 app_version: "1.0.0".into(), registered_at: Utc::now(), last_login_at: Utc::now(),
             },
             created_at: Utc::now(),
+            duress: None,
+            biometric_sek: None,
         };
 
         let recovered_sek = open_with_pin(&record, "123456").await.unwrap().unwrap();
@@ -709,7 +939,31 @@ mod tests {
                 app_version: "1.0.0".into(), registered_at: Utc::now(), last_login_at: Utc::now(),
             },
             created_at: Utc::now(),
+            duress: None,
+            biometric_sek: None,
         }
+    }
+
+    #[tokio::test]
+    async fn the_duress_pin_is_recognised_and_only_it() {
+        let duress = seal_duress("911911").await.unwrap();
+        assert!(duress_matches(&duress, "911911").await.unwrap());
+        assert!(!duress_matches(&duress, "123456").await.unwrap());
+        // Its verifier is not the real PIN's verifier for the same digits.
+        let sek = symmetric::random_key();
+        let (salt, real_verifier, _) = seal_pin("911911", &sek).await.unwrap();
+        let ikm = passcode::secret_ikm(KDF_ARGON2ID_V1, &salt, b"911911").unwrap();
+        assert_ne!(passcode::derive_verifier(&salt, &ikm, DURESS_VERIFIER_INFO).unwrap(), real_verifier);
+    }
+
+    #[test]
+    fn the_lock_screen_never_says_a_duress_pin_exists() {
+        let mut record = blank_record();
+        record.duress = Some(DuressPin { salt: vec![1; 16], verifier: "v".into() });
+        assert!(!status_from(Some(&record), false).duress_configured, "locked: not revealed");
+        assert!(status_from(Some(&record), true).duress_configured, "unlocked: the owner sees it");
+        let wiped = signed_out_result();
+        assert!(wiped.session.is_none() && wiped.status.requires_full_auth && !wiped.status.configured);
     }
 
     #[test]

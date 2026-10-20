@@ -522,6 +522,7 @@ async function probeNamedGroups(
   supportsTls13: boolean,
   emit: ObservationSink,
   budgetMs: number = GROUP_PHASE_BUDGET_MS,
+  signal?: AbortSignal,
 ) {
   const unsupportedLocally = localGroupSupport()
   // ML-KEM groups, hybrid or standalone, exist only in the TLS 1.3 key_share.
@@ -574,7 +575,9 @@ async function probeNamedGroups(
 
   /* ── Pass 1: discovery ─────────────────────────────────────────────────── */
   await mapWithConcurrency(groups, GROUP_DISCOVERY_CONCURRENCY, async (group) => {
-    if (Date.now() >= deadline) {
+    /* A cancelled scan stops exactly like one that ran out of budget: the
+       remaining groups are skipped, not failed, and nobody reads the result. */
+    if (Date.now() >= deadline || signal?.aborted) {
       budgetSkipped.push(group)
       return
     }
@@ -644,7 +647,7 @@ async function probeNamedGroups(
     const wanted = confirmationsFor(kind)
 
     for (let attempt = 0; attempt < wanted; attempt += 1) {
-      if (Date.now() >= deadline) break
+      if (Date.now() >= deadline || signal?.aborted) break
       await sleep(pacing())
       const sample = await probeGroup(host, port, group, isPq(group))
       // A confirmation that comes back accepted overturns the discovery result
@@ -992,12 +995,17 @@ async function analyzeTlsResilient(
   host: string,
   port: number,
   deadline = Number.POSITIVE_INFINITY,
+  signal?: AbortSignal,
 ): Promise<{ handshake: TlsAnalysisResult | null; error: string | null; attempts: number }> {
   const maxAttempts = 3
   let lastError: string | null = null
   let attemptsMade = 0
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    if (signal?.aborted) {
+      lastError = lastError ?? 'The assessment was cancelled before the TLS handshake.'
+      break
+    }
     /* Budget is checked BEFORE the attempt, not after it. Checking afterwards
        let every attempt start with the full 15s ceiling however little time was
        left, so the engine routinely overran the deadline it had been given by
@@ -1016,14 +1024,15 @@ async function analyzeTlsResilient(
         handshake: await analyzeTls(host, port, {
           handshakeTimeoutMs: Math.min(PRIMARY_HANDSHAKE_TIMEOUT_MS, remaining),
           deadline,
+          signal,
         }),
         error: null,
         attempts: attempt,
       }
     } catch (err) {
       lastError = (err as Error).message
-      // A definitive answer is not worth retrying.
-      if (!isTransientHandshakeError(lastError) || attempt === maxAttempts) break
+      // A definitive answer is not worth retrying, and nor is a cancelled one.
+      if (signal?.aborted || !isTransientHandshakeError(lastError) || attempt === maxAttempts) break
       // Back off so the retry does not land inside the same rate-limit window
       // that reset the previous attempt — but only if the backoff plus a usable
       // attempt still fit. Sleeping into the deadline wastes the budget twice.
@@ -1044,13 +1053,15 @@ export async function runTlsEngine(
   onObservation?: ObservationSink,
   /** Epoch ms the whole engine must be finished by. Degrades, never throws. */
   deadline: number = Date.now() + GROUP_PHASE_BUDGET_MS + HANDSHAKE_TIMEOUT * 3,
+  /** Stops probing between handshakes when nobody is waiting for the result. */
+  signal?: AbortSignal,
 ): Promise<EngineResult<TlsIntelligence>> {
   return runEngine('tls-intelligence', emptyTls(), async () => {
     const evidence: Evidence[] = []
     const notes: string[] = []
     const emit = observationEmitter(onObservation)
 
-    const { handshake, error, attempts } = await analyzeTlsResilient(host, port, deadline)
+    const { handshake, error, attempts } = await analyzeTlsResilient(host, port, deadline, signal)
     if (!handshake) {
       const data = emptyTls(error)
       notes.push(
@@ -1117,6 +1128,7 @@ export async function runTlsEngine(
       emit,
       // Whatever is left of the engine's slice, minus room for the wrap-up.
       Math.min(GROUP_PHASE_BUDGET_MS, Math.max(2_000, deadline - Date.now() - 1_000)),
+      signal,
     )
     const session = await sessionPromise
 

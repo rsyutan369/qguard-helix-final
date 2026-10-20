@@ -105,6 +105,29 @@ fn forget_own_device_pin(state: &AppState, user_id: &str, device_id: &str) {
             "Revoked device removed from this device's record of the account's devices",
         );
     }
+    if let Ok(this_device) = state.ensure_identity(user_id, platform_device_label()) {
+        forget_ratchet_sessions(state, user_id, &this_device.device_id, &[device_id.to_string()]);
+    }
+}
+
+/// Destroy the ratchet sessions with `peers` (revoked, removed, or re-keyed
+/// devices). Best effort: the send path refuses such devices regardless.
+fn forget_ratchet_sessions(state: &AppState, user_id: &str, local_device: &str, peers: &[String]) {
+    if peers.is_empty() {
+        return;
+    }
+    let forgotten = state
+        .with_ratchet_sessions(user_id, local_device, |book| {
+            peers.iter().filter(|peer| book.forget_peer(peer)).count()
+        })
+        .unwrap_or(0);
+    if forgotten > 0 {
+        let _ = state.persist_ratchet_sessions(user_id);
+        state.audit_info(
+            "ratchet_session_destroyed",
+            &format!("Secure sessions with {forgotten} revoked or re-keyed device(s) destroyed"),
+        );
+    }
 }
 
 #[tauri::command]
@@ -243,6 +266,17 @@ fn judge_devices(
             .collect();
         (book.is_available(), standings, approved, pins)
     })?;
+
+    // A device presenting different keys is not the device any session was
+    // made with: its sessions go now, so nothing is ever read or sealed on
+    // them again (the send path also re-checks the keys on every use).
+    let key_changed: Vec<String> = subjects
+        .iter()
+        .zip(standings.iter())
+        .filter(|(_, standing)| **standing == Some(DeviceStanding::KeyChanged))
+        .map(|(subject, _)| subject.device_id.clone())
+        .collect();
+    forget_ratchet_sessions(state, &user_id, &this_device.device_id, &key_changed);
 
     let mut judged = standings.into_iter().zip(pins);
     let verdicts = checked

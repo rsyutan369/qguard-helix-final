@@ -72,6 +72,91 @@ pub struct DevicePin {
     pub digest: String,
     pub pinned_at: i64,
     pub source: PinSource,
+    /// The user compared this device's safety number with its owner and said
+    /// it matched — in THIS app, on THIS device. Never set from anything the
+    /// relay says. Bound to `digest`: it means nothing for other keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<UserVerification>,
+    /// Call-pairing halves exchanged with this device (see
+    /// `commands::contact_verification`). Secrets: encrypted at rest with the
+    /// rest of the record, never logged, never sent anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing: Option<Pairing>,
+}
+
+/// How the user verified a device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationMethod {
+    /// Safety numbers compared (read aloud, or over another trusted channel).
+    SafetyNumber,
+    /// The QR code was scanned in person.
+    QrCode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserVerification {
+    pub at: i64,
+    pub method: VerificationMethod,
+}
+
+/// One device's half of a call-pairing secret: the hybrid shared secret of an
+/// offer one side sealed to the other's verified identity keys.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingHalf {
+    /// The offer's id; replays are judged by it and by `created_at`.
+    pub offer_id: String,
+    pub created_at: i64,
+    pub secret: [u8; 32],
+}
+
+impl Drop for PairingHalf {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.secret);
+    }
+}
+
+impl std::fmt::Debug for PairingHalf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PairingHalf")
+            .field("offer_id", &self.offer_id)
+            .field("created_at", &self.created_at)
+            .field("secret", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pairing {
+    /// The half this device sealed to the other one.
+    #[serde(default)]
+    pub sent: Option<PairingHalf>,
+    /// The half the other device sealed to this one.
+    #[serde(default)]
+    pub received: Option<PairingHalf>,
+}
+
+/// What can be said about a device's verification, without any secret.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct VerificationView {
+    pub verified: Option<UserVerification>,
+    pub sent: bool,
+    pub received: bool,
+}
+
+impl VerificationView {
+    /// A call phrase can be shown: verified here, and both halves held.
+    pub fn paired(&self) -> bool {
+        self.verified.is_some() && self.sent && self.received
+    }
+}
+
+/// What became of a received pairing half.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HalfReceived {
+    Stored,
+    /// This exact offer was already stored (a repeat delivery).
+    AlreadyHeld,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -224,6 +309,8 @@ impl DevicePinBook {
                 digest: subject.digest.clone(),
                 pinned_at: now,
                 source: PinSource::ThisDevice,
+                verified: None,
+                pairing: None,
             },
         );
         self.dirty = true;
@@ -259,10 +346,152 @@ impl DevicePinBook {
                 digest: subject.digest.clone(),
                 pinned_at: now,
                 source: PinSource::FirstUse,
+                verified: None,
+                pairing: None,
             });
             self.dirty = true;
         }
-        subjects.iter().map(|subject| self.standing(subject)).collect()
+        let standings: Vec<Option<DeviceStanding>> = subjects.iter().map(|subject| self.standing(subject)).collect();
+        // A device presenting different keys is not the device the user
+        // verified: the verification and any call pairing go now, so neither
+        // can be carried over to whoever holds the new keys.
+        for (subject, standing) in subjects.iter().zip(&standings) {
+            if *standing == Some(DeviceStanding::KeyChanged) {
+                self.clear_verification_for(&subject.user_id, &subject.device_id);
+            }
+        }
+        standings
+    }
+
+    fn clear_verification_for(&mut self, user_id: &str, device_id: &str) -> bool {
+        let Some(pin) = self.users.get_mut(user_id).and_then(|user| user.devices.get_mut(device_id)) else {
+            return false;
+        };
+        if pin.verified.is_none() && pin.pairing.is_none() {
+            return false;
+        }
+        pin.verified = None;
+        pin.pairing = None;
+        self.dirty = true;
+        true
+    }
+
+    /// The pin for `subject` if, and only if, its keys are the recorded ones.
+    fn pinned_mut(&mut self, subject: &PinSubject) -> Result<&mut DevicePin> {
+        if !self.available {
+            return Err(QGuardError::Storage(
+                "the device record on this device could not be opened right now".to_string(),
+            ));
+        }
+        match self.standing(subject) {
+            Some(DeviceStanding::Pinned) => {}
+            Some(DeviceStanding::KeyChanged) => {
+                return Err(QGuardError::Trust(format!(
+                    "device {} is presenting different identity keys than the ones recorded for it",
+                    subject.device_id
+                )))
+            }
+            Some(DeviceStanding::New) | None => {
+                return Err(QGuardError::Trust(format!(
+                    "device {} is not one this device has recorded or approved",
+                    subject.device_id
+                )))
+            }
+        }
+        self.users
+            .get_mut(&subject.user_id)
+            .and_then(|user| user.devices.get_mut(&subject.device_id))
+            .ok_or_else(|| QGuardError::NotFound("device pin".to_string()))
+    }
+
+    /// What is known about the user's verification of `subject`. `None` when
+    /// its keys are not the recorded ones (or nothing is recorded).
+    pub fn verification(&self, subject: &PinSubject) -> Option<VerificationView> {
+        if self.standing(subject) != Some(DeviceStanding::Pinned) {
+            return None;
+        }
+        let pin = self.pin(&subject.user_id, &subject.device_id)?;
+        Some(Self::view_of(pin))
+    }
+
+    /// The same, by ids alone — for a call, whose setup has already checked
+    /// the keys against this record. A pairing secret only exists for the keys
+    /// it was made with, so this can never vouch for anyone else.
+    pub fn verification_by_id(&self, user_id: &str, device_id: &str) -> Option<VerificationView> {
+        self.pin(user_id, device_id).map(Self::view_of)
+    }
+
+    fn view_of(pin: &DevicePin) -> VerificationView {
+        let pairing = pin.pairing.as_ref();
+        VerificationView {
+            verified: pin.verified,
+            sent: pairing.is_some_and(|pairing| pairing.sent.is_some()),
+            received: pairing.is_some_and(|pairing| pairing.received.is_some()),
+        }
+    }
+
+    /// Record that the user verified `subject` here. Only a device whose keys
+    /// are the recorded ones can be verified.
+    pub fn mark_verified(&mut self, subject: &PinSubject, method: VerificationMethod, now: i64) -> Result<()> {
+        let pin = self.pinned_mut(subject)?;
+        pin.verified = Some(UserVerification { at: now, method });
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Withdraw the user's verification. The pairing goes with it: it is
+    /// re-made after the device is verified again.
+    pub fn clear_verification(&mut self, subject: &PinSubject) -> bool {
+        if self.standing(subject) != Some(DeviceStanding::Pinned) {
+            return false;
+        }
+        self.clear_verification_for(&subject.user_id, &subject.device_id)
+    }
+
+    /// Store this device's half, just sealed to `subject`. Requires the user's
+    /// verification: nothing is paired with a device the user has not checked.
+    pub fn record_sent_half(&mut self, subject: &PinSubject, half: PairingHalf) -> Result<()> {
+        let pin = self.pinned_mut(subject)?;
+        if pin.verified.is_none() {
+            return Err(QGuardError::Trust(format!(
+                "device {} has not been verified on this device, so no call pairing is made with it",
+                subject.device_id
+            )));
+        }
+        pin.pairing.get_or_insert_with(Pairing::default).sent = Some(half);
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Store the half `subject` sealed to this device. Accepted from a device
+    /// whose keys are the recorded ones even before the user verifies it — it
+    /// is USED only once they do. An older or same-time offer under another id
+    /// is a replay and is refused.
+    pub fn record_received_half(&mut self, subject: &PinSubject, half: PairingHalf) -> Result<HalfReceived> {
+        let pin = self.pinned_mut(subject)?;
+        let pairing = pin.pairing.get_or_insert_with(Pairing::default);
+        if let Some(existing) = pairing.received.as_ref() {
+            if existing.offer_id == half.offer_id {
+                return Ok(HalfReceived::AlreadyHeld);
+            }
+            if half.created_at <= existing.created_at {
+                return Err(QGuardError::Replay(
+                    "this call-pairing offer is older than the one already held; refusing it".to_string(),
+                ));
+            }
+        }
+        pairing.received = Some(half);
+        self.dirty = true;
+        Ok(HalfReceived::Stored)
+    }
+
+    /// Both halves, when the user has verified the device. By ids, for the
+    /// reason given on [`Self::verification_by_id`].
+    pub fn pairing_halves(&self, user_id: &str, device_id: &str) -> Option<(PairingHalf, PairingHalf)> {
+        let pin = self.pin(user_id, device_id)?;
+        pin.verified?;
+        let pairing = pin.pairing.as_ref()?;
+        Some((pairing.sent.clone()?, pairing.received.clone()?))
     }
 
     /// Record a device the user has approved. Only a NEW device can be
@@ -291,6 +520,8 @@ impl DevicePinBook {
                         digest: subject.digest.clone(),
                         pinned_at: now,
                         source: PinSource::Approved,
+                        verified: None,
+                        pairing: None,
                     },
                 );
                 self.dirty = true;
@@ -497,6 +728,91 @@ mod tests {
 
         assert!(DevicePinBook::decode("me", b"not json").is_err());
         assert!(DevicePinBook::decode("me", br#"{"version":9,"users":{}}"#).is_err());
+    }
+
+    fn half(id: &str, at: i64, byte: u8) -> PairingHalf {
+        PairingHalf { offer_id: id.to_string(), created_at: at, secret: [byte; 32] }
+    }
+
+    #[test]
+    fn verification_is_only_for_recorded_keys_and_goes_when_they_change() {
+        let mut book = DevicePinBook::empty("me");
+        let phone = subject("ana", "phone", "k1");
+        book.assess(&[phone.clone()], NOW);
+        assert_eq!(book.verification(&phone).unwrap().verified, None);
+
+        book.mark_verified(&phone, VerificationMethod::SafetyNumber, NOW + 10).unwrap();
+        assert_eq!(book.verification(&phone).unwrap().verified.unwrap().at, NOW + 10);
+        book.record_sent_half(&phone, half("o1", NOW + 11, 1)).unwrap();
+        book.record_received_half(&phone, half("o2", NOW + 12, 2)).unwrap();
+        assert!(book.verification(&phone).unwrap().paired());
+        assert!(book.pairing_halves("ana", "phone").is_some());
+
+        // Negative controls: other keys under the same id, a new device, nobody.
+        let swapped = subject("ana", "phone", "attacker");
+        assert!(book.verification(&swapped).is_none());
+        assert!(book.mark_verified(&swapped, VerificationMethod::QrCode, NOW).is_err());
+        assert!(book.mark_verified(&subject("ana", "tablet", "k9"), VerificationMethod::QrCode, NOW).is_err());
+        assert!(book.mark_verified(&subject("zed", "phone", "z"), VerificationMethod::QrCode, NOW).is_err());
+
+        // The directory presents other keys for the phone: verification and
+        // pairing are destroyed, even though the old keys could come back.
+        assert_eq!(book.assess(&[swapped], NOW + 20), vec![Some(DeviceStanding::KeyChanged)]);
+        let view = book.verification(&phone).unwrap();
+        assert_eq!(view.verified, None);
+        assert!(!view.sent && !view.received);
+        assert!(book.pairing_halves("ana", "phone").is_none());
+    }
+
+    #[test]
+    fn pairing_needs_the_users_verification_and_refuses_replays() {
+        let mut book = DevicePinBook::empty("me");
+        let phone = subject("ana", "phone", "k1");
+        book.assess(&[phone.clone()], NOW);
+        // Not verified: our half is refused, theirs is held but not usable.
+        assert!(book.record_sent_half(&phone, half("o1", NOW, 1)).is_err());
+        assert_eq!(book.record_received_half(&phone, half("t1", NOW + 5, 2)).unwrap(), HalfReceived::Stored);
+        assert!(book.pairing_halves("ana", "phone").is_none());
+        assert!(!book.verification(&phone).unwrap().paired());
+
+        // The same offer again is harmless; an older or equal-time one is a replay.
+        assert_eq!(book.record_received_half(&phone, half("t1", NOW + 5, 2)).unwrap(), HalfReceived::AlreadyHeld);
+        assert!(matches!(book.record_received_half(&phone, half("t0", NOW + 4, 9)), Err(QGuardError::Replay(_))));
+        assert!(matches!(book.record_received_half(&phone, half("t9", NOW + 5, 9)), Err(QGuardError::Replay(_))));
+        // A newer one replaces it.
+        assert_eq!(book.record_received_half(&phone, half("t2", NOW + 6, 3)).unwrap(), HalfReceived::Stored);
+
+        book.mark_verified(&phone, VerificationMethod::QrCode, NOW + 7).unwrap();
+        book.record_sent_half(&phone, half("o1", NOW + 8, 1)).unwrap();
+        let (sent, received) = book.pairing_halves("ana", "phone").unwrap();
+        assert_eq!((sent.secret[0], received.secret[0]), (1, 3));
+
+        // Withdrawing the verification removes the pairing too.
+        assert!(book.clear_verification(&phone));
+        assert!(book.pairing_halves("ana", "phone").is_none());
+        // And from an unrecorded device nothing is stored at all.
+        assert!(book.record_received_half(&subject("ana", "tablet", "k9"), half("x", NOW, 1)).is_err());
+    }
+
+    #[test]
+    fn verification_survives_the_round_trip_and_revocation_removes_it() {
+        let mut book = DevicePinBook::empty("me");
+        let phone = subject("ana", "phone", "k1");
+        book.assess(&[phone.clone()], NOW);
+        book.mark_verified(&phone, VerificationMethod::SafetyNumber, NOW).unwrap();
+        book.record_sent_half(&phone, half("o1", NOW, 1)).unwrap();
+        book.record_received_half(&phone, half("t1", NOW, 2)).unwrap();
+        let restored = DevicePinBook::decode("me", &book.encode().unwrap()).unwrap();
+        assert!(restored.verification(&phone).unwrap().paired());
+        // Debug output never carries a secret.
+        assert!(!format!("{:?}", restored.pin("ana", "phone")).contains("[1, 1"));
+
+        assert!(book.forget_device("ana", "phone"));
+        assert!(book.verification_by_id("ana", "phone").is_none());
+        // Pins written before verification existed still decode.
+        let old = br#"{"version":1,"users":{"ana":{"first_seen_at":1,"devices":{"phone":{"digest":"d","pinned_at":1,"source":"first_use"}}}}}"#;
+        let old = DevicePinBook::decode("me", old).unwrap();
+        assert_eq!(old.verification_by_id("ana", "phone").unwrap().verified, None);
     }
 
     #[test]

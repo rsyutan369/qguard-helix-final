@@ -391,6 +391,8 @@ export function useAgentCollector(enabled: boolean) {
     [authHeaders, fetchAll],
   );
   const createConnector = useCallback((body: Record<string, unknown>) => request('/connectors', { method: 'POST', body: JSON.stringify(body) }, 'Cloud connection registered.'), [request]);
+  /** Derive this account's QGuard Messaging device posture into evidence (same login, server-side). */
+  const syncMessagingPosture = useCallback(() => request('/integrations/qguard-messaging/sync', { method: 'POST' }, 'QGuard Messaging devices imported.'), [request]);
   const createOperatorAction = useCallback((body: Record<string, unknown>) => request('/remediation/operator-actions', { method: 'POST', body: JSON.stringify(body) }, 'Remediation action created.'), [request]);
   const setOperatorStatus = useCallback((id: string, status: string, extra?: Record<string, unknown>) => request(`/remediation/operator-actions/${id}/status`, { method: 'POST', body: JSON.stringify({ status, ...(extra || {}) }) }, `Action ${status}.`), [request]);
   const acknowledgeAlert = useCallback((id: string) => request(`/alerts/${id}/acknowledge`, { method: 'POST' }, 'Alert acknowledged.'), [request]);
@@ -442,7 +444,7 @@ export function useAgentCollector(enabled: boolean) {
     state, error, busy, sseConnected, lastSyncAt, oneTimeToken, summary,
     refresh: fetchAll,
     createCollector, rotateToken, revokeCollector, deleteCollector, updatePolicy,
-    createConnector, createOperatorAction, setOperatorStatus, acknowledgeAlert, resolveAlert,
+    createConnector, syncMessagingPosture, createOperatorAction, setOperatorStatus, acknowledgeAlert, resolveAlert,
     clearOneTimeToken, setError,
   };
 }

@@ -22,11 +22,11 @@ Later phases have a scope paragraph only; each gets its own spec when its phase 
 | --- | --- | --- | --- |
 | 0 | Research, code inventory, specs, baseline | S | **done** (baseline `449c918`) |
 | 1 | PQ Status badge | S–M | **done** (2026-10-16) |
-| 2 | Post-quantum session ratchet | L | not started |
-| 3 | Call verification | M | not started |
-| 4 | Privacy & lock hardening (quick wins) | S–M | not started |
-| 5 | Recovery: social + passkey | M | not started |
-| 6 | Metadata protection: sealed sender, key transparency | L | not started |
+| 2 | Post-quantum session ratchet | L | **built, opt-in** (2026-10-19); live two-device run, hardware test and independent review open |
+| 3 | Call verification | M | **built** (2026-10-19); live two-instance call check open |
+| 4 | Privacy & lock hardening (quick wins) | S–M | **built** (2026-10-19); Android device run + Play deploy open |
+| 5 | Recovery: social + passkey | M | **built** (2026-10-19): history backup + social recovery; passkeys need a decision |
+| 6 | Metadata protection: sealed sender, key transparency | L | discovery review + fixes **done**; sealed sender and KT **designed, need decisions** |
 | 7 | Groups, group calls, screen share | L | not started |
 | 8 | Private on-device AI | M–L | not started |
 | 9 | Resilience mode (offline / mesh) | L | not started |
@@ -48,7 +48,7 @@ Order rationale: the badge goes **before** the ratchet because it reports today'
 - [x] This roadmap
 - [x] **Baseline committed** — `449c918` "qguard-messaging: v1.3.11 security release and v1.3.12 Android fixes" (88 files). Left out on purpose: rebuilt release `.apk`/`.aab` (28 MB of build output), `public/TO_FIX/` screenshots, and a line-ending-only change to `gradlew` (CRLF would break it on Linux).
 - [x] Baseline suites green (2026-10-16, before any roadmap code): Rust **196 passed / 0 failed** (`%LOCALAPPDATA%\qguard-build-shims\run-rust-tests.ps1`), vitest **297/297** in 33 files, `tsc --noEmit` clean.
-- [ ] Decision: ratchet = implement from Signal's published SPQR/Triple-Ratchet spec (recommended) vs. a simplified in-house KEM ratchet for v1 — see ratchet spec §11
+- [~] Decision: ratchet = implement from Signal's published SPQR/Triple-Ratchet spec vs. a simplified KEM ratchet for v1 — see ratchet spec §11. **Taken by default, awaiting the owner's confirmation:** v1 follows the published Double Ratchet + sparse ML-KEM step (SPQR/PQ3 shape) but sends the whole ML-KEM-1024 key occasionally instead of SPQR's erasure-coded chunks (spec §11.1 recommendation: "v1-simple, revisit after measuring real bandwidth"). No libsignal code was read or ported.
 
 ## Phase 1 — PQ Status badge  *(spec: pq-status-badge)*
 
@@ -62,77 +62,117 @@ Order rationale: the badge goes **before** the ratchet because it reports today'
 
 ## Phase 2 — Post-quantum session ratchet  *(spec: pq-ratchet)*
 
-- [ ] 2a Spike & decisions: finalize protocol choice, wire format, signable v2; verify trusted-device history re-seal does not depend on session state
-- [ ] 2b Session store: encrypted-at-rest persistence, write-ahead, bounded skipped keys, zeroize
-- [ ] 2c Symmetric chain + classical DH ratchet (per-message forward secrecy, post-compromise security per round trip)
-- [ ] 2d Sparse ML-KEM-1024 step (post-quantum post-compromise security)
-- [ ] 2e Capability negotiation via device `suite`, one-shot fallback preserved, session reset/recovery
-- [ ] 2f DB migration (envelope without `hybrid_ciphertext` on non-init messages), RLS/constraint review
-- [ ] 2g Tests: roundtrip, out-of-order, loss, replay, header tamper, PCS heal, PQ-step, desync recovery, 1.3.12 interop (both directions)
-- [ ] 2h Feature flag + staged rollout; badge (Phase 1) shows "per-message ratchet"
-- [ ] 2i Docs updated: `cryptographic-design.md`, `security-limitations.md`, CHANGELOG; the "not a per-message ratchet" statements removed only after 2g passes
-- [ ] 2j Gate: Rust suite + two-instance desktop interop test · Android↔Desktop real-device test (**blocked until a device/emulator is available**)
-- [ ] 2k Independent review of the protocol before it is advertised as default (documented in `security-limitations.md` as unaudited until then)
+- [x] 2a Spike & decisions: protocol per the decision above; wire format = header in the envelope JSON, AAD `QGM2|…|sha3(header)`, header appended to the signable only when present (one-shot envelopes verify byte-for-byte as before); the seed is bound to the session, not the conversation (`init_kex_info`). History re-seal checked: `syncMissingDeviceEnvelopes` re-seals from the decrypted plaintext through the normal send path, so it never depends on session state.
+- [x] 2b Session store: `SessionBook` encrypted at rest (`<user>.ratchet-sessions.enc`, device storage key), always written AFTER the message-key ledger; sender saves before the envelope leaves; ≤1000 skipped keys / 30 days; zeroize on drop; unavailable-file and other-device-identity handling.
+- [x] 2c Symmetric chain + classical DH ratchet (`pq_ratchet.rs`)
+- [x] 2d Sparse ML-KEM-1024 step (every 50 messages / 24 h, carried in the header)
+- [x] 2e Negotiation via `suite.ratchet`; any send-side failure falls back to one-shot; reset/recovery: "session unavailable" error → forget + one `session_reset` control on a fresh session; sessions of revoked / re-keyed devices destroyed; manual reset in Device Trust Center and Settings.
+- [x] 2f Migration `036_ratchet_envelope_header.sql` (header-shape CHECK + insert policy admits a null encapsulation only on a ratchet `msg`). Verified on Postgres 16 in Docker: 10/10 policy cases incl. 7 negative controls; the CHECK binds the service role too; pre-existing rows validate. RLS read rules unchanged. **Not applied to the live project** — the app works without it (the client writes `hybrid_ciphertext: null`, which 007 already admits).
+- [x] 2g Tests — Rust: 20 state-machine tests + 13 two-device end-to-end tests (two complete `AppState`s: roundtrip, burst delivered newest-first, ledger reopen, restart on both sides, PQ step over the wire, capability absent either side, own-device copy one-shot, header/body/strip tamper, valid-signature bad-tag does not move the session, foreign signing keys refused, lost session → marker → recovery, unanchored sender gets no session, simultaneous first messages converge, reset, catch-up never starts a session) + 3 interop tests against a verbatim copy of the 1.3.12 envelope type (one-shot parses and verifies there; 1.3.12 envelopes open here; ratchet envelopes fail closed there). Frontend: QGM2 AAD parsing, row → core request, badge.
+- [x] 2h Flag: Settings → Advanced *Per-message ratchet* (off by default, re-publishes the suite), `QGUARD_RATCHET=1/0` operator override and kill switch. Badge: "Per-message ratchet" only for devices with a session that has completed a round trip. Rollout beyond opt-in (beta → default) waits for 2k.
+- [x] 2i Docs: `cryptographic-design.md` (both modes), `security-limitations.md` (default FS = prekey rotation; ratchet opt-in and unreviewed; header metadata; ledger trade-off), CHANGELOG. The 1.3.11 "not a per-message ratchet" statement stays true for the default and is kept.
+- [~] 2j Gate: Rust **231/231** (was 196) · vitest **326/326** · tsc clean · `vite build` OK. The two-instance interop runs in-process (two complete app states, real send/receive paths, JSON relay). Not done: a two-window live desktop run against the real relay, and Android↔Desktop on hardware (**blocked until a device/emulator is available**).
+- [ ] 2k Independent review of the protocol before it is advertised as default (documented in `security-limitations.md` as unaudited until then) — **needs an external reviewer**
 
 ## Phase 3 — Call verification  *(spec: call-verification)*
 
-- [ ] 3.1 Rust: local `user_verified` bit on the device pin, set only by the local verification flow (never from the relay)
-- [ ] 3.2 Rust: pairing-secret exchange over the hybrid identity KEM, dual-signed, stored encrypted at rest
-- [ ] 3.3 Rust: `call_phrase_now` — 4-word phrase from HMAC-SHA3-256(pair secret, call id, time window)
-- [ ] 3.4 UI: "Verified contact" / "Not verified" on incoming-call modal and in-call overlay (extends `describeCallSecurity`)
-- [ ] 3.5 UI: "Ask for their phrase" panel beside the SAS panel (`InCallOverlay.tsx`)
-- [ ] 3.6 Tests incl. negative controls: wrong secret, wrong call id, expired window, replay in another call, key-changed device
-- [ ] 3.7 Gate: Rust + vitest + tsc pass · two-instance live check
+- [x] 3.1 Rust: `verified` on the device pin (`device_pins.rs`), bound to the pinned keys, set only by `contact_mark_verified` after the core re-derives the safety number the user confirmed; destroyed on key change (in `assess`), revocation, or "Remove verification"
+- [x] 3.2 Rust: pairing exchange (`commands/contact_verification.rs`). Changed from the spec's "lower device id sends one encapsulation": EACH side seals a half to the other's verified identity keys (hybrid, bound combiner, dual-signed, ms-timestamped offers; older offers refused as replays); `pair_secret = HKDF-SHA3-256(half_low ‖ half_high, label ‖ device ids ‖ identity digests)`. Reason: no acknowledgement round is needed, and a half from a recorded-but-not-yet-verified device is held until the user verifies it, so the order in which the two people verify does not matter.
+- [x] 3.3 Rust: `call_phrase` / `call_phrase_check` — 4 words (40 bits) from HMAC-SHA3-256(pair secret, call id, 30 s window), ±1 window, rate-limited; embedded 1024-word list (our own; unique 4-letter prefixes)
+- [x] 3.4 UI: `describeCallSecurity` adds the person-level line (verified on {date} / registered but not verified — cloned-voice warning); `CallSetup` reports it from the keys the call was agreed with; incoming modal shows the record for the ringing device id and needs a second tap for a device never approved for that person (§7.1, applied to unrecorded devices only); *Verify* panel in the chat header
+- [x] 3.5 UI: "Ask for their phrase" panel in `InCallOverlay.tsx` with countdown and typed check
+- [x] 3.6 Tests: Rust — word list properties; same phrase both sides; different call id / window ±2 / other secret / replay in another call; pairing refused for unverified, unrecorded, re-keyed (impostor keys under the same device id), tampered, foreign-device and replayed-older offers; verification + pairing destroyed on key change and only re-made by a new exchange; stale/forged safety number refused. Frontend — `describeCallSecurity` for every §3.4 row incl. a negative control (never vouches on an unproven device), incoming assurance, pairing wording, device→identity mapping.
+- [~] 3.7 Gate: Rust **242/242** · vitest **337/337** · tsc clean. Live two-instance check (verify → pair → call → compare phrases → re-key → warning) **not done**: needs two signed-in desktop instances on the real relay and a live call.
 
 ## Phase 4 — Privacy & lock hardening (quick wins)
 
-- [ ] 4.1 Recent-apps / screenshot masking on Android (listed as not implemented in the PIN spec)
-- [ ] 4.2 Biometric unlock (the PIN spec's "fast-follow" seam)
-- [ ] 4.3 Duress PIN / decoy vault / panic wipe (builds on the existing app-lock wipe command in `applock.rs` — confirm exact behavior before designing)
-- [ ] 4.4 Replace remaining SHA-256 leftovers (MFA recovery hashes, attachment `sha256_b64`, privacy-screen PBKDF2-SHA-256 verifier) with SHA3 — with migration for existing data
-- [ ] 4.5 Version drift: `package.json` 0.1.0 vs Cargo/tauri 1.3.12
-- [ ] 4.6 Google Play purchase verification (`/play-billing/verify` returns 501)
+- [~] 4.1 Recent-apps masking, Android (`PrivacyScreen.kt`): API 33+ `setRecentsScreenshotEnabled(false)`, older a cover view drawn in `onPause`. Screenshots stay allowed (PIN spec product decision). On by default, toggle in Settings → Device privacy. Kotlin compiles (`compileArm64ReleaseKotlin`). **Not run on a device** (none available).
+- [~] 4.2 Biometric unlock (`BiometricUnlock.kt` + `applock_biometric_*`): the SEK is wrapped by an AES-256-GCM Android Keystore key usable only through a `BiometricPrompt` `CryptoObject` (strong biometric, invalidated by new enrolment, every use authenticated); offered automatically on the lock screen. Kotlin compiles; **not run on a device**.
+- [x] 4.3 Duress PIN + panic wipe. Confirmed first: `applock_wipe` only deleted the stored session (sign-out), so a real wipe was new. `AppState::panic_wipe` deletes the device storage key FIRST, then every `keys/<user>.*` file, clears memory without flushing, signs out; vault containers stay (open only with the user's recovery kit). Duress PIN: Argon2id verifier with its own context; both checks always run when one is set; a match wipes silently and returns the same "sign in again" result as an expired session; never revealed on the lock screen; cannot equal the real PIN. Settings → *Erase this device* (type ERASE; revokes the device row first, best effort). "Decoy vault" not built — the duress PIN wipes rather than opening a fake profile (a decoy needs a full parallel data set; see Phase 4 notes below).
+- [x] 4.4 SHA3 everywhere it was missing: MFA recovery codes `sha3:<hex>` (migration 037 — Postgres 16 check: FIPS 202 vector, legacy + SHA3 codes single-use, mislabelled hash refused; the app writes SHA3 only after `qguard_mfa_recovery_hash_schemes()` says so, so app and migration can ship in either order); attachment checksum SHA3-256 (`sha3_b64`, SHA-256 still written for older builds, SHA3 decides when present); privacy-screen verifier → Argon2id + HKDF-SHA3-256 in the core, PBKDF2 configs upgraded on next unlock. Kept SHA-256 on purpose: the Play purchase-token ledger key (an opaque identifier shared with the Express API).
+- [x] 4.5 Version drift: `package.json`/lock → 1.3.12, `tools/release.ps1` now sets them too (dry-run verified: exactly the two lockfile lines change). Also fixed: Android app-lock registrations recorded "0.0.0" (`window.__APP_VERSION__` never existed).
+- [~] 4.6 Google Play verification ported into the `billing` Edge Function (`/play-billing/verify` + `/play-billing/rtdn`): WebCrypto RS256 service-account JWT, subscriptionsv2, account binding, one-token-one-account, acknowledge, list-price invoice, RTDN re-fetch + terminal-state fallback; `/health` reports `playVerification`. Checks: `deno check` clean; `tools/billing-edge-check.ts` 20/20 (8 new incl. a real RS256 sign → verify). **Not deployed**; needs the Play service account + `GOOGLE_PLAY_*`/`PLAY_RTDN_TOKEN` secrets (operator), then a live purchase test.
+
+Phase 4 gate: Rust **250/250**, vitest **347/347**, tsc clean; Android Rust compile check — see 4.x notes in the CHANGELOG. Decoy vault: deliberately not built in this pass — it needs a second, plausible data set and a UI that never leaks which one is open; worth its own spec if wanted.
 
 ## Phase 5 — Recovery
 
-- [ ] 5.1 Social recovery: split the recovery secret across trusted devices/contacts (Shamir) with a PIN second factor
-- [ ] 5.2 Passkey-protected recovery
-- [ ] 5.3 Encrypted history backup/restore across devices
+Spec: [2026-10-19-recovery-design.md](../specs/2026-10-19-recovery-design.md). UI: Settings → Recovery (`RecoveryCenterCard.tsx`, `lib/recovery.ts`).
+- [x] 5.1 Social recovery: the recovery key `R` wrapped under `HKDF(S ‖ Argon2id(PIN))`; `S` split k-of-n (`crypto/shamir.rs`, GF(2⁸), table-free arithmetic); each share sealed (hybrid, dual-signed) to one **verified** contact device; a new device asks with a fresh hybrid key; helpers release only after comparing four words out of band. Migration `038_social_recovery.sql` — Postgres 16 check **20/20** (12 negative controls: forged owner, strangers, guardian impersonating another guardian, closed requests…). Rust tests: Shamir every k-of-n to 5-of-7, k−1 shares uniform, FIPS-197 field vectors; end-to-end 3 helpers → 2-of-3 + PIN gives back the exact key; 1 share / wrong PIN / unverified helper / weak PIN / k>n / share for another helper / tampered share / forged request all refused; request consumed after use. **Not done:** a live run with real accounts and the migration applied.
+- [ ] 5.2 Passkey-protected recovery — assessed in the spec §5; needs a decision (native Credential Manager / PRF-capable authenticators)
+- [x] 5.3 Encrypted history backup: the message-key ledger sealed under `R` (AAD binds the account) → `.qgbackup`; restore merges additively and the history still on the relay opens from the ledger. Tests: export refused under a wrong key; restore on a fresh device of the same account; second import adds nothing; another account cannot load it; tampered salt refused. **Not done:** live restore against real relay history.
+
+Phase 5 gate: Rust **258/258**, vitest **349/349**, tsc clean.
 
 ## Phase 6 — Metadata protection
 
-- [ ] 6.1 Sealed sender (today `sealed_sender` is deliberately `false`; the relay sees who talks to whom)
-- [ ] 6.2 Key transparency — requires verifying the current state of the art first (my searches did not confirm it)
-- [ ] 6.3 Private contact discovery review
+Spec: [2026-10-19-metadata-protection-design.md](../specs/2026-10-19-metadata-protection-design.md).
+- [ ] 6.1 Sealed sender — **designed, waiting on decisions** (spec §3.4: paywall model, conversation ids inside the ciphertext, server-signed sender certificate). The relay authenticates the sender on every insert today, so this needs a new anonymous submission path; not started in code because it is the change most able to break delivery.
+- [ ] 6.2 Key transparency — **state of the art checked** (IETF keytrans architecture draft-05, Oct 2025; WhatsApp AKD and Apple CKV deployed; Signal reported Aug 2026, unconfirmed) and **designed, waiting on decisions** (spec §4.4: own log vs. reference implementation, signing-key custody and auditors, hosting).
+- [x] 6.3 Private contact discovery review: 6 findings (spec §2). Fixed: the directory search no longer leaks email local parts or derives usernames from emails; 3-char minimum; 60 searches / 5 min (migration `039_directory_search_hardening.sql`, Postgres 16 check 12/12); client fallback no longer prefix-matches emails, shows the rate-limit message. **Decisions needed** for findings 4 (peers can read the whole `profiles` row incl. email) and 5 (exact-match-only search for strangers).
 
 ## Phase 7 — Groups, group calls, screen share
 
-- [ ] 7.0 Verify what group chat does today (schema has `group`; no group UI found by the inventory — not confirmed)
-- [ ] 7.1 Group messaging (evaluate MLS / RFC 9420 and its post-quantum status before choosing)
-- [ ] 7.2 Group calls
-- [ ] 7.3 Screen share (`getDisplayMedia`; frame crypto is VP8-specific today — check codec coverage)
-- [ ] 7.4 Channels / broadcast
+Spec: `docs/superpowers/specs/2026-10-19-groups-design.md`.
+
+- [x] 7.0 Verify what group chat does today — confirmed: schema and RLS allowed groups, no UI; **found** that any account knowing a conversation id could add itself (fixed, migration 040)
+- [x] 7.1 Group messaging — pairwise fan-out (MLS deferred: no standardized PQ ciphersuite); encrypted name, create/add/remove/leave, sender names; migration 040 verified on Postgres 16 (22/22); vitest + tsc + build green. Not live-tested between devices.
+  - Owner decisions 2026-10-20, **done**:
+    - only the owner renames (the client checks each name message against the server's ownership history);
+    - up to 3 admins; ownership transfer (migration 042, Postgres 32/32).
+- [x] 7.2 Group calls — mesh between up to 3 people (owner decision):
+  - each pair is an unchanged 1:1 link with its own hybrid KEM and frame key;
+  - a shared signal hub routes every signal to exactly one engine;
+  - a link is auto-accepted only within a group call the user accepted.
+  - Unit-tested (routing, admission, mesh pairing). **Not live-tested**: needs three machines.
+- [x] 7.3 Screen share — 1:1 calls on desktop; replaces the camera track on the encrypted VP8 sender (no new codec path). Android needs MediaProjection (not done). Not live-tested.
+- [x] 7.4 Channels / broadcast — built before MLS (owner decision):
+  - per-epoch AES-256-GCM keys in the core; per-post HKDF-SHA3-256 keys; Ed25519 + ML-DSA-65 signed posts;
+  - epoch keys handed out pairwise (hybrid ML-KEM); a new epoch when a reader leaves;
+  - invite codes stored as SHA3-256 hashes; readers can't see each other;
+  - migration 043, Postgres 31/31; Rust 8 tests; vitest.
+  - **Not live-tested.**
 
 ## Phase 8 — Private on-device AI
 
-- [ ] 8.1 Threat model: model reads plaintext → opt-in, off by default, nothing leaves the device
-- [ ] 8.2 Summaries / "catch me up", smart replies, translation (Android: AICore/Gemini Nano where present; desktop: bundled small local model)
-- [ ] 8.3 Never write AI output into the plaintext cache without the user's say-so; honor disappearing-message expiry
+Spec: `docs/superpowers/specs/2026-10-19-on-device-ai-design.md` (§7: cloud mode). **Owner decision 2026-10-20:**
+- cloud models, with the user's own API key: Anthropic Claude Sonnet 5.5 (`claude-sonnet-5-5`) first, then OpenAI (the model id is entered by the user);
+- no download is needed for cloud models.
+
+- [x] 8.1 Threat model — revised for cloud mode (spec §7): message text leaves the device to the chosen provider only when the user asks, in conversations they allowed
+- [x] 8.2 Summaries ("Catch me up"), suggested replies and translation:
+  - the API key is encrypted in the core (5 Rust tests);
+  - the conversation is sent framed as untrusted data, with `<`/`>` escaped — a test caught a closing-tag forgery;
+  - the CSP admits only api.anthropic.com and api.openai.com;
+  - 16 unit tests. **Not tested against the live APIs** (no key in this environment).
+- [x] 8.3 Never sent: disappearing, one-time, scheduled or undecrypted messages, or attachments. Output is memory-only and wiped with the plaintext caches; suggested replies go to the composer, never sent automatically.
 
 ## Phase 9 — Resilience mode
 
-- [ ] 9.1 Store-and-forward + nearby (Bluetooth) delivery on Android; relay fallback
-- [ ] 9.2 Relay outage / block detection and UX
+Spec: `docs/superpowers/specs/2026-10-20-resilience-design.md`.
+
+- [x] 9.1 Store-and-forward and nearby delivery (owner decision: Google Play services):
+  - sealed envelope rows are kept in an encrypted outbox in the core when the relay never answered, and flushed when it answers (expired disappearing messages are dropped);
+  - on Android, Nearby Connections hands the rows to phones in range; received rows go through the normal screening and decryption.
+  - Rust tests (outbox 4, nearby 4) and vitest (outbox, nearby) pass; the Kotlin compiles.
+  - **Not tested between two phones** (none available).
+- [x] 9.2 Relay outage / block detection and UX — offline / relay failing / relay unreachable-but-internet-works / no internet / can't tell, from real probes (relay health + the existing update host); banner with backoff; 10 unit tests. Not tested against a real outage.
 
 ## Phase 10 — QGuard Helix integration & enterprise
 
-- [ ] 10.1 Messenger crypto posture + CBOM published into Helix (Trust Center / Audit Vault) — real data only
-- [ ] 10.2 Retention, legal hold, compliance export
-- [ ] 10.3 SSO/SAML; replace the single hard-coded admin email in `src/lib/admin.ts` with role-based admin
+Spec: `docs/superpowers/specs/2026-10-20-helix-enterprise-design.md`.
+
+- [x] 10.1 Messenger posture into Helix — same login (owner decision; both apps use one Supabase project, verified):
+  - Helix `POST /api/v1/agent-scanner/integrations/qguard-messaging/sync` reads the user's own `messaging_devices` with their token and derives evidence from each device's published suite;
+  - pre-FIPS Kyber devices are graded classical, never PQC-ready;
+  - "Import messenger devices" button in the Collector console;
+  - `npm run check:messaging-posture` 13/13; Helix `tsc` clean.
+- [x] 10.2 Owner decision: **no archive/escrow device**, so message content is never retained for organisations. Metadata retention and endpoint export remain as designed (not built).
+- [x] 10.3 Role-based admin **done** (migration 041). SSO **prepared, not implemented** (owner decision): `docs/superpowers/specs/2026-10-20-sso-preparation.md` — Supabase Pro; Entra ID → Okta → Google Workspace.
 
 ## Phase 11 — iOS
 
-- [ ] 11.1 Feasibility (Tauri mobile iOS, Keychain/Secure Enclave DEK parity, App Store billing)
+- [x] 11.1 Feasibility — `docs/superpowers/specs/2026-10-20-ios-feasibility.md`: feasible; large items are APNs + Notification Service Extension (core memory in the extension must be measured) and CallKit/PushKit; needs Apple account, Mac builds, test iPhones
 
 ---
 

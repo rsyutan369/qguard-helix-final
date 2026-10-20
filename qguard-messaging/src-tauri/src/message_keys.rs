@@ -322,6 +322,76 @@ impl MessageKeyLedger {
         encoded
     }
 
+    /// Every entry, for an encrypted history backup (`crate::history_backup`).
+    /// Same per-entry form as the stored ledger; prekey bookkeeping is local
+    /// to this device and is left out. The caller encrypts and wipes it.
+    pub fn export_backup(&self) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let mut entries: Vec<LedgerFileEntry> = self
+            .entries
+            .iter()
+            .map(|(id, entry)| LedgerFileEntry {
+                id: id.clone(),
+                key: b64.encode(entry.key),
+                bind: b64.encode(entry.binding),
+                at: entry.cached_at,
+            })
+            .collect();
+        let encoded = serde_json::to_vec(&entries)
+            .map(zeroize::Zeroizing::new)
+            .map_err(|e| QGuardError::Storage(format!("encode history backup: {e}")));
+        for entry in entries.iter_mut() {
+            entry.key.zeroize();
+        }
+        encoded
+    }
+
+    /// Merge a backup's entries. FIRST WRITE WINS, exactly as [`Self::remember`]:
+    /// an entry this ledger already has is kept. Returns (added, already held).
+    pub fn import_backup(&mut self, bytes: &[u8]) -> Result<(usize, usize)> {
+        if !self.available {
+            return Err(QGuardError::Storage(
+                "the message key ledger on this device could not be opened, so nothing can be restored right now".to_string(),
+            ));
+        }
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let mut entries: Vec<LedgerFileEntry> = serde_json::from_slice(bytes)
+            .map_err(|e| QGuardError::InvalidInput(format!("history backup contents are malformed: {e}")))?;
+        let (mut added, mut held) = (0usize, 0usize);
+        for entry in entries.iter_mut() {
+            let key_bytes = b64.decode(&entry.key);
+            entry.key.zeroize();
+            let (Ok(mut key_bytes), Ok(binding_bytes)) = (key_bytes, b64.decode(&entry.bind)) else {
+                continue;
+            };
+            if key_bytes.len() != KEY_SIZE
+                || binding_bytes.len() != BINDING_LEN
+                || entry.id.is_empty()
+                || entry.id.len() > MAX_MESSAGE_ID_LEN
+            {
+                key_bytes.zeroize();
+                continue;
+            }
+            if self.entries.contains_key(&entry.id) {
+                key_bytes.zeroize();
+                held += 1;
+                continue;
+            }
+            let mut key = [0u8; KEY_SIZE];
+            key.copy_from_slice(&key_bytes);
+            key_bytes.zeroize();
+            let mut binding = [0u8; BINDING_LEN];
+            binding.copy_from_slice(&binding_bytes);
+            self.entries.insert(entry.id.clone(), LedgerEntry { key, binding, cached_at: entry.at });
+            key.zeroize();
+            added += 1;
+        }
+        if added > 0 {
+            self.unflushed += added;
+        }
+        Ok((added, held))
+    }
+
     /// Rebuild a ledger from its stored form. Malformed entries are skipped —
     /// one bad record must not cost every other cached key.
     pub fn decode(owner: &str, bytes: &[u8], now: i64) -> Result<Self> {

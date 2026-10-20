@@ -496,6 +496,9 @@ async function main() {
     truth.notAssessed.length +
     truth.incompleteEngines.length +
     assessment.task.coverage.exclusions.length +
+    /* Binary files are their own gap row ("Not content-analysed"), never an
+       exclusion: they were collected, and their contents went unread. */
+    (assessment.task.coverage.filesUnsupported > 0 ? 1 : 0) +
     (assessment.task.coverage.truncated ? 1 : 0);
   assert(
     (gapsRegister?.rows.length ?? 0) === expectedGaps,

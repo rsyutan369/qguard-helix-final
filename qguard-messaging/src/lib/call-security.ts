@@ -31,7 +31,35 @@ export function describeCallSecurity(state: CallState, peerName: string): CallSe
       ? { ok: true, text: "Only the device registered for them can decrypt this call." }
       : { ok: false, text: "The answering device could not be verified. Compare the safety number before sharing anything sensitive." });
   }
+
+  // The PERSON, not just the device: only said about a device the core proved
+  // holds the recorded keys (an unproven device is covered by the line above).
+  const assurance = describeContactAssurance(state, name);
+  if (assurance) lines.push(assurance);
   return lines;
+}
+
+/** "12 Oct 2026"-style date for a unix-seconds timestamp. */
+export function formatVerifiedDate(seconds: number): string {
+  return new Date(seconds * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+/**
+ * Whether the user has checked who holds the other device (design §3.4).
+ * A voice can be cloned, so "it sounded like them" is not on this list.
+ */
+export function describeContactAssurance(state: CallState, name: string): CallSecurityLine | null {
+  if (state.phase !== "connected" || !state.peerVerified) return null;
+  if (state.peerVerifiedAt === null) {
+    return {
+      ok: false,
+      text: `Registered device, but you haven't verified ${name} yet. A cloned voice can't prove who it is — verify them in your chat, or ask a question only they would know.`,
+    };
+  }
+  const when = formatVerifiedDate(state.peerVerifiedAt);
+  return state.peerPaired
+    ? { ok: true, text: `You verified ${name}'s device on ${when}. Ask them for their phrase to be sure it's still them.` }
+    : { ok: true, text: `You verified ${name}'s device on ${when}. A call phrase becomes available once their app has paired with yours.` };
 }
 
 /** True when any line is a warning — the badge must not read as fully secure. */

@@ -371,7 +371,7 @@ export function ShorLab({ onResult, active }: ShorLabProps) {
                 </div>
                 <DistributionChart distribution={result.distribution} accent={QSR.live} peakMarkers={combMarkers} measured={result.measuredPhase} />
                 <p className="mt-1.5 text-[10.5px] leading-snug" style={{ color: QSR.inkFaint }}>
-                  Every exponent that is not a multiple of the period cancelled. The peaks are what survived — this is
+                  Every outcome not close to a multiple of 2<sup>t</sup>/r cancelled. The peaks are what survived — this is
                   interference doing the work, not search.
                 </p>
               </div>
@@ -591,7 +591,7 @@ export function ResourceEstimatorLab() {
               onChange={(value) => setModel(value)}
               options={[
                 { value: 'gidney-ekera-2021' as EstimatorModel, label: '2021', title: 'Gidney & Ekerå: 20M qubits, 8 hours' },
-                { value: 'gidney-2025' as EstimatorModel, label: '2025', title: 'Gidney: under 1M qubits, about 5 days' },
+                { value: 'gidney-2025' as EstimatorModel, label: '2025', title: 'Gidney: under 1M qubits, under a week' },
               ]}
             />
             <p className="mt-1.5 text-[10.5px] leading-snug" style={{ color: QSR.inkFaint }}>
@@ -712,7 +712,7 @@ export function MoscaLab({ defaultShelfLife }: { defaultShelfLife: number }) {
       subtitle={
         <>
           X + Y &gt; Z. If the time your data must stay secret plus the time your migration takes exceeds the time until a
-          quantum computer exists, then data moving on your network right now is already lost. <Cite source="mosca" inline />
+          quantum computer exists, then some of the data you send before migration finishes will still need to be secret when it becomes readable. <Cite source="mosca" inline />
         </>
       }
       right={<ProvenanceBadge kind="model" />}

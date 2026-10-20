@@ -354,7 +354,7 @@ export function verifyAnchors(): AnchorCheck[] {
     pass: rsa2025.physicalQubits < 1e6,
   });
   checks.push({
-    label: 'Gidney 2025 — runtime approximately five days',
+    label: 'Gidney 2025 — runtime under one week (model anchor ≈ 5 days)',
     metric: 'days',
     published: 5,
     computed: rsa2025.runtimeSeconds / 86400,
@@ -419,6 +419,7 @@ export function formatCount(value: number): string {
  * figures below as current.
  */
 export const REPORTED_DEVICES: Array<{ name: string; qubits: number; year: number; note: string }> = [
+  { name: 'Caltech tweezer array', qubits: 6100, year: 2025, note: 'Neutral-atom array of individually controlled qubits (Nature, Sept 2025); not yet a full gate-based processor.' },
   { name: 'IBM Condor', qubits: 1121, year: 2023, note: 'Largest superconducting chip announced by IBM.' },
   { name: 'Atom Computing', qubits: 1180, year: 2023, note: 'Neutral-atom array; qubit count, not logical qubits.' },
   { name: 'IBM Heron R2', qubits: 156, year: 2024, note: 'Fewer qubits, far better error rates — the direction that matters.' },

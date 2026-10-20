@@ -715,7 +715,17 @@ export const CRYPTO_PATTERNS: CryptoPattern[] = [
   // ── DSA / ElGamal Asymmetric (Pattern 65) ─────────────────────────────────
   {
     id: 65,
-    regex: /\bDSA\b|DSACryptoServiceProvider|ElGamal/i,
+    /* `\bDSA\b` alone also matches the DSA inside ML-DSA, SLH-DSA and FN-DSA,
+       because the hyphen is a word boundary. A scan of a post-quantum codebase
+       then filed every ML-DSA-87 signature as quantum-vulnerable discrete-log
+       cryptography — 84 of 103 such findings on this repository's own src/lib.
+
+       The DSA token is also CASE-SENSITIVE: the algorithm is named "DSA"
+       (Java, Python, Ruby, OpenSSL, PEM headers), while a lowercase `dsa` is an
+       identifier — in noble-post-quantum every `const dsa = ml_dsa44` was
+       inventoried as classical DSA. Lowercase API idioms keep their own rules
+       (`generateKeyPair('dsa')`, `crypto/dsa`, `OpenSSL::PKey::DSA`). */
+    regex: /(?<!(?:ML|SLH|FN|Ml|Slh|Fn|ml|slh|fn)[-_ ]?)\bDSA\b|DSACryptoServiceProvider|\b(?:ElGamal|Elgamal|elgamal|ELGAMAL)\b/,
     label: 'DSA / ElGamal',
     category: 'Asymmetric',
     algorithm: 'DSA/ElGamal',

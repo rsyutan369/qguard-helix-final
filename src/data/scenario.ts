@@ -119,14 +119,14 @@ export const SCENARIOS: Scenario[] = [
     id: "tls-compromise",
     name: "TLS / HTTPS Quantum Compromise",
     shortName: "TLS/HTTPS Session Intercept",
-    category: "Man-In-The-Middle (MITM)",
+    category: "Retroactive Decryption",
     objectiveText: "Record browser-to-server TLS handshakes in bulk and solve their key agreements once a CRQC exists, stripping archived HTTPS sessions down to plaintext.",
-    narrative: "Public-key handshakes are recorded in bulk and the key agreement behind each is solved afterwards. Published resource estimates put one RSA-2048 solve at roughly 8 hours on a 20-million-qubit machine, so this is retroactive decryption of stored sessions, not a real-time man-in-the-middle.",
-    impactText: "Direct exploitation of active human internet traffic, leaking corporate bank accounts and administrative credentials.",
+    narrative: "Public-key handshakes are recorded in bulk and the key agreement behind each is solved afterwards. Published resource estimates put one RSA-2048 factorisation at roughly 8 hours on a 20-million-qubit machine (Gidney & Ekerå 2021) or under a week on under a million (Gidney 2025), so this is retroactive decryption of stored sessions, not a real-time man-in-the-middle.",
+    impactText: "Retroactive exposure of recorded HTTPS traffic, leaking banking sessions and administrative credentials captured before migration.",
     impactBullets: [
-      "Real-time decryption of e-banking and operational administration data",
-      "Injection of malicious code blocks straight into active browser sessions",
-      "Complete visual compromise of supposedly secure green-lock portals"
+      "Retroactive decryption of recorded e-banking and administration sessions",
+      "Exposure of credentials and tokens that are still valid or reused",
+      "Active interception only becomes possible if certificate signing keys are also recovered"
     ],
     targets: ["E-Banking Portal", "Enterprise SaaS Core", "Gov Portal Gateway"],
     nodeNames: {
@@ -157,10 +157,10 @@ export const SCENARIOS: Scenario[] = [
     shortName: "SWIFT Financial Intercept",
     category: "Financial Sector",
     objectiveText: "Target high-density SWIFT alliance routers using quantum mathematics to decrypt trans-national payment requests.",
-    narrative: "An economic warfare vector. Attackers compromise key pipelines linking central banks, enabling retroactive or active interception of SWIFT payment scripts.",
+    narrative: "An economic warfare vector. Attackers compromise key pipelines linking central banks, enabling retroactive or active interception of SWIFT payment messages.",
     impactText: "Catastrophic systemic disruption of the G7 banking systems, creating mass asset losses.",
     impactBullets: [
-      "Manipulation of large-value automated clearing house (ACH) transfer blocks",
+      "Manipulation of large-value payment instructions (RTGS systems such as Fedwire)",
       "Expose G7 settlement files, sovereign balance books & treasury allocations",
       "Total crash of global trust, locking commercial exchange networks indefinitely"
     ],
@@ -373,11 +373,11 @@ export const SCENARIOS: Scenario[] = [
     shortName: "PQC Migration Failure",
     category: "Operational Risk Testing",
     objectiveText: "Simulate operational chaos caused by incorrect post-quantum cryptography migrations, including handshake timeouts and network latency spikes.",
-    narrative: "Most vendors ignore migration friction. Enabling PQC standard testing causes connection failures due to packet size increases of ML-KEM/ML-DSA certificates over legacy networks.",
+    narrative: "Most vendors ignore migration friction. Enabling PQC standard testing causes connection failures due to the larger ML-KEM key shares and ML-DSA certificates crossing legacy networks.",
     impactText: "Massive system outages and handshake failures resulting from cryptographic incompatibility.",
     impactBullets: [
       "handshake time-out spikes caused by large packet payloads of PQC Keys",
-      "Network routing dropping packets due to size variations from standard IP rules",
+      "Middleboxes and MTU limits dropping or fragmenting oversized handshake packets",
       "Incompatible legacy certificates causing complete failure of internal VPN tunnels"
     ],
     targets: ["Edge Proxy Grid", "Legacy VPN Concentrator", "Active Certificate Center"],
@@ -445,7 +445,7 @@ export const SCENARIOS: Scenario[] = [
     shortName: "Quantum Supply Chain",
     category: "Software Signing Integrity",
     objectiveText: "Decrypt master Software Signer Certificates to inject trojans into trusted enterprise software updates and firmware scripts.",
-    narrative: "An insidious attack vector. Attackers target trusted third-party vendors. By factorizing software signing keys, they inject malware containing authentic signatures.",
+    narrative: "An insidious attack vector. Attackers target trusted third-party vendors. By recovering software signing keys with Shor's algorithm, they inject malware carrying valid signatures.",
     impactText: "Infiltration of thousands of secure networks trusting signed developer update packages.",
     impactBullets: [
       "Inject backdoors into critical kernel-level software update suites",

@@ -6,8 +6,9 @@
 .DESCRIPTION
   Removes the three-place version footgun (a missed bump silently breaks
   auto-update). Given -Version 1.3.0 it:
-    1. Sets the version in src-tauri/tauri.conf.json, src-tauri/Cargo.toml, and the
-       website download label (../src/app/qguard-messaging/_shared.tsx).
+    1. Sets the version in src-tauri/tauri.conf.json, src-tauri/Cargo.toml,
+       package.json (+ package-lock.json), and the website download label
+       (../src/app/qguard-messaging/_shared.tsx).
     2. Runs tools/release-installer.ps1 (loads the updater signing key from
        src-tauri/updater-keys, builds with AV-lock retries, copies the exe to
        public/downloads, writes a signed latest.json).
@@ -53,6 +54,8 @@ $repo  = Split-Path -Parent $app                 # repo root
 $tauriConf = Join-Path $app  "src-tauri\tauri.conf.json"
 $cargo     = Join-Path $app  "src-tauri\Cargo.toml"
 $shared    = Join-Path $repo "src\app\qguard-messaging\_shared.tsx"
+$pkg       = Join-Path $app  "package.json"
+$pkgLock   = Join-Path $app  "package-lock.json"
 
 # Replace via .NET regex and write UTF-8 WITHOUT a BOM (WriteAllText default),
 # so JSON/TOML/TSX stay byte-clean. Throws if the pattern is missing, so a
@@ -67,13 +70,18 @@ function Set-FileRegex {
   [System.IO.File]::WriteAllText($Path, $new)
 }
 
-Write-Host "[release] Setting version to $Version across 3 files" -ForegroundColor Cyan
+Write-Host "[release] Setting version to $Version across 5 files" -ForegroundColor Cyan
 # tauri.conf.json: the single top-level "version": "x.y.z"
 Set-FileRegex $tauriConf '("version":\s*")\d+\.\d+\.\d+(")' "`${1}$Version`${2}"
 # Cargo.toml: only the FIRST 'version = "x.y.z"' (the [package] one, not deps)
 Set-FileRegex $cargo '(?m)^(version = ")\d+\.\d+\.\d+(")' "`${1}$Version`${2}" 1
 # Website label: version: 'x.y.z' in MESSAGING_INSTALLER
 Set-FileRegex $shared "(version:\s*')\d+\.\d+\.\d+(')" "`${1}$Version`${2}"
+# package.json: the top-level "version" (the first one in the file).
+Set-FileRegex $pkg '("version":\s*")\d+\.\d+\.\d+(")' "`${1}$Version`${2}" 1
+# package-lock.json: the root entry and packages[""] - the first two, never a dependency's.
+Set-FileRegex $pkgLock '(?s)^(\{\s*"name":\s*"qguard-messaging",\s*"version":\s*")\d+\.\d+\.\d+(")' "`${1}$Version`${2}" 1
+Set-FileRegex $pkgLock '("":\s*\{\s*"name":\s*"qguard-messaging",\s*"version":\s*")\d+\.\d+\.\d+(")' "`${1}$Version`${2}" 1
 
 # Build + sign + publish (reuse the existing tool; do not duplicate its logic).
 Write-Host "[release] Building + signing + publishing installer..." -ForegroundColor Cyan

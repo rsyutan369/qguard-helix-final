@@ -934,6 +934,8 @@ function moduleForEvidence(evidence: ScannerEvidenceRecord): string {
       return 'app-crypto-library-scanner'
     case 'jwt-algorithm':
       return 'cloud-api-security-scanner'
+    case 'messaging-device-crypto':
+      return 'app-crypto-library-scanner'
     case 'config-reference':
       return evidence.protocol?.toLowerCase().includes('ssh') ? 'ssh-security-scanner' : 'critical-infrastructure-scanner'
     default:

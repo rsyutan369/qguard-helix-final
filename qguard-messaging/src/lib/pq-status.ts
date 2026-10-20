@@ -1,5 +1,6 @@
 import type { DevicePinStanding } from "@/lib/device-pins";
 import { CURRENT_KEM_COMBINER, kemInteroperates, usesBoundCombiner, type PublishedSuite } from "@/lib/kem-suite";
+import { advertisesRatchet, type RatchetSessionSummary } from "@/lib/ratchet-status";
 
 /**
  * What can truthfully be said about how well ONE conversation is protected
@@ -57,10 +58,29 @@ export interface PqExcludedDevice {
 
 export interface PqOpenedMessage {
   incoming: boolean;
-  /** `hybrid_ciphertext.suite.kem_combiner` of the envelope that opened; "" = legacy. */
-  kemCombiner: string;
+  /**
+   * The hybrid combiner behind the key that opened it; "" = legacy. Null for a
+   * ratchet message whose session this device no longer holds: no evidence
+   * either way about the combiner.
+   */
+  kemCombiner: string | null;
   /** The core's verdict: the sender's keys are the ones registered for that device. */
   authenticated: boolean;
+  /** How the core says the key was established; absent from older cores. */
+  protocol?: "one_shot" | "ratchet";
+}
+
+/**
+ * The core's report on post-quantum ratchet sessions (`messaging_ratchet_status`),
+ * or null when it was not asked or did not answer.
+ */
+export interface PqRatchetEvidence {
+  /** This device advertises the ratchet and starts sessions. */
+  enabledHere: boolean;
+  /** The session file opened; false = sessions cannot be judged right now. */
+  available: boolean;
+  /** The active session per delivery device id, as the core holds it. */
+  sessions: Record<string, RatchetSessionSummary>;
 }
 
 export interface PqStatusEvidence {
@@ -74,6 +94,8 @@ export interface PqStatusEvidence {
   pinsUnavailable: boolean;
   /** `PrekeyStatus.forwardSecrecyHealthy/Summary` for this device, or null when not measured. */
   forwardSecrecy: { healthy: boolean; summary: string } | null;
+  /** Ratchet sessions, in the core's words; null/absent when not measured. */
+  ratchet?: PqRatchetEvidence | null;
 }
 
 export interface PqStatus {
@@ -156,8 +178,9 @@ export function derivePqStatus(evidence: PqStatusEvidence): PqStatus {
   // ---- Incoming: what the contact's app actually used ----------------------
   const incoming = opened.filter((message) => message.incoming);
   // A ciphertext's combiner label is the same string a device publishes as its
-  // capability (`KemCombiner::label`).
-  const incomingLegacy = incoming.filter((message) => message.kemCombiner !== CURRENT_KEM_COMBINER).length;
+  // capability (`KemCombiner::label`). A null combiner is a ratchet message
+  // whose session is gone from this device: it proves nothing either way.
+  const incomingLegacy = incoming.filter((message) => message.kemCombiner !== null && message.kemCombiner !== CURRENT_KEM_COMBINER).length;
   const unauthenticated = incoming.filter((message) => !message.authenticated).length;
   if (incoming.length > 0) {
     if (incomingLegacy > 0) {
@@ -190,6 +213,45 @@ export function derivePqStatus(evidence: PqStatusEvidence): PqStatus {
     } else {
       lines.push({ ok: true, text: `Every device receiving these messages is one this app recorded for ${name}. (This proves the device, not the person — compare safety numbers to be sure who holds it.)` });
     }
+  }
+
+  // ---- Per-message ratchet, in the core's own words --------------------------
+  // Said only when this device runs it: with the ratchet off, every message is
+  // a one-shot envelope and the forward-secrecy line below is the whole story.
+  const ratchet = evidence.ratchet;
+  if (ratchet?.enabledHere && devices.length > 0) {
+    if (!ratchet.available) {
+      lines.push({ ok: false, text: "This device's secure sessions could not be opened right now, so messages go out one-shot sealed until they can." });
+    } else {
+      const withoutCapability = devices.filter((device) => !advertisesRatchet(device.suite));
+      const capable = devices.filter((device) => advertisesRatchet(device.suite));
+      const ratcheted = capable.filter((device) => ratchet.sessions[device.deviceId]?.ratcheted);
+      const waiting = capable.filter((device) => !ratchet.sessions[device.deviceId]?.ratcheted);
+      if (ratcheted.length > 0) {
+        lines.push({
+          ok: true,
+          text: ratcheted.length === devices.length
+            ? `Per-message ratchet: every message to ${name} gets its own key, deleted once used, and a stolen device key stops working after the next reply. A fresh ML-KEM-1024 exchange is mixed in at least every 50 messages or 24 hours.`
+            : `Per-message ratchet on ${ratcheted.map((device) => device.label).join(", ")}: each message gets its own key, deleted once used, with a fresh ML-KEM-1024 exchange at least every 50 messages or 24 hours.`,
+        });
+      }
+      if (waiting.length > 0) {
+        lines.push({
+          ok: true,
+          text: `${waiting.map((device) => device.label).join(", ")}: the per-message ratchet ${plural(waiting.length, "starts", "start")} with the next message and takes full effect once ${name} replies.`,
+        });
+      }
+      if (withoutCapability.length > 0) {
+        lines.push({
+          ok: true,
+          text: `${withoutCapability.map((device) => device.label).join(", ")} ${plural(withoutCapability.length, "does", "do")} not support the per-message ratchet yet, so messages to ${plural(withoutCapability.length, "it", "them")} are one-shot sealed (still post-quantum; forward secrecy per prekey rotation).`,
+        });
+      }
+    }
+  }
+  const incomingRatchet = incoming.filter((message) => message.protocol === "ratchet").length;
+  if (incomingRatchet > 0) {
+    lines.push({ ok: true, text: `${incomingRatchet} of the last ${incoming.length} ${plural(incoming.length, "message", "messages")} from ${name} arrived on a per-message ratchet session.` });
   }
 
   // ---- Forward secrecy, in the core's own words -----------------------------

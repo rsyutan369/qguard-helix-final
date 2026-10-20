@@ -10,9 +10,10 @@ use crate::device_pins::{identity_digest, DeviceStanding, PinSubject};
 use crate::error::{QGuardError, Result};
 use crate::identity::{verify_identity_bundle, platform_device_label};
 use crate::message_crypto::{
-    decrypt_message_with_key, encrypt_message_with_key, message_signable,
-    EncryptedMessageEnvelope, MessageKind, MessageSigningContext,
+    decrypt_message_with_key, encrypt_message_with_key, encrypt_ratchet_message, message_signable,
+    EncryptedMessageEnvelope, MessageAddress, MessageKind, MessageSigningContext,
 };
+use crate::pq_ratchet::{self, HeaderKind, InitContext, InitMaterial, RatchetHeader, Session, SessionSummary};
 use crate::prekeys::{verify_prekey_signature, PrekeyKind, PrekeySignature};
 use crate::ratchet::RatchetSession;
 use crate::state::AppState;
@@ -96,6 +97,17 @@ pub enum SenderVerification {
     UnapprovedDevice,
 }
 
+/// How a message's key was established.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageProtocol {
+    /// Its own hybrid encapsulation to a prekey of this device.
+    OneShot,
+    /// A post-quantum ratchet session (`crate::pq_ratchet`). Known from the
+    /// header, which both signatures and the AEAD tag cover.
+    Ratchet,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct DecryptedMessage {
     pub message_id: String,
@@ -104,6 +116,11 @@ pub struct DecryptedMessage {
     /// True only for `SenderVerification::RegisteredDevice`.
     pub authenticated: bool,
     pub sender_verification: SenderVerification,
+    pub protocol: MessageProtocol,
+    /// Hybrid combiner behind this message's key: the ciphertext's own for a
+    /// one-shot envelope, the seeding one for a ratchet session. `None` when
+    /// this device can no longer tell (the session is gone).
+    pub kem_combiner: Option<String>,
 }
 
 /// The fields of an envelope that are enough to re-derive its message key and
@@ -127,9 +144,14 @@ pub struct EnvelopeKeyRequest {
     pub counter: u64,
     pub envelope: EncryptedEnvelope,
     pub aad: Vec<u8>,
-    pub hybrid_ciphertext: HybridCiphertext,
+    #[serde(default)]
+    pub hybrid_ciphertext: Option<HybridCiphertext>,
+    #[serde(default)]
     pub prekey_id: String,
+    #[serde(default)]
     pub prekey_kind: String,
+    #[serde(default)]
+    pub ratchet: Option<RatchetHeader>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -186,9 +208,10 @@ struct KeyTransport<'a> {
     counter: u64,
     sealed: &'a EncryptedEnvelope,
     aad: &'a [u8],
-    hybrid_ciphertext: &'a HybridCiphertext,
+    hybrid_ciphertext: Option<&'a HybridCiphertext>,
     prekey_id: &'a str,
     prekey_kind: &'a str,
+    ratchet: Option<&'a RatchetHeader>,
 }
 
 impl<'a> KeyTransport<'a> {
@@ -203,9 +226,10 @@ impl<'a> KeyTransport<'a> {
             counter: envelope.counter,
             sealed: &envelope.envelope,
             aad: &envelope.aad,
-            hybrid_ciphertext: &envelope.hybrid_ciphertext,
+            hybrid_ciphertext: envelope.hybrid_ciphertext.as_ref(),
             prekey_id: &envelope.prekey_id,
             prekey_kind: &envelope.prekey_kind,
+            ratchet: envelope.ratchet.as_ref(),
         }
     }
 
@@ -220,20 +244,38 @@ impl<'a> KeyTransport<'a> {
             counter: request.counter,
             sealed: &request.envelope,
             aad: &request.aad,
-            hybrid_ciphertext: &request.hybrid_ciphertext,
+            hybrid_ciphertext: request.hybrid_ciphertext.as_ref(),
             prekey_id: &request.prekey_id,
             prekey_kind: &request.prekey_kind,
+            ratchet: request.ratchet.as_ref(),
         }
     }
 
+    /// The info string the hybrid encapsulation was bound to: the
+    /// conversation for a one-shot envelope, the session for a ratchet seed.
     fn kex_info(&self) -> String {
-        message_kex_info(
-            self.conversation_id,
-            self.sender_user_id,
-            self.recipient_user_id,
-            self.sender_device_id,
-            self.recipient_device_id,
-        )
+        match self.ratchet {
+            Some(header) => pq_ratchet::init_kex_info(
+                &header.session,
+                self.sender_user_id,
+                self.recipient_user_id,
+                self.sender_device_id,
+                self.recipient_device_id,
+            ),
+            None => message_kex_info(
+                self.conversation_id,
+                self.sender_user_id,
+                self.recipient_user_id,
+                self.sender_device_id,
+                self.recipient_device_id,
+            ),
+        }
+    }
+
+    fn hybrid(&self) -> Result<&'a HybridCiphertext> {
+        self.hybrid_ciphertext.ok_or_else(|| {
+            QGuardError::InvalidInput("this envelope carries no hybrid encapsulation".to_string())
+        })
     }
 
     /// Recompute the AAD from the fields and require it to equal the AAD the
@@ -245,15 +287,37 @@ impl<'a> KeyTransport<'a> {
     /// never display one sender / conversation / counter while having been
     /// sealed under another.
     fn verify_aad(&self) -> Result<()> {
-        let expected = crate::message_crypto::message_aad(
-            self.message_id,
-            self.conversation_id,
-            self.sender_user_id,
-            self.recipient_user_id,
-            self.sender_device_id,
-            self.recipient_device_id,
-            self.counter,
-        );
+        // A ratchet envelope binds its header digest too (`QGM2`), so a header
+        // swapped between envelopes fails here before any key is touched.
+        let expected = match self.ratchet {
+            Some(header) => {
+                header.validate()?;
+                crate::message_crypto::message_aad_v2(
+                    self.message_id,
+                    self.conversation_id,
+                    self.sender_user_id,
+                    self.recipient_user_id,
+                    self.sender_device_id,
+                    self.recipient_device_id,
+                    self.counter,
+                    header,
+                )
+            }
+            None => crate::message_crypto::message_aad(
+                self.message_id,
+                self.conversation_id,
+                self.sender_user_id,
+                self.recipient_user_id,
+                self.sender_device_id,
+                self.recipient_device_id,
+                self.counter,
+            ),
+        };
+        if self.ratchet.is_some_and(|header| u64::from(header.n) != self.counter) {
+            return Err(QGuardError::Trust(
+                "ratchet envelope counter does not match its header; refusing it".to_string(),
+            ));
+        }
         if expected != self.aad {
             return Err(QGuardError::Trust(
                 "message metadata does not match the associated data it was sealed under; refusing it"
@@ -272,6 +336,13 @@ impl<'a> KeyTransport<'a> {
 #[tauri::command]
 pub async fn messaging_send_encrypted_message(
     state: State<'_, AppState>,
+    request: SendMessageRequest,
+) -> Result<EncryptedMessageEnvelope> {
+    send_encrypted_message(&state, request)
+}
+
+pub(crate) fn send_encrypted_message(
+    state: &AppState,
     request: SendMessageRequest,
 ) -> Result<EncryptedMessageEnvelope> {
     state.require_user_auth(&request.sender_user_id)?;
@@ -316,6 +387,28 @@ pub async fn messaging_send_encrypted_message(
         } else {
             (&request.recipient.signed_prekey, "signed_prekey")
         };
+
+    // A session with the recipient device when both sides want one. The
+    // sender's copy to ITS OWN device stays one-shot: its own-history path
+    // never depends on a session. Any failure falls back to one-shot, which
+    // every build can open — the PQ status badge shows which mode was used.
+    let to_own_device = request.recipient_user_id == request.sender_user_id
+        && request.recipient_device_id == identity_bundle.device_id;
+    if !to_own_device
+        && state.ratchet_enabled()
+        && pq_ratchet::peer_supports(request.recipient.identity.suite.as_ref())
+    {
+        match send_on_session(state, &request, &identity_bundle.device_id, prekey, prekey_kind) {
+            Ok(envelope) => return Ok(envelope),
+            Err(error) => state.audit_info(
+                "ratchet_send_fell_back",
+                &format!(
+                    "Ratchet session to device {} unavailable ({error}); sent as a one-shot envelope",
+                    request.recipient_device_id
+                ),
+            ),
+        }
+    }
 
     let kex_info = message_kex_info(
         &request.conversation_id,
@@ -402,6 +495,146 @@ pub async fn messaging_send_encrypted_message(
         "message_sent",
         "Encrypted message envelope created for relay storage",
     );
+    Ok(envelope)
+}
+
+/// Seal `request` on the ratchet session with its recipient device, starting
+/// one if there is none worth using. The session is saved BEFORE the envelope
+/// is returned: a chain position must never be handed out twice, and a crash
+/// after this point can only cost a message that was never sent.
+fn send_on_session(
+    state: &AppState,
+    request: &SendMessageRequest,
+    local_device: &str,
+    prekey: &RecipientPrekeyBundle,
+    prekey_kind: &str,
+) -> Result<EncryptedMessageEnvelope> {
+    let user_id = request.sender_user_id.as_str();
+    let peer = request.recipient_device_id.as_str();
+    let now = chrono::Utc::now().timestamp();
+    // Nothing may advance a session whose spent keys could not be recorded.
+    if !state.with_message_keys(user_id, |ledger| ledger.is_available())? {
+        return Err(QGuardError::Storage("the message key ledger is unavailable".to_string()));
+    }
+    let peer_signing = pq_ratchet::signing_digest(
+        &request.recipient.identity.ed25519_identity_public,
+        &request.recipient.identity.mldsa_identity_public,
+    );
+
+    let existing = state.with_ratchet_sessions(user_id, local_device, |book| {
+        if !book.is_available() {
+            return Err(QGuardError::Storage("ratchet sessions could not be opened".to_string()));
+        }
+        Ok(book
+            .active(peer, now)
+            // The device must still present the keys the session was made
+            // with: a re-keyed device gets a fresh session, never the old one.
+            .filter(|session| session.peer_signing == peer_signing)
+            // An unanswered seed must still be openable: once the peer has
+            // rotated the prekey it was sealed to, start again on the new one.
+            .filter(|session| {
+                session.pending_init().is_none_or(|init| {
+                    init.prekey_kind != "signed_prekey" || init.prekey_id == request.recipient.signed_prekey.prekey_id
+                })
+            })
+            .cloned())
+    })??;
+
+    let fresh = existing.is_none();
+    let mut session = match existing {
+        Some(session) => session,
+        None => {
+            let session_id = pq_ratchet::new_session_id();
+            let kex_info = pq_ratchet::init_kex_info(
+                &session_id,
+                user_id,
+                &request.recipient_user_id,
+                local_device,
+                peer,
+            );
+            let combiner = KemCombiner::for_peer_suite(request.recipient.identity.suite.as_ref());
+            let (hybrid_ciphertext, shared) =
+                encapsulate_with(&prekey.x25519_public, &prekey.mlkem_public, kex_info.as_bytes(), combiner)?;
+            let shared = Zeroizing::new(shared);
+            let ctx = InitContext {
+                session_id: &session_id,
+                initiator_device: local_device,
+                responder_device: peer,
+                hybrid_digest: pq_ratchet::hybrid_digest(&hybrid_ciphertext),
+            };
+            Session::initiate(
+                &shared,
+                &ctx,
+                &peer_signing,
+                InitMaterial {
+                    hybrid_ciphertext,
+                    prekey_id: prekey.prekey_id.clone(),
+                    prekey_kind: prekey_kind.to_string(),
+                },
+                now,
+            )?
+        }
+    };
+
+    let (header, message_key) = session.next_send(now)?;
+    let seed = match header.kind {
+        HeaderKind::Init => session
+            .pending_init()
+            .map(|init| (init.hybrid_ciphertext.clone(), init.prekey_id.clone(), init.prekey_kind.clone())),
+        HeaderKind::Msg => None,
+    };
+    let combiner = session.init_combiner.clone();
+    let envelope = {
+        let identity_guard = state
+            .identity
+            .lock()
+            .map_err(|_| QGuardError::Storage("identity lock poisoned".to_string()))?;
+        let identity = identity_guard
+            .as_ref()
+            .ok_or_else(|| QGuardError::NotFound("identity".to_string()))?;
+        encrypt_ratchet_message(
+            MessageAddress {
+                conversation_id: &request.conversation_id,
+                sender_user_id: user_id,
+                recipient_user_id: &request.recipient_user_id,
+                sender_device_id: local_device,
+                recipient_device_id: peer,
+            },
+            header,
+            &message_key,
+            seed,
+            &combiner,
+            request.kind.clone().unwrap_or(MessageKind::Text),
+            request.plaintext.as_bytes(),
+            MessageSigningContext {
+                ed25519_secret: &identity.signing.ed25519_secret,
+                mldsa_secret: &identity.signing.mldsa_secret,
+                ed25519_public: &identity.signing.ed25519_public,
+                mldsa_public: &identity.signing.mldsa_public,
+            },
+        )?
+    };
+
+    state.with_ratchet_sessions(user_id, local_device, |book| {
+        if fresh {
+            book.put(session)
+        } else {
+            book.update(session)
+        }
+    })?;
+    if !state.persist_ratchet_sessions(user_id)? {
+        return Err(QGuardError::Storage("the ratchet session could not be saved".to_string()));
+    }
+    state.touch_telemetry(
+        "message",
+        if fresh {
+            "New post-quantum ratchet session seeded with a fresh ML-KEM-1024/X25519 encapsulation"
+        } else {
+            "Message key advanced on the post-quantum ratchet session"
+        },
+        100,
+    );
+    state.audit_info("message_sent", "Encrypted ratchet envelope created for relay storage");
     Ok(envelope)
 }
 
@@ -540,7 +773,7 @@ fn verify_sender_identity(
 }
 
 /// What a device pin compares for this device (see `crate::device_pins`).
-fn pin_subject_of(identity: &RecipientIdentityBundle) -> PinSubject {
+pub(crate) fn pin_subject_of(identity: &RecipientIdentityBundle) -> PinSubject {
     PinSubject {
         user_id: identity.user_id.clone(),
         device_id: identity.device_id.clone(),
@@ -640,7 +873,7 @@ fn decapsulate_for(state: &AppState, transport: &KeyTransport) -> Result<Zeroizi
     Ok(Zeroizing::new(decapsulate(
         &x25519_secret,
         &mlkem_secret,
-        transport.hybrid_ciphertext,
+        transport.hybrid()?,
         transport.kex_info().as_bytes(),
     )?))
 }
@@ -738,6 +971,14 @@ pub async fn messaging_receive_encrypted_message(
     envelope: EncryptedMessageEnvelope,
     sender_identity: Option<RecipientIdentityBundle>,
 ) -> Result<DecryptedMessage> {
+    receive_encrypted_message(&state, envelope, sender_identity)
+}
+
+pub(crate) fn receive_encrypted_message(
+    state: &AppState,
+    envelope: EncryptedMessageEnvelope,
+    sender_identity: Option<RecipientIdentityBundle>,
+) -> Result<DecryptedMessage> {
     let session_user_id = envelope.recipient_user_id.clone();
     state.require_user_auth(&session_user_id)?;
     let _key_scope = state.lock_key_scope()?;
@@ -776,6 +1017,27 @@ pub async fn messaging_receive_encrypted_message(
         (verification, _) => verification,
     };
     let authenticated = sender_verification == SenderVerification::RegisteredDevice;
+    let protocol = if envelope.ratchet.is_some() { MessageProtocol::Ratchet } else { MessageProtocol::OneShot };
+
+    // What the badge may say about how this message was protected. For a
+    // ratchet message the combiner is a property of its session, known while
+    // this device still holds the session; an init also names it in its seed.
+    let mut kem_combiner = envelope
+        .hybrid_ciphertext
+        .as_ref()
+        .map(|hybrid| hybrid.suite.kem_combiner.clone());
+    if let Some(header) = envelope.ratchet.as_ref() {
+        let from_session = state
+            .with_ratchet_sessions(&session_user_id, &identity_bundle.device_id, |book| {
+                book.find(&envelope.sender_device_id, &header.session)
+                    .map(|session| session.init_combiner.clone())
+            })
+            .ok()
+            .flatten();
+        if from_session.is_some() {
+            kem_combiner = from_session;
+        }
+    }
 
     let cache_key = format!(
         "{}:{}:{}:{}",
@@ -797,6 +1059,8 @@ pub async fn messaging_receive_encrypted_message(
             plaintext,
             authenticated,
             sender_verification,
+            protocol,
+            kem_combiner,
         });
     }
 
@@ -818,7 +1082,22 @@ pub async fn messaging_receive_encrypted_message(
         Some(plaintext) => (plaintext, true),
         None => {
             let transport = KeyTransport::of(&envelope);
-            let (plaintext, message_key) = open_with_prekey(&state, &envelope, &transport)?;
+            let (plaintext, message_key) = match envelope.ratchet.as_ref() {
+                Some(header) => {
+                    let opened = open_ratchet(
+                        state,
+                        &envelope,
+                        &transport,
+                        header,
+                        sender_verification,
+                        &session_user_id,
+                        &identity_bundle.device_id,
+                    )?;
+                    kem_combiner = Some(opened.kem_combiner);
+                    (opened.plaintext, opened.message_key)
+                }
+                None => open_with_prekey(state, &envelope, &transport)?,
+            };
             state.remember_message_key(
                 &session_user_id,
                 &envelope.message_id,
@@ -826,9 +1105,18 @@ pub async fn messaging_receive_encrypted_message(
                 &envelope.envelope.tag,
                 &message_key,
             );
-            // This prekey was still needed. If it is a retired one, that is
-            // evidence it is not ready to be destroyed yet.
-            state.note_prekey_needed(&session_user_id, &envelope.prekey_id);
+            if !envelope.prekey_id.is_empty() {
+                // This prekey was still needed. If it is a retired one, that
+                // is evidence it is not ready to be destroyed yet.
+                state.note_prekey_needed(&session_user_id, &envelope.prekey_id);
+            }
+            if envelope.ratchet.is_some() {
+                // The session moved past this message's key, which now exists
+                // only in the ledger: ledger first, then the sessions. A
+                // failure leaves both dirty in memory; the next write catches
+                // up, and until then the copy on disk can still re-derive.
+                let _ = state.persist_ratchet_sessions(&session_user_id);
+            }
             (plaintext, false)
         }
     };
@@ -842,10 +1130,11 @@ pub async fn messaging_receive_encrypted_message(
         .insert(cache_key, plaintext.clone());
     state.touch_telemetry(
         "message",
-        match (opened_from_ledger, exact_local_device) {
-            (true, _) => "Encrypted message opened with its recorded message key (no prekey needed)",
-            (false, true) => "Encrypted message decrypted locally with its device prekey",
-            (false, false) => "Synced trusted-device envelope decrypted locally with its device prekey",
+        match (opened_from_ledger, protocol, exact_local_device) {
+            (true, _, _) => "Encrypted message opened with its recorded message key (no prekey needed)",
+            (false, MessageProtocol::Ratchet, _) => "Encrypted message opened with its post-quantum ratchet session key",
+            (false, MessageProtocol::OneShot, true) => "Encrypted message decrypted locally with its device prekey",
+            (false, MessageProtocol::OneShot, false) => "Synced trusted-device envelope decrypted locally with its device prekey",
         },
         100,
     );
@@ -855,7 +1144,102 @@ pub async fn messaging_receive_encrypted_message(
         plaintext,
         authenticated,
         sender_verification,
+        protocol,
+        kem_combiner,
     })
+}
+
+/// The stable prefix of "this message belongs to a ratchet session this device
+/// does not hold". The UI matches on it to start a fresh session with the
+/// sender (see `messaging_reset_ratchet_session`) and to explain the gap,
+/// instead of reporting a broken cipher. Keep in sync with
+/// `RATCHET_SESSION_MISSING_MARKER` in src/lib/ratchet-status.ts.
+const RATCHET_SESSION_MISSING_MARKER: &str = "secure session unavailable";
+
+struct RatchetOpened {
+    plaintext: Vec<u8>,
+    message_key: Zeroizing<[u8; 32]>,
+    kem_combiner: String,
+}
+
+/// Open a ratchet envelope addressed to this device.
+///
+/// Every change to a session happens on a CLONE that is committed only after
+/// the AEAD tag verifies, so a malformed or hostile header can never move real
+/// state. The caller has already verified both signatures, the AAD (which
+/// binds the header) and the sender's registered identity.
+fn open_ratchet(
+    state: &AppState,
+    envelope: &EncryptedMessageEnvelope,
+    transport: &KeyTransport,
+    header: &RatchetHeader,
+    sender_verification: SenderVerification,
+    user_id: &str,
+    local_device: &str,
+) -> Result<RatchetOpened> {
+    header.validate()?;
+    if envelope.recipient_device_id != local_device {
+        return Err(QGuardError::NotFound(
+            "this ratchet message was sealed to another of your devices".to_string(),
+        ));
+    }
+    let now = chrono::Utc::now().timestamp();
+    let peer = envelope.sender_device_id.as_str();
+    let peer_signing = pq_ratchet::signing_digest(&envelope.sender_ed25519_public, &envelope.sender_mldsa_public);
+
+    let existing = state.with_ratchet_sessions(user_id, local_device, |book| {
+        book.find(peer, &header.session).cloned()
+    })?;
+
+    if let Some(session) = existing {
+        if session.peer_signing != peer_signing {
+            return Err(QGuardError::Trust(format!(
+                "ratchet message claims session {} but is signed by a key that session was never established with; refusing it",
+                header.session
+            )));
+        }
+        let mut trial = session.clone();
+        let key = trial.recv(header, now)?;
+        let plaintext = symmetric::decrypt(&key, transport.sealed, transport.aad)?;
+        let kem_combiner = trial.init_combiner.clone();
+        let session_id = trial.id.clone();
+        state.with_ratchet_sessions(user_id, local_device, |book| {
+            book.update(trial);
+            book.promote(peer, &session_id);
+        })?;
+        return Ok(RatchetOpened { plaintext, message_key: key, kem_combiner });
+    }
+
+    if header.kind == HeaderKind::Msg {
+        return Err(QGuardError::Crypto(format!(
+            "{RATCHET_SESSION_MISSING_MARKER}: this message belongs to secure session {} with device {peer}, which this device does not hold (it was reset, expired, or never started here). A new session is started with the next message you send them.",
+            header.session
+        )));
+    }
+
+    // An init this device has not seen: the seed comes from our prekey.
+    let hybrid = transport.hybrid()?;
+    let shared = decapsulate_for(state, transport)?;
+    let ctx = InitContext {
+        session_id: &header.session,
+        initiator_device: peer,
+        responder_device: local_device,
+        hybrid_digest: pq_ratchet::hybrid_digest(hybrid),
+    };
+    let kem_combiner = hybrid.suite.kem_combiner.clone();
+    if sender_verification != SenderVerification::RegisteredDevice {
+        // Not a device this device will hold a session with (unregistered or
+        // not yet approved): open this one message from the seed alone, as a
+        // one-shot envelope would be, and keep nothing.
+        let key = pq_ratchet::init_message_key(&shared, &ctx, header)?;
+        let plaintext = symmetric::decrypt(&key, transport.sealed, transport.aad)?;
+        return Ok(RatchetOpened { plaintext, message_key: key, kem_combiner });
+    }
+    let mut session = Session::accept(&shared, &ctx, header, &peer_signing, &kem_combiner, now)?;
+    let key = session.recv(header, now)?;
+    let plaintext = symmetric::decrypt(&key, transport.sealed, transport.aad)?;
+    state.with_ratchet_sessions(user_id, local_device, |book| book.put(session))?;
+    Ok(RatchetOpened { plaintext, message_key: key, kem_combiner })
 }
 
 /// Errors that say "this envelope will never open here", as opposed to "try
@@ -914,10 +1298,32 @@ pub async fn messaging_cache_envelope_key(
     }
 
     let transport = KeyTransport::of_request(&request);
+    if transport.ratchet.is_some_and(|header| header.kind == HeaderKind::Msg) {
+        // Its key comes from a session, not a prekey: no prekey depends on
+        // it, and it is recorded when it is opened.
+        return Ok(EnvelopeKeyOutcome {
+            status: EnvelopeKeyStatus::Unreadable,
+            reason: Some("ratchet message: its key comes from the session, not a prekey".to_string()),
+        });
+    }
     let derived = transport
         .verify_aad()
         .and_then(|_| decapsulate_for(&state, &transport))
-        .and_then(|shared_secret| per_message_key(&shared_secret, &transport))
+        .and_then(|shared_secret| match transport.ratchet {
+            // A ratchet seed, recorded from the seed alone: no signature
+            // here, so no session is started on its strength.
+            Some(header) => pq_ratchet::init_message_key(
+                &shared_secret,
+                &InitContext {
+                    session_id: &header.session,
+                    initiator_device: transport.sender_device_id,
+                    responder_device: transport.recipient_device_id,
+                    hybrid_digest: pq_ratchet::hybrid_digest(transport.hybrid()?),
+                },
+                header,
+            ),
+            None => per_message_key(&shared_secret, &transport),
+        })
         .and_then(|key| {
             // Proof that the key is right: it has to open the ciphertext.
             symmetric::decrypt(&key, transport.sealed, transport.aad)
@@ -1074,6 +1480,111 @@ pub fn messaging_delete_encrypted_message(
     Ok(true)
 }
 
+/// What the app can truthfully say about ratchet sessions on this device.
+#[derive(Clone, Debug, Serialize)]
+pub struct RatchetStatus {
+    /// This install advertises the ratchet and starts sessions.
+    pub enabled: bool,
+    /// `QGUARD_RATCHET` overrides the setting (`Some`), or not (`None`).
+    pub env_override: Option<bool>,
+    /// The session file could be opened. False means "cannot tell", not "none".
+    pub available: bool,
+    /// The protocol label this build speaks.
+    pub protocol: String,
+    /// Active session per requested peer device; absent = no session.
+    pub sessions: std::collections::HashMap<String, SessionSummary>,
+}
+
+const MAX_STATUS_PEERS: usize = 64;
+
+fn ratchet_status_for(state: &AppState, user_id: &str, peer_device_ids: &[String]) -> Result<RatchetStatus> {
+    if peer_device_ids.len() > MAX_STATUS_PEERS {
+        return Err(QGuardError::InvalidInput(format!(
+            "at most {MAX_STATUS_PEERS} devices can be asked about at once"
+        )));
+    }
+    let local_device = state.ensure_identity(user_id, platform_device_label())?.device_id;
+    let now = chrono::Utc::now().timestamp();
+    let (available, sessions) = state.with_ratchet_sessions(user_id, &local_device, |book| {
+        let sessions = peer_device_ids
+            .iter()
+            .filter_map(|peer| book.summary_for(peer, now).map(|summary| (peer.clone(), summary)))
+            .collect();
+        (book.is_available(), sessions)
+    })?;
+    Ok(RatchetStatus {
+        enabled: state.ratchet_enabled(),
+        env_override: pq_ratchet::env_override(),
+        available,
+        protocol: pq_ratchet::RATCHET_PROTOCOL.to_string(),
+        sessions,
+    })
+}
+
+/// Session facts for the PQ status badge and the dashboard. No key material.
+#[tauri::command]
+pub fn messaging_ratchet_status(
+    state: State<'_, AppState>,
+    user_id: Option<String>,
+    peer_device_ids: Vec<String>,
+) -> Result<RatchetStatus> {
+    let user_id = state.resolve_user_id(user_id)?;
+    let _key_scope = state.lock_key_scope()?;
+    ratchet_status_for(&state, &user_id, &peer_device_ids)
+}
+
+/// Settings → Advanced: advertise the ratchet (and start sessions) or not.
+/// The caller re-publishes this device's suite so peers see the change.
+#[tauri::command]
+pub fn messaging_set_ratchet_enabled(
+    state: State<'_, AppState>,
+    user_id: Option<String>,
+    enabled: bool,
+) -> Result<RatchetStatus> {
+    let user_id = state.resolve_user_id(user_id)?;
+    let _key_scope = state.lock_key_scope()?;
+    state.set_ratchet_enabled(enabled)?;
+    state.audit_info(
+        "ratchet_setting_changed",
+        if enabled {
+            "Post-quantum session ratchet turned on for this device"
+        } else {
+            "Post-quantum session ratchet turned off for this device; new messages are one-shot envelopes"
+        },
+    );
+    ratchet_status_for(&state, &user_id, &[])
+}
+
+/// Forget the ratchet session(s) with one peer device, or with every device
+/// when none is named. The next message to that device starts a fresh session
+/// from its prekey — the same path every first message takes. Returns whether
+/// anything was forgotten.
+#[tauri::command]
+pub fn messaging_reset_ratchet_session(
+    state: State<'_, AppState>,
+    user_id: Option<String>,
+    peer_device_id: Option<String>,
+) -> Result<bool> {
+    let user_id = state.resolve_user_id(user_id)?;
+    let _key_scope = state.lock_key_scope()?;
+    let local_device = state.ensure_identity(&user_id, platform_device_label())?.device_id;
+    let forgotten = state.with_ratchet_sessions(&user_id, &local_device, |book| match peer_device_id.as_deref() {
+        Some(peer) => usize::from(book.forget_peer(peer)),
+        None => book.forget_all(),
+    })?;
+    if forgotten > 0 {
+        state.persist_ratchet_sessions(&user_id)?;
+        state.audit_info(
+            "ratchet_session_reset",
+            &match peer_device_id.as_deref() {
+                Some(peer) => format!("Secure session with device {peer} reset; the next message starts a new one"),
+                None => format!("{forgotten} secure session(s) reset; the next message to each device starts a new one"),
+            },
+        );
+    }
+    Ok(forgotten > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1227,5 +1738,565 @@ mod tests {
             format!("{error:?}").contains("does not match the associated data"),
             "expected an AAD mismatch, got {error:?}"
         );
+    }
+}
+
+/// Two complete devices — each its own `AppState`, data directory, identity,
+/// prekeys, ledger and session file — talking through the real send and
+/// receive paths. The relay is modelled as a JSON round trip of each envelope.
+#[cfg(test)]
+mod ratchet_tests {
+    use super::*;
+    use crate::test_support::TestDevice;
+
+    /// The messaging side of a test device.
+    trait Messaging {
+        fn send_to(&self, peer: &TestDevice, text: &str) -> EncryptedMessageEnvelope;
+        fn open_from(&self, sender: &TestDevice, envelope: &EncryptedMessageEnvelope) -> Result<DecryptedMessage>;
+        fn status_with(&self, peer: &TestDevice) -> Option<SessionSummary>;
+        fn forget_decrypted_cache(&self);
+    }
+
+    impl Messaging for TestDevice {
+        fn send_to(&self, peer: &TestDevice, text: &str) -> EncryptedMessageEnvelope {
+            let envelope = send_encrypted_message(
+                &self.state,
+                SendMessageRequest {
+                    conversation_id: "conv-1".to_string(),
+                    sender_user_id: self.user.clone(),
+                    recipient_user_id: peer.user.clone(),
+                    recipient_device_id: peer.device_id.clone(),
+                    plaintext: text.to_string(),
+                    kind: Some(MessageKind::Text),
+                    recipient: peer.key_bundle(),
+                },
+            )
+            .expect("send");
+            relay(&envelope)
+        }
+
+        fn open_from(&self, sender: &TestDevice, envelope: &EncryptedMessageEnvelope) -> Result<DecryptedMessage> {
+            receive_encrypted_message(&self.state, envelope.clone(), Some(sender.identity_row()))
+        }
+
+        fn status_with(&self, peer: &TestDevice) -> Option<SessionSummary> {
+            ratchet_status_for(&self.state, &self.user, &[peer.device_id.clone()])
+                .expect("status")
+                .sessions
+                .remove(&peer.device_id)
+        }
+
+        fn forget_decrypted_cache(&self) {
+            self.state.decrypted_message_cache.lock().unwrap().clear();
+        }
+    }
+
+    /// What the relay stores and hands back.
+    fn relay(envelope: &EncryptedMessageEnvelope) -> EncryptedMessageEnvelope {
+        serde_json::from_value(serde_json::to_value(envelope).unwrap()).unwrap()
+    }
+
+    fn opened(device: &TestDevice, sender: &TestDevice, envelope: &EncryptedMessageEnvelope, text: &str) {
+        let message = device.open_from(sender, envelope).expect("open");
+        assert_eq!(message.plaintext, text);
+        assert!(message.authenticated);
+        assert_eq!(message.protocol, MessageProtocol::Ratchet);
+        assert_eq!(message.kem_combiner.as_deref(), Some(crate::crypto::CURRENT_KEM_COMBINER));
+    }
+
+    fn sign_as(device: &TestDevice, envelope: &mut EncryptedMessageEnvelope) {
+        let identity = device.state.identity.lock().unwrap();
+        let signing = &identity.as_ref().unwrap().signing;
+        envelope.sender_ed25519_public = signing.ed25519_public.clone();
+        envelope.sender_mldsa_public = signing.mldsa_public.clone();
+        envelope.message_signature =
+            crate::crypto::signatures::dual_sign(&signing.ed25519_secret, &signing.mldsa_secret, &message_signable(envelope))
+                .unwrap();
+    }
+
+    #[test]
+    fn two_devices_converse_on_one_session() {
+        let alice = TestDevice::new(true);
+        let bob = TestDevice::new(true);
+
+        let first = alice.send_to(&bob, "hello bob");
+        let header = first.ratchet.clone().expect("a capable peer gets a ratchet envelope");
+        assert_eq!(header.kind, HeaderKind::Init);
+        assert!(first.hybrid_ciphertext.is_some(), "an init carries its seed");
+        assert!(first.aad.starts_with(b"QGM2|"));
+        opened(&bob, &alice, &first, "hello bob");
+
+        let reply = bob.send_to(&alice, "hi alice");
+        let reply_header = reply.ratchet.clone().unwrap();
+        assert_eq!(reply_header.kind, HeaderKind::Msg);
+        assert_eq!(reply_header.session, header.session, "the responder answers on the session it was offered");
+        assert!(reply.hybrid_ciphertext.is_none(), "an ordinary ratchet message carries no encapsulation");
+        assert!(reply.prekey_id.is_empty());
+        opened(&alice, &bob, &reply, "hi alice");
+
+        for round in 0..6 {
+            let burst: Vec<_> = (0..3).map(|i| alice.send_to(&bob, &format!("a{round}.{i}"))).collect();
+            for (i, envelope) in burst.iter().enumerate().rev() {
+                assert_eq!(envelope.ratchet.as_ref().unwrap().kind, HeaderKind::Msg);
+                opened(&bob, &alice, envelope, &format!("a{round}.{i}")); // newest first
+            }
+            let back = bob.send_to(&alice, &format!("b{round}"));
+            opened(&alice, &bob, &back, &format!("b{round}"));
+        }
+        let summary = bob.status_with(&alice).expect("bob holds the session");
+        assert!(summary.ratcheted);
+        assert_eq!(summary.session_id, header.session);
+        assert!(alice.status_with(&bob).unwrap().ratcheted);
+    }
+
+    #[test]
+    fn a_reopened_message_comes_from_the_ledger_not_the_session() {
+        let alice = TestDevice::new(true);
+        let bob = TestDevice::new(true);
+        let first = alice.send_to(&bob, "once");
+        opened(&bob, &alice, &first, "once");
+        bob.forget_decrypted_cache();
+        // The chain has moved past this key; only the ledger can open it now.
+        opened(&bob, &alice, &first, "once");
+    }
+
+    #[test]
+    fn sessions_and_spent_keys_survive_a_restart_on_both_sides() {
+        let alice = TestDevice::new(true);
+        let bob = TestDevice::new(true);
+        let first = alice.send_to(&bob, "before");
+        opened(&bob, &alice, &first, "before");
+        let reply = bob.send_to(&alice, "reply");
+        opened(&alice, &bob, &reply, "reply");
+
+        let alice = alice.restart();
+        let bob = bob.restart();
+        assert!(bob.status_with(&alice).is_some(), "the session was written to disk");
+        // History still opens after the restart (from the ledger)...
+        opened(&bob, &alice, &first, "before");
+        // ...and the conversation carries on where it left off.
+        let after = alice.send_to(&bob, "after");
+        assert_eq!(after.ratchet.as_ref().unwrap().kind, HeaderKind::Msg);
+        opened(&bob, &alice, &after, "after");
+        let again = bob.send_to(&alice, "again");
+        opened(&alice, &bob, &again, "again");
+    }
+
+    #[test]
+    fn a_post_quantum_step_happens_on_the_message_cadence() {
+        let alice = TestDevice::new(true);
+        let bob = TestDevice::new(true);
+        let first = alice.send_to(&bob, "0");
+        opened(&bob, &alice, &first, "0");
+        let mut saw_offer = false;
+        let mut saw_answer = false;
+        for i in 0..(pq_ratchet::PQ_STEP_EVERY_MESSAGES + 4) {
+            let from_bob = bob.send_to(&alice, &format!("b{i}"));
+            let header = from_bob.ratchet.as_ref().unwrap();
+            saw_offer |= header.pq_offer.is_some();
+            saw_answer |= header.pq_answer.is_some();
+            opened(&alice, &bob, &from_bob, &format!("b{i}"));
+            let from_alice = alice.send_to(&bob, &format!("a{i}"));
+            let header = from_alice.ratchet.as_ref().unwrap();
+            saw_offer |= header.pq_offer.is_some();
+            saw_answer |= header.pq_answer.is_some();
+            opened(&bob, &alice, &from_alice, &format!("a{i}"));
+        }
+        assert!(saw_offer && saw_answer, "an ML-KEM-1024 offer and its answer must cross the wire");
+        assert!(alice.status_with(&bob).unwrap().pq_steps >= 1);
+        assert!(bob.status_with(&alice).unwrap().pq_steps >= 1);
+    }
+
+    #[test]
+    fn a_peer_without_the_capability_gets_a_one_shot_envelope() {
+        let alice = TestDevice::new(true);
+        let bob = TestDevice::new(false);
+        let envelope = alice.send_to(&bob, "plain");
+        assert!(envelope.ratchet.is_none());
+        let json = serde_json::to_value(&envelope).unwrap();
+        assert!(json.get("ratchet").is_none(), "a one-shot envelope must not grow a field");
+        assert!(json["hybrid_ciphertext"].is_object());
+        assert!(envelope.aad.starts_with(b"QGM1|"));
+        let message = bob.open_from(&alice, &envelope).unwrap();
+        assert_eq!(message.plaintext, "plain");
+        assert_eq!(message.protocol, MessageProtocol::OneShot);
+        assert!(alice.status_with(&bob).is_none(), "no session was started");
+
+        // And with the capability off on the SENDER, nothing starts either.
+        let carol = TestDevice::new(false);
+        let dave = TestDevice::new(true);
+        assert!(carol.send_to(&dave, "x").ratchet.is_none());
+    }
+
+    #[test]
+    fn the_copy_to_your_own_device_stays_one_shot() {
+        let alice = TestDevice::new(true);
+        let own = send_encrypted_message(
+            &alice.state,
+            SendMessageRequest {
+                conversation_id: "conv-1".to_string(),
+                sender_user_id: alice.user.clone(),
+                recipient_user_id: alice.user.clone(),
+                recipient_device_id: alice.device_id.clone(),
+                plaintext: "note to self".to_string(),
+                kind: Some(MessageKind::Text),
+                recipient: alice.key_bundle(),
+            },
+        )
+        .unwrap();
+        assert!(own.ratchet.is_none());
+        assert_eq!(alice.open_from(&alice, &own).unwrap().plaintext, "note to self");
+    }
+
+    #[test]
+    fn a_tampered_envelope_is_refused_and_never_moves_the_session() {
+        let alice = TestDevice::new(true);
+        let bob = TestDevice::new(true);
+        let first = alice.send_to(&bob, "seed");
+        opened(&bob, &alice, &first, "seed");
+        let genuine = alice.send_to(&bob, "genuine");
+
+        // Relay edits: header, ciphertext, stripping the header. The
+        // signatures catch each one.
+        let mut header_edit = genuine.clone();
+        header_edit.ratchet.as_mut().unwrap().n += 1;
+        assert!(bob.open_from(&alice, &header_edit).is_err());
+        let mut body_edit = genuine.clone();
+        body_edit.envelope.ciphertext[0] ^= 1;
+        assert!(bob.open_from(&alice, &body_edit).is_err());
+        let mut stripped = genuine.clone();
+        stripped.ratchet = None;
+        assert!(bob.open_from(&alice, &stripped).is_err(), "a header cannot be stripped");
+
+        // A sender's own bad envelope (valid signature, wrong tag) fails at the
+        // AEAD on the trial copy, so the real session is untouched.
+        let mut bad_tag = genuine.clone();
+        bad_tag.envelope.tag[0] ^= 1;
+        sign_as(&alice, &mut bad_tag);
+        assert!(bob.open_from(&alice, &bad_tag).is_err());
+        opened(&bob, &alice, &genuine, "genuine");
+    }
+
+    #[test]
+    fn a_session_answers_only_to_the_keys_it_was_made_with() {
+        let alice = TestDevice::new(true);
+        let bob = TestDevice::new(true);
+        let mallory = TestDevice::new(true);
+        let first = alice.send_to(&bob, "seed");
+        opened(&bob, &alice, &first, "seed");
+        let next = alice.send_to(&bob, "next");
+
+        // Mallory re-signs Alice's envelope with her own keys and attaches
+        // them; with no registry row the envelope is self-consistent.
+        let mut forged = next.clone();
+        sign_as(&mallory, &mut forged);
+        let error = receive_encrypted_message(&bob.state, forged, None).unwrap_err();
+        assert!(format!("{error}").contains("never established with"), "{error}");
+        opened(&bob, &alice, &next, "next");
+    }
+
+    #[test]
+    fn a_lost_session_is_reported_and_the_next_message_back_recovers() {
+        let alice = TestDevice::new(true);
+        let bob = TestDevice::new(true);
+        let first = alice.send_to(&bob, "seed");
+        opened(&bob, &alice, &first, "seed");
+        let reply = bob.send_to(&alice, "reply");
+        opened(&alice, &bob, &reply, "reply");
+
+        // Bob loses his sessions (reset in the Trust Center, restored backup…).
+        bob.state
+            .with_ratchet_sessions(&bob.user, &bob.device_id, |book| book.forget_all())
+            .unwrap();
+        let lost = alice.send_to(&bob, "lost");
+        let error = bob.open_from(&alice, &lost).unwrap_err();
+        assert!(format!("{error}").contains(RATCHET_SESSION_MISSING_MARKER), "{error}");
+
+        // Bob's next message starts a fresh session; Alice adopts it, and her
+        // next message travels on it.
+        let fresh = bob.send_to(&alice, "new session");
+        assert_eq!(fresh.ratchet.as_ref().unwrap().kind, HeaderKind::Init);
+        opened(&alice, &bob, &fresh, "new session");
+        let recovered = alice.send_to(&bob, "recovered");
+        assert_eq!(recovered.ratchet.as_ref().unwrap().session, fresh.ratchet.as_ref().unwrap().session);
+        opened(&bob, &alice, &recovered, "recovered");
+    }
+
+    #[test]
+    fn an_unanchored_sender_is_read_once_but_never_given_a_session() {
+        let alice = TestDevice::new(true);
+        let bob = TestDevice::new(true);
+        let first = alice.send_to(&bob, "who am i");
+        let message = receive_encrypted_message(&bob.state, first, None).unwrap();
+        assert_eq!(message.plaintext, "who am i");
+        assert!(!message.authenticated);
+        assert!(bob.status_with(&alice).is_none());
+    }
+
+    #[test]
+    fn simultaneous_first_messages_settle_on_one_session() {
+        let alice = TestDevice::new(true);
+        let bob = TestDevice::new(true);
+        let from_alice = alice.send_to(&bob, "a");
+        let from_bob = bob.send_to(&alice, "b");
+        assert_ne!(from_alice.ratchet.as_ref().unwrap().session, from_bob.ratchet.as_ref().unwrap().session);
+        opened(&bob, &alice, &from_alice, "a");
+        opened(&alice, &bob, &from_bob, "b");
+        // Whatever each side uses now, everything keeps opening, and after an
+        // exchange both use the same session.
+        for i in 0..3 {
+            let a = alice.send_to(&bob, &format!("a{i}"));
+            opened(&bob, &alice, &a, &format!("a{i}"));
+            let b = bob.send_to(&alice, &format!("b{i}"));
+            opened(&alice, &bob, &b, &format!("b{i}"));
+        }
+        assert_eq!(
+            alice.status_with(&bob).unwrap().session_id,
+            bob.status_with(&alice).unwrap().session_id
+        );
+    }
+
+    #[test]
+    fn resetting_sessions_starts_over_from_the_prekey() {
+        let alice = TestDevice::new(true);
+        let bob = TestDevice::new(true);
+        let first = alice.send_to(&bob, "one");
+        opened(&bob, &alice, &first, "one");
+        let removed = alice
+            .state
+            .with_ratchet_sessions(&alice.user, &alice.device_id, |book| book.forget_peer(&bob.device_id))
+            .unwrap();
+        assert!(removed);
+        let again = alice.send_to(&bob, "two");
+        assert_eq!(again.ratchet.as_ref().unwrap().kind, HeaderKind::Init);
+        assert_ne!(again.ratchet.as_ref().unwrap().session, first.ratchet.as_ref().unwrap().session);
+        opened(&bob, &alice, &again, "two");
+    }
+
+    #[test]
+    fn the_key_catch_up_records_a_seed_but_never_starts_a_session() {
+        let alice = TestDevice::new(true);
+        let bob = TestDevice::new(true);
+        let first = alice.send_to(&bob, "unread");
+        let request = EnvelopeKeyRequest {
+            message_id: first.message_id.clone(),
+            conversation_id: first.conversation_id.clone(),
+            sender_user_id: first.sender_user_id.clone(),
+            recipient_user_id: first.recipient_user_id.clone(),
+            sender_device_id: first.sender_device_id.clone(),
+            recipient_device_id: first.recipient_device_id.clone(),
+            counter: first.counter,
+            envelope: first.envelope.clone(),
+            aad: first.aad.clone(),
+            hybrid_ciphertext: first.hybrid_ciphertext.clone(),
+            prekey_id: first.prekey_id.clone(),
+            prekey_kind: first.prekey_kind.clone(),
+            ratchet: first.ratchet.clone(),
+        };
+        let transport = KeyTransport::of_request(&request);
+        transport.verify_aad().unwrap();
+        let shared = decapsulate_for(&bob.state, &transport).unwrap();
+        let header = request.ratchet.as_ref().unwrap();
+        let key = pq_ratchet::init_message_key(
+            &shared,
+            &InitContext {
+                session_id: &header.session,
+                initiator_device: &request.sender_device_id,
+                responder_device: &request.recipient_device_id,
+                hybrid_digest: pq_ratchet::hybrid_digest(request.hybrid_ciphertext.as_ref().unwrap()),
+            },
+            header,
+        )
+        .unwrap();
+        assert_eq!(symmetric::decrypt(&key, &first.envelope, &first.aad).unwrap(), b"unread");
+        assert!(bob.status_with(&alice).is_none());
+    }
+}
+
+/// What a build from before the ratchet (1.3.12) can and cannot read. Its
+/// envelope type is reproduced here exactly; the point is that one-shot
+/// envelopes from this build still parse and verify there, and that ratchet
+/// envelopes fail closed there instead of being misread.
+#[cfg(test)]
+mod interop_tests {
+    use super::*;
+    use crate::identity::LocalIdentity;
+
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    struct EnvelopeV1312 {
+        message_id: String,
+        conversation_id: String,
+        sender_user_id: String,
+        recipient_user_id: String,
+        sender_device_id: String,
+        recipient_device_id: String,
+        counter: u64,
+        kind: MessageKind,
+        sealed_sender: bool,
+        envelope: EncryptedEnvelope,
+        aad: Vec<u8>,
+        hybrid_ciphertext: HybridCiphertext,
+        prekey_id: String,
+        prekey_kind: String,
+        message_signature: DualSignature,
+        sender_ed25519_public: Vec<u8>,
+        sender_mldsa_public: Vec<u8>,
+        suite: AlgorithmSuite,
+        created_at: chrono::DateTime<chrono::Utc>,
+    }
+
+    /// `message_signable` exactly as 1.3.12 computes it.
+    fn signable_v1312(e: &EnvelopeV1312) -> Vec<u8> {
+        let mut data = Vec::new();
+        for part in [
+            e.message_id.as_bytes(),
+            e.conversation_id.as_bytes(),
+            e.sender_user_id.as_bytes(),
+            e.recipient_user_id.as_bytes(),
+            e.sender_device_id.as_bytes(),
+            e.recipient_device_id.as_bytes(),
+        ] {
+            data.extend_from_slice(part);
+        }
+        data.extend_from_slice(&e.counter.to_be_bytes());
+        data.extend_from_slice(format!("{:?}", e.kind).as_bytes());
+        data.extend_from_slice(&e.envelope.nonce);
+        data.extend_from_slice(&e.envelope.ciphertext);
+        data.extend_from_slice(&e.envelope.tag);
+        data.extend_from_slice(&e.aad);
+        data.extend_from_slice(&e.hybrid_ciphertext.x25519_ephemeral_public);
+        data.extend_from_slice(&e.hybrid_ciphertext.ml_kem_ciphertext);
+        data.extend_from_slice(e.prekey_id.as_bytes());
+        data.extend_from_slice(e.prekey_kind.as_bytes());
+        data.extend_from_slice(&e.sender_ed25519_public);
+        data.extend_from_slice(&e.sender_mldsa_public);
+        data
+    }
+
+    fn signing(identity: &LocalIdentity) -> MessageSigningContext<'_> {
+        MessageSigningContext {
+            ed25519_secret: &identity.signing.ed25519_secret,
+            mldsa_secret: &identity.signing.mldsa_secret,
+            ed25519_public: &identity.signing.ed25519_public,
+            mldsa_public: &identity.signing.mldsa_public,
+        }
+    }
+
+    fn one_shot_from(identity: &LocalIdentity) -> EncryptedMessageEnvelope {
+        let mut session = RatchetSession::new("t", [5u8; 32]).unwrap();
+        crate::message_crypto::encrypt_message(
+            &mut session,
+            "conv",
+            "ua",
+            "ub",
+            &identity.device_id,
+            "db",
+            HybridCiphertext {
+                x25519_ephemeral_public: vec![1; 32],
+                ml_kem_ciphertext: vec![2; 1568],
+                suite: AlgorithmSuite::default(),
+            },
+            "pk",
+            "signed_prekey",
+            MessageKind::Text,
+            b"hi",
+            signing(identity),
+        )
+        .unwrap()
+    }
+
+    fn address(identity: &LocalIdentity) -> MessageAddress<'_> {
+        MessageAddress {
+            conversation_id: "conv",
+            sender_user_id: "ua",
+            recipient_user_id: "ub",
+            sender_device_id: &identity.device_id,
+            recipient_device_id: "db",
+        }
+    }
+
+    #[test]
+    fn a_one_shot_envelope_still_parses_and_verifies_on_1_3_12() {
+        let identity = LocalIdentity::generate("ua", "Desktop").unwrap();
+        let envelope = one_shot_from(&identity);
+        let json = serde_json::to_string(&envelope).unwrap();
+        assert!(!json.contains("\"ratchet\""), "no new field on the wire: {json}");
+        let old: EnvelopeV1312 = serde_json::from_str(&json).expect("1.3.12 parses it");
+        assert_eq!(signable_v1312(&old), message_signable(&envelope), "signatures cover the same bytes");
+        dual_verify(&old.sender_ed25519_public, &old.sender_mldsa_public, &signable_v1312(&old), &old.message_signature)
+            .expect("1.3.12 verifies it");
+    }
+
+    #[test]
+    fn an_envelope_written_by_1_3_12_opens_here() {
+        // A stored 1.3.12 envelope has no `ratchet` key and a hybrid object.
+        let identity = LocalIdentity::generate("ua", "Desktop").unwrap();
+        let mut json = serde_json::to_value(one_shot_from(&identity)).unwrap();
+        json.as_object_mut().unwrap().remove("ratchet");
+        let parsed: EncryptedMessageEnvelope = serde_json::from_value(json).unwrap();
+        assert!(parsed.ratchet.is_none() && parsed.hybrid_ciphertext.is_some());
+        dual_verify(
+            &parsed.sender_ed25519_public,
+            &parsed.sender_mldsa_public,
+            &message_signable(&parsed),
+            &parsed.message_signature,
+        )
+        .unwrap();
+        verify_aad_matches_envelope(&parsed).unwrap();
+    }
+
+    #[test]
+    fn a_ratchet_envelope_fails_closed_on_1_3_12() {
+        let identity = LocalIdentity::generate("ua", "Desktop").unwrap();
+        let header = RatchetHeader {
+            v: 1,
+            kind: HeaderKind::Msg,
+            session: "ab".repeat(16),
+            dh: vec![9; 32],
+            pn: 0,
+            n: 3,
+            pq_offer: None,
+            pq_answer: None,
+        };
+        let envelope = encrypt_ratchet_message(
+            address(&identity),
+            header,
+            &[7u8; 32],
+            None,
+            crate::crypto::CURRENT_KEM_COMBINER,
+            MessageKind::Text,
+            b"hi",
+            signing(&identity),
+        )
+        .unwrap();
+        let json = serde_json::to_string(&envelope).unwrap();
+        assert!(
+            serde_json::from_str::<EnvelopeV1312>(&json).is_err(),
+            "1.3.12 must refuse it (no hybrid ciphertext), not misread it"
+        );
+        // Here it verifies, and its AAD is the v2 one that binds the header.
+        dual_verify(
+            &envelope.sender_ed25519_public,
+            &envelope.sender_mldsa_public,
+            &message_signable(&envelope),
+            &envelope.message_signature,
+        )
+        .unwrap();
+        verify_aad_matches_envelope(&envelope).unwrap();
+        assert_eq!(envelope.expected_aad(), envelope.aad);
+        // An init must carry its seed, and nothing else may.
+        let as_init = RatchetHeader { kind: HeaderKind::Init, ..envelope.ratchet.clone().unwrap() };
+        assert!(encrypt_ratchet_message(
+            address(&identity),
+            as_init,
+            &[7u8; 32],
+            None,
+            "",
+            MessageKind::Text,
+            b"hi",
+            signing(&identity),
+        )
+        .is_err());
     }
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { reportRelayTrouble } from "@/lib/relay-health";
 
 export type LiveConnectionState = "connecting" | "live" | "fallback" | "error";
 
@@ -275,6 +276,8 @@ export function useQGuardLiveSse(userId: string | null, onRefresh: () => Promise
       }
       if (subscriptionStatus === "CHANNEL_ERROR" || subscriptionStatus === "TIMED_OUT") {
         scheduleRetry();
+        // Let the relay-health banner find out whether this is the network.
+        reportRelayTrouble();
       }
       if (subscriptionStatus === "CLOSED") {
         setStatus((current) => ({

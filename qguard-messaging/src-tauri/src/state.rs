@@ -17,6 +17,7 @@ use crate::message_keys::MessageKeyLedger;
 use crate::prekeys::{
     generate_one_time_prekeys, generate_signed_prekey, LocalOneTimePrekey, LocalSignedPrekey,
 };
+use crate::pq_ratchet::SessionBook;
 use crate::ratchet::RatchetSession;
 use crate::telemetry::TelemetryEvent;
 
@@ -228,6 +229,11 @@ const DEVICE_PIN_BOOK_AAD: &[u8] = b"QGuard-Messaging-Device-Pins-v1";
 /// How long to wait before trying again to open a device record that would not open.
 const DEVICE_PIN_BOOK_RETRY_SECS: i64 = 60;
 
+/// AAD for the ratchet session file (see `crate::pq_ratchet`).
+const RATCHET_SESSIONS_AAD: &[u8] = b"QGuard-Messaging-Ratchet-Sessions-v1";
+/// How long to wait before trying again to open a session file that would not open.
+const RATCHET_SESSIONS_RETRY_SECS: i64 = 60;
+
 /// Domain separation for the PIN-bound vault key and the keys derived from it.
 const VAULT_KEY_INFO: &[u8] = b"QGuard-Vault-PIN-Bound-Key-v1";
 const VAULT_RECOVERY_SEAL_INFO: &[u8] = b"QGuard-Vault-Recovery-Material-Seal-v1";
@@ -385,6 +391,22 @@ pub struct PersistedAppLock {
     pub inactivity_minutes: u32,
     pub device: DeviceRegistration,
     pub created_at: chrono::DateTime<Utc>,
+    /// A second PIN that, entered at the lock screen, erases this device's
+    /// keys and lands on the sign-in screen as if the session had expired
+    /// (`AppState::panic_wipe`). Only its Argon2id verifier is kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duress: Option<DuressPin>,
+    /// The SEK wrapped by a biometric-gated Android Keystore key (see
+    /// `BiometricUnlock.kt`). Opaque here: only the Keystore, after a
+    /// successful strong-biometric prompt, can unwrap it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub biometric_sek: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DuressPin {
+    pub salt: Vec<u8>,
+    pub verifier: String,
 }
 
 #[derive(Clone, Debug)]
@@ -454,6 +476,12 @@ pub struct AppState {
     /// by call id. Memory only, and each is removed the moment it is used.
     pub pending_call_keys: Mutex<HashMap<String, PendingCallKey>>,
     pub ratchets: Mutex<HashMap<String, RatchetSession>>,
+    /// Post-quantum ratchet sessions with peer devices, encrypted at rest.
+    /// See `crate::pq_ratchet` and `with_ratchet_sessions`.
+    pub ratchet_sessions: Mutex<SessionBook>,
+    /// The user's Settings → Advanced choice to advertise and start ratchet
+    /// sessions (`None` until read from disk). See `ratchet_enabled`.
+    pub ratchet_setting: Mutex<Option<bool>>,
     pub decrypted_message_cache: Mutex<HashMap<String, String>>,
     pub devices: Mutex<HashMap<String, TrustedDevice>>,
     pub audit: Mutex<AuditChain>,
@@ -498,6 +526,8 @@ impl AppState {
             device_pins: Mutex::new(DevicePinBook::default()),
             pending_call_keys: Mutex::new(HashMap::new()),
             ratchets: Mutex::new(HashMap::new()),
+            ratchet_sessions: Mutex::new(SessionBook::default()),
+            ratchet_setting: Mutex::new(None),
             decrypted_message_cache: Mutex::new(HashMap::new()),
             devices: Mutex::new(HashMap::new()),
             audit: Mutex::new(AuditChain::default()),
@@ -775,6 +805,11 @@ impl AppState {
             .lock()
             .ok()
             .and_then(|slot| slot.clone());
+        // Capability only: it says "send me ratchet envelopes". Not part of
+        // the identity signature (see `AlgorithmSuite::pq_kem_standard`).
+        if self.ratchet_enabled() {
+            bundle.suite.ratchet = crate::pq_ratchet::RATCHET_PROTOCOL.to_string();
+        }
         Ok(bundle)
     }
 
@@ -792,7 +827,7 @@ impl AppState {
         }
     }
 
-    fn safe_user_key(user_id: &str) -> String {
+    pub(crate) fn safe_user_key(user_id: &str) -> String {
         user_id
             .chars()
             .map(|ch| {
@@ -1252,10 +1287,182 @@ impl AppState {
         }
     }
 
-    /// Write out whichever ledger is in memory, whoever owns it (window close).
+    // ---- Ratchet sessions (see crate::pq_ratchet) ---------------------------
+
+    fn ratchet_sessions_path(&self, user_id: &str) -> PathBuf {
+        let safe_user_id = Self::safe_user_key(user_id);
+        self.data_dir
+            .join("keys")
+            .join(format!("{safe_user_id}.ratchet-sessions.enc"))
+    }
+
+    fn ratchet_setting_path(&self) -> PathBuf {
+        self.data_dir.join("keys").join("ratchet-enabled")
+    }
+
+    /// Whether this install advertises the ratchet and starts sessions.
+    ///
+    /// `QGUARD_RATCHET=1/0` wins (operator switch, and `0` is the kill switch);
+    /// otherwise the user's Settings → Advanced choice, off until they make it.
+    /// Receiving ratchet envelopes does not depend on this.
+    pub fn ratchet_enabled(&self) -> bool {
+        if let Some(forced) = crate::pq_ratchet::env_override() {
+            return forced;
+        }
+        let Ok(mut slot) = self.ratchet_setting.lock() else {
+            return false;
+        };
+        if slot.is_none() {
+            let stored = std::fs::read_to_string(self.ratchet_setting_path())
+                .map(|text| text.trim() == "1")
+                .unwrap_or(false);
+            *slot = Some(stored);
+        }
+        slot.unwrap_or(false)
+    }
+
+    /// Record the user's choice. Takes effect for the next message; the device
+    /// must re-publish its suite for peers to see the capability change.
+    pub fn set_ratchet_enabled(&self, enabled: bool) -> Result<()> {
+        write_atomic(&self.ratchet_setting_path(), if enabled { b"1" } else { b"0" })
+            .map_err(|e| QGuardError::Storage(format!("write ratchet setting: {e}")))?;
+        *self
+            .ratchet_setting
+            .lock()
+            .map_err(|_| QGuardError::Storage("ratchet setting lock poisoned".to_string()))? = Some(enabled);
+        Ok(())
+    }
+
+    /// Same three outcomes as the ledger and the device record: no file is a
+    /// fresh book; a file that will not open is UNAVAILABLE and never written.
+    fn load_ratchet_sessions(&self, user_id: &str, local_device: &str) -> SessionBook {
+        let retry_after = Utc::now().timestamp() + RATCHET_SESSIONS_RETRY_SECS;
+        match self.read_storage_sealed_file(
+            user_id,
+            &self.ratchet_sessions_path(user_id),
+            RATCHET_SESSIONS_AAD,
+            "ratchet sessions",
+        ) {
+            Ok(None) => SessionBook::empty(user_id, local_device),
+            Ok(Some(plaintext)) => SessionBook::decode(user_id, local_device, &plaintext)
+                .unwrap_or_else(|_| SessionBook::unavailable(user_id, local_device, retry_after)),
+            Err(_) => SessionBook::unavailable(user_id, local_device, retry_after),
+        }
+    }
+
+    /// Run `f` against the session book of `user_id` on `local_device`,
+    /// loading it first if needed. Changes stay in memory until
+    /// [`Self::persist_ratchet_sessions`].
+    pub fn with_ratchet_sessions<T>(
+        &self,
+        user_id: &str,
+        local_device: &str,
+        f: impl FnOnce(&mut SessionBook) -> T,
+    ) -> Result<T> {
+        let lock = || {
+            self.ratchet_sessions
+                .lock()
+                .map_err(|_| QGuardError::Storage("ratchet session lock poisoned".to_string()))
+        };
+        let previous_owner = {
+            let book = lock()?;
+            let current = book.owner() == Some(user_id) && book.local_device() == local_device;
+            if current && !book.should_retry_load(Utc::now().timestamp()) {
+                None
+            } else {
+                Some(book.owner().map(str::to_string))
+            }
+        };
+        if let Some(previous_owner) = previous_owner {
+            // Save what the outgoing book learned (ledger first, as always).
+            // Best effort: an unsaved receiving state is re-derivable.
+            if let Some(owner) = previous_owner {
+                let _ = self.persist_ratchet_sessions(&owner);
+            }
+            let loaded = self.load_ratchet_sessions(user_id, local_device);
+            *lock()? = loaded;
+        }
+        let mut book = lock()?;
+        Ok(f(&mut *book))
+    }
+
+    /// Write the session book out — ALWAYS after the message-key ledger.
+    ///
+    /// That order is the contract that makes chain keys disposable: a message
+    /// key a session has moved past exists only in the ledger, so the ledger
+    /// on disk must never be behind the sessions on disk. Returns `Ok(false)`
+    /// (nothing written) when the ledger cannot be flushed or the book is not
+    /// usable; the book then stays dirty and a later call retries.
+    pub fn persist_ratchet_sessions(&self, user_id: &str) -> Result<bool> {
+        if !self.flush_message_keys(user_id)? {
+            return Ok(false);
+        }
+        let mut book = self
+            .ratchet_sessions
+            .lock()
+            .map_err(|_| QGuardError::Storage("ratchet session lock poisoned".to_string()))?;
+        if book.owner() != Some(user_id) || !book.is_available() {
+            return Ok(false);
+        }
+        if !book.is_dirty() {
+            return Ok(true);
+        }
+        let encoded = book.encode()?;
+        self.write_storage_sealed_file(
+            user_id,
+            &self.ratchet_sessions_path(user_id),
+            RATCHET_SESSIONS_AAD,
+            &encoded,
+            "ratchet sessions",
+        )?;
+        book.mark_saved();
+        Ok(true)
+    }
+
+    /// A small per-user document encrypted under the device storage key, at
+    /// `keys/<user>.<suffix>.enc` (so a panic wipe removes it with the rest).
+    /// `Ok(None)` when there is none.
+    pub(crate) fn load_user_secret_doc(
+        &self,
+        user_id: &str,
+        suffix: &str,
+        aad: &[u8],
+        what: &str,
+    ) -> Result<Option<zeroize::Zeroizing<Vec<u8>>>> {
+        let path = self.user_secret_doc_path(user_id, suffix);
+        self.read_storage_sealed_file(user_id, &path, aad, what)
+    }
+
+    pub(crate) fn save_user_secret_doc(&self, user_id: &str, suffix: &str, aad: &[u8], bytes: &[u8], what: &str) -> Result<()> {
+        let path = self.user_secret_doc_path(user_id, suffix);
+        self.write_storage_sealed_file(user_id, &path, aad, bytes, what)
+    }
+
+    pub(crate) fn delete_user_secret_doc(&self, user_id: &str, suffix: &str) {
+        let _ = std::fs::remove_file(self.user_secret_doc_path(user_id, suffix));
+    }
+
+    fn user_secret_doc_path(&self, user_id: &str, suffix: &str) -> PathBuf {
+        let safe_user_id = Self::safe_user_key(user_id);
+        let safe_suffix: String = suffix.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+        self.data_dir.join("keys").join(format!("{safe_user_id}.{safe_suffix}.enc"))
+    }
+
+    fn ratchet_sessions_owner(&self) -> Option<String> {
+        self.ratchet_sessions
+            .lock()
+            .ok()
+            .and_then(|book| book.owner().map(str::to_string))
+    }
+
+    /// Write out whichever ledger is in memory, whoever owns it (window close),
+    /// then the ratchet sessions that depend on it.
     pub fn flush_loaded_message_keys(&self) {
         if let Ok(mut ledger) = self.message_keys.lock() {
             let _ = self.write_message_keys(&mut ledger);
+        }
+        if let Some(owner) = self.ratchet_sessions_owner() {
+            let _ = self.persist_ratchet_sessions(&owner);
         }
     }
 
@@ -1342,6 +1549,12 @@ impl AppState {
             *ledger = MessageKeyLedger::default();
         }
         let _ = std::fs::remove_file(self.message_key_ledger_path(user_id));
+        // Same for the ratchet sessions: sealed under the discarded key, and
+        // dead anyway — peers will address the new device id.
+        if let Ok(mut sessions) = self.ratchet_sessions.lock() {
+            *sessions = SessionBook::default();
+        }
+        let _ = std::fs::remove_file(self.ratchet_sessions_path(user_id));
         self.install_prekey_retirements(&HashMap::new());
 
         // Drop every cached artefact of the old identity so `ensure_identity`
@@ -1375,6 +1588,113 @@ impl AppState {
         }
 
         self.ensure_identity(user_id, label)
+    }
+
+    /// Destroy everything on THIS device that could open `user_id`'s messages
+    /// or vault, and sign them out (panic wipe; also what a duress PIN does).
+    ///
+    /// Order matters: the device storage key goes first, so even a file that
+    /// cannot be deleted is left encrypted under a key that no longer exists.
+    /// Nothing is flushed on the way out — writing the ledger or sessions now
+    /// would only re-create what is about to be removed. Encrypted vault
+    /// containers are left in place: without the vault key they open only with
+    /// the recovery kit the user holds themselves. Returns how many files were
+    /// removed. Irreversible.
+    pub fn panic_wipe(&self, user_id: &str) -> Result<usize> {
+        let account = Self::safe_user_key(user_id);
+        let key_error = crate::security::keystore::delete_secret(&account, &self.data_dir).err();
+
+        // Memory first, without writing anything back.
+        if let Ok(mut ledger) = self.message_keys.lock() {
+            *ledger = MessageKeyLedger::default();
+        }
+        if let Ok(mut sessions) = self.ratchet_sessions.lock() {
+            *sessions = SessionBook::default();
+        }
+        if let Ok(mut pins) = self.device_pins.lock() {
+            *pins = DevicePinBook::default();
+        }
+        if let Ok(mut identity) = self.identity.lock() {
+            *identity = None;
+        }
+        if let Ok(mut signed) = self.signed_prekey.lock() {
+            *signed = None;
+        }
+        for list in [&self.one_time_prekeys, &self.legacy_one_time_prekeys] {
+            if let Ok(mut list) = list.lock() {
+                list.clear();
+            }
+        }
+        if let Ok(mut legacy) = self.legacy_signed_prekeys.lock() {
+            legacy.clear();
+        }
+        if let Ok(mut legacy) = self.legacy_kem_keypairs.lock() {
+            legacy.clear();
+        }
+        if let Ok(mut ratchets) = self.ratchets.lock() {
+            ratchets.clear();
+        }
+        if let Ok(mut cache) = self.decrypted_message_cache.lock() {
+            cache.values_mut().for_each(|plaintext| plaintext.zeroize());
+            cache.clear();
+        }
+        if let Ok(mut pending) = self.pending_call_keys.lock() {
+            pending.clear();
+        }
+        self.install_prekey_retirements(&HashMap::new());
+        let _ = self.clear_vault_session();
+        self.clear_portable_identity();
+        self.clear_applock_sek();
+        self.lock_all_workspaces();
+
+        // Then every file this account keeps here.
+        let mut removed = 0usize;
+        let prefix = format!("{account}.");
+        if let Ok(entries) = std::fs::read_dir(self.data_dir.join("keys")) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(&prefix) && std::fs::remove_file(entry.path()).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        if self.load_applock_user_pointer().as_deref() == Some(user_id) {
+            self.clear_applock_user_pointer();
+        }
+        // Signed out. Directly, not via `clear_auth_session_for`: that takes
+        // the key-scope lock (callers may hold it) and flushes state that has
+        // just been erased.
+        if let Ok(mut sessions) = self.auth_sessions.lock() {
+            sessions.remove(user_id);
+        }
+        if let Ok(mut current) = self.auth_session.lock() {
+            if current.as_ref().is_some_and(|session| session.user_id == user_id) {
+                *current = None;
+            }
+        }
+        if let Some(error) = key_error {
+            // The files are gone either way; say that the key could not be.
+            return Err(QGuardError::Storage(format!(
+                "local data was erased, but the device storage key could not be removed from the platform key store: {error}"
+            )));
+        }
+        Ok(removed)
+    }
+
+    /// Test-only: give this account a (legacy-format) recovery record whose
+    /// verifier is `verifier`, so recovery-key checks have something to match.
+    #[cfg(test)]
+    pub(crate) fn test_install_recovery_verifier(&self, user_id: &str, verifier: &str) {
+        let material = PersistedVaultRecovery::personal([0u8; crate::crypto::symmetric::KEY_SIZE], verifier.to_string());
+        let bytes = serde_json::to_vec(&material).unwrap();
+        self.write_storage_sealed_file(
+            user_id,
+            &self.vault_recovery_legacy_path(user_id),
+            &crate::security::obf::vault_recovery_material_aad(),
+            &bytes,
+            "vault recovery material",
+        )
+        .unwrap();
     }
 
     /// Pre-v2 recovery file: secrets protected by the device storage key only.
@@ -2023,7 +2343,16 @@ impl AppState {
 
     fn clear_volatile_key_state(&self) -> Result<()> {
         // Before the keys go: anything opened this session but not yet written
-        // to the ledger is saved, then the ledger leaves memory with them.
+        // to the ledger is saved — ledger first, then the ratchet sessions that
+        // depend on it — and both leave memory.
+        if let Some(owner) = self.ratchet_sessions_owner() {
+            let _ = self.persist_ratchet_sessions(&owner);
+        }
+        *self
+            .ratchet_sessions
+            .lock()
+            .map_err(|_| QGuardError::Storage("ratchet session lock poisoned".to_string()))? =
+            SessionBook::default();
         self.unload_message_keys();
         self.install_prekey_retirements(&HashMap::new());
         *self

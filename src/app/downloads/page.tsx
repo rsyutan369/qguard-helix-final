@@ -24,6 +24,7 @@ import { DeployWizard } from '@/components/agent-installer/DeployWizard';
 import { AGENT_ROLES, type AgentRole } from '@/lib/agent-installer/agent-release';
 import { agentRolePlanCopy, useAgentEntitlement } from '@/hooks/use-agent-entitlement';
 import { AgentDetailDrawer } from '@/components/agent-installer/AgentDetailDrawer';
+import ThemeToggle from '@/components/theme/ThemeToggle';
 import {
   Card,
   EmptyState,
@@ -137,7 +138,7 @@ export default function DownloadsPage() {
   if (!entitled) {
     return (
       <Shell>
-        <div className="mx-auto max-w-xl rounded-2xl border border-white/10 bg-white/[0.02] p-8 text-center">
+        <div className="ac-surface mx-auto max-w-xl rounded-2xl border border-white/10 bg-white/[0.02] p-8 text-center">
           <ShieldCheck className="mx-auto h-7 w-7 text-cyan-300" />
           <h1 className="mt-4 text-lg font-black text-white">Agent Center requires a plan</h1>
           <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-white/50">
@@ -163,15 +164,18 @@ export default function DownloadsPage() {
   const release = installer.release;
 
   return (
-    <Shell>
-      <header className="mb-6">
+    <Shell
+      leading={
         <Link
           to="/dashboard/scanner?tab=agents"
           className="inline-flex items-center gap-1.5 text-[11px] font-bold text-white/40 no-underline transition hover:text-cyan-200"
         >
           <ArrowLeft className="h-3.5 w-3.5" /> Agent Collector Console
         </Link>
-        <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
+      }
+    >
+      <header className="mb-6">
+        <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-2xl font-black tracking-tight text-white sm:text-3xl">Qguard Helix Agent Center</h1>
             <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-white/50">
@@ -344,7 +348,7 @@ export default function DownloadsPage() {
                     </span>
                   ))}
                 </div>
-                <code className="mt-3 block break-all rounded-lg border border-white/8 bg-black/40 px-2.5 py-1.5 font-mono text-[10.5px] text-cyan-200/80">
+                <code className="qg-force-dark mt-3 block break-all rounded-lg border border-white/8 bg-black/40 px-2.5 py-1.5 font-mono text-[10.5px] text-cyan-200/80">
                   {platform.quickCommand}
                 </code>
               </div>
@@ -649,10 +653,32 @@ function AgentRow({
   );
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
+/**
+ * Page chrome. `qg-agent-center` is the theme scope (see the AGENT CENTER block
+ * in index.css): inside it the page's dark-first palette is remapped for light
+ * mode, so no component below needs a theme prop or a `dark:` variant.
+ *
+ * The utility bar renders in every state — loading, plan gate and the console —
+ * so the theme can always be changed. It is the same control and the same
+ * provider as the dashboard, so the choice is shared, persisted and applied
+ * before first paint.
+ */
+function Shell({ children, leading }: { children: React.ReactNode; leading?: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-[#050810] text-white">
-      <div className="mx-auto w-full max-w-[1400px] px-4 py-8 sm:px-6 lg:px-8">{children}</div>
+    <div className="qg-agent-center min-h-screen bg-[#050810] text-white">
+      <div className="mx-auto w-full max-w-[1400px] px-4 py-8 sm:px-6 lg:px-8">
+        <div className="mb-5 flex min-h-[38px] items-center justify-between gap-3">
+          <div className="min-w-0">{leading}</div>
+          {/* Compact below `sm` so the toggle never pushes the back link onto a second line. */}
+          <div className="sm:hidden">
+            <ThemeToggle compact showSystem={false} />
+          </div>
+          <div className="hidden sm:block">
+            <ThemeToggle />
+          </div>
+        </div>
+        {children}
+      </div>
     </div>
   );
 }

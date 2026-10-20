@@ -1,4 +1,4 @@
-import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, Ban, ChevronDown, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, Users, X } from "lucide-react";
+import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, BadgeCheck, Ban, ChevronDown, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, Users, X, Sparkles, Megaphone, LogIn } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import { inlineMediaKind } from "@/lib/attachment-media";
@@ -43,14 +43,49 @@ import {
 import { ENVELOPE_INDEX_COLUMNS, EnvelopeBodyCache, envelopeIndexEntry, planBodyFetch } from "@/lib/envelope-history";
 import { attributedSenderUserId, describeRejectedEnvelopes, screenEnvelopeRows } from "@/lib/envelope-integrity";
 import { parseMessageAad } from "@/lib/message-envelope-identity";
-import { asRecord, hybridCiphertextFromSealed, numberArray, prekeyReferenceFromSealed } from "@/lib/message-envelope-rows";
+import {
+  asRecord,
+  hybridCiphertextForCore,
+  hybridCiphertextFromSealed,
+  numberArray,
+  prekeyReferenceFromSealed,
+  ratchetHeaderFromSealed,
+} from "@/lib/message-envelope-rows";
+import {
+  fetchRatchetStatus,
+  isRatchetSessionMissingError,
+  resetRatchetSession,
+  type RatchetStatus,
+} from "@/lib/ratchet-status";
 import { guardNativeFileInput } from "@/lib/native-dialog-guard";
 import { describeSavedFile, saveFileToDevice } from "@/lib/save-file";
 import { supabase } from "@/lib/supabase";
 import { isTauriRuntime, safeInvoke, invokeWithTimeout } from "@/lib/tauri";
 import { fetchPrekeyStatus } from "@/lib/prekey-hygiene";
+import { attachmentDigestMatches, attachmentDigests } from "@/lib/attachment-digest";
+import {
+  createChatProtectionConfig,
+  readChatProtectionConfig,
+  verifyChatProtectionSecret,
+  writeChatProtectionConfig,
+  type ChatProtectionConfig,
+} from "@/lib/privacy-screen";
 import { derivePqStatus, type PqExcludedDevice } from "@/lib/pq-status";
 import { PqStatusBadge } from "@/components/PqStatusBadge";
+import { ContactVerificationPanel } from "@/components/ContactVerificationPanel";
+import { NewGroupDialog } from "@/components/NewGroupDialog";
+import { GroupMembersPanel } from "@/components/GroupMembersPanel";
+import { AssistantPanel } from "@/components/AssistantPanel";
+import { ChannelView } from "@/components/ChannelView";
+import { JoinChannelDialog, NewChannelDialog } from "@/components/ChannelDialogs";
+import type { ReaderDevice } from "@/lib/channels";
+import { OUTBOX_FLUSHED_EVENT, isNetworkFailure, queueOutbox } from "@/lib/outbox";
+import { NEARBY_ROWS_EVENT, mergeRowsById, rowsForDevice } from "@/lib/nearby";
+import { reportRelayTrouble } from "@/lib/relay-health";
+import { conversationAllowed, loadAssistantSettings, type AssistantCandidateMessage } from "@/lib/ai-assistant";
+import { groupFallbackTitle, groupName, rememberGroupName, sanitizeGroupName, setGroupOwnerHistory, type GroupRole } from "@/lib/group-chat";
+import { peerIdentityOfDevice } from "@/lib/call-targets";
+import { createPairingOffer, receivePairingOffer, type PairingOffer } from "@/lib/contact-verification";
 import type { ContactSummary, ConversationSummary, DualSignature, SignedPrekeySummary, TrustedDevice, UserSearchResult } from "@/lib/types";
 import { useCall } from "@/components/call/CallProvider";
 import { buildCallPeer } from "@/lib/call-targets";
@@ -90,11 +125,12 @@ interface EncryptedMessageEnvelope {
     tag: number[];
   };
   aad: number[];
+  /** Null on an ordinary post-quantum ratchet message (its key comes from the session). */
   hybrid_ciphertext: {
     x25519_ephemeral_public: number[];
     ml_kem_ciphertext: number[];
     suite: Record<string, unknown>;
-  };
+  } | null;
   prekey_id: string;
   prekey_kind: string;
   message_signature: DualSignature;
@@ -102,6 +138,8 @@ interface EncryptedMessageEnvelope {
   sender_mldsa_public: number[];
   suite: Record<string, unknown>;
   created_at: string;
+  /** Post-quantum ratchet header; absent on one-shot envelopes. Signed and AEAD-bound. */
+  ratchet?: Record<string, unknown>;
 }
 
 interface MessageEnvelopeRow {
@@ -148,6 +186,14 @@ interface DecryptedChatEnvelope {
    * sender's devices and has not been approved here. Not authenticated.
    */
   sender_verification: "registered_device" | "unverified_device" | "unapproved_device";
+  /** How the message key was established: its own encapsulation, or a ratchet session. */
+  protocol?: "one_shot" | "ratchet";
+  /**
+   * The hybrid combiner behind the key, as the core knows it: the ciphertext's
+   * own for a one-shot envelope, the seeding one for a ratchet session. Null
+   * when this device no longer holds the session and cannot tell.
+   */
+  kem_combiner?: string | null;
 }
 
 /**
@@ -207,9 +253,13 @@ interface ChatMessage {
    * an envelope that opened proves its label. Evidence for the PQ status badge.
    */
   kem_combiner?: string;
+  /** How the key was established, as the core reported it on open. */
+  protocol?: "one_shot" | "ratchet";
   created_at: string;
   error: string | null;
   can_delete: boolean;
+  /** Sealed and kept in the outbox: the relay was unreachable (roadmap 9.1). */
+  queued?: boolean;
 }
 
 interface MessageUserState {
@@ -251,11 +301,11 @@ interface SecureChatAttachment {
   key_b64: string;
   iv_b64: string;
   /**
-   * SHA-256 of the CIPHERTEXT. A transfer checksum, not the integrity control:
-   * authenticity comes from the AES-256-GCM tag (and, since `aad_version` 1,
-   * from the container binding below). Kept because it turns a truncated or
-   * corrupted download into a clear message instead of an opaque AEAD failure.
+   * Digests of the CIPHERTEXT — a transfer checksum, not the integrity control
+   * (see lib/attachment-digest.ts). SHA3-256 since 4.4; SHA-256 is still
+   * written for builds that require it, and is all older attachments have.
    */
+  sha3_b64?: string;
   sha256_b64: string;
   /**
    * Which associated-data binding sealed this attachment. Absent on anything
@@ -305,17 +355,32 @@ interface SecurePlaintextMessage {
 
 type SecureControlMessage =
   | { type: "reaction"; target_client_message_id: string; reaction: string }
-  | { type: "edit"; target_client_message_id: string; body: string };
+  | { type: "edit"; target_client_message_id: string; body: string }
+  /**
+   * Sent to ONE device whose message arrived on a ratchet session this device
+   * does not hold. It carries nothing: what repairs the conversation is that
+   * it travels on a fresh session, which the other device adopts. The target
+   * is the message that could not be opened. Only ever sent to a device that
+   * spoke the ratchet, so only builds that know this control receive it.
+   */
+  | { type: "session_reset"; target_client_message_id: string }
+  /**
+   * One side's call-pairing half (roadmap Phase 3), for ONE device: an
+   * encapsulation to its verified identity keys, dual-signed. Opaque here; the
+   * core checks everything. The target is the offer id.
+   */
+  | { type: "call_pairing"; target_client_message_id: string; offer: PairingOffer }
+  /** A group's name (roadmap 7.1), end-to-end encrypted. The newest wins. */
+  | { type: "group_meta"; target_client_message_id: string; name: string }
+  /** A member who joined after the name was sent asks the owner for it. */
+  | { type: "group_meta_request"; target_client_message_id: string }
+  /** A channel's epoch key, sealed to one reader device (roadmap 7.4). */
+  | { type: "channel_key"; target_client_message_id: string; epoch_id: string; seq: number; key: string }
+  /** A reader without the key asks the channel's staff for it. */
+  | { type: "channel_key_request"; target_client_message_id: string };
 
 type ConversationView = "active" | "archived" | "hidden";
 type ProtectedConversationView = "archived" | "hidden";
-
-interface ChatProtectionConfig {
-  salt_b64: string;
-  verifier_b64: string;
-  iterations: number;
-  created_at: string;
-}
 
 function toMessageKind(value: string): string {
   if (value === "FileReference") return "file_reference";
@@ -354,14 +419,8 @@ function emptyThreat(): ThreatAssessment {
 }
 
 const maxChatAttachmentBytes = 25 * 1024 * 1024;
-// The conversation gate is a privacy SCREEN, not encryption: messages are
-// already end-to-end encrypted, and the workspace lock (Argon2id, in the Rust
-// core) is what protects them at rest. Its verifier lives in the WebView, whose
-// crypto offers PBKDF2 but neither Argon2id nor SHA-3, so it uses
-// PBKDF2-HMAC-SHA-256 at the iteration count OWASP currently recommends for it.
-const chatProtectionIterations = 600_000;
-// A stored verifier weaker than this was not written by any released build.
-const chatProtectionMinIterations = 100_000;
+// The conversation gate is a privacy SCREEN, not encryption; its verifier is
+// made by the core (see lib/privacy-screen.ts).
 const protectedConversationUnlockMs = 5 * 60 * 1000;
 
 function formatBytes(bytes: number): string {
@@ -401,70 +460,6 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
-function chatProtectionStorageKey(userId: string): string {
-  return `qguard-chat-protection:${userId}`;
-}
-
-function readChatProtectionConfig(userId: string): ChatProtectionConfig | null {
-  try {
-    const raw = localStorage.getItem(chatProtectionStorageKey(userId));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<ChatProtectionConfig>;
-    if (!parsed.salt_b64 || !parsed.verifier_b64 || !parsed.iterations) return null;
-    if (!Number.isInteger(parsed.iterations) || parsed.iterations < chatProtectionMinIterations) return null;
-    return {
-      salt_b64: parsed.salt_b64,
-      verifier_b64: parsed.verifier_b64,
-      iterations: parsed.iterations,
-      created_at: parsed.created_at ?? new Date().toISOString(),
-    };
-  } catch {
-    return null;
-  }
-}
-
-async function deriveChatProtectionVerifier(secret: string, saltB64: string, iterations: number): Promise<string> {
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    "PBKDF2",
-    false,
-    ["deriveBits"],
-  );
-  const bits = await crypto.subtle.deriveBits(
-    {
-      name: "PBKDF2",
-      hash: "SHA-256",
-      salt: toArrayBuffer(base64ToBytes(saltB64)),
-      iterations,
-    },
-    keyMaterial,
-    256,
-  );
-  return bytesToBase64(new Uint8Array(bits));
-}
-
-async function createChatProtectionConfig(secret: string): Promise<ChatProtectionConfig> {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const saltB64 = bytesToBase64(salt);
-  return {
-    salt_b64: saltB64,
-    verifier_b64: await deriveChatProtectionVerifier(secret, saltB64, chatProtectionIterations),
-    iterations: chatProtectionIterations,
-    created_at: new Date().toISOString(),
-  };
-}
-
-async function verifyChatProtectionSecret(secret: string, config: ChatProtectionConfig): Promise<boolean> {
-  const verifier = await deriveChatProtectionVerifier(secret, config.salt_b64, config.iterations);
-  return verifier === config.verifier_b64;
-}
-
-async function sha256Base64(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", toArrayBuffer(bytes));
-  return bytesToBase64(new Uint8Array(digest));
-}
-
 function safeAttachmentFileName(name: string): string {
   const cleaned = name.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "");
   return cleaned.slice(0, 96) || "attachment";
@@ -486,7 +481,8 @@ function parseSecureAttachment(value: unknown): SecureChatAttachment | null {
   const keyB64 = typeof record.key_b64 === "string" ? record.key_b64 : "";
   const ivB64 = typeof record.iv_b64 === "string" ? record.iv_b64 : "";
   const sha256B64 = typeof record.sha256_b64 === "string" ? record.sha256_b64 : "";
-  if (!kind || !storagePath || !keyB64 || !ivB64 || !sha256B64) return null;
+  const sha3B64 = typeof record.sha3_b64 === "string" ? record.sha3_b64 : "";
+  if (!kind || !storagePath || !keyB64 || !ivB64 || (!sha256B64 && !sha3B64)) return null;
   return {
     kind,
     storage_path: storagePath,
@@ -496,6 +492,7 @@ function parseSecureAttachment(value: unknown): SecureChatAttachment | null {
     key_b64: keyB64,
     iv_b64: ivB64,
     sha256_b64: sha256B64,
+    ...(sha3B64 ? { sha3_b64: sha3B64 } : {}),
     aad_version: typeof record.aad_version === "number" ? record.aad_version : undefined,
     duration_ms: typeof record.duration_ms === "number" ? record.duration_ms : null,
     created_at: String(record.created_at ?? new Date().toISOString()),
@@ -531,6 +528,38 @@ function parseSecurePlaintext(value: string): SecurePlaintextMessage {
   };
 }
 
+/** An envelope row as stored on the relay (or handed over by a nearby phone). */
+function envelopeRowFromRecord(row: Record<string, unknown>): MessageEnvelopeRow {
+  return {
+    id: String(row.id),
+    conversation_id: String(row.conversation_id),
+    client_message_id: row.client_message_id ? String(row.client_message_id) : null,
+    parent_client_message_id: row.parent_client_message_id ? String(row.parent_client_message_id) : null,
+    sender_user_id: String(row.sender_user_id),
+    sender_device_id: row.sender_device_id ? String(row.sender_device_id) : null,
+    recipient_user_id: String(row.recipient_user_id),
+    recipient_device_id: row.recipient_device_id ? String(row.recipient_device_id) : null,
+    message_kind: String(row.message_kind ?? "text"),
+    sealed_sender_envelope: asRecord(row.sealed_sender_envelope),
+    ciphertext: row.ciphertext,
+    nonce: row.nonce,
+    auth_tag: row.auth_tag,
+    aad: row.aad,
+    ratchet_counter: Number(row.ratchet_counter ?? 0),
+    suite: asRecord(row.suite),
+    lifecycle: asRecord(row.lifecycle),
+    verification_state: String(row.verification_state ?? "pending") as MessageEnvelopeRow["verification_state"],
+    threat_result: asRecord(row.threat_result),
+    deleted_at: row.deleted_at ? String(row.deleted_at) : null,
+    created_at: String(row.created_at ?? new Date().toISOString()),
+  };
+}
+
+/** Groups and channels share naming, roles and membership management. */
+function isMultiParty<T extends { conversation_type: string }>(conversation: T | null | undefined): conversation is T & { conversation_type: "group" | "channel" } {
+  return conversation?.conversation_type === "group" || conversation?.conversation_type === "channel";
+}
+
 function parseSecureControl(value: string): SecureControlMessage | null {
   const parsed = parseJsonPayload(value);
   if (parsed?.qguard_control_v1 !== true) return null;
@@ -549,6 +578,25 @@ function parseSecureControl(value: string): SecureControlMessage | null {
       target_client_message_id: target,
       body: String(parsed.body ?? ""),
     };
+  }
+  if (parsed.type === "session_reset") {
+    return { type: "session_reset", target_client_message_id: target };
+  }
+  if (parsed.type === "channel_key" && typeof parsed.epoch_id === "string" && typeof parsed.key === "string"
+    && typeof parsed.seq === "number" && Number.isSafeInteger(parsed.seq) && parsed.seq > 0) {
+    return { type: "channel_key", target_client_message_id: target, epoch_id: parsed.epoch_id, seq: parsed.seq, key: parsed.key };
+  }
+  if (parsed.type === "channel_key_request") {
+    return { type: "channel_key_request", target_client_message_id: target };
+  }
+  if (parsed.type === "group_meta_request") {
+    return { type: "group_meta_request", target_client_message_id: target };
+  }
+  if (parsed.type === "group_meta" && typeof parsed.name === "string") {
+    return { type: "group_meta", target_client_message_id: target, name: sanitizeGroupName(parsed.name) };
+  }
+  if (parsed.type === "call_pairing" && parsed.offer && typeof parsed.offer === "object" && !Array.isArray(parsed.offer)) {
+    return { type: "call_pairing", target_client_message_id: target, offer: parsed.offer as PairingOffer };
   }
   return null;
 }
@@ -731,6 +779,8 @@ async function withFetchRetry<T>(task: () => Promise<T>, attempts = 3, delayMs =
   throw lastError;
 }
 
+// The directory needs at least this much to search on (migration 039).
+const USER_SEARCH_MIN_CHARS = 3;
 const DIRECTORY_UNREACHABLE_MESSAGE = "Couldn't reach the directory service. Check your connection and try again in a moment.";
 
 // Safety-net cadence for the open thread's realtime reload, mirroring
@@ -899,13 +949,34 @@ function buildTauriEnvelope(row: MessageEnvelopeRow): EncryptedMessageEnvelope {
       tag: byteaToBytes(row.auth_tag),
     },
     aad: byteaToBytes(row.aad),
-    hybrid_ciphertext: hybridCiphertextFromSealed(sealed),
+    hybrid_ciphertext: hybridCiphertextForCore(sealed),
     ...prekeyReferenceFromSealed(sealed),
     message_signature: normalizeSignature(sealed.message_signature),
     sender_ed25519_public: numberArray(sealed.sender_ed25519_public),
     sender_mldsa_public: numberArray(sealed.sender_mldsa_public),
     suite: row.suite,
     created_at: row.created_at,
+    ...(ratchetHeaderFromSealed(sealed) ? { ratchet: ratchetHeaderFromSealed(sealed) } : {}),
+  };
+}
+
+/**
+ * The parts of a sealed envelope that the relay row stores inside
+ * `sealed_sender_envelope`. `hybrid_ciphertext` is written even when it is
+ * null: the insert policy checks the key is present (migration 007), and a
+ * ratchet message's null says "no encapsulation" explicitly. The ratchet
+ * header is written only when there is one, so a one-shot row is byte-for-byte
+ * what earlier builds wrote.
+ */
+function sealedEnvelopeCryptoFields(envelope: EncryptedMessageEnvelope): Record<string, unknown> {
+  return {
+    hybrid_ciphertext: envelope.hybrid_ciphertext,
+    prekey_id: envelope.prekey_id,
+    prekey_kind: envelope.prekey_kind,
+    message_signature: envelope.message_signature,
+    sender_ed25519_public: envelope.sender_ed25519_public,
+    sender_mldsa_public: envelope.sender_mldsa_public,
+    ...(envelope.ratchet ? { ratchet: envelope.ratchet } : {}),
   };
 }
 
@@ -1261,6 +1332,42 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   );
   const decryptInFlightRef = useRef<Map<string, Promise<DecryptedChatEnvelope>>>(new Map());
   const syncInFlightRef = useRef<Set<string>>(new Set());
+  // Contact devices a fresh ratchet session was already requested for.
+  const ratchetRepairsRef = useRef<Set<string>>(new Set());
+  // Call-pairing offers already handed to the core this page lifetime.
+  const pairingOffersSeenRef = useRef<Set<string>>(new Set());
+  const [verifyPanelOpen, setVerifyPanelOpen] = useState(false);
+  // Groups (roadmap 7.1): names arrive as encrypted controls; this re-renders
+  // when one does. Names of members who are not contacts come from profiles
+  // (readable by people who share a conversation, migration 028).
+  const [showNewGroup, setShowNewGroup] = useState(false);
+  const [membersPanelOpen, setMembersPanelOpen] = useState(false);
+  // AI assistant (roadmap 8): per-device setting, per-conversation allowance.
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantConsentVersion, setAssistantConsentVersion] = useState(0);
+  const groupNameRequestsRef = useRef(new Set<string>());
+  // Offline delivery (roadmap 9.1): rows a nearby phone handed over, and the
+  // rows the last load held, per conversation.
+  const nearbyRowsRef = useRef(new Map<string, MessageEnvelopeRow[]>());
+  const heldRowsRef = useRef(new Map<string, MessageEnvelopeRow[]>());
+  // Channels (roadmap 7.4).
+  const [showNewChannel, setShowNewChannel] = useState(false);
+  const [showJoinChannel, setShowJoinChannel] = useState(false);
+  const [channelKeyVersion, setChannelKeyVersion] = useState(0);
+  const [channelDistributeSignal, setChannelDistributeSignal] = useState(0);
+  const channelKeyRequestsSeenRef = useRef(new Set<string>());
+  const channelNamesSentRef = useRef(new Set<string>());
+  const ownNameInHistoryRef = useRef(new Set<string>());
+  const groupNameRepliesRef = useRef(new Set<string>());
+  const [groupNamesVersion, setGroupNamesVersion] = useState(0);
+  // `members`: the name is sent only once the thread lists all of them, so a
+  // just-added member is among the recipients.
+  const [pendingGroupMeta, setPendingGroupMeta] = useState<{ conversationId: string; name: string; members: string[] } | null>(null);
+  // Membership changes made here, shown until the reloaded list agrees.
+  const [groupMemberOverrides, setGroupMemberOverrides] = useState<Record<string, string[]>>({});
+  const [leftGroupIds, setLeftGroupIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [memberProfileNames, setMemberProfileNames] = useState<Record<string, string>>({});
+  useEffect(() => { setVerifyPanelOpen(false); setMembersPanelOpen(false); setAssistantOpen(false); }, [activeConversationId]);
   // When the send path last read the AUTHORITATIVE recipient-device list from
   // the server, keyed by the recipient set. See DEVICE_LIST_MAX_STALENESS_MS.
   const deviceListFetchedAtRef = useRef<Map<string, number>>(new Map());
@@ -1370,9 +1477,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       ...pendingConversations.filter((conversation) => !known.has(conversation.id)),
     ];
     return merged
-      .map((conversation) => ({ ...conversation, ...(conversationStateOverrides[conversation.id] ?? {}) }))
-      .filter((conversation) => !conversation.deleted_at);
-  }, [conversationStateOverrides, conversations, pendingConversations]);
+      .map((conversation) => ({
+        ...conversation,
+        ...(conversationStateOverrides[conversation.id] ?? {}),
+        member_user_ids: groupMemberOverrides[conversation.id] ?? conversation.member_user_ids,
+      }))
+      .filter((conversation) => !conversation.deleted_at && !leftGroupIds.has(conversation.id));
+  }, [conversationStateOverrides, conversations, groupMemberOverrides, leftGroupIds, pendingConversations]);
 
   // Drop optimistic conversations once the real row lands in the prop. Returning
   // the same reference when nothing changed avoids a re-render loop.
@@ -1382,6 +1493,18 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       const known = new Set(conversations.map((conversation) => conversation.id));
       const next = current.filter((conversation) => !known.has(conversation.id));
       return next.length === current.length ? current : next;
+    });
+    setGroupMemberOverrides((current) => {
+      const settled = Object.keys(current).filter((id) => {
+        const loaded = conversations.find((conversation) => conversation.id === id);
+        if (!loaded) return false;
+        const wanted = new Set(current[id]);
+        return loaded.member_user_ids.length === wanted.size && loaded.member_user_ids.every((memberId) => wanted.has(memberId));
+      });
+      if (settled.length === 0) return current;
+      const next = { ...current };
+      settled.forEach((id) => { delete next[id]; });
+      return next;
     });
   }, [conversations]);
   const activeConversations = useMemo(() => effectiveConversations.filter((conversation) => !conversation.archived_at && !conversation.hidden_at), [effectiveConversations]);
@@ -1412,7 +1535,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const currentDevice = localDeviceId
     ? localDevice
     : myDevices.find((device) => device.trust_state === "ThisDevice" && hasSendableKeyBundle(device)) ?? myDevices.find(hasSendableKeyBundle) ?? myDevices[0] ?? null;
-  const activeContact = activeConversation
+  const activeContact = activeConversation && activeConversation.conversation_type === "direct"
     ? contacts.find((contact) => (
       activeConversation.member_user_ids.includes(contact.contact_user_id)
       || chatMessages.some((chatMessage) => (
@@ -1438,6 +1561,98 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     });
     return Array.from(recipientIds);
   }, [activeContact, activeConversation, chatMessages, userId]);
+
+  // Re-read when the panel opens, so a change in Settings applies without a reload.
+  const assistantSettings = useMemo(() => loadAssistantSettings(), [assistantOpen, activeConversationId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const assistantCandidates = useMemo<AssistantCandidateMessage[]>(() => {
+    if (!assistantOpen || !activeConversation) return [];
+    return chatMessages.map((chatMessage) => {
+      const mine = chatMessage.sender_user_id === userId;
+      return {
+        id: chatMessage.id,
+        senderName: mine ? "Me" : isMultiParty(activeConversation)
+          ? memberName(chatMessage.sender_user_id)
+          : conversationTitle(activeConversation),
+        mine,
+        text: chatMessage.plaintext,
+        createdAt: chatMessage.created_at,
+        status: chatMessage.status,
+        expiresAt: chatMessage.expires_at,
+        availableAt: chatMessage.available_at,
+        readOnce: chatMessage.read_once,
+        viewOnce: chatMessage.view_once,
+        hasAttachment: Boolean(chatMessage.attachment),
+      };
+    });
+    // memberName/conversationTitle read contacts and profile names, listed here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversation, assistantOpen, chatMessages, contacts, memberProfileNames, userId]);
+
+  // A group's members who are not contacts are named from their profiles.
+  const groupMemberIdsToName = useMemo(() => {
+    if (!activeConversation || !isMultiParty(activeConversation)) return [];
+    return activeConversation.member_user_ids.filter((memberId) => (
+      memberId !== userId && !contacts.some((contact) => contact.contact_user_id === memberId)
+    ));
+  }, [activeConversation, contacts, userId]);
+  useEffect(() => {
+    const missing = groupMemberIdsToName.filter((memberId) => !(memberId in memberProfileNames));
+    if (missing.length === 0) return;
+    let cancelled = false;
+    void supabase.from("profiles").select("id,name,username").in("id", missing).then(({ data, error }) => {
+      if (cancelled || error || !data) return;
+      setMemberProfileNames((current) => {
+        const next = { ...current };
+        for (const row of data as Array<{ id: string; name: string | null; username: string | null }>) {
+          next[row.id] = row.name?.trim() || (row.username ? `@${row.username}` : "Group member");
+        }
+        return next;
+      });
+    });
+    return () => { cancelled = true; };
+  }, [groupMemberIdsToName, memberProfileNames]);
+
+  // The new group's name is its first encrypted message, sent once the group
+  // is the active conversation (so it reaches every member device enrolled).
+  useEffect(() => {
+    if (!pendingGroupMeta || activeConversation?.id !== pendingGroupMeta.conversationId) return;
+    if (!pendingGroupMeta.members.every((memberId) => activeConversation.member_user_ids.includes(memberId))) return;
+    const { conversationId, name } = pendingGroupMeta;
+    setPendingGroupMeta(null);
+    void sendEncryptedPayload(
+      serializeSecureControl({ type: "group_meta", target_client_message_id: conversationId, name }),
+      { controlType: "group_meta" },
+    ).catch((error) => {
+      setStatus(`Group created, but its name could not be sent: ${describeMessageError(error)}`);
+    });
+    // sendEncryptedPayload is recreated every render; the pending marker gates this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversation?.id, activeConversation?.member_user_ids, pendingGroupMeta]);
+
+  // Who owned the group when (migration 042): a name counts only if its sender
+  // was the owner at the time. Re-read whenever the owner changes.
+  const activeGroupId = isMultiParty(activeConversation) ? activeConversation.id : null;
+  const activeGroupOwner = isMultiParty(activeConversation) ? activeConversation.owner_user_id ?? null : null;
+  useEffect(() => {
+    if (!activeGroupId) return undefined;
+    let cancelled = false;
+    void supabase
+      .from("messaging_conversation_owner_history")
+      .select("owner_user_id,owner_from,owner_until")
+      .eq("conversation_id", activeGroupId)
+      .order("owner_from", { ascending: true })
+      .then(({ data, error }) => {
+        // A database without migration 042: fall back to the current owner only.
+        if (cancelled || error || !data) return;
+        setGroupOwnerHistory(activeGroupId, (data as Array<{ owner_user_id: string; owner_from: string; owner_until: string | null }>).map((row) => ({
+          ownerUserId: String(row.owner_user_id),
+          from: String(row.owner_from),
+          until: row.owner_until ? String(row.owner_until) : null,
+        })));
+        setGroupNamesVersion((version) => version + 1);
+      });
+    return () => { cancelled = true; };
+  }, [activeGroupId, activeGroupOwner]);
   const recipientDevices = useMemo(() => {
     if (!activeConversation) return [];
     return devices.filter((device) => activeRecipientUserIds.includes(device.user_id) && isTrustedDeviceForDelivery(device));
@@ -1506,6 +1721,65 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     () => selectDeliveryDevicesForUsers(recipientDevices, activeRecipientUserIds, localDeviceId, MESSAGE_DELIVERY_POLICY, acceptsDelivery),
     [acceptsDelivery, activeRecipientUserIds, localDeviceId, recipientDevices],
   );
+
+  // Channel members' devices (staff see every reader; readers see only staff).
+  const channelMemberDevices = useMemo<ReaderDevice[]>(
+    () => sendableRecipientDevices.map((device) => ({ deviceId: device.device_id, userId: device.user_id })),
+    [sendableRecipientDevices],
+  );
+  const channelStaffDeviceIds = useMemo(() => {
+    if (activeConversation?.conversation_type !== "channel") return [];
+    return sendableRecipientDevices
+      .filter((device) => memberRole(activeConversation, device.user_id) !== "member")
+      .map((device) => device.device_id);
+    // memberRole reads only the conversation passed in.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversation, sendableRecipientDevices]);
+  const loadChannelSenderIdentity = useCallback(async (deviceId: string) => {
+    await primeSenderIdentities([deviceId]);
+    return senderIdentityCache.get(deviceId) ?? null;
+  }, []);
+
+  // A channel's name exists only as an encrypted message, and until someone
+  // joins there is nobody to send it to. Once readers exist, the owner sends it
+  // once (with this account's own copy) unless history already holds it.
+  useEffect(() => {
+    if (activeConversation?.conversation_type !== "channel" || activeConversation.owner_user_id !== userId || messagesLoading) return;
+    if (channelNamesSentRef.current.has(activeConversation.id) || ownNameInHistoryRef.current.has(activeConversation.id)) return;
+    const name = groupName(activeConversation.id, userId);
+    if (!name || !activeConversation.member_user_ids.some((memberId) => memberId !== userId)) return;
+    channelNamesSentRef.current.add(activeConversation.id);
+    void sendEncryptedPayload(
+      serializeSecureControl({ type: "group_meta", target_client_message_id: activeConversation.id, name }),
+      { controlType: "group_meta" },
+    ).catch((error) => {
+      channelNamesSentRef.current.delete(activeConversation.id);
+      console.warn("[secure-chat] Channel name not sent:", describeMessageError(error));
+    });
+    // sendEncryptedPayload is recreated every render; the sent set gates this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversation, groupNamesVersion, messagesLoading, userId]);
+
+  // A member added after the name was sent cannot read that message (it was
+  // sealed before they joined), so once history has loaded without a name they
+  // ask the owner's devices for it — once per group per session.
+  useEffect(() => {
+    if (!activeGroupId || !activeGroupOwner || activeGroupOwner === userId || messagesLoading) return undefined;
+    if (groupName(activeGroupId, activeGroupOwner) || groupNameRequestsRef.current.has(activeGroupId)) return undefined;
+    const ownerDeviceIds = sendableRecipientDevices.filter((device) => device.user_id === activeGroupOwner).map((device) => device.device_id);
+    if (ownerDeviceIds.length === 0) return undefined;
+    const timer = window.setTimeout(() => {
+      if (groupName(activeGroupId, activeGroupOwner) || groupNameRequestsRef.current.has(activeGroupId)) return;
+      groupNameRequestsRef.current.add(activeGroupId);
+      void sendEncryptedPayload(
+        serializeSecureControl({ type: "group_meta_request", target_client_message_id: activeGroupId }),
+        { controlType: "group_meta_request", onlyDeviceIds: ownerDeviceIds },
+      ).catch((error) => console.warn("[secure-chat] Group name request not sent:", describeMessageError(error)));
+    }, 4_000);
+    return () => window.clearTimeout(timer);
+    // sendEncryptedPayload is recreated every render; the request set gates this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeGroupId, activeGroupOwner, groupNamesVersion, messagesLoading, sendableRecipientDevices, userId]);
   const recipientDevicesMissingPrekeys = activeRecipientUserIds.length > 0 && sendableRecipientDevices.length === 0 && recipientDevices.length > 0;
   const recipientDevicesReady = sendableRecipientDevices.length > 0;
 
@@ -1545,6 +1819,25 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [userId]);
 
+  // The core's own account of the ratchet sessions with this conversation's
+  // delivery devices. Re-read as messages come and go (a send or an open is
+  // what starts or advances a session); null outside the app or on failure,
+  // and the badge then says nothing about the ratchet.
+  const [ratchetStatus, setRatchetStatus] = useState<RatchetStatus | null>(null);
+  const ratchetPeerKey = sendableRecipientDevices.map((device) => device.device_id).sort().join(",");
+  const conversationMessageCount = chatMessages.length;
+  useEffect(() => {
+    if (!isTauriRuntime() || !userId || !ratchetPeerKey) {
+      setRatchetStatus(null);
+      return undefined;
+    }
+    let cancelled = false;
+    fetchRatchetStatus(userId, ratchetPeerKey.split(","))
+      .then((status) => { if (!cancelled) setRatchetStatus(status); })
+      .catch(() => { if (!cancelled) setRatchetStatus(null); });
+    return () => { cancelled = true; };
+  }, [userId, ratchetPeerKey, conversationMessageCount]);
+
   // The conversation's protection badge (lib/pq-status.ts), from the same
   // device lists and verdicts that decide delivery — so the badge cannot say
   // something different from what the next send will actually do.
@@ -1563,14 +1856,17 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       });
     }
     const openedMessages = chatMessages
-      // Only messages that opened HERE and recorded the combiner that opened
-      // them; anything else is no evidence either way.
-      .filter((item) => item.conversation_id === activeConversation.id && item.status === "decrypted" && item.kem_combiner !== undefined)
+      // Only messages that opened HERE and recorded how they were protected
+      // (the combiner, or at least that a ratchet session carried them);
+      // anything else is no evidence either way.
+      .filter((item) => item.conversation_id === activeConversation.id && item.status === "decrypted"
+        && (item.kem_combiner !== undefined || item.protocol === "ratchet"))
       .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())
       .map((item) => ({
         incoming: item.sender_user_id !== userId,
-        kemCombiner: item.kem_combiner ?? "",
+        kemCombiner: item.kem_combiner ?? null,
         authenticated: item.authenticated,
+        protocol: item.protocol,
       }));
     return derivePqStatus({
       inApp: isTauriRuntime(),
@@ -1585,10 +1881,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       openedMessages,
       pinsUnavailable: devicePinsUnavailable,
       forwardSecrecy,
+      ratchet: ratchetStatus
+        ? { enabledHere: ratchetStatus.enabled, available: ratchetStatus.available, sessions: ratchetStatus.sessions }
+        : null,
     });
     // conversationTitle reads contacts; it is a plain function of this render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeConversation, chatMessages, contacts, deviceReviews, devicePinsUnavailable, forwardSecrecy, pinIndex, recipientDevicesOnStaleBuild, sendableRecipientDevices, userId]);
+  }, [activeConversation, chatMessages, contacts, deviceReviews, devicePinsUnavailable, forwardSecrecy, groupNamesVersion, pinIndex, ratchetStatus, recipientDevicesOnStaleBuild, sendableRecipientDevices, userId]);
 
   // Ring targets are chosen with the CALL policy, not the message policy: a
   // ring is real time, so it goes to the devices that could actually answer
@@ -1599,6 +1898,17 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     () => selectDeliveryDevicesForUsers(recipientDevices, activeRecipientUserIds, localDeviceId, CALL_RING_POLICY, acceptsDelivery),
     [acceptsDelivery, activeRecipientUserIds, localDeviceId, recipientDevices],
   );
+
+  // Group call (roadmap 7.2): a group of exactly three, each other person
+  // callable on at least one device — the same list messages fan out to.
+  const groupCallPeers = useMemo(() => {
+    if (activeConversation?.conversation_type !== "group" || activeConversation.member_user_ids.length !== 3) return null;
+    const others = activeConversation.member_user_ids.filter((memberId) => memberId !== userId);
+    const peers = others.map((memberId) => buildCallPeer(callableRecipientDevices.filter((device) => device.user_id === memberId), memberName(memberId)));
+    return peers.every((peer): peer is NonNullable<typeof peer> => peer !== null) ? peers : null;
+    // memberName reads contacts and profile names.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversation, callableRecipientDevices, contacts, memberProfileNames, userId]);
 
   const callPeer = useMemo(() => {
     if (activeConversation?.conversation_type !== "direct") return null;
@@ -1846,8 +2156,25 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   }
 
   function conversationTitle(conversation: ConversationSummary): string {
+    if (isMultiParty(conversation)) {
+      // The decrypted name once known; until then the members' names.
+      return groupName(conversation.id, conversation.owner_user_id) ?? (conversation.title || groupFallbackTitle(conversation.member_user_ids.length));
+    }
     const contact = contacts.find((item) => conversation.member_user_ids.includes(item.contact_user_id));
     return contact ? visibleContactName(contact) : conversation.title;
+  }
+
+  /** A member's role in a group: owner from the conversation row, else the strongest of their device rows. */
+  function memberRole(conversation: ConversationSummary, memberUserId: string): GroupRole {
+    if (conversation.owner_user_id && conversation.owner_user_id === memberUserId) return "owner";
+    const role = conversation.member_roles?.[memberUserId];
+    return role === "admin" ? "admin" : "member";
+  }
+
+  /** A member's name: the contact's, else their profile's, else a neutral label. */
+  function memberName(memberUserId: string): string {
+    const contact = contacts.find((item) => item.contact_user_id === memberUserId);
+    return contact ? visibleContactName(contact) : memberProfileNames[memberUserId] ?? "Group member";
   }
 
   /** The other participant of a direct conversation (drives its avatar). */
@@ -1876,6 +2203,71 @@ export default function SecureChatPage({ userId, conversations, devices, contact
    */
   function isRetiredKeyError(message: string): boolean {
     return message.toLowerCase().includes(RETIRED_PREKEY_MARKER);
+  }
+
+  /**
+   * A contact device is sending on a ratchet session this device does not
+   * hold. Forget whatever this device still holds for it and send it one
+   * empty control on a NEW session: it adopts the session its newest
+   * incoming message arrived on, so its following messages are readable
+   * here again. Once per device per page lifetime, so a device that keeps
+   * failing cannot turn this into a send loop.
+   */
+  /**
+   * A contact device sealed its call-pairing half to this device. The core
+   * checks the signature, that the sender is a device recorded here, and
+   * replays; it stores the half and says whether ours is wanted in return.
+   */
+  async function handlePairingOffer(offer: PairingOffer, senderUserId: string, senderDeviceId: string): Promise<void> {
+    const key = `${senderDeviceId}:${String(offer.offerId ?? "")}`;
+    if (!isTauriRuntime() || pairingOffersSeenRef.current.has(key)) return;
+    pairingOffersSeenRef.current.add(key);
+    try {
+      const listed = recipientDevices.find((device) => device.device_id === senderDeviceId)
+        ?? (await loadTrustedDevicesForUsers([senderUserId])).find((device) => device.device_id === senderDeviceId);
+      const sender = listed ? peerIdentityOfDevice(listed) : null;
+      if (!sender) return;
+      const receipt = await receivePairingOffer(offer, sender);
+      if (receipt.replyNeeded) {
+        const reply = await createPairingOffer(sender);
+        await sendPairingOffer(senderDeviceId, reply);
+      }
+    } catch (error) {
+      console.warn("[secure-chat] Call-pairing offer not accepted:", describeMessageError(error));
+    }
+  }
+
+  async function sendPairingOffer(deviceId: string, offer: PairingOffer): Promise<void> {
+    await sendEncryptedPayload(
+      serializeSecureControl({ type: "call_pairing", target_client_message_id: String(offer.offerId), offer }),
+      { controlType: "call_pairing", onlyDeviceIds: [deviceId] },
+    );
+  }
+
+  async function requestFreshRatchetSession(peerDeviceId: string, failedClientMessageId: string): Promise<void> {
+    if (!peerDeviceId || !userId || !isTauriRuntime() || ratchetRepairsRef.current.has(peerDeviceId)) return;
+    ratchetRepairsRef.current.add(peerDeviceId);
+    try {
+      await resetRatchetSession(userId, peerDeviceId);
+      await sendEncryptedPayload(
+        serializeSecureControl({ type: "session_reset", target_client_message_id: failedClientMessageId }),
+        { controlType: "session_reset", onlyDeviceIds: [peerDeviceId] },
+      );
+      void recordCryptoTelemetry({
+        userId,
+        deviceId: currentDevice?.device_id ?? null,
+        scope: "message",
+        stage: "ratchet_session_restarted",
+        detail: "A contact device used a secure session this device does not hold; a new session was started with it",
+        progress: 100,
+        status: "complete",
+        metadata: { peer_device_id: peerDeviceId },
+      }).catch(() => undefined);
+    } catch (error) {
+      // Not counted as done: a later load may try again.
+      ratchetRepairsRef.current.delete(peerDeviceId);
+      console.warn("[secure-chat] Could not start a new secure session:", describeMessageError(error));
+    }
   }
 
   function describeMessageError(error: unknown): string {
@@ -2014,12 +2406,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             sync_rewrapped_by_user_id: userId,
             sync_rewrapped_by_device_id: currentDevice.device_id,
             sync_rewrapped_at: new Date().toISOString(),
-            hybrid_ciphertext: envelope.hybrid_ciphertext,
-            prekey_id: envelope.prekey_id,
-            prekey_kind: envelope.prekey_kind,
-            message_signature: envelope.message_signature,
-            sender_ed25519_public: envelope.sender_ed25519_public,
-            sender_mldsa_public: envelope.sender_mldsa_public,
+            ...sealedEnvelopeCryptoFields(envelope),
           },
           ciphertext: bytesToBytea(envelope.envelope.ciphertext),
           nonce: bytesToBytea(envelope.envelope.nonce),
@@ -2248,6 +2635,28 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           const localRowSenderUserId = originalSenderUserId(localRow, userId);
           const localRowIsMine = localRowSenderUserId === userId;
           const control = parseSecureControl(decrypted.plaintext);
+          if (control?.type === "group_meta" && (decrypted.authenticated || localRowIsMine)
+            && rememberGroupName(localRow.conversation_id, control.name, localRow.created_at, localRowSenderUserId)) {
+            setGroupNamesVersion((version) => version + 1);
+          }
+          if (control?.type === "group_meta" && localRowIsMine) ownNameInHistoryRef.current.add(localRow.conversation_id);
+          if (control?.type === "channel_key" && !localRowIsMine && decrypted.authenticated
+            && decryptDeviceId && localRow.recipient_device_id === decryptDeviceId) {
+            acceptChannelKey(localRow.conversation_id, localRowSenderUserId, control);
+          }
+          if (control?.type === "channel_key_request" && !localRowIsMine && decrypted.authenticated
+            && !channelKeyRequestsSeenRef.current.has(localRow.id)
+            && Date.now() - new Date(localRow.created_at).getTime() < 24 * 60 * 60 * 1000) {
+            channelKeyRequestsSeenRef.current.add(localRow.id);
+            setChannelDistributeSignal((value) => value + 1);
+          }
+          if (control?.type === "group_meta_request" && !localRowIsMine && decrypted.authenticated) {
+            answerGroupNameRequest(localRow.conversation_id, localRowSenderUserId, buildTauriEnvelope(localRow).sender_device_id, localRow.created_at);
+          }
+          if (control?.type === "call_pairing" && !localRowIsMine && decrypted.authenticated
+            && decryptDeviceId && localRow.recipient_device_id === decryptDeviceId) {
+            void handlePairingOffer(control.offer, localRowSenderUserId, buildTauriEnvelope(localRow).sender_device_id);
+          }
           if (control) {
             void syncMissingDeviceEnvelopes(groupId, localRow, orderedRows, decrypted.plaintext);
             const controlMessage = { ...control, sender_user_id: localRowSenderUserId, created_at: localRow.created_at };
@@ -2297,7 +2706,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             // Checked, not assumed: this row's id and conversation are the ones
             // the sender signed, so it is not a copy of an older envelope.
             replay_protected: screening.positionVerified.has(localRow.id),
-            kem_combiner: String(hybridCiphertextFromSealed(localRow.sealed_sender_envelope).suite.kem_combiner ?? ""),
+            // The core's own account when it gives one (a ratchet message's
+            // combiner lives in its session, not on the row); a core that
+            // predates that field is reported from the row as before.
+            kem_combiner: decrypted.kem_combiner === undefined
+              ? String(hybridCiphertextFromSealed(localRow.sealed_sender_envelope).suite.kem_combiner ?? "")
+              : decrypted.kem_combiner ?? undefined,
+            protocol: decrypted.protocol,
             created_at: localRow.created_at,
             error: null,
             can_delete: localRowIsMine,
@@ -2335,6 +2750,13 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         const failedRow = decryptRows[0];
         const failedRowSenderUserId = originalSenderUserId(failedRow, userId);
         const retiredKey = Boolean(lastDecryptError && isRetiredKeyError(lastDecryptError));
+        // Sealed on a secure session this device does not hold (reset here,
+        // or never seen). Not a broken cipher: a fresh session from this side
+        // repairs the conversation, though this one message stays unreadable.
+        const sessionMissing = !retiredKey && isRatchetSessionMissingError(lastDecryptError);
+        if (sessionMissing) {
+          void requestFreshRatchetSession(buildTauriEnvelope(failedRow).sender_device_id, groupId);
+        }
           hydrated.push({
             id: failedRow.id,
             client_message_id: groupId,
@@ -2359,7 +2781,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             created_at: failedRow.created_at,
             error: retiredKey
               ? "Encrypted to a key this device has since replaced. Nothing can recover it here."
-              : lastDecryptError ?? "No decryptable trusted-device envelope could be recovered locally.",
+              : sessionMissing
+                ? "Sent on a secure session this device no longer holds, so it cannot be opened here. A new session has been started with their device — ask them to send it again."
+                : lastDecryptError ?? "No decryptable trusted-device envelope could be recovered locally.",
             can_delete: failedRowSenderUserId === userId,
           });
       } else if (isMine) {
@@ -2652,29 +3076,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           .in("id", ids)
           .abortSignal(signal), HISTORY_BODY_TIMEOUT_MS, "encrypted history fetch"));
         if (bodyError) throw bodyError;
-        bodyCache.store(conversationForLoad, ((bodyData ?? []) as unknown as Array<Record<string, unknown>>).map((row) => ({
-          id: String(row.id),
-          conversation_id: String(row.conversation_id),
-          client_message_id: row.client_message_id ? String(row.client_message_id) : null,
-          parent_client_message_id: row.parent_client_message_id ? String(row.parent_client_message_id) : null,
-          sender_user_id: String(row.sender_user_id),
-          sender_device_id: row.sender_device_id ? String(row.sender_device_id) : null,
-          recipient_user_id: String(row.recipient_user_id),
-          recipient_device_id: row.recipient_device_id ? String(row.recipient_device_id) : null,
-          message_kind: String(row.message_kind ?? "text"),
-          sealed_sender_envelope: asRecord(row.sealed_sender_envelope),
-          ciphertext: row.ciphertext,
-          nonce: row.nonce,
-          auth_tag: row.auth_tag,
-          aad: row.aad,
-          ratchet_counter: Number(row.ratchet_counter ?? 0),
-          suite: asRecord(row.suite),
-          lifecycle: asRecord(row.lifecycle),
-          verification_state: String(row.verification_state ?? "pending") as MessageEnvelopeRow["verification_state"],
-          threat_result: asRecord(row.threat_result),
-          deleted_at: row.deleted_at ? String(row.deleted_at) : null,
-          created_at: String(row.created_at),
-        } satisfies MessageEnvelopeRow)));
+        bodyCache.store(conversationForLoad, ((bodyData ?? []) as unknown as Array<Record<string, unknown>>).map(envelopeRowFromRecord));
       };
 
       const stateRows = statesResult.error ? [] : (statesResult.data ?? []) as Array<Record<string, unknown>>;
@@ -2689,7 +3091,12 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       // Progressive render: each decrypted chunk flushes to the screen
       // immediately (newest messages first) instead of holding the whole
       // conversation behind one long "Loading encrypted history..." gate.
-      const hydrateHeld = () => hydrateMessageRows(bodyCache.resolve(conversationForLoad, index), userStates, (partial) => {
+      const heldRows = () => {
+        const resolved = bodyCache.resolve(conversationForLoad, index);
+        heldRowsRef.current.set(conversationForLoad, resolved);
+        return mergeRowsById(resolved, nearbyRowsRef.current.get(conversationForLoad) ?? []);
+      };
+      const hydrateHeld = () => hydrateMessageRows(heldRows(), userStates, (partial) => {
         if (messageLoadSeqRef.current !== loadSeq) return;
         setChatMessages(partial);
         setMessagesLoading(false);
@@ -2807,6 +3214,47 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     // channel below, losing any insert that landed in the gap. Keying on the id
     // makes both effects stable for the lifetime of the open conversation.
   }, [activeConversationLoadId, currentDevice?.device_id, localDeviceId, localSignedPrekeyId, userId, onSent, prewarmSenderIdentities]);
+
+  // Rows a nearby phone handed over (roadmap 9.1). Only rows sealed to THIS
+  // device are kept; they then go through the same screening and decryption
+  // as rows from the relay, and are merged into every later load of their
+  // conversation until the relay's own copy replaces them.
+  useEffect(() => {
+    const onRows = (event: Event) => {
+      const deviceId = localDeviceId ?? currentDevice?.device_id ?? null;
+      const rows = rowsForDevice((event as CustomEvent<Array<Record<string, unknown>>>).detail ?? [], deviceId).map(envelopeRowFromRecord);
+      if (rows.length === 0) return;
+      const touched = new Set<string>();
+      for (const row of rows) {
+        const current = nearbyRowsRef.current.get(row.conversation_id) ?? [];
+        nearbyRowsRef.current.set(row.conversation_id, mergeRowsById(current, [row]));
+        touched.add(row.conversation_id);
+      }
+      const active = activeConversationIdRef.current;
+      if (!active || !touched.has(active)) return;
+      const merged = mergeRowsById(heldRowsRef.current.get(active) ?? [], nearbyRowsRef.current.get(active) ?? []);
+      void hydrateMessageRows(merged, new Map()).then((messages) => {
+        if (activeConversationIdRef.current === active) setChatMessages(messages);
+      });
+    };
+    window.addEventListener(NEARBY_ROWS_EVENT, onRows);
+    return () => window.removeEventListener(NEARBY_ROWS_EVENT, onRows);
+    // hydrateMessageRows reads refs and stable setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentDevice?.device_id, localDeviceId]);
+
+  // Queued messages reached the relay: they are ordinary messages now.
+  useEffect(() => {
+    const onFlushed = () => {
+      decryptedMessageCacheRef.current.forEach((cached, key) => {
+        if (cached.queued) decryptedMessageCacheRef.current.set(key, { ...cached, queued: false });
+      });
+      setChatMessages((current) => (current.some((item) => item.queued) ? current.map((item) => (item.queued ? { ...item, queued: false } : item)) : current));
+      void loadConversationMessages();
+    };
+    window.addEventListener(OUTBOX_FLUSHED_EVENT, onFlushed);
+    return () => window.removeEventListener(OUTBOX_FLUSHED_EVENT, onFlushed);
+  }, [loadConversationMessages]);
 
   // Switching conversations must instantly show a clean slate. Clearing in a
   // layout effect (keyed on the conversation id, so it only fires on a real
@@ -3109,7 +3557,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
   async function searchUsers() {
     const trimmed = query.trim();
-    if (trimmed.length < 2) {
+    if (trimmed.length < USER_SEARCH_MIN_CHARS) {
       setSearchResults([]);
       setSearchFeedback(null);
       return;
@@ -3141,14 +3589,18 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
   async function fallbackSearchProfiles(rawQuery: string): Promise<UserSearchResult[]> {
     const normalized = normalizeUserSearchQuery(rawQuery);
-    if (normalized.length < 2) return [];
+    if (normalized.length < USER_SEARCH_MIN_CHARS) return [];
     const escaped = normalized.replace(/[%_]/g, "\\$&");
     const columns = "id,email,name,username";
+    // No email prefix match here (roadmap 6.3, migration 039): it revealed
+    // the start of other people's addresses. A full email is matched exactly.
     const runners: Array<() => PromiseLike<{ data: unknown; error: unknown }>> = [
       () => supabase.from("profiles").select(columns).neq("id", userId).ilike("username", `${escaped}%`).limit(10),
       () => supabase.from("profiles").select(columns).neq("id", userId).ilike("name", `${escaped}%`).limit(10),
-      () => supabase.from("profiles").select(columns).neq("id", userId).ilike("email", `${escaped}%`).limit(10),
     ];
+    if (normalized.includes("@")) {
+      runners.push(() => supabase.from("profiles").select(columns).neq("id", userId).ilike("email", escaped).limit(1));
+    }
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized)) {
       runners.unshift(() => supabase.from("profiles").select(columns).eq("id", normalized).limit(1));
     }
@@ -3159,9 +3611,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
   async function runUserSearch(rawQuery: string) {
     const trimmed = rawQuery.trim();
-    if (trimmed.length < 2) {
+    if (trimmed.length < USER_SEARCH_MIN_CHARS) {
       setSearchResults([]);
-      setSearchFeedback(null);
+      setSearchFeedback(trimmed.length > 0 ? `Type at least ${USER_SEARCH_MIN_CHARS} characters.` : null);
       return;
     }
     const requestId = ++searchRequestRef.current;
@@ -3171,6 +3623,15 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     try {
       const normalized = normalizeUserSearchQuery(trimmed);
       const { data, error } = await withFetchRetry(() => Promise.resolve(supabase.rpc("search_messaging_users", { p_query: normalized })));
+      if (error && /too many searches/i.test(error.message ?? "")) {
+        // The directory's rate limit (migration 039): say so, and do not go
+        // around it with the fallback.
+        if (searchRequestRef.current === requestId) {
+          setSearchResults([]);
+          setSearchFeedback(error.message);
+        }
+        return;
+      }
       let results = error ? [] : (data ?? []) as UserSearchResult[];
       if (results.length === 0) {
         const fallbackResults = await fallbackSearchProfiles(trimmed);
@@ -3195,7 +3656,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
   useEffect(() => {
     const trimmed = query.trim();
-    if (trimmed.length < 2) {
+    if (trimmed.length < USER_SEARCH_MIN_CHARS) {
       searchRequestRef.current += 1;
       setSearchResults([]);
       setSearchFeedback(null);
@@ -3204,7 +3665,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     }
     const timer = window.setTimeout(() => {
       void runUserSearch(trimmed);
-    }, 300);
+    }, 450);
     return () => window.clearTimeout(timer);
   }, [query]);
 
@@ -3346,11 +3807,16 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       let config = protectionConfig;
       if (!config) {
         config = await createChatProtectionConfig(secret);
-        localStorage.setItem(chatProtectionStorageKey(userId), JSON.stringify(config));
+        writeChatProtectionConfig(userId, config);
         setProtectionConfig(config);
       } else {
-        const verified = await verifyChatProtectionSecret(secret, config);
-        if (!verified) throw new Error("Invalid PIN or password.");
+        const { ok, upgraded } = await verifyChatProtectionSecret(secret, config);
+        if (!ok) throw new Error("Invalid PIN or password.");
+        if (upgraded) {
+          // The old PBKDF2-SHA-256 verifier is replaced while the secret is at hand.
+          writeChatProtectionConfig(userId, upgraded);
+          setProtectionConfig(upgraded);
+        }
       }
 
       setProtectedUnlockUntil((current) => ({
@@ -3450,6 +3916,258 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   // uses this to decide whether to close the New Chat modal. Every failure path
   // sets a visible `contactAction` message and logs a breadcrumb, so a tap can
   // never fail silently or bounce the user back with no explanation.
+  /**
+   * Create a group (roadmap 7.1): a conversation of type `group` whose members'
+   * devices are enrolled exactly as a direct chat's are. Every member needs at
+   * least one device this device can seal to; the name follows as the first
+   * (encrypted) message, once the new thread is the active one.
+   */
+  /**
+   * The devices a group sends to for these people — the same delivery gates
+   * (published prekeys, device pins) as a direct chat. Every person must have
+   * at least one, or nobody could reach them.
+   */
+  async function groupMemberDevices(memberUserIds: string[]): Promise<TrustedDevice[]> {
+    const candidates = await loadTrustedDevicesForUsers(memberUserIds);
+    const pins = await refreshDevicePins(candidates);
+    const sendable = selectDeliveryDevicesForUsers(candidates, memberUserIds, localDeviceId, MESSAGE_DELIVERY_POLICY, pinGate(pins));
+    const unreachable = memberUserIds.filter((memberId) => !sendable.some((device) => device.user_id === memberId));
+    if (unreachable.length > 0) {
+      throw new Error(`${unreachable.map(memberName).join(", ")} ${unreachable.length === 1 ? "has" : "have"} no device this app can send to yet (or one awaiting your approval). Open a chat with them first.`);
+    }
+    return sendable;
+  }
+
+  async function createGroup(rawName: string, memberUserIds: string[]): Promise<void> {
+    const name = sanitizeGroupName(rawName);
+    const localDevices = localDeviceId
+      ? (localDevice && isSendableDevice(localDevice) ? [localDevice] : [])
+      : selectDeliveryDevicesForUsers(myDevices, [userId], localDeviceId);
+    if (localDevices.length === 0) throw new Error("This device is still publishing its quantum-safe keys. Try again in a moment.");
+    const sendable = await groupMemberDevices(memberUserIds);
+    const { data: conversation, error: conversationError } = await supabase
+      .from("messaging_conversations")
+      // No title or member hint on the server: the name is end-to-end encrypted.
+      .insert({ owner_user_id: userId, conversation_type: "group", encrypted_title: { version: 1 } })
+      .select("id")
+      .single();
+    if (conversationError) throw conversationError;
+    const conversationId = String(conversation.id);
+    const { error: memberError } = await supabase.from("messaging_conversation_members").insert([
+      ...localDevices.map((device) => ({ conversation_id: conversationId, user_id: userId, device_id: device.device_id, role: "owner" })),
+      ...sendable.map((device) => ({ conversation_id: conversationId, user_id: device.user_id, device_id: device.device_id, role: "member" })),
+    ]);
+    if (memberError) throw memberError;
+    const now = new Date().toISOString();
+    rememberGroupName(conversationId, name, now, userId);
+    setGroupNamesVersion((version) => version + 1);
+    setPendingConversations((current) => [{
+      id: conversationId,
+      conversation_type: "group",
+      title: name,
+      last_activity: "No encrypted messages yet",
+      unread_count: 0,
+      updated_at: now,
+      member_user_ids: Array.from(new Set([userId, ...memberUserIds])),
+      owner_user_id: userId,
+      member_roles: Object.fromEntries([[userId, "owner"], ...memberUserIds.map((memberId) => [memberId, "member"])]),
+      archived_at: null,
+      hidden_at: null,
+      deleted_at: null,
+    }, ...current.filter((item) => item.id !== conversationId)]);
+    setActiveConversationId(conversationId);
+    setConversationView("active");
+    setMobilePane("thread");
+    setPendingGroupMeta({ conversationId, name, members: memberUserIds });
+    setShowNewGroup(false);
+    setStatus(`Group "${name}" created`);
+    await Promise.resolve(onSent());
+  }
+
+  /**
+   * A channel's epoch key from a staff device. Only the owner's or an admin's
+   * key is taken (roles from the server, as for names); the core refuses to
+   * replace a key it already holds for that epoch.
+   */
+  function acceptChannelKey(conversationId: string, senderUserId: string, control: { epoch_id: string; seq: number; key: string }): void {
+    const conversation = effectiveConversations.find((item) => item.id === conversationId);
+    if (!conversation || conversation.conversation_type !== "channel") return;
+    const senderRole = memberRole(conversation, senderUserId);
+    if (senderRole !== "owner" && senderRole !== "admin") return;
+    void safeInvoke("channel_key_import", { channelId: conversationId, epochId: control.epoch_id, seq: control.seq, key: control.key })
+      .then(() => setChannelKeyVersion((value) => value + 1))
+      .catch((error) => console.warn("[secure-chat] Channel key not accepted:", describeMessageError(error)));
+  }
+
+  /** A channel (roadmap 7.4): this account owns it; readers join with invite codes. */
+  async function createChannel(rawName: string): Promise<void> {
+    const name = sanitizeGroupName(rawName);
+    if (!name) throw new Error("Give the channel a name.");
+    const localDevices = localDeviceId
+      ? (localDevice && isSendableDevice(localDevice) ? [localDevice] : [])
+      : selectDeliveryDevicesForUsers(myDevices, [userId], localDeviceId);
+    if (localDevices.length === 0) throw new Error("This device is still publishing its quantum-safe keys. Try again in a moment.");
+    const { data: conversation, error: conversationError } = await supabase
+      .from("messaging_conversations")
+      .insert({ owner_user_id: userId, conversation_type: "channel", encrypted_title: { version: 1 } })
+      .select("id")
+      .single();
+    if (conversationError) throw conversationError;
+    const conversationId = String(conversation.id);
+    const { error: memberError } = await supabase.from("messaging_conversation_members").insert(
+      localDevices.map((device) => ({ conversation_id: conversationId, user_id: userId, device_id: device.device_id, role: "owner" })),
+    );
+    if (memberError) throw memberError;
+    const now = new Date().toISOString();
+    if (rememberGroupName(conversationId, name, now, userId)) setGroupNamesVersion((version) => version + 1);
+    setPendingConversations((current) => [{
+      id: conversationId,
+      conversation_type: "channel",
+      title: name,
+      last_activity: "No posts yet",
+      unread_count: 0,
+      updated_at: now,
+      member_user_ids: [userId],
+      owner_user_id: userId,
+      member_roles: { [userId]: "owner" },
+      archived_at: null,
+      hidden_at: null,
+      deleted_at: null,
+    }, ...current.filter((item) => item.id !== conversationId)]);
+    setActiveConversationId(conversationId);
+    setConversationView("active");
+    setMobilePane("thread");
+    setShowNewChannel(false);
+    setStatus(`Channel "${name}" created — invite readers from the channel`);
+    await Promise.resolve(onSent());
+  }
+
+  async function joinChannel(code: string): Promise<void> {
+    const { data, error } = await supabase.rpc("join_messaging_channel", { p_code: code });
+    if (error) throw new Error(error.message);
+    const conversationId = String(data);
+    const now = new Date().toISOString();
+    setPendingConversations((current) => current.some((item) => item.id === conversationId) ? current : [{
+      id: conversationId,
+      conversation_type: "channel",
+      title: "Channel",
+      last_activity: "Joined",
+      unread_count: 0,
+      updated_at: now,
+      member_user_ids: [userId],
+      owner_user_id: null,
+      archived_at: null,
+      hidden_at: null,
+      deleted_at: null,
+    }, ...current]);
+    setShowJoinChannel(false);
+    setActiveConversationId(conversationId);
+    setConversationView("active");
+    setMobilePane("thread");
+    setStatus("Joined the channel");
+    await Promise.resolve(onSent());
+  }
+
+  /** Owner or admin: add a contact to the active group. */
+  async function addGroupMember(memberUserId: string): Promise<void> {
+    const group = activeConversation;
+    if (!group || !isMultiParty(group)) return;
+    if (group.member_user_ids.includes(memberUserId)) return;
+    const devices = await groupMemberDevices([memberUserId]);
+    const { error } = await supabase.from("messaging_conversation_members").insert(devices.map((device) => ({
+      conversation_id: group.id, user_id: device.user_id, device_id: device.device_id, role: "member",
+    })));
+    if (error) throw error;
+    setGroupMemberOverrides((current) => ({ ...current, [group.id]: Array.from(new Set([...group.member_user_ids, memberUserId])) }));
+    // Earlier messages were sealed before they joined, so they cannot read the
+    // original name message. Only the owner's name counts, so the owner sends it
+    // again; when an admin adds someone, the newcomer asks the owner for it.
+    const name = group.owner_user_id === userId ? groupName(group.id, userId) : null;
+    if (name) setPendingGroupMeta({ conversationId: group.id, name, members: [memberUserId] });
+    setStatus(`${memberName(memberUserId)} added`);
+    await Promise.resolve(onSent());
+  }
+
+  /** Owner (anyone) or admin (plain members): server-side this only revokes membership rows. */
+  async function removeGroupMember(memberUserId: string): Promise<void> {
+    const group = activeConversation;
+    if (!group || !isMultiParty(group)) return;
+    const { error } = await supabase.rpc("remove_messaging_conversation_member", { p_conversation_id: group.id, p_user_id: memberUserId });
+    if (error) throw error;
+    setGroupMemberOverrides((current) => ({ ...current, [group.id]: group.member_user_ids.filter((id) => id !== memberUserId) }));
+    setStatus(`${memberName(memberUserId)} removed`);
+    await Promise.resolve(onSent());
+  }
+
+  /** Owner only: the new name goes to every member device, end-to-end encrypted. */
+  async function renameGroup(rawName: string): Promise<void> {
+    const group = activeConversation;
+    if (!group || !isMultiParty(group)) return;
+    if (group.owner_user_id !== userId) throw new Error("Only the group owner can rename it.");
+    const name = sanitizeGroupName(rawName);
+    if (!name) throw new Error("Give the group a name.");
+    await sendEncryptedPayload(
+      serializeSecureControl({ type: "group_meta", target_client_message_id: group.id, name }),
+      { controlType: "group_meta" },
+    );
+    if (rememberGroupName(group.id, name, new Date().toISOString(), userId)) setGroupNamesVersion((version) => version + 1);
+    setStatus(`Group renamed to "${name}"`);
+  }
+
+  /** Owner only, at most 3 admins (enforced by migration 042). */
+  async function setGroupAdmin(memberUserId: string, admin: boolean): Promise<void> {
+    const group = activeConversation;
+    if (!group || !isMultiParty(group)) return;
+    const { error } = await supabase.rpc("set_messaging_group_admin", { p_conversation_id: group.id, p_user_id: memberUserId, p_admin: admin });
+    if (error) throw error;
+    setStatus(`${memberName(memberUserId)} ${admin ? "is now an admin" : "is no longer an admin"}`);
+    await Promise.resolve(onSent());
+  }
+
+  /** Owner only: hand the group to another member. */
+  async function transferGroupOwnership(memberUserId: string): Promise<void> {
+    const group = activeConversation;
+    if (!group || !isMultiParty(group)) return;
+    const { error } = await supabase.rpc("transfer_messaging_group_ownership", { p_conversation_id: group.id, p_new_owner: memberUserId });
+    if (error) throw error;
+    setStatus(`${memberName(memberUserId)} now owns the group`);
+    await Promise.resolve(onSent());
+  }
+
+  /**
+   * Owner's side of a name request: answer a current member's device with the
+   * name, once per device per session, and only for recent requests (history
+   * replays every old request on each launch).
+   */
+  function answerGroupNameRequest(conversationId: string, requesterUserId: string, requesterDeviceId: string, requestedAt: string): void {
+    const group = activeConversation;
+    if (!group || group.id !== conversationId || group.owner_user_id !== userId) return;
+    if (!group.member_user_ids.includes(requesterUserId)) return;
+    if (Date.now() - new Date(requestedAt).getTime() > 24 * 60 * 60 * 1000) return;
+    const key = `${conversationId}:${requesterDeviceId}`;
+    if (groupNameRepliesRef.current.has(key)) return;
+    const name = groupName(conversationId, userId);
+    if (!name) return;
+    groupNameRepliesRef.current.add(key);
+    void sendEncryptedPayload(
+      serializeSecureControl({ type: "group_meta", target_client_message_id: conversationId, name }),
+      { controlType: "group_meta", onlyDeviceIds: [requesterDeviceId] },
+    ).catch((error) => console.warn("[secure-chat] Group name reply not sent:", describeMessageError(error)));
+  }
+
+  async function leaveGroup(): Promise<void> {
+    const group = activeConversation;
+    if (!group || !isMultiParty(group)) return;
+    const { error } = await supabase.rpc("leave_messaging_conversation", { p_conversation_id: group.id });
+    if (error) throw error;
+    setLeftGroupIds((current) => new Set([...current, group.id]));
+    setMembersPanelOpen(false);
+    setActiveConversationId("");
+    setMobilePane("list");
+    setStatus("You left the group");
+    await Promise.resolve(onSent());
+  }
+
   async function startPrivateChat(contact: ContactSummary): Promise<boolean> {
     if (contactChatBusyId) return false;
 
@@ -3466,7 +4184,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         return false;
       }
 
-      const existing = effectiveConversations.find((conversation) => conversation.member_user_ids.includes(contact.contact_user_id));
+      const existing = effectiveConversations.find((conversation) => (
+        conversation.conversation_type === "direct" && conversation.member_user_ids.includes(contact.contact_user_id)
+      ));
       if (existing) {
         openConversation(existing);
         setContactAction(`Opened chat with ${visibleContactName(contact)}.`);
@@ -3737,7 +4457,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       content_type: source.type || "application/octet-stream",
       key_b64: bytesToBase64(rawKey),
       iv_b64: bytesToBase64(iv),
-      sha256_b64: await sha256Base64(encrypted),
+      ...(await attachmentDigests(encrypted)),
       duration_ms: durationMs,
       created_at: new Date().toISOString(),
     };
@@ -3755,8 +4475,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
     const encrypted = new Uint8Array(await data.arrayBuffer());
     emitProgress("integrity_verification", "Checking attachment ciphertext digest", 52, "progress");
-    const actualDigest = await sha256Base64(encrypted);
-    if (actualDigest !== attachment.sha256_b64) {
+    if (!(await attachmentDigestMatches(encrypted, attachment))) {
       wipeBytes(encrypted);
       throw new Error("Attachment integrity check failed.");
     }
@@ -4030,6 +4749,12 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       controlType?: string | null;
       lifecycle?: SecurePlaintextMessage["lifecycle"];
       messageKind?: "Text" | "FileReference" | "VoiceNote" | "System";
+      /**
+       * Seal to these contact devices only, and keep no copy for this
+       * account's devices. For controls meant for one device (session_reset);
+       * the device must still pass every delivery gate.
+       */
+      onlyDeviceIds?: string[];
     } = {},
   ): Promise<string> {
     if (!activeConversation || !plaintext.trim()) throw new Error("No active recipient devices");
@@ -4096,7 +4821,11 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         : "Recipient device is missing signed PQC prekeys");
     }
     const clientMessageId = options.clientMessageId ?? crypto.randomUUID();
-    const deliveryDevices = Array.from(new Map([...deliveryRecipientDevices, senderDevice].map((device) => [device.device_id, device])).values());
+    const onlyDevices = options.onlyDeviceIds ? new Set(options.onlyDeviceIds) : null;
+    const deliveryDevices = onlyDevices
+      ? deliveryRecipientDevices.filter((device) => onlyDevices.has(device.device_id))
+      : Array.from(new Map([...deliveryRecipientDevices, senderDevice].map((device) => [device.device_id, device])).values());
+    if (deliveryDevices.length === 0) throw new Error("None of the requested devices can be sent to");
     const threat = options.controlType ? emptyThreat() : assessThreatLocally(parseSecurePlaintext(plaintext).body);
     const lifecycle = options.lifecycle ?? parseSecurePlaintext(plaintext).lifecycle;
 
@@ -4156,12 +4885,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         local_archive: isLocalArchive,
         original_sender_user_id: userId,
         original_sender_device_id: senderDevice.device_id,
-        hybrid_ciphertext: envelope.hybrid_ciphertext,
-        prekey_id: envelope.prekey_id,
-        prekey_kind: envelope.prekey_kind,
-        message_signature: envelope.message_signature,
-        sender_ed25519_public: envelope.sender_ed25519_public,
-        sender_mldsa_public: envelope.sender_mldsa_public,
+        ...sealedEnvelopeCryptoFields(envelope),
       },
       ciphertext: bytesToBytea(envelope.envelope.ciphertext),
       nonce: bytesToBytea(envelope.envelope.nonce),
@@ -4183,7 +4907,15 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     }));
 
     const { error } = await supabase.from("messaging_message_envelopes").insert(envelopeRows);
-    if (error) throw error;
+    let queued = false;
+    if (error) {
+      // The relay never answered: keep the sealed rows and send them later
+      // (the outbox, roadmap 9.1). A refusal the relay DID answer stays an error.
+      if (!isTauriRuntime() || !isNetworkFailure(error)) throw error;
+      await queueOutbox({ id: clientMessageId, conversationId: activeConversation.id, queuedAt: Date.now(), rows: envelopeRows });
+      queued = true;
+      reportRelayTrouble();
+    }
 
     void recordCryptoTelemetry({
       userId,
@@ -4231,6 +4963,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         created_at: cachedAt,
         error: null,
         can_delete: true,
+        queued,
       };
       decryptedMessageCacheRef.current.set(clientMessageId, localEcho);
       // Paint the sender's own message NOW. Previously it only appeared after
@@ -4473,6 +5206,33 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               <MessageSquarePlus size={15} />
               New Chat
             </button>
+            <button
+              type="button"
+              onClick={() => setShowNewGroup(true)}
+              className="flex shrink-0 items-center gap-1.5 rounded-lg border border-line bg-white px-2.5 py-1.5 text-xs font-bold text-ink-700 transition hover:bg-canvas"
+              title="Start an encrypted group"
+            >
+              <Users size={15} />
+              Group
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowNewChannel(true)}
+              className="flex shrink-0 items-center gap-1.5 rounded-lg border border-line bg-white px-2.5 py-1.5 text-xs font-bold text-ink-700 transition hover:bg-canvas"
+              title="Start a channel: you post, readers read"
+            >
+              <Megaphone size={15} />
+              Channel
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowJoinChannel(true)}
+              className="flex shrink-0 items-center gap-1.5 rounded-lg border border-line bg-white px-2.5 py-1.5 text-xs font-bold text-ink-700 transition hover:bg-canvas"
+              title="Join a channel with an invite code"
+            >
+              <LogIn size={15} />
+              Join
+            </button>
           </div>
           <div className="mt-3 grid grid-cols-3 gap-1 rounded-lg border border-line bg-canvas p-1">
             {conversationViews.map((view) => {
@@ -4661,6 +5421,52 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {activeConversation && isTauriRuntime() && assistantSettings.enabled && (
+              <button
+                type="button"
+                onClick={() => setAssistantOpen((open) => !open)}
+                aria-pressed={assistantOpen}
+                title="AI assistant (sends the messages it reads to your chosen provider)"
+                className={`icon-button ${assistantOpen ? "border-fuchsia-300 text-fuchsia-700" : ""}`}
+              >
+                <Sparkles size={16} />
+              </button>
+            )}
+            {isMultiParty(activeConversation) && (
+              <button
+                type="button"
+                onClick={() => setMembersPanelOpen((open) => !open)}
+                aria-pressed={membersPanelOpen}
+                title="Group members"
+                className={`icon-button ${membersPanelOpen ? "border-violet-300 text-violet-700" : ""}`}
+              >
+                <Users size={16} />
+              </button>
+            )}
+            {activeConversation && isTauriRuntime() && (
+              <button
+                type="button"
+                onClick={() => setVerifyPanelOpen((open) => !open)}
+                aria-pressed={verifyPanelOpen}
+                title="Verify this contact: compare safety numbers"
+                className={`icon-button ${verifyPanelOpen ? "border-cyan-300 text-cyan-700" : ""}`}
+              >
+                <BadgeCheck size={16} />
+              </button>
+            )}
+            {activeConversation?.conversation_type === "group" && groupCallPeers && (
+              <button
+                type="button"
+                disabled={!call.supported || call.groupCallActive || (call.state.phase !== "idle" && call.state.phase !== "ended")}
+                onClick={() => {
+                  void call.startGroupCall(activeConversation.id, groupCallPeers).catch((error) => setStatus(describeMessageError(error)));
+                }}
+                title={call.supported ? "Group video call: a separately encrypted link to each person" : "Video calling requires the desktop app"}
+                className="icon-button disabled:opacity-50"
+              >
+                <Users size={16} />
+              </button>
+            )}
             <CallButton
               disabled={!call.supported || !callPeer || !activeConversation || call.state.phase !== "idle" && call.state.phase !== "ended"}
               title={call.supported ? "Start quantum-encrypted video call" : "Video calling requires the desktop app"}
@@ -4734,6 +5540,52 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               </div>
             </div>
           )}
+          {assistantOpen && activeConversation && assistantSettings.enabled && (
+            <AssistantPanel
+              key={`${activeConversation.id}:${assistantConsentVersion}`}
+              conversationId={activeConversation.id}
+              settings={assistantSettings}
+              allowed={conversationAllowed(activeConversation.id)}
+              messages={assistantCandidates}
+              onAllowed={() => setAssistantConsentVersion((version) => version + 1)}
+              onUseReply={(text) => setMessage(text)}
+              onClose={() => setAssistantOpen(false)}
+            />
+          )}
+          {membersPanelOpen && isMultiParty(activeConversation) && (
+            <GroupMembersPanel
+              myUserId={userId}
+              groupName={groupName(activeConversation.id, activeConversation.owner_user_id)}
+              members={activeConversation.member_user_ids.map((memberId) => ({
+                userId: memberId,
+                name: memberId === userId ? "You" : memberName(memberId),
+                role: memberRole(activeConversation, memberId),
+              }))}
+              addable={contacts
+                .filter((contact) => contact.trust_state === "added" && !activeConversation.member_user_ids.includes(contact.contact_user_id))
+                .map((contact) => ({ userId: contact.contact_user_id, name: visibleContactName(contact) }))}
+              onRename={renameGroup}
+              onAdd={addGroupMember}
+              onRemove={removeGroupMember}
+              onSetAdmin={setGroupAdmin}
+              onTransfer={transferGroupOwnership}
+              onLeave={leaveGroup}
+              onClose={() => setMembersPanelOpen(false)}
+            />
+          )}
+          {verifyPanelOpen && activeConversation && (
+            <ContactVerificationPanel
+              devices={sendableRecipientDevices
+                .filter((device) => device.user_id !== userId)
+                // In a group, say whose device each one is.
+                .map((device) => (isMultiParty(activeConversation)
+                  ? { ...device, label: `${memberName(device.user_id)} · ${device.label}` }
+                  : device))}
+              peerName={isMultiParty(activeConversation) ? "each member" : conversationTitle(activeConversation)}
+              onPairingOffer={sendPairingOffer}
+              onClose={() => setVerifyPanelOpen(false)}
+            />
+          )}
           {devicePinsUnavailable && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
               Device changes cannot be checked right now: this device&apos;s own record of your contacts&apos; devices could not be
@@ -4797,6 +5649,32 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               </div>
             </div>
           )}
+          {activeConversation?.conversation_type === "channel" ? (
+            <ChannelView
+              key={activeConversation.id}
+              channel={activeConversation}
+              userId={userId}
+              myRole={memberRole(activeConversation, userId)}
+              memberDevices={channelMemberDevices}
+              staffDeviceIds={channelStaffDeviceIds}
+              keyVersion={channelKeyVersion}
+              distributeSignal={channelDistributeSignal}
+              memberName={memberName}
+              loadSenderIdentity={loadChannelSenderIdentity}
+              onSendKey={async (key, deviceIds) => {
+                await sendEncryptedPayload(
+                  serializeSecureControl({ type: "channel_key", target_client_message_id: activeConversation.id, epoch_id: key.epochId, seq: key.seq, key: key.key }),
+                  { controlType: "channel_key", onlyDeviceIds: deviceIds },
+                );
+              }}
+              onRequestKey={async (deviceIds) => {
+                await sendEncryptedPayload(
+                  serializeSecureControl({ type: "channel_key_request", target_client_message_id: activeConversation.id }),
+                  { controlType: "channel_key_request", onlyDeviceIds: deviceIds },
+                );
+              }}
+            />
+          ) : (<>
           {!messagesLoading && activeConversation && chatMessages.length === 0 && (
             <div className="rounded-lg border border-dashed border-line bg-white/70 p-6 text-center text-sm text-ink-500">
               No visible encrypted messages yet.
@@ -4813,17 +5691,25 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                   {!mine && (
                     <UserAvatar
                       userId={chatMessage.sender_user_id}
-                      name={activeContact
-                        ? visibleContactName(activeContact)
-                        : activeConversation
-                          ? conversationTitle(activeConversation)
-                          : "QG"}
+                      name={isMultiParty(activeConversation)
+                        ? memberName(chatMessage.sender_user_id)
+                        : activeContact
+                          ? visibleContactName(activeContact)
+                          : activeConversation
+                            ? conversationTitle(activeConversation)
+                            : "QG"}
                       size={32}
                       className="mt-1 shadow-tight"
                     />
                   )}
                   <div className={`group relative max-w-[74%] ${mine ? "order-1" : ""}`}>
                     <div className={`rounded-2xl px-4 py-3 shadow-tight ${mine ? "rounded-br-md bg-violet-600 text-white" : "rounded-bl-md border border-line bg-white text-ink-900"}`}>
+                      {!mine && isMultiParty(activeConversation) && (
+                        <div className="mb-1 text-[11px] font-bold text-violet-700">{memberName(chatMessage.sender_user_id)}</div>
+                      )}
+                      {chatMessage.queued && (
+                        <div className="mb-1 text-[11px] font-semibold opacity-80">Waiting to send — the relay is unreachable. It stays encrypted on this device until then.</div>
+                      )}
                       {chatMessage.reply_to && messageByClientId.get(chatMessage.reply_to) && (
                         <div className={`mb-2 rounded-lg border-l-2 px-3 py-2 text-xs ${mine ? "border-white/60 bg-white/10 text-violet-50" : "border-violet-300 bg-violet-50 text-ink-600"}`}>
                           <div className="font-bold">Reply</div>
@@ -4985,12 +5871,14 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               );
             })}
           </div>
+          </>)}
           {typingNames.length > 0 && (
             <div className="text-xs font-semibold text-ink-500">
               {typingNames.slice(0, 2).join(", ")} {typingNames.length === 1 ? "is" : "are"} typing...
             </div>
           )}
         </div>
+        {activeConversation?.conversation_type !== "channel" && (
         <div className="border-t border-line bg-white p-4">
           {(replyToMessage || editingMessage) && (
             <div className="mb-3 flex items-center justify-between rounded-lg border border-line bg-canvas px-3 py-2 text-xs text-ink-600">
@@ -5151,6 +6039,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             </button>
           </div>
         </div>
+        )}
       </section>
 
       <div
@@ -5495,6 +6384,17 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         </form>
       </div>
     )}
+    {showNewChannel && <NewChannelDialog onCreate={createChannel} onClose={() => setShowNewChannel(false)} />}
+    {showJoinChannel && <JoinChannelDialog onJoin={joinChannel} onClose={() => setShowJoinChannel(false)} />}
+    {showNewGroup && (
+      <NewGroupDialog
+        candidates={contacts
+          .filter((contact) => contact.trust_state === "added")
+          .map((contact) => ({ userId: contact.contact_user_id, name: visibleContactName(contact) }))}
+        onCreate={createGroup}
+        onClose={() => setShowNewGroup(false)}
+      />
+    )}
     {showNewChat && (
       <div
         className="fixed inset-0 z-50 flex items-start justify-center bg-ink-950/40 p-4 pt-[12vh] backdrop-blur-sm"
@@ -5543,12 +6443,12 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           </div>
 
           <div className="max-h-[46vh] overflow-y-auto px-3 pb-2">
-            {query.trim().length < 2 && (
+            {query.trim().length < USER_SEARCH_MIN_CHARS && (
               <div className="px-2 py-10 text-center text-sm text-ink-500">
                 Start typing to find someone on QGuard.
               </div>
             )}
-            {query.trim().length >= 2 && !searching && searchResults.length === 0 && (
+            {query.trim().length >= USER_SEARCH_MIN_CHARS && !searching && searchResults.length === 0 && (
               <div className="px-2 py-10 text-center text-sm text-ink-500">
                 {searchFeedback ?? `No users found for "${query.trim()}".`}
               </div>

@@ -461,6 +461,7 @@ export function restoreComponent(row: InventoryRow): CbomComponent | null {
       ? evidence
       : [{ summary: `Recorded component ${canonical}.`, observedAt }],
     dependsOn: array(metadata.dependsOn).filter((entry): entry is string => typeof entry === 'string'),
+    ...(str(metadata.migrationTarget) ? { migrationTarget: str(metadata.migrationTarget) } : {}),
   };
 }
 
@@ -706,7 +707,7 @@ export function restoreAssessment(input: {
 
   let scores = scoresFrom(metadata);
   if (!scores) {
-    scores = computeScores({ findings, exposures, coverage, runs });
+    scores = computeScores({ findings, exposures, components: cbom, coverage, runs });
     derived.push('scores recomputed from the recorded findings (the record holds none)');
   } else {
     rehydrated.push('risk, quantum, migration, coverage and confidence scores');

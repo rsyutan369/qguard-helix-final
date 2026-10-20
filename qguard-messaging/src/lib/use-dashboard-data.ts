@@ -9,6 +9,7 @@ import { fetchPrekeyStatus } from "@/lib/prekey-hygiene";
 import { fallbackHardeningStatus, loadSecurityHardeningStatus } from "@/lib/security-hardening";
 import { buildSecurityPosture, ONE_TIME_PREKEY_MIN, SIGNED_PREKEY_MIN } from "@/lib/security-score";
 import { countUnreadGroups, type UnreadEnvelope } from "@/lib/chat-unread";
+import { strongestRole } from "@/lib/group-chat";
 import type {
   ConversationSummary,
   ContactSummary,
@@ -404,6 +405,10 @@ export function useDashboardData(user: User | null, session: Session | null) {
           unread_count: unreadGroups.size,
           updated_at: updatedAt,
           member_user_ids: memberUserIds,
+          owner_user_id: conversation.owner_user_id ? String(conversation.owner_user_id) : null,
+          member_roles: Object.fromEntries(memberUserIds.map((memberId) => [memberId, strongestRole(memberRows
+            .filter((member) => String(member.conversation_id) === String(conversation.id) && String(member.user_id) === memberId)
+            .map((member) => String(member.role)))])),
           archived_at: state?.archived_at ?? null,
           hidden_at: state?.hidden_at ?? null,
           deleted_at: state?.deleted_at ?? null,

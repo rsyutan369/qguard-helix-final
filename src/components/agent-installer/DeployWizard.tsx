@@ -395,7 +395,7 @@ export function DeployWizard({
   const digestMatches = pkg && localDigest ? localDigest === pkg.installerSha256 : null;
 
   return (
-    <div className="rounded-2xl border border-cyan-400/20 bg-gradient-to-b from-cyan-400/[0.04] to-transparent">
+    <div className="ac-surface rounded-2xl border border-cyan-400/20 bg-gradient-to-b from-cyan-400/[0.04] to-transparent">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/8 px-5 py-4">
         <div className="flex items-center gap-2.5">
           <Sparkles className="h-4 w-4 text-cyan-300" />
@@ -850,7 +850,7 @@ export function DeployWizard({
                   </span>
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <code className="flex-1 break-all rounded-lg border border-white/12 bg-black/50 px-3 py-2 font-mono text-xs text-emerald-200">
+                  <code className="qg-force-dark flex-1 break-all rounded-lg border border-white/12 bg-black/50 px-3 py-2 font-mono text-xs text-emerald-200">
                     {oneTimeToken.token}
                   </code>
                   <CopyButton value={oneTimeToken.token} label="Copy token" />
@@ -1032,7 +1032,7 @@ function InstallerPanel({
 }) {
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border border-white/10 bg-black/40">
+      <div className="qg-force-dark rounded-xl border border-white/10 bg-black/40">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/8 px-4 py-2.5">
           <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-white/60">
             <FileTerminal className="h-3.5 w-3.5" /> {pkg.filename}
@@ -1090,7 +1090,7 @@ function InstallerPanel({
 
         <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
           <div className="text-[11px] font-bold uppercase tracking-wide text-white/45">Run it</div>
-          <div className="mt-2 rounded-lg border border-white/10 bg-black/50 px-3 py-2">
+          <div className="qg-force-dark mt-2 rounded-lg border border-white/10 bg-black/50 px-3 py-2">
             <code className="break-all font-mono text-[11px] text-cyan-200">{pkg.instructions.runCommand}</code>
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-2">

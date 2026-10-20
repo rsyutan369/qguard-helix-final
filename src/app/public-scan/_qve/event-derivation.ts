@@ -228,6 +228,30 @@ export function scanStartedEvent(asset: string): ScanEvent {
 }
 
 /**
+ * The run ended without a report: the server refused to start it, reported a
+ * failure, or the stream was lost. Without this the engine never left
+ * `scanning` — stage-level ERRORs are the only other source of one — so the
+ * hero kept saying "Scanning · Collecting edge evidence" under a status bar
+ * that said the assessment had not started.
+ */
+export function scanEndedEvent(asset: string, message: string, refused: boolean): ScanEvent {
+  return make(
+    {
+      type: 'ERROR',
+      category: 'scan',
+      status: 'failed',
+      severity: 'info',
+      finding: message,
+      timelineLabel: refused ? 'Assessment not started' : 'Assessment could not complete',
+      timelineDetail: message,
+    },
+    0,
+    asset,
+    Date.now(),
+  );
+}
+
+/**
  * One event per real stage transition. `previous` is the state we last saw for
  * that stage, so a repeated frame produces nothing.
  */

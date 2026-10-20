@@ -41,7 +41,8 @@ import type {
 import { SEVERITY_ORDER } from '@/lib/scanner/exposure/types';
 import { QUANTUM_STATUS_TEXT, completenessNote, reconcileExposure, withUnit } from '@/lib/scanner/exposure/exposure-truth';
 import { layerLabel } from '@/lib/scanner/exposure/correlate';
-import { algorithmChipCoverage, summariseCorrelation } from '@/lib/scanner/exposure/panel-model';
+import { algorithmChipCoverage, coverageReadings, policyExclusions, summariseCorrelation } from '@/lib/scanner/exposure/panel-model';
+import { cbomToCsv, cbomToCycloneDx, cbomToJson } from '@/lib/scanner/exposure/cbom';
 import { CAPABILITY_LABEL, type EngineDescriptor } from '@/lib/scanner/exposure/engine-contract';
 import type { ScanProfile } from '@/lib/scanner/exposure/profiles';
 
@@ -1135,7 +1136,10 @@ export function FindingDetail({
                 <div className="flex flex-wrap items-center gap-1.5">
                   <SeverityBadge severity={finding.severity} />
                   <ConfidenceBadge confidence={finding.confidence} detection={finding.detection} />
-                  {finding.quantumStatus !== 'not-applicable' && <QuantumBadge status={finding.quantumStatus} />}
+                  {/* Every status, as on the row that opened this drawer. Hiding
+                      "Not Applicable" here made a finding the Quantum filter had
+                      just returned look unclassified once opened. */}
+                  <QuantumBadge status={finding.quantumStatus} />
                 </div>
                 <h3 className="mt-2 text-[16px] font-black leading-tight text-white">{finding.title}</h3>
                 <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-slate-500">
@@ -1297,6 +1301,49 @@ function DetailCell({ label, value }: { label: string; value: string }) {
   );
 }
 
+/* ─────────────────────────────────────────────────────────────── downloads ── */
+
+/**
+ * Save generated text as a file.
+ *
+ * The object URL is revoked on the next tick, not synchronously after
+ * `click()`: revoking in the same task can cancel the download before the
+ * browser has started it.
+ */
+export function downloadText(filename: string, content: string, mime: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type: mime }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = 'noopener';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
+export type CbomExportFormat = 'json' | 'csv' | 'cyclonedx';
+
+/**
+ * Export the CBOM the panel is showing — ONE implementation for Local, Dev and
+ * History.
+ *
+ * Generated in the browser from the very components on screen, so the file can
+ * never disagree with the table. Dev mode used to navigate to the API's export
+ * route instead, which requires a bearer token a plain navigation cannot send:
+ * every Dev CBOM download came back as an HTTP 401 error body.
+ */
+export function exportCbomFile(
+  components: CbomComponent[],
+  format: CbomExportFormat,
+  meta: { scanId: string; target: string; generatedAt: string },
+): void {
+  const slug = meta.target.replace(/[^a-z0-9.-]+/gi, '_').replace(/^_+|_+$/g, '').slice(0, 80) || 'assessment';
+  if (format === 'csv') downloadText(`qguard-cbom-${slug}.csv`, cbomToCsv(components), 'text/csv');
+  else if (format === 'cyclonedx') downloadText(`qguard-cbom-${slug}.cdx.json`, cbomToCycloneDx(components, meta), 'application/json');
+  else downloadText(`qguard-cbom-${slug}.json`, cbomToJson(components, meta), 'application/json');
+}
+
 /* ───────────────────────────────────────────────────────────── CBOM viewer ── */
 
 export function CbomViewer({
@@ -1304,7 +1351,7 @@ export function CbomViewer({
   onExport,
 }: {
   components: CbomComponent[];
-  onExport?: (format: 'json' | 'csv' | 'cyclonedx') => void;
+  onExport?: (format: CbomExportFormat) => void;
 }) {
   const [limit, setLimit] = React.useState(40);
   const visible = components.slice(0, limit);
@@ -1409,35 +1456,23 @@ function ExportButton({ icon: Icon, label, onClick }: { icon: typeof FileJson; l
  * reader who sees "0 critical findings" needs to see, in the same glance,
  * whether four dimensions were never read.
  */
-export function CoveragePanel({ coverage, mode }: { coverage: ScanCoverage; mode: ScanMode }) {
-  const metrics: Array<{ label: string; value: number }> = [
-    { label: 'Files discovered', value: coverage.filesDiscovered },
-    { label: 'Files analysed', value: coverage.filesAnalyzed },
-    { label: 'Binary / unsupported', value: coverage.filesUnsupported },
-    { label: 'Files skipped', value: coverage.filesSkipped },
-    { label: 'Dependencies', value: coverage.dependencies },
-    { label: 'Crypto components', value: coverage.cryptoComponents },
-    { label: 'Certificates', value: coverage.certificates },
-    { label: 'Secrets', value: coverage.secrets },
-    { label: 'Config files', value: coverage.configFiles },
-    { label: 'Containers', value: coverage.containers },
-    { label: 'Images', value: coverage.images },
-    { label: 'K8s namespaces', value: coverage.kubernetesNamespaces },
-    { label: 'K8s workloads', value: coverage.kubernetesWorkloads },
-    { label: 'IaC files', value: coverage.iacFiles },
-    { label: 'CI/CD workflows', value: coverage.cicdWorkflows },
-    { label: 'Cloud resources', value: coverage.cloudResources },
-    { label: 'Branches', value: coverage.branches },
-    { label: 'Commits analysed', value: coverage.commitsAnalyzed },
-  ];
+export function CoveragePanel({ assessment, mode }: { assessment: ExposureAssessment; mode: ScanMode }) {
+  const coverage: ScanCoverage = assessment.task.coverage;
 
   /* A dimension the scan READ and found none of is a measurement; a dimension
-     no engine reached is not. Hiding both behind `value > 0` rendered them
-     identically, so "this repository has no Kubernetes" and "the Kubernetes
-     engine never ran" looked the same (§43). Zeros stay, dimmed; the panel
-     names the ones nothing reported separately. */
-  const present = metrics.filter((metric) => metric.value > 0);
-  const measuredZero = metrics.filter((metric) => metric.value === 0);
+     no engine reached is not (§43). This panel used to print every zero under
+     "Read, none found — measurements of zero", including dimensions whose
+     engine was not in the profile at all ("Cloud resources" on a Local scan)
+     or had failed. `coverageReadings` classifies each zero by whether an
+     engine that measures it actually reported, so the three cases stay apart. */
+  const readings = React.useMemo(
+    () => coverageReadings(coverage, assessment.task.runs),
+    [coverage, assessment.task.runs],
+  );
+  const present = readings.filter((reading) => reading.state === 'measured');
+  const measuredZero = readings.filter((reading) => reading.state === 'measured-zero');
+  const notSelected = readings.filter((reading) => reading.state === 'not-selected');
+  const notReported = readings.filter((reading) => reading.state === 'not-reported');
 
   return (
     <Panel className="overflow-hidden">
@@ -1475,19 +1510,43 @@ export function CoveragePanel({ coverage, mode }: { coverage: ScanCoverage; mode
         </div>
       )}
 
-      {measuredZero.length > 0 && (
+      {coverage.filesUnsupported > 0 && (
         <p className="border-t border-white/[0.06] px-5 py-2.5 text-[11px] leading-relaxed text-slate-500">
-          <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.16em] text-slate-400">Read, none found:</span>{' '}
-          {measuredZero.map((metric) => metric.label).join(', ')}. These are measurements of zero, not dimensions that went
-          unread — anything the scan could not reach is listed under Not assessed above.
+          {coverage.filesUnsupported.toLocaleString()} binary or unsupported file{coverage.filesUnsupported === 1 ? ' was' : 's were'}{' '}
+          discovered and classified but not content-analysed, so no engine read {coverage.filesUnsupported === 1 ? 'its' : 'their'}{' '}
+          contents.
         </p>
       )}
 
-      {coverage.exclusions.length > 0 && (
+      {measuredZero.length > 0 && (
+        <p className="border-t border-white/[0.06] px-5 py-2.5 text-[11px] leading-relaxed text-slate-500">
+          <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.16em] text-slate-400">Read, none found:</span>{' '}
+          {measuredZero.map((metric) => metric.label).join(', ')}. An engine that measures each of these ran and counted
+          none — these are measurements of zero, not dimensions that went unread.
+        </p>
+      )}
+
+      {notReported.length > 0 && (
+        <p className="border-t border-amber-400/20 bg-amber-400/[0.05] px-5 py-2.5 text-[11px] leading-relaxed text-amber-100/85">
+          <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.16em] text-amber-300">Not measured:</span>{' '}
+          {notReported.map((metric) => metric.label).join(', ')}. The engine that would have counted{' '}
+          {notReported.length === 1 ? 'it' : 'them'} was selected but did not complete, so the zero is a gap, not a result.
+        </p>
+      )}
+
+      {notSelected.length > 0 && (
+        <p className="border-t border-white/[0.06] px-5 py-2.5 text-[11px] leading-relaxed text-slate-600">
+          <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.16em] text-slate-500">Outside this profile:</span>{' '}
+          {notSelected.map((metric) => metric.label).join(', ')}. No engine that measures {notSelected.length === 1 ? 'it' : 'them'}{' '}
+          was part of this assessment, so nothing is claimed about {notSelected.length === 1 ? 'it' : 'them'} either way.
+        </p>
+      )}
+
+      {policyExclusions(coverage).length > 0 && (
         <div className="border-t border-white/[0.06] px-5 py-3">
           <p className="font-mono text-[9.5px] font-bold uppercase tracking-[0.16em] text-slate-500">Exclusions in force</p>
           <ul className="mt-1.5 space-y-1">
-            {coverage.exclusions.map((exclusion, index) => (
+            {policyExclusions(coverage).map((exclusion, index) => (
               <li key={index} className="text-[11px] leading-relaxed text-slate-500">
                 {exclusion}
               </li>
@@ -1696,11 +1755,14 @@ export function ExposureRecommendations({ assessment }: { assessment: ExposureAs
           </li>
         ))}
       </ol>
+      {/* "most severe", because that is the order: severity first, then urgent
+          work, then migration priority. "Highest-priority" read as the P1-P4
+          migration priority, which only orders actions WITHIN a severity. */}
       <ListTruncationNote
         shown={recommendations.length}
         total={candidates}
         noun="distinct remediation actions this scan produced"
-        rank="highest-priority"
+        rank="most severe"
       />
     </Panel>
   );

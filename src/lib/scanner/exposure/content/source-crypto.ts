@@ -32,6 +32,7 @@ import {
   RULE_SET_VERSION,
   citeStandard,
   establishGroundTruth,
+  findAlgorithm,
   provenanceFor,
   type CryptoClassification,
   type CryptoRole as KbCryptoRole,
@@ -39,7 +40,7 @@ import {
 } from '@/lib/crypto/knowledge-base';
 import type { CryptoRole as ExposureRole, DetectionMethod, FindingConfidence, FindingSeverity, QuantumStatus } from '../types';
 import type { EngineContext, EngineResult, ExposureEngine, WorkspaceFile } from '../engine-contract';
-import { buildEvidence, buildFinding, completed, reportStride } from '../engine-contract';
+import { buildEvidence, buildFinding, completed, recordInventory, reportStride } from '../engine-contract';
 import {
   contextualiseLexical,
   detectByApi,
@@ -165,11 +166,59 @@ function severityFor(classification: CryptoClassification, verdict: GroundTruthV
 
 /* ─────────────────────────────────────────────── lexical pass (catalogue) ─── */
 
+/** The engine version stamped on every observation, so a change in output can
+ *  be attributed to a change in logic (§85). 3.1.0: compound catalogue labels
+ *  resolve to the algorithm actually matched, and strong primitives reach the
+ *  CBOM as inventory rather than vanishing. */
+const ENGINE_VERSION = '3.1.0';
+
 interface LexicalMatch {
   line: number;
   algorithm: string;
   ruleId: string;
   label: string;
+}
+
+/**
+ * Which algorithm a catalogue match actually names.
+ *
+ * Several catalogue entries carry a COMPOUND label — `DSA/ElGamal`,
+ * `ECC/EdDSA`, `MD5/SHA-1` — because one regex covers several primitives. The
+ * label used to be handed to the classifier as-is, and the classifier resolves
+ * free text to its LONGEST alias, so every match took the longest name in the
+ * label regardless of what the line said: `DSA` became ElGamal (and "key
+ * establishment", for a signature algorithm), `use x25519_dalek` became
+ * Ed25519, `md5(` became SHA-1.
+ *
+ * The matched text is the evidence, so it decides: first by naming an
+ * algorithm itself (protocol names excluded — "TLS" inside a match is context,
+ * not the primitive), then by spelling one of the label's alternatives. A label
+ * with a single alternative is returned unchanged.
+ */
+export function lexicalAlgorithmFor(label: string, regex: RegExp, line: string): string {
+  if (!label.includes('/')) return label;
+  const matched = regex.exec(line)?.[0];
+  if (!matched) return label;
+
+  const direct = findAlgorithm(matched);
+  if (direct && direct.primitiveType !== 'protocol') return direct.canonicalName;
+
+  const text = matched.toLowerCase();
+  let best: { name: string; length: number; index: number } | null = null;
+  for (const part of label.split('/')) {
+    const definition = findAlgorithm(part.trim());
+    if (!definition) continue;
+    for (const alias of new Set([definition.canonicalName.toLowerCase(), ...definition.aliases])) {
+      if (alias.length < 2) continue;
+      const index = text.indexOf(alias);
+      if (index === -1) continue;
+      /* Longest spelling wins, so ECDSA beats the DSA inside it. */
+      if (!best || alias.length > best.length || (alias.length === best.length && index < best.index)) {
+        best = { name: definition.canonicalName, length: alias.length, index };
+      }
+    }
+  }
+  return best?.name ?? label;
 }
 
 /** Run the existing 125-pattern catalogue, deduplicated per (file, rule). */
@@ -190,7 +239,7 @@ function lexicalMatches(file: WorkspaceFile): LexicalMatch[] {
       seen.set(pattern.id, index);
       matches.push({
         line: index + 1,
-        algorithm: pattern.algorithm,
+        algorithm: lexicalAlgorithmFor(pattern.algorithm, pattern.regex, line),
         ruleId: `crypto-pattern-${pattern.id}`,
         label: pattern.label,
       });
@@ -234,6 +283,7 @@ export const sourceCryptoEngine: ExposureEngine = {
     const findings: ReturnType<typeof buildFinding>[] = [];
     const componentKeys = new Set<string>();
     const layerTally: Record<string, number> = { api: 0, ast: 0, 'data-flow': 0, lexical: 0 };
+    let inventoryCount = 0;
     let processed = 0;
     let truncated = false;
 
@@ -292,9 +342,32 @@ export const sourceCryptoEngine: ExposureEngine = {
 
         /* Nothing to say about a strong, resistant, correctly-sized primitive
            in a non-quantum-relevant role — recording it as a FINDING would be
-           noise. It still reaches the CBOM through the component key below,
-           which is the right home for an inventory entry. */
+           noise. It still belongs in the CBOM, and reaches it as an INVENTORY
+           observation below (it used to be noted only here, in a key set nothing
+           read, so the bill of materials silently omitted every one of them). */
         componentKeys.add(`${classification.canonicalName}|${classification.role}`);
+        const layer = file.classification === 'manifest' || file.classification === 'lockfile' ? 'dependency' : 'source';
+        const evidenceFor = (limit: number) =>
+          group.observations.slice(0, limit).map((observation) =>
+            buildEvidence({
+              summary: `${observation.classification.canonicalName} via ${observation.ruleId} (${observation.layer} layer, ${observation.quality.toLowerCase()} evidence) at ${file.path}:${observation.line}`,
+              file: file.path,
+              line: observation.line,
+              snippet: observation.snippet,
+              ruleId: observation.ruleId,
+              localOnly: context.mode === 'local',
+              attributes: {
+                detectionLayer: observation.layer,
+                evidenceQuality: observation.quality,
+                language,
+                role: observation.classification.role,
+                roleBasis: observation.classification.roleBasis,
+                ...(observation.enclosingFunction ? { enclosingFunction: observation.enclosingFunction } : {}),
+                ...(observation.caveats.length ? { caveats: observation.caveats.join('; ') } : {}),
+                ...(observation.attributes ?? {}),
+              },
+            }),
+          );
         /* A rule that fired because of a PARAMETER (a low KDF work factor) or a
            CONTEXT (a weak PRNG near key material) is a finding about the
            configuration, not about the algorithm — bcrypt is a perfectly good
@@ -312,7 +385,45 @@ export const sourceCryptoEngine: ExposureEngine = {
             classification.quantumStatus === 'HYBRID' ||
             classification.quantumStatus === 'PQC_STANDARDIZED' ||
             primary.layer === 'data-flow');
-        if (!worthReporting) continue;
+        if (!worthReporting) {
+          /* Present, sound and nothing to act on — so not a finding, but still
+             cryptography this code USES. A use the engine itself judged
+             non-security (a checksum, a cache key) stays out of the inventory as
+             it stays out of the findings. Bounded by the same budget, so an
+             inventory can never grow without limit. */
+          if (!nonSecurityUse && inventoryCount < MAX_OBSERVATIONS) {
+            inventoryCount += 1;
+            recordInventory(
+              context.workspace,
+              buildFinding({
+                scanId: context.scanId,
+                engineId: 'source-crypto',
+                mode: context.mode,
+                layer,
+                category: 'Cryptographic Inventory',
+                subcategory: classification.algorithm.family,
+                title: buildTitle(classification, primary),
+                description: [describeObservation(primary, classification), classification.quantumRationale].filter(Boolean).join(' '),
+                severity: 'info',
+                confidence: toExposureConfidence(verdict),
+                detection: toDetectionMethod(group.observations),
+                algorithm: classification.observedAs,
+                canonicalAlgorithm: classification.canonicalName,
+                keySize: classification.keySize,
+                cipherMode: classification.cipherMode ?? undefined,
+                protocol: classification.protocol ?? undefined,
+                library: classification.library?.canonicalName,
+                role: toExposureRole(classification.role),
+                quantumStatus: toExposureQuantum(classification.quantumStatus),
+                quantumRationale: classification.quantumRationale,
+                evidence: evidenceFor(2),
+                identity: `inventory|${key}|${primary.line}`,
+                migration: { candidate: false },
+              }),
+            );
+          }
+          continue;
+        }
 
         const severity = severityFor(classification, verdict);
         const confidence = toExposureConfidence(verdict);
@@ -335,7 +446,7 @@ export const sourceCryptoEngine: ExposureEngine = {
           scanId: context.scanId,
           engineId: 'source-crypto',
           mode: context.mode,
-          layer: file.classification === 'manifest' || file.classification === 'lockfile' ? 'dependency' : 'source',
+          layer,
           category: 'Cryptographic Usage',
           subcategory: classification.algorithm.family,
           title: buildTitle(classification, primary),
@@ -354,26 +465,7 @@ export const sourceCryptoEngine: ExposureEngine = {
           quantumRationale: classification.quantumRationale,
           recommendation: buildRecommendation(classification),
           references: classification.standards.map(citeStandard),
-          evidence: group.observations.slice(0, 5).map((observation) =>
-            buildEvidence({
-              summary: `${observation.classification.canonicalName} via ${observation.ruleId} (${observation.layer} layer, ${observation.quality.toLowerCase()} evidence) at ${file.path}:${observation.line}`,
-              file: file.path,
-              line: observation.line,
-              snippet: observation.snippet,
-              ruleId: observation.ruleId,
-              localOnly: context.mode === 'local',
-              attributes: {
-                detectionLayer: observation.layer,
-                evidenceQuality: observation.quality,
-                language,
-                role: observation.classification.role,
-                roleBasis: observation.classification.roleBasis,
-                ...(observation.enclosingFunction ? { enclosingFunction: observation.enclosingFunction } : {}),
-                ...(observation.caveats.length ? { caveats: observation.caveats.join('; ') } : {}),
-                ...(observation.attributes ?? {}),
-              },
-            }),
-          ),
+          evidence: evidenceFor(5),
           identity: `${key}|${primary.line}`,
           migration:
             classification.quantumStatus === 'QUANTUM_VULNERABLE' && classification.quantumRelevant
@@ -391,7 +483,7 @@ export const sourceCryptoEngine: ExposureEngine = {
            and a change in output attributed to a change in logic. */
         finding.evidence[0].attributes = {
           ...finding.evidence[0].attributes,
-          engineVersion: '3.0.0',
+          engineVersion: ENGINE_VERSION,
           knowledgeBaseVersion: KNOWLEDGE_BASE_VERSION,
           ruleSetVersion: RULE_SET_VERSION,
           ...(provenance ? { qghRuleId: provenance.ruleId, qghRuleVersion: provenance.ruleVersion } : {}),
@@ -431,8 +523,9 @@ export const sourceCryptoEngine: ExposureEngine = {
       {
         filesAnalyzed: processed,
         componentKeys: [...componentKeys],
+        inventoryObservations: inventoryCount,
         detectionLayers: layerTally,
-        engineVersion: '3.0.0',
+        engineVersion: ENGINE_VERSION,
       },
     );
   },
@@ -465,8 +558,16 @@ function toExposureRole(role: KbCryptoRole): ExposureRole {
 }
 
 function buildTitle(classification: CryptoClassification, primary: CryptoObservation): string {
-  const size = classification.keySize ? `-${classification.keySize}` : '';
-  const curve = classification.curve ? ` on ${classification.curve.canonicalName}` : '';
+  /* A size or curve the algorithm's own name already states is not repeated:
+     Ed25519 IS the 255-bit Edwards curve, so "Ed25519-255 on Ed25519" said one
+     fact three times and read as a parsing error. */
+  const name = classification.canonicalName;
+  const size = classification.keySize && !name.includes(String(classification.keySize)) && !/25519|448/.test(name)
+    ? `-${classification.keySize}`
+    : '';
+  const curve = classification.curve && classification.curve.canonicalName !== name
+    ? ` on ${classification.curve.canonicalName}`
+    : '';
   const role = classification.role !== 'unknown' ? ` for ${classification.role.replace(/-/g, ' ')}` : '';
 
   if (primary.layer === 'data-flow' && primary.observedAlgorithm === 'Non-cryptographic PRNG') {

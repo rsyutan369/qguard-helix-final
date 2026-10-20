@@ -422,4 +422,24 @@ export function failed(reason: string, partialFindings: ExposureFinding[] = []):
   return { state: 'failed', findings: partialFindings, coverage: {}, detail: reason };
 }
 
+/* ─────────────────────────────────────────────────── inventory observations ── */
+
+/**
+ * Record cryptography that belongs in the CBOM but is not a finding.
+ *
+ * See `ExposureAssessment.inventory`. Kept on the workspace, not emitted: an
+ * emitted observation is a finding by definition, and these must never reach
+ * the finding count, the correlator or the risk model.
+ */
+export function recordInventory(workspace: ScanWorkspace, observation: ExposureFinding): void {
+  const list = (workspace.meta.inventory as ExposureFinding[] | undefined) ?? [];
+  if (!workspace.meta.inventory) workspace.meta.inventory = list;
+  list.push(observation);
+}
+
+/** Every inventory observation recorded so far in this workspace. */
+export function inventoryObservations(workspace: ScanWorkspace): ExposureFinding[] {
+  return (workspace.meta.inventory as ExposureFinding[] | undefined) ?? [];
+}
+
 export { emptyCoverage };

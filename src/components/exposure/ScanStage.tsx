@@ -410,6 +410,10 @@ export function ScanStage({
           ripples.splice(index, 1);
           continue;
         }
+        /* A ripple from "the future" has nothing to draw yet. Painted anyway, a
+           negative age gave `arc()` a negative radius, which THROWS — every
+           frame, aborting the rest of the frame (the lens never painted). */
+        if (age < 0) continue;
         ctx.strokeStyle = ripple.color;
         ctx.globalAlpha = (1 - age) * 0.5;
         ctx.lineWidth = 2 - age;
@@ -535,8 +539,19 @@ export function ScanStage({
     let pageVisible = typeof document === 'undefined' ? true : !document.hidden;
     const start = performance.now();
 
+    /* ONE monotonic clock. `start` and the visibility repaint read
+       `performance.now()`, while rAF hands the loop the time its FRAME began —
+       which can precede `start`, and by seconds when the browser throttles a
+       background or headless tab. Elapsed time therefore ran backwards, ripples
+       were stamped in the future, and their radius went negative. */
+    let lastElapsed = 0;
+    const paintAt = (elapsed: number) => {
+      lastElapsed = Math.max(lastElapsed, elapsed);
+      paint(lastElapsed);
+    };
+
     const tick = (now: number) => {
-      if (inView && pageVisible && (live.current.running || ripples.length > 0)) paint(now - start);
+      if (inView && pageVisible && (live.current.running || ripples.length > 0)) paintAt(now - start);
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
@@ -552,12 +567,12 @@ export function ScanStage({
 
     const onVisibility = () => {
       pageVisible = !document.hidden;
-      if (pageVisible) paint(performance.now() - start);
+      if (pageVisible) paintAt(performance.now() - start);
     };
     document.addEventListener('visibilitychange', onVisibility);
 
     // One frame immediately, so a paused or finished scan is never a black box.
-    paint(0);
+    paintAt(0);
 
     return () => {
       cancelAnimationFrame(frame);

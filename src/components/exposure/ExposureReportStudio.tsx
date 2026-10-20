@@ -396,7 +396,6 @@ export default function ExposureReportStudio({ open, onClose, assessment, genera
             <div className="grid grid-cols-[minmax(0,1fr)] gap-2 sm:grid-cols-3">
               {EXPOSURE_REPORT_DEPTHS.map((candidate) => {
                 const active = candidate.key === depth;
-                const rows = Number.isFinite(candidate.rows) ? candidate.rows : assessment.findings.length;
                 return (
                   <button
                     key={candidate.key}
@@ -413,8 +412,12 @@ export default function ExposureReportStudio({ open, onClose, assessment, genera
                       <Layers className="h-3.5 w-3.5 shrink-0 text-slate-500" aria-hidden />
                     </span>
                     <span className="mt-1 block text-[10.5px] leading-snug text-slate-400">{candidate.detail}</span>
+                    {/* Stated per TABLE, not per finding. "N of M findings shown"
+                        was printed for every template, including the Executive
+                        brief and the Remediation worklist, which table no
+                        findings at all. */}
                     <span className="mt-1 block font-mono text-[9px] uppercase tracking-[0.12em] text-slate-500">
-                      {nf(Math.min(rows, assessment.findings.length))} of {nf(assessment.findings.length)} findings shown
+                      {Number.isFinite(candidate.rows) ? `At most ${nf(candidate.rows)} rows per table` : 'Every row in every table'}
                     </span>
                   </button>
                 );

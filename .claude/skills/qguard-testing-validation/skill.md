@@ -301,6 +301,64 @@ What these caught that reading the code did not:
 - **Per-click generation** gave each format of "one" report its own id and digest;
   grep the report id across every downloaded file.
 
+### Exposure Local / Dev results + Report Studio (/dashboard/scanner?mode=local|dev)
+
+```bash
+npx tsx tools/exposure-detection-accuracy-check.ts   # 57 offline: PQC-name traps, compound labels, Rust API boundaries, inventory→CBOM, coverage readings, quantum-risk unit, action ranking, report registers, Dev export path
+npx tsx tools/exposure-report-check.ts               # 124 offline: 4 templates x depths x 7 formats over a real corpus
+npx tsx tools/exposure-panel-audit.ts <dir> local    # prints every panel's figures for a REAL directory, cross-panel reconciliation
+npx tsx tools/exposure-dev-live-check.ts             # 87 LIVE (:3000): real Dev scan of noble-post-quantum (quick profile, read-only, never synced) + every format's bytes read back
+```
+
+What these caught that the existing suites did not:
+
+- **Every suite scanned this repo's TypeScript.** A Rust PQC codebase exposed four
+  detection defects at once (issue #55). Keep a real PQC corpus in the loop.
+- **Before/after on real code is the proof.** Extract HEAD with
+  `git archive HEAD src tsconfig.json package.json | tar -x -C <scratch>/base`, junction
+  `node_modules` in, and run the same dump harness in both trees.
+  (`git worktree add` fails here: paths in `.codex-tmp` exceed MAX_PATH.)
+- **Drive the real UI:** headless system Chrome over CDP (Node 24 `WebSocket`),
+  magic-link session at `localStorage['sb-<ref>-auth-token']`, `DOM.setFileInputFiles`
+  with a FOLDER path drives the Local `webkitdirectory` input. For full-page captures,
+  un-clip the largest scroller and its ancestors first. This run caught a canvas
+  `arc()` negative-radius exception thrown every frame (two clocks in `ScanStage`) and
+  a live-findings column overflowing the status bar — neither visible to any check.
+- CSS `uppercase` changes `innerText`: match UI labels case-insensitively.
+
+### Public scan under load (/public-scan)
+
+```bash
+npx tsx tools/public-scan-load-check.ts   # 73 offline: coordinator rules + 10/100/1,000 visitors over real HTTP/SSE, synthetic scans, server in its own process
+npx tsx tools/deploy/deploy-readiness-check.ts   # includes PUBLIC_SCAN_MAX_CONCURRENT within the measured ceiling
+```
+
+What the load work taught:
+
+- **Put the server in its own process.** With 1,000 `fetch` clients in the same
+  process, the clients starved the accept loop and the OS refused connections
+  (`ECONNREFUSED` before any byte). That measured the harness, not the server.
+- **This Windows workstation refuses more than ~230 same-instant connects to ANY
+  listener.** A bare `node:http` server drops 768 of 1,000 same-instant connects,
+  and none spread over 2 s. Spread 1,000 arrivals over 2.5 s, or you measure the OS.
+- **Record the socket-level cause** (`error.cause.code`) of every transport
+  failure, and whether it happened before the first event or after. That told
+  "OS refused" apart from "server dropped" in one run.
+- **Live runs cost third-party traffic.** Use few distinct sites (single-flight
+  makes 1,000 visitors over 20 sites cost 20 scans), and charge rate limits with
+  NON-RESOLVING names (`*.example.com`), which end at DNS. Here NXDOMAIN takes
+  ~11 s, so `public-scan-check`'s 3 s `.invalid` probe reads `filtered` on this
+  machine. That is environmental.
+- **Drive the page, not just the stream.** The stream was right and the hero
+  still said "Scanning" after a refusal (#59). CDP `Network.setExtraHTTPHeaders`
+  sets the browser's `X-Forwarded-For` so a test can fill its rate-limit bucket.
+  It also triggers CORS preflights to Google Fonts, so filter those console
+  errors, and run the console-clean pass WITHOUT the header.
+- **Capacity is measured, not assumed.** Run real scans at concurrency 6/12/24/48
+  in one process and record scan p50/max, CPU per scan, event-loop p99, peak RSS,
+  and whether any report degraded. The knee is where scans near the 45 s engine
+  budget, not CPU.
+
 ### Database security changes (live project)
 
 ```bash
@@ -349,6 +407,35 @@ What these caught that reading the code did not:
   if any offered suggestion is not covered.
 - **Reading the prose.** `SOPHIA_AUDIT_PRINT=1` exposed a dossier listing the
   SAFE AES-256-GCM after "are quantum-vulnerable" — every assertion passed.
+
+### Rendering a gated page in both themes (headless Chrome, stubbed network)
+
+For a page behind auth + a paid plan with no credentials to hand, drive the
+REAL page and CSS and stub only the edges. Playwright is not a project
+dependency: install `playwright-core` in a scratch directory and launch the
+system Chrome (`channel: 'chrome'`). Nothing is added to the repo.
+
+- Seed a fake session at `localStorage['sb-<project-ref>-auth-token']` with a
+  far-future `expires_at`; supabase-js then answers `getSession()` without a
+  network call. Seed `qguard-theme-mode-v1` for the theme under test (and do not
+  re-seed on reload, or a persistence test passes/fails for the wrong reason).
+- `page.route` the Supabase REST rows the gate reads (`billing_subscriptions`)
+  and the page's own `/api/v1/...` endpoints. Replace `EventSource` with a stub
+  that emits `stream.ready` once — a finite SSE body just reconnects in a loop.
+- Assert state, not pixels: `<html>` classes, `localStorage`, accessible names,
+  `aria-pressed`, keyboard Enter/Space, reload persistence, `emulateMedia` for
+  the OS-follow mode, no horizontal overflow at 390 px.
+- **Contrast audit.** Walk every text node, composite its background up the
+  ancestor chain (read colours through a 1x1 canvas so `oklab()` /
+  `color-mix()` computed values parse), and list nodes under 4.5:1 (3:1 for
+  large text). This caught what reading the CSS did not: hue text dimmed with
+  alpha (`text-amber-100/70`) sat at ~4.0:1 on its own wash, and a stepper label
+  was 0.02 under AA. Compare against the dark baseline — it is not the bar,
+  AA is.
+- Walk the multi-step flows (wizard, drawer) and audit each step; a disabled
+  control the previous step hid is only reachable by satisfying its precondition.
+- Console errors: `ConsoleMessage.location().url` names the failing resource.
+  `/favicon.ico` 404 on `/downloads` is pre-existing (no `<link rel="icon">`).
 
 ## Evidence ladder
 

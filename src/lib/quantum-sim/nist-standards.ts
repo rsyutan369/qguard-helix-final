@@ -393,7 +393,7 @@ export const PENDING_STANDARDS: PendingStandard[] = [
     role: 'signature',
     status: 'draft',
     summary:
-      'NTRU-lattice signature scheme selected in 2022 for the smallest signatures of the finalists. Draft FIPS 206 has still not been published — NIST reported it as under development in January 2026 — and its floating-point Gaussian sampler makes constant-time implementation the hard part.',
+      'NTRU-lattice signature scheme selected in 2022 for the smallest signatures of the finalists. NIST submitted draft FIPS 206 for approval in August 2025, but no draft has yet been published for public comment; its floating-point Gaussian sampler makes constant-time implementation the hard part.',
     citation: 'fips206',
   },
   {
@@ -443,7 +443,7 @@ export const TRANSITION_MILESTONES: TransitionMilestone[] = [
     authority: 'NSA',
     title: 'CNSA 2.0 — software and firmware signing support',
     detail:
-      'National security systems must support and prefer CNSA 2.0 algorithms (LMS/XMSS, later ML-DSA-87) for signing software and firmware. Exclusive use required by 2030.',
+      'National security systems must support and prefer CNSA 2.0 algorithms for signing software and firmware (LMS or XMSS, per SP 800-208). Exclusive use required by 2030.',
     severity: 'info',
     citation: 'cnsa2',
   },
@@ -480,7 +480,7 @@ export const TRANSITION_MILESTONES: TransitionMilestone[] = [
     authority: 'NIST',
     title: '112-bit-strength RSA, ECDSA, ECDH and finite-field DH deprecated',
     detail:
-      'NIST IR 8547 ipd deprecates public-key algorithms at the 112-bit classical security strength after 2030 — RSA-2048, finite-field DH/MQV-2048, and ECDH/ECDSA on 224-bit curves. Deprecated means: still permitted, but the user accepts the risk in writing. Algorithms at 128-bit strength and above (RSA-3072 and larger, P-256, P-384, X25519, Ed25519) get no deprecation step — they are disallowed outright after 2035.',
+      'NIST IR 8547 ipd deprecates public-key algorithms at the 112-bit classical security strength after 2030 — RSA-2048, finite-field DH/MQV-2048, and ECDH/ECDSA on 224-bit curves. Deprecated means: still permitted, but the user must accept the associated security risk (SP 800-131A definition). Algorithms at 128-bit strength and above (RSA-3072 and larger, P-256, P-384, X25519, Ed25519) get no deprecation step — they are disallowed outright after 2035.',
     severity: 'deadline',
     citation: 'ir8547',
   },
@@ -508,7 +508,7 @@ export const TRANSITION_MILESTONES: TransitionMilestone[] = [
     authority: 'NIST',
     title: 'Quantum-vulnerable public-key cryptography disallowed',
     detail:
-      'NIST IR 8547 ipd disallows RSA, ECDSA, EdDSA, DH and ECDH at every key size after 2035. Disallowed means the algorithm may no longer be used for federal cryptographic protection at all.',
+      'NIST IR 8547 ipd disallows RSA, ECDSA, EdDSA, DH and ECDH at every key size after 2035. Disallowed means the algorithm may no longer be used to apply cryptographic protection under NIST guidance. IR 8547 is still an initial public draft, so these dates are proposed rather than final.',
     severity: 'hard-stop',
     citation: 'ir8547',
   },

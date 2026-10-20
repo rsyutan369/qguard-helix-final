@@ -221,7 +221,7 @@ export function buildClientHello(options: ClientHelloOptions): HandshakeEvidence
           keyShare.subarray(0, mlKemLength),
           `ML-KEM encapsulation key [${mlKemLength}]`,
           'quantum-safe',
-          'A module-lattice public key. Recovering the shared secret from this requires solving Module-LWE, for which no quantum algorithm is known.',
+          'A module-lattice public key. Recovering the shared secret from this requires solving Module-LWE, for which no efficient classical or quantum algorithm is known.',
         );
         b.push(
           keyShare.subarray(mlKemLength),
@@ -493,7 +493,7 @@ export function tls13KeySchedule(sharedSecret: Uint8Array, transcript: Uint8Arra
       name: 'client handshake traffic secret',
       operation: 'Derive-Secret(Handshake, "c hs traffic", Transcript-Hash(captured handshake))',
       value: clientHandshakeTraffic,
-      significance: 'Protects the encrypted extensions, certificate and Finished messages.',
+      significance: "Protects the client's handshake flight — its Finished message, plus its Certificate and CertificateVerify when client authentication is used.",
       consumesSharedSecret: false,
     },
     {
@@ -501,7 +501,7 @@ export function tls13KeySchedule(sharedSecret: Uint8Array, transcript: Uint8Arra
       name: 'server handshake traffic secret',
       operation: 'Derive-Secret(Handshake, "s hs traffic", Transcript-Hash(captured handshake))',
       value: serverHandshakeTraffic,
-      significance: 'Decrypts the server certificate — which in TLS 1.3 is encrypted, and in TLS 1.2 was not.',
+      significance: 'Decrypts the server flight — EncryptedExtensions, the server certificate (encrypted in TLS 1.3, sent in the clear in TLS 1.2), CertificateVerify and Finished.',
       consumesSharedSecret: false,
     },
     {

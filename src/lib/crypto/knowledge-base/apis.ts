@@ -452,9 +452,13 @@ export const CRYPTO_APIS: CryptoApiDefinition[] = [
   },
 
   /* ══════════════════════════════════ Rust ═════════════════════════════ */
+  /* Rust type names are matched on a leading word boundary. Unanchored,
+     `Keypair::generate(` matched `LocalKemKeypair::generate()` — an ML-KEM
+     keypair — and every post-quantum key generation in a Rust codebase was
+     published as an Ed25519 signature at API-layer (strong) confidence. */
   {
     apiId: 'rust-rsa-generate',
-    pattern: /RsaPrivateKey::new\s*\(/,
+    pattern: /\bRsaPrivateKey::new\s*\(/,
     language: ['rust'],
     library: 'rustcrypto',
     algorithm: 'RSA',
@@ -463,7 +467,7 @@ export const CRYPTO_APIS: CryptoApiDefinition[] = [
   },
   {
     apiId: 'rust-ed25519',
-    pattern: /(?:SigningKey|Keypair)::(?:generate|from_bytes)\s*\(|ed25519_dalek::/,
+    pattern: /\b(?:SigningKey|Keypair)::(?:generate|from_bytes)\s*\(|\bed25519_dalek::/,
     language: ['rust'],
     library: 'rustcrypto',
     algorithm: 'Ed25519',

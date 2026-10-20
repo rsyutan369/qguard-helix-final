@@ -51,11 +51,44 @@ function initialStages(): PublicScanStage[] {
   return STAGE_TEMPLATE.map((stage) => ({ ...stage, state: 'waiting' }));
 }
 
+/** This visitor's place in the server's waiting line. Present only while waiting. */
+export interface PublicScanQueue {
+  position: number;
+  queueLength: number;
+  /** An estimate from the server's measured scan durations — label it as one. */
+  estimatedWaitSeconds: number;
+  running: number;
+  capacity: number;
+  /** Client clock when this position arrived, so a countdown can run between updates. */
+  receivedAt: number;
+}
+
+/**
+ * Why the server declined to start this assessment, in its own words.
+ *
+ * An EventSource cannot read the body of a non-200 response, so these used to
+ * arrive as a bare transport error and render as "Connection to the assessment
+ * service was lost" — whether the visitor was rate limited, the line was full
+ * or the domain was simply invalid. The server now sends them in the stream.
+ */
+export interface PublicScanRefusal {
+  code: string;
+  message: string;
+  /** Seconds until retrying can succeed, when the server knows. */
+  retryAfterSeconds: number | null;
+  receivedAt: number;
+}
+
 export interface UsePublicScanResult {
   state: PublicScanState;
   stages: PublicScanStage[];
   report: PublicScanReport | null;
   error: string | null;
+  /** Set while the assessment waits for a free slot; null once it runs. */
+  queue: PublicScanQueue | null;
+  /** How many visitors are watching this one scan, when it is shared; else null. */
+  sharedViewers: number | null;
+  refusal: PublicScanRefusal | null;
   /** 0-100 across the six workflow stages. */
   progress: number;
   /** Live measurements, in the order the scanner made them. */
@@ -72,6 +105,9 @@ export function usePublicScan(): UsePublicScanResult {
   const [stages, setStages] = useState<PublicScanStage[]>(initialStages);
   const [report, setReport] = useState<PublicScanReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [queue, setQueue] = useState<PublicScanQueue | null>(null);
+  const [sharedViewers, setSharedViewers] = useState<number | null>(null);
+  const [refusal, setRefusal] = useState<PublicScanRefusal | null>(null);
   const [observations, setObservations] = useState<PublicScanObservation[]>([]);
   const sourceRef = useRef<EventSource | null>(null);
   /** Monotonic floor for the reported progress. Cleared at the start of a run. */
@@ -91,6 +127,9 @@ export function usePublicScan(): UsePublicScanResult {
     setStages(initialStages());
     setReport(null);
     setError(null);
+    setQueue(null);
+    setSharedViewers(null);
+    setRefusal(null);
     setObservations([]);
   }, [closeStream]);
 
@@ -109,10 +148,61 @@ export function usePublicScan(): UsePublicScanResult {
       setStages(initialStages());
       setReport(null);
       setError(null);
+      setQueue(null);
+      setSharedViewers(null);
+      setRefusal(null);
       setObservations([]);
 
       const source = new EventSource(`/api/v1/public-scan/stream?target=${encodeURIComponent(trimmed)}`);
       sourceRef.current = source;
+
+      /* The waiting line. Positions arrive whenever the line moves; the estimate
+         is the server's, from its measured scan durations. */
+      source.addEventListener('scan-queued', (event) => {
+        try {
+          const payload = JSON.parse((event as MessageEvent).data) as Omit<PublicScanQueue, 'receivedAt'>;
+          if (typeof payload?.position !== 'number') return;
+          setQueue({ ...payload, receivedAt: Date.now() });
+        } catch {
+          /* malformed frame — the next position supersedes it */
+        }
+      });
+
+      source.addEventListener('scan-started', () => setQueue(null));
+
+      source.addEventListener('scan-shared', (event) => {
+        try {
+          const payload = JSON.parse((event as MessageEvent).data) as { viewers?: number };
+          if (typeof payload?.viewers === 'number') setSharedViewers(payload.viewers);
+        } catch {
+          /* informational only */
+        }
+      });
+
+      /* The server declined to start: invalid target, rate limit or a full line.
+         The message is the server's own, and it says when to try again. */
+      source.addEventListener('scan-refused', (event) => {
+        let detail: Omit<PublicScanRefusal, 'receivedAt'> = {
+          code: 'REFUSED',
+          message: 'The assessment could not be started.',
+          retryAfterSeconds: null,
+        };
+        try {
+          const payload = JSON.parse((event as MessageEvent).data) as Partial<PublicScanRefusal>;
+          detail = {
+            code: payload.code ?? detail.code,
+            message: payload.message ?? detail.message,
+            retryAfterSeconds: typeof payload.retryAfterSeconds === 'number' ? payload.retryAfterSeconds : null,
+          };
+        } catch {
+          /* keep the generic wording */
+        }
+        setRefusal({ ...detail, receivedAt: Date.now() });
+        setError(detail.message);
+        setQueue(null);
+        setState('error');
+        closeStream();
+      });
 
       source.addEventListener('observation', (event) => {
         try {
@@ -235,7 +325,7 @@ export function usePublicScan(): UsePublicScanResult {
   else if (state === 'scanning' && computed > progressFloor.current) progressFloor.current = computed;
   const progress = state === 'scanning' || state === 'complete' ? progressFloor.current : computed;
 
-  return { state, stages, report, error, progress, observations, scan, reset };
+  return { state, stages, report, error, queue, sharedViewers, refusal, progress, observations, scan, reset };
 }
 
 export type { PublicScanReport, PublicScanStage, PublicScanStageKey };

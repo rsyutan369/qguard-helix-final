@@ -21,6 +21,7 @@ import {
   FileJson,
   FileSpreadsheet,
   Globe,
+  Hourglass,
   Link2,
   Loader2,
   Lock,
@@ -31,6 +32,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sparkles,
+  Users,
   XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -192,14 +194,62 @@ const STAGE_STATE_STYLE = {
   skipped: { color: ACCENT.slate, label: 'Skipped' },
 } as const;
 
+/** Whole seconds remaining from a server estimate, counting down between updates. */
+function useCountdown(seconds: number | null, receivedAt: number | null): number | null {
+  const [now, setNow] = React.useState(() => Date.now());
+  React.useEffect(() => {
+    if (seconds === null || receivedAt === null) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [seconds, receivedAt]);
+  if (seconds === null || receivedAt === null) return null;
+  return Math.max(0, Math.ceil(seconds - (now - receivedAt) / 1000));
+}
+
+function formatWait(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+}
+
+/**
+ * The visitor's place in line, said plainly.
+ *
+ * The scanner used to refuse everyone past its sixth concurrent assessment. It
+ * now holds them in a fair line, and this is what makes waiting acceptable:
+ * the position, how many are running, and an estimate that is labelled as one.
+ */
+function QueueNotice({ queue }: { queue: NonNullable<ReturnType<typeof usePublicScan>['queue']> }) {
+  const remaining = useCountdown(queue.estimatedWaitSeconds, queue.receivedAt) ?? queue.estimatedWaitSeconds;
+  return (
+    <div className="mx-4 mt-3 rounded-xl border border-cyan-400/20 bg-cyan-400/[0.05] px-3.5 py-3" role="status" aria-live="polite">
+      <p className="flex items-center gap-2 text-[12.5px] font-bold text-cyan-100">
+        <Hourglass className="h-3.5 w-3.5 shrink-0 text-cyan-300" aria-hidden />
+        {queue.position === 1 ? 'You are next in line' : `You are #${queue.position} in line`}
+      </p>
+      <p className="mt-1 text-[11.5px] leading-relaxed text-slate-400">
+        {queue.running} of {queue.capacity} assessments are running. Yours starts automatically —{' '}
+        {remaining > 0 ? `in about ${formatWait(remaining)}` : 'any moment now'}. Keep this page open; closing it gives up
+        your place.
+      </p>
+    </div>
+  );
+}
+
 function ScanRail({
   stages,
   progress,
   state,
+  queue,
+  sharedViewers,
 }: {
   stages: ReturnType<typeof usePublicScan>['stages'];
   progress: number;
   state: ReturnType<typeof usePublicScan>['state'];
+  queue: ReturnType<typeof usePublicScan>['queue'];
+  sharedViewers: ReturnType<typeof usePublicScan>['sharedViewers'];
 }) {
   return (
     <Panel className="overflow-hidden">
@@ -208,10 +258,22 @@ function ScanRail({
         {state === 'scanning' && (
           <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] font-bold text-cyan-300">
             <Loader2 className="h-3 w-3 animate-spin" />
-            {progress}%
+            {queue ? 'Waiting' : `${progress}%`}
           </span>
         )}
       </div>
+      {state === 'scanning' && queue && <QueueNotice queue={queue} />}
+      {/* Said, because a shared scan can be several seconds in when this
+          visitor arrives — without it the rail looks like it skipped stages. */}
+      {state === 'scanning' && sharedViewers !== null && (
+        <p className="mx-4 mt-3 flex items-start gap-2 rounded-lg border border-violet-400/20 bg-violet-400/[0.05] px-3 py-2 text-[11.5px] leading-relaxed text-violet-100/85">
+          <Users className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-300" aria-hidden />
+          <span>
+            Someone else is already assessing this site, so you are watching that same live scan
+            {sharedViewers > 1 ? ` with ${sharedViewers - 1} other visitor${sharedViewers === 2 ? '' : 's'}` : ''} — the results are identical and it costs you nothing.
+          </span>
+        </p>
+      )}
       <p className="px-4 pt-3 font-mono text-[9.5px] uppercase tracking-[0.16em] text-slate-500">
         Public Internet Scan
       </p>
@@ -393,7 +455,9 @@ export default function PublicScanPage() {
   // The whole result is kept (not just the destructured fields) because the QVE
   // hero consumes the live stream object directly to drive its event store.
   const scanResult = usePublicScan();
-  const { state, stages, report, error, progress, scan, reset } = scanResult;
+  const { state, stages, report, error, progress, scan, reset, queue, sharedViewers, refusal } = scanResult;
+  /* Ticks only while a refusal names a retry time; null otherwise. */
+  const retryIn = useCountdown(refusal?.retryAfterSeconds ?? null, refusal?.receivedAt ?? null);
   const [target, setTarget] = React.useState('');
   const resultsRef = React.useRef<HTMLDivElement>(null);
 
@@ -493,7 +557,7 @@ export default function PublicScanPage() {
           onSubmit={submit}
           railSlot={
             <>
-              <ScanRail stages={stages} progress={progress} state={state} />
+              <ScanRail stages={stages} progress={progress} state={state} queue={queue} sharedViewers={sharedViewers} />
 
               <Panel className="overflow-hidden border-violet-400/15">
                 <div className="px-4 py-4">
@@ -540,12 +604,16 @@ export default function PublicScanPage() {
                   )}
                   <span className="text-[13.5px] font-bold text-white">
                     {state !== 'complete'
-                      ? 'Assessment could not complete'
+                      ? refusal
+                        ? 'Assessment not started'
+                        : 'Assessment could not complete'
                       : report?.degraded
                         ? 'Scan completed with limited evidence'
                         : 'Scan Completed'}
                   </span>
-                  <span className="truncate text-[12px] text-slate-500">
+                  {/* The server's own reason, in full — a refusal names its cause
+                      and when to retry, which a truncated line would cut off. */}
+                  <span className={cn('text-[12px] text-slate-500', refusal ? 'min-w-0 whitespace-normal' : 'truncate')}>
                     {state === 'complete' && report
                       ? `${report.target.displayUrl} · ${new Date(report.completedAt).toUTCString().replace('GMT', 'UTC')}${report.cached ? ' · cached' : ''}`
                       : error}
@@ -553,6 +621,17 @@ export default function PublicScanPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   {state === 'complete' && report && <ExportBar report={report} />}
+                  {refusal && retryIn !== null && target.trim() && (
+                    <button
+                      type="button"
+                      disabled={retryIn > 0}
+                      onClick={() => scan(target)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/[0.08] px-3 py-1.5 text-[11.5px] font-bold text-cyan-200 transition-colors hover:bg-cyan-400/[0.14] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      {retryIn > 0 ? `Try again in ${formatWait(retryIn)}` : 'Try again'}
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={reset}

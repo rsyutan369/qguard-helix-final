@@ -82,6 +82,8 @@ export type ScannerEvidenceType =
   | 'certificate-file'
   /** Key-file METADATA only: algorithm, size, public-key fingerprint. Never key material. */
   | 'key-file'
+  /** A QGuard Messaging device's published suite (src/lib/messaging-posture-evidence.ts). */
+  | 'messaging-device-crypto'
 
 export interface ScannerEvidenceRecord {
   id?: string

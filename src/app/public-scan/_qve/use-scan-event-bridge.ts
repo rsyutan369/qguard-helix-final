@@ -26,6 +26,7 @@ import {
   nodeScoresFromReport,
   observationEvent,
   reportEvidenceEvents,
+  scanEndedEvent,
   scanStartedEvent,
   stageTransitionEvents,
 } from './event-derivation';
@@ -42,6 +43,10 @@ export interface ScanEventBridgeInput {
   /** Live measurements streamed during the run. */
   observations: UsePublicScanResult['observations'];
   progress: number;
+  /** Why the run ended without a report, in the server's words when it gave them. */
+  error: string | null;
+  /** True when the server declined to start the run at all. */
+  refused: boolean;
   /** Host or URL being assessed, for the `asset` field. */
   asset: string;
   /** True when heavy motion is disabled — drains the queue immediately. */
@@ -54,6 +59,8 @@ export function useScanEventBridge({
   report,
   observations,
   progress,
+  error,
+  refused,
   asset,
   reducedMotion,
 }: ScanEventBridgeInput): void {
@@ -124,9 +131,19 @@ export function useScanEventBridge({
       reportedScanId.current = null;
       consumedObservations.current = 0;
       dispatch({ type: 'reset' });
+    } else if (state === 'error') {
+      /* The run ended without a report. Say so in the engine too, or the hero
+         keeps animating a scan that is not happening. A refusal that arrives
+         in the same batch as the start skips `scanning`, so a previous run's
+         verdicts are cleared first rather than shown beside the refusal. */
+      if (previous !== 'scanning') dispatch({ type: 'reset' });
+      dispatch({
+        type: 'ingest',
+        event: scanEndedEvent(asset, error ?? 'The assessment could not be completed.', refused),
+      });
     }
-    // `asset` is read at transition time only; a later edit to the input must
-    // not retroactively restamp a running scan.
+    // `asset`, `error` and `refused` are read at transition time only; a later
+    // edit to the input must not retroactively restamp a running scan.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, clearQueue, dispatch]);
 

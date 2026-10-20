@@ -17,12 +17,21 @@ class MainActivity : TauriActivity() {
     // JNI helpers that launch Activities (vault folder picker, Play Billing)
     // need this instance — Rust only holds the Application context.
     CurrentActivity.set(this)
+    PrivacyScreen.apply(this)
     requestCorePermissions()
   }
 
   override fun onResume() {
     super.onResume()
     CurrentActivity.set(this)
+    PrivacyScreen.apply(this)
+    PrivacyScreen.onResume(this)
+  }
+
+  override fun onPause() {
+    // Older Android takes the Recent-apps snapshot after this: cover it first.
+    PrivacyScreen.onPause(this)
+    super.onPause()
   }
 
   override fun onDestroy() {
@@ -71,7 +80,8 @@ class MainActivity : TauriActivity() {
     // Belt-and-suspenders app-entry lock: when the app is backgrounded, ask the
     // web layer to lock immediately (the JS visibilitychange listener is the
     // primary trigger). NOTE: FLAG_SECURE is intentionally NOT set — users must
-    // be able to take screenshots.
+    // be able to take screenshots. The Recent-apps preview is hidden by
+    // PrivacyScreen instead, which leaves screenshots alone.
     runCatching {
       runOnUiThread {
         // Tauri exposes the WebView via the generated activity; evaluate a tiny

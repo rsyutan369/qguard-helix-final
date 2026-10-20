@@ -23,14 +23,21 @@ import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import { guardNativeFileInput } from "@/lib/native-dialog-guard";
 import { describeSavedFile, saveFileToDevice } from "@/lib/save-file";
+import { DevicePrivacyCard } from "@/components/DevicePrivacyCard";
+import { RecoveryCenterCard } from "@/components/RecoveryCenterCard";
+import { AiAssistantCard } from "@/components/AiAssistantCard";
+import { OfflineDeliveryCard } from "@/components/OfflineDeliveryCard";
+import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
+import { fetchRatchetStatus, resetRatchetSession, setRatchetEnabled, type RatchetStatus } from "@/lib/ratchet-status";
 import { createEphemeralSupabaseClient, supabase } from "@/lib/supabase";
-import { safeInvoke } from "@/lib/tauri";
+import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import { listTrustedDevices, revokeTrustedDevice, type TrustedDeviceRow } from "@/lib/trusted-devices";
 import type { Profile, SecurityEvent, TelemetryEvent } from "@/lib/types";
 import { useAppLock } from "@/lib/use-app-lock";
 import type { ThemeMode } from "@/lib/use-theme";
 import { INACTIVITY_OPTIONS, type WorkspaceStatus } from "@/lib/use-workspace-lock";
 import { sha3_256Hex } from "@/lib/sha3";
+import { hashRecoveryCode, recoveryHashScheme } from "@/lib/recovery-code-hash";
 
 interface GpuSafeModeStatus {
   active: boolean;
@@ -110,6 +117,108 @@ function CallDeviceProtectionCard() {
   );
 }
 
+/**
+ * Settings → Advanced: the post-quantum session ratchet (roadmap Phase 2).
+ *
+ * Off by default while it is unaudited. Turning it on makes this device
+ * advertise the capability (its published suite is re-registered right away)
+ * and start a session with each contact device that advertises it too. The
+ * state shown is what the core reports, never the switch position alone.
+ */
+function SessionRatchetCard({ userId }: { userId: string | null }) {
+  const [status, setStatus] = useState<RatchetStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+
+  useEffect(() => {
+    if (!userId || !isTauriRuntime()) return;
+    void fetchRatchetStatus(userId, []).then(setStatus).catch(() => setStatus(null));
+  }, [userId]);
+
+  if (!userId || !status) return null;
+  const forced = status.env_override !== null;
+
+  const toggle = async () => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const next = await setRatchetEnabled(userId, !status.enabled);
+      setStatus(next);
+      // Peers learn the capability from the published suite.
+      await syncCurrentMessagingDevice(supabase, userId);
+      setMessage({
+        tone: "ok",
+        text: next.enabled
+          ? "On. Contacts whose app supports it will use a per-message ratchet with this device from their next message."
+          : "Off. New messages are one-shot sealed again; existing sessions are kept only to read what was already sent.",
+      });
+    } catch (error) {
+      setMessage({ tone: "error", text: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetAll = async () => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const forgotten = await resetRatchetSession(userId, null);
+      setMessage({ tone: "ok", text: forgotten ? "All secure sessions reset. The next message to each device starts a new one." : "There were no secure sessions to reset." });
+    } catch (error) {
+      setMessage({ tone: "error", text: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="shell-card p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm font-bold text-ink-950"><KeyRound size={18} /> Per-message ratchet (advanced)</div>
+        <span className={`status-pill ${status.enabled ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-ink-600"}`}>
+          {status.enabled ? "On" : "Off"}{forced ? " · set by QGUARD_RATCHET" : ""}
+        </span>
+      </div>
+      <p className="mt-1 text-sm text-ink-600">
+        Gives every message its own key, deleted once used, and heals a stolen device key on the next reply — with a fresh
+        ML-KEM-1024 exchange at least every 50 messages or 24 hours. Without it, each message is still sealed with
+        X25519 + ML-KEM-1024, and forward secrecy follows the daily prekey rotation.
+      </p>
+      <p className="mt-2 text-[13px] text-amber-700">
+        Not yet independently reviewed. It only takes effect with contacts whose app has it on too; everyone else keeps
+        receiving one-shot sealed messages.
+      </p>
+      {!status.available && (
+        <p className="mt-2 text-[13px] text-amber-700">This device&apos;s secure sessions could not be opened right now; messages go out one-shot sealed until they can.</p>
+      )}
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={busy || forced}
+          onClick={() => void toggle()}
+          className="rounded-lg border border-line bg-white px-4 py-2 text-sm font-bold text-ink-700 hover:bg-canvas disabled:opacity-60"
+        >
+          {status.enabled ? "Turn off" : "Turn on"}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void resetAll()}
+          className="rounded-lg border border-line bg-white px-4 py-2 text-sm font-bold text-ink-700 hover:bg-canvas disabled:opacity-60"
+        >
+          Reset all secure sessions
+        </button>
+      </div>
+      {message && (
+        <div className={`mt-3 rounded-lg border p-3 text-sm font-semibold ${message.tone === "ok" ? "border-emerald-100 bg-emerald-50 text-emerald-700" : "border-red-100 bg-red-50 text-red-700"}`}>
+          {message.text}
+        </div>
+      )}
+    </section>
+  );
+}
+
 interface SettingsPageProps {
   theme: ThemeMode;
   profile: Profile | null;
@@ -175,16 +284,6 @@ function randomHex(bytes: number) {
   return Array.from(values).map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-// Recovery codes only: `qguard_consume_mfa_recovery_code` recomputes this digest
-// in Postgres with pgcrypto SHA-256, so the two sides must change together.
-async function recoveryCodeSha256Hex(value: string) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function normalizedRecoveryCode(code: string) {
-  return code.trim().replace(/-/g, "").toUpperCase();
-}
 
 function qrCodeSrc(value: string) {
   if (value.startsWith("data:")) return value;
@@ -526,12 +625,14 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
   async function storeRecoveryCodes(codes: string[]) {
     if (!user) return;
     await supabase.from("qguard_mfa_recovery_codes").delete().eq("user_id", user.id).is("used_at", null);
+    // SHA3-256 once the server can check it (migration 037), SHA-256 until then.
+    const scheme = await recoveryHashScheme(supabase);
     const rows = await Promise.all(codes.map(async (code) => {
       const salt = randomHex(16);
       return {
         user_id: user.id,
         salt,
-        code_hash: await recoveryCodeSha256Hex(salt + normalizedRecoveryCode(code)),
+        code_hash: await hashRecoveryCode(salt, code, scheme),
       };
     }));
     const { error: insertError } = await supabase.from("qguard_mfa_recovery_codes").insert(rows);
@@ -769,6 +870,14 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
       )}
 
       <CallDeviceProtectionCard />
+
+      <SessionRatchetCard userId={user?.id ?? null} />
+
+      {user?.id && <DevicePrivacyCard userId={user.id} appLock={appLock} />}
+
+      {user?.id && <RecoveryCenterCard userId={user.id} />}
+      {user?.id && <AiAssistantCard />}
+      {user?.id && <OfflineDeliveryCard />}
 
       <div className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[1fr_420px]">
         <section className="grid gap-4">

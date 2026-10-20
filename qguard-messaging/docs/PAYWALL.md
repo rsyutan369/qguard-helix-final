@@ -18,10 +18,13 @@ flows, and streamed to every logged-in session in real time.
 > `/api/v1/...` paths. The app derives that origin from `VITE_SUPABASE_URL`
 > (`src/lib/billing-api.ts`); `VITE_BILLING_API_ORIGIN` still overrides it for a
 > self-hosted Express API (add its host to the CSP `connect-src` too).
-> Google Play verification is NOT in the Edge Function yet (`/play-billing/verify`
-> answers 501); it needs the Play service account described below. Until the
-> function's `/health` reports `"playVerification": true`, the Android app does
-> not launch Google Play purchases at all and uses PayPal checkout instead
+> **Google Play verification (2026-10-19)** is implemented in the Edge Function
+> (`/api/v1/play-billing/verify` and `/api/v1/play-billing/rtdn`, a port of
+> `src/api-server/play-billing.ts`; checked by `tools/billing-edge-check.ts`).
+> It answers 503 `PLAY_NOT_CONFIGURED` until the Play service-account secrets
+> below are set and the function is redeployed. Until the function's `/health`
+> reports `"playVerification": true`, the Android app does not launch Google Play
+> purchases at all and uses PayPal checkout instead
 > (`billingSupportsPlayVerification()`), so nobody can be charged by Play for a
 > purchase the service cannot verify.
 

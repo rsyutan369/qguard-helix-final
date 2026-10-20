@@ -1,3 +1,4 @@
+import { SCREEN_SHARE_CONSTRAINTS, screenShareSupported } from "@/lib/screen-share";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   CALL_STAGES,
@@ -20,6 +21,8 @@ import {
 import { connectDeadlineMs, shouldAttemptIceRecovery } from "@/lib/call-deadline";
 import { callReducer, INITIAL_CALL_STATE } from "@/lib/call-state";
 import { sendCallSignal, sendCallSignals, subscribeCallSignals, type CallSignalChannel } from "@/lib/call-signaling";
+import { PRIMARY_SLOT, type CallSignalHub } from "@/lib/call-signal-hub";
+import type { GroupInvite } from "@/lib/group-call";
 import { fetchCallPeerIdentity } from "@/lib/call-peer-identity";
 import { applyDecline, callPeerIdentityPayload, parseCallEphemeralKey } from "@/lib/call-targets";
 import type { CallEphemeralKey, CallPeer, CallPeerDevice } from "@/lib/call-targets";
@@ -52,6 +55,10 @@ interface CallSetup {
   safetyNumber: string;
   forwardSecret?: boolean;
   peerAuthenticated?: boolean;
+  /** When the user verified this exact device here (unix seconds), or null. */
+  peerVerifiedAt?: number | null;
+  /** A call challenge phrase can be shown with this device. */
+  peerPaired?: boolean;
 }
 
 /**
@@ -203,13 +210,32 @@ async function pipeEncodedStreams(
  * Secure Chat is open. Outgoing calls pass the peer + conversation explicitly
  * to `startCall`.
  */
-export function useSecureCall(args: { userId: string; deviceId: string }) {
+/**
+ * `hub`/`slot` (group calls, roadmap 7.2): share one signal subscription with
+ * other engine instances, each owning the calls routed to its slot. `isBusy`:
+ * an engine elsewhere is on a call, so rings are answered "busy". Without them
+ * the engine behaves exactly as it always has.
+ */
+export function useSecureCall(args: { userId: string; deviceId: string; hub?: CallSignalHub | null; slot?: string; isBusy?: () => boolean }) {
+  const slot = args.slot ?? PRIMARY_SLOT;
+  const hubRef = useRef(args.hub ?? null);
+  hubRef.current = args.hub ?? null;
+  const isBusyRef = useRef(args.isBusy);
+  isBusyRef.current = args.isBusy;
+  // The group invite an outgoing group link carries on its ring and offer.
+  const groupInviteRef = useRef<GroupInvite | null>(null);
   const [state, dispatch] = useReducer(callReducer, INITIAL_CALL_STATE);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [micEnabled, setMicEnabled] = useState(true);
   const [cameraEnabled, setCameraEnabled] = useState(true);
   const [reconnecting, setReconnecting] = useState(false);
+  // Screen share (roadmap 7.3): the screen track REPLACES the camera track on
+  // the existing video sender, so it rides the same per-frame AES-256-GCM
+  // transform and the same pinned VP8 codec — nothing is renegotiated and no
+  // frame leaves unencrypted.
+  const [screenSharing, setScreenSharing] = useState(false);
+  const screenTrackRef = useRef<MediaStreamTrack | null>(null);
   // Quality survives across calls/app restarts (localStorage) so a user who
   // picked HD (or Low) isn't silently reset to Auto on the next call.
   const [quality, setQualityState] = useState<CallQuality>(loadPersistedQuality);
@@ -392,6 +418,9 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   }, []);
 
   const cleanup = useCallback(() => {
+    // A finished call no longer needs a route through a shared signal hub.
+    if (callIdRef.current) hubRef.current?.release(callIdRef.current);
+    groupInviteRef.current = null;
     // Invalidate any media capture still in flight. Camera warm-up now overlaps
     // signalling, so a call that fails or is hung up mid-setup can have a
     // `getUserMedia` promise that resolves AFTER teardown — without this guard
@@ -435,6 +464,12 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     // the peer connection / worker and releasing the camera in a race).
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     localStreamRef.current = null;
+    if (screenTrackRef.current) {
+      screenTrackRef.current.onended = null;
+      screenTrackRef.current.stop();
+      screenTrackRef.current = null;
+    }
+    setScreenSharing(false);
     setLocalStream(null);
     setRemoteStream(null);
     releaseCallWakeLock();
@@ -714,7 +749,14 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
           // both false and the call screen says so.
           const forwardSecret = setupRef.current.forwardSecret === true;
           const peerVerified = setupRef.current.peerAuthenticated === true;
-          dispatch({ type: "media-connected", safetyNumber: setupRef.current.safetyNumber, forwardSecret, peerVerified });
+          dispatch({
+            type: "media-connected",
+            safetyNumber: setupRef.current.safetyNumber,
+            forwardSecret,
+            peerVerified,
+            peerVerifiedAt: setupRef.current.peerVerifiedAt ?? null,
+            peerPaired: setupRef.current.peerPaired === true,
+          });
           void recordCryptoTelemetry({
             userId: args.userId, scope: "call", stage: "call_connected",
             detail: forwardSecret
@@ -896,6 +938,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
           sdp: offer.sdp,
           hybridCiphertext: setup.hybridCiphertext,
           ...(setup.ephemeralCiphertext ? { ephemeralCiphertext: setup.ephemeralCiphertext, callerProof: setup.callerProof } : {}),
+          ...(groupInviteRef.current ? { group: groupInviteRef.current } : {}),
         },
       });
       // Answered and negotiating: the wall clock hands over to the
@@ -908,9 +951,10 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     }
   }, [args.deviceId, args.userId, attachMediaTransforms, beginConnectPhase, buildPeerConnection, cleanup, signalRoutes]);
 
-  const startCall = useCallback(async (peer: CallPeer, conversationId: string) => {
+  const startCall = useCallback(async (peer: CallPeer, conversationId: string, options?: { group?: GroupInvite }) => {
     if (!supported || !args.deviceId || !conversationId) return;
     if (peer.devices.length === 0) return;
+    groupInviteRef.current = options?.group ?? null;
     // FORK THE RING. A peer is a person, not a device: addressing the call to
     // one device meant that if they were sitting at any other one it never rang,
     // the caller sat on "Connecting…" until the give-up, and no safety number
@@ -926,6 +970,8 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     // still has somewhere to go; rebound for real on the winning accept.
     routeRef.current = routes[0];
     const callId = crypto.randomUUID();
+    // Replies carry no group invite, so they must be routed by call id.
+    hubRef.current?.claim(callId, slot);
     beginCallTimeline(callId, "caller");
     dispatch({ type: "start-outgoing", callId, peerUserId: peer.userId, peerDeviceId: peer.devices[0].deviceId });
     // Ring phase: a pure wall clock, bounding how long the peer's devices ring.
@@ -942,7 +988,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
         call_id: callId, conversation_id: route.conversationId,
         from_user_id: args.userId, from_device_id: args.deviceId,
         to_user_id: route.toUserId, to_device_id: route.toDeviceId,
-        signal_type: "ring" as const, payload: {},
+        signal_type: "ring" as const, payload: groupInviteRef.current ? { group: groupInviteRef.current } : {},
       })));
       markCallStage(CALL_STAGES.signalingStarted);
       describeCallTimeline({ rang: routes.length });
@@ -1099,6 +1145,46 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
   const toggleMic = useCallback(() => { localStream?.getAudioTracks().forEach((t) => (t.enabled = !t.enabled)); setMicEnabled((v) => !v); }, [localStream]);
   const toggleCamera = useCallback(() => { localStream?.getVideoTracks().forEach((t) => (t.enabled = !t.enabled)); setCameraEnabled((v) => !v); }, [localStream]);
 
+  const stopScreenShare = useCallback(async () => {
+    const screen = screenTrackRef.current;
+    if (!screen) return;
+    screenTrackRef.current = null;
+    screen.onended = null;
+    screen.stop();
+    setScreenSharing(false);
+    const sender = pcRef.current?.getSenders().find((s) => s.track === screen || s.track?.kind === "video");
+    const camera = localStreamRef.current?.getVideoTracks()[0] ?? null;
+    if (sender) await sender.replaceTrack(camera).catch(() => undefined);
+  }, []);
+
+  const startScreenShare = useCallback(async () => {
+    if (!screenShareSupported()) throw new Error("Screen sharing is not available in this app version or platform.");
+    if (screenTrackRef.current) return;
+    const pc = pcRef.current;
+    const sender = pc?.getSenders().find((s) => s.track?.kind === "video");
+    if (!pc || !sender) {
+      throw new Error("Screen sharing needs a call that started with video.");
+    }
+    const display = await navigator.mediaDevices.getDisplayMedia(SCREEN_SHARE_CONSTRAINTS);
+    const track = display.getVideoTracks()[0];
+    if (!track) {
+      display.getTracks().forEach((t) => t.stop());
+      throw new Error("No screen was chosen.");
+    }
+    // The call may have ended while the picker was open.
+    if (pcRef.current !== pc) {
+      track.stop();
+      return;
+    }
+    // Text and UI: keep resolution, drop frame rate under pressure.
+    track.contentHint = "detail";
+    await sender.replaceTrack(track);
+    screenTrackRef.current = track;
+    // The platform's own "Stop sharing" control ends the track.
+    track.onended = () => { void stopScreenShare(); };
+    setScreenSharing(true);
+  }, [stopScreenShare]);
+
   // Signal handling
   useEffect(() => {
     if (!args.userId || !args.deviceId) return undefined;
@@ -1122,7 +1208,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       // and the catch-up reader can both deliver it) must never answer "busy"
       // to our own in-progress call — that is what used to tear it down.
       if (row.call_id === callIdRef.current) return true;
-      if (["ringing", "calling", "connecting", "connected"].includes(phaseRef.current)) {
+      if (["ringing", "calling", "connecting", "connected"].includes(phaseRef.current) || isBusyRef.current?.()) {
         replyBusy(row);
         return false;
       }
@@ -1172,9 +1258,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
       return Boolean(route && route.toDeviceId === row.from_device_id && route.toUserId === row.from_user_id);
     };
 
-    const channel = subscribeCallSignals({
-      userId: args.userId, deviceId: args.deviceId,
-      onSignal: (row) => {
+    const onSignal = (row: CallSignalRow) => {
         if (row.from_user_id === args.userId) return;
         switch (row.signal_type) {
           case "ring": {
@@ -1306,8 +1390,11 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
           }
           default: break;
         }
-      },
-    });
+    };
+    const hub = hubRef.current;
+    const channel = hub
+      ? hub.attach(slot, onSignal)
+      : subscribeCallSignals({ userId: args.userId, deviceId: args.deviceId, onSignal });
     signalChannelRef.current = channel;
 
     // A resumed app has a cold relay cache and possibly a dead socket.
@@ -1325,7 +1412,7 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
     };
     // All four are stable callbacks, so the transport stays mounted for the whole
     // session — re-subscribing mid-call is what used to drop the inbound answer.
-  }, [args.deviceId, args.userId, armTimeout, beginConnectPhase, bindAcceptedDevice, endCall, flushPendingCandidates, noteIceProgress]);
+  }, [args.deviceId, args.userId, args.hub, slot, armTimeout, beginConnectPhase, bindAcceptedDevice, endCall, flushPendingCandidates, noteIceProgress]);
 
   // Keep synchronous mirrors of call state for ref-based decisions (busy
   // detection, role checks, hangup addressing) inside the signal handler, so it
@@ -1336,5 +1423,9 @@ export function useSecureCall(args: { userId: string; deviceId: string }) {
 
   useEffect(() => () => cleanup(), [cleanup]);
 
-  return { state, localStream, remoteStream, micEnabled, cameraEnabled, reconnecting, quality, setQuality, stats, supported, startCall, accept, reject, hangup, toggleMic, toggleCamera };
+  return {
+    state, localStream, remoteStream, micEnabled, cameraEnabled, reconnecting, quality, setQuality, stats, supported,
+    startCall, accept, reject, hangup, toggleMic, toggleCamera,
+    screenShareSupported: screenShareSupported(), screenSharing, startScreenShare, stopScreenShare,
+  };
 }

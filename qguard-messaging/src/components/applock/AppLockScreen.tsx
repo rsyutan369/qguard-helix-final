@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Delete, LockKeyhole, ShieldAlert } from "lucide-react";
+import { Delete, Fingerprint, LockKeyhole, ShieldAlert } from "lucide-react";
 
 type Mode = "setup" | "unlock";
 
@@ -12,6 +12,7 @@ interface AppLockScreenProps {
   rootWarning?: boolean;
   onSubmit: (pin: string, digits: number) => Promise<void>; // throws on failure
   onUsePassword?: () => void; // full email/password auth escape hatch
+  onBiometric?: () => Promise<void>; // throws on cancel/failure; offered once automatically
   busy?: boolean;
   busyLabel?: string; // shown while `busy`, e.g. restoring the session after a correct PIN
 }
@@ -44,6 +45,26 @@ export function AppLockScreen(props: AppLockScreenProps) {
   const digits = mode === "unlock" ? (props.digits ?? 6) : chosenDigits;
   const lockoutRemaining = useLockoutCountdown(lockoutUntil);
   const disabled = Boolean(busy) || submitting || lockoutRemaining > 0;
+
+  // Biometric unlock: offered once as the screen appears, then on request.
+  const { onBiometric } = props;
+  const [biometricTried, setBiometricTried] = useState(false);
+  const tryBiometric = useCallback(async () => {
+    if (!onBiometric) return;
+    setError(null);
+    try {
+      await onBiometric();
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      // A cancelled prompt is the user choosing the PIN, not an error.
+      if (!/cancelled/i.test(message)) setError(message);
+    }
+  }, [onBiometric]);
+  useEffect(() => {
+    if (mode !== "unlock" || !onBiometric || biometricTried || disabled) return;
+    setBiometricTried(true);
+    void tryBiometric();
+  }, [biometricTried, disabled, mode, onBiometric, tryBiometric]);
 
   const triggerShake = useCallback(() => {
     setShake(true);
@@ -285,6 +306,17 @@ export function AppLockScreen(props: AppLockScreenProps) {
               </button>
             </div>
           </>
+        )}
+
+        {mode === "unlock" && onBiometric && !busy && (
+          <button
+            onClick={() => void tryBiometric()}
+            disabled={disabled}
+            className="qg-focusable mb-3 flex items-center gap-2 text-[13px] font-semibold disabled:opacity-40"
+            style={{ color: "var(--qg-helix)" }}
+          >
+            <Fingerprint size={16} /> Use fingerprint or face
+          </button>
         )}
 
         {mode === "unlock" && onUsePassword && !busy && (

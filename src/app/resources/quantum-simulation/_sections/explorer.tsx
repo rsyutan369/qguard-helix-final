@@ -234,7 +234,7 @@ export function GroverPanel() {
       title="Grover: a reduction, not a break"
       subtitle={
         <>
-          Grover's search turns an exhaustive key search of size N into √N. That is a real speed-up and it is not an attack —
+          Grover's search turns an exhaustive key search of size N into √N. That is a real speed-up but not a practical break —
           the amplitude curve below is the exact quantum state, sin((2j+1)·θ), not an approximation. <Cite source="grover1996" inline />
         </>
       }
@@ -503,7 +503,7 @@ export function StandardsTimeline({ now }: { now: number }) {
       accent={QSR.live}
       eyebrow="The published clock"
       title="Transition deadlines, in order"
-      subtitle="Not predictions. These are dates in released government publications, and they are the dates a compliance programme is measured against."
+      subtitle="Not predictions. These are dates in released government publications — CNSA 2.0 and NSM-10 are in force; NIST IR 8547 is still an initial public draft — and they are the dates a compliance programme is measured against."
       right={<ProvenanceBadge kind="published" />}
     >
       <div className="relative">

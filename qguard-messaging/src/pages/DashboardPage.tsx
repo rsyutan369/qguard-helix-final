@@ -11,7 +11,7 @@ import {
   ShieldCheck,
   Users,
 } from "lucide-react";
-import { isAdminEmail } from "@/lib/admin";
+import { useIsAdmin } from "@/lib/admin";
 import { ONE_TIME_PREKEY_MIN, SIGNED_PREKEY_MIN } from "@/lib/security-score";
 import type { CSSProperties } from "react";
 import MetricCard from "@/components/MetricCard";
@@ -106,6 +106,7 @@ function telemetryTone(event: TelemetryEvent): string {
 
 export default function DashboardPage({ data, liveEvents, liveStatus, onNavigate }: DashboardPageProps) {
   const isMobile = useIsMobile();
+  const isAdmin = useIsAdmin();
   // Phones get a purpose-built vertical-scroll home screen (gradient hero card,
   // gradient stat tiles, stacked sections) instead of the desktop multi-column
   // grid, which cannot stack into a natural top-to-bottom scroll.
@@ -114,7 +115,6 @@ export default function DashboardPage({ data, liveEvents, liveStatus, onNavigate
   }
 
   const { snapshot, devices, conversations, modules, report, keyInventory, telemetry, securityEvents } = data;
-  const isAdmin = isAdminEmail(data.profile?.email);
   const myDevices = devices.filter((device) => device.user_id === data.profile?.id);
   const activeMyDevices = myDevices.filter((device) => device.trust_state !== "Revoked");
   const trustedDevices = activeMyDevices.filter(isTrustedDevice);

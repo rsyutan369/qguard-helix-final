@@ -2,7 +2,10 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { CallFailureNotice } from "@/components/call/CallFailureNotice";
 import { IncomingCallModal } from "@/components/call/IncomingCallModal";
 import { InCallOverlay } from "@/components/call/InCallOverlay";
+import { GroupCallOverlay, IncomingGroupCallModal } from "@/components/call/GroupCallOverlay";
+import { useCallEngines } from "@/lib/use-group-call";
 import { setCallActive } from "@/lib/call-activity";
+import { fetchContactAssurance, type ContactAssurance } from "@/lib/contact-verification";
 import { supabase } from "@/lib/supabase";
 import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import { useSecureCall, type CallPeer } from "@/lib/use-secure-call";
@@ -12,6 +15,9 @@ type CallEngine = ReturnType<typeof useSecureCall>;
 interface CallContextValue extends Omit<CallEngine, "startCall"> {
   startCall: (peer: CallPeer, conversationId: string) => Promise<void>;
   peerName: string;
+  /** Group calls (roadmap 7.2): a mesh of one-to-one links, up to 3 people. */
+  startGroupCall: (conversationId: string, peers: CallPeer[]) => Promise<void>;
+  groupCallActive: boolean;
 }
 
 const CallContext = createContext<CallContextValue | null>(null);
@@ -58,14 +64,42 @@ export function CallProvider({ userId, children }: { userId: string; children: R
     return () => { cancelled = true; };
   }, [userId]);
 
-  const call = useSecureCall({ userId, deviceId });
+  const engines = useCallEngines(userId, deviceId);
+  const call = engines.primary;
+  const groupCall = engines.group;
+  // Names for everyone in a group call (resolved from profiles, like a caller's).
+  const [groupNames, setGroupNames] = useState<Record<string, string>>({});
+  const groupMembersKey = groupCall.invite ? groupCall.invite.members.join(",") : "";
+  useEffect(() => {
+    if (!groupMembersKey) return undefined;
+    let cancelled = false;
+    void supabase.from("profiles").select("id,name,username").in("id", groupMembersKey.split(",")).then(({ data }) => {
+      if (cancelled || !data) return;
+      setGroupNames(Object.fromEntries((data as Array<{ id: string; name: string | null; username: string | null }>)
+        .map((row) => [row.id, row.name?.trim() || (row.username ? `@${row.username}` : "Group member")])));
+    });
+    if (!groupCall.joined) void requestWindowAttention();
+    return () => { cancelled = true; };
+  }, [groupMembersKey, groupCall.joined]);
   const [peerName, setPeerName] = useState("Secure contact");
+  // What this device's own record holds for the ringing device id: shown
+  // before answering. Null until the core answers (or outside the app).
+  const [incomingAssurance, setIncomingAssurance] = useState<ContactAssurance | null>(null);
+  useEffect(() => {
+    setIncomingAssurance(null);
+    if (call.state.phase !== "ringing" || call.state.role !== "callee" || !call.state.peerUserId || !call.state.peerDeviceId) return undefined;
+    let cancelled = false;
+    fetchContactAssurance(call.state.peerUserId, call.state.peerDeviceId)
+      .then((assurance) => { if (!cancelled) setIncomingAssurance(assurance); })
+      .catch(() => { if (!cancelled) setIncomingAssurance(null); });
+    return () => { cancelled = true; };
+  }, [call.state.phase, call.state.role, call.state.peerUserId, call.state.peerDeviceId]);
 
   // Hold the app-lock open for the lifetime of a call. Without this the Android
   // PIN gate fires on the first `visibilitystate: hidden` -- a screen dim, a
   // volume overlay, a notification shade -- and tears down the live call.
   // Cleared on unmount so a crashed/closed provider can never wedge it open.
-  const callLive = ["ringing", "calling", "connecting", "connected"].includes(call.state.phase);
+  const callLive = ["ringing", "calling", "connecting", "connected"].includes(call.state.phase) || groupCall.live || Boolean(groupCall.invite);
   useEffect(() => {
     setCallActive(callLive);
     return () => setCallActive(false);
@@ -106,13 +140,25 @@ export function CallProvider({ userId, children }: { userId: string; children: R
   const failedCallId = call.state.callId;
   const dismissFailure = useCallback(() => setDismissedErrorCallId(failedCallId), [failedCallId]);
 
-  const value = useMemo<CallContextValue>(() => ({ ...call, startCall, peerName }), [call, peerName, startCall]);
+  const value = useMemo<CallContextValue>(() => ({
+    ...call,
+    startCall,
+    peerName,
+    startGroupCall: groupCall.startGroupCall,
+    groupCallActive: Boolean(groupCall.invite),
+  }), [call, groupCall.invite, groupCall.startGroupCall, peerName, startCall]);
 
   return (
     <CallContext.Provider value={value}>
       {children}
       {call.state.phase === "ringing" && call.state.role === "callee" && (
-        <IncomingCallModal callerName={peerName} callerUserId={call.state.peerUserId ?? null} onAccept={() => void call.accept()} onReject={() => call.reject()} />
+        <IncomingCallModal
+          callerName={peerName}
+          callerUserId={call.state.peerUserId ?? null}
+          assurance={incomingAssurance}
+          onAccept={() => void call.accept()}
+          onReject={() => call.reject()}
+        />
       )}
       {["calling", "connecting", "connected"].includes(call.state.phase) && (
         <InCallOverlay
@@ -130,6 +176,31 @@ export function CallProvider({ userId, children }: { userId: string; children: R
           onHangup={() => call.hangup()}
           onToggleMic={() => call.toggleMic()}
           onToggleCamera={() => call.toggleCamera()}
+          screenShare={call.screenShareSupported
+            ? { active: call.screenSharing, start: call.startScreenShare, stop: call.stopScreenShare }
+            : undefined}
+        />
+      )}
+      {groupCall.invite && !groupCall.joined && (
+        <IncomingGroupCallModal
+          inviterName={groupNames[groupCall.invite.inviterUserId] ?? "Someone"}
+          otherNames={groupCall.invite.members
+            .filter((member) => member !== userId && member !== groupCall.invite!.inviterUserId)
+            .map((member) => groupNames[member] ?? "a group member")}
+          onJoin={() => void groupCall.joinGroupCall(groupNames)}
+          onDecline={() => groupCall.leaveGroupCall()}
+        />
+      )}
+      {groupCall.invite && groupCall.joined && (
+        <GroupCallOverlay
+          links={groupCall.links}
+          localStream={groupCall.localStream}
+          names={groupNames}
+          micEnabled={groupCall.micEnabled}
+          cameraEnabled={groupCall.cameraEnabled}
+          onToggleMic={() => groupCall.setGroupMic(!groupCall.micEnabled)}
+          onToggleCamera={() => groupCall.setGroupCamera(!groupCall.cameraEnabled)}
+          onLeave={() => groupCall.leaveGroupCall()}
         />
       )}
       {failure && <CallFailureNotice message={failure} onDismiss={dismissFailure} />}

@@ -113,7 +113,14 @@ export function checkProductionConfig(env: Env = process.env): ConfigCheck {
     warnings.push('PUBLIC_APP_URL is not set: admin password-recovery links fall back to the request Origin/Host header.')
   }
   if (!isSet(env, 'TRUSTED_CLIENT_IP_HEADER')) {
-    warnings.push('TRUSTED_CLIENT_IP_HEADER is not set: behind Cloudflare/the load balancer, per-IP rate limits key on proxy addresses. Set it to cf-connecting-ip once the origin only accepts Cloudflare traffic.')
+    warnings.push('TRUSTED_CLIENT_IP_HEADER is not set: behind Cloudflare/the load balancer, per-IP rate limits key on proxy addresses or on a client-supplied X-Forwarded-For — one caller rotating that header can fill the public scanner\'s waiting line. Set it to cf-connecting-ip once the origin only accepts Cloudflare traffic.')
+  }
+  /* The public scanner's capacity was measured up to 48 concurrent scans per
+     process (docs/deployment/02-ENVIRONMENT.md): at 48 a scan already nears
+     its 45 s engine budget, past which results degrade to inconclusive. */
+  const publicScanConcurrency = Number.parseInt(String(env.PUBLIC_SCAN_MAX_CONCURRENT ?? ''), 10)
+  if (Number.isFinite(publicScanConcurrency) && publicScanConcurrency > 48) {
+    warnings.push(`PUBLIC_SCAN_MAX_CONCURRENT=${publicScanConcurrency} is above the measured ceiling of 48 per process: scans approach their 45 s budget there and start reporting inconclusive results. Measure on the target node before raising it.`)
   }
   if (!firstSet(env, ['PAYPAL_CLIENT_ID'])) {
     warnings.push('PAYPAL_CLIENT_ID is not set: in-app subscription management actions will report billing as unavailable.')

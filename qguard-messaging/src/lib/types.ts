@@ -60,6 +60,10 @@ export interface ConversationSummary {
   unread_count: number;
   updated_at: string;
   member_user_ids: string[];
+  /** Who created the conversation; for a group, the one who manages members. */
+  owner_user_id?: string | null;
+  /** Each member's strongest role across their devices (groups, migration 042). */
+  member_roles?: Record<string, "owner" | "admin" | "member">;
   archived_at: string | null;
   hidden_at: string | null;
   deleted_at: string | null;

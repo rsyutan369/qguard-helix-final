@@ -27,7 +27,7 @@ import type {
   QuantumStatus,
 } from './types';
 import { stableHash } from './types';
-import { canonicalAlgorithmName, describeAlgorithm } from './algorithms';
+import { canonicalAlgorithmName, describeAlgorithm, migrationTargetFor } from './algorithms';
 import { postQuantumReadiness } from './exposure-truth';
 
 /* ─────────────────────────────────────────────── component qualification ── */
@@ -104,6 +104,7 @@ export function buildCbom(findings: ExposureFinding[]): CbomComponent[] {
       existing.version = existing.version ?? finding.version;
       existing.protocol = existing.protocol ?? finding.protocol;
       existing.cipherMode = existing.cipherMode ?? finding.mode_;
+      existing.migrationTarget = existing.migrationTarget ?? finding.migration?.target;
       for (const item of finding.evidence) {
         const duplicate = existing.evidence.some(
           (candidate) => candidate.file === item.file && candidate.line === item.line && candidate.ruleId === item.ruleId,
@@ -133,6 +134,7 @@ export function buildCbom(findings: ExposureFinding[]): CbomComponent[] {
       quantumStatus: finding.quantumStatus,
       layer: finding.layer,
       evidence: [...finding.evidence],
+      ...(finding.migration?.target ? { migrationTarget: finding.migration.target } : {}),
     });
   }
 
@@ -170,6 +172,34 @@ export function buildCbom(findings: ExposureFinding[]): CbomComponent[] {
     if (rank !== 0) return rank;
     return a.canonicalAlgorithm.localeCompare(b.canonicalAlgorithm);
   });
+}
+
+/**
+ * The post-quantum target for one component — ONE rule for the CBOM register,
+ * the report validation and anything else that names a replacement.
+ *
+ * The engine's own recorded target wins, because it was chosen with the role
+ * the engine OBSERVED. Only a component with none falls back to the role table.
+ */
+export function componentPqcTarget(component: CbomComponent): string | undefined {
+  if (component.migrationTarget) return component.migrationTarget;
+  const entry = describeAlgorithm(component.canonicalAlgorithm);
+  return entry ? migrationTargetFor(entry, component.usage) : undefined;
+}
+
+/**
+ * The CLASSICAL replacement for a component already broken today (MD5, SHA-1,
+ * RC4, DES …). Separate from the post-quantum target on purpose: such a
+ * component is quantum-resistant by definition, so "post-quantum target: not
+ * required" is true of it — and, printed alone, reads as "nothing to do".
+ */
+export function classicalReplacementFor(component: CbomComponent): string | undefined {
+  const entry = describeAlgorithm(component.canonicalAlgorithm);
+  if (!entry?.classicallyWeak) return undefined;
+  if (entry.family === 'legacy-hash') return 'SHA-256 or SHA3-256';
+  if (entry.family === 'legacy-symmetric') return 'AES-256-GCM';
+  if (entry.family === 'protocol') return 'TLS 1.3';
+  return undefined;
 }
 
 /* ───────────────────────────────────────────────────────────────── export ── */

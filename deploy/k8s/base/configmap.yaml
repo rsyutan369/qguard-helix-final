@@ -32,6 +32,15 @@ data:
   NODE_OPTIONS: "--max-old-space-size=1024"
   SUPABASE_MAX_SOCKETS: "16"
 
+  # Public scanner capacity (src/api-server/public-scan.ts). A scan is
+  # network-bound: ~0.25 CPU-seconds and ~1.5 MB over 20-40 s. Measured: 24 at
+  # once held every grade and used ~16% of one core; 48 neared the 45 s engine
+  # budget. Basis and trade-offs: docs/deployment/02-ENVIRONMENT.md.
+  PUBLIC_SCAN_MAX_CONCURRENT: "24"
+  PUBLIC_SCAN_MAX_QUEUE: "500"
+  PUBLIC_SCAN_MAX_ACTIVE_PER_CLIENT: "3"
+  PUBLIC_SCAN_RATE_LIMIT_PER_MINUTE: "5"
+
   # Origins — overridden per environment by the overlays
   APP_ORIGIN: "https://qguardhelix.com"
   PUBLIC_APP_ORIGIN: "https://qguardhelix.com"

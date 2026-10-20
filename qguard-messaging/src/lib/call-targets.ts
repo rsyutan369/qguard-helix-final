@@ -204,3 +204,9 @@ export function parseCallEphemeralKey(value: unknown): CallEphemeralKey | null {
   if (x25519Public.length !== 32 || mlkemPublic.length !== 1568) return null;
   return { x25519Public, mlkemPublic, signature: { ed25519, ml_dsa_65: mlDsa65 } };
 }
+
+/** One directory device as the Rust identity commands take it, or null when it lacks verifiable keys. */
+export function peerIdentityOfDevice(device: CallCandidateDevice): CallPeerIdentityPayload | null {
+  const peer = buildCallPeer([device], "");
+  return peer ? callPeerIdentityPayload(peer.userId, peer.devices[0]) : null;
+}

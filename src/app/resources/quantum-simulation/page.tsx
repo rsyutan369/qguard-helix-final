@@ -197,7 +197,7 @@ export default function QuantumSimulationPage() {
             index="04"
             eyebrow="How urgent is it"
             title="The deadline is set by your data, not by the hardware"
-            lede="Mosca's inequality is the reason waiting for certainty about quantum computers is not a strategy. If your data must stay secret for longer than the time remaining minus your migration time, the traffic on your network right now is already lost — and no action taken later recovers it."
+            lede="Mosca's inequality is the reason waiting for certainty about quantum computers is not a strategy. If your data must stay secret for longer than the time remaining minus your migration time, some of the traffic your network sends before migration finishes will become readable while it still matters — and no action taken later recovers it."
             accent={QSR.broken}
           />
           <MoscaLab defaultShelfLife={range.crypto.shelfLifeYears} />
@@ -224,7 +224,7 @@ export default function QuantumSimulationPage() {
             index="06"
             eyebrow="What replaces it"
             title="The NIST post-quantum suite, measured here"
-            lede="Three finished standards, published 13 August 2024, plus a code-based backup selected in March 2025. The parameter tables come from the FIPS documents; the timings come from your own machine, running the same audited implementation the rest of this platform uses."
+            lede="Three finished standards, published 13 August 2024, plus a code-based backup selected in March 2025. The parameter tables come from the FIPS documents; the timings come from your own machine, running the same open-source implementation the rest of this platform uses."
             accent={QSR.quantum}
           />
           <PqcSuite active={suiteVisible} />
@@ -236,7 +236,7 @@ export default function QuantumSimulationPage() {
             index="07"
             eyebrow="The published clock"
             title="Dates you will be audited against"
-            lede="NIST IR 8547 ipd deprecates 112-bit-strength public-key algorithms — RSA-2048 and finite-field DH among them — after 2030, and disallows every quantum-vulnerable public-key algorithm, at every key size, after 2035. CNSA 2.0 sets earlier exclusive-use dates for national security systems. These are the deadlines a programme plan has to work backwards from."
+            lede="NIST IR 8547 (initial public draft) proposes deprecating 112-bit-strength public-key algorithms — RSA-2048 and finite-field DH among them — after 2030, and disallowing every quantum-vulnerable public-key algorithm, at every key size, after 2035. CNSA 2.0 sets earlier exclusive-use dates for national security systems. These are the deadlines a programme plan has to work backwards from."
             accent={QSR.live}
           />
           <StandardsTimeline now={now} />
@@ -300,7 +300,7 @@ export default function QuantumSimulationPage() {
             <p>
               <strong style={{ color: QSR.inkSoft }}>Measured values</strong> are produced in your browser: the quantum
               state-vector simulation, the HKDF key schedule, and the ML-KEM, ML-DSA and SLH-DSA operations, all using the
-              audited <code>@noble/post-quantum</code> implementation. No network request is made by this page.
+              open-source <code>@noble/post-quantum</code> implementation (not yet independently audited). No network request is made by this page.
             </p>
           </div>
         </footer>

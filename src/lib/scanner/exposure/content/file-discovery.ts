@@ -365,6 +365,14 @@ export const fileDiscoveryEngine: ExposureEngine = {
 
     context.report('Corpus classified', { done: files.length, total: files.length, unit: 'files' });
 
+    /* Configuration files, certificates, IaC files and CI/CD workflows are NOT
+       published here. Each is owned by the engine that actually reads them
+       (configuration-security, certificate-material, iac-security,
+       cicd-security), and `mergeCoverage` SUMS numeric fields — so publishing
+       them from discovery as well counted every one of them twice: a corpus with
+       4 configuration files reported "Config files 8" on the panel and in every
+       exported report. The classification histogram is still on
+       `workspace.meta.fileClassification` for anything that needs it. */
     return completed(
       [],
       {
@@ -373,10 +381,6 @@ export const fileDiscoveryEngine: ExposureEngine = {
         filesSkipped: skipped,
         filesUnsupported: unsupported,
         bytesAnalyzed: bytes,
-        configFiles: byClassification.get('config') ?? 0,
-        certificates: byClassification.get('certificate') ?? 0,
-        iacFiles: byClassification.get('iac') ?? 0,
-        cicdWorkflows: byClassification.get('cicd') ?? 0,
       },
       { languages, frameworks, facets: [...facets], classification: Object.fromEntries(byClassification) },
     );

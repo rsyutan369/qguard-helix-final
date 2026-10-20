@@ -18,9 +18,15 @@ export interface MessageEnvelopeIdentity {
   counter: number;
 }
 
-/** Prefix + field count of the AAD written by `message_crypto::message_aad`. */
+/**
+ * Prefix + field count of the AAD written by `message_crypto::message_aad`
+ * (one-shot envelopes), and by `message_aad_v2` (ratchet envelopes): the same
+ * fields under `QGM2`, plus the SHA3-256 digest of the ratchet header.
+ */
 const AAD_PREFIX = "QGM1";
 const AAD_FIELDS = 8;
+const AAD_V2_PREFIX = "QGM2";
+const AAD_V2_FIELDS = 9;
 
 /**
  * Recover the sender's own identity fields from a message's AAD.
@@ -65,7 +71,9 @@ export function parseMessageAad(aad: unknown): MessageEnvelopeIdentity | null {
   const parts = text.split("|");
   // Exact field count, not "at least": a short read would silently shift every
   // field one position left and produce a confidently wrong identity.
-  if (parts.length !== AAD_FIELDS || parts[0] !== AAD_PREFIX) return null;
+  const v1 = parts.length === AAD_FIELDS && parts[0] === AAD_PREFIX;
+  const v2 = parts.length === AAD_V2_FIELDS && parts[0] === AAD_V2_PREFIX && /^[0-9a-f]{64}$/.test(parts[8]);
+  if (!v1 && !v2) return null;
 
   const counter = Number(parts[7]);
   if (!Number.isInteger(counter) || counter < 0) return null;

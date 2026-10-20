@@ -83,6 +83,15 @@ beats a truncated arbitrary one.
 - Keep animation off the critical path of correctness — a visualization must
   never be the source of a number.
 
+## Anonymous capacity (the public scanner)
+
+`src/api-server/public-scan-queue.ts` is the reference for any capped, anonymous,
+long-running endpoint: concurrency cap + bounded FIFO line with positions, ONE job
+per target shared by every viewer, cache before every gate, and a job stopped once
+its last viewer has gone. A public scan is network-bound (~0.25 CPU-s, ~1.5 MB). The
+ceiling is the 45 s engine budget, reached near 48 concurrent per process; production
+runs 24 (`PUBLIC_SCAN_MAX_CONCURRENT`). See `docs/deployment/02-ENVIRONMENT.md`.
+
 ## Long-running work
 
 Anything that can exceed a request belongs in a job with lease, backoff,

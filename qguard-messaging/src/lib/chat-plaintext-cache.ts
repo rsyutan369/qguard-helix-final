@@ -8,8 +8,11 @@
  * Security model: plaintext lives only in JS memory of the running app (the
  * same exposure as the previous per-mount refs, just longer-lived). It is
  * wiped when the chat workspace locks, on logout, and whenever the owning
- * user/device changes.
+ * user/device changes. Decrypted group names (group-chat.ts) go with them.
  */
+
+import { forgetAssistantOutputs } from "@/lib/ai-assistant";
+import { forgetGroupNames } from "@/lib/group-chat";
 
 const messageCache = new Map<string, unknown>();
 const controlCache = new Map<string, unknown>();
@@ -88,6 +91,8 @@ export function ensureChatCacheOwner(userId: string, deviceId: string | null): v
     messageCache.clear();
     controlCache.clear();
     historySnapshots.clear();
+    forgetGroupNames();
+    forgetAssistantOutputs();
     ownerUserId = userId;
     ownerDeviceId = deviceId;
     return;
@@ -100,6 +105,8 @@ export function ensureChatCacheOwner(userId: string, deviceId: string | null): v
   messageCache.clear();
   controlCache.clear();
   historySnapshots.clear();
+  forgetGroupNames();
+  forgetAssistantOutputs();
   ownerDeviceId = deviceId;
 }
 
@@ -108,6 +115,8 @@ export function clearChatPlaintextCaches(): void {
   messageCache.clear();
   controlCache.clear();
   historySnapshots.clear();
+  forgetGroupNames();
+  forgetAssistantOutputs();
   ownerUserId = null;
   ownerDeviceId = null;
 }

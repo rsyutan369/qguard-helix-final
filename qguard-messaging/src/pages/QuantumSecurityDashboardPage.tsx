@@ -18,7 +18,7 @@ import type { LucideIcon } from "lucide-react";
 import type { CSSProperties } from "react";
 import { useMemo, useState } from "react";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
-import { isAdminEmail } from "@/lib/admin";
+import { useIsAdmin } from "@/lib/admin";
 import { ONE_TIME_PREKEY_MIN, SIGNED_PREKEY_MIN } from "@/lib/security-score";
 import { summarizeContactDeviceProtection } from "@/lib/pq-status";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
@@ -203,7 +203,7 @@ export default function QuantumSecurityDashboardPage({ userId, data, liveEvents,
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<StatusState>(null);
   const { report, hardening, devices, keyInventory, telemetry, securityEvents, vaultFiles } = data;
-  const isAdmin = isAdminEmail(data.profile?.email);
+  const isAdmin = useIsAdmin();
   const hardeningChecks = hardening.checks;
   const activeCount = hardeningChecks.filter((check) => check.status === "active").length;
   const totalCount = hardeningChecks.length;

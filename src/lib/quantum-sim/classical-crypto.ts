@@ -167,7 +167,7 @@ export const CLASSICAL_PRIMITIVES: ClassicalPrimitive[] = [
   },
   {
     id: 'dh-2048',
-    name: 'Finite-field DH / DSA 2048',
+    name: 'Finite-field DH 2048',
     role: 'key-exchange',
     classicalBits: 112,
     quantumBits: 0,
@@ -192,7 +192,7 @@ export const CLASSICAL_PRIMITIVES: ClassicalPrimitive[] = [
     target: 'the symmetric key, by exhaustive search',
     mechanism:
       "Grover's search finds a 128-bit key in about 2^64 quantum evaluations of AES. That number is nominal: the search is inherently sequential, so it cannot be spread across machines the way a classical key search can.",
-    replacement: 'AES-256 (already approved; no new algorithm is required)',
+    replacement: 'None required by NIST — AES-128 remains approved. Use AES-256 where CNSA 2.0 applies or for long-lived data',
     transition: { deprecatedAfter: null, disallowedAfter: null },
     citation: 'grover1996',
   },
@@ -235,7 +235,7 @@ export const CLASSICAL_PRIMITIVES: ClassicalPrimitive[] = [
     attack: 'none',
     verdict: 'safe',
     target: 'a collision',
-    mechanism: 'Same position as SHA-256. SHA-3 is also the sponge FIPS 203/204/205 build their sampling and hashing on.',
+    mechanism: 'Same position as SHA-256. SHA-3/SHAKE is also what FIPS 203 and FIPS 204 build their sampling and hashing on, as do the SHAKE parameter sets of FIPS 205.',
     replacement: 'None',
     transition: { deprecatedAfter: null, disallowedAfter: null },
     citation: 'grover1996',
@@ -269,7 +269,7 @@ export const GROVER_REALITY = {
   headline: 'Grover does not parallelise.',
   detail:
     'Splitting a Grover search across m quantum computers yields only a sqrt(m) speed-up, against the linear speed-up a classical key search enjoys. NIST therefore bounds attacks by a maximum circuit depth (MAXDEPTH) of 2^40 to 2^96 gates. Under that bound, even AES-128 is not practically searchable, and AES-256 is far outside reach.',
-  practicalGuidance: 'Move symmetric keys to 256 bits and hashes to 384 bits or more. Do not replace the algorithms.',
+  practicalGuidance: 'NIST continues to approve AES-128/192/256 and SHA-2/SHA-3, so no algorithm replacement is needed. CNSA 2.0 systems, and data that must stay secret for decades, should use AES-256 and SHA-384/SHA-512.',
 } as const;
 
 export function primitive(id: string): ClassicalPrimitive | undefined {

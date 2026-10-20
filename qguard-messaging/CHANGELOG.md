@@ -10,6 +10,8 @@ auto-update.
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-10-20
+
 ### Added
 
 - **Conversation protection badge.** The chat header now says what can actually
@@ -23,9 +25,144 @@ auto-update.
   contacts' trusted devices get the strongest hybrid form, the earlier key
   combiner, or cannot receive at all (pre-FIPS 203 keys). The same counts are in
   the exported security report (`contact_device_protection`).
+- **Post-quantum session ratchet (opt-in, not yet independently reviewed).**
+  Settings → Advanced → *Per-message ratchet*. With it on, and with contacts
+  whose app has it on too, every message gets its own key (deleted once used),
+  a stolen device key stops working after the next reply, and a fresh
+  ML-KEM-1024 exchange is mixed in at least every 50 messages or 24 hours.
+  Sessions start from the same hybrid X25519 + ML-KEM-1024 encapsulation as
+  today's messages, are encrypted at rest, and survive restarts. A message on a
+  session this device no longer holds is explained as such and repaired
+  automatically for the messages that follow. Devices that do not support it
+  keep receiving one-shot sealed messages, which this build still sends by
+  default — so the 1.3.11 note below ("This is not a per-message ratchet")
+  still describes the default. The badge says which mode each device is in.
+  `QGUARD_RATCHET=0` turns it off for a whole install. Device Trust Center and
+  Settings can reset secure sessions. Migration
+  `036_ratchet_envelope_header.sql` tightens the envelope insert rule (the app
+  works without it).
+
+- **Verify a contact, then prove it's them on a call.** The new *Verify* button
+  in a chat shows each of the contact's devices with a safety number computed
+  from both devices' keys; once you have compared it with them and marked it
+  verified, your two apps pair automatically (a post-quantum, signed exchange
+  over the encrypted chat). During a call, *Ask for their phrase* shows four
+  words that only your two devices can produce for that call — ask them to
+  read theirs, compare with yours, or type what they say to have it checked.
+  Nothing is sent, so nothing can be copied, and a phrase from another call is
+  useless. It proves they hold the device you verified — not who is holding
+  it, and not whether a voice is real; the screens say so.
+- **The call screen says whether you have verified the person**, not just
+  their device: a registered but unverified contact now gets a warning that a
+  cloned voice proves nothing. An incoming call from a device you never
+  approved for that person shows a red warning and needs a second tap to
+  answer.
+
+- **Settings → Device privacy.** *Erase this device* (every platform) destroys
+  this device's keys for your account — messages, the Quantum Vault key, secure
+  sessions, the app PIN — revokes the device on the relay (best effort) and
+  signs you out; type ERASE to confirm. On Android: *Hide in Recent apps* (on by
+  default; Android 13+ shows a blank card, older versions draw a cover —
+  screenshots still work, per the product decision), *Unlock with fingerprint
+  or face* (an Android Keystore key that only a strong-biometric prompt can
+  use; a new fingerprint turns it off), and a *Duress PIN* — entered at the
+  lock screen it erases this device's keys and shows the sign-in screen as if
+  the session had expired.
+
+- **Settings → Recovery.** *Message history backup*: saves the keys to your
+  history (not the messages) in a `.qgbackup` file only your recovery key opens;
+  restored on a new device, the history still on the relay becomes readable
+  again. *Recover your recovery key with help from contacts*: choose verified
+  contacts as helpers and how many are needed; together with a PIN only you
+  know they can get your recovery key back if you lose every device. Helpers
+  release their part only after comparing four words with you by phone or in
+  person. No helper, and not the server, ever sees the key. Needs migration
+  `038_social_recovery.sql`.
+- **Group chats.** *Group* next to *New Chat* creates an end-to-end-encrypted
+  group from two to 31 of your contacts. Every message is sealed separately to
+  each member's devices — the same hybrid X25519 + ML-KEM-1024 encryption,
+  dual signatures and device checks as a direct chat — so there is no shared
+  group key, and removing someone needs no re-keying. The group's name is sent
+  encrypted; the server never sees it. The owner adds and removes people;
+  anyone else can leave. Messages show who sent them, and *Verify* labels each
+  device with its owner. Calls stay one-to-one. Needs migration
+  `040_group_membership_integrity.sql`.
+- **Screen sharing in calls (desktop).** Share your screen during a video call;
+  it replaces your camera picture and goes through the same per-frame
+  AES-256-GCM encryption. Video only — computer sound is never shared. Not
+  available on Android yet.
+- **Group admins and ownership.** A group owner can appoint up to 3 admins (who
+  add and remove members) and hand the group to someone else. Only the owner
+  can rename a group, and a name counts only if whoever owned the group at the
+  time sent it. Someone added later asks the owner's devices for the name.
+  Needs migration `042_group_admins_and_ownership.sql`.
+- **Group video calls (up to 3 people).** Start one from a three-person group.
+  Each pair of people gets its own separately encrypted link (hybrid
+  X25519 + ML-KEM-1024 per link); joining asks once, then the other links connect
+  by themselves.
+- **Channels.** You post; readers read. Posts are encrypted once with a channel
+  key that only readers' devices hold, signed by your device, and readers do
+  not see who else reads. When someone leaves, the next post uses a new key
+  they never get. Invite people with codes that can expire, be used a set
+  number of times, or be revoked. Needs migration `043_channels.sql`.
+- **AI assistant (opt-in, uses your own API key).** *Catch me up*, *Suggest
+  replies* and *Translate*, with Anthropic Claude (Sonnet 5.5) or OpenAI. Off by
+  default; you allow it per conversation; it runs only when you press a button.
+  **The messages it reads are sent to that provider and leave end-to-end
+  encryption** — the app says so before you turn it on. Disappearing and
+  one-time messages and attachments are never sent; suggestions are never sent
+  for you. Your key is stored encrypted on the device.
+- **Messages wait for the relay instead of failing.** If the relay can't be
+  reached, a message you send is kept sealed on this device and goes out by
+  itself when the relay is back ("Waiting to send"). Disappearing messages
+  that expire meanwhile are never sent.
+- **Nearby delivery (Android, opt-in).** While the relay is unreachable, waiting
+  messages can go straight to QGuard phones in Bluetooth/Wi-Fi range, through
+  Google Play services. They stay end-to-end encrypted.
+- **Your messenger devices in QGuard Helix.** With the same login, Helix's
+  Collector console can import the algorithms each of your messenger devices
+  publishes; older devices with pre-standard keys show as not quantum-safe.
+- **The app says why messages aren't moving.** When the relay can't be reached
+  a banner tells you whether you're offline, the service is failing, or the
+  relay is unreachable even though your internet works (down, or blocked on
+  this network) — from real checks, never a guess, and on Android it says when
+  it can't tell. It rechecks by itself and disappears when the relay is back.
+
+### Security
+
+- **Group roles can no longer be chosen by whoever writes the row** (migration
+  `042`). A member adding their own second device could have labelled it an
+  admin; roles are now set by the database from the group itself, and
+  ownership changes only through the transfer function.
+- **Nobody can add themselves to a conversation any more** (migration
+  `040_group_membership_integrity.sql`). The original database rules let any
+  signed-in account that knew a conversation's id insert itself as a member,
+  and let a removed member reinstate itself; senders seal to every member, so
+  that was a silent extra recipient. Now only the owner adds people (and only
+  their contacts), each device must belong to the person it is added for, and
+  members cannot edit their own membership.
 
 ### Changed
 
+- **SHA-3 replaces the last SHA-256 uses** (roadmap 4.4): new MFA recovery
+  codes are stored as SHA3-256 (migration `037_mfa_recovery_codes_sha3.sql`;
+  the app keeps writing SHA-256 until the server reports it can check SHA-3,
+  and existing codes keep working); attachment checksums are SHA3-256 (SHA-256
+  is still written alongside for older builds); the archived/hidden chats
+  privacy screen now uses Argon2id + SHA3-256 in the core instead of
+  PBKDF2-SHA-256, upgrading a stored verifier on the next successful unlock.
+- **Contact search no longer reveals other people's email addresses.** It used
+  to match (and show) the start of anyone's email; an email now matches only
+  when typed in full. Searches need 3 characters and are limited to 60 per 5
+  minutes per account, so the directory cannot be listed. Migration
+  `039_directory_search_hardening.sql`.
+- **Who sees the internal panels is now a server-side role** (migration
+  `041_app_roles.sql`), no longer an email address compiled into the app. The
+  previous administrator is carried over by the migration; more can be granted
+  without a release. The panels still only ever show your own data.
+- `package.json` now carries the real app version (was 0.1.0), and
+  `tools/release.ps1` keeps it in step. Android app-lock device registrations
+  record the real app version (they recorded "0.0.0").
 - The chat header no longer shows a fixed, always-green "E2EE active - X25519 +
   ML-KEM-1024 - AES-256-GCM" line regardless of evidence; the badge replaces it.
 
