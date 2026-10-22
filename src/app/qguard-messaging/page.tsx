@@ -1,7 +1,9 @@
 /**
  * QGuard Messaging — Overview (/qguard-messaging)
- * Showcases the combined application: Secure Chat + Quantum Vault.
- * Light theme matching the QGuard Helix homepage.
+ * Showcases the combined application: Secure Chat + Quantum Vault, and what is
+ * new in 1.3.8 → 1.5.x. Every capability shown is taken from
+ * qguard-messaging/CHANGELOG.md and the feature roadmap; opt-in, platform-limited
+ * and unreviewed features are tagged as such.
  */
 import { Link } from 'react-router-dom';
 import { motion } from 'motion/react';
@@ -35,18 +37,39 @@ import {
   InstallerIntegrity,
   type Feature,
 } from './_shared';
+import { Aurora, Marquee, StageFrame, Tilt3D } from './_motion';
+import { HeroLinkScene } from './_scenes-hero';
+import { Block, FeatureAtlas, NextUp, NumbersStrip, PlatformMatrix, ReleaseRail, StraightTalk } from './_catalog';
+import { MessengerComparison } from './_comparison';
 
 const TRUST = ['NIST FIPS 203', 'FIPS 204', 'End-to-End Encrypted', 'Zero-Knowledge', 'Hybrid Post-Quantum'];
 
+const TICKER = [
+  'Protection badge with evidence',
+  'Verify contacts · call phrase',
+  'Post-quantum session ratchet (opt-in)',
+  'Groups up to 32 · large groups up to 1,000',
+  'Mobile-number sign-in · QR device linking',
+  'Block & Restrict, enforced by the server',
+  'Group video calls',
+  'Channels',
+  'Social recovery',
+  'Encrypted history backup',
+  'Duress PIN · panic wipe',
+  'Offline & nearby delivery',
+  'PIN-bound vault containers',
+  'Helix posture import',
+];
+
 const COMBINED_FEATURES: Feature[] = [
-  { icon: ShieldCheck, title: 'Post-Quantum by Default', body: 'Every message, call, and file is secured with ML-KEM-1024 and ML-DSA — the NIST-standardized algorithms built to withstand quantum computers.' },
-  { icon: Layers, title: 'Hybrid Encryption', body: 'Classical and post-quantum combined. An attacker would have to break both — safe even from "harvest now, decrypt later".' },
-  { icon: Lock, title: 'True End-to-End', body: 'Encrypted on your device, decrypted only on the other end. The server only ever sees ciphertext.' },
-  { icon: EyeOff, title: 'Zero-Knowledge', body: 'We store ciphertext and public keys — never your private keys, plaintext, or recovery secrets.' },
-  { icon: Phone, title: 'Quantum-Encrypted Calls', body: '1:1 voice and video with per-frame encryption and a fresh post-quantum key for every call.' },
-  { icon: KeyRound, title: 'Forward Secrecy', body: 'A fresh key for every message and file. Compromising one key never exposes the rest.' },
-  { icon: Server, title: 'On-Device Vault', body: 'The Quantum Vault encrypts files and folders entirely on your device — nothing is ever uploaded.' },
-  { icon: Cpu, title: 'Native Crypto Core', body: 'Core cryptography runs natively in Rust on-device, not in browser JavaScript.' },
+  { icon: ShieldCheck, title: 'Post-Quantum by Default', body: 'Every message, call and chat file is secured with ML-KEM-1024 and ML-DSA; vault containers are signed with ML-DSA-87 under AES-256 keys — NIST-standardized algorithms built to withstand quantum computers.' },
+  { icon: Layers, title: 'Hybrid Encryption', body: 'Classical and post-quantum combined, bound to the transcript. An attacker would have to break both — built to resist "harvest now, decrypt later".' },
+  { icon: Lock, title: 'True End-to-End', body: 'Encrypted on your device, decrypted only on the other end. The server stores ciphertext and the routing metadata it needs to deliver it — never your content.' },
+  { icon: EyeOff, title: 'Zero-Knowledge', body: 'We store ciphertext, public keys and minimal routing metadata — never your private keys, plaintext, or recovery secrets. No message escrow exists for organisations either.' },
+  { icon: Phone, title: 'Post-Quantum Encrypted Calls', body: '1:1 and three-person calls with per-frame encryption, a fresh post-quantum key per link, an authenticated caller and a verifiable call phrase.' },
+  { icon: KeyRound, title: 'Forward Secrecy You Can Inspect', body: 'Prekeys rotate and retire by default; an opt-in ratchet gives every message its own key. The app tells you which one is protecting each device.' },
+  { icon: Server, title: 'On-Device Vault', body: 'The Quantum Vault encrypts files and folders entirely on your device — PIN-bound containers, nothing ever uploaded.' },
+  { icon: Cpu, title: 'Native Crypto Core', body: 'Core cryptography runs natively in Rust on-device, and a start-up self-test measures it rather than assuming it.' },
 ];
 
 function ProductSpotlight({
@@ -90,14 +113,17 @@ function ProductSpotlight({
           </div>
         </div>
         <div className={reverse ? 'lg:order-1' : ''}>
-          <motion.div
-            whileHover={{ scale: 1.02 }}
-            transition={{ duration: 0.4 }}
-            className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-950 shadow-[0_24px_70px_rgba(2,6,23,0.25)]"
-          >
-            <div className="absolute inset-x-0 top-0 z-10 h-[3px] bg-gradient-to-r from-cyan-400 via-gold to-violet-500" />
-            <img src={image} alt={title} className="h-full max-h-[320px] w-full object-cover opacity-95" />
-          </motion.div>
+          <Tilt3D max={6}>
+            <motion.div
+              whileHover={{ scale: 1.02 }}
+              transition={{ duration: 0.4 }}
+              className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-950 shadow-[0_24px_70px_rgba(2,6,23,0.25)]"
+              style={{ transform: 'translateZ(30px)' }}
+            >
+              <div className="absolute inset-x-0 top-0 z-10 h-[3px] bg-gradient-to-r from-cyan-400 via-gold to-violet-500" />
+              <img src={image} alt={title} className="h-full max-h-[320px] w-full object-cover opacity-95" />
+            </motion.div>
+          </Tilt3D>
         </div>
       </GlassCard>
     </Reveal>
@@ -109,14 +135,18 @@ export default function QguardMessagingOverview() {
     <MessagingLayout>
       {/* Hero */}
       <section className="relative px-6 pb-16 pt-28 sm:pt-32">
-        <div className="mx-auto grid max-w-[88rem] items-center gap-12 lg:grid-cols-[1.1fr_0.9fr]">
+        <Aurora />
+        <div className="mx-auto grid max-w-[88rem] items-center gap-12 grid-cols-[minmax(0,1fr)] lg:grid-cols-2">
           <Reveal>
             <Kicker>QGuard Messaging</Kicker>
             <h1 className="mt-5 text-4xl font-black leading-[1.05] tracking-tight text-slate-900 sm:text-6xl">
               One app.<br />Quantum-safe <Highlight>chat</Highlight> &amp; <Highlight>vault</Highlight>.
             </h1>
             <p className="mt-5 max-w-xl text-base leading-relaxed text-slate-600 sm:text-lg">
-              QGuard Messaging combines end-to-end encrypted Secure Chat and a strictly on-device Quantum Vault — protected by NIST post-quantum cryptography. Your conversations and files stay private, even from us.
+              End-to-end encrypted chat, groups, channels and calls, plus a strictly on-device Quantum Vault — protected by NIST post-quantum cryptography. Now with protection you can see, contacts you can verify, and recovery that does not depend on us.
+            </p>
+            <p className="mt-4 max-w-xl border-l-2 border-gold pl-4 text-sm leading-relaxed text-slate-700 sm:text-base">
+              QGuard Messaging protects your chats, voice and video calls, files and vault with post-quantum encryption by default. It uses NIST-standardized ML-KEM and ML-DSA, so what you send today stays protected against tomorrow's quantum computers. For Windows and Android.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <DownloadButton />
@@ -129,37 +159,26 @@ export default function QguardMessagingOverview() {
             </div>
           </Reveal>
 
-          {/* Dark contrast panel (matches the homepage hero card) */}
           <Reveal delay={0.15}>
-            <div className="relative overflow-hidden rounded-2xl border-2 border-slate-900 bg-[#040810] p-6 text-white shadow-[0_30px_90px_rgba(2,6,23,0.35)]">
-              <div className="absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-cyan-400 via-gold to-violet-500" />
-              <div className="flex items-center justify-between">
-                <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-slate-400">QGUARD_MESSAGING // SECURE</span>
-                <span className="inline-flex items-center gap-1.5 font-mono text-[10px] font-bold text-emerald-400">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" /> E2EE ACTIVE
-                </span>
-              </div>
-              <div className="mt-6 grid grid-cols-2 gap-3">
-                {[
-                  { icon: MessageSquareLock, label: 'Secure Chat', value: 'ML-KEM-1024' },
-                  { icon: Lock, label: 'Quantum Vault', value: 'AES-256-GCM' },
-                  { icon: Phone, label: 'Calls', value: 'Per-frame E2EE' },
-                  { icon: KeyRound, label: 'Signatures', value: 'ML-DSA + Ed25519' },
-                ].map((item) => (
-                  <div key={item.label} className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
-                    <item.icon className="h-5 w-5 text-cyan-300" />
-                    <div className="mt-2 font-mono text-[10px] uppercase tracking-widest text-slate-400">{item.label}</div>
-                    <div className="font-mono text-xs font-bold text-white">{item.value}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-5 flex items-center justify-between rounded-xl border border-gold/30 bg-gold/[0.06] px-4 py-3">
-                <span className="font-mono text-[10px] uppercase tracking-widest text-gold">Zero-Knowledge Relay</span>
-                <ShieldCheck className="h-4 w-4 text-gold" />
-              </div>
-            </div>
+            <StageFrame
+              title="QGUARD_MESSAGING // SECURE"
+              bodyClassName="!px-2 !py-2"
+              note={
+                <>
+                  <span className="inline-flex items-center gap-2"><span className="qm-live-dot" aria-hidden />Relay holds ciphertext, public keys and routing metadata — never plaintext or private keys.</span>
+                  <span>Move your pointer over the scene.</span>
+                </>
+              }
+            >
+              <HeroLinkScene />
+            </StageFrame>
           </Reveal>
         </div>
+      </section>
+
+      {/* Capability ticker */}
+      <section className="relative py-6" aria-label="What is in the app">
+        <Marquee items={TICKER} />
       </section>
 
       {/* Two product spotlights */}
@@ -168,13 +187,13 @@ export default function QguardMessagingOverview() {
           to="/qguard-messaging/secure-chat"
           eyebrow="Secure Chat"
           icon={MessageSquareLock}
-          title="Conversations the quantum era can't crack"
-          blurb="End-to-end encrypted messages, voice & video calls, and file sharing — with disappearing messages, multi-device trust, and one-tap call verification."
+          title="Conversations built for the quantum era"
+          blurb="End-to-end encrypted messages, groups, channels, voice & video calls and files — with a protection badge that shows its evidence, contacts you can verify, and recovery you control."
           bullets={[
-            'Post-quantum, per-message key agreement with forward secrecy',
-            'Encrypted attachments, voice notes, and quantum-safe calls',
-            'Disappearing, view-once, read-once & time-locked messages',
-            'Device approval by QR, revocation, and key-change alerts',
+            'Hybrid ML-KEM-1024 sealing on every message, with an opt-in per-message ratchet',
+            'Verify a contact, then prove it is them on a call with a four-word phrase',
+            'Groups up to 32, large groups and channels up to 1,000, three-person video calls, screen sharing on desktop',
+            'Duress PIN, panic wipe, social recovery and offline delivery when the relay is down',
           ]}
           image="/Secure_communication.png"
         />
@@ -185,22 +204,56 @@ export default function QguardMessagingOverview() {
           title="Your files, sealed for the quantum age"
           blurb="Encrypt any file or folder on your device into a sealed, tamper-evident container. Strictly local and zero-knowledge — your data never leaves your machine."
           bullets={[
-            'On-device AES-256-GCM with post-quantum key protection',
-            'Tamper- and truncation-proof, any file or folder size',
-            'Quantum-safe offline recovery key for new devices',
-            'Enterprise & hybrid dual-control recovery for teams',
+            'PIN-bound .qvault v5: the vault lock is enforced by the cryptography',
+            'Tamper-evident: any change, reorder or truncation is detected and refused, at any file or folder size',
+            'Share to a person with a Portable Hybrid Identity — never your device key',
+            'Quantum-safe offline recovery, with enterprise dual-control for teams',
           ]}
           image="/helix-features/QuantumVault3.png"
           reverse
         />
       </section>
 
+      {/* Numbers */}
+      <Block
+        kicker="By design"
+        title={<>Limits you can <Highlight>plan around</Highlight></>}
+        subtitle="Numbers that come straight from the implementation, so what you read here is what the app enforces."
+      >
+        <NumbersStrip />
+      </Block>
+
+      {/* Comparison */}
+      <Block
+        kicker="How it compares"
+        title={<>Post-quantum where others are <Highlight>still classical</Highlight></>}
+        subtitle="QGuard Messaging next to Signal, WhatsApp and Telegram — feature by feature, from public documentation. Where others lead today, we say so."
+      >
+        <Reveal><MessengerComparison /></Reveal>
+      </Block>
+
+      {/* Feature atlas */}
+      <section className="relative mx-auto max-w-[88rem] px-6 py-16">
+        <Aurora />
+        <SectionHeading
+          kicker="Feature atlas"
+          title={<>Everything that is <Highlight>new</Highlight>, in one place</>}
+          subtitle="Filter by what you care about. Each card says when it arrived and whether it is on by default, opt-in, platform-specific or needs setup."
+        />
+        <FeatureAtlas />
+      </section>
+
+      {/* Release rail */}
+      <Block kicker="What shipped" title={<>From authenticated messages to <Highlight>provable protection</Highlight></>} subtitle="The security releases, the 1.4 line and 1.5, in order.">
+        <ReleaseRail />
+      </Block>
+
       {/* Combined features */}
       <section className="mx-auto max-w-[88rem] px-6 py-16">
         <SectionHeading
           kicker="Why QGuard Messaging"
           title={<>Enterprise-grade, <Highlight>quantum-safe</Highlight> by design</>}
-          subtitle="Both products share the same hardened cryptographic foundation — verified against NIST standards."
+          subtitle="Both products share the same hardened cryptographic foundation — built on NIST standards and self-tested every time the app starts."
         />
         <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
           {COMBINED_FEATURES.map((f, i) => (
@@ -216,15 +269,29 @@ export default function QguardMessagingOverview() {
           <Reveal><AlgoSuiteTable /></Reveal>
         </div>
         <p className="mx-auto mt-4 max-w-2xl text-center text-xs leading-relaxed text-slate-500">
-          ML-KEM is used for key encapsulation only — it protects the keys that protect your data. AES-256-GCM encrypts the content.
+          ML-KEM is used for key encapsulation only — it protects the keys that protect your data. AES-256-GCM encrypts the content. Auto-updates are signed with Ed25519 (minisign) because the updater has no post-quantum option.
         </p>
       </section>
+
+      {/* Platforms + next */}
+      <Block narrow kicker="Where it runs" title="What runs where" subtitle="We list what is not there yet, too.">
+        <Reveal><PlatformMatrix /></Reveal>
+        <div className="mt-10">
+          <h3 className="mb-4 text-center font-mono text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">On the roadmap — not available yet</h3>
+          <NextUp />
+        </div>
+      </Block>
+
+      {/* Straight talk */}
+      <Block narrow kicker="Straight talk" title={<>What we <Highlight>don't</Highlight> claim</>} subtitle="A security product should tell you where its guarantees stop.">
+        <Reveal><StraightTalk /></Reveal>
+      </Block>
 
       {/* Quick links band */}
       <section className="mx-auto max-w-[88rem] px-6 py-8">
         <div className="grid gap-5 sm:grid-cols-2">
           {[
-            { to: '/qguard-messaging/secure-chat', icon: MessageSquareLock, title: 'Secure Chat', body: 'Messaging, calls & files — quantum-safe and end-to-end encrypted.' },
+            { to: '/qguard-messaging/secure-chat', icon: MessageSquareLock, title: 'Secure Chat', body: 'Messaging, groups, calls & recovery — quantum-safe and end-to-end encrypted.' },
             { to: '/qguard-messaging/quantum-vault', icon: Lock, title: 'Quantum Vault', body: 'On-device, zero-knowledge file encryption with quantum-safe recovery.' },
           ].map((c, i) => (
             <Reveal key={c.to} delay={i * 0.08}>
@@ -249,7 +316,7 @@ export default function QguardMessagingOverview() {
 
       <CTASection
         title="Private by default. Quantum-safe by design."
-        body="Start using QGuard Messaging — end-to-end encrypted chat and an on-device quantum vault, with nothing for us to read or leak."
+        body="Start using QGuard Messaging — end-to-end encrypted chat and an on-device quantum vault, with no message content for us to read or leak."
         primary={{ label: 'Launch the App', href: '/login' }}
         secondary={{ label: 'View Quantum Vault', to: '/qguard-messaging/quantum-vault' }}
       />

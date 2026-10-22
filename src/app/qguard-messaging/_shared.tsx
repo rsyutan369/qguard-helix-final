@@ -32,6 +32,7 @@ import { CyberBackground } from '../../components/CyberBackground';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/auth-context';
 import { useSubscription } from '@/hooks/use-subscription';
+import { ScrollProgress } from './_motion';
 
 /* ---------------------------------------------------------------- motion ---- */
 
@@ -157,8 +158,8 @@ export const MESSAGING_INSTALLER = {
    * print "Get-FileHash windows" in the verification command below.
    */
   fileName: 'QGuard-Messaging-Setup.exe',
-  version: '1.3.10',
-  sizeMb: 6,
+  version: '1.5.0',
+  sizeMb: 8,
   requirements: 'Windows 10/11 · 64-bit',
   /**
    * SHA-256 of the exact file served from `href`, shown to users so they can
@@ -169,7 +170,7 @@ export const MESSAGING_INSTALLER = {
    * an honest user their legitimate download was tampered with, which is worse
    * than publishing no hash at all.
    */
-  sha256: 'CD798E899262A8DAE2ED6256EB392AD3214BD9118F999C5F3D2A5117A0B9DE82',
+  sha256: 'D153787B0153EF5180ADE9B1121E4CE486A311183D3FF5A8A755FE2CAE1EC64E',
 };
 
 /**
@@ -758,15 +759,17 @@ export const StepCard: React.FC<{ index: number; title: string; body: string }> 
 
 export const ALGO_SUITE: Array<{ purpose: string; algo: string; standard: string }> = [
   { purpose: 'Key encapsulation (hybrid)', algo: 'ML-KEM-1024 + X25519', standard: 'NIST FIPS 203' },
-  { purpose: 'Digital signatures (dual)', algo: 'ML-DSA + Ed25519', standard: 'NIST FIPS 204' },
-  { purpose: 'Symmetric / AEAD', algo: 'AES-256-GCM', standard: 'FIPS 197' },
-  { purpose: 'Key derivation / hashing', algo: 'HKDF-SHA3-256', standard: 'FIPS 202' },
+  { purpose: 'Digital signatures (dual)', algo: 'ML-DSA-65 (chat) · ML-DSA-87 (vault) + Ed25519', standard: 'NIST FIPS 204' },
+  { purpose: 'Symmetric / AEAD', algo: 'AES-256-GCM', standard: 'FIPS 197 · SP 800-38D' },
+  { purpose: 'Key derivation / hashing', algo: 'HKDF-SHA3-256', standard: 'RFC 5869 · FIPS 202' },
+  { purpose: 'Ratchet chain (opt-in)', algo: 'HMAC-SHA3-256', standard: 'FIPS 198-1 · 202' },
+  { purpose: 'Lock & password derivation', algo: 'Argon2id → HKDF-SHA3-256', standard: 'RFC 9106' },
 ];
 
 export function AlgoSuiteTable() {
   return (
     <GlassCard className="overflow-hidden" hover={false}>
-      <div className="grid grid-cols-1 divide-y divide-slate-200 sm:grid-cols-2 sm:divide-x lg:grid-cols-4 lg:divide-y-0">
+      <div className="grid grid-cols-1 divide-y divide-slate-200 sm:grid-cols-2 sm:divide-x lg:grid-cols-3 lg:divide-y-0 [&>*]:border-slate-200 lg:[&>*:nth-child(n+4)]:border-t">
         {ALGO_SUITE.map((row) => (
           <div key={row.purpose} className="p-5">
             <div className="font-mono text-[10px] font-bold uppercase tracking-widest text-slate-500">{row.purpose}</div>
@@ -940,6 +943,7 @@ export function MessagingLayout({ children }: { children: React.ReactNode }) {
         }}
       />
       <CyberBackground variant="light" />
+      <ScrollProgress />
       <MessagingNav />
       <main className="relative z-10">{children}</main>
       <MessagingFooter />
