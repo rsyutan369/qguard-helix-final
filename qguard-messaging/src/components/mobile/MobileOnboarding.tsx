@@ -91,14 +91,10 @@ export default function MobileOnboarding({ onDone }: MobileOnboardingProps) {
       <div className="qg-stage mobile-safe-top mobile-safe-bottom fixed inset-0 z-50 flex flex-col items-center justify-center overflow-hidden px-6">
         <HelixReactor variant="mark" live size={250}>
           <div
-            className="flex h-[92px] w-[92px] items-center justify-center rounded-[26px] p-3.5"
-            style={{
-              background: "var(--qg-panel)",
-              border: "1px solid var(--qg-hairline)",
-              boxShadow: "var(--qg-glow)",
-            }}
+            className="flex h-[92px] w-[92px] items-center justify-center rounded-full"
+            style={{ boxShadow: "var(--qg-glow)" }}
           >
-            <img src="/NEW_LOGO.png" alt="" className="h-full w-full object-contain" />
+            <img src="/brand/qguard-messaging-badge.webp" alt="" className="h-full w-full object-contain" />
           </div>
         </HelixReactor>
 

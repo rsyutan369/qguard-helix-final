@@ -1085,12 +1085,18 @@ export async function runTlsEngine(
     const legacy = protocols.filter((protocol) => protocol === 'TLSv1' || protocol === 'TLSv1.1')
     const supportsTls13 = protocols.includes('TLSv1.3') || handshake.tlsVersion === 'TLSv1.3'
 
+    /* The card keeps its FIRST lines, so this live line is the one a visitor
+       reads — it names the exposure the `tls-version` row reports, at that row's
+       severity (HIGH), instead of a neutral protocol list beside a Critical card. */
+    const versionLabel = (protocol: string) => (protocol === 'TLSv1' ? 'TLS 1.0' : protocol.replace(/^TLSv/, 'TLS '))
     emit({
       surface: 'tls',
       label: 'Protocol enumeration',
-      detail: `${protocols.join(' / ') || 'none'} accepted`,
+      detail: legacy.length
+        ? `Legacy ${legacy.map(versionLabel).join(', ')} accepted · ${protocols.map(versionLabel).join(' / ')}`
+        : `${protocols.map(versionLabel).join(' / ') || 'none'} accepted`,
       status: legacy.length ? 'warning' : 'pass',
-      severity: legacy.length ? 'medium' : 'none',
+      severity: legacy.length ? 'high' : 'none',
       verdict: legacy.length ? 'Legacy exposed' : supportsTls13 ? 'Secure' : 'Dated',
     })
     emit({

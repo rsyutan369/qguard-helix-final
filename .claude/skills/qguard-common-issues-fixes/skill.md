@@ -3169,6 +3169,162 @@ the same formula maintained in several files, which then drifted.
 
 ---
 
+## 61. /public-scan panels disagree with each other: "PQ 8%" beside "not scored", "+26" gains, a "Fair" TLS card beside a HIGH TLS row
+
+**Problem**
+
+Deep audit of `/public-scan` (2026-10-23) on real scans of cloudflare.com, google.com,
+example.com, expired.badssl.com and tls-v1-0.badssl.com. Every panel was right about
+its own input and several disagreed with each other:
+
+- Executive "Post-Quantum Readiness 8%" beside the decomposition row "not scored"
+  (both badssl hosts); the rail kept quoting a third readiness figure.
+- "Adopt hybrid key exchange · +26" — and Sophia: "the single highest-value change…
+  +26 points" — where the graded encryption score moves single digits.
+- Hero TLS card "Fair · TLS 1.3 enabled" beside Findings "TLS Version · HIGH · legacy
+  TLSv1" (google.com). Quantum card "Good" beside a CRITICAL Quantum Risk row.
+  Headers card "6/9" beside "5 of 8". Core readout "69%" beside gauge "69/100".
+- Findings: a rose "Critical" pill counted as HIGH; "Quantum Risk · High — Key
+  exchange" on a hybrid-ML-KEM endpoint; "Neither SPF nor DMARC" for google.com.
+- Decomposition: `TLS_ECDHE_RSA_WITH_…` scored as static-RSA key transport.
+
+**Root Cause**
+
+- Three post-quantum readiness implementations: `computePostQuantumReadiness`
+  (engine.ts), `publishedPostQuantumReadiness` (shared model) and the crypto engine's
+  `computeReadiness` (quoted by the rail). They differed on an unsettled hybrid probe,
+  standalone ML-KEM and what "hardened HSTS" means. The shared model also read a
+  probe SKIPPED for lack of TLS 1.3 as "did not settle".
+- Recommendation gains were computed on a private `classical × 0.6 + PQ × 0.4`
+  composite; PQ is 3 of the published model's 100 points but 40 of that one's.
+- The hero derived verdicts from private heuristics, and findings were routed to the
+  run (`'scan'`), never to their card: a regex `/1\.0|1\.1|SSL/` that cannot match
+  Node's `TLSv1`; a header ratio over all headers; CAA ignoring `caaClimbComplete`;
+  FS ignoring TLS 1.3's guarantee; `statusFromControl` had no `High` case.
+- `engineControls().reported()` bypassed `reconcileStatus`.
+- `worst = find(Critical) ?? riskFactors[0]` — the first factor is always key exchange.
+- `viaSystemResolver` returns its fallback on timeout, so an unanswered TXT query was
+  indistinguishable from "no SPF published".
+- `classifySuite`'s `/(^|_)RSA_WITH/` matches the `_RSA_WITH` inside `ECDHE_RSA_WITH`
+  (`transport-truth.ts` already documented this trap and used `^(TLS|SSL)_RSA_WITH`).
+- Node 24 reports TLS 1.3 key shares as `{ type: 'TLSGroup' }` with no size, so
+  `extractKeyExchange` recorded "TLSGroup (undefined-bit)" for every TLS 1.3 host.
+
+**Solution**
+
+- `computePostQuantumReadiness` is now a projection of `publishedPostQuantumReadiness`
+  via `toPublishedCategoryEvidence`; the report carries `postQuantumKeyAgreement`
+  (`hybrid | pure-kem | classical | not-measured`) and `postQuantumDetail`, and every
+  caption reads those instead of `readiness >= 60`. `tls13ProvablyAbsent()` (shared)
+  settles the hybrid question on a measured protocol list without TLS 1.3.
+- `assess.ts` holds the crypto engine's stage completion and republishes it from the
+  scored report (`quantumStageDetail`, also used by `cachedStages`).
+- Gains: `gainFromEvidence` applies one operator change to the EVIDENCE and re-scores
+  with the same 12-category model; `categoryGain` only for isolated categories.
+  Priority = severity of the driving finding (`PRIORITY_FOR_SEVERITY`); static RSA is
+  one recommendation; hybrid is recommended only on a measured absence; Sophia's
+  "highest-value change" is chosen by gain.
+- Hero: `CONTROL_NODE` routes every non-healthy finding to its card; evidence events
+  take status/severity from their Findings row; `nodeScoreScopesFromReport` names
+  what each number grades; core readout "/100" when settled.
+- `reported()` applies `reconcileStatus`; Quantum Risk names its max-impact factor;
+  DNS engine carries `spfQueryable`/`dmarcQueryable`/`mxQueryable`; `classifySuite`
+  anchors `^(TLS|SSL)_RSA_`; `extractKeyExchange` handles `TLSGroup`, and
+  `resolveKeyExchange` refuses the old string from cached results.
+
+**Prevention Checklist**
+
+- [ ] Grep for EVERY implementation of a number before trusting one panel —
+      `grep -rn "postQuantumReadiness\|computeReadiness"` found three.
+- [ ] A "modelled gain" must be computed on the score it is printed next to. Mutate
+      evidence and re-score; never re-weight the model in a helper.
+- [ ] A label inferred from a threshold on a score (`>= 60 → hybrid`) is a second
+      derivation. Carry the categorical fact in the report.
+- [ ] A visualization card must take its verdict from the rows it summarises. Route
+      findings to their surface; never let a card read calmer than its worst row.
+- [ ] Node protocol names are `TLSv1`, `TLSv1.1`, … — test exact names, not `1.0`.
+- [ ] `_RSA_WITH` is not static RSA. Anchor to the protocol prefix.
+- [ ] A resolver fallback value is not an answer. Carry `*Queryable` flags.
+- [ ] Every result-builder path (`reported()` too) goes through the one reconciler.
+- [ ] `npx tsx tools/public-scan-hero-alignment-check.ts [host…]` — cross-panel
+      invariants on LIVE evidence plus four derived edge cases per host;
+      `PUBLIC_SCAN_REPORTS_DIR=<dir>` replays saved reports offline, and
+      `PUBLIC_SCAN_NO_REBUILD=1` judges them as saved (the negative control: 24
+      failures on the pre-fix reports, 0 after).
+
+---
+
+## 62. /dashboard/scanner panels disagree: hero "23 components" over a footprint of 16, a private risk ladder, priority from effort, a hero on "Standby" over a graded scan
+
+**Problem**
+
+Deep audit of `/dashboard/scanner` (2026-10-23) through the real pipeline
+(`tools/scanner-panel-audit.ts www.cloudflare.com`) and the rendered page (QA tenant,
+recorded scan, read-only). Every panel was right about its own input; they disagreed:
+
+- Hero strip "Crypto Components 23 · Vulnerable 19" above an Estate Footprint of 16
+  components, 12 quantum-vulnerable; "Authorized Targets"/"Modules Executed" read the
+  composer queue and the live module list, so after a reload they described nothing.
+- Business Risk from a private 90/80/65/50/35 ladder (grade B read "Low", C "Moderate",
+  F "High" — the "How the Grading Works" table it opens says otherwise).
+- Live Dashboard: "Risk Level" from 80/60/40 on exposure, "PQC Readiness" = share of SAFE
+  findings, "Vulnerable Assets" = every target whenever any finding was vulnerable,
+  "Posture Score" printed "/100" for a withheld score; Posture Trend plotted agent/SSH
+  severity-count scores and different websites on one line ("+13 pts").
+- "Retire RSA-2048 · High" above "the most severe is rated CRITICAL"; catalogue cards no
+  observation resolved to; OCSP "Not stapled" for a cert advertising no responder; Quantum
+  Risk "High" here vs "Critical" on /public-scan for the same host.
+- Hero cards on "Standby · No targets authorized · Inventory not synchronized" above a
+  graded recorded scan with 24 CBOM records; status-bar time = `new Date()` at render.
+
+**Root Cause**
+
+- A second metrics object (`dashboardMetrics`) re-derived the counts beside
+  `buildAssessment` with its own scope fallback; the hero read it.
+- `riskBandForScore` was a private ladder; `priorityFor[migrationComplexity]` used effort
+  as urgency; `classicalScore ?? encryptionScore` and `encryptionScore ?? 0` were
+  cross-population fallbacks.
+- Per-endpoint panels read `results[0]`'s edge evidence while the decomposition merges
+  every target, unstated. The Quantum Risk row read only Scanner_2's correlation.
+- History strips each result's `findings`, so a per-target count over recorded results
+  sees empty arrays (caught by the RENDERED page, not the pipeline replay).
+- The QVE bridge only ever animated a live stream, capped routed findings at the first 40,
+  and turned a null PQ readiness into 0 via `Math.round(null)`.
+
+**Solution**
+
+- `ScannerAssessment.counters` (scoped once) feeds the hero strip, Live Dashboard and
+  Estate Footprint; `dashboardMetrics`/`historyMetricSnapshot` deleted.
+- Business risk = `scoreToGrade(score).riskLevel`, floored at High by a critical finding
+  (the /public-scan rule). `encryptionScore`/`classicalScore` are `number | null`, null
+  exactly when the grade is withheld.
+- Recommendation priority = worst severity of the observations a card covers; cards with
+  0 affected are dropped and Migration Complexity counts the same cards.
+- OCSP with no responder → "Not applicable"; Quantum Risk = worst edge Quantum Risk
+  Engine verdict across targets, Scanner_2 correlation named beside it.
+  `surfaceTarget` + `SurfaceScopeNote` state the target per-endpoint panels describe.
+- Bridge `recorded` input replays the recorded scan once into an idle engine ("Recorded
+  Scan · Grade C · 69/100"); no 40-finding cap; null PQ stays null.
+- Trend: web scans of the scan-in-view's target only; status bar uses the
+  `scan-complete` frame time.
+
+**Prevention Checklist**
+
+- [ ] One counts object per page. A second "metrics" derivation beside the assessment
+      WILL pick its own scope and its own labels.
+- [ ] Risk/priority vocabulary comes from the published table or the finding severity —
+      never a private ladder, never effort.
+- [ ] A panel built from one target's evidence on a multi-target run says so.
+- [ ] A count over `results[].findings` must check the findings are present — history
+      payloads strip them.
+- [ ] A visualization must present the scan the page describes, live or recorded.
+- [ ] `npx tsx tools/scanner-dashboard-alignment-check.ts [host…]` — live, with
+      completed/live/estate/two-target/recorded variants (38 failures on HEAD, 0 after);
+      `node .report-smoke/scanner-dashboard-shot.mjs <dir>` — read-only render as the QA
+      tenant, waits for count-ups, revokes the session.
+
+---
+
 ## Adding an entry
 
 Use exactly this shape — Problem, Root Cause, Solution, Prevention Checklist.

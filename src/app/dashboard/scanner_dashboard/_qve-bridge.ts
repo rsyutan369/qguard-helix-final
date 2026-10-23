@@ -168,6 +168,22 @@ export interface DashboardScanBridgeInput {
   modules: ModuleState[];
   findings: DefensiveFinding[];
   summary: ScanSummary | null;
+  /**
+   * The RECORDED scan the page is describing when no run is live (after a
+   * reload, or on first visit to a tenant with history).
+   *
+   * Without it the hero sat on its idle legend — "No targets authorized",
+   * "Inventory not synchronized", "Standby" — directly above an Executive
+   * Summary grading that very scan and a footprint listing its 24 CBOM records:
+   * the visualization denying evidence the rest of the page was built from.
+   */
+  recorded?: {
+    id: string;
+    asset: string;
+    summary: ScanSummary;
+    modules: ModuleState[];
+    findings: DefensiveFinding[];
+  } | null;
   /** Joined target list, for the `asset` field on lifecycle events. */
   asset: string;
   error: string | null;
@@ -184,8 +200,9 @@ export interface DashboardScanBridgeInput {
    * could therefore print two different post-quantum percentages for one scan.
    */
   verdict: {
-    score: number;
-    postQuantumReadiness: number;
+    score: number | null;
+    /** null = not scored; the core's post-quantum readout then stays empty. */
+    postQuantumReadiness: number | null;
     gradeable: boolean;
     /**
      * Per-surface posture, projected from the assessment's published category
@@ -207,6 +224,7 @@ export function useDashboardScanBridge({
   modules,
   findings,
   summary,
+  recorded = null,
   asset,
   error,
   reducedMotion,
@@ -392,12 +410,68 @@ export function useDashboardScanBridge({
     consumedFindings.current = findings.length;
     // Only the material observations reach the visualization: routing every
     // SAFE row would bury the exposures the operator needs to see.
-    enqueue(fresh.filter((finding) => finding.threatLevel !== 'SAFE').slice(0, 40).map((finding) => findingEvent(finding, progress)));
+    /* No cap. A card's verdict is the worst finding routed to it, and this used
+       to take the FIRST 40 non-SAFE findings in arrival order — so on a large
+       estate a CRITICAL finding that arrived 41st never reached its card, which
+       then read calmer than the Findings table. The queue already releases a
+       backlog at the fast interval, and a finished run is flushed at once. */
+    enqueue(fresh.filter((finding) => finding.threatLevel !== 'SAFE').map((finding) => findingEvent(finding, progress)));
   }, [findings, progress, enqueue]);
+
+  /* ── A recorded scan in view: present it as the settled run it was ──────── */
+  /* Replayed ONCE per recorded scan, and only into an idle engine with no run
+     live — so a live scan always owns the hero, and "New scan" (which resets the
+     engine) is not undone by replaying the same record straight back. Released
+     in one pass: the recorded run is over, so there is nothing to narrate. */
+  const replayed = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!recorded) return;
+    const running = status === 'queued' || status === 'running' || status === 'analyzing';
+    if (running || state.run !== 'idle' || replayed.current === recorded.id) return;
+    replayed.current = recorded.id;
+    settled.current = false;
+    const events: ScanEvent[] = [
+      {
+        id: nextId('recorded-start'),
+        type: 'SCAN_STARTED',
+        timestamp: Date.now(),
+        category: 'scan',
+        status: 'running',
+        progress: 0,
+        severity: 'info',
+        finding: 'Recorded assessment loaded',
+        asset: recorded.asset,
+        details: { timelineLabel: 'Recorded assessment loaded' },
+      },
+    ];
+    for (const module of recorded.modules) {
+      if (module.status === 'Queued' || module.status === 'Running') continue;
+      const event = moduleEvent(module, 100);
+      if (event) events.push(event);
+    }
+    for (const finding of recorded.findings) {
+      if (finding.threatLevel !== 'SAFE') events.push(findingEvent(finding, 100));
+    }
+    events.push({
+      id: nextId('recorded-complete'),
+      type: 'SCAN_COMPLETED',
+      timestamp: Date.now(),
+      category: 'scan',
+      status: 'pass',
+      progress: 100,
+      severity: 'info',
+      finding: 'Recorded assessment',
+      asset: recorded.asset,
+    });
+    for (const event of events) dispatch({ type: 'ingest', event });
+  }, [recorded, status, state.run, dispatch]);
 
   /* ── Settle: real scores, once ─────────────────────────────────────────── */
   React.useEffect(() => {
-    if (!summary || settled.current) return;
+    /* The live run's summary, or — when the engine replayed a recorded scan —
+       that scan's. Either way the verdict below is the assessment's own. */
+    const settleSummary = summary ?? (replayed.current && recorded?.id === replayed.current ? recorded.summary : null);
+    if (!settleSummary || settled.current) return;
     if (status === 'queued' || status === 'running' || status === 'analyzing') return;
     // The engine must have observed the run it is being asked to grade. Loading
     // a past scan into the Findings tab sets `status: 'completed'` and a summary
@@ -407,15 +481,20 @@ export function useDashboardScanBridge({
     if (state.run === 'idle') return;
     // An ungradeable run (a module ledger that never closed) gets no verdict —
     // the core keeps its live state rather than certifying a partial estate.
-    if (verdict && !verdict.gradeable) return;
+    if (verdict && (!verdict.gradeable || verdict.score === null)) return;
     settled.current = true;
-    const score = Math.max(0, Math.min(100, Math.round(verdict ? verdict.score : summary.qScore)));
+    const score = Math.max(0, Math.min(100, Math.round(verdict ? (verdict.score as number) : settleSummary.qScore)));
     const grade = scoreToGrade(score);
+    /* NOT SCORED STAYS NOT SCORED. `Math.round(null)` is 0, so an assessment
+       whose post-quantum readiness was withheld settled the core at 0% — a
+       measured-looking failure the Executive Summary beside it denied. The
+       finding-share fallback is gone for the same reason it left the
+       assessment: it is a different measurement of a different population. */
     const postQuantum = verdict
-      ? Math.max(0, Math.min(100, Math.round(verdict.postQuantumReadiness)))
-      : summary.totalFindings > 0
-        ? Math.round((summary.pqcReady / summary.totalFindings) * 100)
-        : 0;
+      ? (verdict.postQuantumReadiness === null
+          ? null
+          : Math.max(0, Math.min(100, Math.round(verdict.postQuantumReadiness))))
+      : null;
     dispatch({
       type: 'settle',
       grade: grade.grade,
@@ -425,5 +504,5 @@ export function useDashboardScanBridge({
       nodeScores: verdict?.nodeScores ?? {},
       nodeScoreScopes: verdict?.nodeScoreScopes ?? {},
     });
-  }, [summary, status, findings, state.run, dispatch, verdict]);
+  }, [summary, recorded, status, findings, state.run, dispatch, verdict]);
 }

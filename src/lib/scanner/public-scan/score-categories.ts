@@ -39,7 +39,7 @@ import {
 import { resolveKeyExchange } from './controls'
 import type { ControlState, PublicScanEvidence, ScoreComponent } from './types'
 
-const PQ_SIGNATURE_PATTERN = /ml-dsa|slh-dsa|dilithium|sphincs|falcon/i
+const PQ_SIGNATURE_PATTERN = /ml[-_]?dsa|slh[-_]?dsa|dilithium|sphincs|falcon/i
 
 /** Symmetric strength of the negotiated AEAD, for the shared Grover margin. */
 function symmetricBits(cipherSuite: string | null | undefined): number | null {

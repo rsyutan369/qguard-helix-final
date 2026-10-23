@@ -122,6 +122,17 @@ export interface ExecutiveSummary {
   /** 0-100 post-quantum readiness observable at the edge; null when unmeasured. */
   postQuantumReadiness: number | null
   /**
+   * WHICH key-agreement answer the readiness rests on. Every label that used to
+   * be inferred from the percentage ("≥ 60 means hybrid") reads this instead: a
+   * hybrid endpoint without TLS 1.3 in its enumerated list scores 55-58 and was
+   * captioned "no hybrid key agreement offered" beside its own accepted group.
+   */
+  postQuantumKeyAgreement: 'hybrid' | 'pure-kem' | 'classical' | 'not-measured'
+  /** A post-quantum signature algorithm appears in the served chain. */
+  postQuantumSignatureObserved: boolean
+  /** One sentence stating the measured key-agreement case, for compact slots. */
+  postQuantumDetail: string
+  /**
    * 0-100 weighted mean across all 12 published categories (grading-model.ts).
    * This — not classicalScore — is what scoreToGrade() maps to a letter grade.
    * Null when coverage is below MIN_GRADEABLE_COVERAGE, for the same reason.
@@ -269,7 +280,13 @@ export interface CryptoIntelligence {
    * offered" — for endpoints where no handshake ever happened. Nothing was
    * offered to us because we were never able to ask.
    */
-  quantumVulnerability: 'Vulnerable' | 'Hybrid-protected' | 'Quantum-safe' | 'Unknown'
+  /**
+   * `PQ-protected` is standalone ML-KEM key agreement: session secrets are out
+   * of Shor's reach, but there is no classical hedge, so it is not "hybrid".
+   * It used to fall through to `Vulnerable`, the strongest negative available,
+   * while the score decomposition credited the same group as post-quantum.
+   */
+  quantumVulnerability: 'Vulnerable' | 'Hybrid-protected' | 'PQ-protected' | 'Quantum-safe' | 'Unknown'
   quantumVulnerabilityReason: string
   migrationTargets: Array<{ name: string; standard: string; replaces: string }>
   confidence: number

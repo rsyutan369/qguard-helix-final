@@ -21,14 +21,10 @@
  */
 
 import type { CertificateInfo, CipherSuiteDetail, ThreatLevel } from '../web-scanner/types'
-import { buildControlStates, findControl, resolveForwardSecrecy, resolveKeyExchange } from './controls'
-import {
-  CLASSICAL_CATEGORY_KEYS,
-  postQuantumReadinessFromSignals,
-  RISK_ORDER,
-  scoreToGrade,
-} from './grading-model'
-import { buildScoreCategories } from './score-categories'
+import { censusFor, publishedPostQuantumReadiness, tls13ProvablyAbsent } from '../published-categories'
+import { buildControlStates, findControl, resolveForwardSecrecy, resolveKeyExchange, symmetricStrength } from './controls'
+import { CLASSICAL_CATEGORY_KEYS, RISK_ORDER, scoreToGrade } from './grading-model'
+import { buildScoreCategories, toPublishedCategoryEvidence } from './score-categories'
 import { detectPlatform, effortFor, remediationFor, type RemediationTopic } from './remediation'
 import type {
   AssessmentScope,
@@ -55,27 +51,6 @@ import type {
 export { resolveForwardSecrecy, resolveKeyExchange, buildControlStates }
 
 const clamp = (value: number, min = 0, max = 100) => Math.max(min, Math.min(max, Math.round(value)))
-
-/** Named hybrid / post-quantum TLS groups observable in a handshake. */
-const PQ_GROUP_PATTERNS = [
-  /x25519(?:mlkem|kyber)/i,
-  /ml[-_]?kem/i,
-  /kyber/i,
-  /secp\d+r1mlkem/i,
-  /frodo/i,
-  /bike/i,
-  /hqc/i,
-]
-
-const PQ_SIGNATURE_PATTERNS = [/ml[-_]?dsa/i, /dilithium/i, /slh[-_]?dsa/i, /sphincs/i, /falcon/i]
-
-function isPostQuantumGroup(value: string | null | undefined): boolean {
-  return Boolean(value) && PQ_GROUP_PATTERNS.some((pattern) => pattern.test(value as string))
-}
-
-function isPostQuantumSignature(value: string | null | undefined): boolean {
-  return Boolean(value) && PQ_SIGNATURE_PATTERNS.some((pattern) => pattern.test(value as string))
-}
 
 // The group → ML-KEM parameter-set map used to be duplicated here. It now lives
 // only in the TLS engine (`HYBRID_GROUP_KEM` in engines/tls-engine.ts), which is
@@ -116,77 +91,113 @@ export function computeClassicalScore(components: ScoreComponent[]): number {
 
 // ─── Post-quantum readiness ───────────────────────────────────────────────────
 
+/** How the hybrid key-agreement question was answered on this run. */
+export type PostQuantumKeyAgreementState = 'hybrid' | 'pure-kem' | 'classical' | 'not-measured'
+
 /**
- * Post-quantum readiness observable at the edge. Deliberately conservative:
- * a site scores 0 unless a hybrid/PQ group or PQ signature actually appears.
- * Crypto-agility signals earn a small "ready to move" allowance, never a
- * readiness claim.
+ * Post-quantum readiness observable at the edge — a PROJECTION of the published
+ * model's `post-quantum-readiness` category, never a second computation of it.
+ *
+ * This function used to feed `postQuantumReadinessFromSignals` from its own
+ * reading of the evidence, while the score decomposition fed the same model from
+ * `published-categories.ts`. The two readings differed on three signals (an
+ * unsettled hybrid probe, standalone ML-KEM, and what "hardened HSTS" means), so
+ * the Executive Summary published 26% beside a decomposition row reading "not
+ * scored" for the same endpoint. There is now exactly one opinion: the shared
+ * model's, read through the same adapter the decomposition uses.
  */
 export function computePostQuantumReadiness(evidence: PublicScanEvidence): {
-  score: number
   /**
-   * False when the named-group probe never ran, i.e. no handshake completed.
-   *
-   * `score` is still returned in that case (the scoring model needs a number for
-   * the `post-quantum-readiness` category, which is separately marked
-   * inapplicable), but no CONSUMER may publish it as a readiness percentage:
-   * 55 of its 100 points come from hybrid key agreement, so an unprobed endpoint
-   * scores 0 by construction and 0% is a verdict this scan did not earn.
+   * 0-100. Meaningless when `measured` is false — no consumer may publish it as
+   * a percentage then: 55 of its 100 points come from hybrid key agreement, so
+   * an unmeasured hybrid signal scores near 0 by construction and that is a
+   * verdict this scan did not earn.
    */
+  score: number
+  /** False when the shared model withheld the category (see `unmeasuredReason`). */
   measured: boolean
+  /** A hybrid ECDHE + ML-KEM group was accepted. */
   hybridObserved: boolean
+  /** Standalone ML-KEM accepted with no hybrid group: post-quantum, no classical hedge. */
+  pureKemObserved: boolean
   pqSignatureObserved: boolean
+  /** The endpoint's measured protocol list excludes TLS 1.3, so hybrid is impossible. */
+  tls13Absent: boolean
+  keyAgreementState: PostQuantumKeyAgreementState
   reasons: string[]
 } {
-  const { tls, certificate, certificateExtras, keyAgreement } = evidence
-  const reasons: string[] = []
+  const published = toPublishedCategoryEvidence(evidence)
+  const shared = publishedPostQuantumReadiness(published)
+  const { keyAgreement } = evidence
+  const hybridObserved = keyAgreement.hybridGroups.length > 0
+  const pureKemGroups = keyAgreement.pureKemGroups ?? []
+  const pureKemObserved = !hybridObserved && pureKemGroups.length > 0
+  const pqSignatureObserved = published.pqSignatureObserved
+  const tls13Absent = tls13ProvablyAbsent(published.transport)
 
-  const hybridObserved =
-    keyAgreement.hybridGroups.length > 0 ||
-    isPostQuantumGroup(tls?.negotiatedCurve) ||
-    isPostQuantumGroup(tls?.keyExchange) ||
-    isPostQuantumGroup(tls?.cipherSuite)
-  const pqSignatureObserved =
-    isPostQuantumSignature(certificate?.signatureAlgorithm) ||
-    isPostQuantumSignature(certificate?.publicKeyAlgorithm) ||
-    isPostQuantumSignature(tls?.signatureAlgorithm)
-
-  /* The MODEL lives in grading-model so the authenticated Dashboard Scanner
-     scores post-quantum readiness with the identical weights from its own
-     evidence. This function stays responsible for one thing only: turning
-     public-edge evidence into the model's signals. */
-  const model = postQuantumReadinessFromSignals({
-    hybridObserved,
-    pqSignatureObserved,
-    tls13Offered: (tls?.supportedProtocols ?? []).includes('TLSv1.3'),
-    certificateValidityDays: certificateExtras ? certificateExtras.validityDays : null,
-    certificateTransparency: Boolean(certificateExtras?.signedCertificateTimestamps),
-    hstsEnforced: Boolean(
-      evidence.http.headers.find((header) => header.name === 'strict-transport-security')?.secure,
-    ),
-  })
-
-  // The public surface can name the exact groups it observed; the shared model
-  // states the generic case.
-  if (hybridObserved && keyAgreement.hybridGroups.length) {
-    reasons.push(`Hybrid post-quantum key agreement accepted: ${keyAgreement.hybridGroups.join(', ')}.`)
-  }
-  const measured = keyAgreement.probed || hybridObserved || pqSignatureObserved
-  if (!measured) {
+  if (!shared) {
+    const reason =
+      !published.transport.handshakeCompleted && !published.certificate
+        ? 'Post-quantum readiness was not measured: no TLS handshake completed, so named key-agreement groups could not be offered to this endpoint.'
+        : keyAgreement.probed
+          ? 'Post-quantum readiness was not scored: no hybrid ML-KEM group reached a conclusive verdict on this run (group probing is the first thing many endpoints throttle), and hybrid key agreement carries 55 of its 100 points. Re-run the assessment to settle it.'
+          : 'Post-quantum readiness was not scored: named key-agreement groups were not probed on this run, and hybrid key agreement carries 55 of its 100 points.'
     return {
-      score: model.score,
+      score: 0,
       measured: false,
       hybridObserved,
+      pureKemObserved,
       pqSignatureObserved,
-      reasons: [
-        'Post-quantum readiness was not measured: no TLS handshake completed, so named key-agreement groups could not be offered to this endpoint.',
-      ],
+      tls13Absent,
+      keyAgreementState: 'not-measured',
+      reasons: [reason],
     }
   }
 
-  reasons.push(...model.reasons)
+  /* The shared model words its first reason generically ("Hybrid post-quantum
+     key agreement negotiated…" / "No hybrid … offered"). The public surface
+     knows exactly which case it measured, so it states that instead. */
+  const keyAgreementReason = hybridObserved
+    ? `Hybrid post-quantum key agreement accepted: ${keyAgreement.hybridGroups.join(', ')}.`
+    : pureKemObserved
+      ? `Standalone ML-KEM key agreement accepted (${pureKemGroups.join(', ')}) — post-quantum, but with no classical hedge.`
+      : tls13Absent
+        ? 'No hybrid key agreement is possible: the endpoint does not offer TLS 1.3, where ML-KEM groups are defined.'
+        : 'No hybrid or post-quantum key-agreement group was accepted when each was offered in isolation.'
 
-  return { score: model.score, measured: true, hybridObserved, pqSignatureObserved, reasons }
+  return {
+    score: shared.score,
+    measured: true,
+    hybridObserved,
+    pureKemObserved,
+    pqSignatureObserved,
+    tls13Absent,
+    keyAgreementState: hybridObserved ? 'hybrid' : pureKemObserved ? 'pure-kem' : 'classical',
+    reasons: [keyAgreementReason, ...shared.reasons.slice(1)],
+  }
+}
+
+/**
+ * The short form of the readiness state, for the Executive Summary card and the
+ * hero — one sentence per measured case, so neither surface words it alone.
+ */
+function postQuantumDetail(pq: ReturnType<typeof computePostQuantumReadiness>, handshake: boolean): string {
+  switch (pq.keyAgreementState) {
+    case 'hybrid':
+      return pq.pqSignatureObserved
+        ? 'Hybrid ML-KEM key agreement and a post-quantum certificate signature observed.'
+        : 'Hybrid ML-KEM key agreement accepted; the certificate signature is still classical.'
+    case 'pure-kem':
+      return 'Standalone ML-KEM accepted — post-quantum key agreement, but no classical hedge.'
+    case 'classical':
+      return pq.tls13Absent
+        ? 'TLS 1.3 is not offered, so hybrid ML-KEM cannot be negotiated — enable TLS 1.3 first.'
+        : 'No hybrid ML-KEM group was accepted — plan hybrid key agreement.'
+    default:
+      return !handshake
+        ? 'No handshake completed, so key-agreement groups could not be offered.'
+        : 'Hybrid ML-KEM support was not settled on this run, so readiness is not scored.'
+  }
 }
 
 // ─── Executive summary ────────────────────────────────────────────────────────
@@ -232,8 +243,13 @@ export function computeConfidence(evidence: PublicScanEvidence): { score: number
   if (!evidence.keyAgreement.probed) {
     score -= 6
     factors.push('Named key-agreement groups not probed')
-  } else {
+  } else if (computePostQuantumReadiness(evidence).measured) {
     factors.push('Named key-agreement groups probed (incl. hybrid ML-KEM)')
+  } else {
+    /* "Probed (incl. hybrid ML-KEM)" claimed the hybrid answer on a run where
+       the hybrid groups never settled — the one signal readiness depends on. */
+    score -= 4
+    factors.push('Named key-agreement groups probed; hybrid ML-KEM did not settle')
   }
   if (!evidence.dns.caaQueryable) {
     score -= 4
@@ -354,6 +370,9 @@ export function buildExecutiveSummary(
     gradeColor,
     classicalScore,
     postQuantumReadiness,
+    postQuantumKeyAgreement: pq.keyAgreementState,
+    postQuantumSignatureObserved: pq.pqSignatureObserved,
+    postQuantumDetail: postQuantumDetail(pq, Boolean(evidence.tls)),
     encryptionScore,
     encryptionBand: gradeable ? graded.rating : 'Unrated',
     businessRisk,
@@ -586,22 +605,31 @@ export function buildIntelligence(evidence: PublicScanEvidence, confidence: numb
    * a panel listing four of them. Projecting the engine catalogue makes the
    * count, the classification and the score one fact with one source.
    */
-  const catalogue = evidence.engines?.crypto?.data?.algorithms ?? []
-  const observedAlgorithms: CryptoIntelligence['observedAlgorithms'] = catalogue.map((algorithm) => ({
-    name: algorithm.name,
-    // The engine's post-quantum margin is the most decision-relevant thing
-    // about an algorithm, so it stays in the compact role line. Zero bits is
-    // not "a 0-bit margin" — it means Shor recovers the secret outright, and
-    // saying so is clearer than a number that reads like a rounding artefact.
-    role:
-      algorithm.postQuantumBits === null
-        ? algorithm.role
-        : algorithm.postQuantumBits === 0
-          ? `${algorithm.role} · recoverable by Shor`
-          : `${algorithm.role} · ${algorithm.postQuantumBits}-bit PQ margin`,
-    quantumVulnerable: algorithm.quantumVulnerable,
-    classification: algorithm.classification,
-    evidenceSource: algorithm.evidenceSource,
+  /* …and the array that category counts is now the shared ALGORITHM CENSUS
+     (`censusFor`), not the engine catalogue. When the category moved to the
+     census, this panel kept listing the catalogue, so cloudflare.com's score row
+     read "14 algorithms observed" above a panel listing 8. The census is
+     documented as "the number every panel must quote"; the panel now lists it. */
+  const census = censusFor(toPublishedCategoryEvidence(evidence))
+  const CENSUS_CLASSIFICATION: Record<string, string> = {
+    'post-quantum': 'Post-Quantum',
+    'quantum-vulnerable': 'Quantum-vulnerable',
+    'grover-affected': 'Grover-affected',
+    protocol: 'Protocol',
+    unclassified: 'Unclassified',
+  }
+  const observedAlgorithms: CryptoIntelligence['observedAlgorithms'] = census.entries.map((entry) => ({
+    name: entry.name,
+    role: entry.role,
+    quantumVulnerable: entry.quantumVulnerable,
+    classification: entry.classicallyBroken
+      ? 'Classically broken'
+      : entry.legacyProtocol
+        ? 'Deprecated protocol'
+        : entry.belowPqMargin
+          ? 'Below the 128-bit PQ margin'
+          : (CENSUS_CLASSIFICATION[entry.cls] ?? entry.cls),
+    evidenceSource: 'algorithm census — TLS handshake, served chain and named-group probe',
   }))
 
   const kex = resolveKeyExchange(evidence)
@@ -619,8 +647,9 @@ export function buildIntelligence(evidence: PublicScanEvidence, confidence: numb
       : 'Not observed'
 
   // Migration targets are only listed for primitives this scan actually saw.
+  // Standalone ML-KEM is already the FIPS 203 target, so it is not re-proposed.
   const migrationTargets: CryptoIntelligence['migrationTargets'] = []
-  if (!pq.hybridObserved && tls) {
+  if (!pq.hybridObserved && !pq.pureKemObserved && tls) {
     migrationTargets.push({
       name: 'ML-KEM-768',
       standard: 'FIPS 203',
@@ -660,10 +689,12 @@ export function buildIntelligence(evidence: PublicScanEvidence, confidence: numb
        observation about the target rather than about the scan. */
     quantumVulnerability: !pq.measured
       ? 'Unknown'
-      : pq.hybridObserved
+      : pq.hybridObserved || pq.pureKemObserved
         ? pq.pqSignatureObserved
           ? 'Quantum-safe'
-          : 'Hybrid-protected'
+          : pq.hybridObserved
+            ? 'Hybrid-protected'
+            : 'PQ-protected'
         : 'Vulnerable',
     quantumVulnerabilityReason: pq.reasons[0],
     migrationTargets,
@@ -708,17 +739,28 @@ export function buildTimeline(evidence: PublicScanEvidence): TimelinePhase[] {
      PQC adoption) are industry context and stay as they are; the four that make
      claims about the target are replaced with what actually happened. */
   const measured = pq.measured
+  /* Two different reasons for "not measured", and they must not share copy:
+     with no handshake nothing about the endpoint is known, but an unsettled
+     hybrid probe still observed the classical key agreement and the chain. */
+  const handshake = Boolean(evidence.tls)
+  /* Post-quantum KEY AGREEMENT — hybrid or standalone ML-KEM — is what decides
+     harvest-now exposure. Standalone ML-KEM is not hybrid (no classical hedge),
+     but recorded sessions are no more decryptable by a CRQC than hybrid ones. */
+  const pqKex = pq.hybridObserved || pq.pureKemObserved
+  const pqGroups = pq.hybridObserved ? groups : pureKem.join(', ')
 
   // The "Today" line states what was measured about this endpoint.
-  const todayDescription = !measured
+  const todayDescription = !handshake
     ? `No handshake completed against this endpoint, so its key agreement and certificate chain are unknown. Nothing on this timeline below is a measurement of this target.`
-    : pq.hybridObserved
-      ? `Hybrid post-quantum key agreement (${groups}) protects new sessions; the chain is still signed with ${certificateAlgorithm ?? 'a classical algorithm'}.`
-      : legacyProtocols.length
-        ? `Key agreement is ${kex}, and deprecated ${legacyProtocols.join('/')} is still accepted — no quantum protection, and a live downgrade path.`
-        : pureKem.length
-          ? `Standalone ${pureKem.join(', ')} is accepted but no hybrid group is offered, so sessions fall back to ${kex}.`
-          : `Key agreement is ${kex} with no post-quantum group offered — classical protection only.`
+    : !measured
+      ? `Key agreement observed on this run is ${kex}; whether a hybrid ML-KEM group is also accepted did not settle, so post-quantum protection is not claimed either way.`
+      : pq.hybridObserved
+        ? `Hybrid post-quantum key agreement (${groups}) protects new sessions; the chain is still signed with ${certificateAlgorithm ?? 'a classical algorithm'}.`
+        : legacyProtocols.length
+          ? `Key agreement is ${kex}, and deprecated ${legacyProtocols.join('/')} is still accepted — no quantum protection, and a live downgrade path.`
+          : pureKem.length
+            ? `Standalone ${pureKem.join(', ')} protects new sessions with post-quantum key agreement, but no hybrid group is offered, so there is no classical hedge.`
+            : `Key agreement is ${kex} with no post-quantum group offered — classical protection only.`
 
   return [
     {
@@ -731,12 +773,14 @@ export function buildTimeline(evidence: PublicScanEvidence): TimelinePhase[] {
     {
       key: 'harvest',
       title: 'Harvest Now',
-      description: !measured
+      description: !handshake
         ? 'Whether traffic to this endpoint is harvestable cannot be determined without observing its key agreement.'
-        : pq.hybridObserved
-          ? 'Recorded sessions are protected by ML-KEM; only captures from before this rollout remain exposed.'
-          : `Traffic protected by ${kex} can be recorded today and stored until it is decryptable.`,
-      state: !measured ? 'future' : pq.hybridObserved ? 'future' : 'active',
+        : !measured
+          ? `Sessions negotiated with ${kex} can be recorded today; whether clients that offer hybrid ML-KEM are protected was not settled on this run.`
+          : pqKex
+            ? `Recorded sessions are protected by ML-KEM (${pqGroups}); only captures from before this rollout remain exposed.`
+            : `Traffic protected by ${kex} can be recorded today and stored until it is decryptable.`,
+      state: !measured ? 'future' : pqKex ? 'future' : 'active',
       horizon: 'Ongoing',
     },
     {
@@ -750,23 +794,29 @@ export function buildTimeline(evidence: PublicScanEvidence): TimelinePhase[] {
     {
       key: 'decryption',
       title: 'Potential Decryption Risk',
-      description: !measured
+      description: !handshake
         ? 'Not assessable — the key agreement protecting this endpoint’s sessions was never observed.'
-        : pq.hybridObserved
-          ? 'Only traffic captured before the hybrid rollout becomes readable.'
-          : `Sessions harvested today become readable once ${kex.split(' (')[0]} is broken.`,
+        : !measured
+          ? `Sessions negotiated with ${kex.split(' (')[0]} become readable once it is broken; post-quantum coverage for hybrid-capable clients was not settled on this run.`
+          : pqKex
+            ? 'Only traffic captured before the ML-KEM rollout becomes readable.'
+            : `Sessions harvested today become readable once ${kex.split(' (')[0]} is broken.`,
       state: 'future',
       horizon: 'Post-CRQC',
     },
     {
       key: 'migration',
       title: 'Recommended Migration',
-      description: !measured
+      description: !handshake
         ? 'Restore reachability on this port, or assess the service from inside the network, before a migration position can be recommended for it. NIST IR 8547 deprecates 112-bit classical key establishment from 2030 regardless.'
-        : pq.hybridObserved
-          ? 'Hybrid key agreement is live at this edge; extend the same rollout to internal services and machine identities. NIST IR 8547 deprecates 112-bit classical key establishment from 2030.'
-          : 'Begin hybrid PQC rollout so long-lived data stops accumulating exposure. NIST IR 8547 deprecates 112-bit classical key establishment (RSA-2048, ECC P-256) from 2030.',
-      state: pq.hybridObserved ? 'now' : 'target',
+        : !measured
+          ? 'Re-run the assessment to settle hybrid ML-KEM support before committing to a migration position for this endpoint. NIST IR 8547 deprecates 112-bit classical key establishment from 2030.'
+          : pqKex
+            ? 'Post-quantum key agreement is live at this edge; extend the same rollout to internal services and machine identities. NIST IR 8547 deprecates 112-bit classical key establishment from 2030.'
+            : pq.tls13Absent
+              ? 'Enable TLS 1.3 — the prerequisite for any hybrid ML-KEM group — then begin the hybrid PQC rollout. NIST IR 8547 deprecates 112-bit classical key establishment (RSA-2048, ECC P-256) from 2030.'
+              : 'Begin hybrid PQC rollout so long-lived data stops accumulating exposure. NIST IR 8547 deprecates 112-bit classical key establishment (RSA-2048, ECC P-256) from 2030.',
+      state: pqKex ? 'now' : 'target',
       horizon: 'Deprecated 2030 · NIST IR 8547',
     },
     {
@@ -781,12 +831,12 @@ export function buildTimeline(evidence: PublicScanEvidence): TimelinePhase[] {
     {
       key: 'full-pqc',
       title: 'Full PQC Adoption',
-      description: pq.pqSignatureObserved && pq.hybridObserved
+      description: pq.pqSignatureObserved && pqKex
         ? 'ML-KEM (FIPS 203) key agreement and a post-quantum signature (FIPS 204/205) are both present on this endpoint.'
-        : pq.hybridObserved
+        : pqKex
           ? `Key agreement is post-quantum; the remaining gap is the ${certificateAlgorithm ?? 'classical'} certificate signature. NIST IR 8547 disallows 112-bit classical signatures after 2035.`
           : 'ML-KEM (FIPS 203) and ML-DSA (FIPS 204) across certificates, transport and signing. NIST IR 8547 disallows 112-bit classical algorithms after 2035.',
-      state: pq.pqSignatureObserved && pq.hybridObserved ? 'now' : 'target',
+      state: pq.pqSignatureObserved && pqKex ? 'now' : 'target',
       horizon: 'Disallowed 2035 · NIST IR 8547',
     },
   ]
@@ -794,51 +844,163 @@ export function buildTimeline(evidence: PublicScanEvidence): TimelinePhase[] {
 
 // ─── Recommendations ──────────────────────────────────────────────────────────
 
-/** Composite encryption score for a given classical/post-quantum pair. */
-function composite(classicalScore: number, pqScore: number): number {
-  return clamp(classicalScore * 0.6 + pqScore * 0.4)
-}
-
 /**
- * Modelled point gain on the composite encryption score if a single scoring
- * dimension were brought to passing, holding everything else constant.
+ * A recommendation's priority IS the severity of the finding it responds to.
  *
- * This replaces the hand-assigned "risk reduction" numbers that used to sit on
- * each recommendation: the figure now comes from re-running the same published
- * scoring model the report already shows, so a reader can reproduce it from the
- * score-decomposition table.
+ * The two used to be assigned independently, so the Findings table read "TLS
+ * Version · High" while the recommendation fixing it read "Critical" — two
+ * urgency claims about one observation on the same screen. The certificate
+ * recommendation was already reconciled this way; every finding-driven
+ * recommendation now is.
  */
-function gainFromDimension(
-  evidence: PublicScanEvidence,
-  components: ScoreComponent[],
-  key: string,
-): number {
-  const pqScore = computePostQuantumReadiness(evidence).score
-  const current = composite(computeClassicalScore(components), pqScore)
-  const improved = components.map((component) =>
-    component.key === key ? { ...component, score: 100, applicable: true } : component,
-  )
-  return Math.max(0, composite(computeClassicalScore(improved), pqScore) - current)
+const PRIORITY_FOR_SEVERITY: Record<ThreatLevel, Recommendation['priority']> = {
+  CRITICAL: 'Critical',
+  HIGH: 'High',
+  MEDIUM: 'Medium',
+  LOW: 'Low',
+  SAFE: 'Low',
 }
 
 /**
- * Modelled gain from a change that alters the *evidence* rather than one score
- * dimension — enabling a hybrid group, or moving to a PQ certificate. The
- * synthetic evidence is fed back through the real scorers so both halves of the
- * composite move exactly as they would in a re-scan.
+ * Modelled point gain on the ENCRYPTION SCORE — the number the gauge and the
+ * grade show — if one change were made, every other observation held constant.
+ *
+ * This used to be measured on a private composite, `classical × 0.6 + PQ × 0.4`,
+ * that appears nowhere else in the report. Post-quantum readiness carries 3 of
+ * the published model's 100 points but 40 of that composite's, so "Adopt hybrid
+ * key exchange" was published at +26 on expired.badssl.com, where the graded
+ * score actually moves by a fraction of that — and Sophia quoted the +26 as the
+ * headline. The change is now applied to the EVIDENCE and re-scored by the same
+ * twelve-category model the grade comes from, so a re-scan after the change
+ * would land on the modelled number.
  */
 function gainFromEvidence(
   evidence: PublicScanEvidence,
   components: ScoreComponent[],
   mutate: (draft: PublicScanEvidence) => PublicScanEvidence,
 ): number {
-  const current = composite(computeClassicalScore(components), computePostQuantumReadiness(evidence).score)
-  const next = mutate(evidence)
-  const nextComponents = buildScoreComponents(next)
-  return Math.max(
-    0,
-    composite(computeClassicalScore(nextComponents), computePostQuantumReadiness(next).score) - current,
+  const current = computeClassicalScore(components)
+  const next = computeClassicalScore(buildScoreComponents(mutate(evidence)))
+  return Math.max(0, next - current)
+}
+
+/**
+ * Gain from bringing one category to `passing`, for a change no evidence field
+ * models (a header set, a CAA RRset, a stapled response). Only used for
+ * categories no other category reads from, so nothing coupled is missed.
+ */
+function categoryGain(components: ScoreComponent[], key: string, passing: number): number {
+  const current = computeClassicalScore(components)
+  const improved = components.map((component) =>
+    component.key === key ? { ...component, score: passing, applicable: true } : component,
   )
+  return Math.max(0, computeClassicalScore(improved) - current)
+}
+
+/* ── Evidence mutations: each one models a single operator change. ───────── */
+
+const isLegacyTls = (protocol: string) => protocol === 'TLSv1' || protocol === 'TLSv1.1'
+
+/**
+ * TLS 1.3 offered. The hybrid probe is marked settled on a refusal, so enabling
+ * the protocol does not turn a measured readiness into an unmeasured one by
+ * opening a question the model would then have to leave unanswered.
+ */
+function withTls13(draft: PublicScanEvidence): PublicScanEvidence {
+  if (!draft.tls || draft.tls.supportedProtocols.includes('TLSv1.3')) return draft
+  return {
+    ...draft,
+    tls: { ...draft.tls, supportedProtocols: [...draft.tls.supportedProtocols, 'TLSv1.3'] },
+    keyAgreement: { ...draft.keyAgreement, probed: true, hybridSettled: true },
+  }
+}
+
+function withoutLegacyTls(draft: PublicScanEvidence): PublicScanEvidence {
+  const next = withTls13(draft)
+  if (!next.tls) return next
+  return { ...next, tls: { ...next.tls, supportedProtocols: next.tls.supportedProtocols.filter((p) => !isLegacyTls(p)) } }
+}
+
+function withHybridGroup(draft: PublicScanEvidence): PublicScanEvidence {
+  const next = withTls13(draft)
+  return {
+    ...next,
+    keyAgreement: {
+      ...next.keyAgreement,
+      probed: true,
+      hybridSettled: true,
+      hybridGroups: ['X25519MLKEM768'],
+      primaryGroup: 'X25519MLKEM768',
+      forwardSecrecy: true,
+    },
+  }
+}
+
+function withPostQuantumCertificate(draft: PublicScanEvidence): PublicScanEvidence {
+  if (!draft.certificate) return draft
+  return {
+    ...draft,
+    certificate: { ...draft.certificate, publicKeyAlgorithm: 'ML-DSA-65', signatureAlgorithm: 'ML-DSA-65' },
+  }
+}
+
+/** Every accepted suite ephemeral: static-RSA key transport removed. */
+function withEphemeralSuitesOnly(draft: PublicScanEvidence): PublicScanEvidence {
+  return {
+    ...draft,
+    cipherSuites: draft.cipherSuites.filter((suite) => suite.category !== 'rsa-kex'),
+    keyAgreement: { ...draft.keyAgreement, forwardSecrecy: true },
+  }
+}
+
+/** The 256-bit variant of the negotiated AEAD suite (Grover leaves a 128-bit margin). */
+function withAes256(draft: PublicScanEvidence): PublicScanEvidence {
+  const suite = draft.tls?.cipherSuite
+  if (!draft.tls || !suite || symmetricStrength(suite) !== 128) return draft
+  const upgraded = suite
+    .replace(/AES_128_GCM_SHA256/g, 'AES_256_GCM_SHA384')
+    .replace(/AES128-GCM-SHA256/g, 'AES256-GCM-SHA384')
+    .replace(/_128_/g, '_256_')
+    .replace(/AES128/g, 'AES256')
+  return { ...draft, tls: { ...draft.tls, cipherSuite: upgraded } }
+}
+
+function withHardenedHsts(draft: PublicScanEvidence): PublicScanEvidence {
+  const http = draft.engines?.http
+  if (!http) return draft
+  const hsts = http.data.hsts
+  return {
+    ...draft,
+    engines: {
+      ...draft.engines,
+      http: {
+        ...http,
+        data: {
+          ...http.data,
+          hsts: { ...hsts, present: true, maxAge: Math.max(hsts.maxAge ?? 0, 31_536_000), includeSubDomains: true },
+        },
+      },
+    },
+  }
+}
+
+/** A like-for-like reissue: same key type, trusted chain, full lifetime ahead. */
+function withReissuedCertificate(draft: PublicScanEvidence, lifetimeDays?: number): PublicScanEvidence {
+  if (!draft.certificate) return draft
+  const extras = draft.certificateExtras
+  const validityDays = lifetimeDays ?? extras?.validityDays ?? 90
+  return {
+    ...draft,
+    certificate: {
+      ...draft.certificate,
+      isExpired: false,
+      isSelfSigned: false,
+      chain: (draft.certificate.chain ?? []).map((entry) => ({ ...entry, isExpired: false })),
+    },
+    certificateExtras: extras
+      ? { ...extras, chainTrusted: true, trustError: null, validityDays, daysRemaining: validityDays }
+      : extras,
+  }
 }
 
 export function buildRecommendations(
@@ -848,6 +1010,10 @@ export function buildRecommendations(
 ): Recommendation[] {
   const pq = computePostQuantumReadiness(evidence)
   const recommendations: Recommendation[] = []
+  /* A gain is a statement about the encryption score. When the score itself is
+     withheld (too little of the edge answered), there is nothing to add points
+     to, and a "+6" beside a "—" gauge would be a number with no referent. */
+  const scored = computeEvidenceCoverage(components) >= MIN_GRADEABLE_COVERAGE
 
   // The platform is read from the fingerprint this scan collected — never
   // assumed. When nothing was detected both helpers fall back to generic text.
@@ -857,12 +1023,19 @@ export function buildRecommendations(
 
   const modelled = (
     gain: number,
-    dimension: string,
-  ): Pick<Recommendation, 'scoreGain' | 'scoreGainTarget' | 'scoreGainBasis'> => ({
-    scoreGain: Math.round(gain),
-    scoreGainTarget: 'encryption',
-    scoreGainBasis: `Modelled by re-scoring with ${dimension} at its passing value; all other dimensions held constant.`,
-  })
+    change: string,
+  ): Pick<Recommendation, 'scoreGain' | 'scoreGainTarget' | 'scoreGainBasis'> =>
+    scored
+      ? {
+          scoreGain: Math.round(gain),
+          scoreGainTarget: 'encryption',
+          scoreGainBasis: `Modelled by re-running the published 12-category scoring model with ${change}; every other observation held constant.`,
+        }
+      : {
+          scoreGain: null,
+          scoreGainTarget: null,
+          scoreGainBasis: 'Not scored — the encryption score is withheld for this assessment, so there is no score to add points to.',
+        }
 
   /** A control only generates a recommendation when it actually failed. */
   const needsAction = (key: string) => {
@@ -874,88 +1047,117 @@ export function buildRecommendations(
     return state.status === 'Critical' || state.status === 'High'
       || state.status === 'Not Supported' || state.status === 'Warning' ? state : null
   }
+  const priorityOf = (state: ControlState) => PRIORITY_FOR_SEVERITY[state.severity] ?? 'Low'
 
   const tlsState = needsAction('tls-version')
   if (tlsState) {
+    const tls13Missing = !evidence.tls?.supportedProtocols.includes('TLSv1.3')
     recommendations.push({
       id: 'disable-legacy-tls',
-      title: 'Disable deprecated TLS 1.0/1.1 and enforce TLS 1.3',
-      priority: 'Critical',
+      title: tls13Missing
+        ? 'Disable deprecated TLS 1.0/1.1 and enable TLS 1.3'
+        : 'Disable deprecated TLS 1.0/1.1',
+      priority: priorityOf(tlsState),
       businessImpact: 'Removes downgrade paths and clears a common audit finding.',
       effort: platformEffort('Configuration change'),
-      ...modelled(gainFromDimension(evidence, components, 'tls-configuration'), 'TLS Configuration'),
+      ...modelled(
+        gainFromEvidence(evidence, components, withoutLegacyTls),
+        tls13Missing ? 'TLS 1.0/1.1 refused and TLS 1.3 offered' : 'TLS 1.0/1.1 refused',
+      ),
       rationale: tlsState.evidence,
       remediation: platformRemediation('tls-version'),
     })
   }
 
-  if (!pq.hybridObserved && evidence.tls && evidence.keyAgreement.probed) {
+  /* Hybrid key agreement is recommended only on a MEASURED absence — the
+     `pq-key-agreement` control's "Not Supported" or standalone-ML-KEM verdict.
+     It used to fire whenever no hybrid group happened to be in the accepted
+     list, including runs where the hybrid probe never settled, and told the
+     reader "no hybrid group was accepted during the named-group probe" about a
+     probe that had reached no answer. */
+  const pqState = findControl(controls, 'pq-key-agreement')
+  if (pqState && evidence.tls && (pqState.status === 'Not Supported' || pq.pureKemObserved)) {
     recommendations.push({
       id: 'hybrid-kex',
-      title: 'Adopt hybrid post-quantum key exchange (X25519MLKEM768)',
-      priority: 'Critical',
-      businessImpact: 'Stops new traffic from accumulating harvest-now-decrypt-later exposure.',
+      title: pq.pureKemObserved
+        ? 'Offer hybrid X25519MLKEM768 alongside standalone ML-KEM'
+        : pq.tls13Absent
+          ? 'Enable TLS 1.3 and adopt hybrid post-quantum key exchange (X25519MLKEM768)'
+          : 'Adopt hybrid post-quantum key exchange (X25519MLKEM768)',
+      priority: priorityOf(pqState),
+      businessImpact: pq.pureKemObserved
+        ? 'Adds a classical hedge to the post-quantum key agreement already in place.'
+        : 'Stops new traffic from accumulating harvest-now-decrypt-later exposure.',
       effort: platformEffort('TLS terminator / CDN setting'),
       ...modelled(
-        gainFromEvidence(evidence, components, (draft) => ({
-          ...draft,
-          keyAgreement: {
-            ...draft.keyAgreement,
-            hybridGroups: ['X25519MLKEM768'],
-            primaryGroup: 'X25519MLKEM768',
-            forwardSecrecy: true,
-          },
-        })),
-        'a hybrid ML-KEM group accepted',
+        gainFromEvidence(evidence, components, withHybridGroup),
+        pq.tls13Absent ? 'TLS 1.3 offered and a hybrid ML-KEM group accepted' : 'a hybrid ML-KEM group accepted',
       ),
-      rationale: 'No hybrid or post-quantum group was accepted during the named-group probe.',
+      rationale: pqState.evidence,
       remediation: platformRemediation('hybrid-kex'),
     })
   }
 
+  const certificateAlgorithmState = findControl(controls, 'certificate-algorithm')
   if (!pq.pqSignatureObserved && evidence.certificate) {
     recommendations.push({
       id: 'pq-signature-roadmap',
       title: 'Prepare a post-quantum certificate roadmap with your CA',
-      priority: 'High',
+      // A classical leaf is a MEDIUM finding; a broken one (expired, sub-2048
+      // RSA) is answered by the certificate-replacement card, not this one.
+      priority:
+        certificateAlgorithmState && certificateAlgorithmState.severity !== 'CRITICAL'
+          ? priorityOf(certificateAlgorithmState)
+          : 'Medium',
       businessImpact: 'Aligns certificate issuance with the FIPS 204 signature standard.',
       effort: 'Depends on CA availability',
       ...modelled(
-        gainFromEvidence(evidence, components, (draft) => ({
-          ...draft,
-          certificate: draft.certificate
-            ? { ...draft.certificate, signatureAlgorithm: 'ML-DSA-65' }
-            : draft.certificate,
-        })),
-        'a post-quantum signature on the served chain',
+        gainFromEvidence(evidence, components, withPostQuantumCertificate),
+        'an ML-DSA-65 leaf key and signature on the served chain',
       ),
       rationale: `The served chain is signed with ${evidence.certificate.signatureAlgorithm}.`,
     })
   }
 
-  const fsState = needsAction('forward-secrecy')
-  if (fsState) {
-    recommendations.push({
-      id: 'forward-secrecy',
-      title: 'Require ephemeral key agreement on every accepted suite',
-      priority: 'High',
-      businessImpact: 'Prevents a single key compromise from unlocking recorded traffic.',
-      effort: platformEffort('Cipher-suite policy change'),
-      ...modelled(gainFromDimension(evidence, components, 'forward-secrecy'), 'Forward Secrecy'),
-      rationale: fsState.evidence,
-      remediation: platformRemediation('forward-secrecy'),
-    })
-  }
-
+  /**
+   * ONE recommendation for static-RSA key transport, not two.
+   *
+   * "Remove static-RSA suites" (cipher-suite) and "Require ephemeral key
+   * agreement on every accepted suite" (forward-secrecy) were emitted together
+   * for the same root cause, so the page listed one configuration change twice
+   * and summed its benefit twice. The forward-secrecy control is the consequence
+   * of the cipher-suite one whenever static RSA is the reason it is partial.
+   */
   const cipherState = needsAction('cipher-suite')
-  if (cipherState) {
+  const fsState = needsAction('forward-secrecy')
+  const staticRsa = evidence.cipherSuites.some((suite) => suite.category === 'rsa-kex')
+  const noForwardSecrecy = Boolean(fsState) && !resolveForwardSecrecy(evidence).enabled
+  const aes128 = symmetricStrength(evidence.tls?.cipherSuite) === 128
+  if (staticRsa || noForwardSecrecy) {
+    const driver = [cipherState, fsState]
+      .filter((state): state is ControlState => Boolean(state))
+      .sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity])[0]
     recommendations.push({
       id: 'strengthen-cipher-suites',
-      title: 'Remove static-RSA suites and prefer 256-bit AEAD',
-      priority: 'High',
-      businessImpact: 'Eliminates suites without forward secrecy and restores a 128-bit post-quantum margin.',
+      title: `${noForwardSecrecy ? 'Require ephemeral (EC)DHE key agreement on every accepted suite' : 'Remove static-RSA key-transport suites'}${aes128 ? ' and prefer 256-bit AEAD' : ''}`,
+      priority: driver ? priorityOf(driver) : 'High',
+      businessImpact: 'Every accepted suite becomes forward secret, so one server-key compromise no longer unlocks recorded traffic.',
       effort: platformEffort('Cipher-suite policy change'),
-      ...modelled(gainFromDimension(evidence, components, 'cipher-suites'), 'Cipher Suites'),
+      ...modelled(
+        gainFromEvidence(evidence, components, (draft) => withAes256(withEphemeralSuitesOnly(draft))),
+        `static-RSA suites refused${aes128 ? ' and a 256-bit AEAD negotiated' : ''}`,
+      ),
+      rationale: (cipherState ?? fsState)!.evidence,
+      remediation: platformRemediation(noForwardSecrecy && !staticRsa ? 'forward-secrecy' : 'cipher-suite'),
+    })
+  } else if (cipherState && aes128) {
+    recommendations.push({
+      id: 'prefer-aes-256',
+      title: 'Prefer 256-bit AEAD cipher suites',
+      priority: priorityOf(cipherState),
+      businessImpact: 'Restores a 128-bit post-quantum margin on the symmetric layer (Grover halves key strength).',
+      effort: platformEffort('Cipher-suite policy change'),
+      ...modelled(gainFromEvidence(evidence, components, withAes256), 'a 256-bit AEAD negotiated'),
       rationale: cipherState.evidence,
       remediation: platformRemediation('cipher-suite'),
     })
@@ -966,10 +1168,10 @@ export function buildRecommendations(
     recommendations.push({
       id: 'enable-caa',
       title: 'Publish DNS CAA records restricting certificate issuance',
-      priority: 'Medium',
+      priority: priorityOf(caaState),
       businessImpact: 'Blocks unauthorised CAs from issuing for your domain.',
       effort: 'DNS record change',
-      ...modelled(gainFromDimension(evidence, components, 'dns-caa'), 'DNS CAA'),
+      ...modelled(categoryGain(components, 'dns-caa', 100), 'a CAA RRset published'),
       rationale: caaState.evidence,
     })
   }
@@ -994,16 +1196,17 @@ export function buildRecommendations(
         : !hstsDetail?.includeSubDomains
           ? 'Extend the HSTS policy to subdomains'
           : 'Raise the HSTS max-age to a full year',
-      // An absent policy is a real gap; strengthening an existing one is not
-      // the same urgency and should not carry the same badge.
-      priority: absent ? 'Medium' : 'Low',
+      priority: priorityOf(hstsState),
       businessImpact: absent
         ? 'Removes the plaintext first-contact window for returning users.'
         : !hstsDetail?.includeSubDomains
           ? 'Closes the downgrade path that remains on every subdomain of this name.'
           : 'Keeps returning users pinned to HTTPS for a full year between visits.',
       effort: platformEffort('Response-header change'),
-      ...modelled(gainFromDimension(evidence, components, 'hsts'), 'HSTS'),
+      ...modelled(
+        gainFromEvidence(evidence, components, withHardenedHsts),
+        'Strict-Transport-Security: max-age=31536000; includeSubDomains',
+      ),
       rationale: `${hstsState.evidence} — ${hstsState.nextStep}`,
       remediation: platformRemediation('hsts'),
     })
@@ -1014,10 +1217,10 @@ export function buildRecommendations(
     recommendations.push({
       id: 'harden-http-headers',
       title: 'Complete the transport-security header set',
-      priority: 'Medium',
+      priority: priorityOf(headerState),
       businessImpact: 'Closes gaps that let transport protections be bypassed in-page.',
       effort: platformEffort('Response-header change'),
-      ...modelled(gainFromDimension(evidence, components, 'http-security-headers'), 'HTTP Security Headers'),
+      ...modelled(categoryGain(components, 'http-security-headers', 100), 'every assessed transport header hardened'),
       rationale: headerState.evidence,
       remediation: platformRemediation('security-headers'),
     })
@@ -1042,14 +1245,12 @@ export function buildRecommendations(
       title: responderUnreachable
         ? 'Enable OCSP stapling — the advertised responder is not answering'
         : 'Enable OCSP stapling at the TLS terminator',
-      // A published-but-dead responder means soft-failing clients get no
-      // revocation checking at all; that is not a latency nicety.
-      priority: responderUnreachable ? 'High' : 'Low',
+      priority: priorityOf(ocspState),
       businessImpact: responderUnreachable
         ? 'Clients that soft-fail revocation are currently performing no revocation check for this endpoint.'
         : 'Removes a CA round-trip from every new client connection.',
       effort: platformEffort('TLS terminator setting'),
-      ...modelled(gainFromDimension(evidence, components, 'ocsp-stapling'), 'OCSP Stapling'),
+      ...modelled(categoryGain(components, 'ocsp-stapling', 100), 'an OCSP response stapled in the handshake'),
       rationale: ocspState.evidence,
       remediation: platformRemediation('ocsp-stapling'),
     })
@@ -1061,51 +1262,83 @@ export function buildRecommendations(
    * This used to emit one Medium-priority "automate the lifecycle" card for
    * every certificate problem — including an expired certificate and a chain
    * that does not verify. Those are not lifecycle-hygiene suggestions: the
-   * endpoint is broken for every visitor right now, and the Findings table was
-   * already calling them Critical while this panel called them Medium. The
-   * recommendation now matches the failure it is responding to.
+   * endpoint is broken for every visitor right now. The priority now comes from
+   * the finding the card responds to, so it can never disagree with that row.
    */
   const extras = evidence.certificateExtras
   const expired = extras ? extras.daysRemaining <= 0 : false
   const untrusted = extras ? !extras.chainTrusted : false
   const expiringSoon = extras ? extras.daysRemaining > 0 && extras.daysRemaining <= 14 : false
   const lifetimeState = needsAction('certificate-lifetime')
+  const issuerState = findControl(controls, 'certificate-issuer')
+  /* A CRITICAL hostname mismatch used to produce no recommendation at all:
+     Node's chain verdict (`authorized`) is independent of RFC 6125 name
+     matching, so a trusted chain for the wrong name skipped every branch. */
+  const hostnameState = findControl(controls, 'hostname-coverage')
+  const hostnameMismatch = hostnameState?.status === 'Critical'
 
-  if (untrusted || expired) {
+  if (untrusted || expired || hostnameMismatch) {
+    const driver = expired ? (lifetimeState ?? issuerState) : untrusted ? issuerState : hostnameState
+    const replace = modelled(
+      gainFromEvidence(evidence, components, (draft) => withReissuedCertificate(draft)),
+      'a valid, publicly trusted reissue of the same key type',
+    )
     recommendations.push({
       id: 'certificate-replace',
       title: expired
         ? 'Replace the expired certificate immediately'
-        : 'Replace the certificate — the served chain does not verify',
-      priority: 'Critical',
+        : untrusted
+          ? 'Replace the certificate — the served chain does not verify'
+          : 'Reissue the certificate to cover this hostname',
+      priority: driver ? priorityOf(driver) : 'Critical',
       businessImpact: expired
         ? 'The certificate has already expired: every browser is showing an interstitial and clients are failing to connect.'
-        : 'The served chain does not verify against the public trust store, so clients cannot authenticate this endpoint.',
+        : untrusted
+          ? 'The served chain does not verify against the public trust store, so clients cannot authenticate this endpoint.'
+          : 'Every browser shows a name-mismatch error and refuses the connection for this hostname.',
       effort: 'Immediate reissue',
-      ...modelled(gainFromDimension(evidence, components, 'certificates'), 'Certificates'),
+      /* Hostname coverage is reported, not graded — none of the twelve
+         categories reads it — so a mismatch-only reissue has no modelled gain
+         to state. "+0" beside a Critical card would read as "this does not
+         matter"; "Not scored" says what is actually true. */
+      ...(!expired && !untrusted && replace.scoreGain === 0
+        ? {
+            scoreGain: null,
+            scoreGainTarget: null,
+            scoreGainBasis: 'Not scored — hostname coverage is reported but is not one of the twelve graded categories.',
+          }
+        : replace),
       rationale:
         extras && !extras.chainTrusted && extras.trustError
           ? `Chain verification failed: ${extras.trustError}.`
-          : (lifetimeState?.evidence ?? 'Served certificate is past its notAfter date.'),
+          : expired
+            ? (lifetimeState?.evidence ?? 'Served certificate is past its notAfter date.')
+            : (hostnameState?.evidence ?? 'The certificate does not cover the scanned name.'),
     })
-  } else if (expiringSoon) {
+  } else if (expiringSoon && lifetimeState) {
     recommendations.push({
       id: 'certificate-renew',
       title: 'Renew the certificate before it expires',
-      priority: 'High',
+      priority: priorityOf(lifetimeState),
       businessImpact: 'An expiry-driven outage takes the endpoint down for every client at once.',
       effort: 'Reissue + deploy',
-      ...modelled(gainFromDimension(evidence, components, 'certificates'), 'Certificates'),
-      rationale: lifetimeState?.evidence ?? `${extras?.daysRemaining} days remaining.`,
+      ...modelled(
+        gainFromEvidence(evidence, components, (draft) => withReissuedCertificate(draft)),
+        'the certificate renewed for its full lifetime',
+      ),
+      rationale: lifetimeState.evidence,
     })
   } else if (lifetimeState) {
     recommendations.push({
       id: 'certificate-automation',
       title: 'Automate certificate lifecycle and shorten issued lifetimes',
-      priority: 'Medium',
+      priority: priorityOf(lifetimeState),
       businessImpact: 'Prevents outages and makes algorithm rollover a routine operation.',
       effort: 'ACME / lifecycle automation',
-      ...modelled(gainFromDimension(evidence, components, 'certificates'), 'Certificates'),
+      ...modelled(
+        gainFromEvidence(evidence, components, (draft) => withReissuedCertificate(draft, 90)),
+        'a freshly issued 90-day certificate',
+      ),
       rationale: lifetimeState.evidence,
     })
   }
@@ -1305,14 +1538,25 @@ export function buildSophia(
      agreement. Asserting it for an endpoint that never completed a handshake
      described cryptography the scan had not seen — so when the probe never ran,
      Sophia says what actually happened instead. */
-  const quantumClause = !pq.measured
+  /* "Not measured" has two causes and they must not share a sentence: with no
+     handshake nothing about the target is known, but an unsettled hybrid probe
+     still observed the classical key agreement and the certificate chain. */
+  const quantumClause = !evidence.tls && !pq.measured
     ? `No TLS handshake completed against this endpoint, so its key agreement, certificate chain and post-quantum posture are all unassessed. Nothing here should be read as a finding about the target's cryptography — only about its availability.`
-    : pq.hybridObserved
-      ? `Hybrid post-quantum key agreement (${evidence.keyAgreement.hybridGroups.join(', ')}) is accepted at the edge, which places this endpoint ahead of most Internet-facing infrastructure. The certificate chain, however, is still anchored on ${certAlg}.`
-      : `Key agreement remains ${resolveKeyExchange(evidence)} and the chain is anchored on ${certAlg}, so traffic captured today stays decryptable once a cryptographically relevant quantum computer exists.`
+    : !pq.measured
+      ? `Key agreement observed on this run is ${resolveKeyExchange(evidence)} and the chain is anchored on ${certAlg}; whether a hybrid ML-KEM group is also accepted did not settle, so no post-quantum claim is made either way.`
+      : pq.hybridObserved
+        ? `Hybrid post-quantum key agreement (${evidence.keyAgreement.hybridGroups.join(', ')}) is accepted at the edge, which places this endpoint ahead of most Internet-facing infrastructure. The certificate chain, however, is still anchored on ${certAlg}.`
+        : pq.pureKemObserved
+          ? `Standalone ML-KEM key agreement (${(evidence.keyAgreement.pureKemGroups ?? []).join(', ')}) is accepted at the edge, so recorded sessions resist a quantum adversary — but with no classical hedge, and the chain is still anchored on ${certAlg}.`
+          : `Key agreement remains ${resolveKeyExchange(evidence)} and the chain is anchored on ${certAlg}, so traffic captured today stays decryptable once a cryptographically relevant quantum computer exists.`
 
   const scoreClause = summary.gradeable
-    ? `Post-quantum readiness measured at the edge is ${summary.postQuantumReadiness}%, against a classical transport score of ${summary.classicalScore} — a composite encryption score of ${summary.encryptionScore}/100, graded ${summary.grade}.`
+    ? `${
+        summary.postQuantumReadiness === null
+          ? 'Post-quantum readiness was not scored on this run'
+          : `Post-quantum readiness measured at the edge is ${summary.postQuantumReadiness}%`
+      }, against a classical transport score of ${summary.classicalScore} — a composite encryption score of ${summary.encryptionScore}/100, graded ${summary.grade}.`
     : `Only ${summary.evidenceCoverage}% of the assessed dimensions responded, so no grade is published for this target.`
 
   /**
@@ -1324,8 +1568,18 @@ export function buildSophia(
   const blocking = findings.filter(
     (finding) => finding.severity === 'CRITICAL' || finding.severity === 'HIGH',
   )
-  const scored = recommendations.filter((recommendation) => recommendation.scoreGain !== null)
-  const topAction = scored[0] ?? null
+  /* "Highest-value" is a claim about the modelled gains, so it is chosen BY the
+     gains. Taking the first card in priority order let Sophia call a +6 card the
+     single highest-value change on a page that also showed a +8 one. Ties keep
+     the priority order the Recommendations panel renders. */
+  const topAction =
+    recommendations
+      .filter((recommendation) => (recommendation.scoreGain ?? 0) > 0)
+      .reduce<Recommendation | null>(
+        (best, recommendation) =>
+          !best || (recommendation.scoreGain ?? 0) > (best.scoreGain ?? 0) ? recommendation : best,
+        null,
+      )
 
   const findingsClause = !summary.gradeable
     ? ''
@@ -1337,7 +1591,7 @@ export function buildSophia(
       : ' No high or critical severity findings were raised against the observable edge.'
 
   const actionClause = topAction
-    ? ` The single highest-value change measured here is "${topAction.title}", modelled at +${topAction.scoreGain} points on the encryption score.`
+    ? ` The highest-value change modelled here is "${topAction.title}", at +${topAction.scoreGain} points on the encryption score.`
     : ''
 
   const unreachable = evidence.engines?.reachability?.data?.reachable === false

@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-  <color name="ic_launcher_background">#fff</color>
+  <!-- Flat fallback of drawable/ic_launcher_background (QGuard navy). -->
+  <color name="ic_launcher_background">#FF06123A</color>
 </resources>

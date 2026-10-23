@@ -56,6 +56,22 @@ import {
 
 /* ================================================================ executive = */
 
+/** Card caption per measured key-agreement case — one table, both panels. */
+const PQ_CASE_CAPTION: Record<PublicScanReport['executive']['postQuantumKeyAgreement'], string> = {
+  hybrid: 'Hybrid observed',
+  'pure-kem': 'Standalone ML-KEM',
+  classical: 'Limited PQ readiness',
+  'not-measured': 'Not measured',
+};
+
+/** The compact form for the Encryption Score flank. */
+const PQ_CASE_SHORT: Record<PublicScanReport['executive']['postQuantumKeyAgreement'], string> = {
+  hybrid: 'Hybrid ready',
+  'pure-kem': 'PQ only',
+  classical: 'Limited',
+  'not-measured': 'Not measured',
+};
+
 export function ExecutiveSummary({ report }: { report: PublicScanReport }) {
   const { executive } = report;
   const [gradingOpen, setGradingOpen] = React.useState(false);
@@ -87,22 +103,17 @@ export function ExecutiveSummary({ report }: { report: PublicScanReport }) {
        unconditional version rendered "0% · Limited PQ readiness · Plan migration
        soon — no hybrid key agreement offered" for endpoints where no handshake
        ever completed: a percentage, a rating and a recommendation, none of which
-       rested on an observation. */
+       rested on an observation.
+
+       The caption names the key-agreement case the report MEASURED. It used to
+       be inferred from the number (≥ 60 meant "hybrid"), so a hybrid endpoint
+       whose protocol list did not enumerate TLS 1.3 scored 55-58 and was
+       captioned "no hybrid key agreement offered" beside its accepted group. */
     {
       label: 'Post-Quantum Readiness',
       big: executive.postQuantumReadiness === null ? '—' : `${executive.postQuantumReadiness}%`,
-      sub:
-        executive.postQuantumReadiness === null
-          ? 'Not measured'
-          : executive.postQuantumReadiness >= 60
-            ? 'Hybrid observed'
-            : 'Limited PQ readiness',
-      detail:
-        executive.postQuantumReadiness === null
-          ? 'Named key-agreement groups could not be offered, so readiness was not scored.'
-          : executive.postQuantumReadiness >= 60
-            ? 'Hybrid ML-KEM key agreement accepted at the edge.'
-            : 'Plan migration soon — no hybrid key agreement offered.',
+      sub: PQ_CASE_CAPTION[executive.postQuantumKeyAgreement],
+      detail: executive.postQuantumDetail,
       ring: executive.postQuantumReadiness,
       color: scoreColor(executive.postQuantumReadiness),
     },
@@ -282,7 +293,7 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
             className="mt-1 text-xs font-semibold"
             style={{ color: scoreColor(executive.postQuantumReadiness) }}
           >
-            {!pqMeasured ? 'Not measured' : executive.postQuantumReadiness! >= 60 ? 'Hybrid ready' : 'Limited'}
+            {PQ_CASE_SHORT[executive.postQuantumKeyAgreement]}
           </p>
           <Meter
             value={executive.postQuantumReadiness}
@@ -326,17 +337,23 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
         {executive.classicalScore === null && !pqMeasured
           ? 'Neither classical encryption nor post-quantum readiness could be scored — the endpoint produced no cryptographic evidence to assess.'
           : `${
-              executive.classicalScore === null
+              /* Worded from the RATING printed directly above it. A private
+                 `>= 70` cut called a 70 "Strong" under its own "Fair" label. */
+              !classicalRating
                 ? 'Classical encryption was not scored,'
-                : executive.classicalScore >= 70
+                : classicalRating.rating === 'Elite' || classicalRating.rating === 'Excellent' || classicalRating.rating === 'Good'
                   ? 'Strong classical encryption today,'
-                  : 'Classical encryption needs hardening,'
+                  : classicalRating.rating === 'Fair'
+                    ? 'Workable classical encryption with hardening gaps,'
+                    : 'Classical encryption needs hardening,'
             } ${
               !pqMeasured
                 ? 'and post-quantum readiness was not measured at the edge.'
-                : executive.postQuantumReadiness! >= 60
+                : executive.postQuantumKeyAgreement === 'hybrid'
                   ? 'with hybrid post-quantum key agreement already in place.'
-                  : 'but limited post-quantum readiness for future migration.'
+                  : executive.postQuantumKeyAgreement === 'pure-kem'
+                    ? 'with standalone ML-KEM key agreement in place, but no classical hedge.'
+                    : 'but limited post-quantum readiness for future migration.'
             }`}
       </p>
 
@@ -352,10 +369,14 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
 
       {open && (
         <div className="space-y-3 border-t border-white/[0.06] px-5 py-4">
+          {/* The weights are read from the model, not typed into the caption, so
+              the sentence cannot drift from the table it describes. */}
           <p className="text-[11px] text-slate-500">
-            Weighted mean across the 12 categories in the published scoring model (18 + 15 + 12 + 12 + 10 + 8 + 5
-            + 5 + 3 + 4 + 5 + 3 = 100). Categories that could not be observed are excluded and their weight
-            redistributed among the rest — see &ldquo;How the Grading Works&rdquo; above for the full reference.
+            Weighted mean across the {scoreComponents.length} categories in the published scoring model (
+            {scoreComponents.map((component) => component.weight).join(' + ')} ={' '}
+            {scoreComponents.reduce((sum, component) => sum + component.weight, 0)}). Categories that could not be
+            observed are excluded and their weight redistributed among the rest — see &ldquo;How the Grading
+            Works&rdquo; above for the full reference.
           </p>
           {scoreComponents.map((component) => (
             <div key={component.key} className="grid grid-cols-[minmax(0,1fr)] gap-1.5 sm:grid-cols-[13rem_minmax(0,1fr)_3rem] sm:items-center sm:gap-4">
@@ -502,7 +523,8 @@ export function CryptoIntelligencePanel({ report }: { report: PublicScanReport }
                 color:
                   intelligence.quantumVulnerability === 'Vulnerable'
                     ? ACCENT.rose
-                    : intelligence.quantumVulnerability === 'Hybrid-protected'
+                    : intelligence.quantumVulnerability === 'Hybrid-protected' ||
+                        intelligence.quantumVulnerability === 'PQ-protected'
                       ? ACCENT.cyan
                       : intelligence.quantumVulnerability === 'Unknown'
                         ? ACCENT.slate

@@ -6,6 +6,8 @@
     <color name="qguard_cyan_500">#FF06B6D4</color>
     <color name="qguard_canvas">#FFF7F8FB</color>
     <color name="qguard_canvas_dark">#FF0F172A</color>
+    <!-- Launch splash field behind the QGuard Messaging badge (Android 12+). -->
+    <color name="qguard_brand_navy">#FF06123A</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 </resources>

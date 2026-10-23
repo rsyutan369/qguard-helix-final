@@ -65,7 +65,7 @@ function LogoMark({ size }: { size: number }) {
     <div className="qg-halo" style={{ width: size, height: size }}>
       <span className="qg-halo-glow" aria-hidden />
       <span className="qg-halo-ring" aria-hidden />
-      <img src="/Android_Logo.jpg" alt="QGuard Helix" className="qg-halo-img" />
+      <img src="/brand/qguard-messaging-badge.webp" alt="QGuard Messaging" className="qg-halo-img" />
     </div>
   );
 }
@@ -572,8 +572,8 @@ export default function LoginPage({
 
         .qg-halo { position: relative; display: grid; place-items: center; }
         .qg-halo-img {
-          position: relative; z-index: 2; width: 78%; height: 78%; object-fit: contain;
-          border-radius: 22%;
+          position: relative; z-index: 2; width: 86%; height: 86%; object-fit: contain;
+          border-radius: 50%;
           box-shadow: 0 8px 30px -6px rgba(76,124,255,0.5);
         }
         .qg-halo-glow {

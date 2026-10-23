@@ -147,7 +147,16 @@ export interface SuiteObservation {
 export function classifySuite(name: string, category?: string | null): SuiteObservation {
   return {
     name,
-    staticRsa: /(^|_)RSA_WITH/i.test(name) || category === 'rsa-kex',
+    /* Static RSA key transport is RSA IMMEDIATELY after the protocol prefix —
+       `TLS_RSA_WITH_…` (and RSA-PSK, which transports the same way). The old
+       `(^|_)RSA_WITH` also matched the `_RSA_WITH` inside `TLS_ECDHE_RSA_WITH_…`,
+       which is ephemeral ECDHE AUTHENTICATED by RSA — forward secret, and the
+       most common suite family on the Internet. Every RSA-certificate endpoint
+       was charged the 50-point static-RSA penalty and a "partial" forward
+       secrecy, while the Findings table (which reads the probe's category)
+       correctly called the same suites Healthy. OpenSSL-style names carry no
+       key-exchange prefix, so the probe's category still decides those. */
+    staticRsa: /^(?:TLS|SSL)_RSA_/i.test(name) || category === 'rsa-kex',
     weak: /3DES|_DES_|RC4|NULL|EXPORT|MD5|_anon_/i.test(name),
     cbc: /CBC/i.test(name),
   }
@@ -495,12 +504,16 @@ function keyExchange(t: TransportObservation, k: KeyAgreementObservation): Score
   /* Only a SETTLED hybrid probe licenses the refusal sentence. Classical groups
      settle first and cheapest, so phrasing this off `probed` printed "every
      hybrid ML-KEM group was offered and refused" for endpoints whose hybrid
-     probes had merely been throttled. */
-  const suffix = k.hybridSettled
-    ? ' · every hybrid ML-KEM group was offered in isolation and refused'
-    : k.probed
-      ? ' · hybrid ML-KEM groups did not settle on this run, so no post-quantum claim is made either way'
-      : ''
+     probes had merely been throttled. An endpoint with no TLS 1.3 is settled by
+     its protocol list: hybrid groups exist only in the 1.3 key_share, so the
+     probe is skipped and "did not settle" would understate a known negative. */
+  const suffix = tls13ProvablyAbsent(t)
+    ? ' · TLS 1.3 is not offered, so no hybrid ML-KEM group can be negotiated'
+    : k.hybridSettled
+      ? ' · every hybrid ML-KEM group was offered in isolation and refused'
+      : k.probed
+        ? ' · hybrid ML-KEM groups did not settle on this run, so no post-quantum claim is made either way'
+        : ''
   const observed = `${k.socketLabel || 'not observed'}${
     k.negotiatedCurve ? ` (${k.negotiatedCurve})` : ''
   }${suffix}`
@@ -695,8 +708,23 @@ const EXCLUSION_REASON: Record<string, (e: PublishedCategoryEvidence) => string>
       : 'no cryptographic material was observed on this target',
   'post-quantum-readiness': (e) =>
     e.transport.handshakeCompleted || e.certificate
-      ? 'hybrid ML-KEM group probing did not settle on this run, and hybrid deployment carries 55 of this category’s 100 points — a readiness figure without it would be a guess'
+      ? e.keyAgreement.probed
+        ? 'hybrid ML-KEM group probing did not settle on this run, and hybrid deployment carries 55 of this category’s 100 points — a readiness figure without it would be a guess'
+        : 'named key-agreement groups were not probed on this run, and hybrid deployment carries 55 of this category’s 100 points — a readiness figure without it would be a guess'
       : 'no TLS handshake completed and no certificate was read, so there was nothing to assess readiness from',
+}
+
+/**
+ * The endpoint's accepted-protocol list was measured and does not include
+ * TLS 1.3 — so no hybrid ML-KEM group can be negotiated, whatever the group
+ * probe did. A measured negative, not an unknown: both scanners skip the hybrid
+ * probe on such an endpoint, and reading that skip as "did not settle" withheld
+ * the readiness score on expired.badssl.com while its own findings table said
+ * "Not offered — the endpoint does not negotiate TLS 1.3".
+ */
+export function tls13ProvablyAbsent(t: TransportObservation): boolean {
+  if (!t.handshakeCompleted || !t.acceptedProtocols?.length) return false
+  return !t.acceptedProtocols.includes('TLSv1.3') && t.negotiatedProtocol !== 'TLSv1.3'
 }
 
 /**
@@ -714,8 +742,14 @@ export function publishedPostQuantumReadiness(
   const t = e.transport
   const k = e.keyAgreement
   if (!t.handshakeCompleted && !e.certificate) return null
-  // A probe that ran must have settled its hybrid groups before it can speak.
-  if (k.probed && !k.hybridSettled && !k.hybrid && !k.pureKem) return null
+  /* The hybrid signal must be MEASURED before the model can speak, because it
+     carries 55 of the 100 points. Three ways it is: a hybrid/ML-KEM group was
+     accepted, the hybrid probe settled on a refusal, or the endpoint provably
+     offers no TLS 1.3 (hybrid groups exist only in its key_share). A probe that
+     never ran, or ran and did not settle, measured nothing — scoring it as a
+     refusal is what turned a 73% endpoint into 6% on a throttled run. */
+  const hybridMeasured = k.hybrid || k.pureKem || (k.probed && k.hybridSettled) || tls13ProvablyAbsent(t)
+  if (!hybridMeasured) return null
 
   return postQuantumReadinessFromSignals({
     hybridObserved: k.hybrid || k.pureKem,

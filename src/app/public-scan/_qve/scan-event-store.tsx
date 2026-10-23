@@ -259,7 +259,8 @@ export function qveReducer(
             {
               id: event.id,
               clock: '00:00',
-              label: 'Assessment started',
+              // A replayed RECORDED scan says so; nothing was started.
+              label: typeof event.details?.timelineLabel === 'string' ? event.details.timelineLabel : 'Assessment started',
               status: 'running',
               severity: 'info',
               detail: event.asset ?? undefined,

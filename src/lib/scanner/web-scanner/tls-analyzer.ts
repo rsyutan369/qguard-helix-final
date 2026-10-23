@@ -222,8 +222,21 @@ function extractKeyExchange(
     } else if (ek.type === 'X25519' || ek.type === 'X448') {
       negotiatedCurve = ek.name || ek.type
       keyExchange = `ECDHE ${negotiatedCurve}${ek.size ? ` (${ek.size}-bit)` : ''}`
+    } else if (ek.type === 'TLSGroup') {
+      /* Node 24 (OpenSSL 3.5) reports a TLS 1.3 key_share generically as
+         `{ type: 'TLSGroup' }`, and for hybrid groups such as X25519MLKEM768
+         with no name or size at all. The generic branch below printed that as
+         "TLSGroup (undefined-bit)" for cloudflare.com, google.com and every
+         other TLS 1.3 endpoint — and wherever the named-group probe had not
+         resolved the group, that string reached the findings table, Sophia and
+         the timeline. A name, when present, is the negotiated group; without
+         one the RFC 8446 guarantee below supplies the honest label. */
+      if (ek.name) {
+        negotiatedCurve = ek.name
+        keyExchange = /mlkem|kyber/i.test(ek.name) ? `Hybrid ECDHE + ML-KEM (${ek.name})` : `ECDHE ${ek.name}`
+      }
     } else if (ek.type) {
-      keyExchange = `${ek.type} (${ek.size}-bit)`
+      keyExchange = ek.size ? `${ek.type} (${ek.size}-bit)` : ek.type
     }
   }
 

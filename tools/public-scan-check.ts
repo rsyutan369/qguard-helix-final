@@ -15,6 +15,8 @@ import 'dotenv/config'
 import { assessPublicTarget } from '../src/lib/scanner/public-scan/assess'
 import { supersedesXFrameOptions } from '../src/lib/scanner/public-scan/engines/http-engine'
 import { probeReachability } from '../src/lib/scanner/public-scan/engines/reachability-engine'
+import { censusFor } from '../src/lib/scanner/published-categories'
+import { toPublishedCategoryEvidence } from '../src/lib/scanner/public-scan/score-categories'
 import {
   buildScoreComponents,
   computeClassicalScore,
@@ -626,15 +628,19 @@ async function main(): Promise<void> {
   // The Cryptographic Intelligence panel and the `cryptographic-algorithms`
   // score category must be counting the SAME array. They used to be two
   // independently-derived lists: the score said "7 algorithms observed" beside
-  // a panel that listed four of them.
-  const engineAlgorithms = report.evidence.engines.crypto.data.algorithms
+  // a panel that listed four of them. The category now scores the shared
+  // ALGORITHM CENSUS (published-categories `censusFor`), so that is the array
+  // both must agree with — comparing against the engine catalogue is what let
+  // "14 algorithms observed" sit above a panel of 8 while this check passed
+  // half of itself.
+  const engineAlgorithms = censusFor(toPublishedCategoryEvidence(report.evidence)).entries
   check(
     'Cryptographic Intelligence lists exactly the algorithms the score category counts',
     report.intelligence.observedAlgorithms.length === engineAlgorithms.length &&
       report.intelligence.observedAlgorithms.every(
         (algorithm, index) => algorithm.name === engineAlgorithms[index].name,
       ),
-    `panel=${report.intelligence.observedAlgorithms.length} engine=${engineAlgorithms.length}`,
+    `panel=${report.intelligence.observedAlgorithms.length} census=${engineAlgorithms.length}`,
   )
   check(
     'the algorithms score category reports the same count it scored',

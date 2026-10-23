@@ -114,8 +114,10 @@ export function ScannerExecutiveSummary({ assessment }: { assessment: ScannerAss
                 ? ` Separately, ${assessment.footprint.components.vulnerable} of ${assessment.footprint.components.total} inventoried components are classified quantum-vulnerable.`
                 : ' No cryptographic component was inventoried on this run.'
             }`,
-      ring: executive.postQuantumReadiness ?? 0,
-      color: scoreColor(executive.postQuantumReadiness ?? 0),
+      // No ring for an unscored readiness: a ring at 0 in the critical colour is
+      // a measurement, and the text beside it says there was none.
+      ring: executive.postQuantumReadiness,
+      color: executive.postQuantumReadiness === null ? ACCENT.slate : scoreColor(executive.postQuantumReadiness),
     },
     {
       label: 'Business Risk',
@@ -224,7 +226,9 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
      that category plus Cryptographic Algorithms and scored 27 on the audited
      scan, so the flanks could not reproduce the middle. */
   const { classical, postQuantum } = assessment.postureSplit;
-  const classicalRating = scoreToGrade(executive.classicalScore);
+  /* Rated only when there is a score to rate — a withheld half has no rating,
+     and defaulting one printed "Critical" under a dash. */
+  const classicalRating = executive.classicalScore === null ? null : scoreToGrade(executive.classicalScore);
 
   return (
     <Panel className="flex h-full flex-col overflow-hidden">
@@ -238,17 +242,19 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
             Classical Encryption
           </p>
           <CountUp value={executive.classicalScore} className="mt-2 block text-5xl font-black tracking-tight" />
-          <p className="mt-1 text-xs font-semibold" style={{ color: classicalRating.color }}>
-            {classicalRating.rating}
+          <p className="mt-1 text-xs font-semibold" style={{ color: classicalRating?.color ?? ACCENT.slate }}>
+            {classicalRating?.rating ?? (executive.gradeable ? 'Not measured' : 'Withheld until graded')}
           </p>
           <Meter
             value={executive.classicalScore}
-            color={classicalRating.color}
+            color={classicalRating?.color}
             className="mx-auto mt-3 max-w-[9rem] sm:mx-0"
           />
-          <p className="mt-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-600">
-            {classical.weightShare}% of the measured model
-          </p>
+          {executive.classicalScore !== null && (
+            <p className="mt-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-600">
+              {classical.weightShare}% of the measured model
+            </p>
+          )}
         </div>
 
         {/* Same score, same colour as the grade badge — the gauge and the letter
@@ -332,9 +338,15 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
       </div>
 
       <p className="mt-auto px-5 pb-4 pt-5 text-center text-[13px] leading-relaxed text-slate-400">
-        {executive.classicalScore >= 70
-          ? 'Strong classical encryption across the scanned estate,'
-          : 'Classical encryption across the scanned estate needs hardening,'}{' '}
+        {/* Worded from the RATING printed above it. A private `>= 70` cut called a
+            70 "Strong" under its own "Fair" label. */}
+        {!classicalRating
+          ? 'Classical encryption has not been graded for this view,'
+          : classicalRating.rating === 'Elite' || classicalRating.rating === 'Excellent' || classicalRating.rating === 'Good'
+            ? 'Strong classical encryption across the scanned estate,'
+            : classicalRating.rating === 'Fair'
+              ? 'Workable classical encryption across the scanned estate, with hardening gaps,'
+              : 'Classical encryption across the scanned estate needs hardening,'}{' '}
         {/* `postQuantumReadiness` is the published readiness CATEGORY, not a
             share of components — and it is nullable. Both were wrong here: at 78
             this read "with most components already quantum-safe" on a scan whose
@@ -389,7 +401,9 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
               the headline are normally the same number — when they are not, the
               summary was rebuilt from stored findings by severity count, and
               saying so is more useful than quietly showing one of them. */}
-          {assessment.decompositionScore !== null && (
+          {/* Only when there is a composite to reconcile with: a withheld composite
+              rendered "vs composite /100". */}
+          {assessment.decompositionScore !== null && executive.encryptionScore !== null && (
             <p
               className={cn(
                 'rounded-md border px-2.5 py-1.5 font-mono text-[10px] leading-relaxed',
@@ -580,12 +594,30 @@ export function ScannerAttackSurface({ assessment }: { assessment: ScannerAssess
           {measured}/{assessment.attackSurface.length} measured
         </span>
       </div>
+      <SurfaceScopeNote assessment={assessment} />
       <ul className="divide-y divide-white/[0.05]">
         {assessment.attackSurface.map((item) => (
           <SurfaceRow key={item.key} item={item} />
         ))}
       </ul>
     </Panel>
+  );
+}
+
+/**
+ * States which endpoint a per-endpoint panel describes on a multi-target run.
+ * The score decomposition aggregates every target; these panels read one
+ * endpoint's edge evidence, and without saying so a row read for target 1 sat
+ * beside a category scored from target 2 as if they disagreed.
+ */
+function SurfaceScopeNote({ assessment }: { assessment: ScannerAssessment }) {
+  const { target, of } = assessment.surfaceTarget;
+  if (of <= 1 || !target) return null;
+  return (
+    <p className="border-b border-white/[0.06] bg-cyan-400/[0.03] px-5 py-2 text-[10.5px] leading-snug text-slate-400">
+      Observed on <span className="font-mono text-slate-200">{target}</span> — 1 of {of} scanned targets. The Encryption
+      Score and its decomposition aggregate all {of}.
+    </p>
   );
 }
 
@@ -636,6 +668,7 @@ export function ScannerCryptoIntelligence({ assessment }: { assessment: ScannerA
       <div className="border-b border-white/[0.06] px-5 py-3">
         <SectionLabel accent={ACCENT.violet}>Cryptographic Intelligence</SectionLabel>
       </div>
+      <SurfaceScopeNote assessment={assessment} />
 
       <div className="space-y-4 px-5 py-4">
         <div>
@@ -1040,6 +1073,8 @@ const THREAT_STATUS: Record<string, string> = {
   SAFE: 'pass',
 };
 
+const THREAT_ORDER: Record<string, number> = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, SAFE: 0 };
+
 export function ScannerFindingsTable({
   findings,
   total,
@@ -1058,14 +1093,26 @@ export function ScannerFindingsTable({
   total: number;
 }) {
   const [expanded, setExpanded] = React.useState(false);
-  const rows = expanded ? findings : findings.slice(0, 8);
+  /* Worst first. The panel shows eight rows before "View all", and in arrival
+     order those eight were whatever the first modules emitted — a CRITICAL
+     static-RSA suite could sit below the fold under a list of SAFE rows. */
+  const ordered = React.useMemo(
+    () => [...findings].sort((a, b) => (THREAT_ORDER[b.threatLevel] ?? 0) - (THREAT_ORDER[a.threatLevel] ?? 0)),
+    [findings],
+  );
+  const rows = expanded ? ordered : ordered.slice(0, 8);
 
   return (
     <Panel className="overflow-hidden">
       <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel>Cryptographic Findings</SectionLabel>
+        {/* The count of the rows THIS table lists. With no scan in view the rows
+            come from the recorded history in the selected window while the
+            headline total is the tenant snapshot — two populations, so both are
+            named instead of one number captioning the other's rows. */}
         <span className="font-mono text-[10px] text-slate-500">
-          {total} recorded observation{total === 1 ? '' : 's'}
+          {findings.length} recorded observation{findings.length === 1 ? '' : 's'}
+          {total !== findings.length && ` · ${total} across the tenant snapshot`}
         </span>
       </div>
 
@@ -1386,16 +1433,23 @@ export function ScannerSophiaInsight({ assessment }: { assessment: ScannerAssess
         with a reason the Executive Summary already renders. Interpolated
         unguarded, it printed the literal string "null%" to the operator. */
   const componentClause = components.total > 0
-    ? ` Of ${pluralize(components.total, 'cryptographic component')} inventoried by this scan, ${components.vulnerable} ${components.vulnerable === 1 ? 'is' : 'are'} quantum-vulnerable.`
+    ? ` Of ${pluralize(components.total, 'cryptographic component')} ${
+        assessment.counters.scope === 'scan' ? 'inventoried by this scan' : 'in the recorded scans in view'
+      }, ${components.vulnerable} ${components.vulnerable === 1 ? 'is' : 'are'} quantum-vulnerable.`
     : '';
   const readinessClause = executive.postQuantumReadiness === null
     ? ` Post-quantum readiness was not scored: ${executive.postQuantumReadinessReason ?? 'no measurable evidence for that dimension'}.`
     : ` Measured post-quantum readiness for this endpoint is ${executive.postQuantumReadiness}/100.`;
 
-  const narrative = assessment.hasEvidence
-    ? `The scanned estate holds a composite cryptographic posture of ${executive.encryptionScore}/100${
+  /* A withheld composite is said to be withheld — it used to print "0/100", the
+     worst measured value on the scale, for a run nobody had graded. */
+  const postureClause = executive.encryptionScore === null
+    ? `No composite cryptographic posture is published for this view yet — ${executive.gradeDetail.charAt(0).toLowerCase()}${executive.gradeDetail.slice(1)}`
+    : `The scanned estate holds a composite cryptographic posture of ${executive.encryptionScore}/100${
         executive.gradeable ? ` (grade ${executive.grade}, ${executive.gradeLabel})` : ''
-      }.${componentClause}${readinessClause} Business risk reads ${executive.businessRisk} and the evidence behind it carries ${executive.confidence}% confidence.${
+      }.`;
+  const narrative = assessment.hasEvidence
+    ? `${postureClause}${componentClause}${readinessClause} Business risk reads ${executive.businessRisk} and the evidence behind it carries ${executive.confidence}% confidence.${
         hndl.immediate + hndl.soon > 0
           ? ` ${pluralize(hndl.immediate + hndl.soon, 'harvest-now exposure')} need attention before the modelled break window.`
           : ''

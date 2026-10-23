@@ -47,6 +47,7 @@ import {
   observationEmitter,
   unmeasuredResult,
 } from './contract'
+import { hybridProbeSettled } from '../../web-scanner/edge-intelligence-model'
 
 export * from './contract'
 export * from './dns-engine'
@@ -141,6 +142,54 @@ export class ScanCancelledError extends Error {
   }
 }
 
+/**
+ * The key-agreement clause of the TLS stage line — ONE wording for the live rail
+ * and the cached replay.
+ *
+ * Both used to print "classical groups only" whenever no hybrid group was in the
+ * accepted list, including runs where the hybrid probe never settled — a
+ * negative the scan had not measured, sitting above a report that correctly
+ * said "not settled".
+ */
+export function keyAgreementPhrase(observed: {
+  hybridGroups: string[]
+  pureKemGroups?: string[]
+  hybridSettled: boolean
+  supportedProtocols: string[]
+}): string {
+  if (observed.hybridGroups.length) return `hybrid PQ (${observed.hybridGroups[0]})`
+  if (observed.pureKemGroups?.length) return `standalone ML-KEM (${observed.pureKemGroups[0]})`
+  const tls13Absent = observed.supportedProtocols.length > 0 && !observed.supportedProtocols.includes('TLSv1.3')
+  if (tls13Absent) return 'no TLS 1.3, so no hybrid group is possible'
+  return observed.hybridSettled ? 'classical groups only' : 'hybrid probe not settled'
+}
+
+/**
+ * The TLS stage line — the rail's, the cached replay's, and (because a card
+ * keeps its first lines) the TLS hero card's. It names the legacy exposure the
+ * `tls-version` row reports; "TLSv1.3 · 4 protocols · hybrid PQ" alone sat on a
+ * Critical card for an endpoint still accepting TLS 1.0.
+ */
+export function tlsStageDetail(observed: {
+  negotiatedProtocol: string | null
+  hybridGroups: string[]
+  pureKemGroups?: string[]
+  hybridSettled: boolean
+  supportedProtocols: string[]
+}): string {
+  const legacy = observed.supportedProtocols
+    .filter((protocol) => protocol === 'TLSv1' || protocol === 'TLSv1.1')
+    .map((protocol) => (protocol === 'TLSv1' ? 'TLS 1.0' : 'TLS 1.1'))
+  return [
+    observed.negotiatedProtocol ?? 'n/a',
+    `${observed.supportedProtocols.length} protocols`,
+    legacy.length ? `legacy ${legacy.join(', ')} accepted` : '',
+    keyAgreementPhrase(observed),
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
 export async function runScanEngines(options: OrchestratorOptions): Promise<ScanEvidenceBundle> {
   const { host, port, onEngine, onEngineStart, signal } = options
   const startedAt = Date.now()
@@ -181,7 +230,11 @@ const caaAnswered = (dns: { caaQueryable: boolean; caaClimbComplete: boolean }) 
       detail: result.data.addressCount
         ? `${result.data.addressCount} address(es) resolved · ${result.data.resolvedVia}`
         : 'No public address records',
-      status: result.data.addressCount ? 'pass' : 'critical',
+      /* Resolving is INVENTORY, not a security verdict — the `internet-facing`
+         row is an inventory row for the same reason. As a `pass` it settled the
+         DNS card "Secure" on runs where CAA, DNSSEC and email authentication all
+         came back Unknown, i.e. where no DNS control had been measured at all. */
+      status: result.data.addressCount ? 'info' : 'critical',
       severity: result.data.addressCount ? 'none' : 'high',
       verdict: result.data.addressCount ? 'Resolved' : 'Unresolved',
     })
@@ -254,6 +307,11 @@ const caaAnswered = (dns: { caaQueryable: boolean; caaClimbComplete: boolean }) 
     )
     const hardened = transport.filter((h) => h.status === 'Healthy').length
     const ratio = hardened / Math.max(1, transport.length)
+    /* Severity follows the `http-security` row: MEDIUM only when a REQUIRED
+       header is missing or weak. A ratio threshold raised the live card to
+       MEDIUM on origins whose Findings row was SAFE, and the card's verdict is
+       a running maximum, so the report could never bring it back down. */
+    const missingRequired = transport.some((h) => h.group === 'Critical' && h.status !== 'Healthy')
     onEngine?.(
       'http-security',
       result.ok,
@@ -268,7 +326,7 @@ const caaAnswered = (dns: { caaQueryable: boolean; caaClimbComplete: boolean }) 
         ? `${hardened}/${transport.length} headers hardened · HTTP ${result.data.statusCode}`
         : (result.data.error ?? 'Origin did not answer over HTTPS'),
       status: !result.data.reachable ? 'critical' : ratio >= 0.8 ? 'pass' : ratio >= 0.5 ? 'warning' : 'critical',
-      severity: !result.data.reachable ? 'medium' : ratio >= 0.5 ? 'low' : 'medium',
+      severity: !result.data.reachable ? 'medium' : missingRequired ? 'medium' : hardened < transport.length ? 'low' : 'none',
       verdict: !result.data.reachable ? 'Unreachable' : ratio >= 0.8 ? 'Good' : ratio >= 0.5 ? 'Fair' : 'Weak',
     })
     return result
@@ -286,9 +344,13 @@ const caaAnswered = (dns: { caaQueryable: boolean; caaClimbComplete: boolean }) 
     'tls-intelligence',
     tlsResult.ok,
     tlsResult.ok
-      ? `${tlsResult.data.negotiatedProtocol} · ${tlsResult.data.supportedProtocols.length} protocols · ${
-          tlsResult.data.hybridGroups.length ? `hybrid PQ (${tlsResult.data.hybridGroups[0]})` : 'classical groups only'
-        }`
+      ? tlsStageDetail({
+          negotiatedProtocol: tlsResult.data.negotiatedProtocol,
+          hybridGroups: tlsResult.data.hybridGroups,
+          pureKemGroups: tlsResult.data.pureKemGroups,
+          hybridSettled: hybridProbeSettled(tlsResult.data),
+          supportedProtocols: tlsResult.data.supportedProtocols,
+        })
       : tlsResult.error ?? 'handshake failed',
   )
 
@@ -347,6 +409,13 @@ const caaAnswered = (dns: { caaQueryable: boolean; caaClimbComplete: boolean }) 
 }
 
 /**
+ * Label of the post-quantum readiness observation. The public assessor holds this
+ * observation back and republishes it from the scored report (see `assess.ts`),
+ * so the live card and the rail never quote a figure the report then contradicts.
+ */
+export const CRYPTO_STAGE_OBSERVATION_LABEL = 'Post-quantum readiness'
+
+/**
  * Publish the cryptographic-intelligence stage.
  *
  * Extracted because it has to say two very different things and used to say only
@@ -377,7 +446,7 @@ function emitCryptoStage(
     )
     emit({
       surface: 'quantum',
-      label: 'Post-quantum readiness',
+      label: CRYPTO_STAGE_OBSERVATION_LABEL,
       detail: crypto.notAssessedReason ?? 'No cryptographic evidence was collected, so readiness was not scored.',
       status: 'info',
       severity: 'info',
@@ -393,7 +462,7 @@ function emitCryptoStage(
   )
   emit({
     surface: 'quantum',
-    label: 'Post-quantum readiness',
+    label: CRYPTO_STAGE_OBSERVATION_LABEL,
     detail: hybrid
       ? `ML-KEM key establishment active (${tlsResult.data.primaryGroup}) · readiness ${crypto.postQuantumReadiness}%`
       : `Hybrid not detected · classical key establishment only · readiness ${crypto.postQuantumReadiness}%`,

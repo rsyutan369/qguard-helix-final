@@ -19,8 +19,8 @@
 import { Router, type Request, type Response } from 'express'
 import net from 'node:net'
 import { validateAsset } from '@/lib/scanner/asset-validator'
-import { assessPublicTarget } from '@/lib/scanner/public-scan/assess'
-import { ScanCancelledError, type ObservationSink } from '@/lib/scanner/public-scan/engines'
+import { assessPublicTarget, quantumStageDetail } from '@/lib/scanner/public-scan/assess'
+import { ScanCancelledError, tlsStageDetail, type ObservationSink } from '@/lib/scanner/public-scan/engines'
 import type { PublicScanReport, PublicScanStage } from '@/lib/scanner/public-scan/types'
 import { trustedClientIp } from './runtime/client-ip'
 import { PublicScanCoordinator, type CoordinatorOptions, type QueueEvent, type QueueTarget } from './public-scan-queue'
@@ -618,6 +618,12 @@ function cachedStages(report: PublicScanReport): PublicScanStage[] {
      identical assessment. */
   const unreachable = report.unreachable
   const reason = report.reachability?.detail ?? 'Endpoint did not answer'
+  const transportHeaders = evidence.http.headers.filter(
+    (header) => header.name !== 'strict-transport-security' && header.applicable !== false,
+  )
+  const transportHardened = transportHeaders.filter((header) => header.secure).length
+  // Older cached reports predate the flag; a scored readiness implies assessment.
+  const cryptoAssessed = evidence.engines?.crypto?.data?.assessed ?? executive.postQuantumReadiness !== null
   return [
     {
       key: 'dns',
@@ -637,13 +643,17 @@ function cachedStages(report: PublicScanReport): PublicScanStage[] {
       label: 'TLS Handshake',
       description: 'Negotiating protocols and cipher suites',
       state: unreachable ? 'unavailable' : report.degraded ? 'failed' : 'complete',
+      // The live stage line's own wording (`tlsStageDetail`), so a cache hit
+      // cannot say "classical groups only" about a probe that never settled.
       detail: unreachable
         ? reason
-        : `${evidence.tls?.tlsVersion ?? 'n/a'} · ${
-            evidence.keyAgreement.hybridGroups.length
-              ? `hybrid PQ (${evidence.keyAgreement.hybridGroups[0]})`
-              : 'classical groups only'
-          }`,
+        : tlsStageDetail({
+            negotiatedProtocol: evidence.tls?.tlsVersion ?? null,
+            hybridGroups: evidence.keyAgreement.hybridGroups,
+            pureKemGroups: evidence.keyAgreement.pureKemGroups,
+            hybridSettled: evidence.keyAgreement.hybridSettled,
+            supportedProtocols: evidence.tls?.supportedProtocols ?? [],
+          }),
     },
     {
       key: 'certificate',
@@ -661,8 +671,10 @@ function cachedStages(report: PublicScanReport): PublicScanStage[] {
       label: 'Security Header Analysis',
       description: 'Inspecting HTTP transport controls',
       state: evidence.http.reachable ? 'complete' : unreachable ? 'unavailable' : 'failed',
+      // The `http-security` row's population — HSTS and superseded headers are
+      // not in it — exactly as the live stage line counts it.
       detail: evidence.http.reachable
-        ? `HTTP ${evidence.http.statusCode} · ${evidence.http.headers.filter((h) => h.secure).length}/${evidence.http.headers.length} hardened`
+        ? `HTTP ${evidence.http.statusCode} · ${transportHardened}/${transportHeaders.length} hardened`
         : unreachable
           ? `Not collected — ${reason}`
           : 'Origin unreachable',
@@ -671,11 +683,14 @@ function cachedStages(report: PublicScanReport): PublicScanStage[] {
       key: 'quantum',
       label: 'Quantum Assessment',
       description: 'Scoring post-quantum exposure',
-      state: executive.postQuantumReadiness === null ? 'unavailable' : 'complete',
-      detail:
-        executive.postQuantumReadiness === null
-          ? 'Not assessed — no cryptographic evidence was collected.'
-          : `PQ readiness ${executive.postQuantumReadiness}% · encryption ${executive.encryptionScore ?? '—'}/100`,
+      /* The engine's own assessed/not-assessed verdict decides the state, as it
+         does live. Keying it off the readiness turned a completed module whose
+         hybrid probe merely did not settle into "no cryptographic evidence was
+         collected" — untrue for a run with a handshake and a chain. */
+      state: cryptoAssessed ? 'complete' : 'unavailable',
+      detail: cryptoAssessed
+        ? quantumStageDetail(executive)
+        : (evidence.engines?.crypto?.data?.notAssessedReason ?? 'Not assessed — no cryptographic evidence was collected.'),
     },
     {
       key: 'report',

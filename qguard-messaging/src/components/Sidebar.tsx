@@ -45,8 +45,8 @@ export default function Sidebar({ activePage, modules, snapshot, unreadMessages 
   return (
     <aside className="flex h-screen w-[232px] flex-col border-r border-line bg-white/75 px-3 py-5 backdrop-blur-xl">
       <div className="mb-7 flex shrink-0 items-center gap-3 px-2">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-violet-100 bg-white p-1 shadow-tight">
-          <img src="/NEW_LOGO.png" alt="Qguard Helix" className="h-full w-full object-contain" />
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full">
+          <img src="/brand/qguard-messaging-badge.webp" alt="QGuard Messaging" className="h-full w-full object-contain drop-shadow-[0_4px_10px_rgba(59,130,246,0.45)]" />
         </div>
         <div>
           <div className="text-sm font-bold tracking-wide text-violet-600">QGUARD</div>

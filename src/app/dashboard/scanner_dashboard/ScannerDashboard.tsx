@@ -61,7 +61,7 @@ import { useExposureAccess } from '@/hooks/use-exposure-access';
 import { LocalAssessmentPanel } from '@/components/exposure/LocalAssessmentPanel';
 import { DevAssessmentPanel } from '@/components/exposure/DevAssessmentPanel';
 import type { ExposureAssessment, ScanMode } from '@/lib/scanner/exposure/types';
-import { buildAssessment, SCANNER_NODE_BLUEPRINTS, SCANNER_NODE_MODULES } from './_intel';
+import { buildAssessment, riskColorFor, SCANNER_NODE_BLUEPRINTS, SCANNER_NODE_MODULES } from './_intel';
 import {
   clearScannerSession,
   loadScannerSession,
@@ -682,54 +682,6 @@ function filterHistoryByTimeframe(entries: HistoryEntry[], timeframe: HistoryTim
   return entries;
 }
 
-function historyMetricSnapshot(entries: HistoryEntry[]) {
-  const assetKeys = new Set<string>();
-  const vulnerableAssetKeys = new Set<string>();
-  let totalFindings = 0;
-  let critical = 0;
-  let vulnerableFindings = 0;
-  let pqcReady = 0;
-  let weightedRisk = 0;
-  let riskWeight = 0;
-
-  entries.forEach((entry) => {
-    const summary = entry.summary;
-    const entryAssets = entry.linkedAssetRecords?.length
-      ? entry.linkedAssetRecords
-      : [entry.target || entry.scanId].filter(Boolean);
-    entryAssets.forEach((asset) => assetKeys.add(asset));
-    if ((entry.vulnerableFindings || summary?.vulnerable || 0) > 0) {
-      entryAssets.forEach((asset) => vulnerableAssetKeys.add(asset));
-    }
-
-    const findingsCount = summary?.totalFindings ?? entry.detectedComponents ?? entry.findings?.length ?? 0;
-    totalFindings += findingsCount;
-    critical += summary?.critical ?? normalizeDashboardFindings(entry.findings).filter((finding) => finding.threatLevel === 'CRITICAL').length;
-    vulnerableFindings += summary?.vulnerable ?? entry.vulnerableFindings ?? 0;
-    pqcReady += summary?.pqcReady ?? entry.pqcReadyFindings ?? 0;
-
-    const risk = entry.riskScore ?? summary?.riskScore;
-    if (typeof risk === 'number' && Number.isFinite(risk)) {
-      const weight = Math.max(1, findingsCount);
-      weightedRisk += risk * weight;
-      riskWeight += weight;
-    }
-  });
-
-  const riskScore = riskWeight > 0 ? Math.round(weightedRisk / riskWeight) : 0;
-  const pqcReadiness = totalFindings > 0 ? Math.round((pqcReady / totalFindings) * 100) : 0;
-
-  return {
-    totalAssetsScanned: assetKeys.size || entries.reduce((sum, entry) => sum + Math.max(0, entry.summary?.targetsScanned ?? 0), 0),
-    vulnerableAssets: vulnerableAssetKeys.size,
-    riskScore,
-    criticalFindings: critical,
-    pqcReadiness,
-    totalFindings,
-    vulnerableFindings,
-    pqcReady,
-  };
-}
 
 
 
@@ -802,6 +754,8 @@ export default function ScannerDashboard() {
   }, [toast]);
 
   const [status, setStatus] = useState<ScanStatus>('idle');
+  /** When the live run's authoritative `scan-complete` frame arrived. */
+  const [liveCompletedAt, setLiveCompletedAt] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>(() => requestedTab ?? 'setup');
 
   /* Three assessment modes (§3). Web is the existing authenticated estate
@@ -1384,6 +1338,7 @@ export default function ScannerDashboard() {
     setTerminalPaused(false);
     setTerminalPinned(false);
     setScanStartedAt(startedAtMs);
+    setLiveCompletedAt(null);
     setStatus('queued');
     // The hero visualization sits above the tab strip and is visible from every
     // tab, so a run no longer needs to steal the user's current view.
@@ -1482,6 +1437,10 @@ export default function ScannerDashboard() {
           if (isTerminalComplete) {
             setStatus('completed');
             setProgress(100);
+            // The moment the server declared the run complete — the status bar's
+            // timestamp, rather than the clock at whatever render shows it.
+            const frameTime = (event as { timestamp?: unknown }).timestamp;
+            setLiveCompletedAt(typeof frameTime === 'string' && !Number.isNaN(Date.parse(frameTime)) ? frameTime : new Date().toISOString());
             // Land on the full assessment — the enterprise equivalent of the
             // public scan's results stack.
             setActiveTab('setup');
@@ -2187,7 +2146,6 @@ export default function ScannerDashboard() {
   const showMitigationNextStep = status === 'completed' && liveCounts.vulnerable > 0;
 
   const displayedHistory = filterHistoryByTimeframe(history, historyTimeframe);
-  const historyMetrics = historyMetricSnapshot(displayedHistory);
 
   /* ── The assessment's evidence set, chosen ONCE ────────────────────────────
      Everything on the results surface — hero counters, Executive Summary,
@@ -2225,9 +2183,6 @@ export default function ScannerDashboard() {
     ? findings
     : normalizeDashboardFindings(latestHistoryEntry?.findings);
 
-  const currentScanReadiness = effectiveSummary?.totalFindings
-    ? Math.round(((effectiveSummary.pqcReady ?? 0) / Math.max(1, effectiveSummary.totalFindings)) * 100)
-    : 0;
   // Central-intelligence KPIs — computed from the shared cryptographic tables
   // (assets / inventory / exposures / results / vulnerabilities), never a
   // time-window subset. This is the authoritative headline for the tenant's
@@ -2235,42 +2190,12 @@ export default function ScannerDashboard() {
   const intelSummary = scannerIntel.data.summary;
   const intelHasData =
     intelSummary.totalAssets > 0 || intelSummary.totalFindings > 0 || intelSummary.totalComponents > 0;
-  const intelMetrics = {
-    totalAssetsScanned: intelSummary.totalAssets,
-    vulnerableAssets: intelSummary.vulnerableAssets,
-    riskScore: intelSummary.riskScore,
-    criticalFindings: intelSummary.criticalFindings,
-    pqcReadiness: intelSummary.pqcReadiness,
-    totalFindings: intelSummary.totalFindings,
-    vulnerableFindings: intelSummary.vulnerableComponents,
-    pqcReady: intelSummary.pqcReadyComponents,
-  };
-  /* Scan scope when an assessment is in view, estate scope otherwise — the same
-     rule `buildAssessment` applies, so the hero counters and the Estate
-     Footprint panel can never be counting different populations. */
-  const dashboardMetrics = effectiveSummary
-    ? {
-        totalAssetsScanned: effectiveSummary.targetsScanned,
-        vulnerableAssets: effectiveSummary.vulnerable > 0 ? Math.max(1, effectiveSummary.targetsScanned) : 0,
-        riskScore: effectiveSummary.riskScore,
-        criticalFindings: effectiveSummary.critical,
-        pqcReadiness: currentScanReadiness,
-        totalFindings: effectiveSummary.totalFindings,
-        vulnerableFindings: effectiveSummary.vulnerable,
-        pqcReady: effectiveSummary.pqcReady,
-      }
-    : intelHasData
-      ? intelMetrics
-      : historyMetrics;
-  const dashboardRiskLabel = dashboardMetrics.riskScore >= 80
-    ? 'Critical Risk'
-    : dashboardMetrics.riskScore >= 60
-      ? 'High Risk'
-      : dashboardMetrics.riskScore >= 40
-        ? 'Medium Risk'
-        : dashboardMetrics.riskScore > 0
-          ? 'Low Risk'
-          : 'No Scan Data';
+  /* There is no second set of headline metrics here any more. A
+     `dashboardMetrics` object used to re-derive the counts beside
+     `buildAssessment` — with its own scope fallback (to a history aggregate the
+     assessment never used), a "readiness" that was the share of SAFE findings and
+     a "vulnerable assets" figure of every scanned target whenever any finding was
+     vulnerable. Every count on this page now reads `assessment.counters`. */
   /* The findings the result panels read.
      When an assessment is in view these are THAT scan's findings — listing
      every finding ever recorded beside a per-scan total is what let the
@@ -2321,7 +2246,13 @@ export default function ScannerDashboard() {
       ? 'No scans in the last 7 days. Switch to All Time to see earlier scans.'
       : 'No authorized scan history available.';
 
-  const failedModules = modules.filter((module) => module.status === 'Failed');
+  /* The modules of the assessment IN VIEW — live, or the recorded run after a
+     reload — the population the Module Execution Flow and the rail describe.
+     Reading the live list alone dropped the "Partial coverage" banner after a
+     reload while the flow below still showed the failed modules. Declared before
+     `effectiveModules` exists, so it resolves the same fallback inline. */
+  const failedModules = (modules.length > 0 ? modules : (latestHistoryEntry?.moduleStates ?? []))
+    .filter((module) => module.status === 'Failed');
   const selectedHistoryEntry = displayedHistory.find((entry) => entry.scanId === selectedHistoryId) || displayedHistory[0] || null;
   const selectedHistoryFindings = normalizeDashboardFindings(selectedHistoryEntry?.findings);
   const selectedHistorySummary = selectedHistoryEntry?.summary || null;
@@ -2551,20 +2482,34 @@ export default function ScannerDashboard() {
   );
 
   const showResults = assessment.hasEvidence;
+  const scanCompletedAt = liveCompletedAt ?? assessment.target.completedAt;
 
   /* ── Real risk trend, one point per recorded scan ─────────────────────── */
+  /* A TREND IS THE METRIC'S OWN HISTORY.
+     The Posture Score tile beside this chart is a web scan's published composite
+     (`summary.qScore`). History also holds continuous-agent evidence batches and
+     SSH runs, whose `qScore` is `100 − severity-count exposure` — a different
+     model — so plotting every entry drew one line through two scales. Only the
+     scans this page can grade are plotted, and from the same field the tile reads,
+     so the last point and the tile are the same number. */
+  /* …and of ONE target set. A tenant that scanned expired.badssl.com, then
+     google.com, then cloudflare.com got a line reading "+13 pts across 4 scans" —
+     the difference between two different websites' scores, presented as one
+     estate improving. The trend follows the target the page is describing. */
+  const trendTarget = latestHistoryEntry?.target ?? null;
   const riskTrendPoints = useMemo(() => {
     const points = [...displayedHistory]
-      .filter((entry) => typeof (entry.qScore ?? entry.summary?.qScore) === 'number')
+      .filter((entry) => isWebScanEntry(entry) && Number.isFinite(Number(entry.summary?.qScore ?? entry.qScore)))
+      .filter((entry) => trendTarget === null || entry.target === trendTarget)
       .sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt))
       .slice(-14)
       .map((entry) => ({
         scanId: entry.scanId,
         at: entry.startedAt,
-        score: Math.max(0, Math.min(100, Math.round((entry.qScore ?? entry.summary?.qScore) as number))),
+        score: Math.max(0, Math.min(100, Math.round(Number(entry.summary?.qScore ?? entry.qScore)))),
       }));
     return points;
-  }, [displayedHistory]);
+  }, [displayedHistory, isWebScanEntry, trendTarget]);
 
   const parsedPreview = useMemo(
     () => (inputText.trim() ? parseAssetInput(inputText).slice(0, 6) : []),
@@ -2650,11 +2595,23 @@ export default function ScannerDashboard() {
             targets={targets.map((target) => target.normalized || target.raw)}
             evidenceFindings={dashboardFindings}
             evidenceModules={effectiveModules}
+            /* No live run: the recorded scan the panels below are describing. */
+            recordedScan={
+              !summary && latestHistoryEntry?.summary
+                ? { id: latestHistoryEntry.scanId, asset: latestHistoryEntry.target, summary: latestHistoryEntry.summary }
+                : null
+            }
             results={effectiveResults}
             scanner2={effectiveScanner2}
+            /* The assessment's own scoped counts — the numbers the Estate
+               Footprint prints for the same labels. This strip used to count every
+               finding as a "component" and every non-SAFE finding as "vulnerable",
+               so the hero said 23 / 19 above a footprint of 16 / 12. */
             counters={{
-              components: dashboardMetrics.totalFindings,
-              vulnerable: dashboardMetrics.vulnerableFindings,
+              targets: assessment.counters.assets,
+              components: assessment.counters.components,
+              componentsLabel: assessment.counters.componentsLabel,
+              vulnerable: assessment.counters.vulnerableComponents,
               cbom: latestHistoryEntry?.linkedCbomRecords?.length ?? 0,
               assets: latestHistoryEntry?.linkedAssetRecords?.length ?? 0,
               exposures: latestHistoryEntry?.linkedExposureNodes?.length ?? 0,
@@ -2727,7 +2684,10 @@ export default function ScannerDashboard() {
                     <dl className="mt-3 space-y-1.5">
                       {[
                         { label: 'Assets', value: intelSummary.totalAssets, to: '/dashboard/assets' },
-                        { label: 'Components', value: intelSummary.totalComponents ?? intelSummary.totalFindings, to: '/dashboard/cbom' },
+                        // The CBOM component count — never the finding total, which
+                        // is a different population (`?? totalFindings` could only
+                        // ever substitute one for the other).
+                        { label: 'Components', value: intelSummary.totalComponents, to: '/dashboard/cbom' },
                         { label: 'Critical findings', value: intelSummary.criticalFindings, to: '/dashboard/findings' },
                       ].map((row) => (
                         <div key={row.label} className="flex items-center justify-between gap-3 text-[12px]">
@@ -2783,8 +2743,13 @@ export default function ScannerDashboard() {
                         : 'Scan could not complete'}
                   </span>
                   <span className="truncate text-[12px] text-slate-500">
+                    {/* The scan's own completion time. This printed `new Date()` —
+                        the clock at render — so the stamp moved on every re-render
+                        and never said when the assessment actually finished. */}
                     {status === 'completed'
-                      ? `${assessment.target.label} · ${new Date().toUTCString().replace('GMT', 'UTC')}`
+                      ? `${assessment.target.label}${
+                          scanCompletedAt ? ` · ${new Date(scanCompletedAt).toUTCString().replace('GMT', 'UTC')}` : ''
+                        }`
                       : error || 'The scan stream stopped before every module reported.'}
                   </span>
                 </div>
@@ -2893,7 +2858,7 @@ export default function ScannerDashboard() {
 
                 <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)]">
                   <Reveal>
-                    <ScannerFindingsTable findings={dashboardFindings} total={dashboardMetrics.totalFindings} />
+                    <ScannerFindingsTable findings={dashboardFindings} total={assessment.counters.findings} />
                   </Reveal>
                   <Reveal delay={0.05}>
                     <ScannerQuantumTimeline assessment={assessment} />
@@ -2937,19 +2902,26 @@ export default function ScannerDashboard() {
                   {assessment.provenance}
                 </span>
               </div>
+              {/* ONE SET OF NUMBERS FOR BOTH TABS.
+                  Every tile reads the assessment the Assessment tab renders. This
+                  tab used to keep its own: a private 80/60/40 "Risk Level" beside
+                  the Executive Summary's Business Risk, a "PQC Readiness" that was
+                  the share of SAFE findings beside the published readiness score,
+                  a "Components" tile counting findings, and "Vulnerable Assets"
+                  that claimed every scanned target whenever any finding was. */}
               <div className="grid grid-cols-2 gap-px bg-white/[0.05] sm:grid-cols-3 lg:grid-cols-6">
                 {[
-                  { label: 'Assets Scanned', value: dashboardMetrics.totalAssetsScanned, color: ACCENT.cyan },
-                  { label: 'Components', value: dashboardMetrics.totalFindings, color: ACCENT.blue },
-                  { label: 'Critical', value: dashboardMetrics.criticalFindings, color: ACCENT.rose },
-                  { label: 'Vulnerable', value: dashboardMetrics.vulnerableFindings, color: ACCENT.amber },
-                  { label: 'PQC Ready', value: dashboardMetrics.pqcReady, color: ACCENT.emerald },
-                  { label: 'Vulnerable Assets', value: dashboardMetrics.vulnerableAssets, color: ACCENT.violet },
+                  { label: 'Assets Scanned', value: assessment.counters.assets as number | null, color: ACCENT.cyan },
+                  { label: assessment.counters.scope === 'scan' ? 'Findings' : 'Observations', value: assessment.counters.findings, color: ACCENT.blue },
+                  { label: 'Critical', value: assessment.counters.critical, color: ACCENT.rose },
+                  { label: assessment.counters.componentsLabel, value: assessment.counters.components, color: ACCENT.blue },
+                  { label: 'Vulnerable Components', value: assessment.counters.vulnerableComponents, color: ACCENT.amber },
+                  { label: 'Vulnerable Assets', value: assessment.counters.vulnerableAssets, color: ACCENT.violet },
                 ].map((metric) => (
                   <div key={metric.label} className="bg-[#080d1a] px-4 py-4">
                     <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">{metric.label}</p>
-                    <p className="mt-2 text-3xl font-black tracking-tight" style={{ color: metric.color }}>
-                      <CountUp value={metric.value} />
+                    <p className="mt-2 text-3xl font-black tracking-tight" style={{ color: metric.value === null ? ACCENT.slate : metric.color }}>
+                      {metric.value === null ? '—' : <CountUp value={metric.value} />}
                     </p>
                   </div>
                 ))}
@@ -2958,21 +2930,29 @@ export default function ScannerDashboard() {
                 <div className="bg-[#080d1a] px-4 py-4">
                   <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">Posture Score</p>
                   <p className="mt-2 text-2xl font-black" style={{ color: scoreColor(assessment.executive.encryptionScore) }}>
-                    {assessment.executive.encryptionScore}/100
+                    {assessment.executive.encryptionScore === null ? '—' : `${assessment.executive.encryptionScore}/100`}
                   </p>
                   <Meter value={assessment.executive.encryptionScore} className="mt-2" />
+                  {assessment.executive.encryptionScore === null && (
+                    <p className="mt-1 font-mono text-[10px] text-slate-600">{assessment.executive.gradeLabel}</p>
+                  )}
                 </div>
                 <div className="bg-[#080d1a] px-4 py-4">
-                  <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">Risk Level</p>
-                  <p className="mt-2 text-2xl font-black text-slate-100">{dashboardRiskLabel}</p>
-                  <p className="mt-1 font-mono text-[10px] text-slate-600">Exposure {dashboardMetrics.riskScore}/100</p>
-                </div>
-                <div className="bg-[#080d1a] px-4 py-4">
-                  <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">PQC Readiness</p>
-                  <p className="mt-2 text-2xl font-black" style={{ color: scoreColor(dashboardMetrics.pqcReadiness) }}>
-                    {dashboardMetrics.pqcReadiness}%
+                  <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">Business Risk</p>
+                  <p className="mt-2 text-2xl font-black" style={{ color: riskColorFor(assessment.executive.businessRisk) }}>
+                    {assessment.executive.businessRisk}
                   </p>
-                  <Meter value={dashboardMetrics.pqcReadiness} className="mt-2" />
+                  <p className="mt-1 text-[10.5px] leading-snug text-slate-600">{assessment.executive.businessRiskDetail}</p>
+                </div>
+                <div className="bg-[#080d1a] px-4 py-4">
+                  <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">Post-Quantum Readiness</p>
+                  <p
+                    className="mt-2 text-2xl font-black"
+                    style={{ color: assessment.executive.postQuantumReadiness === null ? ACCENT.slate : scoreColor(assessment.executive.postQuantumReadiness) }}
+                  >
+                    {assessment.executive.postQuantumReadiness === null ? 'Not scored' : `${assessment.executive.postQuantumReadiness}%`}
+                  </p>
+                  <Meter value={assessment.executive.postQuantumReadiness} className="mt-2" />
                 </div>
                 <div className="bg-[#080d1a] px-4 py-4">
                   <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">Next Scheduled</p>
@@ -3061,12 +3041,12 @@ export default function ScannerDashboard() {
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] px-5 py-3">
                     <SectionLabel accent={ACCENT.cyan}>Posture Trend</SectionLabel>
                     <span className="font-mono text-[9.5px] uppercase tracking-widest text-slate-600">
-                      One point per recorded scan
+                      {trendTarget ? `Posture score · ${trendTarget}` : 'Posture score'} · one point per recorded scan
                     </span>
                   </div>
                   {riskTrendPoints.length < 2 ? (
                     <p className="px-5 py-8 text-center text-[12px] leading-relaxed text-slate-600">
-                      A trend needs at least two recorded scans. {riskTrendPoints.length === 1 ? 'One scan is on record.' : 'No scan is on record yet.'}
+                      A trend needs at least two recorded scans of the same target. {riskTrendPoints.length === 1 ? 'One scan of this target is on record.' : 'No scan is on record yet.'}
                     </p>
                   ) : (
                     <div className="px-5 py-5">
@@ -3349,10 +3329,14 @@ export default function ScannerDashboard() {
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                           {[
-                            ['Components', entry.detectedComponents, ACCENT.blue],
-                            ['Vulnerable', entry.vulnerableFindings, ACCENT.rose],
-                            ['PQC Ready', entry.pqcReadyFindings, ACCENT.emerald],
-                            ['Q-Score', entry.qScore ?? '—', ACCENT.cyan],
+                            /* Named for what they count. `detectedComponents` is the
+                               run's total FINDINGS (policy observations included), so
+                               "Components" here disagreed with the Estate Footprint's
+                               component count for the same scan. */
+                            ['Findings', entry.detectedComponents, ACCENT.blue],
+                            ['Vulnerable Findings', entry.vulnerableFindings, ACCENT.rose],
+                            ['PQC-Ready Findings', entry.pqcReadyFindings, ACCENT.emerald],
+                            ['Posture', entry.summary?.qScore ?? entry.qScore ?? '—', ACCENT.cyan],
                           ].map(([label, value, color]) => (
                             <div key={String(label)} className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-2.5 py-1.5 text-center">
                               <p className="text-[13px] font-black" style={{ color: color as string }}>{String(value)}</p>

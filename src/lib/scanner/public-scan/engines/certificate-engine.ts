@@ -576,12 +576,16 @@ export async function runCertificateEngine(
         severity: responder.state === 'unreachable' ? 'medium' : 'none',
       })
     }
+    /* Context on the OCSP card, not a verdict on it: CT is graded on the
+       Certificates surface (its Findings row and score category both live
+       there). As a `pass` here it settled the OCSP card "Secure" on endpoints
+       whose OCSP row reads Not Applicable — no responder advertised. */
     emit({
       surface: 'ocsp',
       label: 'Certificate Transparency',
       detail: sctCount ? `${sctCount} embedded SCT(s) logged` : 'No embedded CT SCTs',
-      status: sctCount ? 'pass' : 'warning',
-      severity: sctCount ? 'none' : 'low',
+      status: 'info',
+      severity: 'info',
     })
 
     if (data.hostnameMatches === false) {

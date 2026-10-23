@@ -52,7 +52,10 @@ export function resolveKeyExchange(evidence: PublicScanEvidence): string {
       : `ECDHE (${keyAgreement.primaryGroup})`
   }
   const raw = tls?.keyExchange ?? ''
-  if (raw && raw !== 'unknown') return raw
+  /* "TLSGroup (undefined-bit)" is what the analyser recorded for every TLS 1.3
+     handshake on Node 24 before it learned that shape — not a key exchange. A
+     result captured then (a cached report, a replay) must not print it. */
+  if (raw && raw !== 'unknown' && !/undefined|^TLSGroup\b/i.test(raw)) return raw
   if (tls?.tlsVersion === 'TLSv1.3') return 'ECDHE (TLS 1.3 ephemeral)'
   return 'unknown'
 }
@@ -333,7 +336,14 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
           : bits
             ? `${bits}-bit AEAD`
             : 'Negotiated',
-      finding: tls?.cipherSuite || 'Could not be determined',
+      /* The row's verdict is about EVERY accepted suite, so the text says why when
+         that verdict is worse than the negotiated suite. "TLS_AES_256_GCM_SHA384"
+         beside a High pill read as a strong suite marked down for no reason. */
+      finding: !tls?.cipherSuite
+        ? 'Could not be determined'
+        : staticRsa
+          ? `${tls.cipherSuite} negotiated · static-RSA suites also accepted`
+          : tls.cipherSuite,
       evidence: tls?.cipherSuite
         ? `Negotiated: ${tls.cipherSuite}${staticRsa ? ' — static RSA suites also accepted' : ''}`
         : 'Handshake did not complete',
@@ -383,13 +393,19 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
   const rsaWeak = Boolean(
     certificate?.publicKeyAlgorithm.toLowerCase().includes('rsa') && certificate.publicKeySize < 2048,
   )
+  /* The MEDIUM verdict on a sound classical leaf is its quantum exposure. A leaf
+     keyed with a post-quantum signature algorithm does not carry that exposure,
+     and stating "recoverable by a CRQC" about it would be false. */
+  const pqLeaf = /ml[-_]?dsa|slh[-_]?dsa|dilithium|sphincs|falcon/i.test(
+    `${certificate?.publicKeyAlgorithm ?? ''} ${certificate?.signatureAlgorithm ?? ''}`,
+  )
   states.push(
     control({
       key: 'certificate-algorithm',
       control: 'Certificate Algorithm',
       shortLabel: 'Certificate Algorithm',
-      status: !certificate ? 'Unknown' : rsaWeak || certificate.isExpired ? 'Critical' : 'Warning',
-      severity: !certificate ? 'LOW' : rsaWeak || certificate.isExpired ? 'CRITICAL' : 'MEDIUM',
+      status: !certificate ? 'Unknown' : rsaWeak || certificate.isExpired ? 'Critical' : pqLeaf ? 'Healthy' : 'Warning',
+      severity: !certificate ? 'LOW' : rsaWeak || certificate.isExpired ? 'CRITICAL' : pqLeaf ? 'SAFE' : 'MEDIUM',
       value: certificate?.publicKeyAlgorithm ?? 'Unknown',
       finding: certificate?.publicKeyAlgorithm ?? 'Could not be determined',
       evidence: certificate
@@ -400,8 +416,12 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
         : rsaWeak
           ? 'Key size below current classical guidance.'
           : 'Good performance and widely supported.',
-      quantumImpact: 'Vulnerable to Shor’s algorithm — the private key is recoverable by a CRQC.',
-      nextStep: 'Migrate to hybrid PQC certificates (FIPS 204 signature alongside the classical key).',
+      quantumImpact: pqLeaf
+        ? 'Post-quantum signature key (FIPS 204/205) — authentication survives a CRQC.'
+        : 'Vulnerable to Shor’s algorithm — the private key is recoverable by a CRQC.',
+      nextStep: pqLeaf
+        ? 'Maintain the post-quantum certificate and track CA chain readiness.'
+        : 'Migrate to hybrid PQC certificates (FIPS 204 signature alongside the classical key).',
       score: certScore,
       observed: certificate
         ? `${certificate.publicKeyAlgorithm} / ${certificate.signatureAlgorithm}`
@@ -540,7 +560,12 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
     control({
       key: 'forward-secrecy',
       control: 'Forward Secrecy',
-      shortLabel: 'Key Exchange',
+      /* The Attack Surface row names the CONTROL it is painted for. It read
+         "Key Exchange · Hybrid PQ" in amber on cloudflare.com — a green-sounding
+         value in a warning colour, because the colour was the forward-secrecy
+         verdict (static RSA still accepted) and the words were the key
+         exchange, which the Post-Quantum Key Agreement row already reports. */
+      shortLabel: 'Forward Secrecy',
       status: !tls ? 'Unknown' : fs.enabled ? (staticRsa ? 'Warning' : 'Healthy') : 'Critical',
       /* The static-RSA caveat has to reach BOTH fields. `status` already
          downgraded to Warning when key-transport suites are accepted, but
@@ -554,12 +579,7 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
          was observed, which rendered as a lowercase "unknown" in a column of
          capitalised "Unknown" rows — reading as a value rather than as the absence
          of one. Normalised to the same word the other unmeasured rows use. */
-      value: keyAgreement.hybridGroups.length
-        ? 'Hybrid PQ'
-        : (() => {
-            const label = kex.split(' (')[0]
-            return !label || label.toLowerCase() === 'unknown' ? 'Unknown' : label
-          })(),
+      value: !tls ? 'Unknown' : fs.enabled ? (staticRsa ? 'Partial' : 'Enabled') : 'Not observed',
       finding: !tls
         ? 'Could not be determined'
         : fs.enabled
@@ -635,9 +655,13 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
       key: 'pq-key-agreement',
       control: 'Post-Quantum Key Agreement',
       shortLabel: 'Post-Quantum Key Agreement',
-      status: undetermined ? 'Unknown' : hybrid.length ? 'Healthy' : 'Not Supported',
-      severity: undetermined ? 'LOW' : hybrid.length ? 'SAFE' : 'HIGH',
-      value: undetermined ? 'Unknown' : hybrid.length ? 'Pass' : 'Fail',
+      /* Standalone ML-KEM is post-quantum key agreement WITHOUT the classical
+         hedge this control asks for: a real, partial answer. It used to share
+         "Not Supported · HIGH · Fail" with an endpoint offering nothing at all,
+         while the published model credits the same group as post-quantum. */
+      status: undetermined ? 'Unknown' : hybrid.length ? 'Healthy' : pureKem.length ? 'Warning' : 'Not Supported',
+      severity: undetermined ? 'LOW' : hybrid.length ? 'SAFE' : pureKem.length ? 'MEDIUM' : 'HIGH',
+      value: undetermined ? 'Unknown' : hybrid.length ? 'Pass' : pureKem.length ? 'PQ only' : 'Fail',
       finding: hybrid.length
         ? hybrid.join(', ')
         : pureKem.length
@@ -668,15 +692,27 @@ export function buildControlStates(evidence: PublicScanEvidence): ControlState[]
               .join(' · '),
       businessImpact: hybrid.length
         ? 'New sessions are already protected against harvest-now-decrypt-later.'
-        : 'Traffic captured today can be decrypted once a quantum computer exists.',
+        : pureKem.length
+          ? 'New sessions use post-quantum key agreement, but with no classical hedge a flaw in ML-KEM would leave them unprotected.'
+          : undetermined
+            ? 'Whether new sessions are protected against harvest-now-decrypt-later was not settled on this run.'
+            : 'Traffic captured today can be decrypted once a quantum computer exists.',
       quantumImpact: hybrid.length
         ? 'ML-KEM (FIPS 203) key encapsulation resists Shor’s algorithm.'
-        : 'Key agreement is fully recoverable by Shor’s algorithm.',
+        : pureKem.length
+          ? 'ML-KEM (FIPS 203) resists Shor’s algorithm; no classical component is combined with it.'
+          : undetermined
+            ? 'Not assessed on this run.'
+            : 'Key agreement is fully recoverable by Shor’s algorithm.',
       nextStep: hybrid.length
         ? 'Extend hybrid coverage to internal services and machine identities.'
-        : !hybridReachable
-          ? 'Enable TLS 1.3 first — it is the prerequisite for any hybrid ML-KEM group.'
-          : 'Enable X25519MLKEM768 — supported by current TLS stacks and CDNs.',
+        : pureKem.length
+          ? 'Offer X25519MLKEM768 alongside the standalone group so clients get a classical hedge.'
+          : undetermined
+            ? 'Re-run the assessment to settle hybrid ML-KEM support.'
+            : !hybridReachable
+              ? 'Enable TLS 1.3 first — it is the prerequisite for any hybrid ML-KEM group.'
+              : 'Enable X25519MLKEM768 — supported by current TLS stacks and CDNs.',
       // Scored by the post-quantum model, not the classical weighted mean.
       score: null,
       weight: 0,
@@ -1153,8 +1189,13 @@ function engineControls(evidence: PublicScanEvidence): ControlState[] {
   const crypto = bundle.crypto.data
   const states: ControlState[] = []
 
+  /* `reconcileStatus` applies here too. These rows used to bypass `control()`,
+     so the Quantum Risk row on google.com rendered a rose "Critical" pill while
+     its severity was HIGH — the exact pill-versus-census disagreement the
+     one-vocabulary rule above exists to prevent, on the one path it missed. */
   const reported = (draft: Omit<ControlState, 'weight' | 'score' | 'isInventory'>): ControlState => ({
     ...draft,
+    status: reconcileStatus(draft.status, draft.severity),
     score: null,
     weight: 0,
     isInventory: false,
@@ -1194,23 +1235,40 @@ function engineControls(evidence: PublicScanEvidence): ControlState[] {
   // receive mail is not failing an email-authentication control.
   const receivesMail = dns.mailExchangers.length > 0
   const emailPolicies = [dns.spf, dns.dmarc].filter(Boolean).length
+  /* Absence is a finding only where the lookup was ANSWERED. A missing MX, SPF
+     or DMARC record from a query that timed out is not evidence of anything —
+     reporting it as "Neither SPF nor DMARC" accused google.com of publishing
+     neither. Fields are optional-tolerant so a report cached before the flags
+     existed keeps its old reading rather than flipping every row to Unknown. */
+  const mxAnswered = dns.mxQueryable ?? true
+  const policiesAnswered = (dns.spf !== null || (dns.spfQueryable ?? true)) && (dns.dmarc !== null || (dns.dmarcQueryable ?? true))
+  const emailUnknown = !receivesMail ? !mxAnswered : emailPolicies < 2 && !policiesAnswered
   states.push(
     reported({
       key: 'email-authentication',
       control: 'Email Authentication (SPF/DMARC)',
       shortLabel: 'Email Auth',
-      status: !receivesMail
-        ? 'Not Applicable'
-        : emailPolicies === 2
-          ? 'Healthy'
-          : emailPolicies === 1
-            ? 'Warning'
-            : 'Not Supported',
-      severity: !receivesMail ? 'SAFE' : emailPolicies === 2 ? 'SAFE' : emailPolicies === 1 ? 'LOW' : 'MEDIUM',
-      value: !receivesMail ? 'N/A' : emailPolicies === 2 ? 'Pass' : emailPolicies === 1 ? 'Partial' : 'Absent',
-      finding: !receivesMail
-        ? 'Domain publishes no MX records'
-        : [dns.spf ? 'SPF' : null, dns.dmarc ? 'DMARC' : null].filter(Boolean).join(' + ') || 'Neither SPF nor DMARC',
+      status: emailUnknown
+        ? 'Unknown'
+        : !receivesMail
+          ? 'Not Applicable'
+          : emailPolicies === 2
+            ? 'Healthy'
+            : emailPolicies === 1
+              ? 'Warning'
+              : 'Not Supported',
+      severity: emailUnknown ? 'LOW' : !receivesMail ? 'SAFE' : emailPolicies === 2 ? 'SAFE' : emailPolicies === 1 ? 'LOW' : 'MEDIUM',
+      value: emailUnknown ? 'Unknown' : !receivesMail ? 'N/A' : emailPolicies === 2 ? 'Pass' : emailPolicies === 1 ? 'Partial' : 'Absent',
+      finding: emailUnknown
+        ? !receivesMail
+          ? 'Could not be determined — the MX lookup was not answered'
+          : `Could not be fully determined — ${[
+              dns.spf ? 'SPF published' : (dns.spfQueryable ?? true) ? 'no SPF record' : 'SPF lookup not answered',
+              dns.dmarc ? 'DMARC published' : (dns.dmarcQueryable ?? true) ? 'no DMARC record' : 'DMARC lookup not answered',
+            ].join(', ')}`
+        : !receivesMail
+          ? 'Domain publishes no MX records'
+          : [dns.spf ? 'SPF' : null, dns.dmarc ? 'DMARC' : null].filter(Boolean).join(' + ') || 'Neither SPF nor DMARC',
       evidence: [
         dns.spf ? `SPF: ${dns.spf.slice(0, 90)}` : 'no SPF record',
         dns.dmarc ? `DMARC: ${dns.dmarc.slice(0, 90)}` : 'no DMARC record',
@@ -1218,17 +1276,21 @@ function engineControls(evidence: PublicScanEvidence): ControlState[] {
       ]
         .filter(Boolean)
         .join(' · '),
-      businessImpact: !receivesMail
-        ? 'No mail is delivered to this domain, so sender policies do not apply.'
-        : emailPolicies === 2
-          ? 'Sender policies are published, limiting spoofing of this domain.'
-          : 'Missing sender policy lets attackers spoof mail from this domain.',
+      businessImpact: emailUnknown
+        ? 'Sender-policy publication could not be confirmed from this vantage point, so no conclusion is drawn either way.'
+        : !receivesMail
+          ? 'No mail is delivered to this domain, so sender policies do not apply.'
+          : emailPolicies === 2
+            ? 'Sender policies are published, limiting spoofing of this domain.'
+            : 'Missing sender policy lets attackers spoof mail from this domain.',
       quantumImpact: 'DKIM signatures are classical RSA/Ed25519 and will need PQ replacement.',
-      nextStep: !receivesMail
-        ? 'No action required.'
-        : emailPolicies === 2
-          ? 'Continue monitoring policy alignment.'
-          : 'Publish the missing SPF and/or DMARC records.',
+      nextStep: emailUnknown
+        ? 'Verify SPF and DMARC directly with your DNS provider, or re-run the assessment.'
+        : !receivesMail
+          ? 'No action required.'
+          : emailPolicies === 2
+            ? 'Continue monitoring policy alignment.'
+            : 'Publish the missing SPF and/or DMARC records.',
       observed: `${emailPolicies}/2 policies published`,
       detail: 'SPF and DMARC records resolved from public DNS',
       inAttackSurface: false,
@@ -1325,7 +1387,15 @@ function engineControls(evidence: PublicScanEvidence): ControlState[] {
       }),
     )
   } else {
-    const worst = crypto.riskFactors.find((factor) => factor.impact === 'Critical') ?? crypto.riskFactors[0]
+    /* The factor NAMED in the finding must be the one that set the level. This
+       took the first Critical factor or else the FIRST factor, which is always
+       key exchange — so google.com, whose key exchange is hybrid ML-KEM (Low),
+       was published as "High — Key exchange" while its High came from the
+       classical certificate key. */
+    const impactRank: Record<string, number> = { Critical: 3, High: 2, Medium: 1, Low: 0 }
+    const worst = crypto.riskFactors.reduce((most, factor) =>
+      (impactRank[factor.impact] ?? 0) > (impactRank[most.impact] ?? 0) ? factor : most,
+    )
     states.push(
       reported({
         key: 'quantum-risk',

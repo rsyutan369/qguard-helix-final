@@ -84,6 +84,64 @@ export function nodeScoresFromReport(report: PublicScanReport): Partial<Record<Q
   return scores;
 }
 
+/**
+ * What each node's number is a score OF, for the card face — the applicable
+ * published categories it projects, by label.
+ *
+ * Without it a single-category surface reads as a verdict on the whole surface:
+ * "DNS & CAA · Critical · 0" on a domain whose only scored control is a missing
+ * CAA record. The Dashboard Scanner already names its scopes; the public hero
+ * now does too, from the same category table its scores come from.
+ */
+export function nodeScoreScopesFromReport(report: PublicScanReport): Partial<Record<QveNodeKey, string>> {
+  const byKey = new Map(report.scoreComponents.map((component) => [component.key, component]));
+  const scopes: Partial<Record<QveNodeKey, string>> = {};
+  for (const [node, categories] of Object.entries(NODE_SCORE_CATEGORIES) as Array<
+    [QvePublicNodeKey, readonly string[]]
+  >) {
+    const measured = categories
+      .map((key) => byKey.get(key))
+      .filter((component) => component?.applicable)
+      .map((component) => component!.label);
+    if (measured.length) scopes[node] = measured.join(' + ');
+  }
+  return scopes;
+}
+
+/**
+ * The surface that owns each Public Findings row.
+ *
+ * Every assessed control belongs to exactly one card, so a card can be held to
+ * the rows it summarises. Findings used to be routed to the run as a whole
+ * ('scan'), which left each card's verdict to the derivation's own heuristics:
+ * google.com's TLS card read "Fair · TLS 1.3 enabled" while the Findings table
+ * listed TLS Version as HIGH for still accepting TLS 1.0, and cloudflare.com's
+ * Quantum Readiness card read "Good" beside a CRITICAL Quantum Risk row.
+ *
+ * Grouping mirrors {@link NODE_SCORE_CATEGORIES}: Certificate Transparency is a
+ * property of the issued certificate, so its row sits with Certificates.
+ * `tools/public-scan-hero-alignment-check.ts` fails when a finding has no owner.
+ */
+export const CONTROL_NODE: Record<string, QvePublicNodeKey> = {
+  'dns-caa': 'dns',
+  dnssec: 'dns',
+  'email-authentication': 'dns',
+  'tls-version': 'tls',
+  'cipher-suite': 'tls',
+  'forward-secrecy': 'tls',
+  alpn: 'tls',
+  'certificate-algorithm': 'certificate',
+  'certificate-issuer': 'certificate',
+  'certificate-lifetime': 'certificate',
+  'certificate-transparency': 'certificate',
+  'hostname-coverage': 'certificate',
+  hsts: 'headers',
+  'http-security': 'headers',
+  'ocsp-stapling': 'ocsp',
+  'pq-key-agreement': 'quantum',
+  'quantum-risk': 'quantum',
+};
+
 /* ------------------------------------------------------------------ helpers - */
 
 let sequence = 0;
@@ -178,7 +236,13 @@ function severityFromThreat(level: string): ScanEventSeverity {
   }
 }
 
-/** Scanner ControlStatus → engine event status. */
+/**
+ * Scanner ControlStatus → engine event status.
+ *
+ * `High` is a failure tier (a CRITICAL-looking control reconciled to HIGH
+ * severity). It had no case here, so every HIGH row fell through to the neutral
+ * `info` of an unmeasured control.
+ */
 function statusFromControl(status: string): ScanEventStatus {
   switch (status) {
     case 'Healthy':
@@ -186,12 +250,27 @@ function statusFromControl(status: string): ScanEventStatus {
     case 'Warning':
       return 'warning';
     case 'Critical':
+    case 'High':
     case 'Not Supported':
       return 'critical';
     default:
       // Unknown / Not Observable / Not Applicable — deliberately neutral.
       return 'info';
   }
+}
+
+/** Statuses that carry no verdict. Their LOW severity is a placeholder, not a finding. */
+const UNMEASURED_STATUSES = new Set(['Unknown', 'Not Observable', 'Not Applicable']);
+
+/** The severity a finding contributes to its surface — none when nothing was measured. */
+function findingSeverity(finding: { status: string; severity: string }): ScanEventSeverity {
+  return UNMEASURED_STATUSES.has(finding.status) ? 'info' : severityFromThreat(finding.severity);
+}
+
+/** Display form of a Node protocol name ("TLSv1" is TLS 1.0, not "TLS 1"). */
+function protocolLabel(protocol: string): string {
+  if (protocol === 'TLSv1') return 'TLS 1.0';
+  return protocol.replace(/^TLSv/, 'TLS ');
 }
 
 const STAGE_NODE: Record<PublicScanStageKey, QveNodeKey | null> = {
@@ -397,7 +476,7 @@ export function observationEvent(
   // A probe announcement ("Offering X in isolation") is deliberately given no
   // card line: it is work in progress, not a result, and must not displace
   // evidence a card has already earned.
-  const provisional = observation.status === 'info' && /^Offering /.test(observation.detail);
+  const provisional = observation.status === 'info' && /^(Offering|Probing) /.test(observation.detail);
 
   return make(
     {
@@ -428,6 +507,14 @@ function pluralize(count: number, singular: string, plural = `${singular}s`): st
  * Every observation the completed report contains, as events. Ordered so the
  * timeline reads in the sequence the scan actually performed the work: DNS →
  * TLS → certificate → headers → revocation → post-quantum → findings.
+ *
+ * ONE VERDICT PER CONTROL. Each evidence event takes its status and severity
+ * from the Public Findings row it restates, never from a heuristic of its own.
+ * The heuristics had drifted from the rows: a headers ratio over a different
+ * denominator ("6/9" beside "5 of 8"), a legacy-protocol regex that did not
+ * match Node's "TLSv1" (so TLS 1.0 was never flagged), a CAA verdict that
+ * ignored an unfinished RFC 8659 climb, and a forward-secrecy test that missed
+ * TLS 1.3's guarantee. Reading the row makes the card and the table one fact.
  */
 export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
   const asset = report.target.displayUrl;
@@ -437,13 +524,20 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
     events.push(make(draft, progress, asset, now));
   };
 
-  const { evidence, executive, intelligence } = report;
+  const { evidence, executive } = report;
   const engines = evidence.engines;
   const dns = engines.dns.data;
   const tls = evidence.tls;
   const certificate = evidence.certificateExtras;
   const http = evidence.http;
   const keyAgreement = evidence.keyAgreement;
+
+  const findingById = new Map(report.findings.map((finding) => [finding.id, finding]));
+  /** Status + severity of the Public Findings row with this id, when it exists. */
+  const tone = (id: string, fallback: { status: ScanEventStatus; severity: ScanEventSeverity }) => {
+    const finding = findingById.get(id);
+    return finding ? { status: statusFromControl(finding.status), severity: findingSeverity(finding) } : fallback;
+  };
 
   /* The port never accepted a TCP connection, so the TLS / certificate / HTTP
      branches below have nothing to report. They are emitted as `info` +
@@ -460,31 +554,39 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
   push({
     type: 'DNS_COMPLETED',
     category: 'dns',
-    status: dnsReachable ? 'pass' : 'critical',
+    // Inventory, like the `internet-facing` row: resolving says nothing about
+    // DNS security, so it must not settle the card as a pass on its own.
+    status: dnsReachable ? 'info' : 'critical',
     severity: dnsReachable ? 'none' : 'high',
     verdict: dnsReachable ? 'Resolved' : 'Unresolved',
     finding: dnsReachable
-      ? `${pluralize(dns.addressCount, 'address')} resolved · ${dns.resolvedVia}`
+      ? `${pluralize(dns.addressCount, 'address', 'addresses')} resolved · ${dns.resolvedVia}`
       : 'No public address records',
-    nodeLine: dnsReachable ? `${pluralize(dns.addressCount, 'address')} resolved` : 'No address records',
+    nodeLine: dnsReachable ? `${pluralize(dns.addressCount, 'address', 'addresses')} resolved` : 'No address records',
     nodeProgress: 100,
     timelineLabel: 'DNS discovery',
     timelineDetail: dns.resolvedVia,
     details: { addresses: dns.addressCount, ipv4: dns.ipv4.length, ipv6: dns.ipv6.length },
   });
 
+  /* Answered only when a resolver replied AND the climb reached the registrable
+     domain — the `dns-caa` row's own rule. A leaf name with no RRset of its own
+     inherits its apex's policy, so a half-finished climb proves nothing. */
+  const caaAnswered = dns.caaQueryable && dns.caaClimbComplete;
   push({
     type: 'CAA',
     category: 'dns',
-    status: !dns.caaQueryable ? 'info' : dns.caaPresent ? 'pass' : 'warning',
-    severity: !dns.caaQueryable ? 'info' : dns.caaPresent ? 'none' : 'low',
-    verdict: !dns.caaQueryable ? 'Partial' : dns.caaPresent ? 'Secure' : 'Open issuance',
-    finding: !dns.caaQueryable
-      ? 'CAA not observable from this resolver'
+    ...tone('dns-caa', { status: 'info', severity: 'info' }),
+    ...(!caaAnswered ? { unmeasuredReason: 'not-measured' as const } : {}),
+    verdict: !caaAnswered ? 'Undetermined' : dns.caaPresent ? 'Secure' : 'Open issuance',
+    finding: !caaAnswered
+      ? dns.caaQueryable
+        ? 'CAA undetermined — the climb to the registrable domain did not complete'
+        : 'CAA not observable from this resolver'
       : dns.caaPresent
         ? `CAA record found · ${pluralize(dns.caaRecords.length, 'issuer')}`
         : 'No CAA issuance policy',
-    nodeLine: !dns.caaQueryable ? 'CAA not observable' : dns.caaPresent ? 'CAA record found' : 'No CAA policy',
+    nodeLine: !caaAnswered ? 'CAA not determined' : dns.caaPresent ? 'CAA record found' : 'No CAA policy',
     timelineLabel: 'CAA issuance policy',
     timelineDetail: dns.caaAtName ?? dns.caaSource ?? undefined,
   });
@@ -492,8 +594,7 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
   push({
     type: 'DNSSEC',
     category: 'dns',
-    status: !dns.dnssecQueryable ? 'info' : dns.dnssecSigned ? 'pass' : 'warning',
-    severity: !dns.dnssecQueryable ? 'info' : dns.dnssecSigned ? 'none' : 'low',
+    ...tone('dnssec', { status: 'info', severity: 'info' }),
     finding: !dns.dnssecQueryable
       ? 'DNSSEC not observable'
       : dns.dnssecSigned
@@ -507,52 +608,60 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
   /* ── TLS & protocols ───────────────────────────────────────────────────── */
 
   if (tls) {
-    const legacy = tls.supportedProtocols.filter((protocol) => /1\.0|1\.1|SSL/i.test(protocol));
-    const hasTls13 = tls.supportedProtocols.some((protocol) => /1\.3/.test(protocol));
+    // Node names TLS 1.0 "TLSv1" — the `tls-version` row's exact predicate.
+    const legacy = tls.supportedProtocols.filter((protocol) => protocol === 'TLSv1' || protocol === 'TLSv1.1');
+    const hasTls13 = tls.supportedProtocols.includes('TLSv1.3');
+    const legacyLabel = legacy.map(protocolLabel).join(', ');
     push({
       type: 'TLS_PROTOCOLS',
       category: 'tls',
-      status: legacy.length ? 'warning' : hasTls13 ? 'pass' : 'warning',
-      severity: legacy.length ? 'medium' : 'none',
+      ...tone('tls-version', { status: 'info', severity: 'info' }),
       verdict: legacy.length ? 'Legacy exposed' : hasTls13 ? 'Secure' : 'Dated',
       finding: legacy.length
-        ? `Legacy protocols offered: ${legacy.join(', ')}`
-        : `${tls.supportedProtocols.join(' / ')} accepted`,
+        ? `Legacy protocols accepted: ${legacyLabel}`
+        : `${tls.supportedProtocols.map(protocolLabel).join(' / ')} accepted`,
       nodeLine: legacy.length
-        ? `Legacy ${legacy.join(', ')} offered`
+        ? `Legacy ${legacyLabel} accepted`
         : hasTls13
           ? 'TLS 1.3 enabled'
-          : `${tls.tlsVersion} negotiated`,
+          : `${protocolLabel(tls.tlsVersion)} — no TLS 1.3`,
       nodeProgress: 100,
       timelineLabel: 'Protocol enumeration',
       timelineDetail: `${pluralize(tls.protocolSupport.length, 'version')} probed`,
       details: { protocols: tls.supportedProtocols },
     });
 
+    const staticRsa = evidence.cipherSuites.some((suite) => suite.category === 'rsa-kex');
     push({
       type: 'TLS_CIPHERS',
       category: 'tls',
-      status: 'pass',
-      severity: 'none',
-      finding: `${tls.cipherSuite || 'Negotiated suite'} · ${pluralize(evidence.cipherSuites.length, 'suite')} enumerated`,
-      nodeLine: evidence.cipherSuites.length
-        ? `${pluralize(evidence.cipherSuites.length, 'suite')} confirmed`
-        : 'Negotiated suite only',
+      ...tone('cipher-suite', { status: 'info', severity: 'info' }),
+      finding: `${tls.cipherSuite || 'Negotiated suite'} · ${pluralize(evidence.cipherSuites.length, 'suite')} enumerated${
+        staticRsa ? ' · static-RSA key transport accepted' : ''
+      }`,
+      nodeLine: staticRsa
+        ? 'Static-RSA suites accepted'
+        : evidence.cipherSuites.length
+          ? `${pluralize(evidence.cipherSuites.length, 'suite')} confirmed`
+          : 'Negotiated suite only',
       timelineLabel: 'Cipher analysis',
       timelineDetail: tls.cipherSuite || undefined,
       details: { suites: evidence.cipherSuites.length },
     });
 
+    const forwardSecrecy = findingById.get('forward-secrecy');
+    const secrecyHolds = forwardSecrecy?.status === 'Healthy';
     push({
       type: 'TLS_PFS',
       category: 'tls',
-      status: keyAgreement.forwardSecrecy ? 'pass' : 'warning',
-      severity: keyAgreement.forwardSecrecy ? 'none' : 'medium',
-      finding: keyAgreement.forwardSecrecy
-        ? `Forward secrecy via ${keyAgreement.primaryGroup ?? (tls.keyExchange || 'ephemeral key agreement')}`
-        : 'Forward secrecy not established',
-      // Timeline only when secrecy holds; a failure earns a card line.
-      nodeLine: keyAgreement.forwardSecrecy ? null : 'No forward secrecy',
+      ...tone('forward-secrecy', { status: 'info', severity: 'info' }),
+      finding: forwardSecrecy ? `Forward secrecy: ${forwardSecrecy.finding}` : 'Forward secrecy not assessed',
+      // Timeline only when secrecy holds; a gap earns a card line.
+      nodeLine: secrecyHolds || !forwardSecrecy
+        ? null
+        : forwardSecrecy.status === 'Warning'
+          ? 'Forward secrecy partial'
+          : 'No forward secrecy',
       timelineLabel: 'Forward secrecy',
       timelineDetail: keyAgreement.forwardSecrecyBasis,
     });
@@ -576,8 +685,10 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
     push({
       type: 'TLS_CERTIFICATE',
       category: 'certificate',
-      status: certificate.chainTrusted ? 'pass' : 'critical',
-      severity: certificate.chainTrusted ? 'none' : 'high',
+      ...tone('certificate-issuer', {
+        status: certificate.chainTrusted ? 'pass' : 'critical',
+        severity: certificate.chainTrusted ? 'none' : 'high',
+      }),
       verdict: certificate.chainTrusted ? 'Valid chain' : 'Untrusted chain',
       finding: certificate.chainTrusted
         ? `Valid chain · ${pluralize(certificate.chainDepth, 'certificate')}`
@@ -592,11 +703,11 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
     push({
       type: 'CT',
       category: 'certificate',
-      status: certificate.signedCertificateTimestamps ? 'pass' : 'warning',
-      severity: certificate.signedCertificateTimestamps ? 'none' : 'low',
+      ...tone('certificate-transparency', { status: 'info', severity: 'info' }),
       finding: certificate.signedCertificateTimestamps
         ? `${pluralize(certificate.sctCount, 'SCT')} in Certificate Transparency`
         : 'No embedded Certificate Transparency SCTs',
+      // The card's second line is the chain size; CT itself is in the timeline.
       nodeLine: pluralize(certificate.chainDepth, 'certificate'),
       timelineLabel: 'CT log verification',
     });
@@ -606,13 +717,15 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
     push({
       type: 'OCSP',
       category: 'ocsp',
-      status: certificate.ocspStapled ? 'pass' : certificate.ocspUri ? 'warning' : 'info',
-      severity: certificate.ocspStapled ? 'none' : certificate.ocspUri ? 'low' : 'info',
+      ...tone('ocsp-stapling', { status: 'info', severity: 'info' }),
       verdict: certificate.ocspStapled ? 'Secure' : certificate.ocspUri ? 'Not stapled' : 'No responder',
+      ...(!certificate.ocspUri && !certificate.ocspStapled ? { unmeasuredReason: 'not-applicable' as const } : {}),
       finding: certificate.ocspStapled
         ? 'Stapling enabled'
         : certificate.ocspUri
-          ? 'Responder published, response not stapled'
+          ? certificate.ocspResponderState === 'unreachable'
+            ? 'Responder published but not answering, and no response stapled'
+            : 'Responder published, response not stapled'
           : 'No OCSP responder in the certificate',
       nodeLine: certificate.ocspStapled
         ? 'Stapling enabled'
@@ -627,7 +740,7 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
     push({
       type: 'CT',
       category: 'ocsp',
-      status: certificate.mustStaple ? 'pass' : 'info',
+      status: 'info',
       severity: 'info',
       finding: certificate.mustStaple
         ? 'must-staple asserted'
@@ -657,6 +770,7 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
       status: 'info',
       severity: 'info',
       verdict: 'Not observable',
+      unmeasuredReason: 'not-measured',
       finding: 'Revocation state requires a served chain',
       nodeProgress: 100,
       timeline: false,
@@ -666,21 +780,26 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
   /* ── HTTP headers ──────────────────────────────────────────────────────── */
 
   if (http.reachable) {
-    const total = http.headers.length;
-    const secure = http.headers.filter((header) => header.secure).length;
-    const ratio = total ? secure / total : 0;
+    /* The `http-security` row's population: HSTS is graded on its own card line
+       and in its own category, and a header superseded by an equivalent control
+       is exempt. Counting every header printed "6/9" on the card while the
+       Findings table, the score decomposition and the live rail said "5 of 8". */
+    const transport = http.headers.filter(
+      (header) => header.name !== 'strict-transport-security' && header.applicable !== false,
+    );
+    const hardened = transport.filter((header) => header.secure).length;
+    const ratio = transport.length ? hardened / transport.length : 0;
     push({
       type: 'HEADERS',
       category: 'headers',
-      status: ratio >= 0.8 ? 'pass' : ratio >= 0.5 ? 'warning' : 'critical',
-      severity: ratio >= 0.8 ? 'none' : ratio >= 0.5 ? 'low' : 'medium',
+      ...tone('http-security', { status: 'info', severity: 'info' }),
       verdict: ratio >= 0.8 ? 'Good' : ratio >= 0.5 ? 'Fair' : 'Weak',
-      finding: `${secure}/${total} security headers detected`,
-      nodeLine: `${secure}/${total} headers hardened`,
+      finding: `${hardened} of ${transport.length} transport headers hardened`,
+      nodeLine: `${hardened}/${transport.length} headers hardened`,
       nodeProgress: 100,
       timelineLabel: 'HTTP headers',
       timelineDetail: `HTTP ${http.statusCode ?? '—'}${http.server ? ` · ${http.server}` : ''}`,
-      details: { secure, total },
+      details: { secure: hardened, total: transport.length },
     });
 
     push({
@@ -711,15 +830,15 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
   /* ── Post-quantum readiness ────────────────────────────────────────────── */
 
   const hybrid = keyAgreement.hybridGroups;
-  const pqReady = hybrid.length > 0;
+  const pureKem = keyAgreement.pureKemGroups ?? [];
 
   push({
     type: 'PQ_DISCOVERY',
     category: 'quantum',
-    status: keyAgreement.probed ? 'info' : 'info',
+    status: 'info',
     severity: 'info',
     finding: keyAgreement.probed
-      ? `${pluralize(hybrid.length + keyAgreement.classicalGroups.length, 'named group')} probed individually`
+      ? `${pluralize(hybrid.length + pureKem.length + keyAgreement.classicalGroups.length, 'named group')} accepted when offered individually`
       : 'Named key-agreement groups could not be probed',
     nodeLine: null,
     timelineLabel: 'Quantum discovery',
@@ -740,61 +859,108 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
       timelineLabel: `Hybrid group ${group}`,
     });
   }
+  for (const group of pureKem) {
+    push({
+      type: 'PQC_GROUP',
+      category: 'quantum',
+      status: 'warning',
+      severity: 'none',
+      postQuantum: true,
+      verdict: 'PQ only',
+      finding: `${group} accepted — standalone ML-KEM, no classical hedge`,
+      nodeLine: null,
+      nodeProgress: 100,
+      timelineLabel: `Standalone ML-KEM group ${group}`,
+    });
+  }
 
-  /* `postQuantumReadiness === null` means the named-group probe never ran. The
-     warning branch below states "Hybrid not detected · classical key
-     establishment only", which is a claim about the endpoint — untrue when the
-     endpoint was never asked. */
-  const pqMeasured = executive.postQuantumReadiness !== null;
+  /* The key-agreement case is read from the report, which reads it from the
+     published model — never re-derived from the readiness percentage, and never
+     "no TLS handshake completed" for a run whose handshake completed but whose
+     hybrid probe did not settle. */
+  const pqState = executive.postQuantumKeyAgreement;
+  const pqKex = pqState === 'hybrid' || pqState === 'pure-kem';
+  const pqRow = findingById.get('pq-key-agreement');
+  const tls13Absent = Boolean(tls?.supportedProtocols.length) && !tls?.supportedProtocols.includes('TLSv1.3');
   push({
     type: 'PQ_KEM',
     category: 'quantum',
-    status: !pqMeasured ? 'info' : pqReady ? 'pass' : 'warning',
-    severity: !pqMeasured ? 'info' : pqReady ? 'none' : 'medium',
-    postQuantum: pqReady,
-    verdict: !pqMeasured
-      ? 'Not measured'
-      : pqReady
-        ? 'Hybrid ready'
-        : executive.postQuantumReadiness! >= 40
-          ? 'Fair'
-          : 'Classical only',
-    finding: !pqMeasured
-      ? 'Post-quantum readiness not assessed — no TLS handshake completed'
-      : pqReady
-        ? `ML-KEM key establishment active (${keyAgreement.primaryGroup ?? hybrid[0]})`
-        : 'Hybrid not detected · classical key establishment only',
-    nodeLine: !pqMeasured ? 'Not measured' : pqReady ? `${keyAgreement.primaryGroup ?? hybrid[0]} active` : 'Hybrid not detected',
+    ...tone('pq-key-agreement', { status: 'info', severity: 'info' }),
+    ...(pqState === 'not-measured' && !tls ? { unmeasuredReason: 'not-measured' as const } : {}),
+    postQuantum: pqKex,
+    verdict:
+      pqState === 'not-measured'
+        ? 'Not measured'
+        : pqState === 'hybrid'
+          ? 'Hybrid ready'
+          : pqState === 'pure-kem'
+            ? 'PQ only'
+            : tls13Absent
+              ? 'No TLS 1.3'
+              : 'Classical only',
+    finding: executive.postQuantumDetail,
+    nodeLine:
+      pqState === 'not-measured'
+        ? tls
+          ? 'Hybrid probe not settled'
+          : 'Not measured'
+        : pqState === 'hybrid'
+          ? `${keyAgreement.primaryGroup ?? hybrid[0]} active`
+          : pqState === 'pure-kem'
+            ? `${pureKem[0]} · no hybrid`
+            : tls13Absent
+              ? 'No TLS 1.3 — hybrid unavailable'
+              : (pqRow?.status === 'Unknown' ? 'Hybrid not settled' : 'Hybrid not detected'),
     nodeProgress: 100,
     timelineLabel: 'ML-KEM key establishment',
-    timelineDetail: pqMeasured ? `PQ readiness ${executive.postQuantumReadiness}%` : 'PQ readiness not measured',
+    timelineDetail:
+      executive.postQuantumReadiness === null
+        ? 'PQ readiness not scored'
+        : `PQ readiness ${executive.postQuantumReadiness}%`,
     details: { readiness: executive.postQuantumReadiness ?? undefined },
   });
 
   const signature = report.evidence.certificate?.signatureAlgorithm ?? null;
+  const pqSignature = executive.postQuantumSignatureObserved;
   push({
     type: 'PQ_SIGNATURE',
     category: 'quantum',
-    status: 'info',
+    status: !signature ? 'info' : pqSignature ? 'pass' : 'info',
     severity: 'info',
-    finding: signature
-      ? `Certificate signed with ${signature} — ML-DSA migration target`
-      : 'Signature algorithm not observable',
-    nodeLine: signature ? 'Classical signatures' : 'Signatures not observable',
+    postQuantum: pqSignature,
+    finding: !signature
+      ? 'Signature algorithm not observable'
+      : pqSignature
+        ? `Certificate signed with ${signature} — post-quantum signature (FIPS 204/205)`
+        : `Certificate signed with ${signature} — ML-DSA migration target`,
+    nodeLine: !signature ? 'Signatures not observable' : pqSignature ? 'Post-quantum signature' : 'Classical signatures',
     timelineLabel: 'Signature algorithm',
-    timelineDetail: intelligence.quantumVulnerabilityReason,
+    // The signature itself — this entry used to carry the key-agreement reason,
+    // so the log read "Signature algorithm · Hybrid … key agreement accepted".
+    timelineDetail: signature ? `${signature} · ${pqSignature ? 'post-quantum (FIPS 204/205)' : 'classical — ML-DSA migration target'}` : undefined,
   });
 
-  /* ── Findings that matter ──────────────────────────────────────────────── */
+  /* ── Findings, each on the surface it describes ────────────────────────── */
 
+  /* Every row of the Public Findings table reaches its own card, so a card's
+     verdict can never read calmer than the most severe row the table lists for
+     that surface. The row adds no card line (`nodeLine: null`) — it is the
+     verdict's input, not new evidence — and only the alert-level rows earn a
+     timeline entry, as before. */
   for (const finding of report.findings) {
-    if (finding.severity !== 'CRITICAL' && finding.severity !== 'HIGH') continue;
+    const severity = findingSeverity(finding);
+    // A healthy or unmeasured row changes no verdict; replaying it would only
+    // add packet bursts and audio cues for nothing.
+    if (severity === 'none' || severity === 'info') continue;
+    const alert = finding.severity === 'CRITICAL' || finding.severity === 'HIGH';
     push({
       type: 'FINDING',
-      category: 'scan',
+      category: CONTROL_NODE[finding.id] ?? 'scan',
       status: statusFromControl(finding.status),
-      severity: severityFromThreat(finding.severity),
+      severity,
       finding: finding.finding,
+      nodeLine: null,
+      timeline: alert,
       timelineLabel: finding.control,
       timelineDetail: finding.finding,
     });
@@ -817,7 +983,7 @@ export function reportEvidenceEvents(report: PublicScanReport): ScanEvent[] {
     details: {
       grade: executive.grade,
       score: executive.encryptionScore ?? undefined,
-      postQuantum: pqReady,
+      postQuantum: pqKex,
     },
   });
 

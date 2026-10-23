@@ -319,8 +319,19 @@ export interface ScannerAssessment {
     gradeColor: string;
     gradeable: boolean;
     gradeDetail: string;
-    encryptionScore: number;
-    classicalScore: number;
+    /**
+     * The graded composite, or null while it is withheld (live run, unclosed
+     * module ledger, no score). It used to fall back to 0, so the gauge, the Live
+     * Dashboard's Posture Score and Sophia printed a measured-looking 0 — the
+     * worst value on a higher-is-better scale — for a run nobody had graded.
+     */
+    encryptionScore: number | null;
+    /**
+     * The classical half of the published model, or null when that half was not
+     * measured (or the composite is withheld). It used to fall back to the
+     * COMPOSITE, which captioned the whole-model number "Classical Encryption".
+     */
+    classicalScore: number | null;
     /**
      * null = NOT SCORED.
      *
@@ -415,6 +426,36 @@ export interface ScannerAssessment {
   };
   coverage: CoverageItem[];
   scope: { analyzed: string[]; notAnalyzed: string[]; statement: string };
+  /**
+   * THE counts, scoped once. The hero strip, the Live Dashboard tiles and the
+   * Estate Footprint all read these — they used to read three bindings, so one
+   * www.cloudflare.com scan published "Crypto Components 23 · Vulnerable 19" in
+   * the hero above an Estate Footprint of 16 components, 12 quantum-vulnerable.
+   */
+  /**
+   * WHICH TARGET the per-endpoint panels describe. The Observed Attack Surface
+   * and Cryptographic Intelligence read one endpoint's edge evidence (the first
+   * scanned target), while the score decomposition aggregates every target — so
+   * on a multi-target run a row could read "Not applicable" for target 1 beside
+   * a category scored from target 2. The panels now state this scope.
+   */
+  surfaceTarget: { target: string | null; of: number };
+  counters: {
+    scope: 'scan' | 'estate';
+    assets: number;
+    findings: number;
+    critical: number;
+    /** Cryptographic inventory entries (scan) or recorded observations (estate). */
+    components: number;
+    componentsLabel: string;
+    vulnerableComponents: number;
+    /**
+     * Assets with at least one finding above SAFE, counted per target. Null when
+     * the per-target split is not available — the old value claimed EVERY
+     * scanned target was vulnerable whenever any finding was.
+     */
+    vulnerableAssets: number | null;
+  };
   nodeScores: Record<string, number>;
   hndl: { immediate: number; soon: number; planned: number; window: { earliest: number; latest: number } | null };
 }
@@ -426,15 +467,6 @@ const THREAT_RANK: Record<ThreatLevel, number> = { CRITICAL: 4, HIGH: 3, MEDIUM:
 /** Escalate to the more severe of two risk bands. */
 function worstRisk(a: RiskBand, b: RiskBand): RiskBand {
   return RISK_ORDER.indexOf(a) >= RISK_ORDER.indexOf(b) ? a : b;
-}
-
-function riskBandForScore(posture: number): RiskBand {
-  if (posture >= 90) return 'Very Low';
-  if (posture >= 80) return 'Low';
-  if (posture >= 65) return 'Moderate';
-  if (posture >= 50) return 'Elevated';
-  if (posture >= 35) return 'High';
-  return 'Critical';
 }
 
 function average(values: number[]): number | null {
@@ -1273,9 +1305,24 @@ export function buildNodeEvidence(
           },
           {
             label: 'OCSP stapling',
-            value: edgeCert.ocspStapled ? 'Stapled' : edgeCert.mustStaple ? 'MUST-STAPLE VIOLATED' : 'Not stapled',
-            tone: edgeCert.ocspStapled ? TONE_PASS : edgeCert.mustStaple ? TONE_FAIL : TONE_WARN,
-            detail: edgeCert.ocspResponderDetail ?? `Responder state: ${edgeCert.ocspResponderState}`,
+            // No responder advertised: nothing to staple — the Attack Surface row's rule.
+            value: edgeCert.ocspStapled
+              ? 'Stapled'
+              : edgeCert.mustStaple
+                ? 'MUST-STAPLE VIOLATED'
+                : !edgeCert.ocspUri
+                  ? 'Not applicable'
+                  : 'Not stapled',
+            tone: edgeCert.ocspStapled
+              ? TONE_PASS
+              : edgeCert.mustStaple
+                ? TONE_FAIL
+                : !edgeCert.ocspUri
+                  ? TONE_MUTED
+                  : TONE_WARN,
+            detail: !edgeCert.ocspStapled && !edgeCert.ocspUri
+              ? 'No OCSP responder is advertised in the certificate, so stapling does not apply'
+              : (edgeCert.ocspResponderDetail ?? `Responder state: ${edgeCert.ocspResponderState}`),
           },
           {
             label: 'Certificate Transparency',
@@ -1961,7 +2008,7 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
      weight shares come from ONE function, so the Encryption Score panel cannot
      caption a number with a weight that was not used to compute it. */
   const postureSplit = postureSlices(scoreComponents);
-  const classicalScore = postureSplit.classical.score ?? encryptionScore;
+  const classicalScore = postureSplit.classical.score;
 
   // What the published weighted model alone says, kept beside the headline so a
   // divergence is visible rather than hidden.
@@ -2081,15 +2128,19 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
         : 'Run an authorized scan to grade this estate.';
 
   /* ── Business risk ──────────────────────────────────────────────────────
-     Score-derived, then floored by the presence of critical findings: an estate
-     with an open critical exposure is not "Low risk" no matter what the mean
-     says. */
+     The published table's risk level for the score, floored at High by any open
+     critical finding — the rule /public-scan applies, so one host reads the same
+     risk on both surfaces.
+
+     This used to come from a private ladder (90/80/65/50/35) that disagreed with
+     the published table in most bands: grade B (80-84, "Moderate" in the "How
+     the Grading Works" reference opened from this very panel) read "Low", grade
+     C (65-69, Elevated) read "Moderate", and grade F read "High". */
   const criticalCount = scoped.critical;
   const highCount = scoped.high;
   const scopeNoun = scope === 'scan' ? 'this assessment' : 'the tenant estate';
-  let businessRisk: RiskBand = gradeable ? riskBandForScore(encryptionScore) : 'Not assessable';
+  let businessRisk: RiskBand = gradeable ? scoreToGrade(encryptionScore).riskLevel : 'Not assessable';
   if (gradeable && criticalCount > 0) businessRisk = worstRisk(businessRisk, 'High');
-  if (gradeable && criticalCount >= 5) businessRisk = worstRisk(businessRisk, 'Critical');
   const businessRiskDetail = gradeable
     ? criticalCount > 0
       ? `${pluralize(criticalCount, 'critical finding')} open across ${scopeNoun}.`
@@ -2119,16 +2170,54 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
   ).length;
   const policyFindings = findings.filter((finding) => !componentFindings.includes(finding));
 
+  /* The component tile's population, chosen with the scope. The estate snapshot
+     carries totals, not rows, so estate scope reports the observation total as
+     the observation total it is (see the Estate Footprint tile below). */
+  const scopedComponents = scope === 'scan' ? componentFindings.length : count(input.estate.totalFindings);
+  const scopedVulnerableComponents = scope === 'scan' ? vulnerableComponents : count(input.estate.vulnerableComponents);
+  /* Counted per target from the per-target results — but ONLY when every result
+     still carries its findings. A live run's results do; a RECORDED run's do not
+     (the history payload strips each result's findings because the full list is
+     returned once at the entry level), and counting over those empty arrays
+     published "Vulnerable Assets 0" beside four critical findings. Findings
+     carry no target field to attribute them by, so a single-target run is
+     settled by its summary and anything else is unknown rather than guessed. */
+  const perTargetEvidence = results.length > 0 && results.every((result) => Array.isArray(result.findings));
+  const vulnerableAssets: number | null = scope === 'estate'
+    ? count(input.estate.vulnerableAssets)
+    : perTargetEvidence
+      ? results.filter((result) => (result.findings ?? []).some((finding) => finding.threatLevel !== 'SAFE')).length
+      : scoped.assets === 1
+        ? (scoped.vulnerable > 0 ? 1 : 0)
+        : null;
+
   /* ── Migration complexity ─────────────────────────────────────────────── */
   const recommendations = scanner2?.migrationRecommendations ?? [];
   /* Only entries that actually ask for work. The catalogue contains
      "No Migration Needed" confirmations (AES-256 → AES-256), and counting them
      made this line claim more families "require migration" than do — the same
      entries the Executive Recommendations panel now drops. */
+  /* The SAME cards the Executive Recommendations panel renders — built here, once,
+     so "N algorithm families require migration" counts exactly the families that
+     panel lists, and never a catalogue entry no observation resolved to. */
+  const edgeForRecommendations = readEdgeIntelligence(results[0]?.metadata);
+  const recommendationCards = buildRecommendations(
+    recommendations,
+    findings,
+    [
+      /* Measured, not assumed: only primitives the named-group probe actually
+         accepted on this endpoint. */
+      ...(edgeForRecommendations?.pqKeyAgreement?.probed ? edgeForRecommendations.pqKeyAgreement.kemParameterSets : []),
+      ...(edgeForRecommendations?.pqKeyAgreement?.probed ? edgeForRecommendations.pqKeyAgreement.hybridGroups : []),
+    ],
+    edgeForRecommendations?.quantum?.migrationTargets ?? [],
+  );
+  const cardFamilies = new Set(recommendationCards.map((card) => card.id));
   const migrationsRequired = recommendations.filter(
     (recommendation) =>
       !/no migration needed/i.test(recommendation.migrationType ?? '') &&
-      recommendation.classicalAlgorithm !== recommendation.recommendedPQC,
+      recommendation.classicalAlgorithm !== recommendation.recommendedPQC &&
+      cardFamilies.has(recommendation.classicalAlgorithm),
   );
   const complexityRank: Record<PqcRecommendation['migrationComplexity'], number> = {
     LOW: 1,
@@ -2324,8 +2413,10 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
       gradeColor,
       gradeable,
       gradeDetail,
-      encryptionScore,
-      classicalScore,
+      /* Withheld exactly when the grade is: a number the run has not earned a
+         letter for has not earned a gauge position either. */
+      encryptionScore: gradeable ? encryptionScore : null,
+      classicalScore: gradeable ? classicalScore : null,
       postQuantumReadiness,
       postQuantumReadinessReason,
       evidenceCoverage,
@@ -2371,17 +2462,7 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
     /* `encryptionScoreValue`, not `encryptionScore`: the timeline must say
        "Not scored" rather than print the 0 the display value falls back to. */
     timeline: buildTimeline(hndl, encryptionScoreValue, postQuantumReadiness, postQuantumReadinessReason),
-    recommendations: buildRecommendations(
-      recommendations,
-      findings,
-      [
-        /* Measured, not assumed: only primitives the named-group probe actually
-           accepted on this endpoint. */
-        ...(edge?.pqKeyAgreement?.probed ? edge.pqKeyAgreement.kemParameterSets : []),
-        ...(edge?.pqKeyAgreement?.probed ? edge.pqKeyAgreement.hybridGroups : []),
-      ],
-      edge?.quantum?.migrationTargets ?? [],
-    ),
+    recommendations: recommendationCards,
     footprint: {
       metrics: [
         {
@@ -2414,7 +2495,7 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
         {
           key: 'components',
           label: scope === 'scan' ? 'Crypto Components' : 'Crypto Observations',
-          value: scope === 'scan' ? componentFindings.length : input.estate.totalFindings,
+          value: scopedComponents,
           /* "DISTINCT" WAS THE WRONG WORD and it made this tile irreconcilable
              with the Cryptographic Intelligence census beside it. These are
              inventory ROWS — every accepted cipher suite is its own row, as is
@@ -2446,7 +2527,7 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
          included, so this line claimed 27 "quantum-vulnerable components" on a
          scan holding far fewer actual components. */
       exposureLevel: gradeable
-        ? `${businessRisk} — ${pluralize(vulnerableComponents, 'quantum-vulnerable component')}`
+        ? `${businessRisk} — ${pluralize(scopedVulnerableComponents, 'quantum-vulnerable component')}`
         : 'Not assessed',
       basis: `Counted from the scanner's own persisted records for this tenant, scoped to ${scopeNoun}: ${pluralize(completedModules.length, 'module')} measured, ${pluralize(skippedModules.length, 'module')} not applicable, ${pluralize(input.linked.assets, 'asset record')} synchronized. Nothing here is estimated.`,
       components: {
@@ -2456,6 +2537,17 @@ export function buildAssessment(input: AssessmentInput): ScannerAssessment {
       },
     },
     coverage: buildCoverage(modules, failedModules, skippedModules, unreportedModules),
+    surfaceTarget: { target: results[0]?.target ?? null, of: results.length },
+    counters: {
+      scope,
+      assets: scoped.assets,
+      findings: scoped.totalFindings,
+      critical: scoped.critical,
+      components: scopedComponents,
+      componentsLabel: scope === 'scan' ? 'Crypto Components' : 'Crypto Observations',
+      vulnerableComponents: scopedVulnerableComponents,
+      vulnerableAssets,
+    },
     scope: {
       analyzed: completedModules.length
         ? completedModules.map((module) => module.name)
@@ -2930,16 +3022,30 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
      revocation checking, the other is one that promised it and cannot deliver. */
   if (edge?.certificate?.probed) {
     const cert = edge.certificate;
+    /* NO RESPONDER, NOTHING TO STAPLE. A certificate that advertises no OCSP
+       responder cannot staple one — the published `ocsp-stapling` category
+       excludes it as not applicable and /public-scan says "Not applicable". This
+       row used to say "Not stapled" in amber for the same certificate, beside a
+       decomposition row reading "not measured". */
+    const noResponder = !cert.ocspStapled && !cert.ocspUri;
     items.push({
       key: 'ocsp-stapling',
       label: 'OCSP Stapling',
-      value: cert.ocspStapled ? 'Enabled' : cert.mustStaple ? 'Must-staple violated' : 'Not stapled',
-      status: cert.ocspStapled ? 'pass' : cert.mustStaple ? 'fail' : 'partial',
+      value: cert.ocspStapled
+        ? 'Enabled'
+        : cert.mustStaple
+          ? 'Must-staple violated'
+          : noResponder
+            ? 'Not applicable'
+            : 'Not stapled',
+      status: cert.ocspStapled ? 'pass' : cert.mustStaple ? 'fail' : noResponder ? 'unknown' : 'partial',
       detail: cert.ocspStapled
         ? 'A stapled OCSP response was delivered in the handshake, so clients learn revocation status without contacting the CA.'
         : cert.mustStaple
           ? 'The certificate carries the must-staple extension but no response was stapled — conforming clients are required to hard-fail this connection.'
-          : `No OCSP response was stapled. Revocation checking falls back to a client-side fetch, which leaks browsing metadata and is soft-failed by most clients (responder: ${cert.ocspResponderState}).`,
+          : noResponder
+            ? 'The certificate advertises no OCSP responder, so there is nothing to staple. Revocation assurance for this deployment comes from certificate lifetime and Certificate Transparency instead — not a gap.'
+            : `No OCSP response was stapled. Revocation checking falls back to a client-side fetch, which leaks browsing metadata and is soft-failed by most clients (responder: ${cert.ocspResponderState}).`,
       evidence: [
         { label: 'Stapled in handshake', value: cert.ocspStapled ? 'yes' : 'no' },
         { label: 'Responder state', value: `${cert.ocspResponderState}${cert.ocspResponderDetail ? ` — ${cert.ocspResponderDetail}` : ''}` },
@@ -3164,7 +3270,41 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
   });
 
   /* ── Aggregate verdicts ────────────────────────────────────────────────── */
-  const quantumRisk = scanner2?.attackAssessment?.classification ?? null;
+  /* QUANTUM RISK IS THE MEASURED VERDICT FIRST.
+     The edge Quantum Risk Engine rates the primitives it actually observed —
+     the classification /public-scan publishes for the same host. This row used
+     to read only Scanner_2's correlated attack assessment, so www.cloudflare.com
+     read "High" here and "Critical" on /public-scan (static RSA key transport is
+     a Critical factor in the engine). The worst verdict across EVERY scanned
+     target decides, not the first target's alone; Scanner_2's correlation stays
+     beside it, named as the second opinion it is. */
+  const RISK_RANK: Record<string, number> = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
+  type EdgeVerdict = { level: string; factors: Array<{ factor: string; impact: string }>; target: string | undefined };
+  const edgeVerdicts: EdgeVerdict[] = [];
+  for (const result of input.results) {
+    const measured = readEdgeIntelligence(result.metadata);
+    if (measured?.quantum?.quantumRisk) {
+      edgeVerdicts.push({
+        level: measured.quantum.quantumRisk.toUpperCase(),
+        factors: measured.quantum.riskFactors ?? [],
+        target: result.target,
+      });
+    }
+  }
+  const worstEdge = edgeVerdicts.reduce<EdgeVerdict | null>(
+    (worst, entry) => (!worst || (RISK_RANK[entry.level] ?? 0) > (RISK_RANK[worst.level] ?? 0) ? entry : worst),
+    null,
+  );
+  const correlated = scanner2?.attackAssessment?.classification ?? null;
+  const quantumRisk = worstEdge?.level ?? correlated;
+  const worstFactor = worstEdge?.factors.reduce<{ factor: string; impact: string } | null>(
+    (worst, factor) =>
+      !worst || (RISK_RANK[factor.impact.toUpperCase()] ?? 0) > (RISK_RANK[worst.impact.toUpperCase()] ?? 0) ? factor : worst,
+    null,
+  );
+  const correlationNote = scanner2?.attackAssessment
+    ? `Scanner_2's correlated attack assessment rates it ${correlated ? correlated.charAt(0) + correlated.slice(1).toLowerCase() : 'unscored'} across ${pluralize(scanner2.attackAssessment.attackCorrelations.length, 'correlated exposure chain')}.`
+    : '';
   items.push({
     key: 'quantum-risk',
     label: 'Quantum Risk',
@@ -3178,9 +3318,13 @@ function buildAttackSurface(input: AssessmentInput, findings: DefensiveFinding[]
         : quantumRisk === 'MEDIUM'
           ? 'partial'
           : 'pass',
-    detail: scanner2?.attackAssessment
-      ? `Scanner_2 quantum risk assessment across ${pluralize(scanner2.attackAssessment.attackCorrelations.length, 'correlated exposure chain')}.`
-      : 'The Scanner_2 enterprise pass has not scored this estate yet.',
+    detail: worstEdge
+      ? `Quantum Risk Engine — worst factor across the measured primitives${
+          edgeVerdicts.length > 1 && worstEdge.target ? ` (on ${worstEdge.target})` : ''
+        }: ${worstFactor ? `${worstFactor.factor} (${worstFactor.impact})` : worstEdge.level}. ${correlationNote}`.trim()
+      : scanner2?.attackAssessment
+        ? `Scanner_2 quantum risk assessment across ${pluralize(scanner2.attackAssessment.attackCorrelations.length, 'correlated exposure chain')}.`
+        : 'The Scanner_2 enterprise pass has not scored this estate yet.',
   });
 
   /* Edge attribution.
@@ -3378,11 +3522,18 @@ function buildRecommendations(
     return [];
   }
 
-  const priorityFor: Record<PqcRecommendation['migrationComplexity'], RecommendationCard['priority']> = {
+  /* PRIORITY IS URGENCY, AND URGENCY IS THE WORST OBSERVATION THE CARD COVERS.
+     It used to be the catalogue's `migrationComplexity` — how HARD the migration
+     is, which the card already states as its effort — so "Retire RSA-2048" read
+     "High" priority directly above "the most severe is rated CRITICAL". The
+     Findings table and this card now speak one severity, the same rule
+     /public-scan's recommendations follow. */
+  const priorityFor: Record<ThreatLevel, RecommendationCard['priority']> = {
     CRITICAL: 'Critical',
     HIGH: 'High',
     MEDIUM: 'Medium',
     LOW: 'Low',
+    SAFE: 'Low',
   };
 
   const deployed = alreadyDeployed
@@ -3456,7 +3607,7 @@ function buildRecommendations(
         title: isDeployed
           ? `Retire ${recommendation.classicalAlgorithm} — ${recommendedPQC} is already deployed`
           : `Replace ${recommendation.classicalAlgorithm} with ${recommendedPQC}`,
-        priority: priorityFor[recommendation.migrationComplexity],
+        priority: priorityFor[worst],
         businessImpact:
           affected.length > 0
             ? `${pluralize(affected.length, 'observation')} in this assessment ${
@@ -3474,6 +3625,11 @@ function buildRecommendations(
         rationale: `${recommendation.migrationType} · alternatives: ${alternatives.slice(0, 3).join(', ') || 'none published'}`,
       };
     })
+    /* Advice is grounded in THIS assessment or it is not shown. A catalogue entry
+       no observation resolves to was printed as "…is in the migration catalogue,
+       but no observation in this assessment resolves to it" — a recommendation
+       that admits, in its own text, that the scan did not find the problem. */
+    .filter((card) => card.affected > 0)
     .sort((a, b) => {
       const order: Record<RecommendationCard['priority'], number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
       return order[a.priority] - order[b.priority] || b.affected - a.affected;

@@ -255,9 +255,17 @@ function evidenceFor(key: QveNodeKey, report: PublicScanReport): EvidenceRow[] {
         { label: 'A / AAAA records', value: `${dns.ipv4.length} IPv4 · ${dns.ipv6.length} IPv6` },
         { label: 'Nameservers', value: dns.nameservers.length ? dns.nameservers.slice(0, 2).join(', ') : 'not observable' },
         {
+          // The `dns-caa` row's rule: absence is a finding only once the climb
+          // to the registrable domain completed — policy is inherited from it.
           label: 'CAA policy',
-          value: dns.caaQueryable ? (dns.caaPresent ? dns.caaRecords.map((record) => record.value).slice(0, 2).join(', ') : 'no CAA RRset') : 'not observable',
-          tone: dns.caaPresent ? QVE_COLOR.pass : dns.caaQueryable ? QVE_COLOR.warning : undefined,
+          value: dns.caaPresent
+            ? dns.caaRecords.map((record) => record.value).slice(0, 2).join(', ')
+            : dns.caaQueryable && dns.caaClimbComplete
+              ? 'no CAA RRset'
+              : dns.caaQueryable
+                ? 'undetermined — climb incomplete'
+                : 'not observable',
+          tone: dns.caaPresent ? QVE_COLOR.pass : dns.caaQueryable && dns.caaClimbComplete ? QVE_COLOR.warning : undefined,
         },
         {
           label: 'DNSSEC',
@@ -274,8 +282,23 @@ function evidenceFor(key: QveNodeKey, report: PublicScanReport): EvidenceRow[] {
         { label: 'Infrastructure', value: [fingerprint.cdn, fingerprint.waf, fingerprint.cloudProvider].filter(Boolean).join(' · ') || 'no signature' },
         ...http.headers.slice(0, 5).map((header) => ({
           label: header.name,
-          value: header.present ? (header.secure ? 'hardened' : 'present, weak') : 'absent',
-          tone: header.secure ? QVE_COLOR.pass : header.present ? QVE_COLOR.warning : QVE_COLOR.critical,
+          // A superseded header is exempt from the tally, so it is not "absent".
+          value:
+            header.applicable === false
+              ? `not required — ${header.supersededBy ?? 'superseded'}`
+              : header.present
+                ? header.secure
+                  ? 'hardened'
+                  : 'present, weak'
+                : 'absent',
+          tone:
+            header.applicable === false
+              ? undefined
+              : header.secure
+                ? QVE_COLOR.pass
+                : header.present
+                  ? QVE_COLOR.warning
+                  : QVE_COLOR.critical,
         })),
       ];
     case 'ocsp':
@@ -289,9 +312,17 @@ function evidenceFor(key: QveNodeKey, report: PublicScanReport): EvidenceRow[] {
     case 'quantum':
       return [
         {
+          // "none accepted" is only true for a settled refusal; read the
+          // Post-Quantum Key Agreement row, which knows which case this is.
           label: 'Hybrid groups',
-          value: keyAgreement.hybridGroups.length ? keyAgreement.hybridGroups.join(', ') : 'none accepted',
-          tone: keyAgreement.hybridGroups.length ? QVE_COLOR.quantum : QVE_COLOR.warning,
+          value: keyAgreement.hybridGroups.length
+            ? keyAgreement.hybridGroups.join(', ')
+            : (report.findings.find((finding) => finding.id === 'pq-key-agreement')?.finding ?? 'not observable'),
+          tone: keyAgreement.hybridGroups.length
+            ? QVE_COLOR.quantum
+            : report.executive.postQuantumKeyAgreement === 'not-measured'
+              ? undefined
+              : QVE_COLOR.warning,
         },
         { label: 'Classical groups', value: keyAgreement.classicalGroups.join(', ') || 'not observable' },
         {

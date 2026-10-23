@@ -242,14 +242,10 @@ export default function MobileShell({
         >
         <div className="flex items-center gap-3 pt-2.5">
           <div
-            className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[13px] p-1.5"
-            style={{
-              border: "1px solid var(--qg-hairline)",
-              background: "var(--qg-panel-soft)",
-              boxShadow: "var(--qg-glow)",
-            }}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
+            style={{ boxShadow: "var(--qg-glow)" }}
           >
-            <img src="/NEW_LOGO.png" alt="" className="h-full w-full object-contain" />
+            <img src="/brand/qguard-messaging-badge.webp" alt="" className="h-full w-full object-contain" />
           </div>
 
           <div className="min-w-0 flex-1">

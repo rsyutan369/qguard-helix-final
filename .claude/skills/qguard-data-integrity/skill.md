@@ -145,4 +145,9 @@ Before merging any change that touches a displayed value:
 - [ ] Cross-cutting routing is derived from one rule, not duplicated.
 - [ ] Verdicts are withheld when the run is incomplete.
 - [ ] Each panel states the scope it is describing.
-- [ ] `tools/scanner-dashboard-check.ts` passes.
+- [ ] No caption is inferred from a threshold on a number ("≥ 60 means hybrid"):
+      carry the categorical fact in the result instead (issue #61).
+- [ ] A modelled delta ("+N points") is computed on the score it is printed next
+      to, by mutating evidence and re-scoring — never on a private re-weighting.
+- [ ] `tools/scanner-dashboard-check.ts` passes; for /public-scan,
+      `tools/public-scan-hero-alignment-check.ts` passes.

@@ -176,7 +176,9 @@ export const CategoryNode = React.memo(function CategoryNode({
       onClick={() => onSelect(node.key)}
       aria-pressed={selected}
       // The card is the accessible name for everything the beam animates.
-      aria-label={`${node.title}: ${verdict.label}.${context ? ` ${context}.` : ''} ${node.lines.join('. ')}`}
+      aria-label={`${node.title}: ${verdict.label}.${context ? ` ${context}.` : ''} ${node.lines
+        .map((line) => line.replace(/[.\s]+$/, ''))
+        .join('. ')}`}
       title={verdict.basis}
       animate={shake}
       className={cn(

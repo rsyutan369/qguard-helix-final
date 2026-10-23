@@ -38,6 +38,30 @@ tools/public-scan-check.ts             LIVE public engine invariants (139) — s
                                        `net.connect` skipping `lookup` on IP literals
                                        was caught. `PROBE_UNREACHABLE_HOST` overrides
                                        the filtered target (default smtp.gmail.com)
+tools/public-scan-hero-alignment-check.ts
+                                       LIVE cross-panel invariants for /public-scan:
+                                       PQ card == decomposition row, gains reproduce
+                                       from the published model, priority == finding
+                                       severity, hero card never calmer than its worst
+                                       Findings row, headers/TLS/CAA card lines == rows.
+                                       Each host is re-derived into unsettled-probe,
+                                       standalone-ML-KEM, no-TLS-1.3 and unanswered-DNS
+                                       variants. PUBLIC_SCAN_REPORTS_DIR replays saved
+                                       reports; PUBLIC_SCAN_NO_REBUILD=1 is the
+                                       negative control (judges verdicts as saved)
+tools/scanner-dashboard-alignment-check.ts
+                                       LIVE cross-panel invariants for /dashboard/scanner
+                                       through the real orchestrator + Scanner_2 pass:
+                                       hero/Live/footprint counts one population, business
+                                       risk = published table, priority = worst finding,
+                                       OCSP/Quantum Risk parity with /public-scan, withheld
+                                       scores null, recorded-run counts, multi-target scope.
+                                       Pair with `.report-smoke/scanner-dashboard-shot.mjs`
+                                       (rendered page, read-only, QA tenant) — the render
+                                       caught "Vulnerable Assets 0" the pipeline could not,
+                                       because history strips per-target findings.
+                                       CountUp/Gauge animate on scroll: scroll a panel into
+                                       view and wait ~2.5s before reading its numbers.
 tools/hndl-check.ts                    harvest-now-decrypt-later sections
 tools/discovery-workflow-probe.ts      LIVE end-to-end scan + rail rendering
 tools/dashboard-summary-check.ts       LIVE /dashboard/summary scale + direction:

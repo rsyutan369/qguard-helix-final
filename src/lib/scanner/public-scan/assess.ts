@@ -11,7 +11,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { parseTarget } from '../web-scanner/tls-analyzer'
-import { runScanEngines, type ObservationSink, type ScanEvidenceBundle } from './engines'
+import { CRYPTO_STAGE_OBSERVATION_LABEL, runScanEngines, type ObservationSink, type ScanEvidenceBundle } from './engines'
 import {
   buildControlStates,
   buildExecutiveSummary,
@@ -31,6 +31,7 @@ import {
 import { buildScoreCategories } from './score-categories'
 import {
   PUBLIC_SCAN_STAGES,
+  type ExecutiveSummary,
   type PublicScanEvidence,
   type PublicScanReport,
   type PublicScanStage,
@@ -66,6 +67,17 @@ export interface AssessOptions {
 }
 
 const STAGE_BY_KEY = new Map(PUBLIC_SCAN_STAGES.map((stage) => [stage.key, stage]))
+
+/**
+ * The Quantum Assessment stage line, from the scored report. The live rail and
+ * the cached replay both print this, so a cache hit cannot word the same
+ * assessment differently from the run that produced it.
+ */
+export function quantumStageDetail(executive: ExecutiveSummary): string {
+  return executive.postQuantumReadiness === null
+    ? `PQ readiness not scored — ${executive.postQuantumDetail}`
+    : `PQ readiness ${executive.postQuantumReadiness}% · encryption ${executive.encryptionScore ?? '—'}/100`
+}
 
 function stage(key: PublicScanStageKey, state: PublicScanStage['state'], detail?: string): PublicScanStage {
   const meta = STAGE_BY_KEY.get(key)
@@ -194,6 +206,20 @@ export async function assessPublicTarget(options: AssessOptions): Promise<Public
   const startedAt = new Date()
   const emit = (value: PublicScanStage) => onStage?.(value)
 
+  /* The quantum stage is published AFTER the report is scored, from the report.
+     The cryptographic-intelligence engine computes its own readiness figure for
+     the authenticated pipeline, and the rail used to quote it: on a run whose
+     hybrid probe did not settle the rail kept reading "PQ readiness 26%" beside
+     an Executive Summary that correctly said "Not measured". Holding the stage
+     until scoring makes the rail, the cards and a cached replay one number. */
+  let deferredQuantum: { ok: boolean } | null = null
+  const onObservation: ObservationSink | undefined = options.onObservation
+    ? (observation) => {
+        if (observation.surface === 'quantum' && observation.label === CRYPTO_STAGE_OBSERVATION_LABEL) return
+        options.onObservation?.(observation)
+      }
+    : undefined
+
   // Stages are marked running when their engine ACTUALLY starts. Flipping all
   // four to running up front made the rail claim four concurrent modules from
   // the first frame, and left every card sitting on "Analyzing" for the whole
@@ -207,13 +233,17 @@ export async function assessPublicTarget(options: AssessOptions): Promise<Public
     },
     onEngine: (engine, ok, detail, unmeasured) => {
       const key = ENGINE_STAGE[engine]
+      if (engine === 'cryptographic-intelligence' && !unmeasured) {
+        deferredQuantum = { ok }
+        return
+      }
       /* `unavailable`, not `failed`. A module that could not run because the port
          never answered has made no claim about the target — painting it with the
          same red cross as a genuine control failure is what made an unreachable
          endpoint look like it had failed four security checks. */
       if (key) emit(stage(key, ok ? 'complete' : unmeasured ? 'unavailable' : 'failed', detail))
     },
-    onObservation: options.onObservation,
+    onObservation,
     budgetMs: options.budgetMs,
     signal: options.signal,
   })
@@ -232,9 +262,25 @@ export async function assessPublicTarget(options: AssessOptions): Promise<Public
   // Hoisted so Sophia can read the same array the Recommendations panel renders
   // rather than being handed a second, independently-built one.
   const recommendations = buildRecommendations(evidence, controls, scoreComponents)
-  // The quantum stage is already completed by the cryptographic-intelligence
-  // engine's own callback. Emitting it a second time here published two
-  // identical completions for one module and double-counted it in the rail.
+  // Published exactly once: the engine's own completion was held above, so this
+  // is the stage's only `complete` frame — never a second one.
+  if (deferredQuantum) {
+    const quantum = deferredQuantum as { ok: boolean }
+    emit(stage('quantum', quantum.ok ? 'complete' : 'failed', quantumStageDetail(executive)))
+    const kex = executive.postQuantumKeyAgreement
+    options.onObservation?.({
+      surface: 'quantum',
+      label: CRYPTO_STAGE_OBSERVATION_LABEL,
+      detail: `${executive.postQuantumDetail}${
+        executive.postQuantumReadiness === null ? '' : ` · readiness ${executive.postQuantumReadiness}%`
+      }`,
+      status: kex === 'hybrid' ? 'pass' : kex === 'not-measured' ? 'info' : 'warning',
+      severity: kex === 'hybrid' ? 'none' : kex === 'not-measured' ? 'info' : 'medium',
+      verdict:
+        kex === 'hybrid' ? 'Hybrid ready' : kex === 'pure-kem' ? 'PQ only' : kex === 'not-measured' ? 'Not measured' : 'Classical only',
+      postQuantum: kex === 'hybrid' || kex === 'pure-kem',
+    })
+  }
 
   // ── Executive report ──────────────────────────────────────────────────────
   emit(stage('report', 'running'))

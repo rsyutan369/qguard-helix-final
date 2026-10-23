@@ -246,8 +246,11 @@ export const CoreStage = React.memo(function CoreStage({
             >
               {readout === null ? '—' : Math.round(readout)}
             </span>
+            {/* Progress is a percentage; the settled number is the encryption
+                score, which the gauge, timeline and narrative all print as
+                "/100". Suffixing it "%" read as a different quantity. */}
             <span className="text-[0.95rem] font-bold" style={{ color: verdictColor, opacity: 0.7 }}>
-              {readout === null ? '' : '%'}
+              {readout === null ? '' : run === 'complete' ? '/100' : '%'}
             </span>
           </div>
         </div>

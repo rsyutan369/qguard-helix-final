@@ -114,6 +114,7 @@ function buildScannerInfraTiles(input: {
   modules: ModuleState[];
   findings: number;
   components: number;
+  componentsLabel: string;
   cbom: number;
   exposures: number;
   hasEvidence: boolean;
@@ -139,9 +140,9 @@ function buildScannerInfraTiles(input: {
     },
     {
       key: 'components',
-      label: 'Crypto Components',
+      label: input.componentsLabel,
       value: measured ? String(input.components) : '—',
-      basis: 'Distinct cryptographic observations recorded as findings',
+      basis: 'Cryptographic inventory entries, counted with the rule CBOM and Quantum Readiness use — the Estate Footprint tile of the same name',
       icon: Layers,
       measured,
     },
@@ -149,7 +150,7 @@ function buildScannerInfraTiles(input: {
       key: 'findings',
       label: 'Vulnerable',
       value: measured ? String(input.findings) : '—',
-      basis: 'Findings the risk model rated above SAFE',
+      basis: 'Inventory entries classified quantum-vulnerable, legacy or misconfigured — the Estate Footprint exposure line',
       icon: Radar,
       measured,
       tone: input.findings > 0 ? QVE_COLOR.critical : QVE_COLOR.pass,
@@ -199,12 +200,30 @@ export interface ScannerHeroProps {
    * a node card after a reload still shows the real execution states.
    */
   evidenceModules: ModuleState[];
+  /**
+   * The recorded scan in view when no run is live — its id, target and summary.
+   * The hero replays it so the cards and core describe the scan the panels do.
+   */
+  recordedScan?: { id: string; asset: string; summary: ScanSummary } | null;
   /** Per-target scan records — the evidence the node inspector reads. */
   results: ScanResultRecord[];
   /** The Scanner_2 enterprise pass, when one has been produced. */
   scanner2: EnterpriseScanner2 | null;
   /** Headline counters, already reconciled with Scanner Intelligence. */
-  counters: { components: number; vulnerable: number; cbom: number; assets: number; exposures: number };
+  /**
+   * The assessment's scoped counts (`ScannerAssessment.counters`) plus the linked
+   * record totals. `targets`, `components` and `vulnerable` are the SAME values
+   * the Estate Footprint prints under the same labels.
+   */
+  counters: {
+    targets: number;
+    components: number;
+    componentsLabel: string;
+    vulnerable: number;
+    cbom: number;
+    assets: number;
+    exposures: number;
+  };
   hasEvidence: boolean;
   /** Grade letter + colour once the run settles, for the core's verdict bar. */
   gradeLabel: string | null;
@@ -214,7 +233,8 @@ export interface ScannerHeroProps {
    * assessment exists.
    */
   verdict: {
-    score: number;
+    /** null while the composite is withheld — the core then keeps its live state. */
+    score: number | null;
     /** null = not scored on this assessment. */
     postQuantumReadiness: number | null;
     gradeable: boolean;
@@ -263,6 +283,7 @@ function HeroInner({
   targets,
   evidenceFindings,
   evidenceModules,
+  recordedScan = null,
   results,
   scanner2,
   counters,
@@ -295,6 +316,11 @@ function HeroInner({
     modules,
     findings,
     summary,
+    /* The recorded scan the panels describe, replayed when no run is live — the
+       same evidence (`evidenceModules`/`evidenceFindings`) they read. */
+    recorded: recordedScan
+      ? { ...recordedScan, modules: evidenceModules, findings: evidenceFindings }
+      : null,
     asset,
     error,
     reducedMotion: !budget.animate,
@@ -491,7 +517,7 @@ function HeroInner({
 
   const statusLabel =
     state.run === 'complete'
-      ? 'Scan Complete'
+      ? (!summary && recordedScan ? 'Recorded Scan' : 'Scan Complete')
       : state.run === 'error'
         ? 'Scan Failed'
         : state.run === 'scanning'
@@ -510,18 +536,23 @@ function HeroInner({
           : 'Queue an authorized target to begin';
 
   const latestEntry = state.timeline.length ? state.timeline[state.timeline.length - 1] : null;
+  /* The strip describes the assessment in view, not only a live run: after a
+     reload `summary` and `modules` are empty while every panel below describes
+     the recorded scan, so the strip read the composer's queue ("0 targets") and
+     "—" modules above a populated report. */
   const infraTiles = React.useMemo(
     () =>
       buildScannerInfraTiles({
-        targets: summary?.targetsScanned ?? targets.length,
-        modules,
+        targets: counters.targets,
+        modules: evidenceModules,
         findings: counters.vulnerable,
         components: counters.components,
+        componentsLabel: counters.componentsLabel,
         cbom: counters.cbom,
         exposures: counters.exposures,
         hasEvidence,
       }),
-    [summary?.targetsScanned, targets.length, modules, counters, hasEvidence],
+    [evidenceModules, counters, hasEvidence],
   );
   const consoleOpen = state.run === 'scanning' || state.run === 'complete' || state.run === 'error';
 

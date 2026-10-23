@@ -24,8 +24,8 @@ export function PaywallGate(props: {
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-canvas">
       <header className="flex items-center justify-between border-b border-line bg-white/75 px-5 py-3 backdrop-blur-xl">
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-lg border border-violet-100 bg-white p-1 shadow-tight">
-            <img src="/NEW_LOGO.png" alt="QGuard" className="h-full w-full object-contain" />
+          <div className="flex h-9 w-9 items-center justify-center rounded-full">
+            <img src="/brand/qguard-messaging-badge.webp" alt="QGuard Messaging" className="h-full w-full object-contain drop-shadow-[0_4px_10px_rgba(59,130,246,0.45)]" />
           </div>
           <div>
             <div className="text-sm font-bold tracking-wide text-violet-600">QGUARD</div>

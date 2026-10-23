@@ -23,6 +23,7 @@ import React from 'react';
 import type { PublicScanReport, PublicScanStage } from '@/lib/scanner/public-scan/types';
 import type { UsePublicScanResult } from '@/hooks/use-public-scan';
 import {
+  nodeScoreScopesFromReport,
   nodeScoresFromReport,
   observationEvent,
   reportEvidenceEvents,
@@ -203,6 +204,9 @@ export function useScanEventBridge({
       score: report.executive.encryptionScore,
       postQuantumScore: report.executive.postQuantumReadiness,
       nodeScores: nodeScoresFromReport(report),
+      // Names what each card's number grades, so a single-category surface's
+      // score is not read as a verdict on the whole surface.
+      nodeScoreScopes: nodeScoreScopesFromReport(report),
     });
   }, [report, enqueue, dispatch]);
 }

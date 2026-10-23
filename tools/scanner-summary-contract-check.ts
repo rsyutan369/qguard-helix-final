@@ -107,7 +107,11 @@ const INPUT = (overrides: Partial<AssessmentInput>): AssessmentInput => ({
 function verifyNoFabricatedNumbers() {
   console.log('\n=== 5. A summary with no score is NOT graded ===')
   const a = buildAssessment(INPUT({ summary: LEGACY_AGENT_SUMMARY as never }))
-  assert(Number.isFinite(a.executive.encryptionScore), `encryptionScore is never NaN (${a.executive.encryptionScore})`)
+  /* Stronger than "never NaN": an unscored summary publishes NO score. It used to
+     publish a fallback 0, which the gauge, the Live Dashboard and Sophia printed
+     as a measured worst-possible posture. */
+  assert(a.executive.encryptionScore === null, `an unscored summary publishes no score — null, never NaN or 0 (${a.executive.encryptionScore})`)
+  assert(a.executive.classicalScore === null, `nor a classical half (${a.executive.classicalScore})`)
   assert(a.executive.gradeable === false, 'an unscored summary is not gradeable')
   assert(a.executive.grade === '—', `no letter grade is invented (${a.executive.grade})`)
   assert(

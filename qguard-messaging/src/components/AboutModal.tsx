@@ -158,8 +158,8 @@ export function AboutModal({ open, version, onClose }: AboutModalProps) {
           </button>
 
           <div className="relative flex items-center gap-4">
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white p-2 shadow-lg ring-1 ring-white/40">
-              <img src="/NEW_LOGO.png" alt="Qguard Helix" className="h-full w-full object-contain" />
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full shadow-lg ring-1 ring-white/40">
+              <img src="/brand/qguard-messaging-badge.webp" alt="QGuard Messaging" className="h-full w-full object-contain" />
             </div>
             <div className="min-w-0">
               <div className="text-[10px] font-semibold uppercase tracking-[0.26em] text-violet-200">

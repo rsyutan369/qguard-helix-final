@@ -97,6 +97,18 @@ export interface DnsIntelligence {
 
   spf: string | null
   dmarc: string | null
+  /**
+   * Whether the lookups behind `spf`, `dmarc` and `mailExchangers` were ANSWERED.
+   *
+   * A null `spf` meant both "the domain publishes none" and "every resolver
+   * timed out", and the email-authentication control read it as the former:
+   * google.com — which publishes both SPF and DMARC — was reported "Neither SPF
+   * nor DMARC" on a run where its TXT queries simply did not come back. Absence
+   * is a finding only when the question was answered.
+   */
+  spfQueryable: boolean
+  dmarcQueryable: boolean
+  mxQueryable: boolean
   dkimSelectorsFound: string[]
 
   dnssecSigned: boolean
@@ -132,6 +144,9 @@ function emptyDns(host: string): DnsIntelligence {
     caaClimbComplete: false,
     spf: null,
     dmarc: null,
+    spfQueryable: false,
+    dmarcQueryable: false,
+    mxQueryable: false,
     dkimSelectorsFound: [],
     dnssecSigned: false,
     dnssecValidated: false,
@@ -361,6 +376,31 @@ async function viaSystemResolver<T>(query: () => Promise<T>, fallback: T, timeou
   }
 }
 
+/**
+ * A record-type query that reports whether it was ANSWERED, not just what came
+ * back. ENODATA / ENOTFOUND are authoritative "none published" answers; a
+ * timeout or a dead transport is no answer at all.
+ */
+async function systemAnswered<T>(
+  query: () => Promise<T[]>,
+  timeoutMs: number,
+): Promise<{ answered: boolean; records: T[] }> {
+  const unanswered = { answered: false, records: [] as T[] }
+  if (!systemResolverUsable() || timeoutMs <= 0) return unanswered
+  return withTimeout(
+    query().then(
+      (records) => ({ answered: true, records }),
+      (err) => {
+        noteResolverOutcome(err)
+        const code = (err as NodeJS.ErrnoException).code
+        return { answered: code === 'ENODATA' || code === 'ENOTFOUND', records: [] as T[] }
+      },
+    ),
+    timeoutMs,
+    unanswered,
+  )
+}
+
 async function systemCaa(name: string): Promise<{ records: CaaRecord[]; authoritative: boolean }> {
   if (!systemResolverUsable()) return { records: [], authoritative: false }
   try {
@@ -569,10 +609,10 @@ export async function runDnsEngine(
     // whatever budget is actually left. `withTimeout` resolves to the fallback
     // rather than rejecting, so a starved query degrades to "not observed".
     const supportingBudget = () => Math.max(0, Math.min(DOH_TIMEOUT, remaining()))
-    const [ns, mx, txt, soa, apexTxt, dmarcTxt, dnskey] = await Promise.all([
+    const [ns, mxAnswer, txtAnswer, soa, apexTxt, dmarcTxt, dnskey] = await Promise.all([
       viaSystemResolver(() => dnsPromises.resolveNs(apex), [] as string[], Math.min(DNS_TIMEOUT, supportingBudget())),
-      viaSystemResolver(() => dnsPromises.resolveMx(apex), [] as Array<{ priority: number; exchange: string }>, Math.min(DNS_TIMEOUT, supportingBudget())),
-      viaSystemResolver(() => dnsPromises.resolveTxt(host), [] as string[][], Math.min(DNS_TIMEOUT, supportingBudget())),
+      systemAnswered(() => dnsPromises.resolveMx(apex), Math.min(DNS_TIMEOUT, supportingBudget())),
+      systemAnswered(() => dnsPromises.resolveTxt(host), Math.min(DNS_TIMEOUT, supportingBudget())),
       withTimeout(doh(apex, RR.SOA), supportingBudget(), null),
       withTimeout(doh(apex, RR.TXT), supportingBudget(), null),
       withTimeout(doh(`_dmarc.${apex}`, RR.TXT), supportingBudget(), null),
@@ -582,6 +622,8 @@ export async function runDnsEngine(
     /* The NS and MX DoH fallbacks used to be two more SEQUENTIAL awaits after
        the batch above. They are independent of each other, so they run together
        — and only when the primary query actually came back empty. */
+    const mx = mxAnswer.records
+    const txt = txtAnswer.records
     const [nsFallback, mxFallback] = await Promise.all([
       ns.length || remaining() <= 0 ? null : withTimeout(doh(apex, RR.NS), supportingBudget(), null),
       mx.length || remaining() <= 0 ? null : withTimeout(doh(apex, RR.MX), supportingBudget(), null),
@@ -620,6 +662,12 @@ export async function runDnsEngine(
         .filter((answer) => answer.type === RR.TXT)
         .map((answer) => answer.data.replace(/^"|"$/g, '').replace(/" "/g, ''))
         .find((record) => /^v=DMARC1\b/i.test(record)) ?? null
+    /* SPF lives at the apex, so only an ANSWER for the apex settles its absence:
+       the DoH apex query, or the system query when the scanned host IS the
+       apex. A found record settles the question by itself either way. */
+    data.spfQueryable = data.spf !== null || apexTxt !== null || (host === apex && txtAnswer.answered)
+    data.dmarcQueryable = data.dmarc !== null || dmarcTxt !== null
+    data.mxQueryable = data.mailExchangers.length > 0 || mxAnswer.answered || mxFallback !== null
 
     // DKIM selectors are per-sender and cannot be enumerated blind; probe the
     // handful of well-known defaults and report only what actually answers.
