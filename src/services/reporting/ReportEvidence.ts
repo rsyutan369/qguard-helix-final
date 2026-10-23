@@ -364,7 +364,10 @@ function reductionTargets(snapshot: QuantumReadinessSnapshot) {
 }
 
 export function buildReadinessDomains(snapshot: QuantumReadinessSnapshot): ReadinessDomain[] {
-  const factor = (needle: string, fallback: number) => snapshot.readinessFactors.find((f) => f.label.toLowerCase().includes(needle))?.score ?? fallback;
+  const factor = (needle: string, fallback: number) => {
+    const found = snapshot.readinessFactors.find((f) => f.label.toLowerCase().includes(needle));
+    return found && found.measured !== false ? found.score : fallback;
+  };
   const s = snapshot.scores;
   const inv = snapshot.inventory;
   const internetCount = internetFacingLabels(snapshot).length;
@@ -1614,7 +1617,10 @@ export function buildReadinessMethodology(snapshot: QuantumReadinessSnapshot): R
     { factor: 'PQC Adoption', rawWeight: 0.45, score: s.pqcAdoption, measured: true, basis: `${inv.pqcReadyComponents} of ${inv.cryptoComponents} CBOM component(s) PQC-ready (${countPct(inv.pqcReadyComponents, inv.cryptoComponents)}); adoption score ${s.pqcAdoption}% incl. ½-weighted hybrid components` },
     { factor: 'Risk Posture (100 − Quantum Risk)', rawWeight: 0.25, score: 100 - s.quantumRisk, measured: true, basis: `Quantum risk ${s.quantumRisk}/100 from ${snapshot.criticalFindings.length} scanner finding(s)` },
     { factor: 'Runtime Visibility', rawWeight: 0.15, score: factorScore('runtime'), measured, basis: measured ? `${snapshot.telemetry.runtimeEvents.toLocaleString()} runtime crypto event(s) observed` : 'No runtime telemetry recorded — factor excluded, remaining weights renormalised' },
-    { factor: 'Governance Maturity', rawWeight: 0.15, score: factorScore('governance'), measured: true, basis: `${snapshot.telemetry.scanSessions} governed scan session(s) with retained evidence` },
+    // Governance is NOT part of the engine's blend (blendQuantumReadiness): it
+    // used to score a constant 60 whenever a scan existed. Listed so the
+    // methodology states the exclusion instead of silently dropping a row.
+    { factor: 'Governance Maturity', rawWeight: 0.15, score: 0, measured: false, basis: 'No governance evidence source feeds the assessment — factor excluded, remaining weights renormalised' },
   ];
   const present = defs.filter((d) => d.measured);
   const weightSum = present.reduce((sum, d) => sum + d.rawWeight, 0) || 1;
@@ -1633,7 +1639,7 @@ export function buildReadinessMethodology(snapshot: QuantumReadinessSnapshot): R
     overall: s.quantumReadiness,
     factors,
     explanation: snapshot.hasData
-      ? `The overall readiness of ${s.quantumReadiness}/100 is fully auditable: ${additionLine} = ${sum} (≈ ${s.quantumReadiness}, ±1 from score rounding). ${measured ? 'All four factors are measured, so the published weights (45/25/15/15) apply directly.' : 'Runtime Visibility is NOT measured (zero runtime telemetry), so it is shown as Not Measured and excluded — the remaining weights are renormalised to 52.9% / 29.4% / 17.6% rather than silently scoring an unmeasured factor.'}`
+      ? `The overall readiness of ${s.quantumReadiness}/100 is fully auditable: ${additionLine} = ${sum} (≈ ${s.quantumReadiness}, ±1 from score rounding). Governance Maturity has no evidence source and is excluded. ${measured ? 'Runtime Visibility is measured, so the remaining weights renormalise to 52.9% / 29.4% / 17.6%.' : 'Runtime Visibility is NOT measured (zero runtime telemetry) and is excluded too — the remaining weights renormalise to 64.3% / 35.7% rather than silently scoring an unmeasured factor.'}`
       : `${EVIDENCE_UNAVAILABLE}. Run a discovery scan to compute the readiness methodology.`,
   };
 }
@@ -1647,13 +1653,16 @@ export function buildReadinessIndex(snapshot: QuantumReadinessSnapshot, domains:
   const inv = snapshot.inventory;
   const domainScore = (needle: string) => domains.find((d) => d.domain.toLowerCase().includes(needle))?.score ?? 0;
   const factorScore = (needle: string) => snapshot.readinessFactors.find((f) => f.label.toLowerCase().includes(needle))?.score ?? 0;
+  // A factor the engine reports `measured: false` is not evidence for a pillar,
+  // however the pillar would otherwise be gated (older snapshots lack the flag).
+  const factorMeasured = (needle: string) => snapshot.readinessFactors.find((f) => f.label.toLowerCase().includes(needle))?.measured !== false;
   const internet = internetFacingLabels(snapshot).length;
   const defs = [
-    { pillar: 'Cryptographic Agility', weight: 0.16, raw: factorScore('agility'), measured: snapshot.hasData, driver: 'Ability to swap algorithms centrally without code change' },
+    { pillar: 'Cryptographic Agility', weight: 0.16, raw: factorScore('agility'), measured: snapshot.hasData && factorMeasured('agility'), driver: 'Ability to swap algorithms centrally without code change' },
     { pillar: 'TLS Modernization', weight: 0.16, raw: domainScore('tls'), measured: inv.domainsScanned > 0 || internet > 0, driver: `${internet} internet-facing endpoint(s); legacy cipher suites in scope` },
     { pillar: 'PKI Readiness', weight: 0.14, raw: domainScore('pki'), measured: inv.certificatesAnalyzed > 0, driver: `${inv.certificatesAnalyzed} certificate(s) on classical signatures` },
     { pillar: 'Identity Protection', weight: 0.12, raw: domainScore('identity'), measured: inv.identitiesAnalyzed > 0, driver: `${inv.identitiesAnalyzed} identity system(s) analysed` },
-    { pillar: 'Governance', weight: 0.14, raw: factorScore('governance'), measured: snapshot.hasData, driver: 'Crypto policy, inventory and evidence management' },
+    { pillar: 'Governance', weight: 0.14, raw: factorScore('governance'), measured: snapshot.hasData && factorMeasured('governance'), driver: 'Crypto policy, inventory and evidence management' },
     { pillar: 'Visibility (Runtime)', weight: 0.1, raw: factorScore('runtime'), measured: runtimeMeasured(snapshot), driver: runtimeMeasured(snapshot) ? `${snapshot.telemetry.runtimeEvents.toLocaleString()} runtime event(s)` : 'No runtime telemetry deployed' },
     { pillar: 'Vendor Readiness', weight: 0.09, raw: domainScore('vendor'), measured: inv.trustRelationships > 0, driver: `${inv.trustRelationships} trust relationship(s) in scope` },
     { pillar: 'Cloud Readiness', weight: 0.09, raw: domainScore('cloud'), measured: inv.cloudAccounts > 0, driver: `${inv.cloudAccounts} cloud account(s) connected` },
@@ -2100,17 +2109,20 @@ export function buildMaturityModel(snapshot: QuantumReadinessSnapshot, domains: 
   }
   const inv = snapshot.inventory;
   const factor = (needle: string) => snapshot.readinessFactors.find((f) => f.label.toLowerCase().includes(needle))?.score ?? 0;
+  const factorMeasured = (needle: string) => snapshot.readinessFactors.find((f) => f.label.toLowerCase().includes(needle))?.measured !== false;
   const domainScore = (needle: string) => domains.find((d) => d.domain.toLowerCase().includes(needle))?.score ?? 0;
   const runtimeMeasuredFlag = runtimeMeasured(snapshot);
   const weeks = snapshot.estimates.migrationTimelineWeeks || 0;
   const phase = (frac: number) => (weeks ? `~${Math.max(1, Math.round(weeks * frac))} wk` : 'TBD');
   const rows: Array<{ domain: string; current: number; measured?: boolean; owner: string; deps: string; timeline: string }> = [
-    { domain: 'Crypto Agility', current: factor('agility') || snapshot.scores.pqcAdoption, owner: 'Security Engineering', deps: 'Central crypto policy, key management (QKMS)', timeline: phase(1.0) },
-    { domain: 'Governance', current: factor('governance'), owner: 'GRC / Compliance', deps: 'Crypto inventory, evidence pipeline', timeline: phase(0.3) },
+    { domain: 'Crypto Agility', current: factor('agility'), measured: factorMeasured('agility'), owner: 'Security Engineering', deps: 'Central crypto policy, key management (QKMS)', timeline: phase(1.0) },
+    { domain: 'Governance', current: factor('governance'), measured: factorMeasured('governance'), owner: 'GRC / Compliance', deps: 'Crypto inventory, evidence pipeline', timeline: phase(0.3) },
     { domain: 'PKI', current: domainScore('pki'), owner: 'Security Team', deps: 'Hybrid CA, certificate automation', timeline: phase(0.6) },
     { domain: 'TLS / Transport', current: domainScore('tls'), owner: 'Infrastructure Team', deps: 'Load balancers, gateways, TLS 1.3', timeline: phase(0.4) },
     { domain: 'PQC Adoption', current: snapshot.scores.pqcAdoption, owner: 'Application Team', deps: 'Crypto-agile libraries, ML-KEM/ML-DSA', timeline: phase(1.0) },
-    { domain: 'Inventory / CBOM', current: inv.cryptoComponents > 0 ? 60 : 20, owner: 'Security Engineering', deps: 'Continuous scanning, CBOM generation', timeline: phase(0.2) },
+    // Evidence coverage — the share of the seven evidence sources the assessment
+    // actually holds. Was a constant 60 (any CBOM) or 20 (none).
+    { domain: 'Inventory / CBOM', current: snapshot.assessmentProgress, owner: 'Security Engineering', deps: 'Continuous scanning, CBOM generation', timeline: phase(0.2) },
     { domain: 'Runtime Visibility', current: factor('runtime'), measured: runtimeMeasuredFlag, owner: 'Platform Team', deps: 'Runtime crypto telemetry agents', timeline: phase(0.5) },
   ];
   const domainsOut = rows.map((r) => {
@@ -2985,6 +2997,10 @@ export function buildReportModel(
       // exists, matching the Evidence Confidence dashboard exactly.
       table: safeTable('PQC Readiness Factors', ['Factor', 'Score', 'Basis'], snapshot.readinessFactors.map((f) => {
         const label = f.label.toLowerCase();
+        // The engine states each factor's population and whether it was
+        // measured; older saved snapshots without those fields fall through.
+        if (f.measured === false) return [f.label, 'Not Measured', f.basis || 'Not measured — excluded from the readiness formula'];
+        if (f.basis) return [f.label, `${f.score}/100`, f.basis];
         if (label.includes('runtime') && snapshot.telemetry.runtimeEvents === 0) {
           return [f.label, 'Not Measured', 'No runtime telemetry recorded — excluded from the readiness formula'];
         }

@@ -123,6 +123,7 @@ export const CHANNEL_INVITE_CHOICES = [
   { label: "1 person · 24 hours", hours: 24, uses: 1 },
   { label: "10 people · 7 days", hours: 24 * 7, uses: 10 },
   { label: "100 people · 30 days", hours: 24 * 30, uses: 100 },
+  { label: "1,000 people · 30 days", hours: 24 * 30, uses: 1000 },
 ] as const;
 
 /** An invite code as typed or pasted: 32 hex characters, spaces and dashes ignored. */

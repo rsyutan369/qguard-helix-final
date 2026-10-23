@@ -12,6 +12,7 @@ import type { DashboardData, TrustedDevice } from "@/lib/types";
 import { UserAvatar } from "@/components/UserAvatar";
 import HelixReactor, { TONE_VAR } from "@/components/mobile/HelixReactor";
 import { buildCryptoPosture, completeLayerCount, scoreVerdict, toReactorRings } from "@/lib/mobile-posture";
+import { displayableEmail } from "@/lib/account-identity";
 
 interface MobileDashboardProps {
   data: DashboardData;
@@ -29,7 +30,7 @@ function greeting(): string {
 function firstName(data: DashboardData): string {
   const name = data.profile?.name?.trim() || data.profile?.username?.trim();
   if (name) return name.split(/\s+/)[0];
-  const email = data.profile?.email ?? "";
+  const email = displayableEmail(data.profile?.email) ?? "";
   return email ? email.split("@")[0] : "there";
 }
 

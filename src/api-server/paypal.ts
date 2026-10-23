@@ -7,9 +7,12 @@ import {
   BILLING_AUDIT,
   cancellationPatch,
   isCancellationRecorded,
+  isPaypalSubscriptionId,
   failedPaymentInvoiceRow,
   invoiceRow,
+  moneyBackRefundCancels,
   planChangeAction,
+  refundCancellationPatch,
   refundInvoicePatch,
   statusAuditAction,
   webhookClaimDecision,
@@ -712,12 +715,57 @@ async function updateSubscriptionStatus(
   }
 }
 
+/** True when no earlier charge of the same PayPal subscription was recorded. */
+async function isFirstPayment(db: SupabaseClient, invoice: { id: string; user_id: string; payment_date: string | null }, subscriptionId: string): Promise<boolean> {
+  if (!invoice.payment_date) return false
+  const { data, error } = await db
+    .from('billing_invoices')
+    .select('id')
+    .eq('user_id', invoice.user_id)
+    .eq('metadata->>subscriptionId', subscriptionId)
+    .in('status', ['paid', 'refunded'])
+    .lt('payment_date', invoice.payment_date)
+    .neq('id', invoice.id)
+    .limit(1)
+  if (error) throw new Error(`first payment lookup failed: ${error.message}`)
+  return !data || data.length === 0
+}
+
+/** Money-back refund: stop PayPal billing and end access (same rule as the billing Edge Function). */
+async function cancelForRefund(db: SupabaseClient, subscriptionId: string, userId: string, refundCents: number, currency: string): Promise<void> {
+  const sub = await subscriptionByProviderId(db, subscriptionId)
+  if (!sub || sub.user_id !== userId || String(sub.status).toLowerCase() === 'cancelled') return
+  if (!sub.cancel_at_period_end) {
+    try {
+      await cancelSubscription(subscriptionId, 'Refunded under the money-back policy')
+    } catch (err: any) {
+      // 422: already cancelled at PayPal. Anything else means PayPal would keep billing.
+      if (err?.status !== 422) throw err
+    }
+  }
+  const nowIso = new Date().toISOString()
+  await mustSucceed(
+    db.from('billing_subscriptions').update(refundCancellationPatch(sub, nowIso)).eq('provider_subscription_id', subscriptionId),
+    'refund cancellation',
+  )
+  await notify(db, userId, 'subscription', 'warning', 'Subscription cancelled after refund',
+    `Your ${sub.plan} payment was refunded (${(refundCents / 100).toFixed(2)} ${currency}), so the subscription is cancelled and will not renew.`)
+  await audit(db, userId, BILLING_AUDIT.cancelled, 'Subscription cancelled: money-back refund', {
+    providerSubscriptionId: subscriptionId,
+    fromStatus: sub.status,
+    toStatus: 'cancelled',
+    plan: sub.plan,
+    refundCents,
+    source: 'paypal.refund',
+  })
+}
+
 async function recordRefund(db: SupabaseClient, resource: any, eventType: string): Promise<void> {
   const saleId: string | null = resource?.sale_id || resource?.id || null
   if (!saleId) return
   const { data: invoice, error } = await db
     .from('billing_invoices')
-    .select('id, user_id, amount_paid_cents, currency, subscription_plan, metadata')
+    .select('id, user_id, amount_paid_cents, currency, subscription_plan, payment_date, metadata')
     .eq('provider_invoice_id', saleId)
     .maybeSingle()
   if (error) throw new Error(`refund invoice lookup failed: ${error.message}`)
@@ -725,8 +773,23 @@ async function recordRefund(db: SupabaseClient, resource: any, eventType: string
     console.warn(`[paypal] ${eventType} for unknown sale ${saleId} — no invoice to refund`)
     return
   }
-  const refund = refundInvoicePatch(invoice, resource, eventType, new Date().toISOString())
+  const nowIso = new Date().toISOString()
+  const refund = refundInvoicePatch(invoice, resource, eventType, nowIso)
   if (!refund.isNew) return
+  // Cancel BEFORE marking the invoice refunded: a failure is retried by PayPal's redelivery.
+  const subscriptionId = invoice.metadata?.subscriptionId
+  if (isPaypalSubscriptionId(subscriptionId)) {
+    const refundedCents = Number(refund.patch.metadata && (refund.patch.metadata as Record<string, unknown>).refundedCents) || 0
+    const cancels = moneyBackRefundCancels({
+      eventType,
+      amountPaidCents: invoice.amount_paid_cents,
+      refundedCents,
+      paymentDate: invoice.payment_date,
+      refundedAt: resource?.create_time || nowIso,
+      isFirstPayment: refundedCents > 0 && await isFirstPayment(db, invoice, subscriptionId),
+    })
+    if (cancels) await cancelForRefund(db, subscriptionId, invoice.user_id, refundedCents, invoice.currency)
+  }
   await mustSucceed(db.from('billing_invoices').update(refund.patch).eq('id', invoice.id), 'invoice refund')
   await notify(db, invoice.user_id, 'billing', 'warning', 'Payment refunded', `${(refund.refundCents / 100).toFixed(2)} ${invoice.currency} of a ${invoice.subscription_plan} payment was refunded.`)
   await audit(db, invoice.user_id, BILLING_AUDIT.paymentRefunded, `Refund recorded: ${(refund.refundCents / 100).toFixed(2)} ${invoice.currency}`, {

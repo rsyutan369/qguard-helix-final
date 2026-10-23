@@ -107,6 +107,8 @@ export default function QuantumCertificationPage() {
   const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [previewCert, setPreviewCert] = useState<Cert | null>(null);
+  const [revokeOpen, setRevokeOpen] = useState(false);
+  const [revokeReason, setRevokeReason] = useState('');
   const certRef = useRef<HTMLDivElement>(null);
 
   const { eligibility, certificate } = data;
@@ -298,13 +300,15 @@ export default function QuantumCertificationPage() {
             />
           </div>
           <div>
+            {/* The readiness ATTESTED on a certificate. With no certificate there
+                is nothing attested, so it reads "—", not a 0% that looks measured. */}
             <MetricCard
-              label="Overall Readiness"
-              value={`${shownCert?.overallReadiness ?? 0}`}
-              suffix="%"
-              detail={`${activeCount} active · ${suspendedCount} suspended`}
+              label="Attested Readiness"
+              value={shownCert ? `${shownCert.overallReadiness}` : '—'}
+              suffix={shownCert ? '%' : undefined}
+              detail={shownCert ? `${activeCount} active · ${suspendedCount} suspended` : 'No certificate issued yet'}
               color={EMERALD}
-              ring={shownCert?.overallReadiness ?? 0}
+              ring={shownCert ? shownCert.overallReadiness : undefined}
             />
           </div>
         </div>
@@ -364,10 +368,48 @@ export default function QuantumCertificationPage() {
                         Reinstate
                       </HeaderButton>
                     )}
-                    <HeaderButton icon={ShieldX} onClick={() => void onLifecycle(() => revokeCertificate(activeCert.certificateId, 'Revoked by certificate owner'), `Revoked ${activeCert.certificateId}.`)}>
+                    <HeaderButton icon={ShieldX} active={revokeOpen} onClick={() => setRevokeOpen((open) => !open)}>
                       Revoke
                     </HeaderButton>
                     {busy ? <span className="inline-flex items-center gap-1.5 text-xs text-white/50"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Working…</span> : null}
+                  </div>
+                ) : null}
+                {/* Revocation is permanent and public — the verify portal will
+                    report this certificate revoked forever. It used to fire on a
+                    single click with a canned reason. */}
+                {activeCert && revokeOpen ? (
+                  <div className="space-y-2 rounded-md border border-red-400/30 bg-red-400/[0.06] p-3" role="alertdialog" aria-label="Confirm certificate revocation">
+                    <p className="text-xs text-red-100/90">
+                      <strong className="font-bold">Revoke {activeCert.certificateId}?</strong> This cannot be undone. The public verification
+                      portal will report the certificate as revoked, and a new certificate must be issued to restore certified status.
+                    </p>
+                    <label className="block">
+                      <span className="font-mono text-[10px] uppercase tracking-widest text-white/45">Reason (recorded in the audit trail)</span>
+                      <input
+                        value={revokeReason}
+                        onChange={(e) => setRevokeReason(e.target.value)}
+                        maxLength={500}
+                        placeholder="e.g. Key compromise suspected on edge gateway"
+                        className="mt-1 w-full rounded-md border border-white/12 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-red-400/50"
+                      />
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      <PrimaryButton
+                        icon={ShieldX}
+                        disabled={busy || revokeReason.trim().length < 4}
+                        onClick={() => {
+                          const reason = revokeReason.trim();
+                          setRevokeOpen(false);
+                          setRevokeReason('');
+                          void onLifecycle(() => revokeCertificate(activeCert.certificateId, reason), `Revoked ${activeCert.certificateId}.`);
+                        }}
+                      >
+                        Confirm Revocation
+                      </PrimaryButton>
+                      <HeaderButton icon={XCircle} onClick={() => setRevokeOpen(false)}>
+                        Cancel
+                      </HeaderButton>
+                    </div>
                   </div>
                 ) : null}
               </div>
@@ -503,11 +545,14 @@ export default function QuantumCertificationPage() {
           <Panel className="p-4">
             <SectionTitle>Quantum Trust Score™ Over Time</SectionTitle>
             {data.trend.length ? (
-              <TrendChart points={data.trend.map((t) => ({ label: t.label, readiness: t.readiness, risk: Math.round(t.trustScore / 10) }))} />
+              <TrendChart
+                points={data.trend.map((t) => ({ label: t.label, readiness: t.readiness, risk: Math.round(t.trustScore / 10) }))}
+                labels={{ readiness: 'Readiness', risk: 'Trust Score ÷ 10' }}
+              />
             ) : (
               <EmptyState label="No validation history yet." hint="Trust-score history builds as monitoring re-validates your certificate." />
             )}
-            <p className="mt-2 text-[10px] text-white/35">Series: measured readiness and normalized Quantum Trust Score™ from each validation run.</p>
+            <p className="mt-2 text-[10px] text-white/35">Series: readiness and the Quantum Trust Score™ (÷10 to share the 0–100 axis) from each validation run.</p>
           </Panel>
 
           <Panel className="p-4">
@@ -565,9 +610,9 @@ export default function QuantumCertificationPage() {
                 <div className="mt-3 border-t border-white/8 pt-2">
                   <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-white/45">Recommended Next Steps</div>
                   {data.advisor.nextSteps.map((step, i) => (
-                    <a key={i} href={step.route} className="mb-1 block text-blue-300 no-underline hover:text-blue-200">
+                    <Link key={i} to={step.route} className="mb-1 block text-blue-300 no-underline hover:text-blue-200">
                       → {step.title}: <span className="text-white/55">{step.detail}</span>
-                    </a>
+                    </Link>
                   ))}
                 </div>
               ) : null}

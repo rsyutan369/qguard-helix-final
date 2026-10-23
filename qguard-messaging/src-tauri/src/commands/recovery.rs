@@ -269,12 +269,12 @@ struct PendingRequest {
     keypair: LocalKemKeypair,
 }
 
-fn push_field(out: &mut Vec<u8>, field: &[u8]) {
+pub(crate) fn push_field(out: &mut Vec<u8>, field: &[u8]) {
     out.extend_from_slice(&(field.len() as u32).to_be_bytes());
     out.extend_from_slice(field);
 }
 
-fn framed(context: &[u8], fields: &[&[u8]]) -> Vec<u8> {
+pub(crate) fn framed(context: &[u8], fields: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::new();
     push_field(&mut out, context);
     for field in fields {
@@ -283,7 +283,7 @@ fn framed(context: &[u8], fields: &[&[u8]]) -> Vec<u8> {
     out
 }
 
-fn ciphertext_digest(ciphertext: &HybridCiphertext) -> [u8; 32] {
+pub(crate) fn ciphertext_digest(ciphertext: &HybridCiphertext) -> [u8; 32] {
     sha3_256(&framed(b"ct", &[&ciphertext.x25519_ephemeral_public, &ciphertext.ml_kem_ciphertext, ciphertext.suite.kem_combiner.as_bytes()]))
 }
 

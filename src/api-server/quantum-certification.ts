@@ -21,6 +21,8 @@ import type {
 } from '@/types/quantum-certification'
 import { LEVEL_LABELS } from '@/types/quantum-certification'
 import { trustedClientIp } from './runtime/client-ip'
+import { createSingleFlightCache } from '@/lib/single-flight-cache'
+import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
 
 /**
  * Quantum Trust Certification Engine™
@@ -1381,44 +1383,37 @@ async function issueCertificate(args: {
 /* ------------------------------------------------------------------ */
 /* Routes — tenant (auth + basic tier via subscription gateway)        */
 /* ------------------------------------------------------------------ */
+/*
+ * One dashboard build per tenant per window. The build is not read-only — the
+ * continuous monitor inside it can EXPIRE or SUSPEND a certificate and write
+ * history, notifications and audit rows — so concurrent builds (two open tabs,
+ * or a tab plus its stream) could each detect the same drift and record the
+ * suspension twice. Single-flight makes the monitor run once per window.
+ * Every mutating route below deletes the tenant's entry so the operator never
+ * reads a pre-write dashboard.
+ */
+const dashboardCache = createSingleFlightCache<CertificationDashboard>(10_000)
+function buildCachedDashboard(token: string, userId: string, actorEmail: string): Promise<CertificationDashboard> {
+  return dashboardCache.get(userId, () => buildCertificationDashboard(token, userId, actorEmail))
+}
+
 router.get('/', async (req: Request, res: Response) => {
   try {
     const { token, user } = req as AuthedRequest
-    const data = await buildCertificationDashboard(token!, user!.id, user!.email || '')
-    res.json({ data })
+    const data = await buildCachedDashboard(token!, user!.id, user!.email || '')
+    res.json({ data: { ...data, fingerprint: payloadFingerprint(data) } })
   } catch (error) {
     console.error('quantum-certification dashboard failed:', error)
     res.status(500).json({ error: { code: 'CERTIFICATION_ERROR', message: 'Unable to build certification dashboard' } })
   }
 })
 
-router.get('/stream', async (req: Request, res: Response) => {
+router.get('/stream', (req: Request, res: Response) => {
   const { token, user } = req as AuthedRequest
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  })
-  let closed = false
-  const send = async () => {
-    if (closed) return
-    try {
-      const data = await buildCertificationDashboard(token!, user!.id, user!.email || '')
-      res.write(`event: certification-update\ndata: ${JSON.stringify(data)}\n\n`)
-    } catch {
-      res.write(`event: certification-error\ndata: {}\n\n`)
-    }
-  }
-  await send()
-  const interval = setInterval(send, 20000)
-  const heartbeat = setInterval(() => {
-    if (!closed) res.write(': keep-alive\n\n')
-  }, 10000)
-  req.on('close', () => {
-    closed = true
-    clearInterval(interval)
-    clearInterval(heartbeat)
+  streamLiveSnapshot(req, res, {
+    event: 'certification-update',
+    build: () => buildCachedDashboard(token!, user!.id, user!.email || ''),
+    intervalMs: 10_000,
   })
 })
 
@@ -1431,6 +1426,7 @@ router.post('/issue', async (req: Request, res: Response) => {
     // Logo must be a bounded data URL (no external fetches, no oversized payloads).
     const organizationLogo = /^data:image\/(png|jpe?g|svg\+xml|webp);base64,/.test(logo) && logo.length <= 400_000 ? logo : null
     const result = await issueCertificate({ token: token!, userId: user!.id, actorEmail: user!.email || '', ip: clientIp(req), organization, organizationLogo })
+    dashboardCache.delete(user!.id)
     if (isIssueFailure(result)) return res.status(result.status).json({ error: { code: result.code, message: result.message, eligibility: result.eligibility } })
     res.status(201).json({ data: result.certificate })
   } catch (error) {
@@ -1455,6 +1451,7 @@ router.post('/:certificateId/renew', async (req: Request, res: Response) => {
       organizationLogo: existing[0].organization_logo ? str(existing[0].organization_logo) : null,
       renewedFrom: certificateId,
     })
+    dashboardCache.delete(user!.id)
     if (isIssueFailure(result)) return res.status(result.status).json({ error: { code: result.code, message: result.message, eligibility: result.eligibility } })
     res.status(201).json({ data: result.certificate })
   } catch (error) {
@@ -1490,6 +1487,7 @@ async function transitionStatus(req: Request, res: Response, target: Certificate
       patch.last_validated_at = new Date().toISOString()
     }
     const { error } = await client.from(CERT_TABLE).update(patch).eq('certificate_id', certificateId).eq('user_id', user!.id)
+    dashboardCache.delete(user!.id)
     if (error) return res.status(500).json({ error: { code: 'UPDATE_FAILED', message: error.message } })
     await writeHistory(client, user!.id, certificateId, event, reason, user!.email || 'owner')
     await writeAudit(client, user!.id, { certificateId, action: event, detail: reason, actorEmail: user!.email || '', ip: clientIp(req) })
@@ -1521,6 +1519,7 @@ router.post('/:certificateId/download-event', async (req: Request, res: Response
     await client.from('certificate_downloads').insert({ user_id: user!.id, certificate_id: certificateId, format })
     await writeHistory(client, user!.id, certificateId, 'downloaded', `Exported as ${format.toUpperCase()}.`, user!.email || 'owner')
     await writeAudit(client, user!.id, { certificateId, action: 'downloaded', detail: format, actorEmail: user!.email || '', ip: clientIp(req) })
+    dashboardCache.delete(user!.id)
     res.json({ data: { recorded: true } })
   } catch (error) {
     console.error('download event failed:', error)

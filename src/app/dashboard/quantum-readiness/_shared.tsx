@@ -1,12 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { ChevronRight, type LucideIcon } from 'lucide-react';
-import { useAuth } from '@/contexts/auth-context';
-import { supabase } from '@/lib/supabase';
 import { cn } from '@/lib/utils';
+import { downloadJsonFile, useLiveResource } from '@/hooks/use-live-resource';
+import { riskBandFor } from '@/lib/migration/asset-intelligence';
 import { STALE_AFTER_HOURS as STALE_HOURS, assessmentAgeHours as ageHours, describeAge as ageLabel } from '@/lib/dashboard-freshness';
 import type { SharedResponsibilityIntelligence } from '@/lib/shared-responsibility';
 import {
@@ -66,7 +66,10 @@ export interface QuantumReadinessSnapshot {
     cloudAccounts: number;
     dataRepositories: number;
     pqcReadyAssets: number;
+    /** Includes `unassessedAssets` — the shared posture model's catch-all bucket. */
     hybridAssets: number;
+    /** Subset of `hybridAssets` that no scan, CBOM row or runtime event was recorded against. */
+    unassessedAssets?: number;
     quantumVulnerableAssets: number;
     cryptoComponents: number;
     vulnerableComponents: number;
@@ -75,7 +78,12 @@ export interface QuantumReadinessSnapshot {
   riskDistribution: { critical: number; high: number; medium: number; low: number };
   /** Shared Responsibility ownership intelligence (tri-part readiness, matrix, 7-wave roadmap). */
   sharedResponsibility?: SharedResponsibilityIntelligence;
-  readinessFactors: Array<{ label: string; score: number }>;
+  /**
+   * `measured: false` ⇒ the factor's population was empty (or the factor has
+   * no evidence source): render "Not measured" with `basis`, never `score`.
+   * Optional so snapshots saved before the flag existed still parse.
+   */
+  readinessFactors: Array<{ label: string; score: number; measured?: boolean; basis?: string }>;
   riskFactors: Array<{ label: string; score: number; severity: string }>;
   criticalFindings: Array<{
     id: string;
@@ -91,6 +99,8 @@ export interface QuantumReadinessSnapshot {
     /** Every raw detection location merged into this record. */
     locations?: string[];
   }>;
+  /** Totals over ALL consolidated critical/high records — `criticalFindings` is the first `shown`. */
+  criticalFindingsSummary?: { records: number; instances: number; shown: number };
   recommendedActions: Array<{ id: string; title: string; detail: string; severity: string; route: string }>;
   topRiskAssets: Array<{
     asset: string;
@@ -112,7 +122,12 @@ export interface QuantumReadinessSnapshot {
     }>;
     edges: Array<{ source: string; target: string; type: string }>;
   };
-  riskTrend: Array<{ label: string; readiness: number; risk: number }>;
+  /** The headline scores' own recorded history (quantum_readiness_history), oldest → newest. */
+  riskTrend: Array<{ label: string; readiness: number; risk: number; recordedAt?: string }>;
+  /** Whether score history can exist on this deployment, and why not when it cannot. */
+  scoreHistory?: { available: boolean; reason: string | null; points: number };
+  /** Which store answered — 'memory' is a degraded, non-durable read. */
+  persistence?: 'database' | 'memory';
   // parallelWorkstreams: parallel migration teams assumed by the timeline model
   // (1 for small estates; >1 bounds the calendar duration for large estates).
   estimates: { migrationTimelineWeeks: number; migrationCostUsd: number; parallelWorkstreams?: number };
@@ -258,12 +273,13 @@ export function relativeTime(value: string | null) {
    the offline check all reason about assessment age identically. */
 export { STALE_AFTER_HOURS, assessmentAgeHours, describeAge, isStale } from '@/lib/dashboard-freshness';
 
+/**
+ * Colour of a 0–100 lower-better score: the canonical RISK_BANDS hex, so the
+ * colour always agrees with the band label the server publishes. The private
+ * ladder this replaced painted 20–39 ("Moderate") green.
+ */
 export function riskTone(score: number) {
-  if (score >= 80) return RED;
-  if (score >= 60) return ORANGE;
-  if (score >= 40) return GOLD;
-  if (score >= 20) return GREEN;
-  return TEAL;
+  return riskBandFor(Number(score) || 0).hex;
 }
 
 export function readinessTone(score: number) {
@@ -533,12 +549,23 @@ export function BarList({
   );
 }
 
-export function TrendChart({ points }: { points: Array<{ label: string; readiness: number; risk: number }> }) {
+export function TrendChart({
+  points,
+  labels = { readiness: 'Quantum Readiness', risk: 'Quantum Risk' },
+  emptyLabel = 'No score history recorded yet.',
+  emptyHint = 'A point is recorded each time the assessed evidence changes — rescan to add one.',
+}: {
+  points: Array<{ label: string; readiness: number; risk: number }>;
+  /** Legend names. Each series must be named for what it IS, not a borrowed metric. */
+  labels?: { readiness: string; risk: string };
+  emptyLabel?: string;
+  emptyHint?: string;
+}) {
   const width = 820;
   const height = 240;
   const pad = 34;
   if (!points.length) {
-    return <EmptyState label="No historical assessment data yet." hint="Run repeat scans to build a readiness trend." />;
+    return <EmptyState label={emptyLabel} hint={emptyHint} />;
   }
   const line = (values: number[]) =>
     values
@@ -549,8 +576,8 @@ export function TrendChart({ points }: { points: Array<{ label: string; readines
       })
       .join(' ');
   const series = [
-    { label: 'Readiness', values: points.map((p) => p.readiness), color: EMERALD },
-    { label: 'Risk', values: points.map((p) => p.risk), color: RED },
+    { label: labels.readiness, values: points.map((p) => p.readiness), color: EMERALD },
+    { label: labels.risk, values: points.map((p) => p.risk), color: RED },
   ];
   return (
     <div>
@@ -562,7 +589,7 @@ export function TrendChart({ points }: { points: Array<{ label: string; readines
           </span>
         ))}
       </div>
-      <svg className="h-[240px] w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Readiness and risk over time">
+      <svg className="h-[240px] w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${labels.readiness} and ${labels.risk} over time`}>
         {[0, 25, 50, 75, 100].map((tick) => {
           const y = pad + (height - pad * 2) - (tick / 100) * (height - pad * 2);
           return (
@@ -599,6 +626,19 @@ export function TrendChart({ points }: { points: Array<{ label: string; readines
 
 function clampScore(value: number) {
   return Math.max(0, Math.min(100, Number(value) || 0));
+}
+
+/**
+ * The Quantum Readiness / Quantum Risk trend, with the empty state that is
+ * actually TRUE for this deployment: "nothing recorded yet" and "history
+ * cannot be recorded here" are different statements.
+ */
+export function ScoreHistoryTrend({ snapshot }: { snapshot: QuantumReadinessSnapshot }) {
+  const history = snapshot.scoreHistory;
+  if (history && !history.available) {
+    return <EmptyState label="Score history unavailable." hint={history.reason || 'The score history store could not be read.'} />;
+  }
+  return <TrendChart points={snapshot.riskTrend} />;
 }
 
 export function Donut({
@@ -752,6 +792,8 @@ export function QuantumReadinessShell({
   sseConnected,
   state,
   snapshot,
+  error,
+  lastVerifiedAt,
   children,
 }: {
   title: string;
@@ -761,6 +803,9 @@ export function QuantumReadinessShell({
   sseConnected: boolean;
   state: LoadState;
   snapshot: QuantumReadinessSnapshot;
+  error?: string | null;
+  /** When the server last confirmed the shown figures are current. */
+  lastVerifiedAt?: string | null;
   children: ReactNode;
 }) {
   const assessmentAge = ageHours(snapshot.lastAssessmentAt || snapshot.generatedAt);
@@ -780,10 +825,33 @@ export function QuantumReadinessShell({
           <div className="flex flex-wrap items-center gap-2.5">{actions}</div>
         </header>
 
+        {state === 'loading' ? (
+          <div className="flex items-center gap-2 rounded-md border border-white/8 bg-white/[0.02] px-4 py-3 text-sm text-white/55" role="status">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-blue-300" />
+            Loading the assessment from the Quantum Readiness engine — figures appear once the server answers.
+          </div>
+        ) : null}
+
+        {state === 'error' && error ? (
+          <div className="rounded-md border border-red-400/30 bg-red-400/[0.08] px-4 py-3 text-sm text-red-100/90" role="alert">
+            The assessment could not be loaded: {error}. Figures below are not a measurement — retry with Refresh.
+          </div>
+        ) : null}
+
         {!snapshot.hasData && state === 'success' ? (
           <div className="rounded-md border border-[var(--qg-notice-border)] bg-[var(--qg-notice-bg)] px-4 py-3 text-sm text-[var(--qg-notice-text)]">
-            No assessment evidence found for this tenant yet. KPIs below reflect empty state. Run a PQC discovery scan or
-            connect cryptographic inventory to populate the Quantum Readiness Assessment Engine™.
+            No assessment evidence found for this tenant yet. Run a PQC discovery scan or connect cryptographic inventory
+            to populate the Quantum Readiness Assessment Engine™.{' '}
+            <Link to="/dashboard/scanner" className="font-bold text-[var(--qg-notice-text)] no-underline underline-offset-2 hover:underline">
+              Start a discovery scan
+            </Link>
+          </div>
+        ) : null}
+
+        {snapshot.hasData && snapshot.persistence === 'memory' ? (
+          <div className="rounded-md border border-[var(--qg-notice-border)] bg-[var(--qg-notice-bg)] px-4 py-3 text-sm text-[var(--qg-notice-text)]">
+            <span className="font-semibold">Degraded read.</span> The assessment database did not answer, so these figures come from
+            this server&apos;s in-memory scan results. They are real but not durable, and are not recorded in score history.
           </div>
         ) : null}
 
@@ -812,7 +880,8 @@ export function QuantumReadinessShell({
             <span
               className={cn('h-2 w-2 rounded-full', sseConnected ? 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)]' : 'bg-amber-300 animate-pulse')}
             />
-            {sseConnected ? 'Live telemetry, metrics stream & table subscriptions connected' : 'Connecting live assessment streams'}
+            {sseConnected ? 'Live assessment stream connected' : state === 'error' ? 'Live stream unavailable — retrying' : 'Connecting live assessment stream'}
+            {lastVerifiedAt ? <span className="text-white/30">· re-checked {relativeTime(lastVerifiedAt)}</span> : null}
           </span>
           <span>
             Last synchronized: {longDate(snapshot.lastAssessmentAt || snapshot.generatedAt)}
@@ -829,165 +898,73 @@ export function QuantumReadinessShell({
 }
 
 /* ------------------------------------------------------------------ */
-/* Data hook — real Supabase aggregation + SSE + realtime             */
+/* Data hook — the assessment snapshot, live over its own SSE stream  */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Tenant tables buildSnapshot() aggregates. A write to any of them nudges a
+ * refresh; the stream re-checks every 8s regardless. Tables must be in the
+ * `supabase_realtime` publication — see supabase/quantum-readiness-realtime.sql.
+ */
+const QR_REALTIME_TABLES = [
+  'assets',
+  'asset_relationships',
+  'pqc_scan_sessions',
+  'pqc_scan_results',
+  'crypto_inventory',
+  'crypto_exposures',
+  'certificates',
+  'generated_keys',
+  'runtime_crypto_events',
+  'scanner_alerts',
+  'scanner_evidence',
+  'connector_accounts',
+  'vault_files',
+] as const;
+
+function normalizeSnapshot(data: Record<string, unknown>): QuantumReadinessSnapshot {
+  const part = <K extends keyof QuantumReadinessSnapshot>(key: K) => (data[key] && typeof data[key] === 'object' ? (data[key] as object) : {});
+  return {
+    ...EMPTY_SNAPSHOT,
+    ...(data as Partial<QuantumReadinessSnapshot>),
+    scores: { ...EMPTY_SNAPSHOT.scores, ...part('scores') },
+    inventory: { ...EMPTY_SNAPSHOT.inventory, ...part('inventory') },
+    riskDistribution: { ...EMPTY_SNAPSHOT.riskDistribution, ...part('riskDistribution') },
+    exposureGraph: { ...EMPTY_SNAPSHOT.exposureGraph, ...part('exposureGraph') },
+    estimates: { ...EMPTY_SNAPSHOT.estimates, ...part('estimates') },
+    costAssumptions: resolveCostAssumptions(data.costAssumptions as Record<string, unknown> | null),
+    businessValue: { ...EMPTY_SNAPSHOT.businessValue, ...part('businessValue') },
+    telemetry: { ...EMPTY_SNAPSHOT.telemetry, ...part('telemetry') },
+  };
+}
+
+/**
+ * The Quantum Readiness assessment, live. Backed by GET /api/v1/quantum-readiness
+ * and its own fingerprinted stream (/stream), so a page re-renders only when the
+ * assessed evidence actually changed. It used to refetch the whole snapshot on
+ * every tick of an unrelated 8s key-count stream.
+ */
 export function useQuantumReadiness() {
-  const { session, user } = useAuth();
-  const token = session?.access_token;
-  const [snapshot, setSnapshot] = useState<QuantumReadinessSnapshot>(EMPTY_SNAPSHOT);
-  const [state, setState] = useState<LoadState>('loading');
-  const [error, setError] = useState<string | null>(null);
-  const [sseConnected, setSseConnected] = useState(false);
-  const streamsRef = useRef<EventSource[]>([]);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const closeStreams = useCallback(() => {
-    for (const stream of streamsRef.current) stream.close();
-    streamsRef.current = [];
-    setSseConnected(false);
-  }, []);
-
-  const refresh = useCallback(async () => {
-    if (!token) {
-      setSnapshot(EMPTY_SNAPSHOT);
-      setState('success');
-      setError(null);
-      return;
-    }
-    setState((current) => (current === 'success' ? current : 'loading'));
-    try {
-      const response = await fetch('/api/v1/quantum-readiness', {
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-      const data = payload.data || {};
-      setSnapshot({
-        ...EMPTY_SNAPSHOT,
-        ...data,
-        scores: { ...EMPTY_SNAPSHOT.scores, ...(data.scores || {}) },
-        inventory: { ...EMPTY_SNAPSHOT.inventory, ...(data.inventory || {}) },
-        riskDistribution: { ...EMPTY_SNAPSHOT.riskDistribution, ...(data.riskDistribution || {}) },
-        exposureGraph: { ...EMPTY_SNAPSHOT.exposureGraph, ...(data.exposureGraph || {}) },
-        estimates: { ...EMPTY_SNAPSHOT.estimates, ...(data.estimates || {}) },
-        costAssumptions: resolveCostAssumptions(data.costAssumptions as Record<string, unknown> | null),
-        businessValue: { ...EMPTY_SNAPSHOT.businessValue, ...(data.businessValue || {}) },
-        telemetry: { ...EMPTY_SNAPSHOT.telemetry, ...(data.telemetry || {}) },
-      });
-      setState('success');
-      setError(null);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unable to load quantum readiness assessment';
-      console.error('Quantum readiness load failed:', err);
-      setError(message);
-      setState('error');
-    }
-  }, [token]);
-
-  const queueRefresh = useCallback(() => {
-    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-    refreshTimerRef.current = setTimeout(() => {
-      refreshTimerRef.current = null;
-      void refresh();
-    }, 300);
-  }, [refresh]);
-
-  useEffect(
-    () => () => {
-      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (!token || !user) {
-      setSnapshot(EMPTY_SNAPSHOT);
-      setState('success');
-      return;
-    }
-    void refresh();
-  }, [token, user, refresh]);
-
-  // Supabase realtime — refresh on any tenant evidence mutation. The table list
-  // mirrors EXACTLY the evidence sources buildSnapshot() aggregates (the live
-  // Express pipeline writes pqc_scan_* / crypto_inventory / scanner_* — the
-  // legacy Next-era names scan_sessions/scan_results/web_scan_findings are dead
-  // and never fired). Tables must be in the `supabase_realtime` publication —
-  // see supabase/quantum-readiness-realtime.sql.
-  useEffect(() => {
-    if (!user) return;
-    const tables = [
-      'assets',
-      'asset_relationships',
-      'pqc_scan_sessions',
-      'pqc_scan_results',
-      'crypto_inventory',
-      'crypto_exposures',
-      'certificates',
-      'generated_keys',
-      'runtime_crypto_events',
-      'scanner_alerts',
-      'scanner_evidence',
-      'connector_accounts',
-      'vault_files',
-    ];
-    const channels = tables.map((table) =>
-      supabase
-        .channel(`quantum-readiness-${table}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` }, queueRefresh)
-        .subscribe(),
-    );
-    return () => {
-      for (const channel of channels) supabase.removeChannel(channel);
-    };
-  }, [user, queueRefresh]);
-
-  // SSE — reuse existing metrics + scanner streams.
-  useEffect(() => {
-    if (!token) {
-      closeStreams();
-      return;
-    }
-    let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    const connect = () => {
-      closeStreams();
-      const metricsStream = new EventSource(`/api/v1/metrics/stream?token=${encodeURIComponent(token)}`);
-      streamsRef.current = [metricsStream];
-      const markOpen = () => setSseConnected(true);
-      const scheduleReconnect = () => {
-        setSseConnected(false);
-        closeStreams();
-        if (retryTimer) clearTimeout(retryTimer);
-        retryTimer = setTimeout(connect, 10000);
-      };
-      const refreshFromStream = () => queueRefresh();
-      metricsStream.onopen = markOpen;
-      metricsStream.onerror = scheduleReconnect;
-      metricsStream.addEventListener('metrics-update', refreshFromStream);
-      metricsStream.addEventListener('runtime-crypto-update', refreshFromStream);
-      metricsStream.addEventListener('scan-complete', refreshFromStream);
-    };
-    connect();
-    return () => {
-      if (retryTimer) clearTimeout(retryTimer);
-      closeStreams();
-    };
-  }, [token, queueRefresh, closeStreams]);
-
-  const downloadJson = useCallback(
-    (filenamePrefix: string, payload: unknown = snapshot) => {
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `${filenamePrefix}-${new Date().toISOString().slice(0, 10)}.json`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-    },
-    [snapshot],
-  );
-
-  return { snapshot, state, error, sseConnected, refresh, downloadJson };
+  const live = useLiveResource<QuantumReadinessSnapshot>({
+    url: '/api/v1/quantum-readiness',
+    streamUrl: '/api/v1/quantum-readiness/stream',
+    event: 'quantum-readiness',
+    empty: EMPTY_SNAPSHOT,
+    normalize: normalizeSnapshot,
+    realtimeTables: QR_REALTIME_TABLES,
+    channelPrefix: 'quantum-readiness',
+  });
+  const snapshot = live.data;
+  const downloadJson = useCallback((filenamePrefix: string, payload: unknown = snapshot) => downloadJsonFile(filenamePrefix, payload), [snapshot]);
+  return {
+    snapshot,
+    state: live.state,
+    error: live.error,
+    sseConnected: live.sseConnected,
+    lastVerifiedAt: live.lastVerifiedAt,
+    refresh: live.refresh,
+    downloadJson,
+  };
 }
 
 export function useReadinessMemo(snapshot: QuantumReadinessSnapshot) {
@@ -1000,6 +977,8 @@ export function useReadinessMemo(snapshot: QuantumReadinessSnapshot) {
       totalFindings: riskDistribution.critical + riskDistribution.high + riskDistribution.medium + riskDistribution.low,
       readinessColor: readinessTone(scores.quantumReadiness),
       riskColor: riskTone(scores.quantumRisk),
+      /** Hybrid / in-progress assets that were actually measured (the shared bucket also holds unassessed ones). */
+      hybridMeasuredAssets: Math.max(0, inventory.hybridAssets - (inventory.unassessedAssets ?? 0)),
     };
   }, [snapshot]);
 }

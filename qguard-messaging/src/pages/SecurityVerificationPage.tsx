@@ -13,6 +13,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { securityEventDetails } from "@/lib/account-key";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import { useIsAdmin } from "@/lib/admin";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
@@ -412,7 +413,7 @@ export default function SecurityVerificationPage({
         device_id: deviceId,
         event_type: eventType,
         severity,
-        encrypted_details: { redacted: true, user_id: userId, device_id: deviceId, ...metadata },
+        encrypted_details: await securityEventDetails(eventHash, { user_id: userId, device_id: deviceId, ...metadata }),
         event_hash: eventHash,
       });
     } catch {

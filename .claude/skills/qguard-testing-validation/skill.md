@@ -437,6 +437,29 @@ system Chrome (`channel: 'chrome'`). Nothing is added to the repo.
 - Console errors: `ConsoleMessage.location().url` names the failing resource.
   `/favicon.ico` 404 on `/downloads` is pre-existing (no `<link rel="icon">`).
 
+### Quantum Readiness page family — offline (no browser, no credentials)
+
+When minting a tenant session is not an option (the auto-mode classifier refuses
+`generateLink` for user accounts), prove the nine QR-family pages without one:
+
+- `npx tsx tools/quantum-readiness-pages-check.ts` — 33 contract checks with
+  negative controls: readiness blend has no constant term (old blend scored an
+  empty estate 11), scoped reports equal the engine composites, posture buckets
+  partition the estate with unassessed ⊆ hybrid, Exposure Graph counts == the
+  canonical model, the stream sends one full frame then `-unchanged` (nested
+  `generatedAt` must not defeat the fingerprint), score history records on change
+  only and reports a missing table as unavailable.
+- `node tools/qr-pages-render/run.mjs [workDir]` — builds every payload with the
+  REAL assemblers (`fixtures.ts`), bundles each page with esbuild stubbing only
+  auth / supabase / subscription / `use-live-resource`, and `renderToString`s it
+  populated, empty and loading (27 renders). Fails on a crash, any
+  `console.error`, a missing expected label or a FORBIDDEN string (a removed
+  defect such as "Next Escalation Cycle"). The bundle must live inside the repo
+  (`node_modules/.cache/qr-pages-render`) or its externals do not resolve.
+- Unauthenticated `curl` returns 401 for EVERY `/api/v1/*` path (the
+  subscription gateway authenticates before routing), so it cannot prove a route
+  is mounted; list `router.stack` from the module instead.
+
 ## Evidence ladder
 
 Pick the weakest rung that actually proves the claim:

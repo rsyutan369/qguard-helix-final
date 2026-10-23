@@ -1,7 +1,8 @@
-import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, BadgeCheck, Ban, ChevronDown, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, Users, X, Sparkles, Megaphone, LogIn } from "lucide-react";
-import { MobileComposeButton, MobileConversationRow, MobileFilterTabs, MobileSheet, MobileThreadHeader, SheetAction } from "@/components/chat/MobileChat";
+import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, BadgeCheck, Ban, ChevronDown, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, Users, UsersRound, X, Sparkles, Megaphone, LogIn, ShieldOff, ShieldMinus } from "lucide-react";
+import { MobileComposeButton, MobileContactRow, MobileConversationRow, MobileFilterTabs, MobileSheet, MobileThreadHeader, SheetAction } from "@/components/chat/MobileChat";
 import { formatThreadTime } from "@/lib/thread-time";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { openTelemetryDetails } from "@/lib/account-key";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import { inlineMediaKind } from "@/lib/attachment-media";
 import { byteaToBytes, bytesToBytea } from "@/lib/encoding";
@@ -80,12 +81,28 @@ import { GroupMembersPanel } from "@/components/GroupMembersPanel";
 import { AssistantPanel } from "@/components/AssistantPanel";
 import { ChannelView } from "@/components/ChannelView";
 import { JoinChannelDialog, NewChannelDialog } from "@/components/ChannelDialogs";
-import type { ReaderDevice } from "@/lib/channels";
+import { CHANNEL_KEY_BATCH, chunk, type ReaderDevice } from "@/lib/channels";
+import { selectInChunks } from "@/lib/query-batching";
+import type { NewGroupKind } from "@/components/NewGroupDialog";
 import { OUTBOX_FLUSHED_EVENT, isNetworkFailure, queueOutbox } from "@/lib/outbox";
 import { NEARBY_ROWS_EVENT, mergeRowsById, rowsForDevice } from "@/lib/nearby";
 import { reportRelayTrouble } from "@/lib/relay-health";
 import { conversationAllowed, loadAssistantSettings, type AssistantCandidateMessage } from "@/lib/ai-assistant";
-import { groupFallbackTitle, groupName, rememberGroupName, sanitizeGroupName, setGroupOwnerHistory, type GroupRole } from "@/lib/group-chat";
+import {
+  DEFAULT_MEMBER_LIMITS,
+  conversationFallbackTitle,
+  conversationKind,
+  conversationKindLabel,
+  forgetStoredGroupName,
+  groupName,
+  loadStoredGroupNames,
+  parseMemberLimits,
+  rememberGroupName,
+  sanitizeGroupName,
+  setGroupOwnerHistory,
+  type GroupRole,
+  type MemberLimits,
+} from "@/lib/group-chat";
 import { peerIdentityOfDevice } from "@/lib/call-targets";
 import { createPairingOffer, receivePairingOffer, type PairingOffer } from "@/lib/contact-verification";
 import type { ContactSummary, ConversationSummary, DualSignature, SignedPrekeySummary, TrustedDevice, UserSearchResult } from "@/lib/types";
@@ -102,6 +119,7 @@ import { describeKemIncompatibility, kemInteroperates } from "@/lib/kem-suite";
 import { CallButton } from "@/components/call/CallButton";
 import { UserAvatar } from "@/components/UserAvatar";
 import { useIsMobile } from "@/lib/use-mobile";
+import { displayableEmail } from "@/lib/account-identity";
 
 interface SecureChatPageProps {
   userId: string;
@@ -376,8 +394,12 @@ type SecureControlMessage =
   | { type: "group_meta"; target_client_message_id: string; name: string }
   /** A member who joined after the name was sent asks the owner for it. */
   | { type: "group_meta_request"; target_client_message_id: string }
-  /** A channel's epoch key, sealed to one reader device (roadmap 7.4). */
-  | { type: "channel_key"; target_client_message_id: string; epoch_id: string; seq: number; key: string }
+  /**
+   * A channel's epoch key, sealed to one reader device (roadmap 7.4). The
+   * owner adds the name, so a new reader learns it with the key; a name here
+   * counts only when its sender owned the conversation (as for group_meta).
+   */
+  | { type: "channel_key"; target_client_message_id: string; epoch_id: string; seq: number; key: string; name?: string }
   /** A reader without the key asks the channel's staff for it. */
   | { type: "channel_key_request"; target_client_message_id: string };
 
@@ -557,6 +579,14 @@ function envelopeRowFromRecord(row: Record<string, unknown>): MessageEnvelopeRow
   };
 }
 
+/** A group, large group or channel, drawn where a person's avatar would be. */
+function conversationIcon(conversation: { conversation_type: string; member_posting?: boolean }, size: number) {
+  if (conversation.conversation_type === "channel") {
+    return conversation.member_posting ? <UsersRound size={size} aria-label="Large group" /> : <Megaphone size={size} aria-label="Channel" />;
+  }
+  return <Users size={size} aria-label="Group" />;
+}
+
 /** Groups and channels share naming, roles and membership management. */
 function isMultiParty<T extends { conversation_type: string }>(conversation: T | null | undefined): conversation is T & { conversation_type: "group" | "channel" } {
   return conversation?.conversation_type === "group" || conversation?.conversation_type === "channel";
@@ -586,7 +616,15 @@ function parseSecureControl(value: string): SecureControlMessage | null {
   }
   if (parsed.type === "channel_key" && typeof parsed.epoch_id === "string" && typeof parsed.key === "string"
     && typeof parsed.seq === "number" && Number.isSafeInteger(parsed.seq) && parsed.seq > 0) {
-    return { type: "channel_key", target_client_message_id: target, epoch_id: parsed.epoch_id, seq: parsed.seq, key: parsed.key };
+    const name = typeof parsed.name === "string" ? sanitizeGroupName(parsed.name) : "";
+    return {
+      type: "channel_key",
+      target_client_message_id: target,
+      epoch_id: parsed.epoch_id,
+      seq: parsed.seq,
+      key: parsed.key,
+      ...(name ? { name } : {}),
+    };
   }
   if (parsed.type === "channel_key_request") {
     return { type: "channel_key_request", target_client_message_id: target };
@@ -663,6 +701,23 @@ function assessThreatLocally(body: string): ThreatAssessment {
 function visibleContactName(contact: ContactSummary): string {
   return contact.alias || contact.display_name || contact.username || contact.contact_user_id.slice(0, 8);
 }
+
+/**
+ * Someone you can chat with and add to your groups. Restricting a contact
+ * limits what THEY can do to you (call you, add you to groups; migration 047),
+ * not what you can do, so a restricted contact still counts.
+ */
+function isChatContact(contact: ContactSummary): boolean {
+  return contact.trust_state === "added" || contact.trust_state === "restricted";
+}
+
+/** What each contact state means, in the words the contact list uses. */
+const CONTACT_STATE_DETAIL: Record<ContactSummary["trust_state"], string> = {
+  added: "Contact",
+  restricted: "Restricted · can message you, cannot call you or add you to groups",
+  blocked: "Blocked · their messages and calls do not reach you",
+  removed: "Removed",
+};
 
 // Lightweight breadcrumb logging for the Secure Chat open/navigation flow.
 // Printed to the webview console, which surfaces in `adb logcat` on Android and
@@ -1122,23 +1177,25 @@ async function loadTrustedDevicesForUsers(userIds: string[]): Promise<TrustedDev
   const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
   if (uniqueUserIds.length === 0) return [];
 
-  const { data: deviceRows, error: deviceError } = await withFetchRetry(() => Promise.resolve(supabase
+  // In chunks: a large group's member list does not fit one `.in()` URL.
+  const { data: deviceRows, error: deviceError } = await withFetchRetry(() => selectInChunks<Record<string, unknown>>(uniqueUserIds, (ids) => supabase
     .from("messaging_devices")
     .select("id,user_id,device_label,fingerprint,trust_state,suite,last_seen_at,created_at,revoked_at,approved_by_device_id,x25519_identity_public,mlkem_identity_public,ed25519_identity_public,mldsa_identity_public,identity_signature")
-    .in("user_id", uniqueUserIds)
+    .in("user_id", ids)
     .neq("trust_state", "revoked")
     .order("last_seen_at", { ascending: false })));
   if (deviceError) throw deviceError;
 
-  const rows = (deviceRows ?? []) as Array<Record<string, unknown>>;
+  const rows = ((deviceRows ?? []) as Array<Record<string, unknown>>)
+    .sort((a, b) => recordTime(b, "last_seen_at") - recordTime(a, "last_seen_at"));
   const deviceIds = rows.map((device) => String(device.id));
   const signedPrekeysByDevice = new Map<string, SignedPrekeySummary>();
 
   if (deviceIds.length > 0) {
-    const { data: prekeyRows, error: prekeyError } = await withFetchRetry(() => Promise.resolve(supabase
+    const { data: prekeyRows, error: prekeyError } = await withFetchRetry(() => selectInChunks<Record<string, unknown>>(deviceIds, (ids) => supabase
       .from("messaging_signed_prekeys")
       .select("id,user_id,device_id,x25519_public,mlkem_public,signature,fingerprint,is_active,expires_at,created_at")
-      .in("device_id", deviceIds)
+      .in("device_id", ids)
       .eq("is_active", true)
       .order("expires_at", { ascending: true })));
     if (prekeyError) throw prekeyError;
@@ -1173,10 +1230,10 @@ const senderIdentityCache = new Map<string, SenderIdentityPayload | null>();
 async function primeSenderIdentities(deviceIds: string[]): Promise<void> {
   const wanted = Array.from(new Set(deviceIds.filter(Boolean))).filter((id) => !senderIdentityCache.has(id));
   if (wanted.length === 0) return;
-  const { data, error } = await withFetchRetry(() => Promise.resolve(supabase
+  const { data, error } = await withFetchRetry(() => selectInChunks<Record<string, unknown>>(wanted, (ids) => supabase
     .from("messaging_devices")
     .select("id,user_id,x25519_identity_public,mlkem_identity_public,ed25519_identity_public,mldsa_identity_public,identity_signature")
-    .in("id", wanted)));
+    .in("id", ids)));
   // A failed lookup must not be cached as "no such device": that would pin every
   // message from those senders to `unverified_device` for the rest of the
   // session over one transient network error.
@@ -1366,6 +1423,14 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const ownNameInHistoryRef = useRef(new Set<string>());
   const groupNameRepliesRef = useRef(new Set<string>());
   const [groupNamesVersion, setGroupNamesVersion] = useState(0);
+  const [memberLimits, setMemberLimits] = useState<MemberLimits>(DEFAULT_MEMBER_LIMITS);
+  // Conversations whose name was looked for in the background this session.
+  const nameLookupsRef = useRef(new Set<string>());
+  // Phone layout: the Contacts tab and the contact whose actions are open.
+  const [mobileContactsOpen, setMobileContactsOpen] = useState(false);
+  const [mobileContactMenuId, setMobileContactMenuId] = useState<string | null>(null);
+  const [mobileContactFilter, setMobileContactFilter] = useState("");
+  const [mobileAddContactOpen, setMobileAddContactOpen] = useState(false);
   // `members`: the name is sent only once the thread lists all of them, so a
   // just-added member is among the recipients.
   const [pendingGroupMeta, setPendingGroupMeta] = useState<{ conversationId: string; name: string; members: string[] } | null>(null);
@@ -1399,6 +1464,11 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     .map((contact) => (contactOverrides[contact.id] ? { ...contact, trust_state: contactOverrides[contact.id] } : contact))
     .filter((contact) => contact.trust_state !== "removed"), [contacts, contactOverrides]);
   const blockedContactCount = useMemo(() => displayedContacts.filter((contact) => contact.trust_state === "blocked").length, [displayedContacts]);
+  const restrictedContactCount = useMemo(() => displayedContacts.filter((contact) => contact.trust_state === "restricted").length, [displayedContacts]);
+  const blockedUserIds = useMemo(
+    () => displayedContacts.filter((contact) => contact.trust_state === "blocked").map((contact) => contact.contact_user_id),
+    [displayedContacts],
+  );
 
   // Drop optimistic overrides once the refreshed server state confirms them, so
   // we never keep a stale local value after the realtime refresh lands.
@@ -1550,6 +1620,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       ))
     ))
     : null;
+  // With the panel's optimistic overrides, so Block / Restrict apply at once.
+  const activeContactState = activeContact
+    ? displayedContacts.find((contact) => contact.id === activeContact.id)?.trust_state ?? activeContact.trust_state
+    : null;
   const activeRecipientUserIds = useMemo(() => {
     const recipientIds = new Set<string>();
     if (activeConversation) {
@@ -1605,11 +1679,18 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     const missing = groupMemberIdsToName.filter((memberId) => !(memberId in memberProfileNames));
     if (missing.length === 0) return;
     let cancelled = false;
-    void supabase.from("profiles").select("id,name,username").in("id", missing).then(({ data, error }) => {
+    // In chunks (a large group has up to 1,000 members). Every id asked for is
+    // recorded, found or not, so a profile the directory does not return is not
+    // asked for again on every render.
+    void selectInChunks<{ id: string; name: string | null; username: string | null }>(
+      missing,
+      (ids) => supabase.from("profiles").select("id,name,username").in("id", ids),
+    ).then(({ data, error }) => {
       if (cancelled || error || !data) return;
       setMemberProfileNames((current) => {
         const next = { ...current };
-        for (const row of data as Array<{ id: string; name: string | null; username: string | null }>) {
+        for (const memberId of missing) next[memberId] ??= "Group member";
+        for (const row of data) {
           next[row.id] = row.name?.trim() || (row.username ? `@${row.username}` : "Group member");
         }
         return next;
@@ -1661,7 +1742,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   }, [activeGroupId, activeGroupOwner]);
   const recipientDevices = useMemo(() => {
     if (!activeConversation) return [];
-    return devices.filter((device) => activeRecipientUserIds.includes(device.user_id) && isTrustedDeviceForDelivery(device));
+    const recipients = new Set(activeRecipientUserIds);
+    return devices.filter((device) => recipients.has(device.user_id) && isTrustedDeviceForDelivery(device));
   }, [activeConversation, activeRecipientUserIds, devices]);
 
   // Every device id this client already knows — the peers' and its own, since
@@ -1750,14 +1832,16 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   // joins there is nobody to send it to. Once readers exist, the owner sends it
   // once (with this account's own copy) unless history already holds it.
   useEffect(() => {
-    if (activeConversation?.conversation_type !== "channel" || activeConversation.owner_user_id !== userId || messagesLoading) return;
+    // Large groups were created by builds that send the name with the key hand-out.
+    if (activeConversation?.conversation_type !== "channel" || activeConversation.member_posting
+      || activeConversation.owner_user_id !== userId || messagesLoading) return;
     if (channelNamesSentRef.current.has(activeConversation.id) || ownNameInHistoryRef.current.has(activeConversation.id)) return;
     const name = groupName(activeConversation.id, userId);
     if (!name || !activeConversation.member_user_ids.some((memberId) => memberId !== userId)) return;
     channelNamesSentRef.current.add(activeConversation.id);
-    void sendEncryptedPayload(
+    void sendToEveryMember(
       serializeSecureControl({ type: "group_meta", target_client_message_id: activeConversation.id, name }),
-      { controlType: "group_meta" },
+      "group_meta",
     ).catch((error) => {
       channelNamesSentRef.current.delete(activeConversation.id);
       console.warn("[secure-chat] Channel name not sent:", describeMessageError(error));
@@ -2021,6 +2105,51 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localDeviceId]);
 
+  // Names this device stored earlier, so the list shows them straight away.
+  // After the cache-owner effects above: a change of owner wipes memory first,
+  // and these are read back for the owner that remains.
+  useEffect(() => {
+    let cancelled = false;
+    void loadStoredGroupNames()
+      .then((changed) => { if (!cancelled && changed) setGroupNamesVersion((version) => version + 1); })
+      .catch((error) => console.warn("[secure-chat] Stored conversation names not read:", describeMessageError(error)));
+    return () => { cancelled = true; };
+  }, [localDeviceId, userId]);
+
+  // Groups and channels still unnamed after that are looked up in the
+  // background (lookUpMissingConversationNames), shortly after the list
+  // settles. Each is tried once per session.
+  useEffect(() => {
+    if (!localDeviceId || !isTauriRuntime()) return undefined;
+    const timer = window.setTimeout(() => {
+      const missing = effectiveConversations
+        .filter((conversation) => (
+          conversationKind(conversation) !== null
+          && !nameLookupsRef.current.has(conversation.id)
+          && !groupName(conversation.id, conversation.owner_user_id)
+        ))
+        .map((conversation) => conversation.id)
+        .slice(0, 40);
+      if (missing.length === 0) return;
+      missing.forEach((id) => nameLookupsRef.current.add(id));
+      void lookUpMissingConversationNames(missing, localDeviceId)
+        .catch((error) => console.warn("[secure-chat] Conversation names not looked up:", describeMessageError(error)));
+    }, 1_500);
+    return () => window.clearTimeout(timer);
+    // lookUpMissingConversationNames is recreated every render; the lookup set gates it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveConversations, groupNamesVersion, localDeviceId]);
+
+  // The server's member limits (migration 047); the defaults until they load,
+  // or when the table is not there yet.
+  useEffect(() => {
+    let cancelled = false;
+    void supabase.from("messaging_conversation_limits").select("kind,max_members").then(({ data, error }) => {
+      if (!cancelled && !error) setMemberLimits(parseMemberLimits(data));
+    });
+    return () => { cancelled = true; };
+  }, [userId]);
+
   useEffect(() => {
     setConversationStateOverrides((current) => {
       const knownIds = new Set(conversations.map((conversation) => conversation.id));
@@ -2188,9 +2317,12 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   }
 
   function conversationTitle(conversation: ConversationSummary): string {
-    if (isMultiParty(conversation)) {
-      // The decrypted name once known; until then the members' names.
-      return groupName(conversation.id, conversation.owner_user_id) ?? (conversation.title || groupFallbackTitle(conversation.member_user_ids.length));
+    const kind = conversationKind(conversation);
+    if (kind) {
+      // The decrypted name once known; until then what the list computed (the
+      // members' names, or what kind of conversation it is).
+      return groupName(conversation.id, conversation.owner_user_id)
+        ?? (conversation.title || conversationFallbackTitle(kind, conversation.member_user_ids.length, ""));
     }
     const contact = contacts.find((item) => conversation.member_user_ids.includes(item.contact_user_id));
     return contact ? visibleContactName(contact) : conversation.title;
@@ -2674,7 +2806,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           if (control?.type === "group_meta" && localRowIsMine) ownNameInHistoryRef.current.add(localRow.conversation_id);
           if (control?.type === "channel_key" && !localRowIsMine && decrypted.authenticated
             && decryptDeviceId && localRow.recipient_device_id === decryptDeviceId) {
-            acceptChannelKey(localRow.conversation_id, localRowSenderUserId, control);
+            acceptChannelKey(localRow.conversation_id, localRowSenderUserId, control, localRow.created_at);
           }
           if (control?.type === "channel_key_request" && !localRowIsMine && decrypted.authenticated
             && !channelKeyRequestsSeenRef.current.has(localRow.id)
@@ -3511,7 +3643,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       .order("created_at", { ascending: false })
       .limit(40);
     if (error) return;
-    setChatTelemetry(((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+    const openedRows = await openTelemetryDetails(
+      ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({ ...row, id: String(row.id), stage: String(row.stage ?? ""), detail: String(row.detail ?? "") })),
+    );
+    setChatTelemetry((openedRows as Array<Record<string, unknown>>).map((row) => ({
       id: String(row.id),
       stage: String(row.stage),
       detail: String(row.detail),
@@ -3608,7 +3743,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     rows.forEach((row) => {
       const userIdValue = String(row.id ?? row.user_id ?? "");
       if (!userIdValue || userIdValue === userId) return;
-      const emailPrefix = String(row.email ?? "").split("@")[0];
+      const emailPrefix = (displayableEmail(row.email ? String(row.email) : null) ?? "").split("@")[0];
       const username = String(row.username ?? emailPrefix ?? userIdValue.slice(0, 8));
       byId.set(userIdValue, {
         user_id: userIdValue,
@@ -3753,7 +3888,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     onSent();
   }
 
-  async function updateContact(contact: ContactSummary, trustState: "blocked" | "removed" | "added") {
+  async function updateContact(contact: ContactSummary, trustState: "blocked" | "restricted" | "removed" | "added") {
+    if (trustState === "removed" && !window.confirm(`Delete ${visibleContactName(contact)} from your contacts? Your chat history stays; you can add them again later.`)) return;
     setContactAction(null);
     // Apply the change to the panel immediately, then reconcile with the server.
     setContactOverrides((previous) => ({ ...previous, [contact.id]: trustState }));
@@ -3771,7 +3907,15 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       setContactAction(error.message);
       return;
     }
-    setContactAction(trustState === "added" ? `${visibleContactName(contact)} restored` : `${visibleContactName(contact)} ${trustState}`);
+    const name = visibleContactName(contact);
+    setContactAction(trustState === "added"
+      ? `${name} is a normal contact again`
+      : trustState === "restricted"
+        ? `${name} is restricted: they can still message you, but cannot call you or add you to groups`
+        : trustState === "blocked"
+          ? `${name} is blocked: their messages and calls no longer reach you`
+          : `${name} was deleted from your contacts`);
+    if (mobileContactMenuId === contact.id) setMobileContactMenuId(null);
     onSent();
   }
 
@@ -3923,6 +4067,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
         metadata: { conversation_id: thread.id },
       }).catch(() => undefined);
 
+      if (action === "delete" && isMultiParty(thread)) forgetStoredGroupName(thread.id);
       if (activeConversationId === thread.id && (action === "archive" || action === "hide" || action === "delete")) {
         setActiveConversationId("");
         setMobilePane("list");
@@ -3970,20 +4115,33 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     return sendable;
   }
 
-  async function createGroup(rawName: string, memberUserIds: string[]): Promise<void> {
+  /**
+   * A group, or a large group (migration 047): a channel whose members all
+   * post. A large group's name goes to each member with the channel key the
+   * owner's device hands out, so nothing is fanned out here.
+   */
+  async function createGroup(rawName: string, memberUserIds: string[], kind: NewGroupKind = "group"): Promise<void> {
     const name = sanitizeGroupName(rawName);
+    const large = kind === "large_group";
     const localDevices = localDeviceId
       ? (localDevice && isSendableDevice(localDevice) ? [localDevice] : [])
       : selectDeliveryDevicesForUsers(myDevices, [userId], localDeviceId);
     if (localDevices.length === 0) throw new Error("This device is still publishing its quantum-safe keys. Try again in a moment.");
-    const sendable = await groupMemberDevices(memberUserIds);
+    const sendable = memberUserIds.length > 0 ? await groupMemberDevices(memberUserIds) : [];
     const { data: conversation, error: conversationError } = await supabase
       .from("messaging_conversations")
       // No title or member hint on the server: the name is end-to-end encrypted.
-      .insert({ owner_user_id: userId, conversation_type: "group", encrypted_title: { version: 1 } })
+      .insert(large
+        ? { owner_user_id: userId, conversation_type: "channel", member_posting: true, encrypted_title: { version: 1 } }
+        : { owner_user_id: userId, conversation_type: "group", encrypted_title: { version: 1 } })
       .select("id")
       .single();
-    if (conversationError) throw conversationError;
+    if (conversationError) {
+      if (large && /member_posting/i.test(conversationError.message ?? "")) {
+        throw new Error("Large groups need the latest server update (migration 047). Ask your administrator to apply it.");
+      }
+      throw conversationError;
+    }
     const conversationId = String(conversation.id);
     const { error: memberError } = await supabase.from("messaging_conversation_members").insert([
       ...localDevices.map((device) => ({ conversation_id: conversationId, user_id: userId, device_id: device.device_id, role: "owner" })),
@@ -3995,14 +4153,15 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     setGroupNamesVersion((version) => version + 1);
     setPendingConversations((current) => [{
       id: conversationId,
-      conversation_type: "group",
+      conversation_type: large ? "channel" : "group",
       title: name,
-      last_activity: "No encrypted messages yet",
+      last_activity: large ? "No posts yet" : "No encrypted messages yet",
       unread_count: 0,
       updated_at: now,
       member_user_ids: Array.from(new Set([userId, ...memberUserIds])),
       owner_user_id: userId,
       member_roles: Object.fromEntries([[userId, "owner"], ...memberUserIds.map((memberId) => [memberId, "member"])]),
+      member_posting: large,
       archived_at: null,
       hidden_at: null,
       deleted_at: null,
@@ -4010,25 +4169,85 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     setActiveConversationId(conversationId);
     setConversationView("active");
     setMobilePane("thread");
-    setPendingGroupMeta({ conversationId, name, members: memberUserIds });
+    if (!large) setPendingGroupMeta({ conversationId, name, members: memberUserIds });
     setShowNewGroup(false);
-    setStatus(`Group "${name}" created`);
+    setStatus(large ? `Large group "${name}" created — invite more people from the group` : `Group "${name}" created`);
     await Promise.resolve(onSent());
   }
 
   /**
    * A channel's epoch key from a staff device. Only the owner's or an admin's
    * key is taken (roles from the server, as for names); the core refuses to
-   * replace a key it already holds for that epoch.
+   * replace a key it already holds for that epoch. A name riding along is
+   * recorded like any other; it counts only if the sender owned the channel
+   * when it was sent (group-chat.ts).
    */
-  function acceptChannelKey(conversationId: string, senderUserId: string, control: { epoch_id: string; seq: number; key: string }): void {
+  function acceptChannelKey(
+    conversationId: string,
+    senderUserId: string,
+    control: { epoch_id: string; seq: number; key: string; name?: string },
+    sentAt?: string,
+  ): void {
     const conversation = effectiveConversations.find((item) => item.id === conversationId);
     if (!conversation || conversation.conversation_type !== "channel") return;
     const senderRole = memberRole(conversation, senderUserId);
     if (senderRole !== "owner" && senderRole !== "admin") return;
+    if (control.name && sentAt && rememberGroupName(conversationId, control.name, sentAt, senderUserId)) {
+      setGroupNamesVersion((version) => version + 1);
+    }
     void safeInvoke("channel_key_import", { channelId: conversationId, epochId: control.epoch_id, seq: control.seq, key: control.key })
       .then(() => setChannelKeyVersion((value) => value + 1))
       .catch((error) => console.warn("[secure-chat] Channel key not accepted:", describeMessageError(error)));
+  }
+
+  /**
+   * Names for the conversation list without opening each thread: for every
+   * group or channel whose name this device does not know yet, open only the
+   * name-carrying messages addressed to THIS device (group_meta, and channel
+   * key hand-outs, which carry the owner's name). Each conversation is looked
+   * up once per session; everything else waits for the thread to be opened.
+   */
+  async function lookUpMissingConversationNames(conversationIds: string[], deviceId: string): Promise<void> {
+    const { data, error } = await selectInChunks<Record<string, unknown>>(conversationIds, (ids) => supabase
+      .from("messaging_message_envelopes")
+      .select(ENVELOPE_BODY_COLUMNS)
+      .in("conversation_id", ids)
+      .eq("recipient_device_id", deviceId)
+      .in("sealed_sender_envelope->>control_type", ["group_meta", "channel_key"])
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false })
+      .limit(200), 20);
+    if (error || !data) return;
+    const rows = data.map(envelopeRowFromRecord)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    await primeSenderIdentities(rows.map((row) => buildTauriEnvelope(row).sender_device_id));
+    const named = new Set<string>();
+    for (const row of rows) {
+      if (named.has(row.conversation_id)) continue;
+      try {
+        const envelope = buildTauriEnvelope(row);
+        const decrypted = await invokeWithTimeout<DecryptedChatEnvelope>("messaging_receive_encrypted_message", {
+          envelope,
+          senderIdentity: senderIdentityCache.get(envelope.sender_device_id) ?? null,
+        }, DECRYPT_TIMEOUT_MS);
+        const senderUserId = originalSenderUserId(row, userId);
+        const mine = senderUserId === userId;
+        const control = parseSecureControl(decrypted.plaintext);
+        if (!control || (!decrypted.authenticated && !mine)) continue;
+        // Cached like the history loader would, so opening the thread does not open it again.
+        decryptedControlCacheRef.current.set(messageGroupId(row), { ...control, sender_user_id: senderUserId, created_at: row.created_at });
+        if (control.type === "group_meta" && rememberGroupName(row.conversation_id, control.name, row.created_at, senderUserId)) {
+          named.add(row.conversation_id);
+          setGroupNamesVersion((version) => version + 1);
+        }
+        if (control.type === "channel_key" && !mine) {
+          acceptChannelKey(row.conversation_id, senderUserId, control, row.created_at);
+          if (control.name) named.add(row.conversation_id);
+        }
+      } catch {
+        // Not openable here (an old prekey, a revoked sender): the thread shows why when opened.
+      }
+    }
   }
 
   /** A channel (roadmap 7.4): this account owns it; readers join with invite codes. */
@@ -4138,12 +4357,32 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     if (group.owner_user_id !== userId) throw new Error("Only the group owner can rename it.");
     const name = sanitizeGroupName(rawName);
     if (!name) throw new Error("Give the group a name.");
-    await sendEncryptedPayload(
+    await sendToEveryMember(
       serializeSecureControl({ type: "group_meta", target_client_message_id: group.id, name }),
-      { controlType: "group_meta" },
+      "group_meta",
     );
     if (rememberGroupName(group.id, name, new Date().toISOString(), userId)) setGroupNamesVersion((version) => version + 1);
-    setStatus(`Group renamed to "${name}"`);
+    setStatus(`${conversationKindLabel(conversationKind(group) ?? "group")} renamed to "${name}"`);
+  }
+
+  /**
+   * A control every member device needs (a rename, a channel's name). Up to
+   * one batch goes as a single message with this account's own copy, as it
+   * always has; a large group's or channel's fan-out goes in batches of
+   * CHANNEL_KEY_BATCH devices (own copy in the first), so no single upload
+   * carries a thousand sealed copies.
+   */
+  async function sendToEveryMember(plaintext: string, controlType: string): Promise<void> {
+    const deviceIds = sendableRecipientDevices
+      .filter((device) => device.device_id !== localDeviceId)
+      .map((device) => device.device_id);
+    if (deviceIds.length <= CHANNEL_KEY_BATCH) {
+      await sendEncryptedPayload(plaintext, { controlType });
+      return;
+    }
+    for (const [index, batch] of chunk(deviceIds, CHANNEL_KEY_BATCH).entries()) {
+      await sendEncryptedPayload(plaintext, { controlType, onlyDeviceIds: batch, includeOwnCopy: index === 0 });
+    }
   }
 
   /** Owner only, at most 3 admins (enforced by migration 042). */
@@ -4193,6 +4432,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     const { error } = await supabase.rpc("leave_messaging_conversation", { p_conversation_id: group.id });
     if (error) throw error;
     setLeftGroupIds((current) => new Set([...current, group.id]));
+    forgetStoredGroupName(group.id);
     setMembersPanelOpen(false);
     setActiveConversationId("");
     setMobilePane("list");
@@ -4348,6 +4588,16 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     setContactAction(null);
     setNewChatBusyId(null);
     setShowNewChat(true);
+  }
+
+  /** Phone: the directory search that adds a contact, as the desktop Contacts panel does. */
+  function openMobileAddContact() {
+    setQuery("");
+    setSearchResults([]);
+    setSearchFeedback(null);
+    setContactAction(null);
+    setMyQrPayloadCopied(false);
+    setMobileAddContactOpen(true);
   }
 
   function closeNewChat() {
@@ -4787,6 +5037,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
        * the device must still pass every delivery gate.
        */
       onlyDeviceIds?: string[];
+      /** With onlyDeviceIds: also keep this account's own copy (one batch of a large fan-out). */
+      includeOwnCopy?: boolean;
     } = {},
   ): Promise<string> {
     if (!activeConversation || !plaintext.trim()) throw new Error("No active recipient devices");
@@ -4855,7 +5107,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     const clientMessageId = options.clientMessageId ?? crypto.randomUUID();
     const onlyDevices = options.onlyDeviceIds ? new Set(options.onlyDeviceIds) : null;
     const deliveryDevices = onlyDevices
-      ? deliveryRecipientDevices.filter((device) => onlyDevices.has(device.device_id))
+      ? [
+        ...deliveryRecipientDevices.filter((device) => onlyDevices.has(device.device_id) && device.device_id !== senderDevice.device_id),
+        ...(options.includeOwnCopy ? [senderDevice] : []),
+      ]
       : Array.from(new Map([...deliveryRecipientDevices, senderDevice].map((device) => [device.device_id, device])).values());
     if (deliveryDevices.length === 0) throw new Error("None of the requested devices can be sent to");
     const threat = options.controlType ? emptyThreat() : assessThreatLocally(parseSecurePlaintext(plaintext).body);
@@ -5021,6 +5276,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     // "click Send, nothing happens, click again, message sent twice" bug.
     if (sending) return;
     if (!activeConversation || !message.trim()) return;
+    if (activeContactState === "blocked") {
+      setStatus("Unblock this contact to send messages");
+      return;
+    }
     const senderDevice = currentDevice;
     const text = message.trim();
     const editing = editingMessage;
@@ -5209,6 +5468,24 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     { id: "archived", label: "Archived", count: archivedConversations.length, protected: true },
     { id: "hidden", label: "Hidden", count: hiddenConversations.length, protected: true },
   ];
+  // Phone folders: Chats, then Contacts (people right after chats, as in Signal
+  // and Telegram), then the protected folders.
+  const mobileFolderTabs: Array<{ id: ConversationView | "contacts"; label: string; count: number; locked: boolean }> = [];
+  for (const view of conversationViews) {
+    const locked = view.id !== "active" && !protectedViewUnlocked(view.id as ProtectedConversationView);
+    // A locked folder does not reveal how many conversations it holds.
+    mobileFolderTabs.push({ id: view.id, label: view.id === "active" ? "Chats" : view.label, count: locked ? 0 : view.count, locked });
+    if (view.id === "active") mobileFolderTabs.push({ id: "contacts", label: "Contacts", count: displayedContacts.length, locked: false });
+  }
+  const mobileContactNeedle = mobileContactFilter.trim().toLowerCase();
+  const mobileContacts = displayedContacts
+    .filter((contact) => !mobileContactNeedle
+      || visibleContactName(contact).toLowerCase().includes(mobileContactNeedle)
+      || contact.username.toLowerCase().includes(mobileContactNeedle))
+    .sort((a, b) => visibleContactName(a).localeCompare(visibleContactName(b)));
+  const mobileMenuContact = isMobile && mobileContactMenuId
+    ? displayedContacts.find((contact) => contact.id === mobileContactMenuId) ?? null
+    : null;
   const mobileMenuThread = isMobile && openConversationMenuId
     ? visibleConversations.find((thread) => thread.id === openConversationMenuId) ?? null
     : null;
@@ -5228,15 +5505,89 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     >
       {isMobile ? (
       <section className={`-mx-3.5 flex min-h-0 flex-col pb-24 ${mobilePane !== "list" ? "hidden" : ""}`}>
-        <MobileFilterTabs
-          tabs={conversationViews.map((view) => {
-            const locked = view.id !== "active" && !protectedViewUnlocked(view.id as ProtectedConversationView);
-            // A locked folder does not reveal how many conversations it holds.
-            return { id: view.id, label: view.id === "active" ? "Chats" : view.label, count: locked ? 0 : view.count, locked };
-          })}
-          active={conversationView}
-          onSelect={switchConversationView}
+        <MobileFilterTabs<ConversationView | "contacts">
+          tabs={mobileFolderTabs}
+          active={mobileContactsOpen ? "contacts" : conversationView}
+          onSelect={(id) => {
+            if (id === "contacts") {
+              setMobileContactsOpen(true);
+              return;
+            }
+            setMobileContactsOpen(false);
+            switchConversationView(id);
+          }}
         />
+        {mobileContactsOpen ? (
+          <>
+            <div className="px-4 pb-2">
+              <div className="relative">
+                <Search className="absolute left-3 top-3 text-ink-400" size={16} />
+                <input
+                  value={mobileContactFilter}
+                  onChange={(event) => setMobileContactFilter(event.target.value)}
+                  className="h-11 w-full rounded-xl border border-line bg-canvas pl-9 pr-3 text-[15px] outline-none focus:border-violet-300"
+                  placeholder="Search your contacts"
+                  aria-label="Search your contacts"
+                />
+              </div>
+              {(blockedContactCount > 0 || restrictedContactCount > 0) && (
+                <p className="mt-2 text-xs text-ink-500">
+                  {[
+                    restrictedContactCount > 0 ? `${restrictedContactCount} restricted` : null,
+                    blockedContactCount > 0 ? `${blockedContactCount} blocked` : null,
+                  ].filter(Boolean).join(" · ")}
+                </p>
+              )}
+            </div>
+            {contactAction && (
+              <div className="mx-4 mb-2 rounded-lg border border-line px-3 py-2 text-xs font-semibold text-ink-600" role="status">{contactAction}</div>
+            )}
+            {displayedContacts.length === 0 ? (
+              <div className="px-6 py-14 text-center">
+                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-violet-50 text-violet-600">
+                  <Users size={24} />
+                </div>
+                <p className="mx-auto mt-4 max-w-[260px] text-sm text-ink-600">
+                  No contacts yet. Find someone by name, username or their QGuard ID, and they appear here.
+                </p>
+                <button
+                  type="button"
+                  onClick={openMobileAddContact}
+                  className="mx-auto mt-5 flex h-11 items-center gap-2 rounded-xl bg-violet-600 px-5 text-sm font-bold text-white"
+                >
+                  <UserPlus size={16} />
+                  Add a contact
+                </button>
+              </div>
+            ) : mobileContacts.length === 0 ? (
+              <p className="px-6 py-10 text-center text-sm text-ink-500">No contact matches “{mobileContactFilter}”.</p>
+            ) : (
+              <ul aria-label="Contacts">
+                {mobileContacts.map((contact) => {
+                  const readyDevices = selectDeliveryDevicesForUsers(
+                    devices.filter((device) => device.user_id === contact.contact_user_id && isTrustedDeviceForDelivery(device)),
+                    [contact.contact_user_id],
+                    localDeviceId,
+                  ).length;
+                  return (
+                    <MobileContactRow
+                      key={contact.id}
+                      avatar={<UserAvatar userId={contact.contact_user_id} name={visibleContactName(contact)} size={48} />}
+                      name={visibleContactName(contact)}
+                      detail={contact.trust_state === "added"
+                        ? `${contact.username} · ${readyDevices > 0 ? `${readyDevices} device${readyDevices === 1 ? "" : "s"} ready` : "no device ready yet"}`
+                        : CONTACT_STATE_DETAIL[contact.trust_state]}
+                      state={contact.trust_state}
+                      busy={contactChatBusyId === contact.id}
+                      onOpen={() => setMobileContactMenuId(contact.id)}
+                    />
+                  );
+                })}
+              </ul>
+            )}
+            <MobileComposeButton onClick={openMobileAddContact} label="Add a contact" icon={<UserPlus size={22} />} />
+          </>
+        ) : (<>
         {conversationAction && (
           <div className="mx-4 mb-2 rounded-lg border border-line px-3 py-2 text-xs font-semibold text-ink-600">{conversationAction}</div>
         )}
@@ -5266,7 +5617,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                   <UserAvatar userId={conversationPeerUserId(thread)} name={conversationTitle(thread)} size={48} />
                 ) : (
                   <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-violet-500 text-white">
-                    {thread.conversation_type === "channel" ? <Megaphone size={20} /> : <Users size={20} />}
+                    {conversationIcon(thread, 20)}
                   </div>
                 )}
                 title={conversationTitle(thread)}
@@ -5283,6 +5634,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           </ul>
         )}
         {conversationView === "active" && <MobileComposeButton onClick={() => setComposeOpen(true)} />}
+        </>)}
       </section>
       ) : (
       <section className="shell-card overflow-hidden">
@@ -5323,7 +5675,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               type="button"
               onClick={() => setShowJoinChannel(true)}
               className="flex shrink-0 items-center gap-1.5 rounded-lg border border-line bg-white px-2.5 py-1.5 text-xs font-bold text-ink-700 transition hover:bg-canvas"
-              title="Join a channel with an invite code"
+              title="Join a channel or large group with an invite code"
             >
               <LogIn size={15} />
               Join
@@ -5389,7 +5741,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                     <UserAvatar userId={conversationPeerUserId(thread)} name={conversationTitle(thread)} size={40} />
                   ) : (
                     <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-500 text-white">
-                      <Users size={18} />
+                      {conversationIcon(thread, 18)}
                     </div>
                   )}
                   <div className="min-w-0 flex-1">
@@ -5498,7 +5850,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               <UserAvatar userId={conversationPeerUserId(activeConversation)} name={conversationTitle(activeConversation)} size={38} />
             ) : (
               <div className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-full bg-violet-500 text-white">
-                {activeConversation.conversation_type === "channel" ? <Megaphone size={17} /> : <Users size={17} />}
+                {conversationIcon(activeConversation, 17)}
               </div>
             )
           )}
@@ -5532,7 +5884,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                 <UserAvatar userId={conversationPeerUserId(activeConversation)} name={conversationTitle(activeConversation)} size={40} />
               ) : (
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-violet-500 text-white">
-                  <Users size={18} />
+                  {conversationIcon(activeConversation, 18)}
                 </div>
               )
             )}
@@ -5613,6 +5965,28 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               Private channel with {visibleContactName(activeContact)}
             </div>
           )}
+          {activeContact && (activeContactState === "blocked" || activeContactState === "restricted") && (
+            <div
+              role="status"
+              className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3 text-sm ${activeContactState === "blocked" ? "border-rose-200 bg-rose-50 text-rose-800" : "border-amber-200 bg-amber-50 text-amber-900"}`}
+            >
+              <span className="min-w-0 flex-1">
+                {activeContactState === "blocked"
+                  ? `You blocked ${visibleContactName(activeContact)}. Their messages and calls do not reach you, and you cannot send to them.`
+                  : `${visibleContactName(activeContact)} is restricted. They can message you, but cannot call you or add you to groups.`}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  const contact = displayedContacts.find((item) => item.id === activeContact.id);
+                  if (contact) void updateContact(contact, "added");
+                }}
+                className="shrink-0 rounded-md border border-current px-2.5 py-1 text-xs font-bold"
+              >
+                {activeContactState === "blocked" ? "Unblock" : "Lift restriction"}
+              </button>
+            </div>
+          )}
           {messageAction && (
             <div className="rounded-lg border border-line bg-white p-3 text-sm text-ink-600">{messageAction}</div>
           )}
@@ -5684,6 +6058,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           {membersPanelOpen && isMultiParty(activeConversation) && (
             <GroupMembersPanel
               myUserId={userId}
+              kind={conversationKind(activeConversation) ?? "group"}
+              maxMembers={memberLimits[conversationKind(activeConversation) ?? "group"]}
               groupName={groupName(activeConversation.id, activeConversation.owner_user_id)}
               members={activeConversation.member_user_ids.map((memberId) => ({
                 userId: memberId,
@@ -5691,7 +6067,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                 role: memberRole(activeConversation, memberId),
               }))}
               addable={contacts
-                .filter((contact) => contact.trust_state === "added" && !activeConversation.member_user_ids.includes(contact.contact_user_id))
+                .filter((contact) => isChatContact(contact) && !activeConversation.member_user_ids.includes(contact.contact_user_id))
                 .map((contact) => ({ userId: contact.contact_user_id, name: visibleContactName(contact) }))}
               onRename={renameGroup}
               onAdd={addGroupMember}
@@ -5784,6 +6160,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               channel={activeConversation}
               userId={userId}
               myRole={memberRole(activeConversation, userId)}
+              memberPosting={activeConversation.member_posting === true}
+              blockedUserIds={blockedUserIds}
               memberDevices={channelMemberDevices}
               staffDeviceIds={channelStaffDeviceIds}
               keyVersion={channelKeyVersion}
@@ -5791,8 +6169,17 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               memberName={memberName}
               loadSenderIdentity={loadChannelSenderIdentity}
               onSendKey={async (key, deviceIds) => {
+                // The owner's hand-out carries the name, so a new member learns it with the key.
+                const name = activeConversation.owner_user_id === userId ? groupName(activeConversation.id, userId) : null;
                 await sendEncryptedPayload(
-                  serializeSecureControl({ type: "channel_key", target_client_message_id: activeConversation.id, epoch_id: key.epochId, seq: key.seq, key: key.key }),
+                  serializeSecureControl({
+                    type: "channel_key",
+                    target_client_message_id: activeConversation.id,
+                    epoch_id: key.epochId,
+                    seq: key.seq,
+                    key: key.key,
+                    ...(name ? { name } : {}),
+                  }),
                   { controlType: "channel_key", onlyDeviceIds: deviceIds },
                 );
               }}
@@ -6328,11 +6715,14 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                         </div>
                       </div>
                     </div>
-                    <span className={`status-pill ${contact.trust_state === "blocked" ? "bg-rose-50 text-rose-500" : "bg-emerald-50 text-emerald-600"}`}>
+                    <span
+                      title={CONTACT_STATE_DETAIL[contact.trust_state]}
+                      className={`status-pill ${contact.trust_state === "blocked" ? "bg-rose-50 text-rose-500" : contact.trust_state === "restricted" ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-600"}`}
+                    >
                       {contact.trust_state}
                     </span>
                   </div>
-                  <div className="mt-3 grid grid-cols-3 gap-2">
+                  <div className="mt-3 grid grid-cols-2 gap-2 xl:grid-cols-4">
                     <button
                       type="button"
                       disabled={isOpeningChat || isBlocked}
@@ -6342,6 +6732,16 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                     >
                       {isOpeningChat ? <Loader2 className="animate-spin" size={13} /> : <MessageSquarePlus size={13} />}
                       {isOpeningChat ? "Opening" : "Chat"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isBlocked}
+                      onClick={() => updateContact(contact, contact.trust_state === "restricted" ? "added" : "restricted")}
+                      title={contact.trust_state === "restricted" ? "Lift the restriction" : "Restrict: they can still message you, but cannot call you or add you to groups"}
+                      className={`flex items-center justify-center gap-1 rounded-lg border px-2 py-2 text-xs font-bold transition disabled:cursor-not-allowed disabled:opacity-50 ${contact.trust_state === "restricted" ? "border-amber-200 text-amber-700 hover:bg-amber-50" : "border-line text-ink-700 hover:bg-canvas"}`}
+                    >
+                      {contact.trust_state === "restricted" ? <ShieldOff size={14} /> : <ShieldMinus size={14} />}
+                      {contact.trust_state === "restricted" ? "Unrestrict" : "Restrict"}
                     </button>
                     <button
                       type="button"
@@ -6518,9 +6918,114 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     {isMobile && composeOpen && (
       <MobileSheet title="Start something new" subtitle="Everything here is end-to-end encrypted" onClose={() => setComposeOpen(false)}>
         <SheetAction icon={<MessageSquarePlus size={18} />} label="New chat" detail="Message one person" onClick={() => { setComposeOpen(false); openNewChat(); }} />
-        <SheetAction icon={<Users size={18} />} label="New group" detail="Each message is sealed to every member's devices" onClick={() => { setComposeOpen(false); setShowNewGroup(true); }} />
-        <SheetAction icon={<Megaphone size={18} />} label="New channel" detail="You post, readers read" onClick={() => { setComposeOpen(false); setShowNewChannel(true); }} />
-        <SheetAction icon={<LogIn size={18} />} label="Join a channel" detail="With an invite code someone shared" onClick={() => { setComposeOpen(false); setShowJoinChannel(true); }} />
+        <SheetAction icon={<Users size={18} />} label="New group" detail={`Up to ${memberLimits.group} people, or a large group of up to ${memberLimits.large_group.toLocaleString("en-US")}`} onClick={() => { setComposeOpen(false); setShowNewGroup(true); }} />
+        <SheetAction icon={<Megaphone size={18} />} label="New channel" detail={`You post, up to ${memberLimits.channel.toLocaleString("en-US")} readers read`} onClick={() => { setComposeOpen(false); setShowNewChannel(true); }} />
+        <SheetAction icon={<LogIn size={18} />} label="Join with a code" detail="A channel or large group, with an invite code someone shared" onClick={() => { setComposeOpen(false); setShowJoinChannel(true); }} />
+      </MobileSheet>
+    )}
+    {isMobile && mobileAddContactOpen && (
+      <MobileSheet title="Add a contact" subtitle="Search by name or username, or paste their QGuard ID" onClose={() => setMobileAddContactOpen(false)}>
+        <form
+          className="flex gap-2 px-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void searchUsers();
+          }}
+        >
+          <input
+            autoFocus
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="h-11 min-w-0 flex-1 rounded-xl border border-line bg-canvas px-3 text-[15px] outline-none focus:border-violet-300"
+            placeholder="Name, username or qguard-user:…"
+            aria-label="Search the directory"
+            enterKeyHint="search"
+          />
+          <button
+            type="submit"
+            disabled={searching || query.trim().length < USER_SEARCH_MIN_CHARS}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-violet-600 text-white disabled:opacity-50"
+            aria-label="Search"
+          >
+            {searching ? <Loader2 size={18} className="animate-spin" /> : <Search size={18} />}
+          </button>
+        </form>
+        <div className="mt-2 max-h-[45vh] overflow-y-auto px-1">
+          {searchFeedback && !searching && <p className="px-3 py-2 text-sm text-ink-600">{searchFeedback}</p>}
+          {contactAction && <p className="px-3 py-2 text-sm font-semibold text-ink-700" role="status">{contactAction}</p>}
+          {searchResults.map((result) => {
+            const existing = displayedContacts.find((contact) => contact.contact_user_id === result.user_id);
+            return (
+              <SheetAction
+                key={result.user_id}
+                icon={<UserAvatar userId={result.user_id} name={result.display_name} size={40} />}
+                label={result.display_name}
+                detail={!existing
+                  ? result.username || result.user_id
+                  : existing.trust_state === "blocked"
+                    ? "You blocked them. Tap to unblock and add them again."
+                    : "Already in your contacts"}
+                disabled={Boolean(existing && existing.trust_state !== "blocked")}
+                onClick={() => void addContact(result)}
+              />
+            );
+          })}
+        </div>
+        <div className="mx-3 mt-3 rounded-xl border border-violet-100 bg-violet-50/60 p-3">
+          <div className="text-[11px] font-bold uppercase tracking-wide text-violet-600">Your QGuard ID</div>
+          <div className="mt-1 break-all font-mono text-xs text-ink-700">qguard-user:{userId}</div>
+          <button
+            type="button"
+            onClick={() => {
+              navigator.clipboard.writeText(`qguard-user:${userId}`).then(
+                () => setMyQrPayloadCopied(true),
+                () => setMyQrPayloadCopied(false),
+              );
+            }}
+            className="mt-2 h-10 w-full rounded-lg bg-violet-600 text-sm font-bold text-white"
+          >
+            {myQrPayloadCopied ? "Copied — share it privately" : "Copy my ID to share"}
+          </button>
+        </div>
+      </MobileSheet>
+    )}
+    {isMobile && mobileMenuContact && (
+      <MobileSheet
+        title={visibleContactName(mobileMenuContact)}
+        subtitle={mobileMenuContact.trust_state === "added" ? mobileMenuContact.username : CONTACT_STATE_DETAIL[mobileMenuContact.trust_state]}
+        onClose={() => setMobileContactMenuId(null)}
+      >
+        <SheetAction
+          icon={contactChatBusyId === mobileMenuContact.id ? <Loader2 size={18} className="animate-spin" /> : <MessageSquarePlus size={18} />}
+          label="Chat"
+          detail={mobileMenuContact.trust_state === "blocked" ? "Unblock them first" : "Open your end-to-end encrypted chat"}
+          disabled={mobileMenuContact.trust_state === "blocked" || contactChatBusyId !== null}
+          onClick={() => {
+            const contact = mobileMenuContact;
+            void startPrivateChat(contact).then((opened) => {
+              if (!opened) return;
+              setMobileContactMenuId(null);
+              setMobileContactsOpen(false);
+            });
+          }}
+        />
+        {mobileMenuContact.trust_state === "restricted" ? (
+          <SheetAction icon={<ShieldOff size={18} />} label="Lift restriction" detail="They can call you and add you to groups again" onClick={() => void updateContact(mobileMenuContact, "added")} />
+        ) : (
+          <SheetAction
+            icon={<ShieldMinus size={18} />}
+            label="Restrict"
+            detail="They can still message you, but cannot call you or add you to groups"
+            disabled={mobileMenuContact.trust_state === "blocked"}
+            onClick={() => void updateContact(mobileMenuContact, "restricted")}
+          />
+        )}
+        {mobileMenuContact.trust_state === "blocked" ? (
+          <SheetAction icon={<ShieldCheck size={18} />} label="Unblock" detail="Their messages and calls reach you again" onClick={() => void updateContact(mobileMenuContact, "added")} />
+        ) : (
+          <SheetAction icon={<Ban size={18} />} label="Block" detail="Their messages and calls stop reaching you. They are not told." danger onClick={() => void updateContact(mobileMenuContact, "blocked")} />
+        )}
+        <SheetAction icon={<Trash2 size={18} />} label="Delete contact" detail="Removes them from your contacts; your chat stays" danger onClick={() => void updateContact(mobileMenuContact, "removed")} />
       </MobileSheet>
     )}
     {isMobile && mobileMenuThread && (
@@ -6585,9 +7090,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     )}
     {showNewGroup && (
       <NewGroupDialog
-        candidates={contacts
-          .filter((contact) => contact.trust_state === "added")
+        candidates={displayedContacts
+          .filter(isChatContact)
           .map((contact) => ({ userId: contact.contact_user_id, name: visibleContactName(contact) }))}
+        limits={memberLimits}
         onCreate={createGroup}
         onClose={() => setShowNewGroup(false)}
       />

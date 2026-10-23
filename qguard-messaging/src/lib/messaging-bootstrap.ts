@@ -1,5 +1,6 @@
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { byteaToBytes, bytesToBytea, randomHex } from "@/lib/encoding";
+import { syncAccountKey } from "@/lib/account-key";
 import { rotateSignedPrekeyIfDue, schedulePrekeyHygiene } from "@/lib/prekey-hygiene";
 import { ONE_TIME_PREKEY_MIN, ONE_TIME_PREKEY_TARGET } from "@/lib/security-score";
 import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
@@ -263,6 +264,9 @@ async function ensureDesktopDevice(client: SupabaseClient, userId: string): Prom
   await retireSupersededDevice(client, bundle);
   // Background, throttled, and unable to fail this registration.
   schedulePrekeyHygiene(client, userId, bundle.device_id);
+  // Same rules: the account sealing key (src/lib/account-key.ts) is brought up to
+  // date in the background and can never fail registration.
+  void syncAccountKey(client, userId, bundle.device_id);
   return bundle;
 }
 
@@ -359,8 +363,10 @@ async function ensureSignedPrekey(client: SupabaseClient, userId: string, device
   // ORDER MATTERS: publish the new active prekey FIRST, deactivate the old ones
   // second. The previous order (deactivate → publish) stranded a device with
   // ZERO active prekeys whenever the publish step failed mid-flight, making it
-  // unreachable for messages and calls ("Awaiting prekey material"). A brief
-  // overlap of two active prekeys is harmless — peers pick the newest.
+  // unreachable for messages and calls ("Awaiting prekey material"). There is
+  // no overlap: the relay allows one active prekey per device, and migration
+  // 046's trigger retires the old one inside this upsert. Without that trigger
+  // this upsert fails with 23505 on every rotation.
   const { error } = await client.from("messaging_signed_prekeys").upsert({
     id: prekey.prekey_id,
     user_id: userId,

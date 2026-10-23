@@ -12,7 +12,15 @@
 import assert from 'node:assert/strict'
 import { generateKeyPairSync, verify as verifySignature } from 'node:crypto'
 import { PLAN_PRICING } from '../src/lib/billing/plan-pricing'
+import { REFUND_POLICY } from '../src/lib/site-identity'
 import {
+  invoiceRowFromTransaction,
+  moneyBackRefundCancels,
+  reconcileAction,
+  refundCancellationPatch,
+  refundInvoicePatch,
+  REFUND_PROCESSING_GRACE_DAYS,
+  REFUND_WINDOW_DAYS,
   activationRow,
   appOrigin,
   approvalLink,
@@ -189,6 +197,68 @@ function playResource(overrides: Record<string, any> = {}) {
     ...overrides,
   }
 }
+
+check('refund window constants match the published Refund Policy', () => {
+  assert.equal(REFUND_WINDOW_DAYS, REFUND_POLICY.initialWindowDays)
+  // 10 business days never spans more than 14 calendar days.
+  assert.ok(REFUND_PROCESSING_GRACE_DAYS >= Math.ceil((REFUND_POLICY.processingDays / 5) * 7))
+})
+
+check('only a full money-back refund of the first payment cancels the subscription', () => {
+  const base = {
+    eventType: 'PAYMENT.SALE.REFUNDED',
+    amountPaidCents: 3000,
+    refundedCents: 3000,
+    paymentDate: '2026-10-01T00:00:00Z',
+    refundedAt: '2026-10-04T00:00:00Z',
+    isFirstPayment: true,
+  }
+  assert.equal(moneyBackRefundCancels(base), true)
+  // Requested on day 7, issued within the processing allowance.
+  assert.equal(moneyBackRefundCancels({ ...base, refundedAt: '2026-10-19T00:00:00Z' }), true)
+  // Negative controls.
+  assert.equal(moneyBackRefundCancels({ ...base, refundedCents: 1500 }), false, 'partial refund')
+  assert.equal(moneyBackRefundCancels({ ...base, isFirstPayment: false }), false, 'renewal refund (goodwill)')
+  assert.equal(moneyBackRefundCancels({ ...base, refundedAt: '2026-11-15T00:00:00Z' }), false, 'outside the window')
+  assert.equal(moneyBackRefundCancels({ ...base, eventType: 'PAYMENT.SALE.REVERSED' }), false, 'reversal is not a refund')
+  assert.equal(moneyBackRefundCancels({ ...base, amountPaidCents: 0, refundedCents: 0 }), false, 'nothing was paid')
+  assert.equal(moneyBackRefundCancels({ ...base, paymentDate: null }), false, 'unknown payment date')
+  // Cumulative partial refunds that reach the full amount count as full.
+  const first = refundInvoicePatch({ amount_paid_cents: 3000, metadata: {} }, { id: 'R1', amount: { total: '10.00' } }, 'PAYMENT.SALE.REFUNDED', '2026-10-02T00:00:00Z')
+  const second = refundInvoicePatch({ amount_paid_cents: 3000, metadata: first.patch.metadata as Record<string, unknown> }, { id: 'R2', amount: { total: '20.00' } }, 'PAYMENT.SALE.REFUNDED', '2026-10-03T00:00:00Z')
+  assert.equal((second.patch.metadata as Record<string, unknown>).refundedCents, 3000)
+})
+
+check('a refund cancellation ends access now and keeps the first cancel time', () => {
+  const now = '2026-10-04T00:00:00.000Z'
+  assert.deepEqual(refundCancellationPatch(null, now), { status: 'cancelled', auto_renew: false, cancel_at_period_end: true, cancelled_at: now, updated_at: now })
+  assert.equal(refundCancellationPatch({ cancelled_at: '2026-10-02T00:00:00Z' }, now).cancelled_at, '2026-10-02T00:00:00Z')
+})
+
+check('reconcile repairs only real drift between PayPal and the local row', () => {
+  const env = (key: string) => ENV[key]
+  const local = { plan: 'Pro', status: 'active', renewal_date: '2026-11-01T10:00:00Z', cancel_at_period_end: false }
+  const remote = { status: 'ACTIVE', plan_id: 'P-PRO-M', billing_info: { next_billing_time: '2026-11-01T10:00:00.000Z' } }
+  assert.equal(reconcileAction(env, local, remote), null, 'in agreement (same instant, different formatting)')
+  assert.equal(reconcileAction(env, { ...local, status: 'past_due' }, remote), 'sync', 'payment recovered')
+  assert.equal(reconcileAction(env, local, { ...remote, plan_id: 'P-STARTER-M' }), 'sync', 'plan changed')
+  assert.equal(reconcileAction(env, local, { ...remote, billing_info: { next_billing_time: '2026-12-01T10:00:00Z' } }), 'sync', 'renewed')
+  assert.equal(reconcileAction(env, local, { ...remote, status: 'CANCELLED' }), 'cancelled')
+  assert.equal(reconcileAction(env, { ...local, cancel_at_period_end: true }, { ...remote, status: 'CANCELLED' }), null, 'cancellation already recorded')
+  assert.equal(reconcileAction(env, local, { ...remote, status: 'SUSPENDED' }), 'suspended')
+  assert.equal(reconcileAction(env, { ...local, status: 'expired' }, { ...remote, status: 'EXPIRED' }), null)
+  assert.equal(reconcileAction(env, local, { ...remote, status: 'APPROVAL_PENDING' }), null, 'not yet approved')
+})
+
+check('reconciled payments become the same invoice row the webhook writes', () => {
+  const sub = { user_id: USER, plan: 'Pro' }
+  const tx = { id: '7XY12345AB678901C', status: 'COMPLETED', time: '2026-10-01T10:00:00Z', amount_with_breakdown: { gross_amount: { currency_code: 'USD', value: '30.00' } } }
+  const fromTx = invoiceRowFromTransaction(tx, sub, 'I-ABCDEF123456', '2026-10-05T00:00:00Z')
+  const fromWebhook = invoiceRow({ id: tx.id, amount: { total: '30.00', currency: 'USD' }, create_time: tx.time, billing_agreement_id: 'I-ABCDEF123456' }, sub, '2026-10-05T00:00:00Z')
+  assert.deepEqual(fromTx, fromWebhook)
+  assert.equal(invoiceRowFromTransaction({ ...tx, status: 'DECLINED' }, sub, 'I-ABCDEF123456', '2026-10-05T00:00:00Z'), null)
+  assert.equal(invoiceRowFromTransaction({ ...tx, id: '' }, sub, 'I-ABCDEF123456', '2026-10-05T00:00:00Z'), null)
+})
 
 check('play: list prices are exactly the platform catalog', () => {
   assert.deepEqual(PLAY_LIST_PRICING, PLAN_PRICING)

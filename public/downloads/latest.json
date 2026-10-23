@@ -1,11 +1,11 @@
 {
+    "version":  "1.5.0",
+    "notes":  "Contacts on Android with Restrict and Block that the server enforces; large groups of up to 1,000 people; group and channel names shown everywhere.",
+    "pub_date":  "2026-10-22T08:28:02Z",
     "platforms":  {
                       "windows-x86_64":  {
-                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSazhTOEN6bmJEb2s0T1JVcmRyNjdqaU1Sdm4zK0dHRmZLMXBuamJNaWttSjNoZm9tNW5aVHpTZEMxZzJuRFpLeG5IYmlLVU51My84M1BUS09BR2YyNGdtalhYSWNvUUFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNDI0NzAzCWZpbGU6UUd1YXJkIE1lc3NhZ2luZ18xLjMuMTBfeDY0LXNldHVwLmV4ZQoyRlhkZHc2SWZnMkl5bzd6RkI0dmhMK1JaVGhSdkp5ampVa0FQMmVXbHF2VHRBRCtaTTRwZjUveHA5VkJ4RnljdTVna0FoYk1KbExpaXU5eGh0Z0ZBZz09Cg==",
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSazhTOEN6bmJEb3RKYSs0TDNFazRSZjdVU2d5b0pzS0toVDR0MllJSXBSUjEvRm04MFpMUkw1TTZVV04wcFNxLy9UaklnYkVkcGZuU1J2SmRWRkF1cWFGV2Y3YnJyMXdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyNjU3MjQ0CWZpbGU6UUd1YXJkIE1lc3NhZ2luZ18xLjUuMF94NjQtc2V0dXAuZXhlCXZlcnNpb246MS41LjAKZEFzVnQ2RWswREhBNG4zYm5sYnp4NWpidnlRV0JIQm5OdUVUQktXaVo0bEZyZ2F6eSsrdDlsZ0NhMUgxZjlhWnk0QzdVTkIyOWhhblorSTlFMmkwQ0E9PQo=",
                                              "url":  "https://api.qguard.dev/downloads/QGuard-Messaging-Setup.exe"
                                          }
-                  },
-    "pub_date":  "2026-10-08T01:58:26Z",
-    "version":  "1.3.10",
-    "notes":  "Calls now connect reliably on restrictive networks: ICE gathering completes in about 200 ms instead of stalling. Call setup enforces a deadline and chat history opens faster."
+                  }
 }

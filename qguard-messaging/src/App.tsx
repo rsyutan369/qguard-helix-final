@@ -21,7 +21,10 @@ import { upsertTrustedDevice, isDeviceRevoked } from "@/lib/trusted-devices";
 import { buildChecklist, buildTourSteps, useOnboarding } from "@/lib/onboarding";
 import { useDashboardData } from "@/lib/use-dashboard-data";
 import { useWorkspaceLock, type UnlockMethod, type WorkspaceScope } from "@/lib/use-workspace-lock";
-import { createEphemeralSupabaseClient, supabase } from "@/lib/supabase";
+import { supabase } from "@/lib/supabase";
+import { accountIdentifierLabel, accountProofKind, sendAccountProofCode, verifyAccountProof } from "@/lib/account-identity";
+import { finishPendingLinkCompletion, hasPendingLinkCompletion } from "@/lib/device-link";
+import { ensureMessagingWorkspace, syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import { isAndroidRuntime, safeInvoke } from "@/lib/tauri";
 import { APP_VERSION } from "@/lib/app-update";
 import { useTheme } from "@/lib/use-theme";
@@ -112,6 +115,19 @@ function ProtectedMessagingApp() {
       .reduce((sum, conversation) => sum + conversation.unread_count, 0),
     [data.conversations],
   );
+
+  // A device that signed in from a QR link reports back once its identity keys
+  // are registered, so the approving device can verify the binding proof and
+  // trust it. No-op on every other sign-in.
+  const userForLink = auth.user;
+  const tokenForLink = auth.session?.access_token ?? null;
+  useEffect(() => {
+    if (!userForLink || !tokenForLink || !hasPendingLinkCompletion()) return;
+    void finishPendingLinkCompletion(userForLink.id, tokenForLink, async () => {
+      await ensureMessagingWorkspace(supabase, userForLink);
+      return syncCurrentMessagingDevice(supabase, userForLink.id);
+    });
+  }, [tokenForLink, userForLink]);
 
   // The Subscription page is a client-side module every account has (it must
   // stay reachable to manage/cancel/restore) — appended to the DB-driven list.
@@ -255,7 +271,7 @@ function ProtectedMessagingApp() {
           if (error) {
             // Refresh token expired -> fall back to full auth, keep existing PIN.
             setForcePasswordLogin(true);
-            throw new Error("Your session expired. Please sign in with your password.");
+            throw new Error("Your session expired. Please sign in again.");
           }
         }
         // Check remote revocation (Settings -> Security -> Revoke) even on cold
@@ -283,7 +299,7 @@ function ProtectedMessagingApp() {
       return (
         <AppLockScreen
           mode="unlock"
-          email={auth.user?.email ?? null}
+          email={accountIdentifierLabel(auth.user) || null}
           digits={appLock.status.digits}
           attemptsRemaining={appLock.status.attemptsRemaining}
           lockoutUntil={appLock.status.lockoutUntil}
@@ -311,10 +327,15 @@ function ProtectedMessagingApp() {
           error={auth.error}
           notice={auth.notice}
           pendingMfa={auth.pendingMfa}
+          pendingPhone={auth.pendingPhone}
           onSignIn={auth.signIn}
           onVerifyMfa={auth.verifyMfaSignIn}
           onCancelMfa={auth.cancelMfaSignIn}
           onSignUp={auth.signUp}
+          onRequestPhoneCode={auth.requestPhoneCode}
+          onVerifyPhoneCode={auth.verifyPhoneCode}
+          onCancelPhone={auth.cancelPhoneSignIn}
+          onLinkCredential={auth.signInWithLinkCredential}
           onResendVerification={auth.resendVerification}
           onResetPassword={auth.resetPassword}
           onClearError={auth.clearError}
@@ -328,7 +349,7 @@ function ProtectedMessagingApp() {
       return (
         <AppLockScreen
           mode="setup"
-          email={auth.user.email ?? null}
+          email={accountIdentifierLabel(auth.user) || null}
           onSubmit={async (pin, digits) => {
             if (!stored) throw new Error("No active session to secure.");
             const status = await appLock.setup(digits, pin, stored, "Android Device", appVersion);
@@ -350,7 +371,7 @@ function ProtectedMessagingApp() {
       return (
         <AppLockScreen
           mode="setup"
-          email={auth.user.email ?? null}
+          email={accountIdentifierLabel(auth.user) || null}
           digits={appLock.status.digits}
           onSubmit={async (pin, digits) => {
             if (!stored) throw new Error("No active session to secure.");
@@ -427,17 +448,17 @@ function ProtectedMessagingApp() {
       // Zero-Trust Workspace Lock: Secure Chat and Quantum Vault require their own
       // password/PIN before the module mounts. While locked, render the gate; the
       // heavy page component only mounts once the scope is unlocked.
-      // Verify the account password WITHOUT touching the live session (ephemeral
-      // client, persistSession: false) — the identity proof that gates a lossless
-      // chat reset and the destructive "start fresh" vault reset.
-      const verifyAccountPassword = async (password: string): Promise<void> => {
-        const email = auth.user?.email;
-        if (!email) throw new Error("No account email is on file for this session.");
-        const ephemeral = createEphemeralSupabaseClient();
-        const { error: authError } = await ephemeral.auth.signInWithPassword({ email, password });
-        await ephemeral.auth.signOut().catch(() => undefined);
-        if (authError) throw new Error("That account password is incorrect.");
+      // Prove account ownership WITHOUT touching the live session — the proof
+      // that gates a lossless chat reset and the destructive "start fresh" vault
+      // reset. Email accounts type their password; mobile-number accounts (no
+      // password) type a fresh SMS code. See lib/account-identity.ts.
+      const verifyAccountPassword = async (secret: string): Promise<void> => {
+        if (!auth.user) throw new Error("Your session has ended. Sign in again.");
+        await verifyAccountProof(auth.user, secret);
       };
+      const accountProof = auth.user && accountProofKind(auth.user) === "sms"
+        ? { kind: "sms" as const, sendCode: () => sendAccountProofCode(auth.user!) }
+        : { kind: "password" as const };
 
       const renderProtected = (scope: WorkspaceScope, pageElement: ReactNode): ReactNode => {
         const scopeStatus = lockState.status?.[scope];
@@ -460,6 +481,7 @@ function ProtectedMessagingApp() {
               status={scopeStatus}
               recoveryEnabled={scope === "vault" ? vaultRecoveryEnabled : undefined}
               inactivityMinutes={lockState.inactivityMinutes}
+              accountProof={accountProof}
               onUnlock={(method, secret) => lockState.unlock(scope, method, secret)}
               onSetup={(method, secret) => lockState.setup(scope, method, secret)}
               onCancel={() => setPage("dashboard")}

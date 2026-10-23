@@ -37,7 +37,9 @@ import {
   SectionTitle,
   integerFmt,
   longDate,
+  riskTone,
   useQuantumReadiness,
+  TruncationNote,
   BLUE,
   GREEN,
   ORANGE,
@@ -47,6 +49,7 @@ import {
   RED,
 } from '../_shared';
 import { useAuth } from '@/contexts/auth-context';
+import { useReportAuditTrail } from '@/hooks/use-report-audit-trail';
 import { REPORT_TEMPLATES } from '@/services/reporting/templates';
 import { listSnapshotAssets, scopeSnapshotToAssets } from '@/services/reporting/ReportScope';
 import {
@@ -58,8 +61,11 @@ import {
   type ReportKind,
 } from '@/services/reporting/schemas/ReportSchema';
 
-const BRANDING_STORAGE_KEY = 'qg-report-branding';
-const HISTORY_STORAGE_KEY = 'qg-report-history';
+/* Branding is a per-ACCOUNT convenience: keyed by user, so a second account on
+   the same browser never prints the first account's company name and logo on
+   its cover. Report history is NOT kept here any more — it is the tenant's
+   audit log (useReportAuditTrail). */
+const BRANDING_STORAGE_PREFIX = 'qg-report-branding';
 
 const FORMAT_META: Record<ReportFormat, { label: string; icon: typeof FileText; color: string }> = {
   pdf: { label: 'PDF', icon: FileText, color: RED },
@@ -77,18 +83,6 @@ const TEMPLATE_ICON: Record<ReportKind, typeof FileText> = {
   compliance: Landmark,
   migration: RouteIcon,
 };
-
-interface HistoryEntry {
-  id: string;
-  kind: ReportKind;
-  name: string;
-  version: string;
-  format: ReportFormat;
-  generatedAt: string;
-  generatedBy: string;
-  integrityHash: string;
-  scope?: string;
-}
 
 const ASSETS_PER_PAGE = 5;
 
@@ -114,25 +108,22 @@ function paginationItems(current: number, total: number): Array<number | '…'> 
   return items;
 }
 
-function loadBranding(): ReportBranding {
+function brandingKey(userId: string | undefined): string {
+  return `${BRANDING_STORAGE_PREFIX}:${userId || 'anonymous'}`;
+}
+
+function loadBranding(userId: string | undefined): ReportBranding {
   try {
-    const raw = localStorage.getItem(BRANDING_STORAGE_KEY);
+    const raw = localStorage.getItem(brandingKey(userId));
     if (raw) return brandingSchema.parse(JSON.parse(raw));
   } catch {
-    /* ignore */
+    /* unavailable or malformed storage — fall back to defaults */
   }
   return brandingSchema.parse({});
 }
 
-function loadHistory(): HistoryEntry[] {
-  try {
-    const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as HistoryEntry[];
-  } catch {
-    /* ignore */
-  }
-  return [];
-}
+const isReportKind = (value: unknown): value is ReportKind => REPORT_TEMPLATES.some((t) => t.kind === value);
+const isReportFormat = (value: unknown): value is ReportFormat => (REPORT_FORMATS as readonly string[]).includes(String(value));
 
 function bumpVersion(version: string): string {
   const parts = version.split('.').map((n) => parseInt(n, 10));
@@ -143,16 +134,21 @@ function bumpVersion(version: string): string {
 
 export default function ReportCenterPage() {
   const { user } = useAuth();
-  const { snapshot, state, sseConnected, refresh } = useQuantumReadiness();
+  const { snapshot, state, error: loadError, sseConnected, lastVerifiedAt, refresh } = useQuantumReadiness();
+  const reportTrail = useReportAuditTrail('report');
+  const recordReport = reportTrail.record;
 
-  const [branding, setBranding] = useState<ReportBranding>(() => loadBranding());
+  const [branding, setBranding] = useState<ReportBranding>(() => loadBranding(user?.id));
   const [kind, setKind] = useState<ReportKind>('executive');
   const [busy, setBusy] = useState<string | null>(null);
-  const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
   const [previews, setPreviews] = useState<ReportChartImage[] | null>(null);
   const [previewing, setPreviewing] = useState(false);
-  const [schedule, setSchedule] = useState<'none' | 'daily' | 'weekly' | 'monthly' | 'quarterly'>('none');
   const [error, setError] = useState<string | null>(null);
+
+  // Switching accounts loads that account's branding, never the previous one's.
+  useEffect(() => {
+    setBranding(loadBranding(user?.id));
+  }, [user?.id]);
   // Asset scope — null means "all discovered assets" (full assessment scope).
   const [selectedAssetKeys, setSelectedAssetKeys] = useState<Set<string> | null>(null);
   const [assetPage, setAssetPage] = useState(1);
@@ -197,20 +193,11 @@ export default function ReportCenterPage() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify(branding));
+      localStorage.setItem(brandingKey(user?.id), JSON.stringify(branding));
     } catch {
-      /* ignore */
+      /* storage unavailable — branding simply is not remembered */
     }
-  }, [branding]);
-
-  const persistHistory = useCallback((entries: HistoryEntry[]) => {
-    setHistory(entries);
-    try {
-      localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(entries.slice(0, 40)));
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  }, [branding, user?.id]);
 
   const updateBranding = useCallback(<K extends keyof ReportBranding>(key: K, value: ReportBranding[K]) => {
     setBranding((current) => ({ ...current, [key]: value }));
@@ -224,8 +211,12 @@ export default function ReportCenterPage() {
     reader.readAsDataURL(file);
   }, [updateBranding]);
 
+  // `reportKind` is explicit so "Regenerate" on a history row builds THAT row's
+  // template. It used to call setKind() then generate() in the same tick, and
+  // generate() closed over the previous kind — regenerating whatever template
+  // happened to be selected.
   const generate = useCallback(
-    async (fmt: ReportFormat) => {
+    async (fmt: ReportFormat, reportKind: ReportKind = kind) => {
       if (!snapshot.hasData) {
         setError('No assessment evidence available — run a discovery scan before generating reports.');
         return;
@@ -241,21 +232,22 @@ export default function ReportCenterPage() {
           import('@/services/reporting/ReportEngine'),
           import('@/services/reporting/ReportExporter'),
         ]);
-        const report = buildReport({ snapshot, branding, kind, generatedBy, withCharts: fmt !== 'csv' && fmt !== 'json', scopeAssetKeys: scopeKeys });
+        const report = buildReport({ snapshot, branding, kind: reportKind, generatedBy, withCharts: fmt !== 'csv' && fmt !== 'json', scopeAssetKeys: scopeKeys });
         const result = await exportReport(report, fmt);
         downloadResult(result);
-        const entry: HistoryEntry = {
-          id: report.meta.id,
-          kind,
-          name: report.meta.title,
-          version: report.meta.version,
+        // Recorded in the tenant audit log. A failed write does not undo the
+        // download, but it is surfaced — an unrecorded report is not "audited".
+        const recorded = await recordReport({
+          reportId: report.meta.id,
+          kind: reportKind,
           format: fmt,
-          generatedAt: report.meta.generatedAt,
-          generatedBy,
-          integrityHash: report.integrity?.hash.slice(0, 16) || '—',
+          title: report.meta.title,
+          version: report.meta.version,
           scope: scopeLabel,
-        };
-        persistHistory([entry, ...history]);
+          integrityHash: report.integrity?.hash || '',
+          generatedAt: report.meta.generatedAt,
+        });
+        if (!recorded) setError('The report was downloaded, but its audit-trail record could not be written.');
         // Auto-increment version for the next generation (Phase 10 versioning).
         updateBranding('reportVersion', bumpVersion(branding.reportVersion));
       } catch (err) {
@@ -265,7 +257,7 @@ export default function ReportCenterPage() {
         setBusy(null);
       }
     },
-    [snapshot, branding, kind, generatedBy, history, persistHistory, updateBranding, assetOptions, selectedCount, scopeKeys, scopeLabel],
+    [snapshot, branding, kind, generatedBy, recordReport, updateBranding, assetOptions, selectedCount, scopeKeys, scopeLabel],
   );
 
   const preview = useCallback(async () => {
@@ -312,10 +304,12 @@ export default function ReportCenterPage() {
     <QuantumReadinessShell
       title="Report Center"
       subtitle="Enterprise Reporting Engine™ — generate professional, evidence-driven reports (PDF, DOCX, XLSX, CSV, JSON, HTML, PPTX) for executives, security teams, auditors and regulators. Every value is derived from live assessment telemetry."
-      badge={<Badge color={GREEN}>{integerFmt(history.length)} generated</Badge>}
+      badge={<Badge color={GREEN}>{integerFmt(reportTrail.entries.length)} generated</Badge>}
       sseConnected={sseConnected}
       state={state}
       snapshot={snapshot}
+      error={loadError}
+      lastVerifiedAt={lastVerifiedAt}
       actions={
         <>
           <HeaderButton icon={RefreshCw} onClick={() => void refresh()}>
@@ -429,29 +423,14 @@ export default function ReportCenterPage() {
             </HeaderButton>
           </div>
 
-          {/* Scheduling */}
-          <div className="mt-4 rounded-md border border-white/8 bg-black/20 p-3">
-            <div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-white/45">
-              <Calendar className="h-3.5 w-3.5" /> Scheduled Reports
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {(['none', 'daily', 'weekly', 'monthly', 'quarterly'] as const).map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setSchedule(option)}
-                  className={`rounded border px-2.5 py-1 text-[11px] font-bold capitalize transition ${schedule === option ? 'border-blue-400/50 bg-blue-500/15 text-blue-200' : 'border-white/10 bg-black/20 text-white/55 hover:border-blue-400/35'}`}
-                >
-                  {option}
-                </button>
-              ))}
-            </div>
-            {schedule !== 'none' ? (
-              <p className="mt-2 text-[11px] text-amber-200/80">
-                {schedule} schedule saved for this template. Automated delivery requires the BullMQ/Redis worker + cron to be provisioned server-side.
-              </p>
-            ) : null}
-          </div>
+          {/* Scheduled delivery is not offered: no server-side scheduler exists
+              to run it. The control that stood here said "schedule saved" and
+              saved nothing — a dead button presented as a feature. */}
+          <p className="mt-4 flex items-start gap-2 rounded-md border border-white/8 bg-black/20 p-3 text-[11px] text-white/45">
+            <Calendar className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            Reports are generated on demand from the live assessment and recorded in your tenant audit trail below. Automated scheduled
+            delivery is not available in this deployment.
+          </p>
         </Panel>
       </section>
 
@@ -685,7 +664,7 @@ export default function ReportCenterPage() {
                     <span className="hidden rounded px-1.5 py-0.5 text-[10px] font-black sm:inline" style={{ color: posture.color, backgroundColor: `${posture.color}1a` }}>
                       {posture.label}
                     </span>
-                    <span className="w-14 shrink-0 text-right font-mono text-[11px] font-bold" style={{ color: asset.riskScore >= 75 ? RED : asset.riskScore >= 50 ? ORANGE : asset.riskScore >= 25 ? AMBER : GREEN }}>
+                    <span className="w-14 shrink-0 text-right font-mono text-[11px] font-bold" style={{ color: riskTone(asset.riskScore) }}>
                       {asset.riskScore}/100
                     </span>
                   </button>
@@ -746,8 +725,11 @@ export default function ReportCenterPage() {
 
       {/* Audit trail / history */}
       <Panel className="p-5">
-        <SectionTitle suffix={<span className="text-[11px] text-white/40">Versioning & audit trail</span>}>Report History</SectionTitle>
-        {history.length ? (
+        <SectionTitle suffix={<span className="text-[11px] text-white/40">Tenant audit log · versioning &amp; integrity</span>}>Report History</SectionTitle>
+        {reportTrail.error ? (
+          <p className="mb-3 text-[11px] text-[var(--qg-notice-text)]">Report history: {reportTrail.error}</p>
+        ) : null}
+        {reportTrail.entries.length ? (
           <div className="overflow-x-auto">
             <table className="min-w-[860px] w-full text-left text-xs">
               <thead>
@@ -763,27 +745,36 @@ export default function ReportCenterPage() {
                 </tr>
               </thead>
               <tbody>
-                {history.length > 20 ? (
-                  <div className="text-[10px] text-white/35">
-                    Showing the 20 most recent of {history.length} generated reports.
-                  </div>
-                ) : null}
-                {history.slice(0, 20).map((entry, index) => {
-                  const meta = FORMAT_META[entry.format];
+                {reportTrail.entries.slice(0, 20).map((entry) => {
+                  const format = isReportFormat(entry.format) ? entry.format : null;
+                  const meta = format ? FORMAT_META[format] : null;
+                  const entryKind = isReportKind(entry.kind) ? entry.kind : null;
                   return (
-                    <tr key={`${entry.id}-${index}`} className="border-b border-white/5 text-white/70">
-                      <td className="py-3 font-medium text-white/82">{entry.name}</td>
-                      <td className="py-3 font-mono">v{entry.version}</td>
-                      <td className="py-3"><span className="rounded px-1.5 py-0.5 text-[10px] font-black" style={{ color: meta.color, backgroundColor: `${meta.color}1a` }}>{meta.label}</span></td>
+                    <tr key={entry.id} className="border-b border-white/5 text-white/70">
+                      <td className="py-3 font-medium text-white/82">{entry.title || 'Report'}</td>
+                      <td className="py-3 font-mono">{entry.version ? `v${entry.version}` : '—'}</td>
+                      <td className="py-3">
+                        {meta ? (
+                          <span className="rounded px-1.5 py-0.5 text-[10px] font-black" style={{ color: meta.color, backgroundColor: `${meta.color}1a` }}>{meta.label}</span>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
                       <td className="py-3 text-white/55">{entry.scope || 'All assets'}</td>
-                      <td className="max-w-[160px] truncate py-3 text-white/55">{entry.generatedBy}</td>
-                      <td className="py-3 text-white/50">{longDate(entry.generatedAt)}</td>
-                      <td className="py-3 font-mono text-[10px] text-white/45">{entry.integrityHash}…</td>
+                      <td className="max-w-[160px] truncate py-3 text-white/55">{entry.generatedBy || '—'}</td>
+                      <td className="py-3 text-white/50">{longDate(entry.generatedAt || entry.createdAt)}</td>
+                      <td className="py-3 font-mono text-[10px] text-white/45" title={entry.integrityHash || undefined}>
+                        {entry.integrityHash ? `${entry.integrityHash.slice(0, 16)}…` : '—'}
+                      </td>
                       <td className="py-3">
                         <button
                           type="button"
-                          disabled={busy !== null}
-                          onClick={() => { setKind(entry.kind); void generate(entry.format); }}
+                          disabled={busy !== null || !format || !entryKind}
+                          onClick={() => {
+                            if (!format || !entryKind) return;
+                            setKind(entryKind);
+                            void generate(format, entryKind);
+                          }}
                           className="inline-flex items-center gap-1 rounded border border-white/10 bg-white/[0.025] px-2 py-1 text-[10px] font-bold text-white/60 transition hover:border-blue-400/40 hover:text-blue-200 disabled:opacity-40"
                         >
                           <RefreshCw className="h-3 w-3" /> Regenerate
@@ -794,9 +785,14 @@ export default function ReportCenterPage() {
                 })}
               </tbody>
             </table>
+            <TruncationNote shown={Math.min(20, reportTrail.entries.length)} total={reportTrail.entries.length} noun="recorded reports" rank="most recent" />
+            <p className="mt-2 text-[10px] text-white/35">Regenerate rebuilds the template from the CURRENT assessment — figures reflect today&apos;s evidence, not the original report&apos;s.</p>
           </div>
         ) : (
-          <EmptyState label="No reports generated yet." hint="Select a template and export format above to generate your first enterprise report." />
+          <EmptyState
+            label={reportTrail.loaded ? 'No reports generated yet.' : 'Loading report history…'}
+            hint="Select a template and export format above — every generated report is recorded in your tenant audit log."
+          />
         )}
         <div className="mt-4 flex items-center gap-2 text-[11px] text-white/40">
           <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />

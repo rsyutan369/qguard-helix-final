@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { securityEventDetails } from "@/lib/account-key";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import { useIsAdmin } from "@/lib/admin";
 import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
@@ -252,7 +253,7 @@ export default function AuditLogsPage({ userId, devices, events, securityEvents,
         device_id: null,
         event_type: eventType,
         severity,
-        encrypted_details: { redacted: true, ...metadata },
+        encrypted_details: await securityEventDetails(eventHash, metadata),
         event_hash: eventHash,
       });
     } catch {

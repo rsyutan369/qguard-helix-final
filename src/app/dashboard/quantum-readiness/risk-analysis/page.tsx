@@ -14,8 +14,8 @@ import {
   MetricCard,
   Panel,
   QuantumReadinessShell,
+  ScoreHistoryTrend,
   SectionTitle,
-  TrendChart,
   ViewAllLink,
   integerFmt,
   percentLabel,
@@ -34,7 +34,7 @@ const HEATMAP_DIMENSIONS = ['Overall Risk', 'Crypto Posture', 'Internet Exposure
 
 export default function RiskAnalysisPage() {
   const navigate = useNavigate();
-  const { snapshot, state, sseConnected, refresh, downloadJson } = useQuantumReadiness();
+  const { snapshot, state, error, sseConnected, lastVerifiedAt, refresh, downloadJson } = useQuantumReadiness();
   const { scores, riskDistribution } = snapshot;
 
   const totalFindings = riskDistribution.critical + riskDistribution.high + riskDistribution.medium + riskDistribution.low;
@@ -61,37 +61,51 @@ export default function RiskAnalysisPage() {
 
   // Risk heat map — top exposure-graph assets scored across risk dimensions.
   // Every cell traces to measured evidence (asset risk score, CBOM posture,
-  // internet exposure, environment) — nothing is fabricated.
+  // internet exposure, environment). A dimension nothing was recorded for is a
+  // null cell ("—"), never a mid-scale number: an asset with no crypto evidence
+  // used to read Posture 10 (the PQC-ready score) and an unlabelled
+  // environment read 30.
   const heatmapRows = useMemo(
     () =>
       [...snapshot.exposureGraph.nodes]
         .sort((a, b) => b.riskScore - a.riskScore)
         .slice(0, 12)
-        .map((node) => ({
-          asset: node.label,
-          cells: [
-            { score: node.riskScore, basis: 'Measured asset risk score (scan evidence)' },
-            {
-              score: node.posture === 'vulnerable' ? 90 : node.posture === 'hybrid' ? 50 : 10,
-              basis: `Crypto posture: ${node.posture} (CBOM / scan findings)`,
-            },
-            { score: node.internetFacing ? 100 : 20, basis: node.internetFacing ? 'Internet-facing (asset evidence)' : 'Internal-only (asset evidence)' },
-            {
-              score: /prod/i.test(node.environment) ? 70 : 30,
-              basis: `Environment: ${node.environment || 'unknown'}`,
-            },
-          ],
-        })),
+        .map((node) => {
+          const environment = (node.environment || '').trim();
+          const knownEnvironment = environment !== '' && environment.toLowerCase() !== 'unknown';
+          const postureScore = node.posture === 'vulnerable' ? 90 : node.posture === 'hybrid' ? 50 : node.posture === 'pqc' ? 10 : null;
+          return {
+            asset: node.label,
+            cells: [
+              { score: node.riskScore as number | null, basis: 'Measured asset risk score (scan evidence)' },
+              {
+                score: postureScore,
+                basis: postureScore === null ? 'No crypto evidence recorded for this asset' : `Crypto posture: ${node.posture} (CBOM / scan findings)`,
+              },
+              { score: node.internetFacing ? 100 : 20, basis: node.internetFacing ? 'Internet-facing (asset evidence)' : 'Internal-only (asset evidence)' },
+              {
+                score: knownEnvironment ? (/prod/i.test(environment) ? 70 : 30) : null,
+                basis: knownEnvironment ? `Environment: ${environment}` : 'Environment not recorded for this asset',
+              },
+            ],
+          };
+        }),
     [snapshot.exposureGraph.nodes],
   );
 
-  // Consolidated evidence tally — records shown vs the raw scanner instances they
-  // represent, so the collapse is visible rather than implied.
+  // Consolidated evidence tally — records vs the raw scanner instances they
+  // represent, so the collapse is visible rather than implied. Totals come from
+  // the server's count over ALL records: the table carries the first 24, and
+  // summing only those under-reported the total once an estate had more.
   const evidence = useMemo(() => {
-    const records = snapshot.criticalFindings.length;
-    const instances = snapshot.criticalFindings.reduce((sum, f) => sum + Math.max(1, f.instances ?? 1), 0);
-    return { records, instances };
-  }, [snapshot.criticalFindings]);
+    const shownInstances = snapshot.criticalFindings.reduce((sum, f) => sum + Math.max(1, f.instances ?? 1), 0);
+    const summary = snapshot.criticalFindingsSummary;
+    return {
+      records: summary?.records ?? snapshot.criticalFindings.length,
+      instances: summary?.instances ?? shownInstances,
+      shown: snapshot.criticalFindings.length,
+    };
+  }, [snapshot.criticalFindings, snapshot.criticalFindingsSummary]);
 
   const kpis = [
     { label: 'Quantum Risk', value: integerFmt(scores.quantumRisk), suffix: '/100', detail: scores.quantumRiskLevel, color: riskTone(scores.quantumRisk), ring: scores.quantumRisk },
@@ -110,6 +124,8 @@ export default function RiskAnalysisPage() {
       sseConnected={sseConnected}
       state={state}
       snapshot={snapshot}
+      error={error}
+      lastVerifiedAt={lastVerifiedAt}
       actions={
         <>
           <HeaderButton icon={RefreshCw} onClick={() => void refresh()}>
@@ -171,17 +187,20 @@ export default function RiskAnalysisPage() {
                 {heatmapRows.map((row) => (
                   <tr key={row.asset}>
                     <td className="max-w-[180px] truncate pr-2 font-medium text-white/80">{row.asset}</td>
-                    {row.cells.map((cell, i) => (
-                      <td key={HEATMAP_DIMENSIONS[i]} className="text-center">
-                        <span
-                          className="block rounded px-1.5 py-1.5 font-mono text-[10px] font-bold"
-                          style={{ backgroundColor: `${riskTone(cell.score)}22`, color: riskTone(cell.score), border: `1px solid ${riskTone(cell.score)}35` }}
-                          title={cell.basis}
-                        >
-                          {integerFmt(cell.score)}
-                        </span>
-                      </td>
-                    ))}
+                    {row.cells.map((cell, i) => {
+                      const tone = cell.score === null ? '#64748B' : riskTone(cell.score);
+                      return (
+                        <td key={HEATMAP_DIMENSIONS[i]} className="text-center">
+                          <span
+                            className="block rounded px-1.5 py-1.5 font-mono text-[10px] font-bold"
+                            style={{ backgroundColor: `${tone}22`, color: tone, border: `1px ${cell.score === null ? 'dashed' : 'solid'} ${tone}35` }}
+                            title={cell.basis}
+                          >
+                            {cell.score === null ? '—' : integerFmt(cell.score)}
+                          </span>
+                        </td>
+                      );
+                    })}
                   </tr>
                 ))}
               </tbody>
@@ -195,7 +214,8 @@ export default function RiskAnalysisPage() {
             />
             <p className="mt-2 text-[10px] text-white/35">
               Cells score 0–100 per dimension. Overall = measured asset risk; Posture = quantum-vulnerable 90 / hybrid 50 /
-              PQC-ready 10; Internet exposure and production environment from asset evidence. Hover a cell for its basis.
+              PQC-ready 10; Internet exposure and production environment from asset evidence. “—” means nothing was recorded for
+              that dimension. Hover a cell for its basis.
             </p>
           </div>
         ) : (
@@ -230,8 +250,8 @@ export default function RiskAnalysisPage() {
         </Panel>
 
         <Panel className="p-5 xl:col-span-7">
-          <SectionTitle suffix={<ViewAllLink to="/dashboard/quantum-readiness">Assessment Overview</ViewAllLink>}>Risk Trend</SectionTitle>
-          <TrendChart points={snapshot.riskTrend} />
+          <SectionTitle suffix={<span className="text-[11px] text-white/40">Recorded each time the assessed evidence changes</span>}>Readiness &amp; Risk Trend</SectionTitle>
+          <ScoreHistoryTrend snapshot={snapshot} />
         </Panel>
       </section>
 
@@ -359,10 +379,11 @@ export default function RiskAnalysisPage() {
                 })}
               </tbody>
             </table>
+            <TruncationNote shown={evidence.shown} total={evidence.records} noun="critical / high evidence records" rank="highest-severity" />
             <p className="mt-2 text-[10px] text-white/35">
               One record per algorithm, asset, environment and severity. The scanner reports one finding per detected instance and observes the
-              same host through several detection channels — identical evidence is consolidated and the Instances column carries the raw count, so
-              the totals still reconcile with the severity distribution above.
+              same host through several detection channels — identical evidence is consolidated and the Instances column carries the raw count.
+              {` ${integerFmt(evidence.instances)} instance(s) across all records; the severity distribution above counts ${integerFmt(riskDistribution.critical + riskDistribution.high)} critical + high.`}
             </p>
           </div>
         ) : (

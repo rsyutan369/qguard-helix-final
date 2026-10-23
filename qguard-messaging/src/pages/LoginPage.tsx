@@ -1,19 +1,32 @@
-import { FormEvent, useState } from "react";
-import { Atom, FileLock2, Fingerprint, LockKeyhole, RefreshCcw, ShieldCheck } from "lucide-react";
+import { FormEvent, useEffect, useState } from "react";
+import { Atom, FileLock2, Fingerprint, LockKeyhole, Mail, QrCode as QrCodeIcon, RefreshCcw, ShieldCheck, Smartphone } from "lucide-react";
+import { LinkThisDevicePanel } from "@/components/auth/LinkThisDevicePanel";
+import { PhoneNumberInput } from "@/components/auth/PhoneNumberInput";
+import { fetchAuthCapabilities } from "@/lib/account-identity";
+import { PHONE_RESEND_SECONDS, type PendingPhoneChallenge, type PhoneAuthMode } from "@/lib/auth-context";
+import type { LinkCredential } from "@/lib/device-link";
+import { defaultCountryIso, parsePhoneNumber } from "@/lib/phone-number";
 
 interface LoginPageProps {
   loading: boolean;
   error: string | null;
   notice: string | null;
   pendingMfa: { email: string; factorName: string } | null;
+  pendingPhone: PendingPhoneChallenge | null;
   onSignIn: (email: string, password: string) => Promise<boolean>;
   onVerifyMfa: (code: string) => Promise<boolean>;
   onCancelMfa: () => Promise<void>;
   onSignUp: (email: string, password: string, name: string) => Promise<boolean>;
+  onRequestPhoneCode: (phone: string, mode: PhoneAuthMode, name?: string) => Promise<boolean>;
+  onVerifyPhoneCode: (code: string) => Promise<boolean>;
+  onCancelPhone: () => void;
+  onLinkCredential: (credential: LinkCredential) => Promise<boolean>;
   onResendVerification: (email: string) => Promise<boolean>;
   onResetPassword: (email: string) => Promise<boolean>;
   onClearError: () => void;
 }
+
+type SignInMethod = "email" | "phone";
 
 function toVisibleError(message: string | null): string | null {
   if (!message) return null;
@@ -61,21 +74,86 @@ const inputClass =
   "mt-2 w-full rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-3 text-[15px] text-white placeholder-white/25 outline-none transition focus:border-violet-400/70 focus:bg-white/[0.06] focus:ring-2 focus:ring-violet-500/25";
 const labelClass = "block text-[13px] font-semibold text-white/70";
 
-export default function LoginPage({ loading, error, notice, pendingMfa, onSignIn, onVerifyMfa, onCancelMfa, onSignUp, onResendVerification, onResetPassword, onClearError }: LoginPageProps) {
+export default function LoginPage({
+  loading,
+  error,
+  notice,
+  pendingMfa,
+  pendingPhone,
+  onSignIn,
+  onVerifyMfa,
+  onCancelMfa,
+  onSignUp,
+  onRequestPhoneCode,
+  onVerifyPhoneCode,
+  onCancelPhone,
+  onLinkCredential,
+  onResendVerification,
+  onResetPassword,
+  onClearError,
+}: LoginPageProps) {
   const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
+  const [method, setMethod] = useState<SignInMethod>("email");
+  const [linking, setLinking] = useState(false);
   const [email, setEmail] = useState("");
   const [lastVerificationEmail, setLastVerificationEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [mfaCode, setMfaCode] = useState("");
-  const visibleError = toVisibleError(error);
+  const [countryIso, setCountryIso] = useState(() => defaultCountryIso());
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [phoneError, setPhoneError] = useState<string | null>(null);
+  const [smsCode, setSmsCode] = useState("");
+  const [phoneAvailable, setPhoneAvailable] = useState<boolean | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const visibleError = phoneError ?? toVisibleError(error);
   const verificationEmail = email.trim() || lastVerificationEmail;
+  const usingPhone = method === "phone" && !pendingMfa;
+  const resendIn = pendingPhone ? Math.max(0, PHONE_RESEND_SECONDS - Math.floor((now - pendingPhone.sentAt) / 1000)) : 0;
+
+  useEffect(() => {
+    let active = true;
+    void fetchAuthCapabilities().then((capabilities) => {
+      if (active) setPhoneAvailable(capabilities.phone);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!pendingPhone) return undefined;
+    setSmsCode("");
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [pendingPhone]);
+
+  // An MFA challenge replaces whatever was on screen, including the QR panel.
+  useEffect(() => {
+    if (pendingMfa) setLinking(false);
+  }, [pendingMfa]);
+
+  async function sendPhoneCode() {
+    setPhoneError(null);
+    const parsed = parsePhoneNumber(phoneNumber, countryIso);
+    if (!parsed.ok) {
+      setPhoneError(parsed.error);
+      return;
+    }
+    await onRequestPhoneCode(parsed.e164, mode, name.trim());
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     onClearError();
+    setPhoneError(null);
     if (pendingMfa) {
       await onVerifyMfa(mfaCode);
+      return;
+    }
+    if (usingPhone) {
+      if (pendingPhone) await onVerifyPhoneCode(smsCode);
+      else await sendPhoneCode();
       return;
     }
     const normalizedEmail = email.trim();
@@ -93,12 +171,37 @@ export default function LoginPage({ loading, error, notice, pendingMfa, onSignIn
     }
   }
 
-  const heading = pendingMfa ? "Verify identity" : mode === "sign-in" ? "Welcome back" : "Create account";
+  const heading = pendingMfa
+    ? "Verify identity"
+    : linking
+      ? "Link this device"
+      : usingPhone && pendingPhone
+        ? "Enter your code"
+        : mode === "sign-in" ? "Welcome back" : "Create account";
   const subheading = pendingMfa
     ? pendingMfa.factorName
-    : mode === "sign-in"
-      ? "Sign in to your quantum-safe workspace."
-      : "Set up your quantum-safe messaging & vault.";
+    : linking
+      ? "Sign in by scanning this code with a device you're already signed in on."
+      : usingPhone && pendingPhone
+        ? `Sent by SMS to ${pendingPhone.masked}.`
+        : mode === "sign-in"
+          ? "Sign in to your quantum-safe workspace."
+          : "Set up your quantum-safe messaging & vault.";
+  const phoneBlocked = usingPhone && phoneAvailable === false;
+  const submitLabel = loading
+    ? "Validating…"
+    : pendingMfa
+      ? "Verify and continue"
+      : usingPhone
+        ? pendingPhone ? "Verify code" : "Send verification code"
+        : mode === "sign-in" ? "Sign in securely" : "Create account";
+
+  const switchMethod = (next: SignInMethod) => {
+    onClearError();
+    setPhoneError(null);
+    if (pendingPhone) onCancelPhone();
+    setMethod(next);
+  };
 
   return (
     <div className="qg-login mobile-safe-top mobile-safe-bottom relative flex min-h-[100dvh] items-center justify-center overflow-hidden px-4 py-8 md:px-6">
@@ -176,117 +279,238 @@ export default function LoginPage({ loading, error, notice, pendingMfa, onSignIn
               </div>
             )}
 
-            {pendingMfa ? (
-              <label className="mt-6 block">
-                <span className={labelClass}>Authenticator code</span>
-                <input
-                  value={mfaCode}
-                  onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
-                  className={`${inputClass} text-center font-mono text-lg tracking-[0.4em]`}
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  required
-                />
-              </label>
-            ) : mode === "sign-up" && (
-              <label className="mt-6 block">
-                <span className={labelClass}>Full name</span>
-                <input
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  className={inputClass}
-                  autoComplete="name"
-                  required
-                />
-              </label>
-            )}
+            {linking && !pendingMfa ? (
+              <LinkThisDevicePanel
+                onCredential={onLinkCredential}
+                onCancel={() => {
+                  onClearError();
+                  setLinking(false);
+                }}
+              />
+            ) : (
+              <>
+                {/* Email or mobile number — a returning user's choice is the method they registered with. */}
+                {!pendingMfa && !pendingPhone && (
+                  <div className="mt-6 grid grid-cols-2 gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1" role="tablist" aria-label="Sign-in method">
+                    {([
+                      { value: "email", label: "Email", icon: Mail },
+                      { value: "phone", label: "Mobile number", icon: Smartphone },
+                    ] as const).map((item) => (
+                      <button
+                        key={item.value}
+                        type="button"
+                        role="tab"
+                        aria-selected={method === item.value}
+                        onClick={() => switchMethod(item.value)}
+                        className={`flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-[13px] font-semibold transition ${
+                          method === item.value ? "bg-violet-500/25 text-white shadow-[inset_0_0_0_1px_rgba(167,139,250,0.45)]" : "text-white/55 hover:text-white/80"
+                        }`}
+                      >
+                        <item.icon size={15} /> {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
 
-            {!pendingMfa && (
-              <label className="mt-5 block">
-                <span className={labelClass}>Email</span>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(event) => {
-                    setEmail(event.target.value);
-                    if (event.target.value.trim()) setLastVerificationEmail(event.target.value.trim());
-                  }}
-                  className={inputClass}
-                  autoComplete="email"
-                  required
-                />
-              </label>
-            )}
+                {pendingMfa ? (
+                  <label className="mt-6 block">
+                    <span className={labelClass}>Authenticator code</span>
+                    <input
+                      value={mfaCode}
+                      onChange={(event) => setMfaCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                      className={`${inputClass} text-center font-mono text-lg tracking-[0.4em]`}
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      required
+                    />
+                  </label>
+                ) : mode === "sign-up" && !(usingPhone && pendingPhone) && (
+                  <label className="mt-5 block">
+                    <span className={labelClass}>Full name</span>
+                    <input
+                      value={name}
+                      onChange={(event) => setName(event.target.value)}
+                      className={inputClass}
+                      autoComplete="name"
+                      required={!usingPhone}
+                      placeholder={usingPhone ? "Optional — shown to your contacts" : undefined}
+                    />
+                  </label>
+                )}
 
-            {!pendingMfa && (
-              <div className="mt-4">
-                <div className="flex items-center justify-between gap-2">
-                  <label htmlFor="qg-login-password" className={labelClass}>Password</label>
-                  {mode === "sign-in" && (
+                {usingPhone && !pendingPhone && (
+                  <div className="mt-5">
+                    <span className={labelClass}>Mobile number</span>
+                    <PhoneNumberInput
+                      countryIso={countryIso}
+                      number={phoneNumber}
+                      onCountryChange={setCountryIso}
+                      onNumberChange={(value) => {
+                        setPhoneNumber(value);
+                        setPhoneError(null);
+                      }}
+                      inputClass={inputClass}
+                      disabled={loading || phoneBlocked}
+                    />
+                    {phoneBlocked ? (
+                      <p className="mt-3 rounded-xl border border-amber-300/20 bg-amber-400/[0.07] p-3 text-[12.5px] leading-5 text-amber-100/85">
+                        Mobile-number sign-in hasn't been switched on for this server yet. Use your email address for now — you can add a number to the same account later.
+                      </p>
+                    ) : (
+                      <p className="mt-2.5 flex gap-2 text-[12px] leading-5 text-white/45">
+                        <LockKeyhole size={13} className="mt-0.5 shrink-0" />
+                        <span>Your number is only used to sign you in. It is never shown to your contacts — they find you by username. Carrier SMS rates may apply.</span>
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {usingPhone && pendingPhone && (
+                  <label className="mt-6 block">
+                    <span className={labelClass}>6-digit code</span>
+                    <input
+                      value={smsCode}
+                      onChange={(event) => setSmsCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                      className={`${inputClass} text-center font-mono text-lg tracking-[0.4em]`}
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      autoFocus
+                      required
+                    />
+                  </label>
+                )}
+
+                {!pendingMfa && !usingPhone && (
+                  <label className="mt-5 block">
+                    <span className={labelClass}>Email</span>
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(event) => {
+                        setEmail(event.target.value);
+                        if (event.target.value.trim()) setLastVerificationEmail(event.target.value.trim());
+                      }}
+                      className={inputClass}
+                      autoComplete="email"
+                      required
+                    />
+                  </label>
+                )}
+
+                {!pendingMfa && !usingPhone && (
+                  <div className="mt-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <label htmlFor="qg-login-password" className={labelClass}>Password</label>
+                      {mode === "sign-in" && (
+                        <button
+                          type="button"
+                          disabled={loading}
+                          onClick={() => {
+                            onClearError();
+                            void onResetPassword(verificationEmail);
+                          }}
+                          className="text-[12.5px] font-semibold text-violet-300 transition hover:text-violet-200 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Forgot password?
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      id="qg-login-password"
+                      type="password"
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      className={inputClass}
+                      autoComplete={mode === "sign-in" ? "current-password" : "new-password"}
+                      minLength={8}
+                      required
+                    />
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={loading || phoneBlocked || (usingPhone && Boolean(pendingPhone) && smsCode.length !== 6)}
+                  className="qg-cta mt-7 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3.5 text-[14px] font-bold text-white transition disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {submitLabel}
+                </button>
+
+                {pendingMfa ? (
+                  <button
+                    type="button"
+                    onClick={onCancelMfa}
+                    className="mt-4 w-full text-[13px] font-semibold text-white/50 transition hover:text-white/80"
+                  >
+                    Cancel sign in
+                  </button>
+                ) : usingPhone && pendingPhone ? (
+                  <div className="mt-4 flex items-center justify-between gap-3 text-[13px] font-semibold">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onCancelPhone();
+                        setSmsCode("");
+                      }}
+                      className="text-white/50 transition hover:text-white/80"
+                    >
+                      Change number
+                    </button>
+                    <button
+                      type="button"
+                      disabled={loading || resendIn > 0}
+                      onClick={() => void onRequestPhoneCode(pendingPhone.phone, pendingPhone.mode, name.trim())}
+                      className="text-violet-300 transition hover:text-violet-200 disabled:cursor-not-allowed disabled:text-white/35"
+                    >
+                      {resendIn > 0 ? `Resend code in ${resendIn}s` : "Resend code"}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClearError();
+                      setPhoneError(null);
+                      setMode((current) => (current === "sign-in" ? "sign-up" : "sign-in"));
+                    }}
+                    className="mt-4 w-full text-[13px] font-semibold text-violet-300 transition hover:text-violet-200"
+                  >
+                    {mode === "sign-in" ? "Need an account? Register" : "Already registered? Sign in"}
+                  </button>
+                )}
+
+                {!pendingMfa && !usingPhone && mode === "sign-in" && (
+                  <button
+                    type="button"
+                    disabled={loading || !verificationEmail}
+                    onClick={() => onResendVerification(verificationEmail)}
+                    className="mt-2.5 w-full text-[13px] font-semibold text-white/45 transition hover:text-white/70 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Resend verification email
+                  </button>
+                )}
+
+                {!pendingMfa && !pendingPhone && mode === "sign-in" && (
+                  <>
+                    <div className="mt-6 flex items-center gap-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-white/30" aria-hidden>
+                      <span className="h-px flex-1 bg-white/10" /> or <span className="h-px flex-1 bg-white/10" />
+                    </div>
                     <button
                       type="button"
                       disabled={loading}
                       onClick={() => {
                         onClearError();
-                        void onResetPassword(verificationEmail);
+                        setPhoneError(null);
+                        setLinking(true);
                       }}
-                      className="text-[12.5px] font-semibold text-violet-300 transition hover:text-violet-200 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-white/12 bg-white/[0.04] px-4 py-3 text-[13.5px] font-semibold text-white/85 transition hover:border-violet-300/40 hover:bg-white/[0.07] disabled:opacity-50"
                     >
-                      Forgot password?
+                      <QrCodeIcon size={16} /> Link with QR code
                     </button>
-                  )}
-                </div>
-                <input
-                  id="qg-login-password"
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  className={inputClass}
-                  autoComplete={mode === "sign-in" ? "current-password" : "new-password"}
-                  minLength={8}
-                  required
-                />
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="qg-cta mt-7 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3.5 text-[14px] font-bold text-white transition disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {loading ? "Validating…" : pendingMfa ? "Verify and continue" : mode === "sign-in" ? "Sign in securely" : "Create account"}
-            </button>
-
-            {pendingMfa ? (
-              <button
-                type="button"
-                onClick={onCancelMfa}
-                className="mt-4 w-full text-[13px] font-semibold text-white/50 transition hover:text-white/80"
-              >
-                Cancel sign in
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  onClearError();
-                  setMode((current) => (current === "sign-in" ? "sign-up" : "sign-in"));
-                }}
-                className="mt-4 w-full text-[13px] font-semibold text-violet-300 transition hover:text-violet-200"
-              >
-                {mode === "sign-in" ? "Need an account? Register" : "Already registered? Sign in"}
-              </button>
-            )}
-
-            {!pendingMfa && mode === "sign-in" && (
-              <button
-                type="button"
-                disabled={loading || !verificationEmail}
-                onClick={() => onResendVerification(verificationEmail)}
-                className="mt-2.5 w-full text-[13px] font-semibold text-white/45 transition hover:text-white/70 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                Resend verification email
-              </button>
+                    <p className="mt-2 text-center text-[11.5px] text-white/40">Already signed in on another phone or computer? Scan to sign in here — no password needed.</p>
+                  </>
+                )}
+              </>
             )}
 
             {/* Trust row — phones only; the desktop hero carries the badges. */}

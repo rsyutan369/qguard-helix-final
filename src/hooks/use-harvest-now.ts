@@ -1,13 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useAuth } from '@/contexts/auth-context';
-import { supabase } from '@/lib/supabase';
+import { useLiveResource, type LiveLoadState } from './use-live-resource';
 
 /* ------------------------------------------------------------------ */
 /* Types — the HNDL contract from /api/v1/harvest-now                 */
 /* ------------------------------------------------------------------ */
-export type LoadState = 'loading' | 'success' | 'error';
+export type LoadState = LiveLoadState;
 export type CryptoClass = 'vulnerable' | 'hybrid' | 'safe' | 'unknown';
 
 export interface HndlBanner {
@@ -186,7 +184,12 @@ export interface ExposureMatrixRow {
 export interface CapturedDataLine {
   key: string;
   label: string;
+  /** MEASURED count of the unit (hosts, vault files, assets). */
   unit: number;
+  /** What `unit` counts, singular. */
+  unitLabel?: string;
+  /** Published planning assumption per unit — NOT a measurement. */
+  perUnitGb?: number;
   gb: number;
   tb: number;
 }
@@ -197,6 +200,8 @@ export interface MigrationReadiness {
   pqcReady: number;
   hybridReady: number;
   legacyOnly: number;
+  /** Assets nothing has been measured on yet. */
+  notAssessed?: number;
   migrationBlocked: number;
   migrationInProgress: number;
   migrationCompleted: number;
@@ -207,7 +212,8 @@ export interface MigrationReadiness {
 export interface AdversaryInterestRow {
   key: string;
   sector: string;
-  interestScore: number;
+  /** null when the estate holds no assets in this sector — not scored. */
+  interestScore: number | null;
   level: string;
   assetsInSector: number;
   inScope: boolean;
@@ -218,9 +224,12 @@ export interface ThreatActorRow {
   actor: string;
   interestScore: number;
   level: string;
+  /** The estate's harvest-exposed assets — what such an actor COULD collect, not observed targeting. */
   targetedAssets: string[];
   targetedAssetCount: number;
   motivation: string;
+  /** How the modelled relevance was derived. */
+  basis?: string;
 }
 
 export interface IntelligenceFeedItem {
@@ -250,7 +259,9 @@ export interface TopFindingRow {
 export interface RemediationAction {
   key: string;
   label: string;
+  /** Count of `unit`s the action changes (named for history; not always assets). */
   affectedAssets: number;
+  unit?: string;
   riskReductionPct: number;
   effort: string;
   completion: string;
@@ -275,7 +286,7 @@ export interface HndlIntelligence {
   };
   forwardSecrecy: ForwardSecrecy;
   exposureMatrix: ExposureMatrixRow[];
-  capturedData: { lines: CapturedDataLine[]; totalTb: number; totalGb: number; hasEvidence: boolean };
+  capturedData: { lines: CapturedDataLine[]; totalTb: number; totalGb: number; hasEvidence: boolean; basis?: string };
   futureDecryptable: {
     totalDataAtRiskTb: number; projectedDecryptableTb: number; highValueDataPct: number;
     criticalConfidentialAssets: number; vulnerableSharePct: number; trend: Array<{ label: string; decryptableTb: number }>; hasEvidence: boolean;
@@ -323,151 +334,22 @@ export const EMPTY_HNDL: HndlIntelligence = {
 const REALTIME_TABLES = [
   'assets', 'pqc_scan_results', 'pqc_scan_sessions', 'crypto_inventory', 'crypto_exposures',
   'certificates', 'generated_keys', 'runtime_crypto_events', 'migration_jobs',
-];
+] as const;
 
 /**
- * useHarvestNow — fetches the enterprise HNDL intelligence model, keeps it live
- * via a dedicated SSE stream (header-authenticated fetch — token never in URL)
- * and Supabase realtime table subscriptions, and exposes loading/error/connection
- * state. Every value is tenant-scoped real data derived from scanned assets,
- * CBOM, certificates and runtime crypto telemetry.
+ * useHarvestNow — the enterprise HNDL intelligence model, live over its
+ * fingerprinted stream (see use-live-resource.ts; the bearer token travels in
+ * the Authorization header, never the URL). Every value is tenant-scoped data
+ * derived from scanned assets, CBOM, certificates and runtime crypto telemetry.
  */
 export function useHarvestNow() {
-  const { session, user } = useAuth();
-  const token = session?.access_token;
-  const [data, setData] = useState<HndlIntelligence>(EMPTY_HNDL);
-  const [state, setState] = useState<LoadState>('loading');
-  const [error, setError] = useState<string | null>(null);
-  const [sseConnected, setSseConnected] = useState(false);
-  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const apply = useCallback((next: Partial<HndlIntelligence> | null) => {
-    setData({ ...EMPTY_HNDL, ...(next || {}) });
-  }, []);
-
-  const refresh = useCallback(async () => {
-    if (!token) {
-      apply(EMPTY_HNDL);
-      setState('success');
-      return;
-    }
-    setState((current) => (current === 'success' ? current : 'loading'));
-    try {
-      const response = await fetch('/api/v1/harvest-now', {
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-      apply(payload.data || {});
-      setState('success');
-      setError(null);
-    } catch (err) {
-      console.error('HNDL intelligence load failed:', err);
-      setError(err instanceof Error ? err.message : 'Unable to load HNDL intelligence');
-      setState('error');
-    }
-  }, [token, apply]);
-
-  const queueRefresh = useCallback(() => {
-    if (refreshTimer.current) clearTimeout(refreshTimer.current);
-    refreshTimer.current = setTimeout(() => {
-      refreshTimer.current = null;
-      void refresh();
-    }, 400);
-  }, [refresh]);
-
-  useEffect(() => () => { if (refreshTimer.current) clearTimeout(refreshTimer.current); }, []);
-
-  useEffect(() => {
-    if (!token || !user) {
-      apply(EMPTY_HNDL);
-      setState('success');
-      return;
-    }
-    void refresh();
-  }, [token, user, refresh, apply]);
-
-  // Dedicated SSE stream over fetch() + Authorization header. EventSource cannot
-  // set request headers, which forces the bearer token into the URL query string
-  // where it leaks into access logs / proxies / browser history. Reading the
-  // text/event-stream body via a ReadableStream lets us authenticate with a
-  // header and keep the token out of the URL entirely.
-  useEffect(() => {
-    if (!token) return;
-    const controller = new AbortController();
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let cancelled = false;
-
-    const parseFrame = (frame: string) => {
-      let eventName = 'message';
-      const dataLines: string[] = [];
-      for (const line of frame.split('\n')) {
-        if (line.startsWith('event:')) eventName = line.slice(6).trim();
-        else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
-        // lines starting with ':' are heartbeats/comments — ignored
-      }
-      if (eventName === 'hndl-intelligence' && dataLines.length) {
-        try {
-          apply(JSON.parse(dataLines.join('\n')));
-          setState('success');
-          setError(null);
-        } catch {
-          /* ignore malformed frame */
-        }
-      }
-    };
-
-    const connect = async () => {
-      try {
-        const response = await fetch('/api/v1/harvest-now/stream', {
-          headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
-          signal: controller.signal,
-        });
-        if (!response.ok || !response.body) throw new Error(`SSE ${response.status}`);
-        setSseConnected(true);
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let boundary = buffer.indexOf('\n\n');
-          while (boundary !== -1) {
-            parseFrame(buffer.slice(0, boundary));
-            buffer = buffer.slice(boundary + 2);
-            boundary = buffer.indexOf('\n\n');
-          }
-        }
-        throw new Error('stream ended');
-      } catch {
-        if (cancelled || controller.signal.aborted) return;
-        setSseConnected(false);
-        if (retry) clearTimeout(retry);
-        retry = setTimeout(() => void connect(), 10000);
-      }
-    };
-
-    void connect();
-    return () => {
-      cancelled = true;
-      controller.abort();
-      if (retry) clearTimeout(retry);
-      setSseConnected(false);
-    };
-  }, [token, apply]);
-
-  // Supabase realtime — refresh on any tenant scan / crypto mutation
-  useEffect(() => {
-    if (!user) return;
-    const channels = REALTIME_TABLES.map((table) =>
-      supabase
-        .channel(`hndl-${table}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` }, queueRefresh)
-        .subscribe(),
-    );
-    return () => { for (const channel of channels) supabase.removeChannel(channel); };
-  }, [user, queueRefresh]);
-
-  return { data, state, error, sseConnected, refresh };
+  const live = useLiveResource<HndlIntelligence>({
+    url: '/api/v1/harvest-now',
+    streamUrl: '/api/v1/harvest-now/stream',
+    event: 'hndl-intelligence',
+    empty: EMPTY_HNDL,
+    realtimeTables: REALTIME_TABLES,
+    channelPrefix: 'hndl',
+  });
+  return { data: live.data, state: live.state, error: live.error, sseConnected: live.sseConnected, lastVerifiedAt: live.lastVerifiedAt, refresh: live.refresh };
 }

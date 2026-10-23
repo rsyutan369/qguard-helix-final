@@ -1,6 +1,9 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
+import { createSingleFlightCache } from '@/lib/single-flight-cache'
+import { deriveAssetPostureModel } from '@/lib/migration/asset-intelligence'
 import { buildSnapshot, isInternetFacing } from './quantum-readiness'
+import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
 import {
   classifyAlgorithmClass,
   classifyAssetCategory,
@@ -71,15 +74,6 @@ router.use(requireAuth)
 const str = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : String(v))
 const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
 const clampPct = (n: number) => Math.max(0, Math.min(100, Math.round(n)))
-
-function severityWeight(sev: string): number {
-  const s = sev.toLowerCase()
-  if (s.includes('critical')) return 100
-  if (s.includes('high')) return 75
-  if (s.includes('medium') || s.includes('moderate')) return 50
-  if (s.includes('low')) return 25
-  return 10
-}
 
 async function safeRows(
   client: NonNullable<ReturnType<typeof createAuthClient>>,
@@ -185,24 +179,19 @@ export function assembleExposureIntelligence(snapshot: Snapshot, rows: ExposureR
     return assetIdByName.get(assetName.toLowerCase()) || ''
   }
 
-  const assetRisk = new Map<string, number>()
-  const bumpRisk = (assetId: string, weight: number) => {
-    if (!assetId) return
-    assetRisk.set(assetId, Math.max(assetRisk.get(assetId) || 0, weight))
-  }
-  for (const r of scanResults) bumpRisk(str(r.asset_id), severityWeight(str(r.threat_level)))
-  for (const e of cryptoExposures) bumpRisk(str(e.asset_id), severityWeight(str(e.severity)))
-  for (const i of cryptoInventory) if (i.is_vulnerable === true) bumpRisk(resolveAsset(str(i.asset_id), str(i.name)), 65)
-  for (const e of runtimeEvents) {
-    const id = resolveAsset(str(e.asset_id), str(e.asset_name))
-    if (e.is_legacy === true || e.hndl_risk === true) bumpRisk(id, Math.max(60, num(e.risk_score)))
-    else if (num(e.risk_score) > 0) bumpRisk(id, num(e.risk_score))
-  }
+  /*
+   * Per-asset risk and posture come from THE canonical model
+   * (deriveAssetPostureModel) — the same call the Quantum Readiness snapshot,
+   * the Migration Planner and /dashboard/assets make. This graph used to keep
+   * its own copy (it also counted classical certificates and name-matched rows
+   * as vulnerability evidence), so its "Quantum Vulnerable" KPI could disagree
+   * with the Quantum Readiness overview for the same estate.
+   */
+  const postureModel = deriveAssetPostureModel({ assets, scanResults, cryptoExposures, cryptoInventory, runtimeEvents })
+  const assetRisk = postureModel.assetRisk
 
   const algosByAsset = new Map<string, Set<string>>()
   const protosByAsset = new Map<string, Set<string>>()
-  const vulnAssetIds = new Set<string>()
-  const pqcAssetIds = new Set<string>()
   const addAlgo = (assetId: string, algorithm: string, protocol: string) => {
     if (!assetId) return
     if (algorithm) {
@@ -216,26 +205,11 @@ export function assembleExposureIntelligence(snapshot: Snapshot, rows: ExposureR
       protosByAsset.set(assetId, set)
     }
   }
-  for (const i of cryptoInventory) {
-    const id = resolveAsset(str(i.asset_id), str(i.name))
-    addAlgo(id, str(i.algorithm), str(i.protocol))
-    if (i.is_vulnerable === true) vulnAssetIds.add(id)
-    if (i.is_quantum_safe === true) pqcAssetIds.add(id)
-    if (classifyAlgorithmClass(str(i.algorithm)) === 'vulnerable') vulnAssetIds.add(id)
-  }
-  for (const e of runtimeEvents) {
-    const id = resolveAsset(str(e.asset_id), str(e.asset_name))
-    addAlgo(id, str(e.algorithm), '')
-    if (e.is_legacy === true) vulnAssetIds.add(id)
-    if (e.is_pqc === true) pqcAssetIds.add(id)
-  }
-  for (const r of scanResults) {
-    const id = str(r.asset_id)
-    addAlgo(id, str(r.algorithm), '')
-    if (classifyAlgorithmClass(str(r.algorithm)) === 'vulnerable') vulnAssetIds.add(id)
-  }
-  vulnAssetIds.delete('')
-  pqcAssetIds.delete('')
+  // Algorithm / protocol detail for the node inspector (display only — posture
+  // is decided by the canonical model above).
+  for (const i of cryptoInventory) addAlgo(resolveAsset(str(i.asset_id), str(i.name)), str(i.algorithm), str(i.protocol))
+  for (const e of runtimeEvents) addAlgo(resolveAsset(str(e.asset_id), str(e.asset_name)), str(e.algorithm), '')
+  for (const r of scanResults) addAlgo(str(r.asset_id), str(r.algorithm), '')
 
   const certsByAsset = new Map<string, NodeCertificate[]>()
   for (const c of certificates) {
@@ -253,7 +227,6 @@ export function assembleExposureIntelligence(snapshot: Snapshot, rows: ExposureR
     list.push(cert)
     certsByAsset.set(id, list)
     addAlgo(id, str(c.algorithm), '')
-    if (c.is_quantum_safe !== true && classifyAlgorithmClass(str(c.algorithm)) === 'vulnerable') vulnAssetIds.add(id)
   }
 
   const migratingAssetIds = new Set<string>()
@@ -271,14 +244,13 @@ export function assembleExposureIntelligence(snapshot: Snapshot, rows: ExposureR
   }
 
   /* ---- Five-state posture per asset -------------------------------- */
+  // The canonical verdict, plus two states the graph can say more precisely:
+  // an active migration job ('migrating'), and an asset nothing was measured on
+  // ('unknown' — the canonical model files those under hybrid for its counts).
   const postureFor = (assetId: string): NodePosture => {
-    const risk = assetRisk.get(assetId) || 0
-    const isVuln = vulnAssetIds.has(assetId) || risk >= 50
     if (migratingAssetIds.has(assetId)) return 'migrating'
-    if (isVuln) return 'vulnerable'
-    if (pqcAssetIds.has(assetId)) return 'pqc'
-    const hasCryptoEvidence = (algosByAsset.get(assetId)?.size || 0) > 0 || (certsByAsset.get(assetId)?.length || 0) > 0
-    return hasCryptoEvidence ? 'hybrid' : 'unknown'
+    if (!postureModel.evidencedAssetIds.has(assetId)) return 'unknown'
+    return postureModel.assetPosture.get(assetId) || 'unknown'
   }
 
   /* ---- Asset nodes (bounded detail, exact headline elsewhere) ------ */
@@ -940,23 +912,14 @@ async function computeExposureIntelligence(token: string, userId: string): Promi
   return assembleExposureIntelligence(snapshot, rows)
 }
 
-// Per-tenant short-TTL single-flight cache (same pattern as buildSnapshot):
-// the JSON endpoint, the SSE loop and multiple open tabs collapse to one
-// computation per window. Failures are never cached.
-const INTEL_CACHE_TTL_MS = 15_000
-const intelCache = new Map<string, { at: number; promise: Promise<ExposureIntelligence> }>()
+// Per-tenant single-flight cache shared by the JSON endpoint, the SSE loop and
+// every open tab. The previous hand-rolled Map stamped `at` at build START, so
+// a build slower than its TTL was duplicated by the next tick — the exact
+// amplifier lib/single-flight-cache.ts exists to remove. Failures are never cached.
+const intelCache = createSingleFlightCache<ExposureIntelligence>(15_000)
 
 export async function buildExposureIntelligence(token: string, userId: string): Promise<ExposureIntelligence> {
-  const cached = intelCache.get(userId)
-  if (cached && Date.now() - cached.at < INTEL_CACHE_TTL_MS) return cached.promise
-  const promise = computeExposureIntelligence(token, userId)
-  intelCache.set(userId, { at: Date.now(), promise })
-  promise.catch(() => intelCache.delete(userId))
-  if (intelCache.size > 500) {
-    const now = Date.now()
-    for (const [key, value] of intelCache) if (now - value.at > INTEL_CACHE_TTL_MS) intelCache.delete(key)
-  }
-  return promise
+  return intelCache.get(userId, () => computeExposureIntelligence(token, userId))
 }
 
 /* ================================================================== */
@@ -967,38 +930,20 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const { token, user } = req as AuthedRequest
     const data = await buildExposureIntelligence(token!, user!.id)
-    res.json({ data })
+    res.json({ data: { ...data, fingerprint: payloadFingerprint(data) } })
   } catch (error) {
     console.error('Exposure graph intelligence error:', error)
     res.status(500).json({ error: { code: 'EXPOSURE_GRAPH_ERROR', message: error instanceof Error ? error.message : 'Failed to build exposure graph intelligence' } })
   }
 })
 
-router.get('/stream', async (req: Request, res: Response) => {
+router.get('/stream', (req: Request, res: Response) => {
   const { token, user } = req as AuthedRequest
-  res.status(200)
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
-  res.flushHeaders?.()
-
-  let closed = false
-  const send = (event: string, data: unknown) => { if (!closed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
-
-  const emit = async () => {
-    try {
-      const data = await buildExposureIntelligence(token!, user!.id)
-      send('exposure-intelligence', data)
-    } catch (err) {
-      send('exposure-error', { message: err instanceof Error ? err.message : 'stream failed' })
-    }
-  }
-
-  await emit()
-  const refresh = setInterval(emit, 30000)
-  const heartbeat = setInterval(() => { if (!closed) res.write(': heartbeat\n\n') }, 25000)
-  req.on('close', () => { closed = true; clearInterval(refresh); clearInterval(heartbeat) })
+  streamLiveSnapshot(req, res, {
+    event: 'exposure-intelligence',
+    build: () => buildExposureIntelligence(token!, user!.id),
+    intervalMs: 15_000,
+  })
 })
 
 export default router

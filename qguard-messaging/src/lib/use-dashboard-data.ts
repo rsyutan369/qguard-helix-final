@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session, User } from "@supabase/supabase-js";
+import { openSecurityEventDetails, openTelemetryDetails } from "@/lib/account-key";
 import { ensureMessagingWorkspace, ensurePrekeyReadiness } from "@/lib/messaging-bootstrap";
 import { byteaToBytes } from "@/lib/encoding";
 import { requireSupabase } from "@/lib/supabase";
@@ -9,7 +10,9 @@ import { fetchPrekeyStatus } from "@/lib/prekey-hygiene";
 import { fallbackHardeningStatus, loadSecurityHardeningStatus } from "@/lib/security-hardening";
 import { buildSecurityPosture, ONE_TIME_PREKEY_MIN, SIGNED_PREKEY_MIN } from "@/lib/security-score";
 import { countUnreadGroups, type UnreadEnvelope } from "@/lib/chat-unread";
-import { strongestRole } from "@/lib/group-chat";
+import { conversationFallbackTitle, conversationKind, strongestRole } from "@/lib/group-chat";
+import { selectAllPages, selectInChunks } from "@/lib/query-batching";
+import { displayableEmail } from "@/lib/account-identity";
 import type {
   ConversationSummary,
   ContactSummary,
@@ -217,19 +220,23 @@ export function useDashboardData(user: User | null, session: Session | null) {
         hardeningStatus,
         prekeyStatus,
       ] = await Promise.all([
-        client.from("messaging_devices").select("id,user_id,device_label,fingerprint,trust_state,suite,last_seen_at,created_at,revoked_at,approved_by_device_id,x25519_identity_public,mlkem_identity_public,ed25519_identity_public,mldsa_identity_public,identity_signature").order("last_seen_at", { ascending: false }),
-        client.from("messaging_conversations").select("id,owner_user_id,conversation_type,encrypted_title,updated_at,created_at").order("updated_at", { ascending: false }).limit(100),
+        // Paged: co-members' devices of a 1,000-person conversation pass the
+        // relay's 1,000-row cap on their own (see query-batching.ts).
+        selectAllPages<Record<string, unknown>>((from, to) => client.from("messaging_devices").select("id,user_id,device_label,fingerprint,trust_state,suite,last_seen_at,created_at,revoked_at,approved_by_device_id,x25519_identity_public,mlkem_identity_public,ed25519_identity_public,mldsa_identity_public,identity_signature").order("last_seen_at", { ascending: false }).order("id").range(from, to)),
+        // `*` so member_posting (migration 047) is read where it exists without
+        // breaking the list on a server that has not applied 047 yet.
+        client.from("messaging_conversations").select("*").order("updated_at", { ascending: false }).limit(100),
         client.from("messaging_message_envelopes").select("id,conversation_id,client_message_id,message_kind,created_at,recipient_user_id,sender_user_id,deleted_at,expires_at,lifecycle,original_sender_user_id:sealed_sender_envelope->>original_sender_user_id,sync_original_sender_user_id:sealed_sender_envelope->>sync_original_sender_user_id").order("created_at", { ascending: false }).limit(500),
         emptyResult(),
         client.from("messaging_security_events").select("id,device_id,event_type,severity,encrypted_details,event_hash,previous_hash,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(30),
         client.from("messaging_org_members").select("org_id,user_id,role,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(30),
         client.from("messaging_contacts").select("id,contact_user_id,alias,trust_state,created_at,updated_at").eq("owner_user_id", user.id).neq("trust_state", "removed").order("updated_at", { ascending: false }),
-        client.from("messaging_conversation_members").select("conversation_id,user_id,device_id,role,revoked_at").is("revoked_at", null),
+        selectAllPages<Record<string, unknown>>((from, to) => client.from("messaging_conversation_members").select("conversation_id,user_id,device_id,role,revoked_at").is("revoked_at", null).order("conversation_id").order("user_id").order("device_id").range(from, to)),
         client.from("messaging_conversation_user_states").select("conversation_id,archived_at,hidden_at,deleted_at,updated_at").eq("user_id", user.id),
         client.from("messaging_message_user_states").select("conversation_id,client_message_id,first_read_at,hidden_at").eq("user_id", user.id),
-        client.from("messaging_signed_prekeys").select("id,user_id,device_id,x25519_public,mlkem_public,signature,fingerprint,is_active,expires_at,created_at").eq("is_active", true).order("expires_at", { ascending: true }),
+        selectAllPages<Record<string, unknown>>((from, to) => client.from("messaging_signed_prekeys").select("id,user_id,device_id,x25519_public,mlkem_public,signature,fingerprint,is_active,expires_at,created_at").eq("is_active", true).order("expires_at", { ascending: true }).order("id").range(from, to)),
         client.from("messaging_one_time_prekeys").select("id,device_id,consumed_at,created_at").eq("user_id", user.id).is("consumed_at", null),
-        client.from("messaging_crypto_telemetry").select("id,user_id,device_id,event_scope,stage,detail,progress,status,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(50),
+        client.from("messaging_crypto_telemetry").select("id,user_id,device_id,event_scope,stage,detail,progress,status,created_at,redacted_metadata").eq("user_id", user.id).order("created_at", { ascending: false }).limit(50),
         emptyResult(),
         loadSecurityHardeningStatus(),
         // How this device's prekeys are really rotating — the evidence behind
@@ -334,7 +341,7 @@ export function useDashboardData(user: User | null, session: Session | null) {
       const contactRows = contactsResult.error ? [] : (contactsResult.data ?? []) as Array<Record<string, unknown>>;
       // Resolve real usernames for conversation members and contacts so direct
       // chats show who the messages come from instead of the generic
-      // "Encrypted direct conversation" label. Only public directory fields
+      // "Direct conversation" label. Only public directory fields
       // (username/name/email) are read; message content stays encrypted.
       const directoryUserIds = Array.from(new Set([
         ...memberRows.map((member) => String(member.user_id)),
@@ -346,16 +353,16 @@ export function useDashboardData(user: User | null, session: Session | null) {
       ])).filter((id) => id && id !== user.id);
       const profileDirectory = new Map<string, { username: string | null; name: string | null; email: string | null }>();
       if (directoryUserIds.length > 0) {
-        const { data: directoryRows, error: directoryError } = await client
-          .from("profiles")
-          .select("id,username,name,email")
-          .in("id", directoryUserIds);
+        const { data: directoryRows, error: directoryError } = await selectInChunks<Record<string, unknown>>(
+          directoryUserIds,
+          (ids) => client.from("profiles").select("id,username,name,email").in("id", ids),
+        );
         if (!directoryError) {
           ((directoryRows ?? []) as Array<Record<string, unknown>>).forEach((row) => {
             profileDirectory.set(String(row.id), {
               username: row.username ? String(row.username) : null,
               name: row.name ? String(row.name) : null,
-              email: row.email ? String(row.email) : null,
+              email: displayableEmail(row.email ? String(row.email) : null),
             });
           });
         }
@@ -397,10 +404,14 @@ export function useDashboardData(user: User | null, session: Session | null) {
           : peerNames.join(", ");
         const state = conversationStatesById.get(String(conversation.id));
         const updatedAt = latestIso(conversation.updated_at, conversation.created_at, latestEnvelope?.created_at);
+        const memberPosting = conversation.member_posting === true;
+        const kind = conversationKind({ conversation_type: String(conversation.conversation_type), member_posting: memberPosting });
         return {
           id: String(conversation.id),
           conversation_type: String(conversation.conversation_type),
-          title: peerTitle || `Encrypted ${String(conversation.conversation_type)} conversation`,
+          // A group's or channel's own name is end-to-end encrypted and is
+          // filled in by the chat page; this is only what shows until then.
+          title: kind ? conversationFallbackTitle(kind, memberUserIds.length, peerTitle) : peerTitle || "Direct conversation",
           last_activity: latestEnvelope ? messageKindLabel(latestEnvelope.message_kind) : "No encrypted messages yet",
           unread_count: unreadGroups.size,
           updated_at: updatedAt,
@@ -409,6 +420,7 @@ export function useDashboardData(user: User | null, session: Session | null) {
           member_roles: Object.fromEntries(memberUserIds.map((memberId) => [memberId, strongestRole(memberRows
             .filter((member) => String(member.conversation_id) === String(conversation.id) && String(member.user_id) === memberId)
             .map((member) => String(member.role)))])),
+          member_posting: memberPosting,
           archived_at: state?.archived_at ?? null,
           hidden_at: state?.hidden_at ?? null,
           deleted_at: state?.deleted_at ?? null,
@@ -424,7 +436,7 @@ export function useDashboardData(user: User | null, session: Session | null) {
           contact_user_id: contactUserId,
           alias,
           display_name: alias ?? profile?.name ?? profile?.username ?? `Contact ${contactUserId.slice(0, 8)}`,
-          username: profile?.username ?? (profile?.email ? profile.email.split("@")[0] : contactUserId),
+          username: profile?.username ?? (displayableEmail(profile?.email)?.split("@")[0] ?? contactUserId),
           trust_state: String(contact.trust_state) as ContactSummary["trust_state"],
           created_at: String(contact.created_at),
           updated_at: String(contact.updated_at),
@@ -442,7 +454,7 @@ export function useDashboardData(user: User | null, session: Session | null) {
         revoked_at: file.revoked_at ? String(file.revoked_at) : null,
       } satisfies VaultFileSummary));
 
-      const securityEvents = (securityEventsResult.error ? [] : (securityEventsResult.data ?? []) as Array<Record<string, unknown>>).map((event) => ({
+      const securityEventsSealed = (securityEventsResult.error ? [] : (securityEventsResult.data ?? []) as Array<Record<string, unknown>>).map((event) => ({
         id: String(event.id),
         device_id: event.device_id ? String(event.device_id) : null,
         event_type: String(event.event_type),
@@ -452,6 +464,8 @@ export function useDashboardData(user: User | null, session: Session | null) {
         previous_hash: event.previous_hash ? String(event.previous_hash) : null,
         created_at: String(event.created_at),
       }));
+      // Audit details are sealed on write; open them here so every page sees plain details.
+      const securityEvents = await openSecurityEventDetails(securityEventsSealed);
       const orgMembers = (orgMembersResult.error ? [] : (orgMembersResult.data ?? []) as Array<Record<string, unknown>>).map((member) => ({
         org_id: String(member.org_id),
         user_id: String(member.user_id),
@@ -488,7 +502,10 @@ export function useDashboardData(user: User | null, session: Session | null) {
         void ensurePrekeyReadiness(client, user.id);
       }
 
-      const cryptoTelemetryRows = cryptoTelemetryResult.error ? [] : (cryptoTelemetryResult.data ?? []) as Array<Record<string, unknown>>;
+      const cryptoTelemetryRowsSealed = cryptoTelemetryResult.error ? [] : (cryptoTelemetryResult.data ?? []) as Array<Record<string, unknown>>;
+      const cryptoTelemetryRows = (await openTelemetryDetails(
+        cryptoTelemetryRowsSealed.map((row) => ({ ...row, id: String(row.id), stage: String(row.stage ?? ""), detail: String(row.detail ?? "") })),
+      )) as Array<Record<string, unknown>>;
       const vaultOperationRows = vaultOperationsResult.error ? [] : (vaultOperationsResult.data ?? []) as Array<Record<string, unknown>>;
       const cryptoTelemetry = cryptoTelemetryRows.map((event) => ({
         id: String(event.id),

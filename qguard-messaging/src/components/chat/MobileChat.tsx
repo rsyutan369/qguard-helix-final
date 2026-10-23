@@ -161,7 +161,50 @@ export function MobileConversationRow(props: {
   );
 }
 
-/** Folder-style filter tabs (Chats / Archived / Hidden) that scroll instead of truncating. */
+/**
+ * A contact in the phone's Contacts tab. Tap opens its actions (chat,
+ * restrict, block, delete) in a sheet, the way Signal and Telegram show a
+ * contact; the state is spelled out under the name rather than as a bare chip.
+ */
+export function MobileContactRow(props: {
+  avatar: ReactNode;
+  name: string;
+  detail: string;
+  state: "added" | "restricted" | "blocked" | "removed";
+  busy: boolean;
+  onOpen: () => void;
+}) {
+  const badge = props.state === "blocked"
+    ? { label: "Blocked", className: "bg-rose-50 text-rose-600" }
+    : props.state === "restricted"
+      ? { label: "Restricted", className: "bg-amber-50 text-amber-700" }
+      : null;
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={props.onOpen}
+        aria-label={`${props.name}${badge ? `, ${badge.label.toLowerCase()}` : ""}. Open contact actions.`}
+        className="flex w-full items-center gap-3 px-4 text-left transition active:bg-canvas"
+      >
+        {props.avatar}
+        <span className="flex min-w-0 flex-1 items-center gap-2 border-b border-line py-3">
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[15px] font-semibold text-ink-950">{props.name}</span>
+            <span className="mt-0.5 block truncate text-[13px] text-ink-600">{props.detail}</span>
+          </span>
+          {props.busy ? (
+            <Loader2 size={16} className="shrink-0 animate-spin text-ink-500" />
+          ) : badge && (
+            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold ${badge.className}`}>{badge.label}</span>
+          )}
+        </span>
+      </button>
+    </li>
+  );
+}
+
+/** Folder-style filter tabs (Chats / Contacts / Archived / Hidden) that scroll instead of truncating. */
 export function MobileFilterTabs<T extends string>(props: {
   tabs: Array<{ id: T; label: string; count: number; locked: boolean }>;
   active: T;
@@ -245,17 +288,17 @@ export function MobileThreadHeader(props: {
 }
 
 /** The one compose button, above the navigation bar. */
-export function MobileComposeButton(props: { onClick: () => void }) {
+export function MobileComposeButton(props: { onClick: () => void; label?: string; icon?: ReactNode }) {
   return (
     <button
       type="button"
       onClick={props.onClick}
-      aria-label="New chat, group or channel"
-      title="New chat, group or channel"
+      aria-label={props.label ?? "New chat, group or channel"}
+      title={props.label ?? "New chat, group or channel"}
       className="fixed right-5 z-30 flex h-14 w-14 items-center justify-center rounded-2xl bg-violet-600 text-white shadow-lg transition active:scale-95"
       style={{ bottom: "calc(env(safe-area-inset-bottom, 0px) + 92px)" }}
     >
-      <Pencil size={22} />
+      {props.icon ?? <Pencil size={22} />}
     </button>
   );
 }

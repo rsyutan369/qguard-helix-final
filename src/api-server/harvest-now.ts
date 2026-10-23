@@ -3,6 +3,9 @@ import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server
 import { buildSnapshot } from './quantum-readiness'
 import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
 import { namesCryptography } from '@/lib/scanner/finding-identity'
+import { isInternetFacing, levelFromRisk } from '@/lib/migration/asset-intelligence'
+import { createSingleFlightCache } from '@/lib/single-flight-cache'
+import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
 
 /**
  * QGuard Helix Quantum Threat Operations Center™ — Harvest Now, Decrypt Later.
@@ -176,7 +179,11 @@ const DATA_CATEGORIES: Array<{ key: string; label: string; retentionYears: numbe
 /* ================================================================== */
 function buildBanner(snapshot: Snapshot, futureDecryptableTb: number, criticalFindings: number) {
   const hndl = snapshot.scores.hndlRisk
-  const threatLevel = !snapshot.hasData ? 'Unknown' : hndl >= 75 || criticalFindings > 0 ? 'Critical' : hndl >= 50 ? 'High' : hndl >= 30 ? 'Elevated' : 'Guarded'
+  // The canonical band of the HNDL score itself (RISK_BANDS). It used to be a
+  // private ladder that also escalated to "Critical" on ANY critical finding —
+  // findings unrelated to harvest exposure — so nearly every estate read
+  // "Critical Threat" whatever its HNDL score said.
+  const threatLevel = !snapshot.hasData ? 'Unknown' : levelFromRisk(hndl)
   const exposureWindow = !snapshot.hasData ? EVIDENCE_UNAVAILABLE : hndl >= 60 ? 'Within 5 Years' : hndl >= 40 ? '5-10 Years' : '10+ Years'
   return {
     threatLevel,
@@ -212,13 +219,14 @@ function buildExposureGraph(snapshot: Snapshot, cryptoInventory: Row[], certific
   const keyVuln = keyItems.filter((c) => c.is_vulnerable === true).length
 
   const tiers = [
-    { id: 'internet', label: 'Internet Edge', kind: 'edge', total: inv.domainsScanned, vulnerable: 0, cryptoClass: 'unknown' as CryptoClass, detail: `${inv.domainsScanned} internet-facing endpoint(s)` },
+    { id: 'internet', label: 'Internet Edge', kind: 'edge', total: inv.domainsScanned, vulnerable: 0, cryptoClass: 'unknown' as CryptoClass, detail: `${inv.domainsScanned} scanned host(s) / domain(s)` },
     { id: 'tls', label: 'TLS Endpoints', kind: 'protocol', total: tlsItems.length || inv.domainsScanned, vulnerable: tlsVuln, cryptoClass: tierClass(tlsVuln, tlsItems.length || inv.domainsScanned), detail: `${tlsVuln} non-quantum-safe handshake(s)` },
     { id: 'certs', label: 'Certificates', kind: 'pki', total: inv.certificatesAnalyzed, vulnerable: certVuln, cryptoClass: tierClass(certVuln, inv.certificatesAnalyzed), detail: `${certVuln} classical certificate signature(s)` },
     { id: 'keys', label: 'Cryptographic Keys', kind: 'key', total: inv.keysDiscovered || keyItems.length, vulnerable: keyVuln, cryptoClass: tierClass(keyVuln, inv.keysDiscovered || keyItems.length), detail: `${keyVuln} quantum-vulnerable key(s)` },
     { id: 'databases', label: 'Databases', kind: 'store', total: snapshot.exposureGraph.nodes.filter((n) => /db|database|sql|store/i.test(n.type)).length, vulnerable: 0, cryptoClass: 'unknown' as CryptoClass, detail: 'Encrypted-at-rest data stores' },
-    { id: 'backups', label: 'Backups & Archives', kind: 'store', total: inv.dataRepositories, vulnerable: 0, cryptoClass: 'unknown' as CryptoClass, detail: `${inv.dataRepositories} long-lived repositor(ies)` },
-    { id: 'longterm', label: 'Long-Term Storage', kind: 'store', total: inv.dataRepositories, vulnerable: 0, cryptoClass: 'unknown' as CryptoClass, detail: 'Multi-year confidential retention' },
+    // One tier for the vault: "Backups" and "Long-Term Storage" used to be two
+    // tiers printing the SAME vault-file count, which read as twice the data.
+    { id: 'vault', label: 'Encrypted Data Vault', kind: 'store', total: inv.dataRepositories, vulnerable: 0, cryptoClass: 'unknown' as CryptoClass, detail: `${inv.dataRepositories} file(s) held in the Quantum Vault` },
   ].filter((t) => t.total > 0 || t.id === 'internet' || t.id === 'tls')
 
   // Per-asset interactive nodes (top exposure) with crypto + migration context.
@@ -796,20 +804,32 @@ function buildCapturedData(snapshot: Snapshot, assets: Row[]) {
   const emailAssets = assets.filter((a) => /mail|exchange|smtp|inbox/i.test(`${str(a.name)} ${str(a.type)}`)).length
   const docAssets = assets.filter((a) => /doc|file|share|drive|sharepoint/i.test(`${str(a.name)} ${str(a.type)}`)).length
 
+  // `unit` is MEASURED (a real count from the estate); `perUnitGb` is a
+  // published planning assumption. Both travel with the line so the page can
+  // show the arithmetic instead of presenting the product as an observation.
   const lines = [
-    { key: 'traffic', label: 'Encrypted Traffic', unit: inv.domainsScanned, gb: inv.domainsScanned * GB.trafficPerEndpoint },
-    { key: 'archives', label: 'Stored Archives', unit: repos, gb: repos * GB.archivePerRepo },
-    { key: 'dbdumps', label: 'Database Dumps', unit: dbStores, gb: dbStores * GB.dbDumpPerStore },
-    { key: 'backups', label: 'Backups', unit: repos, gb: repos * GB.backupPerRepo },
-    { key: 'email', label: 'Email Repositories', unit: emailAssets, gb: emailAssets * GB.emailPerAsset },
-    { key: 'documents', label: 'Document Repositories', unit: docAssets, gb: docAssets * GB.docPerAsset },
-    { key: 'sourcecode', label: 'Source Code Repositories', unit: codeRepos, gb: codeRepos * GB.codePerRepo },
-  ].map((l) => ({ ...l, tb: tb(l.gb) }))
+    { key: 'traffic', label: 'Encrypted Traffic', unit: inv.domainsScanned, unitLabel: 'scanned host', perUnitGb: GB.trafficPerEndpoint },
+    { key: 'archives', label: 'Stored Archives', unit: repos, unitLabel: 'vault file', perUnitGb: GB.archivePerRepo },
+    { key: 'dbdumps', label: 'Database Dumps', unit: dbStores, unitLabel: 'database asset', perUnitGb: GB.dbDumpPerStore },
+    { key: 'backups', label: 'Backups', unit: repos, unitLabel: 'vault file', perUnitGb: GB.backupPerRepo },
+    { key: 'email', label: 'Email Repositories', unit: emailAssets, unitLabel: 'mail asset', perUnitGb: GB.emailPerAsset },
+    { key: 'documents', label: 'Document Repositories', unit: docAssets, unitLabel: 'document asset', perUnitGb: GB.docPerAsset },
+    { key: 'sourcecode', label: 'Source Code Repositories', unit: codeRepos, unitLabel: 'code asset', perUnitGb: GB.codePerRepo },
+  ].map((l) => ({ ...l, gb: l.unit * l.perUnitGb, tb: tb(l.unit * l.perUnitGb) }))
   const totalGb = lines.reduce((s, l) => s + l.gb, 0)
-  return { lines, totalTb: tb(totalGb), totalGb, hasEvidence: totalGb > 0 }
+  return {
+    lines,
+    totalTb: tb(totalGb),
+    totalGb,
+    hasEvidence: totalGb > 0,
+    basis: 'Planning estimate: measured unit counts × a published per-unit volume assumption. Not an observation of captured traffic.',
+  }
 }
 function buildFutureDecryptable(snapshot: Snapshot, captured: ReturnType<typeof buildCapturedData>) {
-  const vulnShare = snapshot.inventory.cryptoComponents > 0 ? snapshot.inventory.vulnerableComponents / snapshot.inventory.cryptoComponents : (snapshot.hasData ? 0.5 : 0)
+  // No CBOM ⇒ no measured vulnerable share ⇒ nothing is projected decryptable.
+  // This used to assume 50% whenever any evidence existed, publishing a
+  // decryptable volume no measurement supported.
+  const vulnShare = snapshot.inventory.cryptoComponents > 0 ? snapshot.inventory.vulnerableComponents / snapshot.inventory.cryptoComponents : 0
   const hndlFactor = snapshot.scores.hndlRisk / 100
   // Decryptable = captured volume protected by quantum-vulnerable crypto,
   // weighted by HNDL exposure (how much is long-lived & worth harvesting).
@@ -835,13 +855,14 @@ function buildFutureDecryptable(snapshot: Snapshot, captured: ReturnType<typeof 
 /* SECTION 11 — Quantum Migration Readiness™                          */
 /* ================================================================== */
 function buildMigrationReadiness(snapshot: Snapshot, migrationJobs: Row[]) {
-  const nodes = snapshot.exposureGraph.nodes
-  let pqcReady = 0, hybridReady = 0, legacyOnly = 0
-  for (const n of nodes) {
-    if (n.posture === 'pqc') pqcReady += 1
-    else if (n.posture === 'hybrid') hybridReady += 1
-    else if (n.posture === 'vulnerable') legacyOnly += 1
-  }
+  // Exact tenant counts from the shared posture model. These were tallied from
+  // `exposureGraph.nodes`, which is the 40 highest-risk assets only, so a large
+  // estate under-reported every bucket.
+  const inv = snapshot.inventory
+  const pqcReady = inv.pqcReadyAssets
+  const notAssessed = num(inv.unassessedAssets)
+  const hybridReady = Math.max(0, inv.hybridAssets - notAssessed)
+  const legacyOnly = inv.quantumVulnerableAssets
   const inProgress = migrationJobs.filter((j) => /running|in_progress|active|executing|analyzing|queued/i.test(str(j.status))).length
   const completed = migrationJobs.filter((j) => /completed|done|success/i.test(str(j.status))).length
   const blocked = migrationJobs.filter((j) => /blocked|failed|error|stalled/i.test(str(j.status))).length
@@ -854,7 +875,7 @@ function buildMigrationReadiness(snapshot: Snapshot, migrationJobs: Row[]) {
   return {
     readinessScore,
     readinessLevel: snapshot.scores.quantumReadinessLevel,
-    pqcReady, hybridReady, legacyOnly,
+    pqcReady, hybridReady, legacyOnly, notAssessed,
     migrationBlocked: blocked,
     migrationInProgress: inProgress,
     migrationCompleted: completed,
@@ -881,18 +902,21 @@ function buildAdversaryInterest(snapshot: Snapshot, assets: Row[]) {
   const exposure = snapshot.scores.cryptoExposure
   return SECTORS.map((s) => {
     const present = assets.filter((a) => s.match.test(`${str(a.name)} ${str(a.type)} ${str((a.metadata as Row)?.industry || '')} ${str((a.metadata as Row)?.sector || '')}`)).length
-    // Interest = intrinsic sector value × tenant exposure, lifted when the
-    // tenant actually operates assets in that sector.
-    const score = clamp(s.baseWeight * (hndl * 0.55 + exposure * 0.25 + 35) + (present > 0 ? 8 : 0))
+    // Modelled interest = intrinsic sector value × this estate's measured
+    // exposure. A sector the estate holds no assets in is NOT scored — it used
+    // to be, so every tenant saw "Defense: 72 High" without owning a single
+    // defense asset (the same defect Harvest Value already fixed).
+    const inScope = present > 0
+    const score = inScope ? clamp(s.baseWeight * (hndl * 0.55 + exposure * 0.25 + 35) + 8) : null
     return {
       key: s.key,
       sector: s.label,
       interestScore: score,
-      level: score >= 75 ? 'Critical' : score >= 55 ? 'High' : score >= 35 ? 'Moderate' : 'Low',
+      level: score === null ? 'Not in estate' : score >= 75 ? 'Critical' : score >= 55 ? 'High' : score >= 35 ? 'Moderate' : 'Low',
       assetsInSector: present,
-      inScope: present > 0,
+      inScope,
     }
-  }).sort((a, b) => b.interestScore - a.interestScore)
+  }).sort((a, b) => Number(b.inScope) - Number(a.inScope) || (b.interestScore ?? -1) - (a.interestScore ?? -1))
 }
 
 /* ================================================================== */
@@ -912,6 +936,12 @@ function buildThreatActors(snapshot: Snapshot) {
     { key: 'organized-crime', actor: 'Organized Crime', weight: 0.7, motivation: 'Financial fraud and extortion using future-decryptable financial/PII data.' },
     { key: 'hacktivist', actor: 'Hacktivists', weight: 0.5, motivation: 'Disclosure and disruption of high-visibility confidential assets.' },
   ]
+  // A MODELLED relevance, not observed adversary activity: the actor's published
+  // HNDL profile weighted by this estate's measured HNDL risk and exposure. The
+  // asset list is the estate's harvest-exposed surface (internet-facing or
+  // high-risk), which is what such an actor could collect — not a claim that
+  // the actor is targeting those assets.
+  const basis = `Modelled from HNDL risk ${hndl}/100 and crypto exposure ${exposure}/100 — no threat-intelligence feed is connected, so this is not observed activity.`
   return actors.map((a) => {
     const score = clamp(a.weight * (hndl * 0.5 + exposure * 0.3 + 30))
     return {
@@ -922,6 +952,7 @@ function buildThreatActors(snapshot: Snapshot) {
       targetedAssets: targets.slice(0, 5),
       targetedAssetCount: targets.length,
       motivation: a.motivation,
+      basis,
     }
   }).sort((a, b) => b.interestScore - a.interestScore)
 }
@@ -980,21 +1011,57 @@ function buildTopFindings(snapshot: Snapshot) {
 /* ================================================================== */
 /* SECTION 16 — Remediation Center™                                   */
 /* ================================================================== */
-function buildRemediationCenter(snapshot: Snapshot, matrix: ReturnType<typeof buildExposureMatrix>, forwardSecrecy: ReturnType<typeof buildForwardSecrecy>) {
+/**
+ * Remediation scope, counted in the unit each action actually changes.
+ *
+ * The previous counts were borrowed: "Enable Hybrid TLS" counted every scanned
+ * domain, "Deploy ML-DSA" and "Replace Legacy Certificates" counted ALL
+ * certificates (quantum-safe ones included), "Rotate Keys" counted every key
+ * the tenant ever generated (its own ML-KEM keys among them), "Deploy ML-KEM"
+ * summed matrix rows so one asset with three RSA families counted three times,
+ * and "Quantum-Safe VPN" read a 'Legacy VPN' bucket that no code produces, so
+ * it was always 0.
+ */
+function measureRemediationScope(rows: HndlRawRows) {
+  const classicalKeyExchangeAssets = new Set<string>()
+  const internetClassicalAssets = new Set<string>()
+  const vpnClassicalAssets = new Set<string>()
+  const internetAssetIds = new Set(rows.assets.filter((a) => isInternetFacing(a)).map((a) => str(a.id)))
+  for (const c of rows.cryptoInventory) {
+    if (c.is_quantum_safe === true) continue
+    const anatomy = analyzeCryptoObservation({ algorithm: c.algorithm, name: c.name, itemType: c.item_type, protocol: c.protocol }, isMeasuredCryptography(c))
+    if ((anatomy.kind !== 'key-exchange' && anatomy.kind !== 'cipher-suite') || anatomy.quantumClass !== 'vulnerable') continue
+    const assetId = str(c.asset_id)
+    if (!assetId) continue
+    classicalKeyExchangeAssets.add(assetId)
+    if (internetAssetIds.has(assetId)) internetClassicalAssets.add(assetId)
+    if (/ipsec|ikev?\d?|\bvpn\b|wireguard|openvpn/i.test(`${str(c.name)} ${str(c.item_type)} ${str(c.protocol)}`)) vpnClassicalAssets.add(assetId)
+  }
+  const classicalCertificates = rows.certificates.filter((c) => c.is_quantum_safe !== true && classifyAlgorithm(str(c.algorithm)) === 'vulnerable').length
+  const classicalKeys = (rows.keys || []).filter((k) => classifyAlgorithm(str(k.algorithm)) === 'vulnerable').length
+  return {
+    classicalKeyExchangeAssets: classicalKeyExchangeAssets.size,
+    internetClassicalAssets: internetClassicalAssets.size,
+    vpnClassicalAssets: vpnClassicalAssets.size,
+    classicalCertificates,
+    classicalKeys,
+  }
+}
+
+function buildRemediationCenter(snapshot: Snapshot, scope: ReturnType<typeof measureRemediationScope>, forwardSecrecy: ReturnType<typeof buildForwardSecrecy>) {
   const inv = snapshot.inventory
   const reduction = Math.max(0, snapshot.scores.quantumRisk - Math.max(10, Math.round(snapshot.scores.quantumRisk * 0.25)))
-  const rsaAssets = matrix.filter((m) => /RSA|ECDSA|ECDH/.test(m.algorithm) && m.cryptoClass === 'vulnerable').reduce((s, m) => s + m.assetCount, 0)
   const weeks = snapshot.estimates.migrationTimelineWeeks || 0
   const completion = (ratio: number) => weeks ? new Date(Date.now() + Math.round(weeks * ratio) * 7 * 86400000).toISOString().slice(0, 10) : EVIDENCE_UNAVAILABLE
   const actions = [
-    { key: 'hybrid-tls', label: 'Enable Hybrid TLS', affectedAssets: inv.domainsScanned, riskReductionPct: clamp(reduction * 0.4), effort: 'Medium', completion: completion(0.2), href: '/dashboard/migration-planner?focus=tls', requires: 'TLS 1.3 + X25519 + ML-KEM-768' },
-    { key: 'deploy-mlkem', label: 'Deploy ML-KEM', affectedAssets: rsaAssets, riskReductionPct: clamp(reduction * 0.35), effort: 'High', completion: completion(0.35), href: '/dashboard/qkms?focus=ml-kem', requires: 'FIPS 203 key establishment' },
-    { key: 'deploy-mldsa', label: 'Deploy ML-DSA', affectedAssets: inv.certificatesAnalyzed, riskReductionPct: clamp(reduction * 0.25), effort: 'High', completion: completion(0.4), href: '/dashboard/qkms?focus=ml-dsa', requires: 'FIPS 204 signatures' },
-    { key: 'replace-certs', label: 'Replace Legacy Certificates', affectedAssets: inv.certificatesAnalyzed, riskReductionPct: clamp(reduction * 0.2), effort: 'Medium', completion: completion(0.3), href: '/dashboard/pki-visibility', requires: 'Hybrid certificate chains' },
-    { key: 'forward-secrecy', label: 'Enable Forward Secrecy', affectedAssets: forwardSecrecy.assetsUnprotected, riskReductionPct: clamp(reduction * 0.18), effort: 'Low', completion: completion(0.15), href: '/dashboard/tls-orchestrator', requires: 'ECDHE / X25519 ephemeral key exchange' },
-    { key: 'rotate-keys', label: 'Rotate Cryptographic Keys', affectedAssets: inv.keysDiscovered, riskReductionPct: clamp(reduction * 0.12), effort: 'Medium', completion: completion(0.25), href: '/dashboard/qkms?focus=rotation', requires: 'Re-key with PQC-ready custody' },
-    { key: 'quantum-vpn', label: 'Deploy Quantum-Safe VPN', affectedAssets: forwardSecrecy.nonPfsBreakdown.find((b) => b.type === 'Legacy VPN')?.count ?? 0, riskReductionPct: clamp(reduction * 0.1), effort: 'High', completion: completion(0.4), href: '/dashboard/migration-planner?focus=vpn', requires: 'Hybrid IKEv2 / ML-KEM' },
-    { key: 'validate-pqc', label: 'Validate PQC Interoperability', affectedAssets: inv.quantumVulnerableAssets, riskReductionPct: clamp(reduction * 0.08), effort: 'Medium', completion: completion(0.45), href: '/dashboard/migration-sandbox', requires: 'Hybrid negotiation + trust-chain validation' },
+    { key: 'hybrid-tls', label: 'Enable Hybrid TLS', affectedAssets: scope.internetClassicalAssets, unit: 'internet-facing asset', riskReductionPct: clamp(reduction * 0.4), effort: 'Medium', completion: completion(0.2), href: '/dashboard/tls-orchestrator', requires: 'TLS 1.3 + X25519MLKEM768 hybrid group' },
+    { key: 'deploy-mlkem', label: 'Deploy ML-KEM', affectedAssets: scope.classicalKeyExchangeAssets, unit: 'asset', riskReductionPct: clamp(reduction * 0.35), effort: 'High', completion: completion(0.35), href: '/dashboard/qkms/overview', requires: 'FIPS 203 key establishment' },
+    { key: 'deploy-mldsa', label: 'Deploy ML-DSA', affectedAssets: scope.classicalCertificates, unit: 'certificate', riskReductionPct: clamp(reduction * 0.25), effort: 'High', completion: completion(0.4), href: '/dashboard/pki-visibility', requires: 'FIPS 204 signatures' },
+    { key: 'replace-certs', label: 'Replace Legacy Certificates', affectedAssets: scope.classicalCertificates, unit: 'certificate', riskReductionPct: clamp(reduction * 0.2), effort: 'Medium', completion: completion(0.3), href: '/dashboard/pki-visibility', requires: 'Hybrid certificate chains' },
+    { key: 'forward-secrecy', label: 'Enable Forward Secrecy', affectedAssets: num(forwardSecrecy.assetsWithoutPfs), unit: 'asset', riskReductionPct: clamp(reduction * 0.18), effort: 'Low', completion: completion(0.15), href: '/dashboard/tls-orchestrator', requires: 'ECDHE / X25519 ephemeral key exchange' },
+    { key: 'rotate-keys', label: 'Rotate Cryptographic Keys', affectedAssets: scope.classicalKeys, unit: 'classical key', riskReductionPct: clamp(reduction * 0.12), effort: 'Medium', completion: completion(0.25), href: '/dashboard/qkms/rotation', requires: 'Re-key with PQC-ready custody' },
+    { key: 'quantum-vpn', label: 'Deploy Quantum-Safe VPN', affectedAssets: scope.vpnClassicalAssets, unit: 'VPN asset', riskReductionPct: clamp(reduction * 0.1), effort: 'High', completion: completion(0.4), href: '/dashboard/migration-planner', requires: 'Hybrid IKEv2 / ML-KEM (RFC 9370)' },
+    { key: 'validate-pqc', label: 'Validate PQC Interoperability', affectedAssets: inv.quantumVulnerableAssets, unit: 'asset', riskReductionPct: clamp(reduction * 0.08), effort: 'Medium', completion: completion(0.45), href: '/dashboard/migration-sandbox', requires: 'Hybrid negotiation + trust-chain validation' },
   ]
   return actions
     .map((a) => ({ ...a, inScope: a.affectedAssets > 0 }))
@@ -1010,6 +1077,8 @@ interface HndlRawRows {
   runtimeEvents: Row[]
   assets: Row[]
   migrationJobs: Row[]
+  /** generated_keys (algorithm only). Optional so older fixtures still assemble. */
+  keys?: Row[]
 }
 
 /**
@@ -1045,7 +1114,7 @@ function assembleHndlIntelligence(snapshot: Snapshot, rows: HndlRawRows) {
     threatActors: buildThreatActors(snapshot),
     intelligenceFeed: buildIntelligenceFeed(),
     topFindings: buildTopFindings(snapshot),
-    remediationCenter: buildRemediationCenter(snapshot, exposureMatrix, forwardSecrecy),
+    remediationCenter: buildRemediationCenter(snapshot, measureRemediationScope(rows), forwardSecrecy),
     scores: {
       hndlRisk: snapshot.scores.hndlRisk,
       hndlRiskLevel: snapshot.scores.hndlRiskLevel,
@@ -1073,57 +1142,48 @@ function assembleHndlIntelligence(snapshot: Snapshot, rows: HndlRawRows) {
   }
 }
 
-async function buildHndlIntelligence(token: string, userId: string) {
+async function computeHndlIntelligence(token: string, userId: string) {
   const snapshot = await buildSnapshot(token, userId)
   const client = createAuthClient(token)
-  const [cryptoInventory, certificates, runtimeEvents, assets, migrationJobs] = client
+  const [cryptoInventory, certificates, runtimeEvents, assets, migrationJobs, keys] = client
     ? await Promise.all([
         safeRows(client as never, 'crypto_inventory', 'id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, created_at', userId, 2500),
         safeRows(client as never, 'certificates', 'id, asset_id, name, algorithm, key_size, issuer, not_after, is_quantum_safe, status, created_at', userId, 1500),
         safeRows(client as never, 'runtime_crypto_events', 'id, asset_id, algorithm, severity, risk_score, asset_name, asset_type, host, is_pqc, is_legacy, hndl_risk, created_at', userId, 3000),
         safeRows(client as never, 'assets', 'id, name, type, environment, region, service_owner, criticality, status, metadata, created_at', userId, 1500),
         safeRows(client as never, 'migration_jobs', 'id, status, progress, asset_id, job_type, created_at', userId, 300),
+        safeRows(client as never, 'generated_keys', 'id, algorithm, status, created_at', userId, 1500),
       ])
-    : [[], [], [], [], []]
-  return assembleHndlIntelligence(snapshot, { cryptoInventory, certificates, runtimeEvents, assets, migrationJobs })
+    : [[], [], [], [], [], []]
+  return assembleHndlIntelligence(snapshot, { cryptoInventory, certificates, runtimeEvents, assets, migrationJobs, keys })
+}
+
+/* One build per tenant per 15s window, shared by the JSON route, the stream
+   and every open tab — this builder adds six table reads on top of the shared
+   QR snapshot, and used to run them once per client per tick. */
+const hndlCache = createSingleFlightCache<ReturnType<typeof assembleHndlIntelligence>>(15_000)
+function buildHndlIntelligence(token: string, userId: string) {
+  return hndlCache.get(userId, () => computeHndlIntelligence(token, userId))
 }
 
 router.get('/', async (req: Request, res: Response) => {
   try {
     const { token, user } = req as AuthedRequest
     const data = await buildHndlIntelligence(token!, user!.id)
-    res.json({ data })
+    res.json({ data: { ...data, fingerprint: payloadFingerprint(data) } })
   } catch (error) {
     console.error('Harvest-now (HNDL) error:', error)
     res.status(500).json({ error: { code: 'HNDL_ERROR', message: error instanceof Error ? error.message : 'Failed to build HNDL intelligence' } })
   }
 })
 
-router.get('/stream', async (req: Request, res: Response) => {
+router.get('/stream', (req: Request, res: Response) => {
   const { token, user } = req as AuthedRequest
-  res.status(200)
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
-  res.flushHeaders?.()
-
-  let closed = false
-  const send = (event: string, data: unknown) => { if (!closed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
-
-  const emit = async () => {
-    try {
-      const data = await buildHndlIntelligence(token!, user!.id)
-      send('hndl-intelligence', data)
-    } catch (err) {
-      send('hndl-error', { message: err instanceof Error ? err.message : 'stream failed' })
-    }
-  }
-
-  await emit()
-  const refresh = setInterval(emit, 30000)
-  const heartbeat = setInterval(() => { if (!closed) res.write(': heartbeat\n\n') }, 25000)
-  req.on('close', () => { closed = true; clearInterval(refresh); clearInterval(heartbeat) })
+  streamLiveSnapshot(req, res, {
+    event: 'hndl-intelligence',
+    build: () => buildHndlIntelligence(token!, user!.id),
+    intervalMs: 15_000,
+  })
 })
 
 export { buildHndlIntelligence, assembleHndlIntelligence }

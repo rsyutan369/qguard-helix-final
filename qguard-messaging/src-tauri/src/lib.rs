@@ -36,7 +36,9 @@ use commands::recovery::*;
 use commands::security::*;
 use commands::assistant::*;
 use commands::calls::*;
+use commands::account_key::*;
 use commands::channels::*;
+use commands::conversation_names::*;
 use commands::contact_verification::*;
 use commands::vault::*;
 use commands::vault_identity::*;
@@ -322,6 +324,13 @@ pub fn run() {
             assistant_key_set,
             assistant_key_clear,
             assistant_key_for_request,
+            account_key_status,
+            account_key_bootstrap,
+            account_key_rotate,
+            account_key_make_wrap,
+            account_key_accept_wrap,
+            account_field_seal,
+            account_field_open_many,
             channel_status,
             channel_new_epoch,
             channel_key_export,
@@ -330,6 +339,9 @@ pub fn run() {
             channel_seal_post,
             channel_open_post,
             channel_forget,
+            conversation_names_list,
+            conversation_names_remember,
+            conversation_names_forget,
             outbox_put,
             outbox_list,
             outbox_remove,

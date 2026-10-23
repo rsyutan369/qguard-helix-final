@@ -49,6 +49,17 @@
   offline (Argon2id slows that, it does not stop it). Use a passphrase. Helpers
   must confirm the four words out of band; approving a request without doing so
   defeats the protection against a forged request.
+- **Account sealing key (audit and telemetry details).** The key is wrapped to
+  each of your devices' long-lived identity keys, so the wrap has no forward
+  secrecy: someone who later steals a device identity key AND holds a copy of the
+  wrap rows can recover the key and read those details. They are low-value
+  (event types, ids, error text), not message content. Fields sealed before a
+  device was removed stay readable to whoever already held that epoch. Two
+  devices that both believed they were first could mint different keys; that is
+  refused and shows as "unavailable", never as wrong data. Rows written before
+  the migration stay plaintext until they age out. Audit event types, severities
+  and hashes, telemetry stage names and status, and every id column remain
+  readable to the relay.
 - Supabase sees minimum routing metadata such as recipient IDs and queue timing.
   There is no sealed sender (`sealed_sender` is deliberately `false`).
 - The relay cannot decrypt content, but compromised endpoints can access local
@@ -58,13 +69,33 @@
 
 - **Groups use pairwise fan-out, not MLS.** Each message is sealed separately to
   every member device (same hybrid KEM, signatures and pins as a direct chat), so
-  groups are capped at 32 people. The server sees who is in a group (not its
-  name). Members learn of membership changes on their next refresh, so a message
-  sent in that window can still reach a just-removed member or miss a just-added
-  one. A removed member keeps whatever was already delivered. Any member can
-  rename the group, and the owner is the only admin; there is no ownership
-  transfer. MLS was not used because its post-quantum ciphersuites are not yet
-  standardized (`docs/superpowers/specs/2026-10-19-groups-design.md`).
+  groups are capped at 32 people (enforced by the server since migration 047).
+  The server sees who is in a group (not its name). Members learn of membership
+  changes on their next refresh, so a message sent in that window can still
+  reach a just-removed member or miss a just-added one. A removed member keeps
+  whatever was already delivered. Only the owner renames; the owner and up to 3
+  admins manage members. MLS was not used because its post-quantum ciphersuites
+  are not yet standardized (`docs/superpowers/specs/2026-10-19-groups-design.md`).
+- **Large groups (up to 1,000) trade per-message keys for one key per epoch.**
+  Posts are encrypted once under a shared epoch key, exactly as in a channel,
+  so the channel limits below apply. In addition: members hand nothing out —
+  only the owner's and admins' devices distribute keys and start a new epoch,
+  so after someone leaves, members' posts keep using the key that person held
+  until the owner or an admin next has the group open. The relay stops serving
+  posts to them at once; only someone holding both that key and a copy of the
+  relay's data could read those posts. Large groups carry text posts only (no
+  files, voice notes, reactions or calls yet).
+- **Block and Restrict rely on the relay.** A block makes the server drop the
+  blocked person's envelopes and call signals to you; Restrict drops their calls
+  and stops them adding you to groups. Both are enforced by migration 047's
+  triggers, so a server that has not applied 047 shows the state but does not
+  enforce it. Blocking is one-way and silent: they are not told, and you can
+  still be in groups with them. In a large group or channel their posts still
+  reach your device (the timeline is shared) and are folded away by the app,
+  not by the server.
+- **Group and channel names are kept on the device.** Decrypted names are stored
+  in the core's encrypted per-user storage (like channel keys) so the
+  conversation list can show them after a restart; they never reach the server.
 - **Screen sharing** sends exactly what the system picker selected, encrypted
   like the camera. Check what is on that screen before sharing. It is not
   available on Android, or in calls that started without video.

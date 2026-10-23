@@ -126,7 +126,9 @@ function verifyEnterprise() {
   console.log('=== Enterprise snapshot — 16 sections ===')
   assert(r.hasData === true, 'hasData=true')
   // S1 Banner
-  assert(r.banner.threatLevel === 'Critical' && r.banner.hndlExposureScore === 68, `S1 Banner: ${r.banner.threatLevel}, HNDL ${r.banner.hndlExposureScore}, future ${r.banner.estimatedFutureDecryptableTb} TB`)
+  // The threat level is the CANONICAL band of the HNDL score (68 → High). It
+  // used to escalate to "Critical" on any critical finding of any kind.
+  assert(r.banner.threatLevel === 'High' && r.banner.hndlExposureScore === 68, `S1 Banner: ${r.banner.threatLevel}, HNDL ${r.banner.hndlExposureScore}, future ${r.banner.estimatedFutureDecryptableTb} TB`)
   // S2 Exposure graph
   assert(r.exposureGraph.tiers.length >= 5 && r.exposureGraph.nodes.length === 4, `S2 Exposure Graph: ${r.exposureGraph.tiers.length} tiers, ${r.exposureGraph.nodes.length} nodes`)
   // S3 Theater (3D map model)
@@ -204,7 +206,15 @@ function verifyEnterprise() {
   // S10 Future decryptable
   assert(r.futureDecryptable.projectedDecryptableTb >= 0 && r.futureDecryptable.projectedDecryptableTb <= r.capturedData.totalTb, `S10 Future Decryptable: ${r.futureDecryptable.projectedDecryptableTb}/${r.futureDecryptable.totalDataAtRiskTb} TB, ${r.futureDecryptable.highValueDataPct}% high-value`)
   // S11 Migration readiness
-  assert(r.migrationReadiness.pqcReady === 1 && r.migrationReadiness.legacyOnly === 2 && r.migrationReadiness.migrationInProgress === 1, `S11 Migration Readiness: PQC ${r.migrationReadiness.pqcReady}, hybrid ${r.migrationReadiness.hybridReady}, legacy ${r.migrationReadiness.legacyOnly}, blocked ${r.migrationReadiness.migrationBlocked}`)
+  // Exact tenant counts from inventory (2 PQC / 1 hybrid / 22 vulnerable), NOT a
+  // tally of the 4 sampled exposure-graph nodes (which would read 1 / 1 / 2).
+  assert(
+    r.migrationReadiness.pqcReady === ENTERPRISE_SNAPSHOT.inventory.pqcReadyAssets &&
+      r.migrationReadiness.legacyOnly === ENTERPRISE_SNAPSHOT.inventory.quantumVulnerableAssets &&
+      r.migrationReadiness.hybridReady === ENTERPRISE_SNAPSHOT.inventory.hybridAssets &&
+      r.migrationReadiness.migrationInProgress === 1,
+    `S11 Migration Readiness: PQC ${r.migrationReadiness.pqcReady}, hybrid ${r.migrationReadiness.hybridReady}, legacy ${r.migrationReadiness.legacyOnly}, blocked ${r.migrationReadiness.migrationBlocked}`,
+  )
   // S12 Adversary interest
   assert(r.adversaryInterest.length === 7, `S12 Adversary Interest: ${r.adversaryInterest.length} sectors; top ${r.adversaryInterest[0]?.sector} (${r.adversaryInterest[0]?.interestScore})`)
   // S13 Threat actors
@@ -218,6 +228,37 @@ function verifyEnterprise() {
   // Consistency
   assert(r.scores.hndlRisk === 68 && r.scores.quantumRisk === 64, `Consistency: HNDL ${r.scores.hndlRisk}, quantum risk ${r.scores.quantumRisk} mirror snapshot`)
   assert(r.evidence.sources.length === 6, `Evidence: ${r.evidence.sources.length} sources`)
+
+  /* ---- 2026-10-21 audit guards ---------------------------------------- */
+  // A sector the estate holds no assets in is NOT scored (it used to read e.g.
+  // "Defense 72 High" for a tenant with no defense asset).
+  const scoredAbsentSector = r.adversaryInterest.find((a) => !a.inScope && a.interestScore !== null)
+  const unscoredPresentSector = r.adversaryInterest.find((a) => a.inScope && a.interestScore === null)
+  assert(!scoredAbsentSector && !unscoredPresentSector, `S12 guard: only sectors present in the estate are scored (${scoredAbsentSector?.sector || unscoredPresentSector?.sector || 'ok'})`)
+  // Remediation counts are in the unit the action changes. "Replace Legacy
+  // Certificates" counts CLASSICAL certificates (2 here), not every certificate
+  // the inventory holds (18) — quantum-safe ones need no replacement.
+  const replaceCerts = r.remediationCenter.find((a) => a.key === 'replace-certs')
+  const classicalCerts = ENTERPRISE_ROWS.certificates.filter((c) => c.is_quantum_safe !== true).length
+  assert(replaceCerts?.affectedAssets === classicalCerts && replaceCerts?.unit === 'certificate', `S16 guard: certificate actions count classical certificates (${replaceCerts?.affectedAssets} ${replaceCerts?.unit}, expected ${classicalCerts})`)
+  assert(r.remediationCenter.every((a) => typeof a.unit === 'string' && a.unit.length > 0), 'S16 guard: every remediation action names its unit')
+  // No action links to a route the router does not serve (/dashboard/qkms has no index).
+  const deadLink = r.remediationCenter.find((a) => /^\/dashboard\/qkms(\?|$)/.test(a.href))
+  assert(!deadLink, `S16 guard: no remediation link to the non-existent /dashboard/qkms index (${deadLink?.href || 'ok'})`)
+  // Captured volume carries its arithmetic: measured unit × stated assumption.
+  assert(r.capturedData.lines.every((l) => l.gb === l.unit * (l.perUnitGb ?? NaN)) && Boolean(r.capturedData.basis), 'S9 guard: every captured-data line is unit × perUnitGb, with a stated basis')
+}
+
+/** Evidence exists, but no CBOM: nothing may be projected decryptable. */
+function verifyNoCbom() {
+  const snapshot = {
+    ...(ENTERPRISE_SNAPSHOT as unknown as Record<string, unknown>),
+    inventory: { ...(ENTERPRISE_SNAPSHOT as unknown as { inventory: Record<string, number> }).inventory, cryptoComponents: 0, vulnerableComponents: 0, pqcReadyComponents: 0 },
+  } as unknown as AssembleSnapshot
+  const r = assembleHndlIntelligence(snapshot, ENTERPRISE_ROWS)
+  console.log('\n=== Evidence without a CBOM — no assumed vulnerable share ===')
+  // It used to assume a 50% vulnerable share whenever any evidence existed.
+  assert(r.futureDecryptable.vulnerableSharePct === 0 && r.futureDecryptable.projectedDecryptableTb === 0, `Future Decryptable without CBOM: ${r.futureDecryptable.vulnerableSharePct}% share, ${r.futureDecryptable.projectedDecryptableTb} TB`)
 }
 
 function verifyEmpty() {
@@ -236,6 +277,7 @@ function verifyEmpty() {
 }
 
 verifyEnterprise()
+verifyNoCbom()
 verifyEmpty()
 console.log(failures === 0 ? '\nAll HNDL section checks passed.' : `\n${failures} check(s) FAILED`)
 process.exit(failures === 0 ? 0 : 1)

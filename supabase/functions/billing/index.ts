@@ -14,6 +14,7 @@
  *   POST /api/v1/paypal/confirm                  activate from PayPal's own state (auth)
  *   POST /api/v1/billing/subscription/actions    cancel | reactivate (auth)
  *   POST /api/v1/paypal/webhook                  PayPal events (PayPal signature)
+ *   POST /api/v1/paypal/reconcile                missed-webhook repair (X-Reconcile-Secret, scheduled)
  *   POST /api/v1/play-billing/verify             verify a Google Play purchase token (auth)
  *   POST /api/v1/play-billing/rtdn?token=…       Play Real-Time Developer Notifications (shared secret)
  *
@@ -23,7 +24,7 @@
  *
  * Secrets (Edge Function secrets): PAYPAL_CLIENT_ID, PAYPAL_SECRET_KEY,
  * PAYPAL_ENV, PAYPAL_WEBHOOK_ID, PAYPAL_PLAN_<TIER>_<CYCLE> (8), optional
- * APP_ORIGIN. Google Play (optional; /health reports playVerification only
+ * APP_ORIGIN, PAYPAL_RECONCILE_SECRET (enables /reconcile). Google Play (optional; /health reports playVerification only
  * when set): GOOGLE_PLAY_PACKAGE_NAME, GOOGLE_PLAY_SERVICE_ACCOUNT_JSON (or
  * GOOGLE_PLAY_SA_EMAIL + GOOGLE_PLAY_SA_PRIVATE_KEY), PLAY_RTDN_TOKEN, optional
  * PLAY_PRODUCT_<TIER>. SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are provided by
@@ -47,7 +48,14 @@ import {
   isCancellationRecorded,
   isPlayConfigured,
   mapPlayState,
+  moneyBackRefundCancels,
   parseRtdnMessage,
+  invoiceRowFromTransaction,
+  reconcileAction,
+  RECONCILE_CHECKOUT_LOOKBACK_DAYS,
+  RECONCILE_PAYMENT_LOOKBACK_DAYS,
+  RECONCILE_STATUSES,
+  refundCancellationPatch,
   pemToDer,
   playJwtSigningInput,
   playPackageName,
@@ -495,12 +503,65 @@ async function updateStatus(db: SupabaseClient, resource: Record<string, any>, s
   }
 }
 
+/** True when no earlier charge of the same PayPal subscription was recorded. */
+async function isFirstPayment(db: SupabaseClient, invoice: { id: string; user_id: string; payment_date: string | null }, subscriptionId: string): Promise<boolean> {
+  if (!invoice.payment_date) return false;
+  const { data, error } = await db
+    .from("billing_invoices")
+    .select("id")
+    .eq("user_id", invoice.user_id)
+    .eq("metadata->>subscriptionId", subscriptionId)
+    .in("status", ["paid", "refunded"])
+    .lt("payment_date", invoice.payment_date)
+    .neq("id", invoice.id)
+    .limit(1);
+  if (error) throw new Error(`first payment lookup failed: ${error.message}`);
+  return !data || data.length === 0;
+}
+
+/**
+ * Money-back refund: stop PayPal billing and end access now. Runs BEFORE the
+ * invoice is marked refunded, so a failure here (5xx → PayPal redelivers) is
+ * retried rather than lost behind the refund's own idempotency check.
+ */
+async function cancelForRefund(db: SupabaseClient, subscriptionId: string, userId: string, refundCents: number, currency: string) {
+  const subscription = await subscriptionByProviderId(db, subscriptionId);
+  if (!subscription || subscription.user_id !== userId) return;
+  if (String(subscription.status).toLowerCase() === "cancelled") return;
+  if (!subscription.cancel_at_period_end) {
+    try {
+      await paypal(`/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}/cancel`, {
+        method: "POST",
+        body: JSON.stringify({ reason: "Refunded under the money-back policy" }),
+      });
+    } catch (error) {
+      // Already cancelled at PayPal is fine; anything else means PayPal would keep billing.
+      if ((error as { paypalName?: string }).paypalName !== "UNPROCESSABLE_ENTITY") throw error;
+    }
+  }
+  const nowIso = new Date().toISOString();
+  await mustSucceed(
+    db.from("billing_subscriptions").update(refundCancellationPatch(subscription, nowIso)).eq("provider_subscription_id", subscriptionId),
+    "refund cancellation",
+  );
+  await notify(db, userId, "subscription", "warning", "Subscription cancelled after refund",
+    `Your ${subscription.plan} payment was refunded (${(refundCents / 100).toFixed(2)} ${currency}), so the subscription is cancelled and will not renew.`);
+  await audit(db, userId, BILLING_AUDIT.cancelled, "Subscription cancelled: money-back refund", {
+    providerSubscriptionId: subscriptionId,
+    fromStatus: subscription.status,
+    toStatus: "cancelled",
+    plan: subscription.plan,
+    refundCents,
+    source: "paypal.refund",
+  });
+}
+
 async function recordRefund(db: SupabaseClient, resource: Record<string, any>, eventType: string) {
   const saleId = resource?.sale_id ?? resource?.id;
   if (typeof saleId !== "string" || !saleId) return;
   const { data: invoice, error } = await db
     .from("billing_invoices")
-    .select("id, user_id, amount_paid_cents, currency, subscription_plan, metadata")
+    .select("id, user_id, amount_paid_cents, currency, subscription_plan, payment_date, metadata")
     .eq("provider_invoice_id", saleId)
     .maybeSingle();
   if (error) throw new Error(`refund invoice lookup failed: ${error.message}`);
@@ -508,8 +569,22 @@ async function recordRefund(db: SupabaseClient, resource: Record<string, any>, e
     console.warn(`[billing] ${eventType} for unknown sale ${saleId} — no invoice to refund`);
     return;
   }
-  const refund = refundInvoicePatch(invoice, resource, eventType, new Date().toISOString());
+  const nowIso = new Date().toISOString();
+  const refund = refundInvoicePatch(invoice, resource, eventType, nowIso);
   if (!refund.isNew) return;
+  const subscriptionId = (invoice.metadata as Record<string, unknown> | null)?.subscriptionId;
+  if (isPaypalSubscriptionId(subscriptionId)) {
+    const refundedCents = Number((refund.patch.metadata as Record<string, unknown>).refundedCents) || 0;
+    const cancels = moneyBackRefundCancels({
+      eventType,
+      amountPaidCents: invoice.amount_paid_cents,
+      refundedCents,
+      paymentDate: invoice.payment_date,
+      refundedAt: resource?.create_time ?? nowIso,
+      isFirstPayment: refundedCents > 0 && await isFirstPayment(db, invoice, subscriptionId),
+    });
+    if (cancels) await cancelForRefund(db, subscriptionId, invoice.user_id, refundedCents, invoice.currency);
+  }
   await mustSucceed(db.from("billing_invoices").update(refund.patch).eq("id", invoice.id), "invoice refund");
   await notify(db, invoice.user_id, "billing", "warning", "Payment refunded", `${(refund.refundCents / 100).toFixed(2)} ${invoice.currency} of a ${invoice.subscription_plan} payment was refunded.`);
   await audit(db, invoice.user_id, BILLING_AUDIT.paymentRefunded, `Refund recorded: ${(refund.refundCents / 100).toFixed(2)} ${invoice.currency}`, {
@@ -826,6 +901,123 @@ async function claimWebhookEvent(
   return reclaimed && reclaimed.length > 0 ? "run" : "in-progress";
 }
 
+// ---- Reconciliation (missed-webhook repair) ----------------------------------
+
+/** PayPal's view of a subscription, or null when PayPal no longer has it (abandoned checkout). */
+async function remoteSubscription(subscriptionId: string): Promise<Record<string, any> | null> {
+  try {
+    return await paypal(`/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}`);
+  } catch (error) {
+    if ((error as { paypalName?: string }).paypalName === "RESOURCE_NOT_FOUND") return null;
+    throw error;
+  }
+}
+
+/** Record completed charges PayPal holds for a subscription that we never received a webhook for. */
+async function reconcilePayments(db: SupabaseClient, subscriptionId: string): Promise<number> {
+  const subscription = await subscriptionByProviderId(db, subscriptionId);
+  if (!subscription?.user_id) return 0;
+  const end = new Date();
+  const start = new Date(end.getTime() - RECONCILE_PAYMENT_LOOKBACK_DAYS * 86_400_000);
+  const history = await paypal(
+    `/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}/transactions?start_time=${start.toISOString()}&end_time=${end.toISOString()}`,
+  );
+  let recorded = 0;
+  for (const transaction of Array.isArray(history?.transactions) ? history.transactions : []) {
+    const row = invoiceRowFromTransaction(transaction, subscription, subscriptionId, end.toISOString());
+    if (!row || !await insertInvoiceOnce(db, row, "reconciled invoice")) continue;
+    recorded += 1;
+    await audit(db, subscription.user_id, BILLING_AUDIT.paymentSucceeded, `Payment received: ${subscription.plan} ${(Number(row.amount_paid_cents) / 100).toFixed(2)} ${row.currency}`, {
+      saleId: row.provider_invoice_id,
+      amountCents: row.amount_paid_cents,
+      currency: row.currency,
+      providerSubscriptionId: subscriptionId,
+      source: "paypal.reconcile",
+    });
+  }
+  return recorded;
+}
+
+/**
+ * Re-read PayPal for (1) recent checkouts that never activated locally, (2)
+ * every live local PayPal subscription, and (3) their recent payments, and
+ * apply whatever the webhooks would have. Every step reuses the webhook
+ * handlers, so a repair writes exactly the rows a delivered event would have,
+ * and running it again changes nothing.
+ */
+async function reconcile(db: SupabaseClient) {
+  const summary = { checkoutsChecked: 0, activated: 0, subscriptionsChecked: 0, statusRepaired: 0, paymentsRecorded: 0, errors: 0 };
+  const since = new Date(Date.now() - RECONCILE_CHECKOUT_LOOKBACK_DAYS * 86_400_000).toISOString();
+
+  const { data: checkouts, error: checkoutError } = await db
+    .from("billing_audit_events")
+    .select("user_id, metadata")
+    .in("action", ["paypal.subscription.checkout_created", "paypal.subscription.reactivate_requested"])
+    .gte("created_at", since)
+    .limit(200);
+  if (checkoutError) throw new Error(`reconcile checkout query failed: ${checkoutError.message}`);
+  const pending = new Map<string, string>();
+  for (const row of checkouts ?? []) {
+    const id = (row.metadata as Record<string, unknown> | null)?.providerSubscriptionId;
+    if (isPaypalSubscriptionId(id) && isUuid(row.user_id)) pending.set(id, row.user_id);
+  }
+  for (const [subscriptionId, userId] of pending) {
+    if (await subscriptionByProviderId(db, subscriptionId)) continue; // already recorded
+    summary.checkoutsChecked += 1;
+    try {
+      const remote = await remoteSubscription(subscriptionId);
+      // Only a checkout PayPal reports ACTIVE and bound to the same account activates.
+      if (!remote || String(remote.status).toUpperCase() !== "ACTIVE" || remote.custom_id !== userId) continue;
+      const activated = await activate(db, remote);
+      if (!activated) continue;
+      await recordActivation(db, activated, subscriptionId, "paypal.reconcile");
+      summary.activated += 1;
+    } catch (error) {
+      summary.errors += 1;
+      console.error(`[billing] reconcile checkout ${subscriptionId} failed:`, error instanceof Error ? error.message : error);
+    }
+  }
+
+  const { data: rows, error } = await db
+    .from("billing_subscriptions")
+    .select("plan, status, renewal_date, cancel_at_period_end, provider_subscription_id")
+    .eq("provider", "paypal")
+    .not("provider_subscription_id", "is", null)
+    .in("status", RECONCILE_STATUSES)
+    .limit(200);
+  if (error) throw new Error(`reconcile subscription query failed: ${error.message}`);
+  for (const row of rows ?? []) {
+    const subscriptionId = String(row.provider_subscription_id);
+    if (!isPaypalSubscriptionId(subscriptionId)) continue;
+    summary.subscriptionsChecked += 1;
+    try {
+      const remote = await remoteSubscription(subscriptionId);
+      if (!remote) continue;
+      const action = reconcileAction(env, row, remote);
+      if (action === "sync") await syncUpdate(db, remote);
+      else if (action) await updateStatus(db, remote, action);
+      if (action) summary.statusRepaired += 1;
+      summary.paymentsRecorded += await reconcilePayments(db, subscriptionId);
+    } catch (error) {
+      summary.errors += 1;
+      console.error(`[billing] reconcile subscription ${subscriptionId} failed:`, error instanceof Error ? error.message : error);
+    }
+  }
+  return summary;
+}
+
+/** Scheduler-only: `X-Reconcile-Secret: <PAYPAL_RECONCILE_SECRET>` (supabase/paypal-reconcile-schedule.sql). */
+async function handleReconcile(req: Request, db: SupabaseClient): Promise<Response> {
+  const secret = (env("PAYPAL_RECONCILE_SECRET") ?? "").trim();
+  if (!secret) return fail(503, "RECONCILE_DISABLED", "Reconciliation is disabled (set PAYPAL_RECONCILE_SECRET)");
+  const provided = req.headers.get("X-Reconcile-Secret") ?? bearerToken(req.headers.get("Authorization")) ?? "";
+  if (!provided || !timingSafeEqualText(provided, secret)) return fail(401, "UNAUTHORIZED", "Invalid reconcile secret");
+  if (!isPaypalConfigured(env)) return fail(503, "PAYPAL_NOT_CONFIGURED", "PayPal is not configured on the billing service");
+  const summary = await reconcile(db);
+  console.log("[billing] reconcile", JSON.stringify(summary));
+  return json(200, { data: summary });
+}
+
 // ---- Google Play Billing (roadmap 4.6) --------------------------------------
 //
 // The Edge port of src/api-server/play-billing.ts. Nothing the app sends is
@@ -1075,6 +1267,8 @@ Deno.serve(async (req: Request) => {
         return await handleSubscribe(req, serviceClient());
       case "/api/v1/paypal/confirm":
         return await handleConfirm(req, serviceClient());
+      case "/api/v1/paypal/reconcile":
+        return await handleReconcile(req, serviceClient());
       case "/api/v1/billing/subscription/actions":
         return await handleActions(req, serviceClient());
       case "/api/v1/play-billing/verify":

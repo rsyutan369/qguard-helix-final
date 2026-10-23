@@ -17,7 +17,9 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { rotateAccountKeyAfterRemoval, securityEventDetails } from "@/lib/account-key";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
+import { LinkDeviceDialog } from "@/components/devices/LinkDeviceDialog";
 import { approveDevicePins } from "@/lib/device-pins";
 import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import { supabase } from "@/lib/supabase";
@@ -293,6 +295,24 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
   const [scannerActive, setScannerActive] = useState(false);
   const [scannerError, setScannerError] = useState<string | null>(null);
   const [resetPhrase, setResetPhrase] = useState("");
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [localDeviceId, setLocalDeviceId] = useState<string | null>(null);
+
+  // This device, as the local core knows it. The directory row marked
+  // this_device is only the most recently REGISTERED device of the account,
+  // which on a multi-device account is often a different one.
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let active = true;
+    void safeInvoke<{ device_id: string }>("keys_upload_identity_bundle", { userId })
+      .then((bundle) => {
+        if (active) setLocalDeviceId(bundle?.device_id ?? null);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [userId]);
   const [resetOpen, setResetOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -458,7 +478,7 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
         device_id: deviceId,
         event_type: eventType,
         severity,
-        encrypted_details: { redacted: true, ...metadata },
+        encrypted_details: await securityEventDetails(eventHash, metadata),
         event_hash: eventHash,
       });
     } catch {
@@ -569,6 +589,10 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
         throw new Error("Device no longer exists.");
       }
 
+      // The removed device must not receive the key that protects what is
+      // written from here on (best effort; the next sync pass also notices).
+      if (thisDevice?.device_id) void rotateAccountKeyAfterRemoval(supabase, userId, thisDevice.device_id);
+
       // Audited at `info`: this is a successful, authenticated action the user
       // deliberately took, not evidence that something is wrong. It was
       // `warning`, and the posture score read that literally -- see
@@ -609,6 +633,7 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
         throw new Error("Device no longer exists.");
       }
 
+      if (thisDevice?.device_id) void rotateAccountKeyAfterRemoval(supabase, userId, thisDevice.device_id);
       await recordDeviceTelemetry(null, "device_deleted", "Device row and active key material removed", 100, "complete");
       setStatus({ tone: "success", message: `${device.label} was permanently removed from Device Trust Center.` });
       if (selectedDevice?.device_id === device.device_id) setSelectedDevice(null);
@@ -764,6 +789,15 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
               <span className="status-pill bg-emerald-50 text-emerald-600"><ShieldCheck size={13} />{activeDevices.length} active</span>
               <span className="status-pill bg-amber-50 text-amber-700"><QrCode size={13} />{pendingDevices.length + pendingLinkRequests.length} pending</span>
               {revokedDevices > 0 && <span className="status-pill bg-rose-50 text-rose-600"><Ban size={13} />{revokedDevices} revoked</span>}
+              <button
+                onClick={() => setLinkOpen(true)}
+                disabled={Boolean(busy)}
+                title="Sign in a new phone or computer by scanning its QR code"
+                className="flex items-center gap-2 rounded-lg bg-violet-600 px-3 py-2 text-xs font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <QrCode size={14} />
+                Link a device
+              </button>
               <button
                 onClick={syncCurrentDevice}
                 disabled={Boolean(busy)}
@@ -1130,6 +1164,14 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
           </section>
         </div>
       )}
+
+      <LinkDeviceDialog
+        open={linkOpen}
+        userId={userId}
+        approverDeviceId={localDeviceId}
+        onClose={() => setLinkOpen(false)}
+        onLinked={() => void onRefresh()}
+      />
     </div>
   );
 }

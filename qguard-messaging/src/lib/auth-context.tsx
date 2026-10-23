@@ -1,7 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { sha3_256Hex } from "@/lib/sha3";
 import type { Session, User } from "@supabase/supabase-js";
+import { accountAuditIdentifier, accountIdentifierLabel } from "@/lib/account-identity";
 import { clearChatPlaintextCaches } from "@/lib/chat-plaintext-cache";
+import type { LinkCredential } from "@/lib/device-link";
+import { maskPhone } from "@/lib/phone-number";
 import { getSupabaseConfigError, isSupabaseConfigured, requireSupabase, supabase } from "@/lib/supabase";
 import { isAndroidRuntime, isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import type { StoredSession } from "@/lib/use-app-lock";
@@ -10,6 +13,7 @@ interface AuthContextValue {
   user: User | null;
   session: Session | null;
   pendingMfa: PendingMfaChallenge | null;
+  pendingPhone: PendingPhoneChallenge | null;
   loading: boolean;
   error: string | null;
   notice: string | null;
@@ -17,6 +21,10 @@ interface AuthContextValue {
   verifyMfaSignIn: (code: string) => Promise<boolean>;
   cancelMfaSignIn: () => Promise<void>;
   signUp: (email: string, password: string, name: string) => Promise<boolean>;
+  requestPhoneCode: (phone: string, mode: PhoneAuthMode, name?: string) => Promise<boolean>;
+  verifyPhoneCode: (code: string) => Promise<boolean>;
+  cancelPhoneSignIn: () => void;
+  signInWithLinkCredential: (credential: LinkCredential) => Promise<boolean>;
   resendVerification: (email: string) => Promise<boolean>;
   resetPassword: (email: string) => Promise<boolean>;
   signOut: () => Promise<void>;
@@ -27,9 +35,23 @@ interface AuthContextValue {
 interface PendingMfaChallenge {
   factorId: string;
   challengeId: string;
+  /** The identifier the account signs in with (email, or E.164 for phones). */
   email: string;
   factorName: string;
 }
+
+export type PhoneAuthMode = "sign-in" | "sign-up";
+
+export interface PendingPhoneChallenge {
+  /** E.164; held only in memory while the code is outstanding. */
+  phone: string;
+  masked: string;
+  mode: PhoneAuthMode;
+  sentAt: number;
+}
+
+/** Seconds before another SMS may be requested (GoTrue's default OTP interval). */
+export const PHONE_RESEND_SECONDS = 60;
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
@@ -92,7 +114,7 @@ function toStoredSession(session: Session | null): StoredSession | null {
     refreshToken: session.refresh_token,
     expiresAt: session.expires_at ?? 0,
     userId: session.user.id,
-    email: session.user.email ?? "",
+    email: accountIdentifierLabel(session.user),
   };
 }
 
@@ -100,6 +122,7 @@ const missingProviderAuth: AuthContextValue = {
   user: null,
   session: null,
   pendingMfa: null,
+  pendingPhone: null,
   loading: false,
   error: "Please refresh the app to restore your secure session.",
   notice: null,
@@ -107,6 +130,10 @@ const missingProviderAuth: AuthContextValue = {
   verifyMfaSignIn: async () => false,
   cancelMfaSignIn: async () => undefined,
   signUp: async () => false,
+  requestPhoneCode: async () => false,
+  verifyPhoneCode: async () => false,
+  cancelPhoneSignIn: () => undefined,
+  signInWithLinkCredential: async () => false,
   resendVerification: async () => false,
   resetPassword: async () => false,
   signOut: async () => undefined,
@@ -118,6 +145,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [pendingMfa, setPendingMfa] = useState<PendingMfaChallenge | null>(null);
+  const [pendingPhone, setPendingPhone] = useState<PendingPhoneChallenge | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -209,10 +237,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setPendingMfa({
       factorId: factor.id,
       challengeId: challenge.id,
-      email: activeSession.user.email ?? "",
+      email: accountAuditIdentifier(activeSession.user),
       factorName: factor.friendly_name ?? "Authenticator app",
     });
-    await auditAuthEvent("login_mfa_challenge", "info", activeSession.user.email ?? "", { factor_type: "totp" }, activeSession.user.id);
+    await auditAuthEvent("login_mfa_challenge", "info", accountAuditIdentifier(activeSession.user), { factor_type: "totp" }, activeSession.user.id);
     return false;
   }, [auditAuthEvent]);
 
@@ -469,6 +497,138 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [completeAuthenticatedSession]);
 
+  // Mobile-number accounts: SMS one-time codes, no password (Signal/Telegram
+  // model). "sign-up" may create the account; "sign-in" never does, so a typo
+  // in a returning user's number cannot silently open a second, empty account.
+  const requestPhoneCode = useCallback(async (phone: string, mode: PhoneAuthMode, name?: string) => {
+    setLoading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const client = requireSupabase();
+      const allowed = await checkAuthRateLimit("login_sms", phone);
+      if (!allowed) {
+        setError("Too many code requests. Please wait a few minutes and try again.");
+        await auditAuthEvent("login_sms_rate_limited", "warning", phone);
+        return false;
+      }
+      const cleanName = name?.trim();
+      const { error: otpError } = await withTimeout(
+        retryOnTransient(() => Promise.resolve(client.auth.signInWithOtp({
+          phone,
+          options: {
+            shouldCreateUser: mode === "sign-up",
+            channel: "sms",
+            ...(mode === "sign-up" && cleanName ? { data: { full_name: cleanName } } : {}),
+          },
+        }))),
+        signInRequestTimeoutMs,
+        "Secure sign in",
+      );
+      if (otpError) throw otpError;
+      const masked = maskPhone(phone);
+      setPendingPhone({ phone, masked, mode, sentAt: Date.now() });
+      setNotice(`We texted a 6-digit code to ${masked}.`);
+      void auditAuthEvent("login_sms_requested", "info", phone, { mode });
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await auditAuthEvent("login_sms_request_failed", "warning", phone, { mode });
+      if (isTransientAuthError(err)) {
+        setError(AUTH_UNREACHABLE_MESSAGE);
+      } else if (/signups? not allowed|user not found|otp_disabled/i.test(message)) {
+        setError("We couldn't find an account for that number. Choose \"Create account\" to register it.");
+      } else if (/phone.*(provider|disabled|not enabled)|unsupported phone provider|sms.*(provider|disabled)/i.test(message)) {
+        setError("Sign-in by mobile number isn't enabled on this server yet. Use your email address for now.");
+      } else if (/only request this after|rate limit|too many/i.test(message)) {
+        setError("A code was sent very recently. Please wait a minute before requesting another.");
+      } else if (/invalid.*phone|phone.*invalid/i.test(message)) {
+        setError("That mobile number isn't valid. Check the country and number, then try again.");
+      } else {
+        setError(message);
+      }
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }, [auditAuthEvent, checkAuthRateLimit]);
+
+  const verifyPhoneCode = useCallback(async (code: string) => {
+    if (!pendingPhone) {
+      setError("Request a code first.");
+      return false;
+    }
+    setLoading(true);
+    setError(null);
+    setNotice(null);
+    const { phone, mode } = pendingPhone;
+    try {
+      const allowed = await checkAuthRateLimit("login_sms_verify", phone);
+      if (!allowed) {
+        setError("Too many attempts. Please wait a few minutes and try again.");
+        await auditAuthEvent("login_sms_verify_rate_limited", "warning", phone);
+        return false;
+      }
+      const { data, error: verifyError } = await withTimeout(
+        requireSupabase().auth.verifyOtp({ phone, token: code.replace(/\D/g, ""), type: "sms" }),
+        signInRequestTimeoutMs,
+        "Secure sign in",
+      );
+      if (verifyError || !data.session) throw verifyError ?? new Error("Sign in failed.");
+      setPendingPhone(null);
+      const completed = await completeAuthenticatedSession(data.session, true);
+      void auditAuthEvent(mode === "sign-up" ? "signup_sms_verified" : "login_success", "info", phone, { method: "sms" }, data.session.user.id);
+      return completed;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await auditAuthEvent("login_sms_verify_failed", "warning", phone);
+      if (isTransientAuthError(err)) {
+        setError(AUTH_UNREACHABLE_MESSAGE);
+      } else if (/expired|invalid|token/i.test(message)) {
+        setError("That code is incorrect or has expired. Check the SMS or request a new code.");
+      } else {
+        setError(message);
+      }
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }, [auditAuthEvent, checkAuthRateLimit, completeAuthenticatedSession, pendingPhone]);
+
+  const cancelPhoneSignIn = useCallback(() => {
+    setPendingPhone(null);
+    setError(null);
+    setNotice(null);
+  }, []);
+
+  // A QR-linked device redeems the one-time credential the device-link service
+  // minted for it. The result is an ordinary, independent session; MFA, if the
+  // account has it, is still required here (the credential is only aal1).
+  const signInWithLinkCredential = useCallback(async (credential: LinkCredential) => {
+    setLoading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const client = requireSupabase();
+      const { data, error: verifyError } = await withTimeout(
+        credential.method === "email_token"
+          ? client.auth.verifyOtp({ token_hash: credential.tokenHash, type: "magiclink" })
+          : client.auth.verifyOtp({ phone: credential.phone, token: credential.code, type: "sms" }),
+        signInRequestTimeoutMs,
+        "Linked device sign in",
+      );
+      if (verifyError || !data.session) throw verifyError ?? new Error("The link could not be redeemed.");
+      const completed = await completeAuthenticatedSession(data.session, true);
+      void auditAuthEvent("login_device_linked", "info", accountAuditIdentifier(data.session.user), { method: credential.method }, data.session.user.id);
+      return completed;
+    } catch (err) {
+      setError(isTransientAuthError(err) ? AUTH_UNREACHABLE_MESSAGE : "This device couldn't be signed in from the link. Show a new QR code and try again.");
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }, [auditAuthEvent, completeAuthenticatedSession]);
+
   const resendVerification = useCallback(async (email: string) => {
     setLoading(true);
     setError(null);
@@ -548,12 +708,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
     setSession(null);
     setPendingMfa(null);
+    setPendingPhone(null);
   }, [user?.id]);
 
   const value = useMemo<AuthContextValue>(() => ({
     user,
     session,
     pendingMfa,
+    pendingPhone,
     loading,
     error,
     notice,
@@ -561,6 +723,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     verifyMfaSignIn,
     cancelMfaSignIn,
     signUp,
+    requestPhoneCode,
+    verifyPhoneCode,
+    cancelPhoneSignIn,
+    signInWithLinkCredential,
     resendVerification,
     resetPassword,
     signOut,
@@ -569,7 +735,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setNotice(null);
     },
     currentStoredSession: () => toStoredSession(session),
-  }), [cancelMfaSignIn, error, loading, notice, pendingMfa, resendVerification, resetPassword, session, signIn, signOut, signUp, user, verifyMfaSignIn]);
+  }), [cancelMfaSignIn, cancelPhoneSignIn, error, loading, notice, pendingMfa, pendingPhone, requestPhoneCode, resendVerification, resetPassword, session, signIn, signInWithLinkCredential, signOut, signUp, user, verifyMfaSignIn, verifyPhoneCode]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

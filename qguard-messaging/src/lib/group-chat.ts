@@ -9,16 +9,36 @@
  * was evaluated — see docs/superpowers/specs/2026-10-19-groups-design.md.)
  *
  * The group's NAME is end-to-end encrypted: it travels as a `group_meta`
- * control message, never in a database column, and like all decrypted content
- * it is kept in memory only (see chat-plaintext-cache.ts). Only the owner may
- * name a group (owner decision 2026-10-20): a name counts only if its sender
- * owned the group when it was sent, checked against the server's ownership
- * history (migration 042). After a cold start a group shows its members' names
- * until its thread is opened.
+ * control message (or inside a channel key hand-out), never in a database
+ * column. Only the owner may name a group (owner decision 2026-10-20): a name
+ * counts only if its sender owned the group when it was sent, checked against
+ * the server's ownership history (migration 042).
+ *
+ * Accepted names are kept in memory (wiped with the plaintext caches, see
+ * chat-plaintext-cache.ts) AND in the core's encrypted per-user storage
+ * (commands/conversation_names.rs), so the conversation list shows them after
+ * a restart instead of a generic label, and a channel nobody has joined yet
+ * keeps its name. Only names that arrived authenticated, or that this account
+ * sent, are ever passed to rememberGroupName; the owner check still runs on
+ * every read, so a stored name cannot outlive an ownership change.
+ *
+ * Sizes (migration 047): a group seals every message once per member device,
+ * so it stays at 32 people. A large group (a channel whose members all post)
+ * and a channel encrypt each post once, and start at 1,000. The server holds
+ * the real limits in messaging_conversation_limits; these are the defaults
+ * used until that table has been read.
  */
 
-/** Members besides yourself. Each member's devices are sealed to separately. */
-export const GROUP_MAX_OTHER_MEMBERS = 31;
+import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
+
+export type ConversationKind = "group" | "large_group" | "channel";
+
+export type MemberLimits = Record<ConversationKind, number>;
+
+export const DEFAULT_MEMBER_LIMITS: MemberLimits = { group: 32, large_group: 1000, channel: 1000 };
+
+/** Members besides yourself in a group. Each member's devices are sealed to separately. */
+export const GROUP_MAX_OTHER_MEMBERS = DEFAULT_MEMBER_LIMITS.group - 1;
 export const GROUP_NAME_MAX_CHARS = 64;
 /** Admins besides the owner (migration 042 enforces the same cap). */
 export const GROUP_MAX_ADMINS = 3;
@@ -47,16 +67,53 @@ export function sanitizeGroupName(raw: string): string {
 /**
  * Record a `group_meta` name (whoever sent it; validity is decided when the
  * name is read, once the ownership history is known). Returns true when it is
- * new, so the caller can re-render.
+ * new, so the caller can re-render. New names are also stored on this device
+ * unless `persist` is false (names just read back from that store).
  */
-export function rememberGroupName(conversationId: string, rawName: string, at: string, senderUserId: string): boolean {
+export function rememberGroupName(
+  conversationId: string,
+  rawName: string,
+  at: string,
+  senderUserId: string,
+  options: { persist?: boolean } = {},
+): boolean {
   const name = sanitizeGroupName(rawName);
-  if (!name || !senderUserId) return false;
+  if (!name || !senderUserId || Number.isNaN(new Date(at).getTime())) return false;
   const list = candidates.get(conversationId) ?? [];
   if (list.some((item) => item.at === at && item.senderUserId === senderUserId && item.name === name)) return false;
   list.push({ name, at, senderUserId });
   candidates.set(conversationId, list);
+  if (options.persist !== false && isTauriRuntime()) {
+    const entry = { conversationId, name, at: new Date(at).toISOString(), senderUserId };
+    void safeInvoke("conversation_names_remember", { entries: [entry] })
+      .catch((error) => console.warn("[group-chat] Name not stored on this device:", error));
+  }
   return true;
+}
+
+/**
+ * Read back the names stored on this device (after a start or an unlock).
+ * Returns true when any was new to memory. Outside the app shell there is no
+ * store and nothing changes.
+ */
+export async function loadStoredGroupNames(): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  const stored = await safeInvoke<Array<{ conversationId: string; name: string; at: string; senderUserId: string }>>("conversation_names_list");
+  let changed = false;
+  for (const entry of stored) {
+    if (rememberGroupName(entry.conversationId, entry.name, entry.at, entry.senderUserId, { persist: false })) changed = true;
+  }
+  return changed;
+}
+
+/** Forget one conversation's names here and on this device (left, removed, deleted). */
+export function forgetStoredGroupName(conversationId: string): void {
+  candidates.delete(conversationId);
+  ownerHistories.delete(conversationId);
+  if (isTauriRuntime()) {
+    void safeInvoke("conversation_names_forget", { conversationId })
+      .catch((error) => console.warn("[group-chat] Stored name not removed:", error));
+  }
 }
 
 export function setGroupOwnerHistory(conversationId: string, history: GroupOwnerPeriod[]): void {
@@ -96,13 +153,73 @@ export function groupFallbackTitle(memberCount: number): string {
   return `Group · ${memberCount} ${memberCount === 1 ? "person" : "people"}`;
 }
 
-/** Validate a member selection; returns an error message, or null when fine. */
-export function groupSelectionError(otherMemberIds: string[], name: string): string | null {
+/** Which size class a multi-party conversation is in; null for a direct chat. */
+export function conversationKind(conversation: { conversation_type: string; member_posting?: boolean | null }): ConversationKind | null {
+  if (conversation.conversation_type === "group") return "group";
+  if (conversation.conversation_type === "channel") return conversation.member_posting ? "large_group" : "channel";
+  return null;
+}
+
+export function conversationKindLabel(kind: ConversationKind): string {
+  if (kind === "large_group") return "Large group";
+  if (kind === "channel") return "Channel";
+  return "Group";
+}
+
+/**
+ * The title until the encrypted name is known. It says what the conversation
+ * is rather than "Encrypted channel conversation". A channel reader sees only
+ * the staff, whose names would read like a direct chat, so they are not used.
+ */
+export function conversationFallbackTitle(kind: ConversationKind, memberCount: number, memberNames: string): string {
+  if (kind === "channel") return "Channel";
+  if (memberNames) return memberNames;
+  return kind === "large_group"
+    ? `Large group · ${memberCount} ${memberCount === 1 ? "person" : "people"}`
+    : groupFallbackTitle(memberCount);
+}
+
+/** "1,000": limits are shown the way people read them. */
+export function formatMemberLimit(limit: number): string {
+  return limit.toLocaleString("en-US");
+}
+
+/**
+ * Validate a member selection; returns an error message, or null when fine.
+ * A group needs two other people (one is a direct chat); a large group may
+ * start with nobody else, since most people join it with an invite code.
+ */
+export function groupSelectionError(
+  otherMemberIds: string[],
+  name: string,
+  kind: Exclude<ConversationKind, "channel"> = "group",
+  limits: MemberLimits = DEFAULT_MEMBER_LIMITS,
+): string | null {
   if (!sanitizeGroupName(name)) return "Give the group a name.";
   const unique = new Set(otherMemberIds);
-  if (unique.size < 2) return "Choose at least two people (for one person, start a direct chat).";
-  if (unique.size > GROUP_MAX_OTHER_MEMBERS) return `A group can have at most ${GROUP_MAX_OTHER_MEMBERS + 1} people.`;
+  if (kind === "group" && unique.size < 2) return "Choose at least two people (for one person, start a direct chat).";
+  const max = limits[kind];
+  if (unique.size + 1 > max) {
+    return kind === "group"
+      ? `A group can have at most ${formatMemberLimit(max)} people. Make it a large group for up to ${formatMemberLimit(limits.large_group)}.`
+      : `A large group can have at most ${formatMemberLimit(max)} people.`;
+  }
   return null;
+}
+
+/**
+ * The server's limits (migration 047), from rows of
+ * messaging_conversation_limits. Unknown or missing rows keep the defaults,
+ * which match what the server enforced before that table existed.
+ */
+export function parseMemberLimits(rows: ReadonlyArray<{ kind?: unknown; max_members?: unknown }> | null | undefined): MemberLimits {
+  const limits = { ...DEFAULT_MEMBER_LIMITS };
+  for (const row of rows ?? []) {
+    const kind = String(row.kind ?? "");
+    const max = Number(row.max_members);
+    if (kind in limits && Number.isSafeInteger(max) && max >= 2) limits[kind as ConversationKind] = max;
+  }
+  return limits;
 }
 
 /** What `actor` may do to `target` in a group — mirrors migration 042's checks. */

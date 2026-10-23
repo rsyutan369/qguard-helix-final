@@ -45,11 +45,18 @@ const POST_LIMIT = 100;
  * readers read. Posts are opened by the core with the epoch key this device
  * holds; staff devices hand the current key to every member device that lacks
  * it, and start a new epoch when someone who held it has left.
+ *
+ * A large group (migration 047, `memberPosting`) is the same timeline where
+ * every member posts. Keys are still handed out only by staff devices, so a
+ * member's post uses whatever epoch this device holds; a new epoch after
+ * someone leaves starts the next time the owner or an admin has it open.
  */
 export function ChannelView({
   channel,
   userId,
   myRole,
+  memberPosting = false,
+  blockedUserIds = [],
   memberDevices,
   staffDeviceIds,
   keyVersion,
@@ -62,6 +69,10 @@ export function ChannelView({
   channel: { id: string; member_user_ids: string[] };
   userId: string;
   myRole: GroupRole;
+  /** A large group: every member may post. */
+  memberPosting?: boolean;
+  /** People this account blocked: their posts are folded away, not shown. */
+  blockedUserIds?: string[];
   memberDevices: ReaderDevice[];
   staffDeviceIds: string[];
   keyVersion: number;
@@ -72,6 +83,7 @@ export function ChannelView({
   onRequestKey: (deviceIds: string[]) => Promise<void>;
 }) {
   const staff = myRole === "owner" || myRole === "admin";
+  const canPost = staff || memberPosting;
   const [posts, setPosts] = useState<PostView[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -239,16 +251,23 @@ export function ChannelView({
     void loadInvites();
   };
 
-  // ---- posting (staff) ----------------------------------------------------------
+  // ---- posting (staff; every member in a large group) ---------------------------
   const post = async () => {
     const text = draft.trim();
     if (!text) return;
     setPosting(true);
     setNote(null);
     try {
-      // Whoever left since the last post must not be able to read this one.
-      const status = await ensureKeys();
-      if (!status?.currentEpoch) throw new Error("The channel key is not ready yet.");
+      // Staff: whoever left since the last post must not be able to read this
+      // one, so a due rotation happens first. A member can only use the key it holds.
+      const status = staff
+        ? await ensureKeys()
+        : await safeInvoke<ChannelStatus>("channel_status", { channelId: channel.id });
+      if (!status?.currentEpoch) {
+        throw new Error(staff
+          ? "The key is not ready yet."
+          : "This device does not have the group key yet. It has asked the owner and admins; try again once it arrives.");
+      }
       const postId = crypto.randomUUID();
       const sealed = await safeInvoke<SealedChannelPost>("channel_seal_post", { channelId: channel.id, postId, plaintext: text });
       const { error } = await supabase.from("messaging_channel_posts").insert(sealedToRow(sealed));
@@ -266,10 +285,14 @@ export function ChannelView({
       <div className="flex items-start gap-2 rounded-lg border border-line bg-white p-3 text-xs text-ink-600">
         <Megaphone size={16} className="mt-0.5 shrink-0 text-violet-600" />
         <span>
-          Channel posts are encrypted once with the channel key and signed by the posting device. Only the owner and admins post.
+          {memberPosting
+            ? "Large group: every member posts. Posts are encrypted once with the group key and signed by the posting device."
+            : "Channel posts are encrypted once with the channel key and signed by the posting device. Only the owner and admins post."}
           {staff
-            ? ` The key is shared with ${keyState ? keyState.recipients.length : "…"} reader device${keyState?.recipients.length === 1 ? "" : "s"}; when someone leaves, the next post uses a new key they never get.`
-            : " Other readers cannot see that you read this channel."}
+            ? ` The key is shared with ${keyState ? keyState.recipients.length : "…"} member device${keyState?.recipients.length === 1 ? "" : "s"}; when someone leaves, the next post uses a new key they never get.`
+            : memberPosting
+              ? " The owner and admins hand the key to new members and replace it when someone leaves."
+              : " Other readers cannot see that you read this channel."}
         </span>
       </div>
 
@@ -309,14 +332,14 @@ export function ChannelView({
       {loadError && <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{loadError}</div>}
       {!loading && !loadError && posts.length === 0 && (
         <div className="rounded-lg border border-dashed border-line bg-white/70 p-6 text-center text-sm text-ink-500">
-          {staff ? "No posts yet. Write the first one below." : "No posts yet."}
+          {canPost ? "No posts yet. Write the first one below." : "No posts yet."}
         </div>
       )}
       {waitingForKey && !loading && (
         <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
           <KeyRound size={14} className="mt-0.5 shrink-0" />
-          This device does not have the channel key yet. It has asked the channel&apos;s owner and admins; the key arrives the next time
-          one of them has the channel open.
+          This device does not have the {memberPosting ? "group" : "channel"} key yet. It has asked the owner and admins; the key arrives the
+          next time one of them has it open.
         </div>
       )}
 
@@ -328,14 +351,16 @@ export function ChannelView({
               <span className="font-medium text-ink-400">{new Date(view.row.created_at).toLocaleString()}</span>
               {view.opened?.authenticated && <BadgeCheck size={12} className="text-emerald-600" aria-label="Signed by a recorded device" />}
             </div>
-            {view.opened ? (
+            {blockedUserIds.includes(view.row.sender_user_id) ? (
+              <div className="text-xs italic text-ink-500">Hidden: from someone you blocked.</div>
+            ) : view.opened ? (
               <div className="whitespace-pre-wrap break-words text-sm text-ink-900">{view.opened.plaintext}</div>
             ) : view.problem === "no-key" ? (
               <div className="text-xs italic text-ink-500">Waiting for the key to this post.</div>
             ) : (
               <div className="flex items-center gap-1.5 text-xs font-semibold text-rose-700"><ShieldAlert size={13} /> {view.problem}</div>
             )}
-            {view.opened && !view.opened.authenticated && (
+            {view.opened && !view.opened.authenticated && !blockedUserIds.includes(view.row.sender_user_id) && (
               <div className="mt-1 text-[11px] text-amber-700">Signed by a device you have not approved yet.</div>
             )}
           </article>
@@ -348,15 +373,15 @@ export function ChannelView({
         </div>
       )}
 
-      {staff && (
+      {canPost && (
         <div className="flex items-end gap-2 rounded-lg border border-line bg-white p-3">
           <textarea
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             rows={2}
             maxLength={20_000}
-            placeholder="Write a post for every reader"
-            aria-label="Channel post"
+            placeholder={memberPosting ? "Write a message to the group" : "Write a post for every reader"}
+            aria-label={memberPosting ? "Group message" : "Channel post"}
             className="min-w-0 flex-1 resize-none rounded-md border border-line bg-canvas px-3 py-2 text-sm outline-none focus:border-violet-300"
           />
           <button

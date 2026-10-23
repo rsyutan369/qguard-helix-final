@@ -1,4 +1,14 @@
 import type { QuantumReadinessSnapshot } from '@/app/dashboard/quantum-readiness/_shared';
+import {
+  blendQuantumReadiness,
+  estimateMigrationSchedule,
+  levelFromReadiness,
+  levelFromRisk,
+  quantumRiskFrom,
+  severityPressureFrom,
+  severityWeight,
+} from '@/lib/migration/asset-intelligence';
+import { migrationCostUsd as migrationCostUsdFor } from '@/lib/migration/cost-model';
 import { normalizeAssetKey } from './ReportEvidence';
 import type { ReportScope } from './schemas/ReportSchema';
 
@@ -46,32 +56,6 @@ function clamp(value: number, min = 0, max = 100): number {
   return Math.max(min, Math.min(max, value));
 }
 
-// Mirrors the assessment backend's level bands exactly.
-function levelFromRisk(score: number): string {
-  if (score >= 80) return 'Critical';
-  if (score >= 60) return 'High';
-  if (score >= 40) return 'Elevated';
-  if (score >= 20) return 'Moderate';
-  if (score > 0) return 'Low';
-  return 'Minimal';
-}
-function levelFromReadiness(score: number): string {
-  if (score >= 85) return 'Quantum-Ready';
-  if (score >= 65) return 'Advanced';
-  if (score >= 45) return 'Developing';
-  if (score >= 25) return 'Early Stage';
-  if (score > 0) return 'Initial';
-  return 'Not Started';
-}
-// Same per-severity risk weight the backend applies when bumping asset risk.
-function severityWeight(sev: string): number {
-  const s = (sev || '').toLowerCase();
-  if (s.includes('critical')) return 100;
-  if (s.includes('high')) return 75;
-  if (s.includes('medium') || s.includes('moderate')) return 50;
-  if (s.includes('low')) return 25;
-  return 10;
-}
 
 function postureFromStatus(status: string): ScopeAssetOption['posture'] {
   const s = (status || '').toLowerCase();
@@ -143,7 +127,7 @@ export function listSnapshotAssets(snapshot: QuantumReadinessSnapshot): ScopeAss
     entry.findingsCount += 1;
     if (finding.assetType && entry.assetType === 'asset') entry.assetType = finding.assetType;
     if (finding.environment && finding.environment !== 'unknown' && entry.environment === 'unknown') entry.environment = finding.environment;
-    entry.riskScore = Math.max(entry.riskScore, severityWeight(finding.severity));
+    entry.riskScore = Math.max(entry.riskScore, severityWeight(finding.severity || ''));
     const sev = (finding.severity || '').toLowerCase();
     if (entry.posture === 'unknown' && (sev.includes('critical') || sev.includes('high'))) entry.posture = 'vulnerable';
   }
@@ -268,22 +252,19 @@ export function scopeSnapshotToAssets(snapshot: QuantumReadinessSnapshot, assetK
   const trustRelationships = Math.max(edges.length, Math.round(inv.trustRelationships * ratio));
   const domainsScanned = Math.min(inv.domainsScanned, selected.filter(isDomainish).length);
 
-  // ---- Scoring model (mirrors src/api-server/quantum-readiness.ts) --------
-  const severityPressure = totalFindings > 0
-    ? clamp(((critical * 4 + high * 2.5 + medium * 1 + low * 0.4) / totalFindings) * 22)
-    : 0;
+  // ---- Scoring model — THE shared composites (asset-intelligence.ts) -------
+  // This block used to be a hand-maintained copy of the backend formulas, and
+  // it had drifted: it still summed components + assets into one migration
+  // scope, priced it at a hardcoded rate instead of the tenant's assumptions,
+  // and carried the constant governance term the engine no longer has.
+  const severityPressure = severityPressureFrom({ critical, high, medium, low });
   const vulnerableShare = totalCrypto > 0 ? (vulnerableComponents / totalCrypto) * 100 : 0;
   const internetShare = selCount > 0 ? (internetFacing / selCount) * 100 : 0;
-  const quantumRisk = Math.round(clamp(severityPressure * 0.45 + vulnerableShare * 0.4 + internetShare * 0.15));
+  const quantumRisk = quantumRiskFrom({ severityPressure, vulnerableSharePct: vulnerableShare, internetSharePct: internetShare });
 
   const pqcAdoption = totalCrypto > 0 ? ((pqcReadyComponents + hybridComponents * 0.5) / totalCrypto) * 100 : 0;
   const runtimeMeasured = snapshot.telemetry.runtimeEvents > 0;
-  const runtimeVisibility = runtimeMeasured ? 100 : 0;
-  const governanceMaturity = snapshot.telemetry.scanSessions > 0 ? 60 : 0;
-  const readinessWeightSum = runtimeMeasured ? 1 : 0.85;
-  const quantumReadiness = Math.round(
-    clamp((pqcAdoption * 0.45 + (100 - quantumRisk) * 0.25 + (runtimeMeasured ? runtimeVisibility * 0.15 : 0) + governanceMaturity * 0.15) / readinessWeightSum),
-  );
+  const quantumReadiness = blendQuantumReadiness({ pqcAdoption, quantumRisk, runtimeMeasured });
 
   // HNDL: the runtime/vault terms are tenant-level and not in the snapshot, so
   // recover them as the residual of the published tenant score, then re-blend
@@ -301,25 +282,47 @@ export function scopeSnapshotToAssets(snapshot: QuantumReadinessSnapshot, assetK
   const footprint = clamp((selCount / 50) * 20 + (certificatesAnalyzed / 50) * 15 + (cloudAccounts / 5) * 15);
   const migrationComplexity = Math.round(clamp(dependencyDepth * 0.4 + footprint * 0.4 + vulnerableShare * 0.2));
 
-  const remaining = vulnerableComponents + quantumVulnerableAssets;
-  const migrationEffort = Math.round(clamp((remaining / Math.max(1, totalCrypto + selCount)) * 100));
-  // Same parallel-workstream model as the backend (quantum-readiness.ts):
-  // effort scales linearly, calendar duration is bounded by adding workstreams
-  // once single-lane execution would exceed ~2 years of wave work (cap 64).
-  const effortWeeks = remaining * 0.6 * (1 + migrationComplexity / 200);
-  const parallelWorkstreams = Math.min(64, Math.max(1, Math.ceil(effortWeeks / 104)));
-  const migrationTimelineWeeks = Math.max(remaining > 0 ? 2 : 0, Math.round(effortWeeks / parallelWorkstreams));
-  const migrationCostUsd = migrationTimelineWeeks > 0 ? Math.round(migrationTimelineWeeks * parallelWorkstreams * 38 * 165) : 0;
+  // Same units as the engine: migration scope is COMPONENTS (it used to add
+  // assets in too), effort is the remaining share of quantum-relevant components.
+  const migrationEffort = Math.round(clamp((vulnerableComponents / Math.max(1, totalCrypto)) * 100));
+  const { parallelWorkstreams, migrationTimelineWeeks } = estimateMigrationSchedule({
+    vulnerableComponents,
+    vulnerableAssets: quantumVulnerableAssets,
+    migrationComplexity,
+    hasData: true,
+  });
+  const migrationCostUsd = migrationCostUsdFor(migrationTimelineWeeks, parallelWorkstreams, snapshot.costAssumptions);
 
   // ---- Factor breakdowns (same labels/order as the backend) ---------------
-  const readinessFactors = [
-    { label: 'PQC-Ready Components', score: Math.round(clamp(totalCrypto > 0 ? (pqcReadyComponents / totalCrypto) * 100 : 0)) },
-    { label: 'Hybrid Crypto Adoption', score: Math.round(clamp(totalCrypto > 0 ? (hybridComponents / totalCrypto) * 100 : 0)) },
-    { label: 'TLS / Protocol Maturity', score: Math.round(clamp(domainsScanned > 0 ? 100 - vulnerableShare : 0)) },
-    { label: 'PKI Maturity', score: Math.round(clamp(certificatesAnalyzed > 0 ? 100 - vulnerableShare * 0.8 : 0)) },
-    { label: 'Crypto-Agility Readiness', score: Math.round(clamp(pqcAdoption)) },
-    { label: 'Governance Maturity', score: Math.round(governanceMaturity) },
-    { label: 'Runtime Visibility', score: Math.round(runtimeVisibility) },
+  // Factors measured over populations the snapshot does not attribute to
+  // assets (key exchanges, certificate signatures, runtime events) are carried
+  // from the tenant figure and SAY so in their basis — a proportional share
+  // would invent a measurement. Component-share factors are recomputed.
+  const tenantReadinessFactor = (needle: string) => snapshot.readinessFactors.find((f) => f.label.toLowerCase().includes(needle));
+  const carried = (needle: string, label: string) => {
+    const f = tenantReadinessFactor(needle);
+    return f
+      ? { label: f.label, score: f.score, measured: f.measured, basis: f.basis ? `${f.basis} (tenant-wide — not attributable to the selected assets)` : undefined }
+      : { label, score: 0, measured: false, basis: 'Not measured for this scope' };
+  };
+  const readinessFactors: QuantumReadinessSnapshot['readinessFactors'] = [
+    {
+      label: 'PQC-Ready Components',
+      score: Math.round(clamp(totalCrypto > 0 ? (pqcReadyComponents / totalCrypto) * 100 : 0)),
+      measured: totalCrypto > 0,
+      basis: `${pqcReadyComponents} of ${totalCrypto} attributed CBOM component(s) in the selected scope`,
+    },
+    {
+      label: 'Hybrid Crypto Adoption',
+      score: Math.round(clamp(totalCrypto > 0 ? (hybridComponents / totalCrypto) * 100 : 0)),
+      measured: totalCrypto > 0,
+      basis: `${hybridComponents} of ${totalCrypto} attributed CBOM component(s) in the selected scope`,
+    },
+    carried('tls', 'TLS / Key Exchange PQC Coverage'),
+    carried('pki', 'PKI Quantum Readiness'),
+    carried('agility', 'Crypto-Agility Readiness'),
+    carried('governance', 'Governance Maturity'),
+    carried('runtime', 'Runtime Visibility'),
   ];
   const riskFactors = [
     { label: 'RSA / ECC Exposure', score: Math.round(clamp(vulnerableShare)), severity: levelFromRisk(vulnerableShare) },

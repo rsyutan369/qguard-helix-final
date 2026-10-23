@@ -169,6 +169,87 @@ export function levelFromReadiness(score: number): string {
 }
 
 /* ------------------------------------------------------------------ */
+/* Canonical readiness blend                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Weights of the quantum readiness blend. A factor that was not measured is
+ * EXCLUDED and the remaining weights renormalised (data-integrity rule 3).
+ *
+ * There is deliberately no governance term. It used to contribute a constant
+ * 60 points whenever a scan session existed — a number no evidence produced,
+ * which lifted every tenant's readiness by ~10 points. Governance maturity
+ * returns to the blend only when a real governance evidence source feeds it.
+ */
+export const READINESS_WEIGHTS = { pqcAdoption: 0.45, riskPosture: 0.25, runtimeVisibility: 0.15 } as const
+
+export interface ReadinessBlendInputs {
+  /** 0–100 share of quantum-relevant components that are PQC-ready (hybrid ½). */
+  pqcAdoption: number
+  /** 0–100, LOWER is better. */
+  quantumRisk: number
+  /** True only when runtime crypto telemetry was actually observed. */
+  runtimeMeasured: boolean
+}
+
+/**
+ * THE quantum readiness blend. The tenant snapshot, the scoped report model and
+ * the per-asset dossiers all call this, so the three can never weight the same
+ * evidence differently (they used to carry three copies of the formula).
+ */
+export function blendQuantumReadiness(inputs: ReadinessBlendInputs): number {
+  const w = READINESS_WEIGHTS
+  const runtime = inputs.runtimeMeasured ? w.runtimeVisibility : 0
+  const weightSum = w.pqcAdoption + w.riskPosture + runtime
+  const raw = clamp(num(inputs.pqcAdoption)) * w.pqcAdoption + (100 - clamp(num(inputs.quantumRisk))) * w.riskPosture + (inputs.runtimeMeasured ? 100 * runtime : 0)
+  return Math.round(clamp(raw / weightSum))
+}
+
+export interface SeverityCounts {
+  critical: number
+  high: number
+  medium: number
+  low: number
+}
+
+/** Mean severity of the finding population on a 0–100 scale (0 when there are none). */
+export function severityPressureFrom(sev: SeverityCounts): number {
+  const total = sev.critical + sev.high + sev.medium + sev.low
+  if (total <= 0) return 0
+  return clamp(((sev.critical * 4 + sev.high * 2.5 + sev.medium * 1 + sev.low * 0.4) / total) * 22)
+}
+
+/**
+ * THE tenant quantum-risk composite (0–100, lower-better), shared by the QR
+ * snapshot and the scoped report model.
+ */
+export function quantumRiskFrom(inputs: { severityPressure: number; vulnerableSharePct: number; internetSharePct: number }): number {
+  return Math.round(clamp(inputs.severityPressure * 0.45 + inputs.vulnerableSharePct * 0.4 + inputs.internetSharePct * 0.15))
+}
+
+/**
+ * THE migration schedule model (tenant snapshot + scoped reports).
+ *
+ * Scope is measured in COMPONENTS; assets add a bounded per-asset cutover and
+ * validation overhead (0.2 wk each) rather than being summed with components —
+ * those assets are vulnerable BECAUSE of the components already counted.
+ * Calendar duration is bounded by parallel workstreams once single-lane work
+ * would exceed ~2 years (cap 64 lanes); small estates run one lane.
+ */
+export function estimateMigrationSchedule(inputs: {
+  vulnerableComponents: number
+  vulnerableAssets: number
+  migrationComplexity: number
+  hasData: boolean
+}): { effortWeeks: number; parallelWorkstreams: number; migrationTimelineWeeks: number } {
+  const remaining = Math.max(0, num(inputs.vulnerableComponents))
+  const effortWeeks = (remaining * 0.6 + Math.max(0, num(inputs.vulnerableAssets)) * 0.2) * (1 + clamp(num(inputs.migrationComplexity)) / 200)
+  const parallelWorkstreams = Math.min(64, Math.max(1, Math.ceil(effortWeeks / 104)))
+  const migrationTimelineWeeks = inputs.hasData ? Math.max(remaining > 0 ? 2 : 0, Math.round(effortWeeks / parallelWorkstreams)) : 0
+  return { effortWeeks, parallelWorkstreams, migrationTimelineWeeks }
+}
+
+/* ------------------------------------------------------------------ */
 /* Canonical per-asset risk + posture model                            */
 /* ------------------------------------------------------------------ */
 
@@ -187,7 +268,22 @@ export interface PostureModel {
   assetPosture: Map<string, Posture>
   vulnerableAssetIds: Set<string>
   pqcAssetIds: Set<string>
-  counts: { pqcReadyAssets: number; hybridAssets: number; quantumVulnerableAssets: number; internetFacing: number }
+  /**
+   * Assets at least one input row (scan result, exposure, CBOM component or
+   * runtime event) was recorded against. An asset OUTSIDE this set still gets
+   * the 'hybrid' posture — that is the historical contract every consumer
+   * reconciles against — but it has not been measured, and a surface that
+   * reports posture must say so rather than call it "in progress".
+   */
+  evidencedAssetIds: Set<string>
+  counts: {
+    pqcReadyAssets: number
+    hybridAssets: number
+    quantumVulnerableAssets: number
+    internetFacing: number
+    /** Subset of `hybridAssets` with no crypto evidence at all. */
+    unassessedAssets: number
+  }
 }
 
 /**
@@ -221,8 +317,16 @@ export function deriveAssetPostureModel(inputs: PostureModelInputs): PostureMode
     if (item.is_quantum_safe === true) pqcAssetIds.add(str(item.asset_id))
   }
 
+  const evidencedAssetIds = new Set<string>()
+  for (const rows of [inputs.scanResults, inputs.cryptoExposures, inputs.cryptoInventory, inputs.runtimeEvents]) {
+    for (const row of rows) {
+      const id = str(row.asset_id)
+      if (id) evidencedAssetIds.add(id)
+    }
+  }
+
   const assetPosture = new Map<string, Posture>()
-  const counts = { pqcReadyAssets: 0, hybridAssets: 0, quantumVulnerableAssets: 0, internetFacing: 0 }
+  const counts = { pqcReadyAssets: 0, hybridAssets: 0, quantumVulnerableAssets: 0, internetFacing: 0, unassessedAssets: 0 }
   for (const asset of inputs.assets) {
     const id = str(asset.id)
     const isVuln = vulnerableAssetIds.has(id) || (assetRisk.get(id) || 0) >= 50
@@ -231,11 +335,14 @@ export function deriveAssetPostureModel(inputs: PostureModelInputs): PostureMode
     assetPosture.set(id, posture)
     if (posture === 'vulnerable') counts.quantumVulnerableAssets += 1
     else if (posture === 'pqc') counts.pqcReadyAssets += 1
-    else counts.hybridAssets += 1
+    else {
+      counts.hybridAssets += 1
+      if (!evidencedAssetIds.has(id)) counts.unassessedAssets += 1
+    }
     if (isInternetFacing(asset)) counts.internetFacing += 1
   }
 
-  return { assetRisk, assetPosture, vulnerableAssetIds, pqcAssetIds, counts }
+  return { assetRisk, assetPosture, vulnerableAssetIds, pqcAssetIds, evidencedAssetIds, counts }
 }
 
 /** Display label for a posture — identical wording to the QR top-risk table. */
@@ -890,17 +997,8 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
 
     /* ---- readiness (asset-scoped analogue of the tenant readiness model) ---- */
     const assetPqcAdoption = componentCount > 0 ? ((pqcComponentCount + hybridComponentCount * 0.5) / componentCount) * 100 : 0
-    const runtimeMeasured = runtime.length > 0
-    const runtimeVisibility = runtimeMeasured ? 100 : 0
-    const governanceMaturity = scans.length > 0 || certs.length > 0 ? 60 : 0
-    const readinessWeightSum = runtimeMeasured ? 1 : 0.85
     const readinessScore = hasEvidence
-      ? Math.round(
-          clamp(
-            (assetPqcAdoption * 0.45 + (100 - riskScore) * 0.25 + (runtimeMeasured ? runtimeVisibility * 0.15 : 0) + governanceMaturity * 0.15) /
-              readinessWeightSum,
-          ),
-        )
+      ? blendQuantumReadiness({ pqcAdoption: assetPqcAdoption, quantumRisk: riskScore, runtimeMeasured: runtime.length > 0 })
       : 0
 
     /* ---- HNDL exposure ---- */
@@ -1035,7 +1133,7 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
         effort: 'Medium',
       })
     }
-    if (!runtimeMeasured) {
+    if (runtime.length === 0) {
       recommendations.push({
         id: 'rec-runtime',
         title: 'Enable runtime cryptographic telemetry',

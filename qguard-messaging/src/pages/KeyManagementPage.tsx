@@ -319,7 +319,8 @@ export default function KeyManagementPage({
 
       // Publish the NEW prekey first, deactivate old ones after. The reverse
       // order stranded the device keyless (unreachable for messages/calls)
-      // whenever the publish step failed between the two writes.
+      // whenever the publish step failed between the two writes. Migration
+      // 046 retires the old prekey inside this upsert (one active per device).
       pushLog("Relay publish", "Publishing active signed prekey", "running");
       const publishResult = await withTimeout(
         supabase.from("messaging_signed_prekeys").upsert({

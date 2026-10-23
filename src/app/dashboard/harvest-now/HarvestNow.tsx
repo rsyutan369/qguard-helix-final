@@ -1,6 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ComponentType, type ElementType, type ReactNode } from 'react';
+import { useMemo, useState, type ComponentType, type ElementType, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+import { QuantumReadinessSubnav } from '../quantum-readiness/_shared';
 import {
   Activity,
   ArrowRight,
@@ -165,30 +167,11 @@ function EmptyState({ children }: { children: string }) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Next-escalation live countdown (to next UTC hour boundary)         */
-/* ------------------------------------------------------------------ */
-function useEscalationCountdown() {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(t);
-  }, []);
-  const nextHour = Math.ceil(now / 3_600_000) * 3_600_000;
-  const remaining = Math.max(0, nextHour - now);
-  const totalSeconds = Math.floor(remaining / 1000);
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  const s = totalSeconds % 60;
-  return [h, m, s].map((p) => String(p).padStart(2, '0')).join(':');
-}
-
 /* ================================================================== */
 /* Page                                                               */
 /* ================================================================== */
 export default function HarvestNow() {
   const { data, state, error, sseConnected, refresh } = useHarvestNow();
-  const countdown = useEscalationCountdown();
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [theaterSelection, setTheaterSelection] = useState<TheaterSelection>(null);
 
@@ -270,6 +253,7 @@ export default function HarvestNow() {
       `}</style>
 
       <div className="mx-auto grid max-w-[1700px] gap-3">
+        <QuantumReadinessSubnav />
         <WorkflowRail activeStage="risk" tone="adaptive" />
 
         {error && (
@@ -294,8 +278,8 @@ export default function HarvestNow() {
 
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <Stat label="HNDL Exposure" value={`${banner.hndlExposureScore}/100`} tone={levelTone(banner.hndlExposureLevel)} sub={banner.hndlExposureLevel} />
-              <Stat label="Critical Findings" value={fmt(banner.criticalFindings)} tone={banner.criticalFindings > 0 ? 'red' : 'green'} sub="quantum-vulnerable" />
-              <Stat label="Future Decryptable" value={tbFmt(banner.estimatedFutureDecryptableTb)} tone="amber" sub="est. at risk" />
+              <Stat label="Critical Findings" value={fmt(banner.criticalFindings)} tone={banner.criticalFindings > 0 ? 'red' : 'green'} sub="critical severity · all sources" />
+              <Stat label="Future Decryptable" value={tbFmt(banner.estimatedFutureDecryptableTb)} tone="amber" sub="planning estimate" />
               <Stat label="Exposure Window" value={banner.quantumExposureWindow} tone={bannerTone} sub="to CRQC" />
             </div>
 
@@ -342,13 +326,19 @@ export default function HarvestNow() {
                   <RefreshCw className={`h-3.5 w-3.5 ${state === 'loading' ? 'animate-spin' : ''}`} />
                 </button>
               </div>
+              {/* The planning horizon is the real deadline this page argues from.
+                  It replaced a countdown to the next UTC hour labelled "Next
+                  Escalation Cycle" — nothing escalates on the hour. */}
               <div className={`rounded-lg border px-3 py-2 text-center ${alert ? 'border-red-500/35 bg-red-500/8' : 'border-cyan-400/30 bg-cyan-500/8'}`}>
-                <p className="text-[9px] font-black uppercase tracking-[0.16em] text-white/45">Next Escalation Cycle</p>
-                <p className={`font-mono text-2xl font-black tracking-[0.08em] ${alert ? 'text-red-300' : 'text-cyan-300'}`}>{countdown}</p>
+                <p className="text-[9px] font-black uppercase tracking-[0.16em] text-white/45">CRQC Planning Horizon</p>
+                <p className={`font-mono text-2xl font-black tracking-[0.08em] ${alert ? 'text-red-300' : 'text-cyan-300'}`}>
+                  {banner.yearsToDeadline > 0 ? `${banner.yearsToDeadline} yr${banner.yearsToDeadline === 1 ? '' : 's'}` : 'Reached'}
+                </p>
+                <p className="text-[8px] font-bold uppercase tracking-[0.12em] text-white/35">to {banner.migrationDeadlineYear} · planning assumption</p>
               </div>
               <div className="flex gap-2">
                 <a href="#exposure-matrix" className="inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md border border-cyan-400/50 bg-cyan-500/10 text-[10px] font-black uppercase tracking-[0.1em] text-cyan-200 transition hover:bg-cyan-500/20"><Activity className="h-3.5 w-3.5" /> Review Exposure</a>
-                <a href="/dashboard/migration-planner?source=harvest-now" className="inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md border border-amber-400/50 bg-amber-500/10 text-[10px] font-black uppercase tracking-[0.1em] text-amber-200 transition hover:bg-amber-500/20"><ArrowRight className="h-3.5 w-3.5" /> Begin Migration</a>
+                <Link to="/dashboard/migration-planner?source=harvest-now" className="inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md border border-amber-400/50 bg-amber-500/10 text-[10px] font-black uppercase tracking-[0.1em] text-amber-200 no-underline transition hover:bg-amber-500/20"><ArrowRight className="h-3.5 w-3.5" /> Begin Migration</Link>
               </div>
             </div>
           </div>
@@ -367,7 +357,7 @@ export default function HarvestNow() {
               <ShieldCheck className="mx-auto h-10 w-10 text-cyan-300" />
               <h2 className="mt-3 text-lg font-black uppercase tracking-[0.06em] text-white">No HNDL Evidence Yet</h2>
               <p className="mt-2 text-xs font-semibold leading-5 text-white/55">{data.evidence.note || 'Run a discovery scan to populate the Quantum Threat Operations Center with your real cryptographic exposure, harvestable data and migration intelligence.'}</p>
-              <a href="/dashboard/scanner" className="mt-4 inline-flex h-10 items-center gap-2 rounded-md border border-cyan-400/50 bg-cyan-500/10 px-5 text-xs font-black uppercase tracking-[0.1em] text-cyan-200 transition hover:bg-cyan-500/20"><Radar className="h-4 w-4" /> Launch Discovery Scan</a>
+              <Link to="/dashboard/scanner" className="mt-4 inline-flex h-10 items-center gap-2 rounded-md border border-cyan-400/50 bg-cyan-500/10 px-5 text-xs font-black uppercase tracking-[0.1em] text-cyan-200 no-underline transition hover:bg-cyan-500/20"><Radar className="h-4 w-4" /> Launch Discovery Scan</Link>
             </div>
           </section>
         ) : (
@@ -684,21 +674,31 @@ export default function HarvestNow() {
               {/* SECTION 9 — Estimated Captured Data */}
               <section className={PANEL}>
                 <div className="relative z-10 p-3">
-                  <SectionHeader icon={HardDriveDownload} tone="amber">Estimated Captured Data™</SectionHeader>
+                  <SectionHeader icon={HardDriveDownload} tone="amber" action="planning estimate">Estimated Captured Data™</SectionHeader>
                   {!data.capturedData.hasEvidence ? <EmptyState>No harvestable data sources</EmptyState> : (
                     <>
                       <div className="space-y-1">
                         {data.capturedData.lines.filter((l) => l.gb > 0).map((l) => (
-                          <div key={l.key} className="flex items-center justify-between text-[10px] font-bold">
-                            <span className="text-white/55">{l.label}</span>
-                            <span className="text-amber-300">{tbFmt(l.tb)}</span>
+                          <div key={l.key} className="flex items-center justify-between gap-2 text-[10px] font-bold">
+                            <span className="min-w-0 truncate text-white/55">
+                              {l.label}
+                              {l.perUnitGb ? (
+                                <span className="ml-1.5 font-semibold text-white/30">
+                                  {fmt(l.unit)} {l.unitLabel || 'unit'}{l.unit === 1 ? '' : 's'} × {fmt(l.perUnitGb)} GB
+                                </span>
+                              ) : null}
+                            </span>
+                            <span className="shrink-0 text-amber-300">{tbFmt(l.tb)}</span>
                           </div>
                         ))}
                       </div>
                       <div className="mt-2 border-t border-white/8 pt-2 text-center">
-                        <p className="text-[9px] font-black uppercase tracking-[0.14em] text-white/45">Total Captured Volume</p>
+                        <p className="text-[9px] font-black uppercase tracking-[0.14em] text-white/45">Estimated Harvestable Volume</p>
                         <p className="text-2xl font-black text-amber-300">{tbFmt(data.capturedData.totalTb)}</p>
                       </div>
+                      <p className="mt-1.5 text-[9px] font-semibold leading-3 text-white/35">
+                        {data.capturedData.basis || 'Planning estimate from measured unit counts — not an observation of captured traffic.'}
+                      </p>
                     </>
                   )}
                 </div>
@@ -740,13 +740,18 @@ export default function HarvestNow() {
                     <Ring value={data.migrationReadiness.readinessScore} tone={levelTone(data.migrationReadiness.readinessLevel)} label="Readiness" sub={data.migrationReadiness.readinessLevel} size={104} />
                   </div>
                   <div className="grid grid-cols-3 gap-1.5">
-                    <Stat label="PQC Ready" value={fmt(data.migrationReadiness.pqcReady)} tone="green" />
-                    <Stat label="Hybrid" value={fmt(data.migrationReadiness.hybridReady)} tone="amber" />
-                    <Stat label="Legacy" value={fmt(data.migrationReadiness.legacyOnly)} tone="red" />
-                    <Stat label="In Progress" value={fmt(data.migrationReadiness.migrationInProgress)} tone="cyan" />
-                    <Stat label="Completed" value={fmt(data.migrationReadiness.migrationCompleted)} tone="green" />
-                    <Stat label="Blocked" value={fmt(data.migrationReadiness.migrationBlocked)} tone="red" />
+                    <Stat label="PQC Ready" value={fmt(data.migrationReadiness.pqcReady)} tone="green" sub="assets" />
+                    <Stat label="Hybrid" value={fmt(data.migrationReadiness.hybridReady)} tone="amber" sub="assets" />
+                    <Stat label="Legacy" value={fmt(data.migrationReadiness.legacyOnly)} tone="red" sub="assets" />
+                    <Stat label="In Progress" value={fmt(data.migrationReadiness.migrationInProgress)} tone="cyan" sub="migration jobs" />
+                    <Stat label="Completed" value={fmt(data.migrationReadiness.migrationCompleted)} tone="green" sub="migration jobs" />
+                    <Stat label="Blocked" value={fmt(data.migrationReadiness.migrationBlocked)} tone="red" sub="migration jobs" />
                   </div>
+                  {(data.migrationReadiness.notAssessed ?? 0) > 0 ? (
+                    <p className="mt-1.5 text-[9px] font-semibold text-white/40">
+                      {fmt(data.migrationReadiness.notAssessed ?? 0)} asset(s) have no cryptographic evidence yet and are not counted above — scan them to classify.
+                    </p>
+                  ) : null}
                   <p className="mt-2 text-[9px] font-semibold leading-3 text-white/45">{data.migrationReadiness.recommendation}</p>
                 </div>
               </section>
@@ -754,12 +759,22 @@ export default function HarvestNow() {
               {/* SECTION 12 — Adversary Interest Score */}
               <section className={PANEL}>
                 <div className="relative z-10 p-3">
-                  <SectionHeader icon={Crosshair} tone="red">Adversary Interest Score™</SectionHeader>
+                  <SectionHeader icon={Crosshair} tone="red" action="modelled">Adversary Interest Score™</SectionHeader>
                   <div className="space-y-1.5">
                     {data.adversaryInterest.length === 0 ? <EmptyState>No sector telemetry</EmptyState> : data.adversaryInterest.map((a) => (
-                      <div key={a.key}><Bar value={a.interestScore} tone={levelTone(a.level)} label={a.sector} right={`${a.interestScore}`} /></div>
+                      <div key={a.key} className={a.interestScore === null ? 'opacity-50' : ''}>
+                        <Bar
+                          value={a.interestScore ?? 0}
+                          tone={a.interestScore === null ? 'muted' : levelTone(a.level)}
+                          label={a.interestScore === null ? `${a.sector} · not in this estate` : `${a.sector} · ${fmt(a.assetsInSector)} asset(s)`}
+                          right={a.interestScore === null ? '—' : `${a.interestScore}`}
+                        />
+                      </div>
                     ))}
                   </div>
+                  <p className="mt-2 text-[9px] font-semibold leading-3 text-white/35">
+                    Sector value × this estate&apos;s measured HNDL risk and exposure. Sectors the estate holds no assets in are not scored.
+                  </p>
                 </div>
               </section>
             </div>
@@ -769,7 +784,7 @@ export default function HarvestNow() {
               {/* SECTION 13 — Threat Actors Most Interested */}
               <section className={PANEL}>
                 <div className="relative z-10 p-3">
-                  <SectionHeader icon={Target} tone="red">Threat Actors Most Interested™</SectionHeader>
+                  <SectionHeader icon={Target} tone="red" action="modelled relevance">Threat Actor Relevance™</SectionHeader>
                   <div className="space-y-1.5">
                     {data.threatActors.length === 0 ? <EmptyState>No exposure intelligence</EmptyState> : data.threatActors.map((a) => (
                       <div key={a.key} className="rounded-md border border-white/8 bg-black/25 px-2.5 py-1.5">
@@ -778,17 +793,20 @@ export default function HarvestNow() {
                           <Badge tone={levelTone(a.level)}>{a.interestScore}</Badge>
                         </div>
                         <p className="mt-0.5 text-[9px] font-semibold leading-3 text-white/45">{a.motivation}</p>
-                        {a.targetedAssetCount > 0 && <p className="mt-0.5 text-[9px] font-bold text-cyan-300/70">Targets: {a.targetedAssetCount} asset(s)</p>}
+                        {a.targetedAssetCount > 0 && <p className="mt-0.5 text-[9px] font-bold text-cyan-300/70">Harvest-exposed surface in scope: {a.targetedAssetCount} asset(s)</p>}
                       </div>
                     ))}
                   </div>
+                  {data.threatActors[0]?.basis ? (
+                    <p className="mt-2 text-[9px] font-semibold leading-3 text-white/35">{data.threatActors[0].basis}</p>
+                  ) : null}
                 </div>
               </section>
 
               {/* SECTION 14 — Strategic Intelligence Feed */}
               <section className={PANEL}>
                 <div className="relative z-10 p-3">
-                  <SectionHeader icon={Activity} tone="cyan" action="PQC ecosystem">Strategic Intelligence Feed™</SectionHeader>
+                  <SectionHeader icon={Activity} tone="cyan" action="reference · not tenant telemetry">Strategic Intelligence Feed™</SectionHeader>
                   <div className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
                     {data.intelligenceFeed.map((it) => (
                       <div key={it.id} className="rounded-md border border-white/8 bg-black/25 px-2.5 py-1.5">
@@ -837,18 +855,21 @@ export default function HarvestNow() {
                   <SectionHeader icon={KeyRound} tone="green" action="action plan">Remediation Center™</SectionHeader>
                   <div className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
                     {data.remediationCenter.map((a) => (
-                      <a key={a.key} href={a.href} className={`block rounded-md border bg-black/25 px-2.5 py-1.5 transition hover:border-cyan-400/40 hover:bg-cyan-500/5 ${a.inScope ? 'border-white/10' : 'border-white/5 opacity-55'}`}>
+                      <Link key={a.key} to={a.href} className={`block rounded-md border bg-black/25 px-2.5 py-1.5 no-underline transition hover:border-cyan-400/40 hover:bg-cyan-500/5 ${a.inScope ? 'border-white/10' : 'border-white/5 opacity-55'}`}>
                         <div className="flex items-center justify-between gap-2">
                           <p className="truncate text-[11px] font-black uppercase tracking-[0.05em] text-white/85">{a.label}</p>
                           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-white/35" />
                         </div>
                         <p className="text-[9px] font-semibold text-white/40">{a.requires}</p>
                         <div className="mt-1 grid grid-cols-3 gap-1 text-[9px] font-bold">
-                          <span className="text-white/45">Assets <span className="text-cyan-300">{fmt(a.affectedAssets)}</span></span>
-                          <span className="text-white/45">Risk <span className="text-emerald-300">-{a.riskReductionPct}%</span></span>
+                          <span className="truncate text-white/45">
+                            In scope <span className="text-cyan-300">{fmt(a.affectedAssets)}</span>
+                            {a.unit ? <span className="text-white/35"> {a.unit}{a.affectedAssets === 1 ? '' : 's'}</span> : null}
+                          </span>
+                          <span className="text-white/45">Est. risk <span className="text-emerald-300">-{a.riskReductionPct}%</span></span>
                           <span className="text-white/45">Effort <span className="text-amber-300">{a.effort}</span></span>
                         </div>
-                      </a>
+                      </Link>
                     ))}
                   </div>
                 </div>

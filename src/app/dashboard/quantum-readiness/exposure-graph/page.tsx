@@ -42,7 +42,7 @@ type PostureFilter = 'all' | NodePosture;
 type Selection = { kind: 'node'; id: string } | { kind: 'edge'; id: string } | null;
 
 export default function ExposureGraphPage() {
-  const { data, state, sseConnected, refresh, downloadJson } = useExposureGraph();
+  const { data, state, error, sseConnected, lastVerifiedAt, refresh, downloadJson } = useExposureGraph();
   const [postureFilter, setPostureFilter] = useState<PostureFilter>('all');
   const [tierFilter, setTierFilter] = useState<string>('all');
   const [showExternal, setShowExternal] = useState(true);
@@ -246,11 +246,8 @@ export default function ExposureGraphPage() {
               ))}
               {searchMatches.length > 6 ? (
                 <div className="border-t border-white/8 px-3 py-1.5 text-[10px] text-white/35">
-                  {searchMatches.length - 6} more match — refine your search.
+                  {searchMatches.length - 6} more match{searchMatches.length - 6 === 1 ? '' : 'es'} highlighted in the graph — refine your search to list them.
                 </div>
-              ) : null}
-              {searchMatches.length > 6 ? (
-                <div className="border-t border-white/5 px-3 py-1.5 text-[10px] text-white/35">{searchMatches.length - 6} more match(es) highlighted in the graph</div>
               ) : null}
             </div>
           ) : null}
@@ -267,6 +264,8 @@ export default function ExposureGraphPage() {
       sseConnected={sseConnected}
       state={state}
       snapshot={shellSnapshot}
+      error={error}
+      lastVerifiedAt={lastVerifiedAt}
       actions={
         <>
           <HeaderButton icon={RefreshCw} onClick={() => void refresh()}>Refresh</HeaderButton>

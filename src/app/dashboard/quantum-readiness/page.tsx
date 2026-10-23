@@ -66,7 +66,7 @@ const MODULES = [
 
 export default function QuantumReadinessLandingPage() {
   const navigate = useNavigate();
-  const { snapshot, state, sseConnected, refresh } = useQuantumReadiness();
+  const { snapshot, state, error, sseConnected, lastVerifiedAt, refresh } = useQuantumReadiness();
   const memo = useReadinessMemo(snapshot);
   const { scores, inventory } = snapshot;
 
@@ -80,8 +80,18 @@ export default function QuantumReadinessLandingPage() {
     { label: 'Quantum Readiness', value: integerFmt(scores.quantumReadiness), suffix: '/100', detail: scores.quantumReadinessLevel, color: readinessTone(scores.quantumReadiness), ring: scores.quantumReadiness, icon: ShieldCheck },
     { label: 'Quantum Risk', value: integerFmt(scores.quantumRisk), suffix: '/100', detail: scores.quantumRiskLevel, color: riskTone(scores.quantumRisk), ring: scores.quantumRisk, icon: ShieldAlert },
     { label: 'HNDL Risk', value: integerFmt(scores.hndlRisk), suffix: '/100', detail: scores.hndlRiskLevel, color: riskTone(scores.hndlRisk), ring: scores.hndlRisk, icon: Target },
-    { label: 'PQC Adoption', value: percentLabel(scores.pqcAdoption), detail: `${integerFmt(inventory.pqcReadyAssets)} PQC-ready`, color: GREEN, ring: scores.pqcAdoption, icon: Gauge },
-    { label: 'Assets Assessed', value: integerFmt(inventory.assetsAssessed), detail: `${integerFmt(inventory.quantumVulnerableAssets)} vulnerable`, color: BLUE, icon: Boxes },
+    // PQC Adoption is a COMPONENT share — its detail names components, not the
+    // asset count it used to print beside a component percentage.
+    { label: 'PQC Adoption', value: percentLabel(scores.pqcAdoption), detail: inventory.cryptoComponents ? `${integerFmt(inventory.pqcReadyComponents)} of ${integerFmt(inventory.cryptoComponents)} components` : 'No CBOM yet', color: GREEN, ring: scores.pqcAdoption, icon: Gauge },
+    {
+      label: 'Assets Assessed',
+      value: integerFmt(inventory.assetsAssessed),
+      detail: inventory.unassessedAssets
+        ? `${integerFmt(inventory.quantumVulnerableAssets)} vulnerable · ${integerFmt(inventory.unassessedAssets)} no crypto evidence`
+        : `${integerFmt(inventory.quantumVulnerableAssets)} vulnerable`,
+      color: BLUE,
+      icon: Boxes,
+    },
     { label: 'Keys Discovered', value: integerFmt(inventory.keysDiscovered), detail: `${integerFmt(inventory.certificatesAnalyzed)} certificates`, color: CYAN, icon: KeyRound },
   ];
 
@@ -93,6 +103,8 @@ export default function QuantumReadinessLandingPage() {
       sseConnected={sseConnected}
       state={state}
       snapshot={snapshot}
+      error={error}
+      lastVerifiedAt={lastVerifiedAt}
       actions={
         <>
           <HeaderButton icon={RefreshCw} onClick={() => void refresh()}>
@@ -152,7 +164,7 @@ export default function QuantumReadinessLandingPage() {
         </Panel>
 
         <Panel className="p-6 xl:col-span-4">
-          <SectionTitle suffix={<Badge color={VIOLET}>AI</Badge>}>Latest AI Recommendation</SectionTitle>
+          <SectionTitle suffix={<Badge color={VIOLET}>Evidence-derived</Badge>}>Recommended Next Actions</SectionTitle>
           {snapshot.recommendedActions.length ? (
             <div className="space-y-3">
               {snapshot.recommendedActions.slice(0, 3).map((action) => {
@@ -231,6 +243,45 @@ export default function QuantumReadinessLandingPage() {
         ))}
       </section>
 
+      {/* Readiness factor breakdown — every factor states the population it was
+          computed over; an unmeasured factor says so and is excluded from the score. */}
+      {snapshot.hasData && snapshot.readinessFactors.length ? (
+        <Panel className="p-5">
+          <SectionTitle
+            suffix={
+              <span className="text-[11px] text-white/40">
+                Readiness = PQC adoption · risk posture · runtime visibility — unmeasured factors excluded, weights renormalised
+              </span>
+            }
+          >
+            What Drives the Readiness Score
+          </SectionTitle>
+          <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-4">
+            {snapshot.readinessFactors.map((factor) => {
+              const measured = factor.measured !== false;
+              const color = measured ? readinessTone(factor.score) : '#64748B';
+              return (
+                <div key={factor.label} className="rounded-md border border-white/8 bg-black/20 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-[11px] font-bold text-white/80">{factor.label}</span>
+                    <span className="font-mono text-sm font-bold" style={{ color }}>
+                      {measured ? `${integerFmt(factor.score)}` : '—'}
+                    </span>
+                  </div>
+                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/5">
+                    {measured ? <div className="h-full rounded-full" style={{ width: `${Math.min(100, factor.score)}%`, backgroundColor: color }} /> : null}
+                  </div>
+                  <p className="mt-1.5 text-[10px] leading-snug text-white/42">
+                    {measured ? null : <span className="font-bold text-white/55">Not measured · </span>}
+                    {factor.basis || (measured ? 'Measured from assessment evidence' : 'No evidence for this factor')}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </Panel>
+      ) : null}
+
       {/* Module hub */}
       <Panel className="p-5">
         <SectionTitle suffix={<span className="text-[11px] text-white/40">{MODULES.length} assessment modules</span>}>Assessment Modules</SectionTitle>
@@ -270,9 +321,11 @@ export default function QuantumReadinessLandingPage() {
             <div>
               <div className="text-base font-bold text-white">Ready to advance your quantum posture?</div>
               <div className="text-sm text-white/55">
-                {snapshot.hasData
-                  ? `${integerFmt(inventory.quantumVulnerableAssets)} vulnerable assets identified — generate a migration plan or executive report.`
-                  : 'Begin with a PQC discovery scan to inventory your cryptographic assets.'}
+                {!snapshot.hasData
+                  ? 'Begin with a PQC discovery scan to inventory your cryptographic assets.'
+                  : inventory.quantumVulnerableAssets > 0
+                    ? `${integerFmt(inventory.quantumVulnerableAssets)} quantum-vulnerable asset${inventory.quantumVulnerableAssets === 1 ? '' : 's'} identified — generate a migration plan or executive report.`
+                    : 'No quantum-vulnerable assets in the current evidence — keep scanning to hold that position.'}
               </div>
             </div>
           </div>

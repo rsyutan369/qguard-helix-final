@@ -3072,6 +3072,103 @@ Collecting edge evidence" after a refusal.
 
 ---
 
+## 60. Quantum Readiness pages: a "Readiness Trend" that is another metric, readiness lifted by a constant, and every tab refetching every 8 s
+
+**Problem**
+
+Audit of `/dashboard/quantum-readiness/*`, `/dashboard/harvest-now` and
+`/dashboard/quantum-certification` (2026-10-21). Each looked plausible; each was
+wrong in a way only a second panel or the code revealed:
+
+- "Readiness vs Risk Trend" (Risk Analysis, Remediation, reports, HNDL's
+  decryptable trend) was `100 - findings_count / total_assets * 100` per scan
+  session — a different metric drawn under the "Readiness"/"Risk" legends. The
+  Executive dashboard had already stopped using it for exactly that reason.
+- Quantum Readiness included `governanceMaturity = scanSessions > 0 ? 60 : 0`
+  weighted 15% — a constant no evidence produced (~+10 points for every tenant).
+  Three copies of the blend existed (QR snapshot, `ReportScope`, per-asset
+  dossiers); the `ReportScope` copy had also drifted (components + assets summed
+  into one scope, cost at a hardcoded `38 × 165`).
+- "TLS / Protocol Maturity" and "PKI Maturity" were both `100 - vulnerableShare`
+  (the second × 0.8); neither read a handshake or certificate.
+- Assets with no crypto evidence were "Hybrid / In-Progress" (the posture
+  model's catch-all) on the top-risk table, the Migration Advisor KPI and HNDL.
+- The Exposure Graph kept a private posture model, so its "Quantum Vulnerable"
+  could disagree with the Overview for the same estate.
+- `useQuantumReadiness` refetched the full snapshot on every `metrics-update`
+  of the 8 s key-count stream; Exposure/HNDL/Remediation/Certification re-sent
+  full payloads every 20–30 s per tab with no cache (Remediation re-ran the
+  marginal-gain simulation per client per tick; Certification's monitor —
+  which can SUSPEND a certificate — could run twice concurrently).
+- HNDL: a "Next Escalation Cycle" countdown to the next UTC hour; a 50% vulnerable
+  share assumed when no CBOM existed; adversary scores for sectors the estate
+  does not have; remediation counts in borrowed units (all certificates, every
+  generated key, scanned domains); `/dashboard/qkms?focus=…` links to a route
+  with no index; migration-readiness buckets tallied from the 40-node sample.
+- Reports: "Scheduled Reports" said "schedule saved" and saved nothing; report
+  history and branding lived in localStorage shared by every account on the
+  browser; "Regenerate" built the currently-selected template (stale closure);
+  a `<div>` inside `<tbody>`. AI Executive Advisor: approval and audit trail were
+  React state; a 450 ms fake "Generating…"; board statement banded by a private
+  70/45/20 ladder (60–69 read "ELEVATED" while every surface said "High").
+- Certification: one-click irreversible Revoke; "Overall Readiness 0%" with no
+  certificate.
+
+**Root Cause**
+
+Proxies and fallbacks introduced to avoid empty-looking panels, each locally
+reasonable, never re-checked against the population their label names; and
+the same formula maintained in several files, which then drifted.
+
+**Solution**
+
+- Shared composites in `src/lib/migration/asset-intelligence.ts`:
+  `blendQuantumReadiness` (no governance term; unmeasured runtime excluded and
+  renormalised), `severityPressureFrom`, `quantumRiskFrom`,
+  `estimateMigrationSchedule`; QR snapshot, `ReportScope` and per-asset dossiers
+  all call them. `deriveAssetPostureModel` gained `evidencedAssetIds` and
+  `counts.unassessedAssets` (subset of hybrid — existing reconciliations hold).
+- Readiness factors carry `{ measured, basis }`; TLS = key-exchange/cipher-suite
+  observations via `analyzeCryptoObservation`; PKI = certificates with PQC/hybrid
+  signatures; governance/agility `measured: false`. Report methodology, index and
+  maturity tables branch on `measured`.
+- Trend = the scores' own history: `src/api-server/quantum-readiness-history.ts`
+  + `supabase/quantum-readiness-history.sql` (append-only RLS; one row per tenant
+  per ≥10 min, only on change). Missing table ⇒ `scoreHistory.available=false`
+  with the reason, rendered as such (`ScoreHistoryTrend`).
+- `src/api-server/live-snapshot-stream.ts` (`streamLiveSnapshot`,
+  `payloadFingerprint` — ignores `generatedAt` at ANY depth) for all five
+  streams + new `GET /api/v1/quantum-readiness/stream`; single-flight caches for
+  exposure-graph, harvest-now, remediation, certification (mutations delete the
+  entry). Client: `src/hooks/use-live-resource.ts` (stream-first, fingerprint
+  de-dup, REST fallback after 4 s, 2→30 s backoff, reset on USER change not token
+  rotation); the five hooks are thin wrappers.
+- Exposure Graph posture = canonical model (+ `migrating`, + `unknown` for
+  unevidenced). Report/advisory trail → `audit_logs` via
+  `GET/POST /api/v1/reports/history`, `POST /api/v1/reports/advisories`
+  (`src/hooks/use-report-audit-trail.ts`).
+
+**Prevention Checklist**
+
+- [ ] A trend line must be the metric's own history. If no history store exists,
+      the chart says so — it does not borrow a series.
+- [ ] `x ? CONSTANT : 0` inside a score is a fabricated measurement. Exclude the
+      factor and renormalise (`blendQuantumReadiness`).
+- [ ] A factor label names a population; compute it over THAT population and
+      carry `measured` + `basis`. Two factors with the same formula are one proxy.
+- [ ] Search for a second copy of any formula you change
+      (`grep -rn "readinessWeightSum\|governanceMaturity"` found three).
+- [ ] An SSE stream sends news, not repeats: fingerprint + `-unchanged` frames,
+      and every polled builder behind single-flight. A build that mutates
+      (certificate monitor) MUST be single-flight.
+- [ ] Never show a countdown, "saved", or "approved" that no server state backs.
+- [ ] Browser storage for anything per-account is keyed by user; anything called
+      an audit trail lives server-side.
+- [ ] `npx tsx tools/quantum-readiness-pages-check.ts` (33 checks) and
+      `node tools/qr-pages-render/run.mjs` (27 renders, forbidden-string list).
+
+---
+
 ## Adding an entry
 
 Use exactly this shape — Problem, Root Cause, Solution, Prevention Checklist.

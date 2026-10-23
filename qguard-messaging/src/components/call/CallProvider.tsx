@@ -9,6 +9,7 @@ import { fetchContactAssurance, type ContactAssurance } from "@/lib/contact-veri
 import { supabase } from "@/lib/supabase";
 import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import { useSecureCall, type CallPeer } from "@/lib/use-secure-call";
+import { displayableEmail } from "@/lib/account-identity";
 
 type CallEngine = ReturnType<typeof useSecureCall>;
 
@@ -116,7 +117,7 @@ export function CallProvider({ userId, children }: { userId: string; children: R
       .maybeSingle()
       .then(({ data }) => {
         if (cancelled || !data) return;
-        setPeerName(String(data.name || data.username || data.email || "Secure contact"));
+        setPeerName(String(data.name || data.username || displayableEmail(data.email) || "Secure contact"));
       });
     void requestWindowAttention();
     return () => { cancelled = true; };

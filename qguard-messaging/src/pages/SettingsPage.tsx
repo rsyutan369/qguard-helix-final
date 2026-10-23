@@ -17,6 +17,7 @@ import {
   UserRound,
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { accountAuditIdentifier, accountIdentifierLabel, displayableEmail, isPhoneAccount, sendAccountProofCode, verifyAccountProof } from "@/lib/account-identity";
 import { useAuth } from "@/lib/auth-context";
 import { invalidateAvatar } from "@/lib/avatars";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
@@ -312,6 +313,63 @@ async function resizeAvatar(file: File): Promise<Blob> {
   }
 }
 
+/** "Current password" for email accounts; an SMS code (with a send button) for mobile-number accounts. */
+function ProofInput({ phone, value, onChange, sentTo, onSend }: {
+  phone: boolean;
+  value: string;
+  onChange: (value: string) => void;
+  sentTo: string | null;
+  onSend?: () => Promise<void>;
+}) {
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  if (!phone) {
+    return (
+      <label className="text-sm font-semibold text-ink-700">
+        Current password
+        <input type="password" value={value} onChange={(event) => onChange(event.target.value)} className="mt-2 w-full rounded-lg border border-line bg-canvas px-3 py-2 outline-none focus:border-cyan-300" autoComplete="current-password" />
+      </label>
+    );
+  }
+  return (
+    <div className="text-sm font-semibold text-ink-700">
+      <label htmlFor="settings-sms-proof">SMS code</label>
+      <div className="mt-2 flex gap-2">
+        <input
+          id="settings-sms-proof"
+          value={value}
+          onChange={(event) => onChange(event.target.value.replace(/\D/g, "").slice(0, 6))}
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          className="min-w-0 flex-1 rounded-lg border border-line bg-canvas px-3 py-2 text-center font-mono tracking-[0.25em] outline-none focus:border-cyan-300"
+        />
+        <button
+          type="button"
+          disabled={sending || !onSend}
+          onClick={async () => {
+            if (!onSend) return;
+            setSending(true);
+            setSendError(null);
+            try {
+              await onSend();
+            } catch (error) {
+              setSendError(error instanceof Error ? error.message : String(error));
+            } finally {
+              setSending(false);
+            }
+          }}
+          className="shrink-0 rounded-lg border border-line px-3 py-2 text-xs font-bold text-ink-700 hover:bg-canvas disabled:opacity-50"
+        >
+          {sending ? "Sending…" : sentTo ? "Resend" : "Text me"}
+        </button>
+      </div>
+      {sendError
+        ? <div className="mt-1 text-[11px] text-rose-600">{sendError}</div>
+        : sentTo && <div className="mt-1 text-[11px] text-emerald-600">Sent to {sentTo}</div>}
+    </div>
+  );
+}
+
 export default function SettingsPage({ theme, profile, telemetry, securityEvents, liveEvents, liveStatus, onToggleTheme, onRefresh, inactivityMinutes, onSetInactivityMinutes, workspaceStatus, onLockWorkspaces, appLock, verifyAccountPassword }: SettingsPageProps) {
   const auth = useAuth();
   const user = auth.user;
@@ -319,7 +377,9 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
   const [username, setUsername] = useState(profile?.username ?? "");
   // Prefer the authoritative auth session email (auth.users) over the denormalized
   // profiles.email mirror, so a completed email change is reflected immediately.
-  const [email, setEmail] = useState(user?.email ?? profile?.email ?? "");
+  const [email, setEmail] = useState(displayableEmail(user?.email) ?? displayableEmail(profile?.email) ?? "");
+  const phoneAccount = isPhoneAccount(user);
+  const [proofSentTo, setProofSentTo] = useState<string | null>(null);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -390,7 +450,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
   useEffect(() => {
     setDisplayName(profile?.name ?? "");
     setUsername(profile?.username ?? "");
-    setEmail(user?.email ?? profile?.email ?? "");
+    setEmail(displayableEmail(user?.email) ?? displayableEmail(profile?.email) ?? "");
   }, [profile, user?.email]);
 
   useEffect(() => {
@@ -454,7 +514,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
         p_event_type: eventType,
         p_severity: severity,
         p_metadata: metadata,
-        p_email_hash: sha3_256Hex((user.email ?? email).trim().toLowerCase()),
+        p_email_hash: sha3_256Hex(accountAuditIdentifier(user) || email.trim().toLowerCase()),
         p_user_id: user.id,
       });
     } catch {
@@ -465,7 +525,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
   async function enforceRateLimit(action: string, limit = 5) {
     const { data, error: limitError } = await supabase.rpc("check_qguard_profile_rate_limit", {
       p_action: action,
-      p_email_hash: sha3_256Hex((user?.email ?? email).trim().toLowerCase()),
+      p_email_hash: sha3_256Hex(accountAuditIdentifier(user) || email.trim().toLowerCase()),
       p_limit: limit,
       p_window_seconds: 300,
     });
@@ -474,6 +534,13 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
   }
 
   async function validateCurrentPassword() {
+    // Mobile-number accounts have no password: the "current password" field
+    // carries a fresh SMS code instead (see ProofInput).
+    if (user && phoneAccount) {
+      if (!currentPassword) throw new Error("Text yourself a code and enter it to confirm this change.");
+      await verifyAccountProof(user, currentPassword);
+      return;
+    }
     if (!user?.email) throw new Error("A verified email session is required.");
     if (!currentPassword) throw new Error("Current password is required.");
     const client = createEphemeralSupabaseClient();
@@ -758,7 +825,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
             </label>
             <div className="min-w-0">
               <div className="truncate text-lg font-bold text-ink-950">{displayName || "QGuard User"}</div>
-              <div className="mt-1 truncate text-sm text-ink-600">{email}</div>
+              <div className="mt-1 truncate text-sm text-ink-600">{phoneAccount ? accountIdentifierLabel(user) : email}</div>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <span className="inline-flex items-center gap-2 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-600">
                   <ShieldCheck size={14} />
@@ -899,16 +966,16 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
           </form>
 
           <form onSubmit={updateEmail} className="shell-card p-5">
-            <div className="mb-4 flex items-center gap-2 text-sm font-bold text-ink-950"><Mail size={18} /> Email Address</div>
+            <div className="mb-4 flex items-center gap-2 text-sm font-bold text-ink-950"><Mail size={18} /> {phoneAccount && !email ? "Add an Email Address" : "Email Address"}</div>
+            {phoneAccount && !email && (
+              <p className="-mt-2 mb-4 text-xs leading-5 text-ink-500">Optional. You keep signing in with your mobile number; an email adds a way to receive account notices.</p>
+            )}
             <div className="grid gap-4 md:grid-cols-3">
               <label className="text-sm font-semibold text-ink-700">
                 New email
                 <input type="email" value={newEmail} onChange={(event) => setNewEmail(event.target.value)} className="mt-2 w-full rounded-lg border border-line bg-canvas px-3 py-2 outline-none focus:border-cyan-300" />
               </label>
-              <label className="text-sm font-semibold text-ink-700">
-                Current password
-                <input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-line bg-canvas px-3 py-2 outline-none focus:border-cyan-300" autoComplete="current-password" />
-              </label>
+              <ProofInput phone={phoneAccount} value={currentPassword} onChange={setCurrentPassword} sentTo={proofSentTo} onSend={user ? async () => setProofSentTo(await sendAccountProofCode(user)) : undefined} />
               <label className="text-sm font-semibold text-ink-700">
                 MFA code
                 <input value={stepUpCode} onChange={(event) => setStepUpCode(event.target.value.replace(/\D/g, "").slice(0, 6))} className="mt-2 w-full rounded-lg border border-line bg-canvas px-3 py-2 outline-none focus:border-cyan-300" inputMode="numeric" />
@@ -919,13 +986,21 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
             </button>
           </form>
 
+          {phoneAccount ? (
+            <section className="shell-card p-5">
+              <div className="mb-3 flex items-center gap-2 text-sm font-bold text-ink-950"><Smartphone size={18} /> Sign-in Method</div>
+              <p className="text-sm text-ink-700">
+                You sign in with <span className="font-semibold">{accountIdentifierLabel(user)}</span> and a one-time SMS code. This account has no password to steal or reuse.
+              </p>
+              <p className="mt-2 text-xs leading-5 text-ink-500">
+                For a second factor — so a SIM swap alone can never open your account — turn on authenticator MFA. New devices can also be linked by QR code from Devices → Link a device.
+              </p>
+            </section>
+          ) : (
           <form onSubmit={updatePassword} className="shell-card p-5">
             <div className="mb-4 flex items-center gap-2 text-sm font-bold text-ink-950"><LockKeyhole size={18} /> Credential Management</div>
             <div className="grid gap-4 md:grid-cols-2">
-              <label className="text-sm font-semibold text-ink-700">
-                Current password
-                <input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-line bg-canvas px-3 py-2 outline-none focus:border-cyan-300" autoComplete="current-password" />
-              </label>
+              <ProofInput phone={phoneAccount} value={currentPassword} onChange={setCurrentPassword} sentTo={proofSentTo} onSend={user ? async () => setProofSentTo(await sendAccountProofCode(user)) : undefined} />
               <label className="text-sm font-semibold text-ink-700">
                 Email nonce
                 <input value={passwordNonce} onChange={(event) => setPasswordNonce(event.target.value)} className="mt-2 w-full rounded-lg border border-line bg-canvas px-3 py-2 outline-none focus:border-cyan-300" />
@@ -947,6 +1022,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
               Update Password
             </button>
           </form>
+          )}
         </section>
 
         <aside className="grid gap-4 content-start">
@@ -982,10 +1058,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
 
             {mfaEnabled && (
               <div className="mt-5 grid gap-3">
-                <label className="text-sm font-semibold text-ink-700">
-                  Current password
-                  <input type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} className="mt-2 w-full rounded-lg border border-line bg-canvas px-3 py-2 outline-none focus:border-cyan-300" />
-                </label>
+                <ProofInput phone={phoneAccount} value={currentPassword} onChange={setCurrentPassword} sentTo={proofSentTo} onSend={user ? async () => setProofSentTo(await sendAccountProofCode(user)) : undefined} />
                 <label className="text-sm font-semibold text-ink-700">
                   MFA code
                   <input value={stepUpCode} onChange={(event) => setStepUpCode(event.target.value.replace(/\D/g, "").slice(0, 6))} className="mt-2 w-full rounded-lg border border-line bg-canvas px-3 py-2 outline-none focus:border-cyan-300" inputMode="numeric" />

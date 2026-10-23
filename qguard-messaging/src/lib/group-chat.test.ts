@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  DEFAULT_MEMBER_LIMITS,
   GROUP_MAX_OTHER_MEMBERS,
   GROUP_NAME_MAX_CHARS,
+  conversationFallbackTitle,
+  conversationKind,
+  formatMemberLimit,
   forgetGroupNames,
   groupFallbackTitle,
+  parseMemberLimits,
   groupName,
   groupPermissions,
   groupSelectionError,
@@ -105,7 +110,54 @@ describe("member selection", () => {
   it("caps the group size", () => {
     const max = Array.from({ length: GROUP_MAX_OTHER_MEMBERS }, (_, index) => `u${index}`);
     expect(groupSelectionError(max, "Team")).toBeNull();
-    expect(groupSelectionError([...max, "one-more"], "Team")).toMatch(/at most 32/);
+    expect(groupSelectionError([...max, "one-more"], "Team")).toMatch(/at most 32 .*large group for up to 1,000/);
+  });
+
+  it("lets a large group start small and grow to 1,000", () => {
+    expect(groupSelectionError([], "Town hall", "large_group")).toBeNull();
+    const full = Array.from({ length: 999 }, (_, index) => `u${index}`);
+    expect(groupSelectionError(full, "Town hall", "large_group")).toBeNull();
+    expect(groupSelectionError([...full, "one-more"], "Town hall", "large_group")).toMatch(/at most 1,000/);
+  });
+
+  it("follows the server's limits once they are read", () => {
+    const limits = parseMemberLimits([{ kind: "large_group", max_members: 10000 }, { kind: "group", max_members: 32 }]);
+    expect(limits).toEqual({ group: 32, large_group: 10000, channel: 1000 });
+    const many = Array.from({ length: 5000 }, (_, index) => `u${index}`);
+    expect(groupSelectionError(many, "Town hall", "large_group", limits)).toBeNull();
+  });
+});
+
+describe("member limits", () => {
+  it("keeps the defaults for missing, unknown or nonsense rows", () => {
+    expect(parseMemberLimits(null)).toEqual(DEFAULT_MEMBER_LIMITS);
+    expect(parseMemberLimits([{ kind: "mega", max_members: 5 }, { kind: "channel", max_members: "lots" }, { kind: "group", max_members: 1 }]))
+      .toEqual(DEFAULT_MEMBER_LIMITS);
+    expect(DEFAULT_MEMBER_LIMITS).toEqual({ group: 32, large_group: 1000, channel: 1000 });
+  });
+
+  it("formats limits the way people read them", () => {
+    expect(formatMemberLimit(1000)).toBe("1,000");
+    expect(formatMemberLimit(100000)).toBe("100,000");
+  });
+});
+
+describe("conversation kinds and titles", () => {
+  it("tells groups, large groups and channels apart", () => {
+    expect(conversationKind({ conversation_type: "group" })).toBe("group");
+    expect(conversationKind({ conversation_type: "channel", member_posting: true })).toBe("large_group");
+    expect(conversationKind({ conversation_type: "channel", member_posting: false })).toBe("channel");
+    expect(conversationKind({ conversation_type: "channel" })).toBe("channel");
+    expect(conversationKind({ conversation_type: "direct" })).toBeNull();
+  });
+
+  it("never falls back to a generic \"Encrypted … conversation\" label", () => {
+    expect(conversationFallbackTitle("channel", 1, "")).toBe("Channel");
+    // A reader sees only the staff, so their names would read like a direct chat.
+    expect(conversationFallbackTitle("channel", 2, "Owner Person")).toBe("Channel");
+    expect(conversationFallbackTitle("group", 3, "Ana, Ben")).toBe("Ana, Ben");
+    expect(conversationFallbackTitle("group", 3, "")).toBe("Group · 3 people");
+    expect(conversationFallbackTitle("large_group", 1, "")).toBe("Large group · 1 person");
   });
 });
 

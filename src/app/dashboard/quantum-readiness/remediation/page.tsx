@@ -85,7 +85,7 @@ function severityBadgeColor(severity: string): string {
 }
 
 export default function QuantumRemediationPage() {
-  const { plan, state, error, sseConnected, refresh } = useQuantumRemediation();
+  const { plan, state, error, sseConnected, lastVerifiedAt, refresh } = useQuantumRemediation();
   const [queue, setQueue] = useState<QueueFilter>('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [advisorOpen, setAdvisorOpen] = useState<number | null>(0);
@@ -144,6 +144,13 @@ export default function QuantumRemediationPage() {
         {error && state === 'error' ? (
           <div className="rounded-md border border-red-400/30 bg-red-400/[0.08] px-4 py-3 text-sm text-red-100/90">
             Failed to load the remediation engine: {error}
+          </div>
+        ) : null}
+
+        {state === 'loading' ? (
+          <div className="flex items-center gap-2 rounded-md border border-white/8 bg-white/[0.02] px-4 py-3 text-sm text-white/55" role="status">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-cyan-300" />
+            Building the remediation plan from your assessment evidence — figures appear once the engine answers.
           </div>
         ) : null}
 
@@ -678,6 +685,7 @@ export default function QuantumRemediationPage() {
                 <div>{plan.progress.openActions} action{plan.progress.openActions === 1 ? '' : 's'} remaining</div>
               </div>
             </div>
+            <p className="-mt-2 mb-3 text-[10px] text-white/35">Completed migration jobs ÷ (open remediation actions + completed jobs). A fix counts once a rescan no longer reports it.</p>
             <div className="mb-1 text-[10px] font-black uppercase tracking-wide text-white/40">Recently fixed</div>
             {plan.progress.recentlyFixed.length ? (
               <div className="space-y-1.5">
@@ -751,8 +759,8 @@ export default function QuantumRemediationPage() {
         {/* Readiness trend */}
         {plan.readinessTrend.length > 1 ? (
           <Panel className="p-5">
-            <SectionTitle suffix={<span className="text-[11px] text-white/40">from completed scan sessions</span>}>
-              Readiness Trend
+            <SectionTitle suffix={<span className="text-[11px] text-white/40">recorded each time the assessed evidence changes</span>}>
+              Quantum Readiness &amp; Risk Trend
             </SectionTitle>
             <TrendChart points={plan.readinessTrend} />
           </Panel>
@@ -854,7 +862,8 @@ export default function QuantumRemediationPage() {
             <span
               className={`h-2 w-2 rounded-full ${sseConnected ? 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)]' : 'animate-pulse bg-amber-300'}`}
             />
-            {sseConnected ? 'Live remediation stream & evidence subscriptions connected' : 'Connecting live remediation stream'}
+            {sseConnected ? 'Live remediation stream connected' : state === 'error' ? 'Live stream unavailable — retrying' : 'Connecting live remediation stream'}
+            {lastVerifiedAt ? <span className="text-white/30">· re-checked {relativeTime(lastVerifiedAt)}</span> : null}
           </span>
           <span>
             <CalendarClock className="mr-1 inline h-3 w-3" />

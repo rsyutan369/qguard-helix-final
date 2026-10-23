@@ -1,7 +1,10 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
+import { createSingleFlightCache } from '@/lib/single-flight-cache'
+import { isInternetFacing } from '@/lib/migration/asset-intelligence'
 import { buildScannerIntelligence } from './scanner'
 import { evaluateEligibility, gatherEvidence, loadPolicy, type EvidenceBundle } from './quantum-certification'
+import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
 import type { CertificationPolicy, EligibilityResult } from '@/types/quantum-certification'
 import type {
   AdvisorAnswer,
@@ -1066,10 +1069,14 @@ export function buildRemediationPlan(ev: RemediationEvidence): RemediationPlan {
   const workstreams = Math.max(1, ev.parallelWorkstreams)
   const calendarWeeks = Math.ceil(totalEffortWeeks / workstreams)
   const eligible = ev.eligibility.eligible
+  // Day precision: a millisecond timestamp here made every rebuild look like a
+  // content change to the live stream, and a planning estimate has no
+  // sub-day meaning anyway.
+  const dayOf = (ms: number) => `${new Date(ms).toISOString().slice(0, 10)}T00:00:00.000Z`
   const estimatedCertificationDate = eligible
-    ? new Date().toISOString()
+    ? dayOf(Date.now())
     : actions.length
-      ? new Date(Date.now() + calendarWeeks * 7 * 86400000).toISOString()
+      ? dayOf(Date.now() + calendarWeeks * 7 * 86400000)
       : null
 
   const queues: Record<RemediationPriority, number> = { critical: 0, high: 0, medium: 0, low: 0 }
@@ -1474,15 +1481,11 @@ export async function assembleEvidence(token: string, userId: string): Promise<R
     }
   }
 
-  const isInternetFacing = (raw: Record<string, unknown> | undefined, type: string, name: string): boolean => {
-    const env = str(raw?.environment).toLowerCase()
-    if (['public', 'internet', 'dmz', 'external', 'edge'].some((e) => env.includes(e))) return true
-    const meta = (raw?.metadata && typeof raw.metadata === 'object' ? raw.metadata : {}) as Record<string, unknown>
-    if (meta.internet_facing === true || meta.public === true) return true
-    if (/web|domain|tls|endpoint|site|host|gateway|cdn|proxy|load|dns|ingress|api/i.test(type)) return true
-    if (/^https?:\/\//i.test(name) || /\.[a-z]{2,}(?::\d+)?$/i.test(name)) return true
-    return false
-  }
+  // THE canonical internet-exposure heuristic (asset-intelligence.ts). This
+  // route used to carry a private copy that had already drifted — it ignored
+  // `metadata.exposure`, so an asset tagged `exposure: internet` was internal here.
+  const internetFacingFor = (raw: Record<string, unknown> | undefined, type: string, name: string): boolean =>
+    isInternetFacing({ ...(raw || {}), type, name })
 
   const assets: RemediationEvidence['assets'] = intelAssets.map((asset) => {
     const raw = rawById.get(str(asset.id))
@@ -1496,7 +1499,7 @@ export async function assembleEvidence(token: string, userId: string): Promise<R
       environment: str(raw?.environment) || 'unknown',
       owner: str(raw?.service_owner) || 'Unassigned',
       criticality: str(raw?.criticality) || 'unknown',
-      internetFacing: isInternetFacing(raw, type, name),
+      internetFacing: internetFacingFor(raw, type, name),
       riskScore: num(asset.riskScore),
       pqcCapable: meta.pqc_supported !== false && !/legacy|mainframe|scada|embedded|iot(-|$)/i.test(type),
       vendorParty: /vendor|third|saas|partner|external.?service/i.test(`${type} ${name}`) || meta.vendor === true,
@@ -1595,45 +1598,32 @@ export async function assembleEvidence(token: string, userId: string): Promise<R
 /* ------------------------------------------------------------------ */
 /* Routes                                                              */
 /* ------------------------------------------------------------------ */
+/* One plan per tenant per 15s window for the JSON route, the stream and every
+   open tab. Assembling evidence re-reads the certification bundle, scanner
+   intelligence and four tables, then runs the marginal-gain simulation — it
+   used to do all of that once per connected client every 30s. */
+const planCache = createSingleFlightCache<RemediationPlan>(15_000)
+function buildCachedPlan(token: string, userId: string): Promise<RemediationPlan> {
+  return planCache.get(userId, async () => buildRemediationPlan(await assembleEvidence(token, userId)))
+}
+
 router.get('/', async (req: Request, res: Response) => {
   try {
     const { token, user } = req as AuthedRequest
-    const evidence = await assembleEvidence(token!, user!.id)
-    res.json({ data: buildRemediationPlan(evidence) })
+    const plan = await buildCachedPlan(token!, user!.id)
+    res.json({ data: { ...plan, fingerprint: payloadFingerprint(plan) } })
   } catch (error) {
     console.error('quantum-remediation plan failed:', error)
     res.status(500).json({ error: { code: 'REMEDIATION_ERROR', message: 'Unable to build remediation plan' } })
   }
 })
 
-router.get('/stream', async (req: Request, res: Response) => {
+router.get('/stream', (req: Request, res: Response) => {
   const { token, user } = req as AuthedRequest
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  })
-  let closed = false
-  const send = async () => {
-    if (closed) return
-    try {
-      const evidence = await assembleEvidence(token!, user!.id)
-      if (closed) return
-      res.write(`event: remediation-update\ndata: ${JSON.stringify(buildRemediationPlan(evidence))}\n\n`)
-    } catch {
-      if (!closed) res.write(`event: remediation-error\ndata: {}\n\n`)
-    }
-  }
-  await send()
-  const interval = setInterval(send, 30000)
-  const heartbeat = setInterval(() => {
-    if (!closed) res.write(': keep-alive\n\n')
-  }, 15000)
-  req.on('close', () => {
-    closed = true
-    clearInterval(interval)
-    clearInterval(heartbeat)
+  streamLiveSnapshot(req, res, {
+    event: 'remediation-update',
+    build: () => buildCachedPlan(token!, user!.id),
+    intervalMs: 15_000,
   })
 })
 

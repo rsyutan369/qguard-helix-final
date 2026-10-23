@@ -10,6 +10,98 @@ auto-update.
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-10-22
+
+### Added
+
+- **Contacts on Android.** The phone's Secure Chat has a *Contacts* folder next
+  to *Chats*: every contact with its state, and per contact *Chat*, *Restrict*,
+  *Block* and *Delete*. *Add a contact* searches the directory and shows your
+  QGuard ID to share. Desktop's Contacts panel gains *Restrict*.
+- **Restrict and Block that the server enforces** (migration 047). A restricted
+  contact can still message you, but cannot call you or add you to a group or
+  channel. A blocked contact's messages and calls are dropped by the relay
+  (they are not told), they cannot add you anywhere, and their posts in shared
+  timelines are folded away.
+- **Large groups of up to 1,000 people.** *New group* offers *Group* (up to 32,
+  every message sealed per device, with files and calls) or *Large group* (up to
+  1,000, everyone posts, one encryption per post under a shared key that only
+  members' devices hold; join with invite codes). Channels hold up to 1,000
+  readers and invites up to 1,000 uses. The limits live in the server's
+  `messaging_conversation_limits` table, enforced on every way in, so raising
+  them toward 10,000–100,000 is a data change (`docs/superpowers/specs/2026-10-19-groups-design.md` §8).
+
+- **Sign up and sign in with a mobile number.** The sign-in screen offers
+  *Email* or *Mobile number*. A phone account uses one-time SMS codes and has no
+  password (the Signal/Telegram model); authenticator MFA still applies on top.
+  The number is normalised to E.164 (so `0917…`, `+63 917…` and `0063 917…` are
+  one account, never three), never copied into `profiles`, and never shown to
+  contacts — they find you by username. Wherever the app used to ask for the
+  account password before something sensitive (workspace lock reset, email
+  change, MFA changes), a phone account confirms with a fresh SMS code instead.
+  The option is offered only when the Supabase project has an SMS provider
+  enabled (read from Auth's public settings). See `docs/PHONE_AND_DEVICE_LINKING.md`.
+- **Link a device by QR code.** *Link with QR code* on the sign-in screen shows
+  a two-minute code; *Devices → Link a device* on a signed-in phone or computer
+  scans it (camera via BarcodeDetector or jsQR, or type the 12-character code),
+  shows which device, platform and network is asking, and approves. The new
+  device gets its OWN session from the new `device-link` Edge Function — never a
+  copy of the approver's — then proves, with a secret carried only in the QR
+  code, that it is the device that was scanned; the approving device checks
+  that proof against the fingerprint its own core computes before trusting it.
+  Needs migration `045_phone_accounts_and_device_linking.sql` and the
+  `device-link` function deployed.
+
+### Fixed
+
+- **Groups and channels show the name their owner gave them**, on Android and
+  desktop, instead of "Encrypted channel conversation" or member names. Names
+  are kept in the device's encrypted storage (never on the server), looked up in
+  the background for the list, and sent to new channel members with the key.
+- **Conversations with many members load completely.** Member, device and
+  prekey reads are paged past the relay's 1,000-row cap, and id filters are
+  chunked; before, a large conversation could silently drop rows, including
+  this account's own memberships in other conversations.
+- **Messages stopped sending on every device a day after it was set up**
+  ("Refreshing this desktop signed prekey", "Open the desktop app to send
+  securely"). The daily signed-prekey rotation published the new prekey before
+  retiring the old one, and the relay's one-active-prekey-per-device index
+  refused it, so each device kept a new key the relay never advertised.
+  Migration `046_atomic_signed_prekey_rotation.sql` retires the old prekey in
+  the same statement; installed apps recover on their next sync with no update.
+- Verifying the account password before a workspace reset signed the user out
+  on **every** device: the throwaway session was closed with `signOut()`, whose
+  default scope is global. It now closes only that one session.
+- A phone-registered account's profile would have been named after its UUID,
+  because the bootstrap derived the display name from the placeholder address
+  (latent until now — phone sign-up did not exist; fixed in migration 045).
+
+### Security
+
+- **App-only fields are now sealed before they reach the relay.** The details of
+  an audit event (`messaging_security_events.encrypted_details` — which held
+  plain JSON despite its name) and the detail and metadata of crypto telemetry
+  (`messaging_crypto_telemetry`) are encrypted on the device with AES-256-GCM
+  under a per-account key, so a copy of the database shows ciphertext for them.
+  A sealed value is bound to its user, its purpose and its row, so it does not
+  open if moved. Without a key (not yet received on this device) the detail is
+  withheld — a bare marker is written, never the plaintext.
+  - **The account key** is random, 256 bits, kept on each of your devices
+    encrypted at rest. A device that has it seals it to each of your other
+    trusted devices (hybrid X25519 + ML-KEM-1024, dual-signed with Ed25519 +
+    ML-DSA-65) and stores that in `messaging_account_key_wraps`; the relay
+    cannot open it, and a device only accepts or makes a wrap for a device it
+    has itself recorded as yours. Removing a device starts a new key epoch the
+    removed device never receives.
+  - Needs migration `044_account_key_wraps.sql`. Without it the key stays on the
+    device that made it, so fields written there are readable only there.
+  - Not changed, on purpose: contact nicknames (`alias` is a copy of the contact's
+    public profile name, and the contact id beside it already names the
+    relationship), ids, member lists, timestamps, expiry times, read and delivery
+    state, message kind and call signals. The relay and its row-level security
+    need those to route, authorise and clean up; they cannot be encrypted
+    without breaking delivery. See `docs/security-limitations.md`.
+
 ## [1.4.3] — 2026-10-20
 
 ### Changed

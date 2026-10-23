@@ -61,6 +61,8 @@ export function WorkspaceLockGate(props: {
   onRecoverChat?: (accountPassword: string) => Promise<unknown>;
   onRecoverVaultWithKey?: (recoveryKey: string, method: UnlockMethod, secret: string) => Promise<unknown>;
   onRecoverVaultWithAccount?: (accountPassword: string, method: UnlockMethod, secret: string) => Promise<unknown>;
+  /** How this account proves ownership: its password, or an SMS code for mobile-number accounts. */
+  accountProof?: AccountProof;
 }) {
   const { scope, status } = props;
   const copy = COPY[scope];
@@ -153,6 +155,7 @@ export function WorkspaceLockGate(props: {
         onRecoverChat={props.onRecoverChat}
         onRecoverVaultWithKey={props.onRecoverVaultWithKey}
         onRecoverVaultWithAccount={props.onRecoverVaultWithAccount}
+        accountProof={props.accountProof ?? { kind: "password" }}
       />
     );
   }
@@ -347,6 +350,68 @@ function MethodToggle({ method, onChange }: { method: UnlockMethod; onChange: (m
  * a new Vault Master Key — with a clear, honest warning that files encrypted under
  * the old key are only recoverable with the recovery key.
  */
+export type AccountProof =
+  | { kind: "password" }
+  | { kind: "sms"; sendCode: () => Promise<string> };
+
+/** "Confirm your account password", or for a phone account "Text me a code" + the code. */
+function AccountProofField({ proof, value, onChange }: { proof: AccountProof; value: string; onChange: (value: string) => void }) {
+  const [sending, setSending] = useState(false);
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
+
+  if (proof.kind === "password") {
+    return (
+      <>
+        <label className="mt-3 block text-xs font-bold text-ink-700">Confirm your account password</label>
+        <input
+          type="password"
+          value={value}
+          onChange={(e) => onChange(e.currentTarget.value)}
+          placeholder="Your QGuard account password"
+          className="mt-1.5 w-full rounded-lg border border-line bg-canvas px-3 py-2.5 text-sm outline-none focus:border-cyan-300"
+        />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <label className="mt-3 block text-xs font-bold text-ink-700">Confirm it's you with an SMS code</label>
+      <div className="mt-1.5 flex gap-2">
+        <input
+          value={value}
+          onChange={(e) => onChange(e.currentTarget.value.replace(/\D/g, "").slice(0, 6))}
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          placeholder="6-digit code"
+          className="min-w-0 flex-1 rounded-lg border border-line bg-canvas px-3 py-2.5 text-center font-mono text-sm tracking-[0.3em] outline-none focus:border-cyan-300"
+        />
+        <button
+          type="button"
+          disabled={sending}
+          onClick={async () => {
+            setSending(true);
+            setSendError(null);
+            try {
+              setSentTo(await proof.sendCode());
+            } catch (err) {
+              setSendError(describeError(err));
+            } finally {
+              setSending(false);
+            }
+          }}
+          className="shrink-0 rounded-lg border border-line px-3 py-2 text-xs font-bold text-ink-700 hover:bg-canvas disabled:opacity-50"
+        >
+          {sending ? <Loader2 className="animate-spin" size={14} /> : sentTo ? "Resend" : "Text me a code"}
+        </button>
+      </div>
+      {sentTo && !sendError && <div className="mt-1.5 text-[11px] font-semibold text-emerald-600">Code sent to {sentTo}.</div>}
+      {sendError && <div className="mt-1.5 text-[11px] font-semibold text-rose-600">{sendError}</div>}
+    </>
+  );
+}
+
 function WorkspaceRecoveryPanel(props: {
   scope: WorkspaceScope;
   recoveryEnabled?: boolean;
@@ -356,6 +421,7 @@ function WorkspaceRecoveryPanel(props: {
   onRecoverChat?: (accountPassword: string) => Promise<unknown>;
   onRecoverVaultWithKey?: (recoveryKey: string, method: UnlockMethod, secret: string) => Promise<unknown>;
   onRecoverVaultWithAccount?: (accountPassword: string, method: UnlockMethod, secret: string) => Promise<unknown>;
+  accountProof: AccountProof;
 }) {
   const isChat = props.scope === "chat";
   const [vaultTab, setVaultTab] = useState<"key" | "account">(props.recoveryEnabled === false ? "account" : "key");
@@ -460,7 +526,7 @@ function WorkspaceRecoveryPanel(props: {
             <AlertTriangle size={14} className="mt-0.5 shrink-0" />
             <span>
               {isChat
-                ? "This device's storage key was replaced when its keys were reset, so the Secure Chat lock saved before can no longer be opened. Confirm your account password to set a new one."
+                ? "This device's storage key was replaced when its keys were reset, so the Secure Chat lock saved before can no longer be opened. Confirm it's you to set a new one."
                 : "This device's storage key was replaced when its keys were reset, so the vault lock saved before — and the vault key it protected — can no longer be opened here. Use your recovery key, or start a fresh vault."}
             </span>
           </div>
@@ -472,14 +538,9 @@ function WorkspaceRecoveryPanel(props: {
               <ShieldCheck size={14} className="mt-0.5 shrink-0" />
               Your messages are encrypted with your device keys, not this PIN — resetting the lock keeps every conversation intact.
             </div>
-            <label className="mt-4 block text-xs font-bold text-ink-700">Confirm your account password</label>
-            <input
-              type="password"
-              value={accountPassword}
-              onChange={(e) => setAccountPassword(e.currentTarget.value)}
-              placeholder="Your QGuard account password"
-              className="mt-1.5 w-full rounded-lg border border-line bg-canvas px-3 py-2.5 text-sm outline-none focus:border-cyan-300"
-            />
+            <div className="mt-1">
+              <AccountProofField proof={props.accountProof} value={accountPassword} onChange={setAccountPassword} />
+            </div>
             {error && <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-600">{error}</div>}
             <button
               type="button"
@@ -542,14 +603,7 @@ function WorkspaceRecoveryPanel(props: {
                   <ShieldAlert size={14} className="mt-0.5 shrink-0" />
                   Without your PIN or recovery key, files already encrypted in this vault cannot be recovered — their keys were sealed by the forgotten secret. This creates a new, empty vault. Existing <span className="font-mono">.qvault</span> files remain on disk and stay locked unless you find your recovery key.
                 </div>
-                <label className="mt-3 block text-xs font-bold text-ink-700">Confirm your account password</label>
-                <input
-                  type="password"
-                  value={accountPassword}
-                  onChange={(e) => setAccountPassword(e.currentTarget.value)}
-                  placeholder="Your QGuard account password"
-                  className="mt-1.5 w-full rounded-lg border border-line bg-canvas px-3 py-2.5 text-sm outline-none focus:border-cyan-300"
-                />
+                <AccountProofField proof={props.accountProof} value={accountPassword} onChange={setAccountPassword} />
                 {newSecretFields}
                 <label className="mt-3 block text-xs font-bold text-ink-700">Type <span className="font-mono text-rose-600">RESET</span> to confirm</label>
                 <input

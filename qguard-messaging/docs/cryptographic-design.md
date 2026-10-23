@@ -112,6 +112,34 @@ pinned. Devices excluded from delivery are reported but do not lower the
 level, since nothing is sealed to them. "Pinned" proves the device, not the
 person.
 
+## Account Sealing Key (app-only fields)
+
+`src-tauri/src/commands/account_key.rs`, `src/lib/account-key.ts`, migration 044.
+
+A few relay rows are read only by the account's own devices — the details of an
+audit event and crypto telemetry details — so they are sealed rather than left
+as plaintext columns. Message content, files and calls are not involved; they
+keep their own keys.
+
+- **Key.** 256 random bits per epoch (1, 2, ...), stored on each device in the
+  device-storage-key-sealed document `<user>.account-key.enc`. The ring holds
+  every epoch so older fields stay readable.
+- **Field.** `{v, e, n, c}`: AES-256-GCM, key = HKDF-SHA3-256(epoch key,
+  "QGuard-AccountField-v1|" + purpose); associated data = user id, purpose, row
+  context (the event hash, or the telemetry row id) and epoch. A value moved to
+  another row, purpose or account does not open. Purposes are a fixed list.
+- **Wrap.** The whole ring, sealed to another device of the same account:
+  hybrid X25519 + ML-KEM-1024 to that device's identity keys
+  (`QGuard-AccountKey-v1:wrap:<from>:<to>`), AES-256-GCM, dual-signed by the
+  sender over the header, the ciphertext digest and the sealed bytes. Made and
+  accepted only for devices `device_pins` records as pinned for this account.
+- **First key / rotation.** The first key is made by the only trusted device, or
+  by the lowest device id when several have none and no wrap exists. A device
+  that held the current epoch and is no longer trusted triggers a new epoch,
+  made by the lowest-id remaining holder.
+- **Failure.** No key for an epoch → the field reads as unavailable, never as
+  garbage. No key at write time → a bare marker is written, never plaintext.
+
 ## Call Media Encryption
 
 Voice/video calls are end-to-end encrypted independently of the transport

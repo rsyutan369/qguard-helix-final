@@ -8,15 +8,21 @@ import { buildSharedResponsibility } from '@/lib/shared-responsibility'
 import { buildOwnershipInputs } from './shared-responsibility-inputs'
 import { collapseCriticalFindings, type RawCriticalFinding } from './critical-findings'
 import {
+  blendQuantumReadiness,
   classifyAlgorithm,
   deriveAssetPostureModel,
+  estimateMigrationSchedule,
   isInternetFacing,
   levelFromReadiness,
   levelFromRisk,
-  severityWeight,
+  quantumRiskFrom,
+  severityPressureFrom,
 } from '@/lib/migration/asset-intelligence'
 import { isCryptographicComponent } from '@/lib/scanner/finding-identity'
 import { algorithmFamily } from '@/lib/governance/subjects'
+import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
+import { syncScoreHistory } from './quantum-readiness-history'
+import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
 
 // The per-asset risk/posture derivation, algorithm classification and internet
 // exposure heuristic live in the shared migration intelligence engine so the
@@ -40,12 +46,21 @@ export { isInternetFacing }
 
 const router = Router()
 
+/** One readiness factor. `measured: false` ⇒ render "Not measured" with `basis`, never the score. */
+export interface ReadinessFactor {
+  label: string
+  score: number
+  measured: boolean
+  basis: string
+}
+
 type AuthedRequest = Request & { user?: { id: string; email?: string | null }; token?: string }
 
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  // Header-only auth (Authorization: Bearer). No query-string token fallback —
-  // this router exposes JSON only (no SSE/EventSource), so there is no need to
-  // accept tokens in the URL where they could leak into logs, proxies or Referer.
+  // Header-only auth (Authorization: Bearer) for both GET / and the SSE
+  // GET /stream. The client reads the event stream with fetch() + an
+  // Authorization header, never EventSource, so no query-string token is
+  // accepted — tokens in URLs leak into logs, proxies and Referer.
   const token = getToken(req)
   if (!token) return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
   const user = await getServerUser(token)
@@ -269,7 +284,6 @@ async function computeSnapshot(token: string, userId: string) {
     [
       ...scannerEvidence.map((e) => str(e.host)),
       ...runtimeEvents.map((e) => str(e.host)),
-      ...scanResults.map((r) => str(r.target_name)),
       ...domainAssetNames,
     ].filter(Boolean),
   ).size
@@ -368,16 +382,41 @@ async function computeSnapshot(token: string, userId: string) {
   const vulnerableComponents = vulnerable
   const pqcReadyComponents = pqcReady + hybrid
 
+  /*
+   * Measured sub-populations for the readiness factors. Each factor is computed
+   * over the population its label names and is reported `measured: false` when
+   * that population is empty. They used to be proxies of one number:
+   * "TLS / Protocol Maturity" and "PKI Maturity" were both `100 - vulnerableShare`
+   * (the second scaled by 0.8), so neither looked at a single handshake or
+   * certificate.
+   */
+  let hybridComponentRows = 0
+  let keyExchangeMeasured = 0
+  let keyExchangeQuantumSafe = 0
+  for (const item of cryptoComponentRows) {
+    const anatomy = analyzeCryptoObservation({ algorithm: item.algorithm, name: item.name, itemType: item.item_type, protocol: item.protocol }, true)
+    if (item.is_quantum_safe !== true && anatomy.quantumClass === 'hybrid') hybridComponentRows += 1
+    if ((anatomy.kind === 'key-exchange' || anatomy.kind === 'cipher-suite') && anatomy.quantumClass !== 'unknown') {
+      keyExchangeMeasured += 1
+      if (item.is_quantum_safe === true || anatomy.quantumClass === 'safe' || anatomy.quantumClass === 'hybrid') keyExchangeQuantumSafe += 1
+    }
+  }
+  const quantumSafeCertificates = certificates.filter((cert) => cert.is_quantum_safe === true || classifyAlgorithm(str(cert.algorithm)) !== 'vulnerable' && classifyAlgorithm(str(cert.algorithm)) !== 'unknown').length
+
   // ---- Per-asset risk, posture & internet exposure -----------------------
   // Derived by the SHARED engine (src/lib/migration/asset-intelligence.ts) that
   // the Migration Planner's per-asset dossiers also use, so an asset's risk
   // score and posture are identical on every page of the platform.
   const postureModel = deriveAssetPostureModel({ assets, scanResults, cryptoExposures, cryptoInventory, runtimeEvents })
-  const { assetRisk, assetPosture } = postureModel
+  const { assetRisk, assetPosture, evidencedAssetIds } = postureModel
   const pqcReadyAssets = postureModel.counts.pqcReadyAssets
   const hybridAssets = postureModel.counts.hybridAssets
+  const unassessedAssets = postureModel.counts.unassessedAssets
   const quantumVulnerableAssets = postureModel.counts.quantumVulnerableAssets
   const internetFacing = postureModel.counts.internetFacing
+  /** Display posture: the shared verdict, except that an asset nothing was measured on is 'unknown'. */
+  const displayPosture = (assetId: string): 'pqc' | 'hybrid' | 'vulnerable' | 'unknown' =>
+    evidencedAssetIds.has(assetId) ? assetPosture.get(assetId) || 'hybrid' : 'unknown'
 
   /*
    * THERE IS NO FALLBACK FROM ASSETS TO COMPONENTS. An asset count is a count
@@ -448,14 +487,13 @@ async function computeSnapshot(token: string, userId: string) {
     runtimeEvents.length > 0
 
   // ---- Scoring model ----------------------------------------------------
-  const severityPressure = totalFindings > 0
-    ? clamp(((critical * 4 + high * 2.5 + medium * 1 + low * 0.4) / totalFindings) * 22)
-    : 0
+  // The composites live in src/lib/migration/asset-intelligence.ts so the
+  // scoped report model (ReportScope) and the per-asset dossiers weight the
+  // same evidence identically.
+  const severityPressure = severityPressureFrom({ critical, high, medium, low })
   const vulnerableShare = totalCrypto > 0 ? (vulnerable / totalCrypto) * 100 : 0
   const internetShare = assetsAssessed > 0 ? (internetFacing / assetsAssessed) * 100 : 0
-  const quantumRisk = hasData
-    ? Math.round(clamp(severityPressure * 0.45 + vulnerableShare * 0.4 + internetShare * 0.15))
-    : 0
+  const quantumRisk = hasData ? quantumRiskFrom({ severityPressure, vulnerableSharePct: vulnerableShare, internetSharePct: internetShare }) : 0
 
   const pqcAdoption = totalCrypto > 0 ? ((pqcReady + hybrid * 0.5) / totalCrypto) * 100 : 0
   // Runtime visibility is a MEASURED signal: non-zero only when real runtime
@@ -466,7 +504,6 @@ async function computeSnapshot(token: string, userId: string) {
   // blend and the remaining weights are renormalised, instead of silently
   // scoring an unmeasured factor.
   const runtimeMeasured = runtimeEvents.length > 0
-  const runtimeVisibility = runtimeMeasured ? 100 : 0
   /**
    * Newest runtime observation, published so consumers can distinguish
    * "telemetry exists" from "telemetry is CURRENT".
@@ -482,12 +519,8 @@ async function computeSnapshot(token: string, userId: string) {
     return ms > best ? ms : best
   }, 0)
   const latestRuntimeEventAt = latestRuntimeEventMs ? new Date(latestRuntimeEventMs).toISOString() : null
-  const governanceMaturity = scanSessions.length > 0 ? 60 : 0
 
-  const readinessWeightSum = runtimeMeasured ? 1 : 0.85
-  const quantumReadiness = hasData
-    ? Math.round(clamp((pqcAdoption * 0.45 + (100 - quantumRisk) * 0.25 + (runtimeMeasured ? runtimeVisibility * 0.15 : 0) + governanceMaturity * 0.15) / readinessWeightSum))
-    : 0
+  const quantumReadiness = hasData ? blendQuantumReadiness({ pqcAdoption, quantumRisk, runtimeMeasured }) : 0
 
   const hndlEvents = runtimeEvents.filter((e) => e.hndl_risk === true).length
   const hndlEventShare = runtimeEvents.length > 0 ? (hndlEvents / runtimeEvents.length) * 100 : 0
@@ -524,9 +557,12 @@ async function computeSnapshot(token: string, userId: string) {
   // Component work + bounded per-asset cutover/validation overhead (0.2 wk each):
   // change windows, scheduling and post-change verification are paid per asset
   // however many components it carries.
-  const effortWeeks = (remaining * 0.6 + cutoverAssets * 0.2) * (1 + migrationComplexity / 200)
-  const parallelWorkstreams = Math.min(64, Math.max(1, Math.ceil(effortWeeks / 104)))
-  const migrationTimelineWeeks = hasData ? Math.max(remaining > 0 ? 2 : 0, Math.round(effortWeeks / parallelWorkstreams)) : 0
+  const { parallelWorkstreams, migrationTimelineWeeks } = estimateMigrationSchedule({
+    vulnerableComponents: remaining,
+    vulnerableAssets: cutoverAssets,
+    migrationComplexity,
+    hasData,
+  })
   // Rate and hours/week are TENANT assumptions, not platform constants
   // (src/lib/migration/cost-model.ts). Defaults apply until a tenant sets theirs.
   const migrationCostUsd = computeMigrationCostUsd(migrationTimelineWeeks, parallelWorkstreams, costAssumptions)
@@ -545,14 +581,64 @@ async function computeSnapshot(token: string, userId: string) {
   // Terminology: this factor measures the CBOM component share (pqcReady /
   // totalCrypto are cryptographic COMPONENTS, not assets) — labelled accordingly
   // so it can never be confused with the asset-level `pqcReadyAssets` count.
-  const readinessFactors = [
-    { label: 'PQC-Ready Components', score: Math.round(clamp(totalCrypto > 0 ? (pqcReady / totalCrypto) * 100 : 0)) },
-    { label: 'Hybrid Crypto Adoption', score: Math.round(clamp(totalCrypto > 0 ? (hybrid / totalCrypto) * 100 : 0)) },
-    { label: 'TLS / Protocol Maturity', score: Math.round(clamp(domainsScanned > 0 ? 100 - vulnerableShare : 0)) },
-    { label: 'PKI Maturity', score: Math.round(clamp(certificatesAnalyzed > 0 ? 100 - vulnerableShare * 0.8 : 0)) },
-    { label: 'Crypto-Agility Readiness', score: Math.round(clamp(pqcAdoption)) },
-    { label: 'Governance Maturity', score: Math.round(governanceMaturity) },
-    { label: 'Runtime Visibility', score: Math.round(runtimeVisibility) },
+  //
+  // `measured: false` factors carry score 0 only for contract compatibility —
+  // every consumer must branch on `measured` and render "Not measured" with the
+  // basis, never the 0 (data-integrity rule 3).
+  const pct = (part: number, whole: number) => Math.round(clamp(whole > 0 ? (part / whole) * 100 : 0))
+  const readinessFactors: ReadinessFactor[] = [
+    {
+      label: 'PQC-Ready Components',
+      score: pct(pqcReadyComponents, totalCrypto),
+      measured: cryptoComponents > 0,
+      basis: cryptoComponents > 0
+        ? `${pqcReadyComponents} of ${cryptoComponents} quantum-relevant CBOM component(s) are post-quantum or hybrid`
+        : 'No cryptographic inventory recorded yet',
+    },
+    {
+      label: 'Hybrid Crypto Adoption',
+      score: pct(hybridComponentRows, cryptoComponentRows.length),
+      measured: cryptoComponentRows.length > 0,
+      basis: cryptoComponentRows.length > 0
+        ? `${hybridComponentRows} of ${cryptoComponentRows.length} CBOM component(s) negotiate a hybrid classical + PQC primitive`
+        : 'No cryptographic inventory recorded yet',
+    },
+    {
+      label: 'TLS / Key Exchange PQC Coverage',
+      score: pct(keyExchangeQuantumSafe, keyExchangeMeasured),
+      measured: keyExchangeMeasured > 0,
+      basis: keyExchangeMeasured > 0
+        ? `${keyExchangeQuantumSafe} of ${keyExchangeMeasured} observed key exchange(s) / cipher suite(s) use ML-KEM or a hybrid group`
+        : 'No key exchange or cipher suite observed — scan a TLS, SSH or VPN endpoint',
+    },
+    {
+      label: 'PKI Quantum Readiness',
+      score: pct(quantumSafeCertificates, certificates.length),
+      measured: certificates.length > 0,
+      basis: certificates.length > 0
+        ? `${quantumSafeCertificates} of ${certificates.length} certificate(s) carry a PQC or hybrid signature`
+        : 'No certificate inventory recorded yet',
+    },
+    {
+      label: 'Crypto-Agility Readiness',
+      score: 0,
+      measured: false,
+      basis: 'Not part of this assessment — measured by the Crypto Agility Engine',
+    },
+    {
+      label: 'Governance Maturity',
+      score: 0,
+      measured: false,
+      basis: 'No governance evidence source feeds this assessment — excluded from the readiness score',
+    },
+    {
+      label: 'Runtime Visibility',
+      score: runtimeMeasured ? 100 : 0,
+      measured: runtimeMeasured,
+      basis: runtimeMeasured
+        ? `${runtimeEvents.length} runtime crypto event(s) observed${latestRuntimeEventAt ? `, newest ${latestRuntimeEventAt}` : ''}`
+        : 'No runtime crypto telemetry — excluded from the readiness score',
+    },
   ]
   const riskFactors = [
     { label: 'RSA / ECC Exposure', score: Math.round(clamp(vulnerableShare)), severity: levelFromRisk(vulnerableShare) },
@@ -611,7 +697,15 @@ async function computeSnapshot(token: string, userId: string) {
   // environment + severity, carrying the true instance count and every merged
   // detection location. See src/api-server/critical-findings.ts for why the raw
   // location cannot be the key.
-  const criticalFindings = collapseCriticalFindings(rawCriticalFindings).slice(0, 24)
+  const collapsedCriticalFindings = collapseCriticalFindings(rawCriticalFindings)
+  const criticalFindings = collapsedCriticalFindings.slice(0, 24)
+  /* Totals over the WHOLE collapsed set, so a panel listing the first 24 can say
+     so — and so its instance column can be reconciled with the severity counts. */
+  const criticalFindingsSummary = {
+    records: collapsedCriticalFindings.length,
+    instances: collapsedCriticalFindings.reduce((sum, f) => sum + Math.max(1, Number(f.instances) || 1), 0),
+    shown: criticalFindings.length,
+  }
 
   // ---- Recommended actions ---------------------------------------------
   const recommendedActions: Array<{ id: string; title: string; detail: string; severity: string; route: string }> = []
@@ -671,7 +765,7 @@ async function computeSnapshot(token: string, userId: string) {
       environment: str(a.environment) || 'unknown',
       owner: str(a.service_owner) || 'Unassigned',
       riskScore: Math.round(assetRisk.get(str(a.id)) || 0),
-      status: assetPosture.get(str(a.id)) === 'pqc' ? 'PQC-Ready' : assetPosture.get(str(a.id)) === 'vulnerable' ? 'Quantum-Vulnerable' : 'Hybrid / In-Progress',
+      status: ({ pqc: 'PQC-Ready', vulnerable: 'Quantum-Vulnerable', hybrid: 'Hybrid / In-Progress', unknown: 'Not Assessed' } as const)[displayPosture(str(a.id))],
     }))
     .filter((a) => a.riskScore > 0 || quantumVulnerableAssets === 0)
     .sort((x, y) => y.riskScore - x.riskScore)
@@ -701,7 +795,7 @@ async function computeSnapshot(token: string, userId: string) {
     type: str(a.type) || 'asset',
     environment: str(a.environment) || 'unknown',
     riskScore: Math.round(assetRisk.get(str(a.id)) || 0),
-    posture: assetPosture.get(str(a.id)) || 'hybrid',
+    posture: displayPosture(str(a.id)),
     internetFacing: isInternetFacing(a),
   }))
   const nodeIds = new Set(nodes.map((n) => n.id))
@@ -713,20 +807,30 @@ async function computeSnapshot(token: string, userId: string) {
     .map((r) => ({ source: relSource(r), target: relTarget(r), type: str(r.relationship_type) || 'depends-on' }))
 
   // ---- Risk / readiness trend ------------------------------------------
-  const riskTrend = scanSessions
-    .filter((s) => s.completed_at)
-    .sort((a, b) => new Date(str(a.completed_at)).getTime() - new Date(str(b.completed_at)).getTime())
-    .slice(-12)
-    .map((s) => {
-      const total = Math.max(1, num(s.total_assets) || num(s.scanned_assets))
-      const findings = num(s.findings_count)
-      const readiness = Math.round(clamp(100 - Math.min(100, (findings / total) * 100)))
-      return {
-        label: new Date(str(s.completed_at)).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        readiness,
-        risk: Math.round(clamp(100 - readiness)),
-      }
-    })
+  // The trend is the headline scores' OWN recorded history. It used to be a
+  // per-session `100 - findings / assets` ratio — a different metric, drawn
+  // under the "Readiness" and "Risk" legends beside scores it did not match.
+  // In-memory (degraded) reads are not recorded: they are not durable evidence.
+  const scoreHistory = persistence === 'database'
+    ? await syncScoreHistory(
+        client,
+        userId,
+        hasData
+          ? {
+              quantumReadiness,
+              quantumRisk,
+              hndlRisk,
+              pqcAdoption: Math.round(clamp(pqcAdoption)),
+              assetsAssessed,
+              cryptoComponents,
+              vulnerableComponents,
+              criticalFindings: critical,
+              highFindings: high,
+            }
+          : null,
+      )
+    : { available: false, reason: 'The assessment database is unreachable — showing in-memory scan results, which are not recorded as history.', points: [] }
+  const riskTrend = scoreHistory.points.map((p) => ({ label: p.label, readiness: p.readiness, risk: p.risk, recordedAt: p.recordedAt }))
 
   // ---- Assessment progress ---------------------------------------------
   /* Named, so a consumer can say WHICH evidence is missing rather than
@@ -815,6 +919,8 @@ async function computeSnapshot(token: string, userId: string) {
       dataRepositories,
       pqcReadyAssets,
       hybridAssets,
+      /** Subset of `hybridAssets` with no crypto evidence at all — not measured, not "in progress". */
+      unassessedAssets,
       quantumVulnerableAssets,
       cryptoComponents,
       vulnerableComponents,
@@ -835,11 +941,14 @@ async function computeSnapshot(token: string, userId: string) {
     readinessFactors,
     riskFactors,
     criticalFindings,
+    criticalFindingsSummary,
     recommendedActions,
     topRiskAssets,
     assetTypePosture,
     exposureGraph: { nodes, edges },
     riskTrend,
+    /** Whether `riskTrend` can exist, and why not when it cannot. */
+    scoreHistory: { available: scoreHistory.available, reason: scoreHistory.reason, points: scoreHistory.points.length },
     estimates: { migrationTimelineWeeks, migrationCostUsd, parallelWorkstreams },
     costAssumptions,
     businessValue,
@@ -863,11 +972,26 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const { token, user } = req as AuthedRequest
     const snapshot = await buildSnapshot(token!, user!.id)
-    res.json({ data: snapshot })
+    res.json({ data: { ...snapshot, fingerprint: payloadFingerprint(snapshot) } })
   } catch (error) {
     console.error('Quantum readiness aggregation error:', error)
     res.status(500).json({ error: { code: 'QUANTUM_READINESS_ERROR', message: 'Failed to compute quantum readiness assessment' } })
   }
+})
+
+/**
+ * Live assessment stream for the nine Quantum Readiness pages. The snapshot is
+ * sent once, then again only when its content changes; between changes an
+ * `-unchanged` frame proves the estate was re-checked. The 8s tick is a cache
+ * read inside the 15s single-flight window, so open tabs cost one build.
+ */
+router.get('/stream', (req: Request, res: Response) => {
+  const { token, user } = req as AuthedRequest
+  streamLiveSnapshot(req, res, {
+    event: 'quantum-readiness',
+    build: () => buildSnapshot(token!, user!.id),
+    intervalMs: 8_000,
+  })
 })
 
 export default router

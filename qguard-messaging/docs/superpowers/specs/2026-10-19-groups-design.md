@@ -155,3 +155,51 @@ Beyond 4 needs an SFU. With end-to-end encryption that means SFrame-style keys s
   - A new reader receives the current epoch only, so earlier posts are not readable.
   - A staff member's second device makes its own epoch rather than receiving one.
   - A channel name set before anyone joins is held only in memory until a reader exists to send it to.
+
+---
+
+## 8. Contacts on Android, names that stay, and 1,000 members (owner request 2026-10-22)
+
+### 8.1 What was wrong (verified in code)
+
+- **Names:** a group's or channel's name exists only end-to-end encrypted (§2.2), and the decrypted name was kept in memory only. After every app start the list fell back to its member names, and a channel, whose reader sees only the staff, or which nobody has joined, fell back to the generic `Encrypted channel conversation`. A channel's own owner lost the name on restart, because with no readers it had never been sent anywhere.
+- **Contacts on phones:** the Contacts panel is the desktop's right-hand column, which the phone layout hides. A phone could add a contact only through *New chat*, and could not see, block or delete one.
+- **Block did nothing on the server.** `trust_state = 'blocked'` was a label; no policy read it, so a blocked person's messages and calls still arrived.
+- **Limits:** the 32-person group cap lived only in the client; the 1,000-reader channel cap only in `join_messaging_channel`, so adding contacts directly was never counted.
+
+### 8.2 Names (both platforms)
+
+- `commands/conversation_names.rs`: the names this device accepted, each as received (name, time, sender), in the core's encrypted per-user storage (AAD `QGuard-ConversationNames-v1`). At most 8 per conversation and 5,000 conversations. `group-chat.ts` reads them back on start and after an unlock, and still applies the owner check (§7.1) on every read, so a stored name cannot outlive an ownership change. Leaving or deleting a conversation forgets its names.
+- The owner's **channel key hand-out carries the name** (`channel_key.name`), so a new member of a channel or large group learns it with the key; it counts only if the sender owned the conversation then.
+- **Background lookup:** for each unnamed group or channel in the list, the client opens only the `group_meta` and `channel_key` envelopes addressed to this device (once per session), without opening the thread.
+- **Fallback titles** say what the conversation is (`Channel`, `Group · 4 people`, `Large group · 120 people`) or list member names; never `Encrypted … conversation`.
+
+### 8.3 Contacts, Restrict and Block (migration 047)
+
+- **Phone:** a *Contacts* folder next to *Chats* lists every contact with its state; a tap opens *Chat*, *Restrict / Lift restriction*, *Block / Unblock* and *Delete contact*. *Add a contact* searches the directory as the desktop does, and shows your QGuard ID to share. Desktop gains *Restrict*.
+- **Restrict** (new state): they can still message you, but cannot call you or add you to a group or channel.
+- **Block:** the relay drops their envelopes and call signals to you without telling them (a `BEFORE INSERT` trigger returns no row, so the sender's batch still succeeds); they cannot add you to conversations; the app hides their posts in shared timelines and will not send to them.
+- `qguard_contact_state` is not granted to clients: whether someone blocked you is theirs to know.
+
+### 8.4 Large groups and member limits (migration 047)
+
+- **Why not just raise the group cap:** a group seals every message once per member device (§2.1). At 1,000 people with ~1.5 devices each, one message is ~1,500 hybrid encapsulations and ML-DSA-65 signatures and an upload of roughly 10–20 MB. That does not work on a phone.
+- **Large group** = a channel whose members all post (`member_posting = true`, fixed at creation). It reuses the reviewed channel crypto (§7.3): one encryption per post under the epoch key, signed by the posting device and verified against its registered identity. Members see each other, as in a group. Keys are still handed out and rotated only by the owner's and admins' devices.
+- **Limits are data:** `messaging_conversation_limits` holds `group = 32`, `large_group = 1000`, `channel = 1000`. A statement-level trigger locks each conversation that gained a person and refuses a statement that would pass its limit, on every path (owner or admin adds, reinstating a revoked row, joining with a code). Role changes and removals are never refused, even when a lowered limit leaves a conversation over it. Invites accept up to 100,000 uses.
+- **Client reads at this size:** member rows, devices and prekeys are read page by page (the relay returns at most 1,000 rows per request, so a large group would otherwise silently drop rows, including this account's own memberships in other conversations); `.in()` filters go in chunks of 150 ids; a rename or name fan-out goes in batches of 50 devices.
+
+Verification: Postgres 16, migrations 001–047 applied in order, 047 re-applied (idempotent), **62/62** checks: restricted and blocked contacts (messages, calls, the sender's own copy, one-way blocking), consent to be added (insert and reinstate), limits (under, over, one statement over, nothing left behind, roles and removal while over a lowered limit, raising by data, the 100,000 bound), large groups (members post, readers of a channel cannot, non-members cannot, members see each other, channel readers still do not, `member_posting` frozen), invites to 5,000 and joining against the limit. A baseline without 047 shows the defect: the blocked message and call are stored, five people are added to a group with no count, and someone who blocked the owner is added. Rust: 4 tests (`conversation_names`). Vitest: 510/510.
+
+### 8.5 To go from 1,000 to 10,000 and 100,000
+
+Raising a row in `messaging_conversation_limits` is enough for the server. These are what would then become the bottleneck, in the order they bite:
+
+1. **Key rotation cost.** Each epoch is sealed pairwise to every member device: about 1,500 seals at 1,000 members, 15,000 at 10,000. Rotation is lazy (the next staff action after someone leaves), which holds at 1,000. Past that, either batch rotations (at most one per interval) or move to MLS once a post-quantum ciphersuite is an RFC (§2.1), where a member change costs O(log n).
+2. **Member list loading.** The dashboard reads every visible member row. At 10,000 that has to become paged on demand (count from the server, names fetched as the list scrolls), and the members panel already shows 200 at a time with search.
+3. **Device and prekey reads** for key hand-out: chunked already; at 10,000 they should come from a server-side RPC that returns only devices missing the current epoch.
+4. **Realtime fan-out** of post inserts to every subscriber is Supabase Realtime's limit, not ours; at 100,000 posts should be fetched on notification rather than pushed with the row.
+
+### 8.6 Not verified here
+
+- No two-device run: names arriving with a key hand-out, Block between two real accounts, and a 1,000-member group were exercised in Postgres and unit tests only.
+- Migration 047 is **not applied to the live project**. Until it is, Restrict and Block are shown but not enforced, large groups cannot be created (the app says so), and the old limits apply.

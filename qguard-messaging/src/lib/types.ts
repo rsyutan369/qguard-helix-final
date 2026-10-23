@@ -64,6 +64,8 @@ export interface ConversationSummary {
   owner_user_id?: string | null;
   /** Each member's strongest role across their devices (groups, migration 042). */
   member_roles?: Record<string, "owner" | "admin" | "member">;
+  /** A channel whose members all post: a large group (migration 047). */
+  member_posting?: boolean;
   archived_at: string | null;
   hidden_at: string | null;
   deleted_at: string | null;
@@ -75,7 +77,8 @@ export interface ContactSummary {
   alias: string | null;
   display_name: string;
   username: string;
-  trust_state: "added" | "blocked" | "removed";
+  /** "restricted": still a contact, but cannot call you or add you to groups (migration 047). */
+  trust_state: "added" | "restricted" | "blocked" | "removed";
   created_at: string;
   updated_at: string;
 }

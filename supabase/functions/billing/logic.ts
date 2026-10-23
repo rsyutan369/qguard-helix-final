@@ -400,6 +400,115 @@ export function refundInvoicePatch(
   };
 }
 
+// ---- Money-back refunds cancel the subscription ------------------------------
+//
+// The Refund Policy (src/pages/Refund.tsx) promises that a money-back refund —
+// the full refund of a subscriber's FIRST payment, requested within the window —
+// cancels the subscription. PayPal does not do that on its own: refunding a sale
+// leaves the subscription billing. Renewal refunds (duplicate charge, charge
+// after cancellation) are goodwill corrections and leave the subscription alone.
+
+/** Money-back window in days. MUST equal REFUND_POLICY.initialWindowDays (asserted by tools/billing-edge-check.ts). */
+export const REFUND_WINDOW_DAYS = 7;
+/**
+ * Calendar-day allowance for issuing an approved refund: the policy promises
+ * processing within REFUND_POLICY.processingDays (10) BUSINESS days, so a
+ * request made on day 7 can be refunded up to two weeks later.
+ */
+export const REFUND_PROCESSING_GRACE_DAYS = 14;
+
+const DAY_MS = 86_400_000;
+
+export function moneyBackRefundCancels(opts: {
+  eventType: string;
+  amountPaidCents: unknown;
+  refundedCents: unknown;
+  paymentDate: unknown;
+  refundedAt: unknown;
+  isFirstPayment: boolean;
+}): boolean {
+  if (opts.eventType !== "PAYMENT.SALE.REFUNDED" || !opts.isFirstPayment) return false;
+  const paid = Math.round(Number(opts.amountPaidCents) || 0);
+  if (paid <= 0 || Math.round(Number(opts.refundedCents) || 0) < paid) return false;
+  const paidAt = Date.parse(String(opts.paymentDate ?? ""));
+  const refundedAt = Date.parse(String(opts.refundedAt ?? ""));
+  if (!Number.isFinite(paidAt) || !Number.isFinite(refundedAt)) return false;
+  return refundedAt - paidAt <= (REFUND_WINDOW_DAYS + REFUND_PROCESSING_GRACE_DAYS) * DAY_MS;
+}
+
+/** A money-back refund ends access now — the refunded period was not paid for. */
+export function refundCancellationPatch(row: { cancelled_at?: string | null } | null, nowIso: string): Record<string, unknown> {
+  return {
+    status: "cancelled",
+    auto_renew: false,
+    cancel_at_period_end: true,
+    cancelled_at: row?.cancelled_at ?? nowIso,
+    updated_at: nowIso,
+  };
+}
+
+// ---- Reconciliation (repair for missed webhooks) -----------------------------
+//
+// PayPal retries a failed webhook for a few days, then gives up. The reconcile
+// route (POST /api/v1/paypal/reconcile, scheduled by
+// supabase/paypal-reconcile-schedule.sql) re-reads PayPal's own state so a
+// lost ACTIVATED, status change or PAYMENT.SALE.COMPLETED is still applied.
+
+/** Checkouts younger than this are re-checked for an approval whose webhook was lost. */
+export const RECONCILE_CHECKOUT_LOOKBACK_DAYS = 7;
+/** Payment history window re-read per subscription. */
+export const RECONCILE_PAYMENT_LOOKBACK_DAYS = 35;
+/** Local statuses whose PayPal subscription may still change. */
+export const RECONCILE_STATUSES = ["active", "trial", "past_due", "suspended", "pending_renewal", "incomplete"];
+
+/**
+ * What a remote subscription resource requires of the local row, or null when
+ * the two already agree. `sync` covers ACTIVE (status, plan and renewal date);
+ * the others are the webhook's own status transitions.
+ */
+export function reconcileAction(
+  env: EnvGetter,
+  local: { plan?: string | null; status?: string | null; renewal_date?: string | null; cancel_at_period_end?: boolean | null },
+  remote: Record<string, any>,
+): "sync" | "cancelled" | "suspended" | "expired" | null {
+  const remoteStatus = String(remote?.status ?? "").toUpperCase();
+  const localStatus = String(local.status ?? "").toLowerCase();
+  if (remoteStatus === "CANCELLED") return local.cancel_at_period_end || localStatus === "cancelled" ? null : "cancelled";
+  if (remoteStatus === "SUSPENDED") return localStatus === "suspended" ? null : "suspended";
+  if (remoteStatus === "EXPIRED") return localStatus === "expired" ? null : "expired";
+  if (remoteStatus !== "ACTIVE") return null;
+  const info = planInfoFromId(env, remote?.plan_id);
+  const next = remote?.billing_info?.next_billing_time ?? null;
+  const sameTime = (a: unknown, b: unknown) => Date.parse(String(a ?? "")) === Date.parse(String(b ?? ""));
+  const drift = localStatus !== "active"
+    || (info !== null && info.tier !== normalizeTier(local.plan))
+    || (next !== null && !sameTime(next, local.renewal_date));
+  return drift ? "sync" : null;
+}
+
+/**
+ * Invoice row for a completed charge read from
+ * GET /v1/billing/subscriptions/{id}/transactions. The transaction id is the
+ * sale id PAYMENT.SALE.COMPLETED carries, so a payment the webhook already
+ * recorded maps to the same provider_invoice_id and is not inserted twice.
+ */
+export function invoiceRowFromTransaction(
+  transaction: Record<string, any>,
+  subscription: { user_id: string; plan: string },
+  subscriptionId: string,
+  nowIso: string,
+): Record<string, unknown> | null {
+  if (String(transaction?.status ?? "").toUpperCase() !== "COMPLETED") return null;
+  const saleId = typeof transaction?.id === "string" && transaction.id ? transaction.id : null;
+  if (!saleId) return null;
+  const gross = transaction?.amount_with_breakdown?.gross_amount ?? {};
+  return invoiceRow(
+    { id: saleId, amount: gross, create_time: transaction?.time ?? nowIso, billing_agreement_id: subscriptionId },
+    subscription,
+    nowIso,
+  );
+}
+
 // ---- Cancellation: access until the end of the paid period -------------------
 //
 // A customer who cancels keeps what they already paid for. Provider billing

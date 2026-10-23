@@ -38,6 +38,7 @@ import {
   riskTone,
   severityColor,
   useQuantumReadiness,
+  useReadinessMemo,
   AMBER,
   BLUE,
   EMERALD,
@@ -67,19 +68,16 @@ const WAVE_COLORS = [RED, ORANGE, GOLD, BLUE, VIOLET];
 export default function AiMigrationAdvisorPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { snapshot, state, sseConnected, refresh, downloadJson } = useQuantumReadiness();
+  const { snapshot, state, error, sseConnected, lastVerifiedAt, refresh, downloadJson } = useQuantumReadiness();
   const model = useAdvisorModel(snapshot, user?.email || 'QGuard Helix');
+  const memo = useReadinessMemo(snapshot);
   const [generated, setGenerated] = useState(false);
-  const [generating, setGenerating] = useState(false);
   const [handoffNote, setHandoffNote] = useState<string | null>(null);
 
+  // The roadmap is a deterministic function of the live evidence and is ready
+  // the moment the snapshot is; the 450ms "Generating…" delay was theatre.
   const generate = useCallback(() => {
-    if (!snapshot.hasData) return;
-    setGenerating(true);
-    window.setTimeout(() => {
-      setGenerated(true);
-      setGenerating(false);
-    }, 450);
+    if (snapshot.hasData) setGenerated(true);
   }, [snapshot.hasData]);
 
   const { scores, inventory, estimates } = snapshot;
@@ -107,7 +105,15 @@ export default function AiMigrationAdvisorPage() {
     { label: 'Est. Timeline', value: estimates.migrationTimelineWeeks ? `${integerFmt(estimates.migrationTimelineWeeks)}w` : '—', detail: 'To quantum-safe', color: BLUE, icon: CalendarClock },
     { label: 'Est. Cost', value: estimates.migrationCostUsd ? currencyFmt(estimates.migrationCostUsd) : '—', detail: 'Programme investment', color: EMERALD, icon: Boxes },
     { label: 'Vulnerable Assets', value: integerFmt(inventory.quantumVulnerableAssets), detail: 'To migrate', color: RED, icon: AlertTriangle },
-    { label: 'Hybrid In-Progress', value: integerFmt(inventory.hybridAssets), detail: 'Transitioning', color: AMBER, icon: Layers },
+    // Measured hybrid/in-progress assets only — the shared bucket also holds
+    // assets nothing was recorded against, which are not "transitioning".
+    {
+      label: 'Hybrid In-Progress',
+      value: integerFmt(memo.hybridMeasuredAssets),
+      detail: inventory.unassessedAssets ? `${integerFmt(inventory.unassessedAssets)} not yet assessed` : 'Transitioning',
+      color: AMBER,
+      icon: Layers,
+    },
   ];
 
   // Evidence-gated compatibility considerations — each renders ONLY when the
@@ -119,7 +125,12 @@ export default function AiMigrationAdvisorPage() {
       out.push({
         level: 'high',
         text: 'Public clients without ML-KEM support require hybrid mode (X25519 + ML-KEM) during the transition window.',
-        evidence: `${integerFmt(Math.max(internetNodes, 1))} internet-facing asset(s) / ${integerFmt(inventory.domainsScanned)} scanned domain(s)`,
+        // Counts as measured — this used to floor the asset count at 1, printing
+        // "1 internet-facing asset" for an estate with none.
+        evidence: [
+          internetNodes > 0 ? `${integerFmt(internetNodes)} internet-facing asset(s) among the highest-risk assets` : null,
+          inventory.domainsScanned > 0 ? `${integerFmt(inventory.domainsScanned)} scanned host(s) / domain(s)` : null,
+        ].filter(Boolean).join(' · '),
       });
     }
     if (inventory.keysDiscovered > 0) {
@@ -154,6 +165,8 @@ export default function AiMigrationAdvisorPage() {
       sseConnected={sseConnected}
       state={state}
       snapshot={snapshot}
+      error={error}
+      lastVerifiedAt={lastVerifiedAt}
       actions={
         <>
           <HeaderButton icon={RefreshCw} onClick={() => void refresh()}>
@@ -169,8 +182,8 @@ export default function AiMigrationAdvisorPage() {
               </HeaderButton>
             </>
           ) : (
-            <PrimaryButton icon={BrainCircuit} onClick={generate} disabled={!snapshot.hasData || generating}>
-              {generating ? 'Generating…' : 'Generate Migration Advisory'}
+            <PrimaryButton icon={BrainCircuit} onClick={generate} disabled={!snapshot.hasData || state !== 'success'}>
+              Generate Migration Advisory
             </PrimaryButton>
           )}
         </>
@@ -225,7 +238,7 @@ export default function AiMigrationAdvisorPage() {
             <div className="mt-3 flex flex-wrap gap-1.5">
               {[
                 `Primary exposure: ${model.advisorValidation.primaryExposureDomain}`,
-                `${integerFmt(snapshot.criticalFindings.length)} graded finding(s)`,
+                `${integerFmt(snapshot.criticalFindingsSummary?.records ?? snapshot.criticalFindings.length)} critical / high evidence record(s)`,
                 `${integerFmt(inventory.assetsAssessed)} asset(s) in scope`,
                 ...(advisor.affectedAssets.length ? [`Affects: ${advisor.affectedAssets.slice(0, 3).join(', ')}${advisor.affectedAssets.length > 3 ? '…' : ''}`] : []),
               ].map((chip) => (
@@ -545,8 +558,8 @@ export default function AiMigrationAdvisorPage() {
               </p>
             </div>
             {snapshot.hasData ? (
-              <PrimaryButton icon={BrainCircuit} onClick={generate} disabled={generating}>
-                {generating ? 'Generating…' : 'Generate Migration Advisory'}
+              <PrimaryButton icon={BrainCircuit} onClick={generate}>
+                Generate Migration Advisory
               </PrimaryButton>
             ) : null}
           </div>

@@ -46,6 +46,8 @@ import {
 } from '../_shared';
 import { useAuth } from '@/contexts/auth-context';
 import type { EnterpriseAssessmentReport } from '@/services/reporting/schemas/ReportSchema';
+import { riskBandFor } from '@/lib/migration/asset-intelligence';
+import { useReportAuditTrail } from '@/hooks/use-report-audit-trail';
 import { useAdvisorModel } from '../_advisor';
 
 /**
@@ -99,39 +101,83 @@ function StateRow({ label, current, target, betterHigh }: { label: string; curre
 
 export default function AiExecutiveAdvisorPage() {
   const { user } = useAuth();
-  const { snapshot, state, sseConnected, refresh, downloadJson } = useQuantumReadiness();
+  const { snapshot, state, error, sseConnected, lastVerifiedAt, refresh, downloadJson } = useQuantumReadiness();
   const model = useAdvisorModel(snapshot, user?.email || 'QGuard Helix');
   const [advisory, setAdvisory] = useState<Advisory | null>(null);
-  const [history, setHistory] = useState<Advisory[]>([]);
-  const [generating, setGenerating] = useState(false);
+  // Models generated in THIS session, so a trail entry can be reopened. The
+  // trail itself is the tenant's audit log and survives reloads and devices.
+  const [sessionModels, setSessionModels] = useState<Record<string, Advisory>>({});
+  const trail = useReportAuditTrail('advisory');
+  const recordAdvisory = trail.record;
+  const [approving, setApproving] = useState(false);
 
+  /* Deterministic synthesis from the validated report model — the same engine
+     as the Report Center, so the advisory can never contradict the report. It
+     is instant; the 450ms "Generating…" delay this replaced was theatre. */
   const generate = useCallback(() => {
     if (!snapshot.hasData) return;
-    setGenerating(true);
-    // Deterministic synthesis from the validated report model — same engine as
-    // the Report Center, so the advisory can never contradict the report.
-    window.setTimeout(() => {
-      const next: Advisory = {
-        id: `adv-${Date.now()}`,
-        generatedAt: new Date().toISOString(),
-        approved: false,
-        readiness: snapshot.scores.quantumReadiness,
-        risk: snapshot.scores.quantumRisk,
-        validation: model.reportValidation.overall,
-        model,
-      };
-      setAdvisory(next);
-      setHistory((prev) => [next, ...prev].slice(0, 10));
-      setGenerating(false);
-    }, 450);
-  }, [snapshot, model]);
+    const next: Advisory = {
+      id: `adv-${Date.now()}`,
+      generatedAt: new Date().toISOString(),
+      approved: false,
+      readiness: snapshot.scores.quantumReadiness,
+      risk: snapshot.scores.quantumRisk,
+      validation: model.reportValidation.overall,
+      model,
+    };
+    setAdvisory(next);
+    setSessionModels((prev) => ({ ...prev, [next.id]: next }));
+    void recordAdvisory({
+      action: 'generated',
+      advisoryId: next.id,
+      readiness: next.readiness,
+      risk: next.risk,
+      validation: next.validation,
+      assessmentAt: snapshot.lastAssessmentAt || snapshot.generatedAt,
+    });
+  }, [snapshot, model, recordAdvisory]);
 
-  const approve = useCallback(() => {
-    if (!advisory) return;
+  const approve = useCallback(async () => {
+    if (!advisory || advisory.approved) return;
+    setApproving(true);
+    // Approval is an auditable decision: it only shows as approved once the
+    // tenant's audit log has accepted the record.
+    const recorded = await recordAdvisory({
+      action: 'approved',
+      advisoryId: advisory.id,
+      readiness: advisory.readiness,
+      risk: advisory.risk,
+      validation: advisory.validation,
+      assessmentAt: snapshot.lastAssessmentAt || snapshot.generatedAt,
+    });
+    setApproving(false);
+    if (!recorded) return;
     const approved = { ...advisory, approved: true };
     setAdvisory(approved);
-    setHistory((prev) => prev.map((a) => (a.id === approved.id ? approved : a)));
-  }, [advisory]);
+    setSessionModels((prev) => ({ ...prev, [approved.id]: approved }));
+  }, [advisory, recordAdvisory, snapshot.lastAssessmentAt, snapshot.generatedAt]);
+
+  /** One row per advisory: generation merged with its approval, newest first. */
+  const auditRows = useMemo(() => {
+    const byId = new Map<string, { id: string; generatedAt: string; readiness: number | null; risk: number | null; validation: string; approved: boolean; approvedBy?: string }>();
+    for (const entry of [...trail.entries].reverse()) {
+      if (!entry.advisoryId) continue;
+      const row = byId.get(entry.advisoryId) || {
+        id: entry.advisoryId,
+        generatedAt: entry.createdAt,
+        readiness: entry.readiness ?? null,
+        risk: entry.risk ?? null,
+        validation: entry.validation || 'FAIL',
+        approved: false,
+      };
+      if (entry.action === 'executive_advisory_approved') {
+        row.approved = true;
+        row.approvedBy = entry.actor;
+      }
+      byId.set(entry.advisoryId, row);
+    }
+    return [...byId.values()].sort((a, b) => Date.parse(b.generatedAt) - Date.parse(a.generatedAt)).slice(0, 12);
+  }, [trail.entries]);
 
   const exportAdvisory = useCallback(() => {
     if (!advisory) return;
@@ -170,13 +216,24 @@ export default function AiExecutiveAdvisorPage() {
   const m = advisory?.model;
   const ex = m?.executiveBlock;
 
+  // Worded from the CANONICAL band of the risk score (RISK_BANDS), so the board
+  // statement can never call a score "ELEVATED" that every other surface bands
+  // "High" — the private 70/45/20 ladder this replaced did exactly that at 60–69.
   const boardStatement = useMemo(() => {
     if (!advisory) return '';
-    const risk = advisory.risk;
-    if (risk >= 70) return 'Quantum risk is SEVERE and represents a material exposure requiring board oversight and immediate, funded remediation.';
-    if (risk >= 45) return 'Quantum risk is ELEVATED and warrants a board-approved migration mandate with quarterly progress reporting.';
-    if (risk >= 20) return 'Quantum risk is MODERATE and is being actively managed; sustain the funded migration trajectory.';
-    return 'Quantum risk is LOW relative to the assessed evidence; sustain governance, monitoring and crypto-agility investment.';
+    const band = riskBandFor(advisory.risk);
+    switch (band.key) {
+      case 'critical':
+        return `Quantum risk is CRITICAL (${advisory.risk}/100) — a material exposure requiring board oversight and immediate, funded remediation.`;
+      case 'high':
+        return `Quantum risk is HIGH (${advisory.risk}/100) and warrants a board-approved migration mandate with quarterly progress reporting.`;
+      case 'elevated':
+        return `Quantum risk is ELEVATED (${advisory.risk}/100); fund the migration programme and report progress to the risk committee.`;
+      case 'moderate':
+        return `Quantum risk is MODERATE (${advisory.risk}/100) and is being actively managed; sustain the funded migration trajectory.`;
+      default:
+        return `Quantum risk is ${band.label.toUpperCase()} (${advisory.risk}/100) relative to the assessed evidence; sustain governance, monitoring and crypto-agility investment.`;
+    }
   }, [advisory]);
 
   return (
@@ -187,6 +244,8 @@ export default function AiExecutiveAdvisorPage() {
       sseConnected={sseConnected}
       state={state}
       snapshot={snapshot}
+      error={error}
+      lastVerifiedAt={lastVerifiedAt}
       actions={
         <>
           <HeaderButton icon={RefreshCw} onClick={() => void refresh()}>
@@ -200,18 +259,23 @@ export default function AiExecutiveAdvisorPage() {
               <HeaderButton icon={Download} onClick={exportAdvisory}>
                 Export
               </HeaderButton>
-              <PrimaryButton icon={BadgeCheck} onClick={approve} disabled={advisory.approved}>
-                {advisory.approved ? 'Approved' : 'Approve for Report'}
+              <PrimaryButton icon={BadgeCheck} onClick={() => void approve()} disabled={advisory.approved || approving}>
+                {advisory.approved ? 'Approved' : approving ? 'Recording approval…' : 'Approve for Report'}
               </PrimaryButton>
             </>
           ) : (
-            <PrimaryButton icon={Sparkles} onClick={generate} disabled={!snapshot.hasData || generating}>
-              {generating ? 'Generating…' : 'Generate Advisory'}
+            <PrimaryButton icon={Sparkles} onClick={generate} disabled={!snapshot.hasData || state !== 'success'}>
+              Generate Advisory
             </PrimaryButton>
           )}
         </>
       }
     >
+      {trail.error ? (
+        <div className="rounded-md border border-[var(--qg-notice-border)] bg-[var(--qg-notice-bg)] px-4 py-2.5 text-xs text-[var(--qg-notice-text)]">
+          Advisory audit trail: {trail.error}. Generation still works; approval is not recorded until the audit log accepts it.
+        </div>
+      ) : null}
       {/* Evidence inputs strip */}
       <Panel className="p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -478,8 +542,8 @@ export default function AiExecutiveAdvisorPage() {
                   </p>
                 </div>
                 {snapshot.hasData ? (
-                  <PrimaryButton icon={Sparkles} onClick={generate} disabled={generating}>
-                    {generating ? 'Generating…' : 'Generate Advisory'}
+                  <PrimaryButton icon={Sparkles} onClick={generate}>
+                    Generate Advisory
                   </PrimaryButton>
                 ) : null}
               </div>
@@ -493,7 +557,7 @@ export default function AiExecutiveAdvisorPage() {
             <>
               <Panel className="p-5">
                 <SectionTitle suffix={<ScrollText className="h-4 w-4 text-white/40" />}>Board-Level Risk Statement</SectionTitle>
-                <p className="text-sm leading-relaxed" style={{ color: advisory.risk >= 45 ? '#FCA5A5' : '#86EFAC' }}>
+                <p className="text-sm leading-relaxed" style={{ color: advisory.risk >= 40 ? '#FCA5A5' : '#86EFAC' }}>
                   {boardStatement}
                 </p>
                 <p className="mt-2 text-[11px] leading-snug text-white/45">{m.benchmarking.percentileNarrative}</p>
@@ -560,7 +624,7 @@ export default function AiExecutiveAdvisorPage() {
                 'Arithmetic and cross-section consistency self-validate at generation time (PASS/FAIL badge)',
                 'Target algorithms resolve through the active crypto-policy profile (NIST FIPS 203/204/205)',
                 'Peer benchmarks are labelled modeled reference points — never presented as tenant telemetry',
-                'Approval is required before inclusion in board reports',
+                'Every generation and approval is written to the tenant audit log, with the approver',
               ].map((rule) => (
                 <li key={rule} className="flex items-start gap-2">
                   <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
@@ -572,31 +636,37 @@ export default function AiExecutiveAdvisorPage() {
 
           <Panel className="p-5">
             <SectionTitle suffix={<History className="h-4 w-4 text-white/40" />}>Advisory Audit Trail</SectionTitle>
-            {history.length ? (
+            {auditRows.length ? (
               <div className="space-y-2">
-                {history.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setAdvisory(item)}
-                    className={`flex w-full items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-xs transition ${
-                      advisory?.id === item.id ? 'border-violet-400/45 bg-violet-500/10' : 'border-white/8 bg-black/20 hover:border-blue-400/35'
-                    }`}
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate font-semibold text-white/80">{longDate(item.generatedAt)}</span>
-                      <span className="inline-flex items-center gap-1.5 text-[10px] text-white/40">
-                        Readiness {item.readiness} · Risk {item.risk} ·
-                        {item.validation === 'PASS' ? <CheckCircle2 className="h-3 w-3 text-emerald-400" /> : <XCircle className="h-3 w-3 text-red-400" />}
-                        {item.validation}
+                {auditRows.map((item) => {
+                  const reopenable = sessionModels[item.id];
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      disabled={!reopenable}
+                      onClick={() => reopenable && setAdvisory(reopenable)}
+                      title={reopenable ? 'Reopen this advisory' : 'Recorded in the audit log — regenerate to view current figures'}
+                      className={`flex w-full items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-xs transition disabled:cursor-default ${
+                        advisory?.id === item.id ? 'border-violet-400/45 bg-violet-500/10' : 'border-white/8 bg-black/20 enabled:hover:border-blue-400/35'
+                      }`}
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate font-semibold text-white/80">{longDate(item.generatedAt)}</span>
+                        <span className="inline-flex items-center gap-1.5 text-[10px] text-white/40">
+                          Readiness {item.readiness ?? '—'} · Risk {item.risk ?? '—'} ·
+                          {item.validation === 'PASS' ? <CheckCircle2 className="h-3 w-3 text-emerald-400" /> : <XCircle className="h-3 w-3 text-red-400" />}
+                          {item.validation}
+                        </span>
+                        {item.approved && item.approvedBy ? <span className="block truncate text-[10px] text-white/30">Approved by {item.approvedBy}</span> : null}
                       </span>
-                    </span>
-                    {item.approved ? <Badge color={GREEN}>Approved</Badge> : <Badge color={BLUE}>Draft</Badge>}
-                  </button>
-                ))}
+                      {item.approved ? <Badge color={GREEN}>Approved</Badge> : <Badge color={BLUE}>Draft</Badge>}
+                    </button>
+                  );
+                })}
               </div>
             ) : (
-              <EmptyState label="No advisories generated yet." />
+              <EmptyState label={trail.loaded ? 'No advisories generated yet.' : 'Loading audit trail…'} hint="Every generation and approval is recorded in your tenant audit log." />
             )}
           </Panel>
 

@@ -41,8 +41,8 @@ export function NewChannelDialog({ onCreate, onClose }: { onCreate: (name: strin
   return (
     <Shell title="New channel" icon={<Megaphone size={17} />} onClose={onClose}>
       <p className="text-xs leading-relaxed text-ink-600">
-        You post; readers read. Posts are encrypted once with a channel key that only readers&apos; devices hold. Invite people with codes
-        from the channel; readers do not see who else reads.
+        You post; your readers read. Posts are encrypted once with a channel key that only readers&apos; devices hold. Invite people
+        with codes from the channel; readers do not see who else reads. For a conversation where everyone posts, make a large group.
       </p>
       <input
         autoFocus
@@ -68,13 +68,14 @@ export function NewChannelDialog({ onCreate, onClose }: { onCreate: (name: strin
   );
 }
 
-/** "Join channel": an invite code from the channel's owner or an admin. */
+/** "Join with a code": an invite code from a channel's or large group's owner or an admin. */
 export function JoinChannelDialog({ onJoin, onClose }: { onJoin: (code: string) => Promise<void>; onClose: () => void }) {
   const [code, setCode] = useState("");
   const { busy, error, setError, run } = useAction();
   const normalized = normalizeInviteCode(code);
   return (
-    <Shell title="Join a channel" icon={<LogIn size={17} />} onClose={onClose}>
+    <Shell title="Join with an invite code" icon={<LogIn size={17} />} onClose={onClose}>
+      <p className="text-xs leading-relaxed text-ink-600">For a channel or a large group. Ask its owner or an admin for a code.</p>
       <input
         autoFocus
         value={code}
