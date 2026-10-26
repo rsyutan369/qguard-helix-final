@@ -3,14 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence, useMotionValue, useTransform, useSpring } from 'motion/react';
+import Navbar2 from "@/components/ui/navbar2";
 import { Hero195 } from "@/components/ui/hero-195";
 import { StickyFeatureSection } from "@/components/ui/sticky-scroll-cards-section";
 import { QuantumFeaturesMarquee } from "@/components/ui/QuantumFeaturesMarquee";
 import {
   Activity,
-  BookOpen,
   Calendar,
   Shield,
   Check,
@@ -23,7 +23,6 @@ import {
   Key,
   KeyRound,
   Lock,
-  MessageSquareLock,
   AlertTriangle,
   MoveRight,
   FileCheck,
@@ -2567,13 +2566,7 @@ export default function App() {
   const [now, setNow] = useState(() => new Date());
   const [expandedNistPhase, setExpandedNistPhase] = useState<number | null>(null);
   const [heroTypedLength, setHeroTypedLength] = useState(0);
-  const [navScrolled, setNavScrolled] = useState(false);
-  const [isPlatformMenuOpen, setIsPlatformMenuOpen] = useState(false);
-  const [isSolutionsMenuOpen, setIsSolutionsMenuOpen] = useState(false);
-  const [isResourcesMenuOpen, setIsResourcesMenuOpen] = useState(false);
   const [isDemoModalOpen, setIsDemoModalOpen] = useState(false);
-  const homepageNavRef = useRef<HTMLElement | null>(null);
-  const isHomepageMenuOpen = isPlatformMenuOpen || isSolutionsMenuOpen || isResourcesMenuOpen;
   const countdownUnits = useMemo(() => getQuantumCountdown(now), [now]);
   const typedLineOne = HERO_LINE_ONE.slice(0, heroTypedLength);
   const typedLineTwoLength = Math.max(0, heroTypedLength - HERO_LINE_ONE.length);
@@ -2584,11 +2577,6 @@ export default function App() {
   );
   const isTypingSecondLine = heroTypedLength > HERO_LINE_ONE.length;
   const isHeroTypewriterComplete = heroTypedLength >= HERO_CHARACTER_COUNT;
-  const closeHomepageMenus = () => {
-    setIsPlatformMenuOpen(false);
-    setIsSolutionsMenuOpen(false);
-    setIsResourcesMenuOpen(false);
-  };
 
   useEffect(() => {
     const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -2619,368 +2607,12 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    const handleScroll = () => {
-      setNavScrolled(window.scrollY > 24);
-
-      if (isHomepageMenuOpen) {
-        closeHomepageMenus();
-      }
-    };
-
-    setNavScrolled(window.scrollY > 24);
-    window.addEventListener('scroll', handleScroll, { passive: true });
-
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, [isHomepageMenuOpen]);
-
-  useEffect(() => {
-    if (!isHomepageMenuOpen) {
-      return;
-    }
-
-    const handleOutsidePointer = (event: MouseEvent | TouchEvent) => {
-      const target = event.target;
-
-      if (target instanceof Node && !homepageNavRef.current?.contains(target)) {
-        closeHomepageMenus();
-      }
-    };
-
-    document.addEventListener('mousedown', handleOutsidePointer);
-    document.addEventListener('touchstart', handleOutsidePointer, { passive: true });
-
-    return () => {
-      document.removeEventListener('mousedown', handleOutsidePointer);
-      document.removeEventListener('touchstart', handleOutsidePointer);
-    };
-  }, [isHomepageMenuOpen]);
-
-  useEffect(() => {
-    const handleHomepageNavigation = () => closeHomepageMenus();
-
-    window.addEventListener('hashchange', handleHomepageNavigation);
-    window.addEventListener('popstate', handleHomepageNavigation);
-
-    return () => {
-      window.removeEventListener('hashchange', handleHomepageNavigation);
-      window.removeEventListener('popstate', handleHomepageNavigation);
-    };
-  }, []);
-
   return (
     <TooltipProvider>
       <div className="qguard-home qguard-home--light min-h-screen overflow-x-hidden bg-transparent text-foreground selection:bg-quantum-blue/30">
         <CyberBackground variant="light" />
 
-        {/* Navigation Bar */}
-        <header ref={homepageNavRef} className={`homepage-nav fixed top-0 left-0 right-0 z-50 border-b backdrop-blur-2xl transition-all duration-300 ${navScrolled ? 'homepage-nav--scrolled' : ''}`}>
-          <div className="mx-auto flex h-16 max-w-[96rem] items-center justify-between px-4 sm:px-6">
-            <a href="#hero" className="homepage-nav__brand group flex min-w-0 items-center gap-3 no-underline">
-              <img
-                src="/NEW_LOGO.png"
-                alt="Qguard Helix logo"
-                className="homepage-nav__logo h-16 w-auto shrink-0 object-contain"
-              />
-              <span className="hidden min-w-0 flex-col leading-none sm:flex">
-                <span className="homepage-nav__wordmark whitespace-nowrap text-lg font-black tracking-[0.03em] text-gold gold-glow transition-colors group-hover:text-cyan-600">
-                  Qguard Helix
-                </span>
-                <span className="homepage-logo-subtitle homepage-nav__tagline mt-1 whitespace-nowrap bg-gradient-to-r from-cyan-500 via-slate-600 to-violet-600 bg-clip-text font-mono text-[10px] font-black uppercase tracking-[0.32em] text-transparent">
-                  Quantum Cyber Defense
-                </span>
-              </span>
-            </a>
-
-            <nav className="homepage-nav__links hidden items-center lg:flex">
-              {[
-                { label: 'Platform', href: '#migration-process', active: true, dropdown: true },
-                { label: 'Solutions', href: '#nist-strategy', dropdown: true },
-                { label: 'Resources', href: '/docs', dropdown: true },
-                { label: 'Free Scan', href: '/public-scan' },
-                { label: 'Pricing', href: '#pricing' },
-                { label: 'Company', href: '#faq' }
-              ].map((item) => {
-                if (item.label === 'Platform') {
-                  return (
-                    <button
-                      key={item.label}
-                      type="button"
-                      aria-expanded={isPlatformMenuOpen}
-                      aria-controls="homepage-platform-menu"
-                      onClick={() => {
-                        setIsPlatformMenuOpen((open) => !open);
-                        setIsSolutionsMenuOpen(false);
-                        setIsResourcesMenuOpen(false);
-                      }}
-                      className={`homepage-nav__link homepage-nav__link--button ${isPlatformMenuOpen ? 'homepage-nav__link--active' : ''} text-sm font-semibold text-muted-foreground no-underline transition-colors hover:text-gold`}
-                    >
-                      {item.label}
-                      <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isPlatformMenuOpen ? 'rotate-180' : ''}`} />
-                    </button>
-                  );
-                }
-
-                if (item.label === 'Solutions') {
-                  return (
-                    <button
-                      key={item.label}
-                      type="button"
-                      aria-expanded={isSolutionsMenuOpen}
-                      aria-controls="homepage-solutions-menu"
-                      onClick={() => {
-                        setIsSolutionsMenuOpen((open) => !open);
-                        setIsPlatformMenuOpen(false);
-                        setIsResourcesMenuOpen(false);
-                      }}
-                      className={`homepage-nav__link homepage-nav__link--button ${isSolutionsMenuOpen ? 'homepage-nav__link--active' : ''} text-sm font-semibold text-muted-foreground no-underline transition-colors hover:text-gold`}
-                    >
-                      {item.label}
-                      <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isSolutionsMenuOpen ? 'rotate-180' : ''}`} />
-                    </button>
-                  );
-                }
-
-                if (item.label === 'Resources') {
-                  return (
-                    <button
-                      key={item.label}
-                      type="button"
-                      aria-expanded={isResourcesMenuOpen}
-                      aria-controls="homepage-resources-menu"
-                      onClick={() => {
-                        setIsResourcesMenuOpen((open) => !open);
-                        setIsPlatformMenuOpen(false);
-                        setIsSolutionsMenuOpen(false);
-                      }}
-                      className={`homepage-nav__link homepage-nav__link--button ${isResourcesMenuOpen ? 'homepage-nav__link--active' : ''} text-sm font-semibold text-muted-foreground no-underline transition-colors hover:text-gold`}
-                    >
-                      {item.label}
-                      <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isResourcesMenuOpen ? 'rotate-180' : ''}`} />
-                    </button>
-                  );
-                }
-
-                return (
-                  <a
-                    key={item.label}
-                    href={item.href}
-                    onClick={() => {
-                      setIsPlatformMenuOpen(false);
-                      setIsSolutionsMenuOpen(false);
-                      setIsResourcesMenuOpen(false);
-                    }}
-                    className="homepage-nav__link text-sm font-semibold text-muted-foreground no-underline transition-colors hover:text-gold"
-                  >
-                    {item.label}
-                    {item.dropdown && <ChevronDown className="h-3.5 w-3.5" />}
-                  </a>
-                );
-              })}
-              <div
-                id="homepage-platform-menu"
-                className={`homepage-nav__platform-menu ${isPlatformMenuOpen ? 'homepage-nav__platform-menu--open' : ''}`}
-              >
-                <span className="homepage-nav__menu-kicker">Platform Sections</span>
-                {[
-                  {
-                    title: 'Post-Quantum Migration Process',
-                    description: 'A phased workflow for discovery, assessment, migration, validation, and monitoring.',
-                    href: '#migration-process',
-                    icon: RefreshCcw
-                  },
-                  {
-                    title: 'Core Platform Capabilities',
-                    description: 'Runtime crypto visibility, risk scoring, orchestration, governance, and crypto-agility.',
-                    href: '#core-capabilities-section',
-                    icon: Activity
-                  },
-                  {
-                    title: 'Removing the RoadBlocks',
-                    description: 'Practical answers for PQC readiness, crypto inventory gaps, vendors, VPNs, and TLS risk.',
-                    href: '#mitigation-roadblocks-section',
-                    icon: Lock
-                  },
-                  {
-                    title: 'Quantum Risk Assessment Sandbox',
-                    description: 'Interactive classification of RSA, ECC, symmetric crypto, and NIST PQC primitives.',
-                    href: '#simulator',
-                    icon: Terminal
-                  },
-                  {
-                    title: 'Post Quantum Roadmap',
-                    description: 'A 2026-2029 plan for inventory, prioritization, pilots, migration, and assurance.',
-                    href: '#roadmap',
-                    icon: Calendar
-                  },
-                  {
-                    title: 'Qguard Helix - Advance Features',
-                    description: 'Unified operational surface for HNDL, runtime visibility, trust fabric, crypto agility, migration, sandboxing, rollback, and vaulting.',
-                    href: '#command-center',
-                    icon: Database
-                  },
-                  {
-                    title: 'Quantum Encryption Services Use Cases',
-                    description: 'Coming soon - applied encryption, QRNG, authentication, tokenization, and secure communication patterns.',
-                    href: '#use-cases',
-                    icon: KeyRound
-                  }
-                ].map((entry) => (
-                  <a
-                    href={entry.href}
-                    className="homepage-nav__menu-item no-underline"
-                    key={entry.title}
-                    onClick={() => {
-                      setIsPlatformMenuOpen(false);
-                      setIsSolutionsMenuOpen(false);
-                      setIsResourcesMenuOpen(false);
-                    }}
-                  >
-                    <span className="homepage-nav__menu-icon">
-                      <entry.icon className="h-4 w-4" />
-                    </span>
-                    <span>
-                      <strong>{entry.title}</strong>
-                      <small>{entry.description}</small>
-                    </span>
-                  </a>
-                ))}
-              </div>
-              <div
-                id="homepage-solutions-menu"
-                className={`homepage-nav__platform-menu homepage-nav__solutions-menu ${isSolutionsMenuOpen ? 'homepage-nav__platform-menu--open' : ''}`}
-              >
-                <span className="homepage-nav__menu-kicker">Solution Suites</span>
-                {[
-                  {
-                    title: 'QGuard Helix Features',
-                    description: 'The full platform showcase — all fifteen modules, what each one does, and the business value it delivers.',
-                    href: '/qguard-helix-features',
-                    icon: Sparkles
-                  },
-                  {
-                    title: 'PQC Solutions',
-                    description: 'The six problems that stall every PQC migration — hidden trust, shadow crypto, unmanaged keys — solved in one platform.',
-                    href: '/pqc-solutions',
-                    icon: CheckCircle2
-                  },
-                  {
-                    title: 'Qguard Messaging',
-                    description: 'End-to-end encrypted Secure Chat and an on-device Quantum Vault, built on NIST post-quantum cryptography.',
-                    href: '/qguard-messaging',
-                    icon: MessageSquareLock
-                  },
-                  {
-                    title: 'Public Quantum Exposure Assessment',
-                    description: 'Free, no-signup scan of your Internet-facing TLS, certificates and post-quantum readiness.',
-                    href: '/public-scan',
-                    icon: Search
-                  },
-                  {
-                    title: 'Quantum Readiness & Assessment',
-                    description: 'Score quantum risk, model exposure, and generate executive readiness reports.',
-                    href: '/quantum-readiness-assessment',
-                    icon: Search
-                  },
-                  {
-                    title: 'Post-Quantum Migration Platform',
-                    description: 'Discover your crypto estate, then plan, orchestrate, and validate PQC migration with rollback-safe controls.',
-                    href: '/post-quantum-migration-platform',
-                    icon: RefreshCcw
-                  },
-                  {
-                    title: 'Quantum Trust & Governance Center',
-                    description: 'Enterprise governance, full QKMS, and SOC 2 / PCI-DSS / NIST compliance across your estate.',
-                    href: '/quantum-trust-governance-center',
-                    icon: ShieldCheck
-                  }
-                ].map((entry) => (
-                  <a
-                    href={entry.href}
-                    className="homepage-nav__menu-item no-underline"
-                    key={entry.title}
-                    onClick={() => {
-                      setIsPlatformMenuOpen(false);
-                      setIsSolutionsMenuOpen(false);
-                      setIsResourcesMenuOpen(false);
-                    }}
-                  >
-                    <span className="homepage-nav__menu-icon">
-                      <entry.icon className="h-4 w-4" />
-                    </span>
-                    <span>
-                      <strong>{entry.title}</strong>
-                      <small>{entry.description}</small>
-                    </span>
-                  </a>
-                ))}
-              </div>
-              <div
-                id="homepage-resources-menu"
-                className={`homepage-nav__platform-menu homepage-nav__resources-menu ${isResourcesMenuOpen ? 'homepage-nav__platform-menu--open' : ''}`}
-              >
-                <span className="homepage-nav__menu-kicker">Resource Library</span>
-                {[
-                  {
-                    title: 'Qguard Helix PQC Checklist',
-                    description: 'Download the CPM readiness checklist for cryptographic visibility, governance, and post-quantum migration planning.',
-                    href: '/resources/pqc-checklist',
-                    icon: FileCheck
-                  },
-                  {
-                    title: 'Documentation Center',
-                    description: 'Review platform guides, module walkthroughs, API references, and operational workflows.',
-                    href: '/docs',
-                    icon: BookOpen
-                  }
-                ].map((entry) => (
-                  <a
-                    href={entry.href}
-                    className="homepage-nav__menu-item no-underline"
-                    key={entry.title}
-                    onClick={() => {
-                      setIsPlatformMenuOpen(false);
-                      setIsSolutionsMenuOpen(false);
-                      setIsResourcesMenuOpen(false);
-                    }}
-                  >
-                    <span className="homepage-nav__menu-icon">
-                      <entry.icon className="h-4 w-4" />
-                    </span>
-                    <span>
-                      <strong>{entry.title}</strong>
-                      <small>{entry.description}</small>
-                    </span>
-                  </a>
-                ))}
-              </div>
-            </nav>
-
-            <div className="homepage-nav__actions hidden items-center gap-4 lg:flex">
-              <div className="homepage-nav__status">
-                <span>Status:</span>
-                <i />
-                <strong>Active</strong>
-              </div>
-              <a
-                href="/login"
-                className="homepage-nav__auth inline-flex h-11 items-center gap-2 rounded-lg bg-gold px-6 font-black uppercase tracking-[0.12em] text-cyber-black no-underline shadow-[0_0_24px_rgba(212,175,55,0.28)] transition-all hover:bg-white hover:shadow-[0_0_38px_rgba(212,175,55,0.45)]"
-              >
-                <Users className="h-4 w-4" />
-                Login / Register
-              </a>
-            </div>
-
-            <div className="flex items-center gap-2 lg:hidden">
-              <a
-                href="/login"
-                className="homepage-nav__auth inline-flex h-10 items-center rounded-lg bg-gold px-4 text-xs font-black uppercase tracking-[0.1em] text-cyber-black no-underline shadow-[0_0_20px_rgba(212,175,55,0.24)] transition-all hover:bg-white"
-              >
-                Login
-              </a>
-            </div>
-          </div>
-        </header>
+        <Navbar2 onRequestDemo={() => setIsDemoModalOpen(true)} />
 
         {/* Hero Section */}
         <section id="hero" className="hero-shell relative pt-32 pb-20 px-6 min-h-screen flex flex-col justify-center">
