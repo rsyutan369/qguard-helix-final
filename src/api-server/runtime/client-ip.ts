@@ -23,3 +23,19 @@ export function trustedClientIp(req: Request): string | null {
   const value = (Array.isArray(raw) ? raw[0] : raw || '').split(',')[0].trim()
   return value && isIP(value) ? value : null
 }
+
+/**
+ * The client a rate limit is charged to: the trusted header when configured,
+ * otherwise the leftmost `X-Forwarded-For`, `X-Real-IP`, then the socket peer.
+ * Without TRUSTED_CLIENT_IP_HEADER the forwarded values are caller-supplied,
+ * so a limit keyed on this is best-effort, not a security boundary.
+ */
+export function readClientIp(req: Request): string {
+  const trusted = trustedClientIp(req)
+  if (trusted) return trusted
+  const forwarded = req.headers['x-forwarded-for']
+  if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0].trim()
+  const realIp = req.headers['x-real-ip']
+  if (typeof realIp === 'string' && realIp.trim()) return realIp.trim()
+  return req.ip || req.socket.remoteAddress || 'unknown'
+}

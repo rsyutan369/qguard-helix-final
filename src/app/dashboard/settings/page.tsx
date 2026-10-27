@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   Clock3,
   CreditCard,
-  Globe2,
   KeyRound,
   Laptop,
   LockKeyhole,
@@ -29,23 +28,19 @@ import {
 import BillingTab from './BillingTab'
 import {
   MfaEnrollment,
-  ProfileTheme,
   UserActivity,
   UserDevice,
-  UserPreferences,
   UserProfileSettings,
   UserSecuritySettings,
   UserSession,
   useProfileSettings,
 } from '@/hooks/use-profile-settings'
 import { useBillingSettings } from '@/hooks/use-billing-settings'
+import { useUserPreferences } from '@/contexts/user-preferences-context'
+import PreferencesTab from './PreferencesTab'
+import { SectionCard, ToggleRow, ghostButtonClass, inputClass, labelClass, primaryButtonClass } from './_ui'
 
 type SettingsTab = 'profile' | 'security' | 'preferences' | 'activity' | 'billing'
-
-const inputClass = 'w-full rounded-lg border border-gold/15 bg-[#0f1428]/45 px-3 py-2.5 text-sm text-white outline-none transition focus:border-gold/50 focus:bg-[#0f1428]/65'
-const labelClass = 'mb-1.5 block text-[10px] font-black uppercase tracking-[0.16em] text-white/35'
-const ghostButtonClass = 'inline-flex items-center justify-center gap-2 rounded-lg border border-gold/20 bg-gold/[0.04] px-3 py-2 text-xs font-bold text-gold transition hover:border-gold/40 hover:bg-gold/[0.08] disabled:cursor-not-allowed disabled:opacity-50'
-const primaryButtonClass = 'inline-flex items-center justify-center gap-2 rounded-lg border border-gold/40 bg-gold px-4 py-2 text-xs font-black uppercase tracking-[0.12em] text-black shadow-[0_0_20px_rgba(212,175,55,0.18)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50'
 
 const TABS: { key: SettingsTab; label: string; icon: typeof UserCog }[] = [
   { key: 'profile', label: 'Profile', icon: UserCog },
@@ -53,22 +48,6 @@ const TABS: { key: SettingsTab; label: string; icon: typeof UserCog }[] = [
   { key: 'preferences', label: 'Preferences', icon: Settings },
   { key: 'activity', label: 'Activity', icon: Activity },
   { key: 'billing', label: 'Billing', icon: CreditCard },
-]
-
-const THEME_OPTIONS: { key: ProfileTheme; label: string; accent: string }[] = [
-  { key: 'gold', label: 'Gold', accent: 'from-gold to-yellow-200' },
-  { key: 'dark', label: 'Dark', accent: 'from-zinc-500 to-white' },
-  { key: 'light', label: 'Light', accent: 'from-white to-cyan-200' },
-  { key: 'cyber', label: 'Cyber', accent: 'from-cyan-400 to-fuchsia-400' },
-]
-
-const TIMEZONES = ['UTC', 'Asia/Manila', 'America/New_York', 'America/Los_Angeles', 'Europe/London', 'Europe/Berlin', 'Asia/Tokyo', 'Asia/Singapore']
-const LANGUAGES = [
-  { value: 'en', label: 'English' },
-  { value: 'es', label: 'Spanish' },
-  { value: 'fr', label: 'French' },
-  { value: 'de', label: 'German' },
-  { value: 'ja', label: 'Japanese' },
 ]
 
 // `role` is NOT part of the editable draft: profiles.role is the access role
@@ -114,14 +93,6 @@ function validateProfileDraft(draft: ProfileDraft) {
   if (draft.phone && !/^[+()0-9\s.-]{7,40}$/.test(draft.phone)) {
     return 'Phone number can only include digits, spaces, plus signs, dashes, dots, and parentheses.'
   }
-  return null
-}
-
-function validatePreferencesDraft(draft: UserPreferences) {
-  if (!LANGUAGES.some((language) => language.value === draft.language)) return 'Choose a supported language.'
-  if (!TIMEZONES.includes(draft.timezone)) return 'Choose a supported timezone.'
-  if (!['compact', 'comfortable', 'expanded'].includes(draft.dashboardDensity)) return 'Choose a valid dashboard density.'
-  if (!draft.defaultDashboardView.trim()) return 'Choose a default dashboard view.'
   return null
 }
 
@@ -173,14 +144,6 @@ function qrImageSource(value: string) {
   return `data:image/svg+xml;utf8,${encodeURIComponent(value)}`
 }
 
-function SectionCard({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return (
-    <div className={`rounded-lg border p-5 shadow-[0_0_30px_rgba(0,0,0,0.25)] ${className} glass-panel`}>
-      {children}
-    </div>
-  )
-}
-
 function TextField({
   label,
   value,
@@ -211,35 +174,6 @@ function TextField({
         onChange={(event) => onChange(event.target.value)}
       />
     </label>
-  )
-}
-
-function ToggleRow({
-  title,
-  description,
-  checked,
-  onChange,
-}: {
-  title: string
-  description: string
-  checked: boolean
-  onChange: (checked: boolean) => void
-}) {
-  return (
-    <div className="flex items-center justify-between gap-4 rounded-lg border border-white/10 bg-white/[0.025] p-3">
-      <div>
-        <div className="text-sm font-bold text-white/85">{title}</div>
-        <div className="mt-0.5 text-xs text-white/40">{description}</div>
-      </div>
-      <button
-        type="button"
-        aria-pressed={checked}
-        onClick={() => onChange(!checked)}
-        className={`relative h-7 w-12 shrink-0 rounded-full border transition ${checked ? 'border-gold/50 bg-gold/35' : 'border-white/15 bg-white/10'}`}
-      >
-        <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition ${checked ? 'left-6' : 'left-1'}`} />
-      </button>
-    </div>
   )
 }
 
@@ -628,9 +562,9 @@ function SecurityTab({
             <h3 className="text-sm font-black uppercase tracking-[0.16em] text-white/70">Security Notifications</h3>
           </div>
           <div className="grid gap-3 lg:grid-cols-3">
-            <ToggleRow title="MFA enforcement" description="Require MFA for privileged account actions." checked={securityDraft.mfaEnforced} onChange={(value) => updateSecurityDraft({ mfaEnforced: value })} />
-            <ToggleRow title="Suspicious login alerts" description="Receive alerts when a new device or location appears." checked={securityDraft.suspiciousLoginAlerts} onChange={(value) => updateSecurityDraft({ suspiciousLoginAlerts: value })} />
-            <ToggleRow title="Security email notices" description="Send account security changes to verified email." checked={securityDraft.securityEmailNotifications} onChange={(value) => updateSecurityDraft({ securityEmailNotifications: value })} />
+            <ToggleRow id="sec-mfa-enforced" title="MFA enforcement" description="Require MFA for privileged account actions." checked={securityDraft.mfaEnforced} onChange={(value) => updateSecurityDraft({ mfaEnforced: value })} />
+            <ToggleRow id="sec-suspicious-login" title="Suspicious login alerts" description="Receive alerts when a new device or location appears." checked={securityDraft.suspiciousLoginAlerts} onChange={(value) => updateSecurityDraft({ suspiciousLoginAlerts: value })} />
+            <ToggleRow id="sec-email-notices" title="Security email notices" description="Send account security changes to verified email." checked={securityDraft.securityEmailNotifications} onChange={(value) => updateSecurityDraft({ securityEmailNotifications: value })} />
           </div>
           {securityValidationError && (
             <div className="mt-3 rounded-lg border border-yellow-400/20 bg-yellow-400/10 px-3 py-2 text-xs text-yellow-100">
@@ -746,128 +680,6 @@ function DeviceRow({ device, saving, onTrust }: { device: UserDevice; saving: bo
   )
 }
 
-function PreferencesTab({
-  preferences,
-  saving,
-  onSave,
-}: {
-  preferences: UserPreferences
-  saving: boolean
-  onSave: (updates: Partial<UserPreferences>) => Promise<UserPreferences>
-}) {
-  const [draft, setDraft] = useState<UserPreferences>(preferences)
-  const [dirty, setDirty] = useState(false)
-
-  useEffect(() => {
-    if (!dirty) setDraft(preferences)
-  }, [dirty, preferences])
-
-  const validationError = useMemo(() => validatePreferencesDraft(draft), [draft])
-  const updateDraft = useCallback((updates: Partial<UserPreferences>) => {
-    setDirty(true)
-    setDraft((prev) => ({ ...prev, ...updates }))
-  }, [])
-
-  async function submit(event: FormEvent) {
-    event.preventDefault()
-    if (validationError) return
-    const saved = await onSave(draft)
-    setDraft(saved)
-    setDirty(false)
-  }
-
-  return (
-    <form onSubmit={submit} className="space-y-5">
-      <SectionCard>
-        <div className="mb-4 flex items-center gap-2">
-          <Settings className="h-4 w-4 text-gold" />
-          <h3 className="text-sm font-black uppercase tracking-[0.16em] text-white/70">Theme</h3>
-        </div>
-        <div className="grid gap-3 md:grid-cols-4">
-          {THEME_OPTIONS.map((theme) => (
-            <button
-              key={theme.key}
-              type="button"
-              onClick={() => updateDraft({ theme: theme.key })}
-              className={`rounded-lg border p-4 text-left transition ${draft.theme === theme.key ? 'border-gold/50 bg-gold/[0.08]' : 'border-white/10 bg-white/[0.025] hover:border-gold/25'}`}
-            >
-              <span className={`mb-3 block h-7 rounded-md bg-gradient-to-r ${theme.accent}`} />
-              <span className="text-sm font-black text-white/85">{theme.label}</span>
-            </button>
-          ))}
-        </div>
-      </SectionCard>
-
-      <div className="grid gap-5 xl:grid-cols-2">
-        <SectionCard>
-          <div className="mb-4 flex items-center gap-2">
-            <Bell className="h-4 w-4 text-gold" />
-            <h3 className="text-sm font-black uppercase tracking-[0.16em] text-white/70">Notifications</h3>
-          </div>
-          <div className="space-y-3">
-            <ToggleRow title="Email notifications" description="Operational and account updates." checked={draft.notificationEmail} onChange={(value) => updateDraft({ notificationEmail: value })} />
-            <ToggleRow title="Push notifications" description="Browser and dashboard alerts." checked={draft.notificationPush} onChange={(value) => updateDraft({ notificationPush: value })} />
-            <ToggleRow title="SMS notifications" description="Critical account and security events." checked={draft.notificationSms} onChange={(value) => updateDraft({ notificationSms: value })} />
-            <ToggleRow title="Security alerts" description="MFA, session, and suspicious activity notices." checked={draft.securityAlerts} onChange={(value) => updateDraft({ securityAlerts: value })} />
-            <ToggleRow title="Product updates" description="Release notes and platform announcements." checked={draft.productUpdates} onChange={(value) => updateDraft({ productUpdates: value })} />
-          </div>
-        </SectionCard>
-
-        <SectionCard>
-          <div className="mb-4 flex items-center gap-2">
-            <Globe2 className="h-4 w-4 text-gold" />
-            <h3 className="text-sm font-black uppercase tracking-[0.16em] text-white/70">Localization</h3>
-          </div>
-          <div className="grid gap-4">
-            <label>
-              <span className={labelClass}>Language</span>
-              <select className={inputClass} value={draft.language} onChange={(event) => updateDraft({ language: event.target.value })}>
-                {LANGUAGES.map((language) => <option key={language.value} value={language.value}>{language.label}</option>)}
-              </select>
-            </label>
-            <label>
-              <span className={labelClass}>Timezone</span>
-              <select className={inputClass} value={draft.timezone} onChange={(event) => updateDraft({ timezone: event.target.value })}>
-                {TIMEZONES.map((timezone) => <option key={timezone} value={timezone}>{timezone}</option>)}
-              </select>
-            </label>
-            <label>
-              <span className={labelClass}>Dashboard density</span>
-              <select className={inputClass} value={draft.dashboardDensity} onChange={(event) => updateDraft({ dashboardDensity: event.target.value as UserPreferences['dashboardDensity'] })}>
-                <option value="compact">Compact</option>
-                <option value="comfortable">Comfortable</option>
-                <option value="expanded">Expanded</option>
-              </select>
-            </label>
-            <label>
-              <span className={labelClass}>Default dashboard view</span>
-              <select className={inputClass} value={draft.defaultDashboardView} onChange={(event) => updateDraft({ defaultDashboardView: event.target.value })}>
-                <option value="overview">Overview</option>
-                <option value="quantum-risk-scoring">Quantum Risk Scoring</option>
-                <option value="scanner">PQC Scanner</option>
-              </select>
-            </label>
-            <ToggleRow title="Telemetry sync" description="Use live profile telemetry and account activity streams." checked={draft.telemetryOptIn} onChange={(value) => updateDraft({ telemetryOptIn: value })} />
-          </div>
-        </SectionCard>
-      </div>
-
-      {validationError && (
-        <div className="rounded-lg border border-yellow-400/20 bg-yellow-400/10 px-3 py-2 text-xs text-yellow-100">
-          {validationError}
-        </div>
-      )}
-
-      <div className="flex justify-end">
-        <button type="submit" className={primaryButtonClass} disabled={saving || Boolean(validationError)}>
-          <Save className="h-3.5 w-3.5" />
-          Save Preferences
-        </button>
-      </div>
-    </form>
-  )
-}
-
 function ActivityTab({ activity, onRefresh, saving }: { activity: UserActivity[]; onRefresh: () => Promise<void>; saving: boolean }) {
   return (
     <SectionCard>
@@ -925,12 +737,12 @@ export default function ProfileSettingsPage() {
     saving,
     error,
     sseConnected,
+    telemetryEnabled,
     recoveryCodes,
     clearRecoveryCodes,
     refresh,
     refreshActivity,
     updateProfile,
-    updatePreferences,
     updateSecurity,
     uploadMedia,
     removeMedia,
@@ -942,7 +754,9 @@ export default function ProfileSettingsPage() {
     regenerateRecoveryCodes,
     setDeviceTrust,
     revokeSession,
+    updatePreferences,
   } = useProfileSettings()
+  const { error: preferencesError, refresh: refreshPreferences } = useUserPreferences()
   const {
     billing,
     loading: billingLoading,
@@ -984,6 +798,15 @@ export default function ProfileSettingsPage() {
     return Math.min(100, score)
   }, [devices, profile, security])
 
+  function selectTab(tab: SettingsTab) {
+    setActiveTab(tab)
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href)
+      url.searchParams.set('tab', tab)
+      window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
+    }
+  }
+
   async function showNotice<T>(action: () => Promise<T>, message: string): Promise<T> {
     setNotice(null)
     const result = await action()
@@ -1017,8 +840,8 @@ export default function ProfileSettingsPage() {
         <SectionCard className="mx-auto max-w-xl text-center">
           <ShieldAlert className="mx-auto mb-4 h-8 w-8 text-yellow-300" />
           <h1 className="text-xl font-black text-white">Profile settings unavailable</h1>
-          <p className="mt-2 text-sm text-white/45">{error || 'The account profile schema is not ready yet.'}</p>
-          <button type="button" className={`${primaryButtonClass} mt-5`} onClick={refresh}>
+          <p className="mt-2 text-sm text-white/45">{error || preferencesError || 'The account profile schema is not ready yet.'}</p>
+          <button type="button" className={`${primaryButtonClass} mt-5`} onClick={() => { void refresh(); void refreshPreferences() }}>
             <RefreshCw className="h-3.5 w-3.5" />
             Retry
           </button>
@@ -1051,9 +874,12 @@ export default function ProfileSettingsPage() {
             </div>
             <div className="rounded-lg border border-white/10 bg-white/[0.035] px-4 py-3">
               <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/35">Realtime</div>
-              <div className={`mt-2 inline-flex items-center gap-2 text-xs font-bold ${sseConnected ? 'text-green-300' : 'text-yellow-300'}`}>
-                <span className={`h-2 w-2 rounded-full ${sseConnected ? 'bg-green-400' : 'bg-yellow-400'} ${sseConnected ? 'animate-pulse' : ''}`} />
-                {sseConnected ? 'Live' : 'Polling'}
+              <div
+                title={telemetryEnabled ? undefined : 'Live telemetry sync is off in Preferences'}
+                className={`mt-2 inline-flex items-center gap-2 text-xs font-bold ${sseConnected ? 'text-green-300' : telemetryEnabled ? 'text-yellow-300' : 'text-white/45'}`}
+              >
+                <span className={`h-2 w-2 rounded-full ${sseConnected ? 'bg-green-400 animate-pulse' : telemetryEnabled ? 'bg-yellow-400' : 'bg-white/30'}`} />
+                {sseConnected ? 'Live' : telemetryEnabled ? 'Polling' : 'Paused'}
               </div>
             </div>
             <div className="rounded-lg border border-white/10 bg-white/[0.035] px-4 py-3">
@@ -1064,9 +890,12 @@ export default function ProfileSettingsPage() {
         </div>
       </header>
 
-      {(error || notice) && (
-        <div className={`rounded-lg border px-4 py-3 text-sm ${error ? 'border-red-500/25 bg-red-500/10 text-red-100' : 'border-green-400/25 bg-green-400/10 text-green-100'}`}>
-          {error || notice}
+      {(error || preferencesError || notice) && (
+        <div
+          role={error || preferencesError ? 'alert' : 'status'}
+          className={`rounded-lg border px-4 py-3 text-sm ${error || preferencesError ? 'border-red-500/25 bg-red-500/10 text-red-100' : 'border-green-400/25 bg-green-400/10 text-green-100'}`}
+        >
+          {error || preferencesError || notice}
         </div>
       )}
 
@@ -1078,14 +907,7 @@ export default function ProfileSettingsPage() {
             <button
               key={tab.key}
               type="button"
-              onClick={() => {
-                setActiveTab(tab.key)
-                if (typeof window !== 'undefined') {
-                  const url = new URL(window.location.href)
-                  url.searchParams.set('tab', tab.key)
-                  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
-                }
-              }}
+              onClick={() => selectTab(tab.key)}
               className={`relative flex items-center gap-2 rounded-t-lg border px-4 py-3 text-xs font-black uppercase tracking-[0.12em] transition ${
                 active ? 'border-gold/35 border-b-black bg-gold/[0.08] text-gold' : 'border-transparent text-white/35 hover:bg-white/[0.03] hover:text-white/70'
               }`}
@@ -1135,7 +957,6 @@ export default function ProfileSettingsPage() {
       {activeTab === 'preferences' && (
         <PreferencesTab
           preferences={preferences}
-          saving={saving}
           onSave={(updates) => showNotice(() => updatePreferences(updates), 'Preferences saved.')}
         />
       )}

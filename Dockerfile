@@ -45,6 +45,56 @@ RUN npm run agent:release \
 RUN npm prune --omit=dev --no-audit --no-fund
 
 # ---------------------------------------------------------------------------
+# public-api — the public website's backend ONLY: the free Web assessment and
+# the Request Demo email (src/api-server/public-api.ts). No agent runtime, no
+# installer, no Supabase or payment credentials needed. Build it explicitly:
+#   docker build --target public-api -t qguard-public-api .
+#   docker run --rm -p 8080:8080 -e ALLOWED_ORIGINS=https://qguardhelix.com \
+#     -e TRUSTED_CLIENT_IP_HEADER=cf-connecting-ip qguard-public-api
+# It sits BEFORE `runtime` so a plain `docker build .` still produces the full
+# platform image (the last stage is the default target).
+# ---------------------------------------------------------------------------
+FROM deps AS public-build
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm prune --omit=dev --no-audit --no-fund
+
+FROM node:${NODE_VERSION}-bookworm-slim AS public-api
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tini ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV NODE_ENV=production \
+    QGUARD_ENVIRONMENT=production \
+    PORT=8080 \
+    NPM_CONFIG_UPDATE_NOTIFIER=false
+
+WORKDIR /app
+COPY --from=public-build --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node package.json package-lock.json tsconfig.json ./
+COPY --from=public-build --chown=node:node /app/src ./src
+
+ARG APP_VERSION=""
+ARG GIT_SHA=""
+ENV APP_VERSION=${APP_VERSION} \
+    GIT_SHA=${GIT_SHA}
+
+LABEL org.opencontainers.image.title="qguard-public-api" \
+      org.opencontainers.image.description="QGuard Helix public assessment and demo request API" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.version="${APP_VERSION}"
+
+USER node
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/api/v1/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["node", "--import", "tsx", "src/api-server/public-standalone.ts"]
+
+# ---------------------------------------------------------------------------
 # runtime — minimal, non-root
 # ---------------------------------------------------------------------------
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime

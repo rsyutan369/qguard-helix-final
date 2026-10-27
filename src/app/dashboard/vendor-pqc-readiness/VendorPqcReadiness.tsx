@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  AlertTriangle, BadgeCheck, Building2, CheckCircle2, ClipboardList, Download, FileCheck2,
-  FlaskConical, Globe2, Link2, Loader2, Send, ShieldCheck, Sparkles,
+  BadgeCheck, Building2, ClipboardList, Download,
+  FlaskConical, Globe2, Link2, Loader2, Network, Send, ShieldCheck, Sparkles,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { WorkflowRail } from '@/components/workflow/WorkflowRail'
-import { useExternalTrustActions, useVendorReadiness } from '@/hooks/use-external-trust'
+import { useEcosystemMap, useExternalTrustActions, useVendorReadiness } from '@/hooks/use-external-trust'
+import { VendorMap } from './VendorMap'
 import {
   ALIGNMENT_LABEL, EVIDENCE_REQUEST_LABEL, EVIDENCE_STAGE_LABEL, EVIDENCE_STAGE_ORDER,
   MIGRATION_SUPPORT_LABEL, OBLIGATION_LABEL, READINESS_LABEL, RISK_LABEL,
@@ -55,8 +56,21 @@ export default function VendorPqcReadiness() {
   const navigate = useNavigate()
   const focusVendor = useQueryParam('vendor')
   const { data, state, error, live, lastGoodAt, refresh } = useVendorReadiness()
+  // The vendor stream already carries every snapshot change; the ecosystem
+  // projection is re-read on that signal instead of opening a second stream.
+  const ecosystem = useEcosystemMap(null, { stream: false })
+  const refreshEcosystem = ecosystem.refresh
+  const ecosystemGeneratedAt = ecosystem.data?.generatedAt
+  useEffect(() => {
+    if (data?.generatedAt && ecosystemGeneratedAt && data.generatedAt !== ecosystemGeneratedAt) void refreshEcosystem()
+    // Only a new vendor snapshot should trigger a re-read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.generatedAt])
   const { requestEvidence, updateEvidenceRequest } = useExternalTrustActions()
 
+  const [category, setCategory] = useState('all')
+  const [mapFocus, setMapFocus] = useState<string | null>(focusVendor ? `vendor:${focusVendor}` : null)
+  const [mapVendorId, setMapVendorId] = useState<string | null>(focusVendor || null)
   const [search, setSearch] = useState('')
   const [readiness, setReadiness] = useState('all')
   const [risk, setRisk] = useState('all')
@@ -74,13 +88,16 @@ export default function VendorPqcReadiness() {
   const [notice, setNotice] = useState<{ tone: 'good' | 'critical'; message: string } | null>(null)
 
   const pageSize = 12
-  useEffect(() => { setPage(0) }, [search, readiness, risk, evidence, owner, criticality, support])
+  useEffect(() => { setPage(0) }, [search, readiness, risk, evidence, owner, criticality, support, category])
+
+  const filtersActive = Boolean(search.trim()) || [readiness, risk, evidence, owner, criticality, support, category].some((value) => value !== 'all')
 
   const records = useMemo(() => {
     if (!data) return []
     const term = search.trim().toLowerCase()
     return data.records.filter((record) => {
       if (term && !`${record.name} ${record.category} ${record.services.join(' ')} ${record.businessOwner} ${record.observedHosts.join(' ')}`.toLowerCase().includes(term)) return false
+      if (category !== 'all' && record.category !== category) return false
       if (readiness !== 'all' && record.readiness !== readiness) return false
       if (risk !== 'all' && record.risk !== risk) return false
       if (evidence !== 'all' && record.evidenceState !== evidence) return false
@@ -89,14 +106,26 @@ export default function VendorPqcReadiness() {
       if (support !== 'all' && record.migrationSupport !== support) return false
       return true
     })
-  }, [data, search, readiness, risk, evidence, owner, criticality, support])
+  }, [data, search, readiness, risk, evidence, owner, criticality, support, category])
 
-  // A cross-page link (?vendor=) opens straight into that vendor's drawer.
+  // A cross-page link (?vendor=) lands on that vendor in the map, with its
+  // context panel open; the full assessment drawer is one click away.
   useEffect(() => {
-    if (!focusVendor || !data || selected) return
-    const match = data.records.find((record) => record.id === focusVendor)
-    if (match) setSelected(match)
-  }, [focusVendor, data, selected])
+    if (!focusVendor) return
+    setMapFocus(`vendor:${focusVendor}`)
+    setMapVendorId(focusVendor)
+  }, [focusVendor])
+
+  const openAssessment = useCallback((record: VendorRecord) => {
+    setSelected(record)
+    setMapFocus(`vendor:${record.id}`)
+    setMapVendorId(record.id)
+  }, [])
+
+  const clearFilters = () => {
+    setSearch(''); setReadiness('all'); setRisk('all'); setEvidence('all')
+    setOwner('all'); setCriticality('all'); setSupport('all'); setCategory('all')
+  }
 
   const pages = Math.max(1, Math.ceil(records.length / pageSize))
   const current = Math.min(page, pages - 1)
@@ -177,7 +206,7 @@ export default function VendorPqcReadiness() {
       `}</style>
 
       <WorkflowRail activeStage="assessment" />
-      <SuiteRail current="vendor" />
+      <SuiteRail current="vendor" context={{ vendor: selected?.id ?? mapVendorId }} />
 
       <PageHeader
         title="Vendor PQC Readiness"
@@ -217,6 +246,49 @@ export default function VendorPqcReadiness() {
               detail="Requests can be composed but not stored until supabase/external-trust-schema.sql is applied to this project. Nothing is faked in the meantime — the workflow simply reports as unavailable."
             />
           )}
+
+          {/* Vendor ecosystem map — shares its filters with the register below */}
+          <SectionCard
+            id="vendor-map" title="Vendor Ecosystem Map" icon={Network}
+            right={<span className="font-mono text-[9px] uppercase tracking-widest text-white/30">{numberFmt(records.length)} / {numberFmt(data.totalUnfiltered)} vendors</span>}
+          >
+            <div className="mb-3 flex flex-wrap items-center gap-2" role="group" aria-label="Vendor filters — applied to the map and the register">
+              <SearchInput value={search} onChange={setSearch} label="Filter vendors" placeholder="Filter vendors, services, owners, hosts…" />
+              <Select label="Readiness" value={readiness} onChange={setReadiness}
+                options={[['all', 'All readiness'], ['ready', 'Ready'], ['hybrid-ready', 'Hybrid Ready'], ['preparing', 'Preparing'], ['committed', 'Committed'], ['not-ready', 'Not Ready'], ['unknown', 'Unknown']]} />
+              <Select label="Risk" value={risk} onChange={setRisk}
+                options={[['all', 'All risk'], ['critical', 'Critical'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low'], ['unknown', 'Unknown']]} />
+              <Select label="Criticality" value={criticality} onChange={setCriticality}
+                options={[['all', 'All criticality'], ['critical', 'Critical'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low'], ['unknown', 'Unknown']]} />
+              <Select label="Category" value={category} onChange={setCategory}
+                options={[['all', 'All categories'], ...data.filters.categories.map((value) => [value, value] as [string, string])]} />
+              <Select label="Migration support" value={support} onChange={setSupport}
+                options={[['all', 'All migration status'], ['full', 'Full Support'], ['partial', 'Partial Support'], ['roadmap-only', 'Roadmap Only'], ['none', 'No Support'], ['unknown', 'Unknown']]} />
+              <Select label="Evidence" value={evidence} onChange={setEvidence}
+                options={[['all', 'All evidence'], ['complete', 'Complete'], ['partial', 'Partial'], ['requested', 'Requested'], ['pending', 'Pending'], ['overdue', 'Overdue'], ['rejected', 'Rejected'], ['unknown', 'Unknown']]} />
+              <Select label="Business owner" value={owner} onChange={setOwner}
+                options={[['all', 'All owners'], ...data.filters.owners.map((value) => [value, value] as [string, string])]} />
+              {filtersActive && (
+                <button type="button" onClick={clearFilters}
+                  className="rounded-lg border border-white/12 bg-white/5 px-2.5 py-1.5 text-[9px] font-black uppercase tracking-wider text-white/60">Clear</button>
+              )}
+            </div>
+            <VendorMap
+              vendors={records}
+              allVendors={data.records}
+              ecosystem={ecosystem.data ? { nodes: ecosystem.data.nodes, edges: ecosystem.data.edges } : null}
+              status={ecosystem.state === 'error' && !ecosystem.data ? 'error' : 'ready'}
+              error={ecosystem.error}
+              onRetry={() => void ecosystem.refresh(true)}
+              focusNodeId={mapFocus}
+              onSelectVendor={setMapVendorId}
+              onOpenAssessment={openAssessment}
+              filtered={filtersActive && data.totalUnfiltered > 0}
+            />
+            <p className="mt-2 text-[10px] leading-relaxed text-white/35">
+              Columns read left to right: internal systems that depend on a vendor, the vendor, the hosts QGuard observed for it, and the algorithms and certificate authorities behind it. Dashed links are inferred; every link states its evidence when selected.
+            </p>
+          </SectionCard>
 
           {/* Readiness distribution — click to filter the register */}
           <SectionCard title="Vendor Readiness Distribution" icon={ShieldCheck}
@@ -281,21 +353,13 @@ export default function VendorPqcReadiness() {
               </div>
             }
           >
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <SearchInput value={search} onChange={setSearch} label="Search vendors" placeholder="Search vendors, services, owners, hosts…" />
-              <Select label="Readiness" value={readiness} onChange={setReadiness}
-                options={[['all', 'All readiness'], ['ready', 'Ready'], ['hybrid-ready', 'Hybrid Ready'], ['preparing', 'Preparing'], ['committed', 'Committed'], ['not-ready', 'Not Ready'], ['unknown', 'Unknown']]} />
-              <Select label="Risk" value={risk} onChange={setRisk}
-                options={[['all', 'All risk'], ['critical', 'Critical'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low'], ['unknown', 'Unknown']]} />
-              <Select label="Evidence" value={evidence} onChange={setEvidence}
-                options={[['all', 'All evidence'], ['complete', 'Complete'], ['partial', 'Partial'], ['requested', 'Requested'], ['pending', 'Pending'], ['overdue', 'Overdue'], ['rejected', 'Rejected'], ['unknown', 'Unknown']]} />
-              <Select label="Criticality" value={criticality} onChange={setCriticality}
-                options={[['all', 'All criticality'], ['critical', 'Critical'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low'], ['unknown', 'Unknown']]} />
-              <Select label="Migration support" value={support} onChange={setSupport}
-                options={[['all', 'All support'], ['full', 'Full Support'], ['partial', 'Partial Support'], ['roadmap-only', 'Roadmap Only'], ['none', 'No Support'], ['unknown', 'Unknown']]} />
-              <Select label="Business owner" value={owner} onChange={setOwner}
-                options={[['all', 'All owners'], ...data.filters.owners.map((value) => [value, value] as [string, string])]} />
-            </div>
+            {filtersActive && (
+              <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-cyan-400/25 bg-cyan-500/[0.06] px-3 py-2 text-[10px] text-white/60">
+                Filtered by the controls on the Vendor Ecosystem Map.
+                <a href="#vendor-map" className="font-bold text-cyan-300 underline">Adjust filters</a>
+                <button type="button" onClick={clearFilters} className="font-bold text-cyan-300 underline">Clear</button>
+              </div>
+            )}
 
             {data.totalUnfiltered === 0 ? (
               <EmptyState icon={Building2} title="No Vendor Assessments"
@@ -320,7 +384,7 @@ export default function VendorPqcReadiness() {
                     </thead>
                     <tbody className="divide-y divide-white/5">
                       {visible.map((record) => (
-                        <tr key={record.id} className="cursor-pointer transition hover:bg-cyan-500/[0.05]" onClick={() => setSelected(record)}>
+                        <tr key={record.id} className="cursor-pointer transition hover:bg-cyan-500/[0.05]" onClick={() => openAssessment(record)}>
                           <td className="px-2 py-2" onClick={(event) => event.stopPropagation()}>
                             <input
                               type="checkbox" aria-label={`Select ${record.name}`}

@@ -90,7 +90,7 @@ function HandshakeEvidencePanel({ crypto }: { crypto: ScenarioCryptoProfile }) {
                 className="rounded-md border px-2.5 py-1.5 font-mono text-[10px] font-bold transition-colors"
                 style={{
                   borderColor: selected ? tint(accent, 0.5) : QSR.hairline,
-                  background: selected ? tint(accent, 0.14) : 'rgba(4,7,16,0.5)',
+                  background: selected ? tint(accent, 0.14) : QSR.well,
                   color: selected ? accent : QSR.inkMuted,
                 }}
               >
@@ -133,7 +133,7 @@ function HandshakeEvidencePanel({ crypto }: { crypto: ScenarioCryptoProfile }) {
           </div>
           <div
             className="qsr-scroll overflow-x-auto rounded-lg border p-3 font-mono text-[10.5px] leading-[1.65]"
-            style={{ borderColor: QSR.hairline, background: '#03050d' }}
+            style={{ borderColor: QSR.hairline, background: QSR.wellSolid }}
           >
             {rows.map((row) => (
               <div key={row.offset} className="flex gap-3 whitespace-pre">
@@ -173,7 +173,7 @@ function HandshakeEvidencePanel({ crypto }: { crypto: ScenarioCryptoProfile }) {
         </div>
 
         <div className="space-y-3">
-          <div className="min-h-[112px] rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.55)' }}>
+          <div className="min-h-[112px] rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: QSR.well }}>
             <div className="font-mono text-[9px] font-bold uppercase tracking-[0.18em]" style={{ color: QSR.inkMuted }}>
               {activeField ? 'Field' : 'Hover a byte'}
             </div>
@@ -198,7 +198,7 @@ function HandshakeEvidencePanel({ crypto }: { crypto: ScenarioCryptoProfile }) {
             )}
           </div>
 
-          <div className="rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.55)' }}>
+          <div className="rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: QSR.well }}>
             <DataRow label="IANA code point" value={`0x${group.id.toString(16).padStart(4, '0')}`} provenance="published" />
             <DataRow label="Client key share" value={`${group.clientShareBytes} B`} provenance="published" />
             <DataRow label="Server key share" value={`${group.serverShareBytes} B`} provenance="published" />
@@ -285,7 +285,7 @@ function ArchiveEvidencePanel({ crypto }: { crypto: ScenarioCryptoProfile }) {
       </div>
 
       <div className="grid gap-3 md:grid-cols-2">
-        <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.55)' }}>
+        <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: QSR.well }}>
           <div className="mb-2 flex items-center gap-1.5">
             <Database className="h-3.5 w-3.5" style={{ color: QSR.broken }} />
             <span className="font-mono text-[9px] font-bold uppercase tracking-[0.18em]" style={{ color: QSR.broken }}>
@@ -415,7 +415,7 @@ function KeyScheduleEvidencePanel() {
                 className="rounded-lg border px-3.5 py-2.5"
                 style={{
                   borderColor: step.consumesSharedSecret ? tint(QSR.broken, 0.4) : QSR.hairline,
-                  background: step.consumesSharedSecret ? tint(QSR.broken, 0.08) : 'rgba(4,7,16,0.5)',
+                  background: step.consumesSharedSecret ? tint(QSR.broken, 0.08) : QSR.well,
                 }}
               >
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -471,7 +471,7 @@ function ExposureEvidencePanel({ scenario, crypto }: { scenario: Scenario; crypt
                 {file.tag}
               </span>
             </div>
-            <div className="mt-2 text-[12px] font-semibold leading-snug text-slate-100">{file.name}</div>
+            <div className="mt-2 text-[12px] font-semibold leading-snug qsr-heading">{file.name}</div>
             <div className="mt-1 truncate font-mono text-[10px]" style={{ color: QSR.inkFaint }}>
               {file.filename}
             </div>
@@ -482,7 +482,7 @@ function ExposureEvidencePanel({ scenario, crypto }: { scenario: Scenario; crypt
         ))}
       </div>
 
-      <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.55)' }}>
+      <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: QSR.well }}>
         <div className="mb-2 font-mono text-[9px] font-bold uppercase tracking-[0.18em]" style={{ color: QSR.broken }}>
           Consequence
         </div>
@@ -550,7 +550,7 @@ function DefenceEvidencePanel() {
             className="rounded-md border px-2.5 py-1.5 font-mono text-[10px] font-bold transition-colors"
             style={{
               borderColor: id === algorithm ? tint(QSR.quantum, 0.5) : QSR.hairline,
-              background: id === algorithm ? tint(QSR.quantum, 0.14) : 'rgba(4,7,16,0.5)',
+              background: id === algorithm ? tint(QSR.quantum, 0.14) : QSR.well,
               color: id === algorithm ? QSR.quantum : QSR.inkMuted,
             }}
           >
@@ -578,7 +578,7 @@ function DefenceEvidencePanel() {
           </div>
 
           <div className="grid gap-3 lg:grid-cols-2">
-            <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.55)' }}>
+            <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: QSR.well }}>
               <div className="mb-2 flex items-center justify-between">
                 <span className="font-mono text-[9px] font-bold uppercase tracking-[0.18em]" style={{ color: QSR.inkMuted }}>
                   Live output vs FIPS 203 Table 3
@@ -601,7 +601,7 @@ function DefenceEvidencePanel() {
               ))}
             </div>
 
-            <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.55)' }}>
+            <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: QSR.well }}>
               <div className="mb-2 font-mono text-[9px] font-bold uppercase tracking-[0.18em]" style={{ color: QSR.inkMuted }}>
                 Material generated a moment ago
               </div>

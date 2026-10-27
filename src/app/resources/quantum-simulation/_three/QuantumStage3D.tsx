@@ -37,7 +37,14 @@ import { Html } from '@react-three/drei';
 import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing';
 import { BlendFunction, KernelSize } from 'postprocessing';
 import type { QveBudget } from '@/app/public-scan/_qve/performance-manager';
-import { QSR } from '../_theme';
+import { QsrThemeProvider, useQsrPalette, type QsrTheme } from '../_theme';
+
+/**
+ * Additive blending is how emitted light is drawn on a dark ground. On a light
+ * ground there is no headroom to add to — packets and bars would vanish — so
+ * the light theme draws them as ordinary opaque-ish geometry instead.
+ */
+const emitBlending = (palette: { theme: QsrTheme }) => (palette.theme === 'dark' ? THREE.AdditiveBlending : THREE.NormalBlending);
 
 /* ═══════════════════════════════════════════════════════════════ scene model */
 
@@ -68,6 +75,8 @@ export interface QuantumStage3DProps {
   /** True when the scenario is on a hybrid (post-quantum) group already. */
   quantumSafe: boolean;
   budget: QveBudget;
+  /** Which palette the scene is painted in. Passed as a prop: context does not cross into the R3F reconciler on its own. */
+  theme: QsrTheme;
   dpr: number;
   onReady?: () => void;
 }
@@ -121,6 +130,7 @@ function StageRig({ stage, animate }: { stage: number; animate: boolean }) {
 
 /** A slowly drifting lattice of points: depth cue, not data. */
 function LatticeField({ count, animate }: { count: number; animate: boolean }) {
+  const P = useQsrPalette();
   const points = React.useRef<THREE.Points>(null);
   const positions = React.useMemo(() => {
     const out = new Float32Array(count * 3);
@@ -143,7 +153,7 @@ function LatticeField({ count, animate }: { count: number; animate: boolean }) {
       <bufferGeometry>
         <bufferAttribute attach="attributes-position" args={[positions, 3]} />
       </bufferGeometry>
-      <pointsMaterial size={0.05} color={QSR.live} transparent opacity={0.22} sizeAttenuation depthWrite={false} />
+      <pointsMaterial size={0.05} color={P.live} transparent opacity={0.22} sizeAttenuation depthWrite={false} />
     </points>
   );
 }
@@ -169,9 +179,10 @@ function SiteNode({
   animate: boolean;
   shape?: 'octahedron' | 'box' | 'cylinder';
 }) {
+  const P = useQsrPalette();
   const group = React.useRef<THREE.Group>(null);
   const ring = React.useRef<THREE.Mesh>(null);
-  const colour = React.useMemo(() => new THREE.Color(compromised ? QSR.broken : accent), [accent, compromised]);
+  const colour = React.useMemo(() => new THREE.Color(compromised ? P.broken : accent), [accent, compromised]);
 
   useFrame((state, delta) => {
     if (!group.current || !animate) return;
@@ -220,13 +231,13 @@ function SiteNode({
               fontSize: 12,
               fontWeight: 700,
               letterSpacing: '0.08em',
-              color: compromised ? QSR.broken : active ? '#e2e8f0' : QSR.inkSoft,
-              textShadow: '0 2px 12px rgba(0,0,0,0.95)',
+              color: compromised ? P.broken : active ? P.ink : P.inkSoft,
+              textShadow: `0 2px 12px ${P.labelShadow}`,
             }}
           >
             {label}
           </div>
-          <div style={{ fontSize: 9, letterSpacing: '0.18em', textTransform: 'uppercase', color: compromised ? QSR.broken : accent, marginTop: 2 }}>
+          <div style={{ fontSize: 9, letterSpacing: '0.18em', textTransform: 'uppercase', color: compromised ? P.broken : accent, marginTop: 2 }}>
             {sublabel}
           </div>
         </div>
@@ -262,6 +273,7 @@ function DataConduit({
   animate: boolean;
   dashed?: boolean;
 }) {
+  const P = useQsrPalette();
   const curve = React.useMemo(() => {
     const mid = from.clone().add(to).multiplyScalar(0.5).add(bow);
     return new THREE.CatmullRomCurve3([from.clone(), mid, to.clone()]);
@@ -299,7 +311,7 @@ function DataConduit({
       {packets > 0 && (
         <instancedMesh ref={instances} args={[undefined, undefined, packets]}>
           <sphereGeometry args={[1, 8, 8]} />
-          <meshBasicMaterial color={colour} transparent opacity={0.5 + intensity * 0.5} blending={THREE.AdditiveBlending} depthWrite={false} />
+          <meshBasicMaterial color={colour} transparent opacity={0.5 + intensity * 0.5} blending={emitBlending(P)} depthWrite={false} />
         </instancedMesh>
       )}
     </group>
@@ -336,10 +348,11 @@ function QuantumCore({
   resolved: boolean;
   animate: boolean;
 }) {
+  const P = useQsrPalette();
   const group = React.useRef<THREE.Group>(null);
   const bars = React.useRef<THREE.InstancedMesh>(null);
   const dummy = React.useMemo(() => new THREE.Object3D(), []);
-  const accent = resolved ? QSR.quantum : QSR.live;
+  const accent = resolved ? P.quantum : P.live;
   const colour = React.useMemo(() => new THREE.Color(accent), [accent]);
 
   /** One lattice point per qubit, on a golden-angle sphere. */
@@ -435,7 +448,7 @@ function QuantumCore({
       {/* The interference ring — real measurement statistics. */}
       <instancedMesh ref={bars} args={[undefined, undefined, RING_BINS]} position={[0, -1.15, 0]}>
         <boxGeometry args={[1, 1, 1]} />
-        <meshBasicMaterial color={colour} transparent opacity={active ? 0.9 : 0.3} blending={THREE.AdditiveBlending} depthWrite={false} />
+        <meshBasicMaterial color={colour} transparent opacity={active ? 0.9 : 0.3} blending={emitBlending(P)} depthWrite={false} />
       </instancedMesh>
 
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.16, 0]}>
@@ -450,6 +463,7 @@ function QuantumCore({
 
 /** Cold storage. Plates light up as the archive fills — staging, not data. */
 function ArchiveSilo({ position, fill, active, animate }: { position: THREE.Vector3; fill: number; active: boolean; animate: boolean }) {
+  const P = useQsrPalette();
   const group = React.useRef<THREE.Group>(null);
   const plates = 9;
 
@@ -465,8 +479,8 @@ function ArchiveSilo({ position, fill, active, animate }: { position: THREE.Vect
           <mesh key={i} position={[0, i * 0.19 - 0.8, 0]}>
             <cylinderGeometry args={[0.78 - i * 0.03, 0.78 - i * 0.03, 0.08, 6]} />
             <meshStandardMaterial
-              color={lit ? QSR.broken : '#16203a'}
-              emissive={lit ? QSR.broken : '#0a1120'}
+              color={lit ? P.broken : P.plateOff}
+              emissive={lit ? P.broken : P.plateOffEmissive}
               emissiveIntensity={lit ? (active ? 1.1 : 0.5) : 0.05}
               roughness={0.5}
               metalness={0.4}
@@ -484,6 +498,7 @@ function ArchiveSilo({ position, fill, active, animate }: { position: THREE.Vect
 
 /** The post-quantum dome that closes over the target at the migration stage. */
 function ShieldDome({ position, strength, animate }: { position: THREE.Vector3; strength: number; animate: boolean }) {
+  const P = useQsrPalette();
   const mesh = React.useRef<THREE.Mesh>(null);
   const inner = React.useRef<THREE.Mesh>(null);
 
@@ -502,13 +517,13 @@ function ShieldDome({ position, strength, animate }: { position: THREE.Vector3; 
     <group position={position}>
       <mesh ref={mesh}>
         <icosahedronGeometry args={[1.75, 2]} />
-        <meshBasicMaterial color={QSR.quantum} wireframe transparent opacity={0.34 * strength} />
+        <meshBasicMaterial color={P.quantum} wireframe transparent opacity={0.34 * strength} />
       </mesh>
       <mesh ref={inner} scale={0.96}>
         <sphereGeometry args={[1.75, 32, 32]} />
         <meshStandardMaterial
-          color={QSR.quantum}
-          emissive={QSR.quantum}
+          color={P.quantum}
+          emissive={P.quantum}
           emissiveIntensity={0.7 * strength}
           transparent
           opacity={0.1 * strength}
@@ -522,9 +537,11 @@ function ShieldDome({ position, strength, animate }: { position: THREE.Vector3; 
 
 /* ═══════════════════════════════════════════════════════════════ the scene */
 
-function StageScene(props: Omit<QuantumStage3DProps, 'dpr' | 'onReady'>) {
+function StageScene(props: Omit<QuantumStage3DProps, 'dpr' | 'onReady' | 'theme'>) {
   const { stage, progress, sites, distribution, qubits, resolved, quantumSafe, budget } = props;
   const animate = budget.animate;
+  const P = useQsrPalette();
+  const light = P.theme === 'light';
 
   // How lit each part of the board is at this stage.
   const wireLive = stage >= 1 ? 1 : 0;
@@ -535,14 +552,14 @@ function StageScene(props: Omit<QuantumStage3DProps, 'dpr' | 'onReady'>) {
   const exposed = stage === 5;
   const shielded = stage >= 6 ? 1 : 0;
 
-  const linkAccent = quantumSafe || stage >= 6 ? QSR.quantum : exposed || recovered ? QSR.broken : QSR.live;
+  const linkAccent = quantumSafe || stage >= 6 ? P.quantum : exposed || recovered ? P.broken : P.live;
   const packetBudget = Math.max(4, Math.round(budget.maxPackets / 6));
 
   return (
     <>
-      <ambientLight intensity={0.5} />
+      <ambientLight intensity={light ? 1.15 : 0.5} />
       <pointLight position={[0, 6, 8]} intensity={90} distance={40} color="#7dd3fc" />
-      <pointLight position={[6, -2, 4]} intensity={45} distance={30} color={recovered ? QSR.broken : QSR.quantum} />
+      <pointLight position={[6, -2, 4]} intensity={45} distance={30} color={recovered ? P.broken : P.quantum} />
 
       <StageRig stage={stage} animate={animate} />
       {budget.dust && <LatticeField count={budget.dustCount * 6} animate={animate} />}
@@ -564,7 +581,7 @@ function StageScene(props: Omit<QuantumStage3DProps, 'dpr' | 'onReady'>) {
         from={SITE_POSITIONS.transit}
         to={SITE_POSITIONS.archive}
         bow={new THREE.Vector3(-0.6, 0.2, 0)}
-        accent={QSR.broken}
+        accent={P.broken}
         flow={0.22}
         intensity={tapLive ? 0.7 : 0.1}
         packets={tapLive ? packetBudget : 0}
@@ -576,7 +593,7 @@ function StageScene(props: Omit<QuantumStage3DProps, 'dpr' | 'onReady'>) {
         from={SITE_POSITIONS.archive}
         to={SITE_POSITIONS.crqc}
         bow={new THREE.Vector3(0.8, 1.4, 0)}
-        accent={QSR.quantum}
+        accent={P.quantum}
         flow={0.3}
         intensity={stage >= 3 ? 0.8 : 0.04}
         packets={stage >= 3 ? packetBudget : 0}
@@ -589,7 +606,7 @@ function StageScene(props: Omit<QuantumStage3DProps, 'dpr' | 'onReady'>) {
         from={SITE_POSITIONS.crqc}
         to={SITE_POSITIONS.server}
         bow={new THREE.Vector3(0.4, 0.6, 0)}
-        accent={shielded ? QSR.safe : QSR.broken}
+        accent={shielded ? P.safe : P.broken}
         flow={0.36}
         intensity={recovered && !shielded ? 0.95 : 0.05}
         packets={recovered && !shielded ? packetBudget : 0}
@@ -597,13 +614,13 @@ function StageScene(props: Omit<QuantumStage3DProps, 'dpr' | 'onReady'>) {
         dashed
       />
 
-      <SiteNode position={SITE_POSITIONS.client} label={sites.client} sublabel="Initiator" accent={QSR.live} active={stage === 1} compromised={false} animate={animate} />
-      <SiteNode position={SITE_POSITIONS.transit} label={sites.transit} sublabel="Passive tap" accent={QSR.broken} active={stage <= 2} compromised animate={animate} shape="cylinder" />
+      <SiteNode position={SITE_POSITIONS.client} label={sites.client} sublabel="Initiator" accent={P.live} active={stage === 1} compromised={false} animate={animate} />
+      <SiteNode position={SITE_POSITIONS.transit} label={sites.transit} sublabel="Passive tap" accent={P.broken} active={stage <= 2} compromised animate={animate} shape="cylinder" />
       <SiteNode
         position={SITE_POSITIONS.server}
         label={sites.server}
         sublabel={shielded ? 'ML-KEM protected' : recovered ? 'Keys recovered' : 'Responder'}
-        accent={shielded ? QSR.quantum : QSR.live}
+        accent={shielded ? P.quantum : P.live}
         active={stage >= 4}
         compromised={recovered && !shielded}
         animate={animate}
@@ -613,8 +630,8 @@ function StageScene(props: Omit<QuantumStage3DProps, 'dpr' | 'onReady'>) {
       <ArchiveSilo position={SITE_POSITIONS.archive} fill={archiveFill} active={stage >= 2} animate={animate} />
       <Html center distanceFactor={11} position={[SITE_POSITIONS.archive.x, SITE_POSITIONS.archive.y - 1.5, SITE_POSITIONS.archive.z]} style={{ pointerEvents: 'none' }}>
         <div style={{ textAlign: 'center', whiteSpace: 'nowrap', fontFamily: '"JetBrains Mono", monospace' }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: '#e2e8f0', textShadow: '0 2px 12px rgba(0,0,0,0.95)' }}>{sites.archive}</div>
-          <div style={{ fontSize: 9, letterSpacing: '0.18em', textTransform: 'uppercase', color: QSR.broken, marginTop: 2 }}>Ciphertext archive</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: P.ink, textShadow: `0 2px 12px ${P.labelShadow}` }}>{sites.archive}</div>
+          <div style={{ fontSize: 9, letterSpacing: '0.18em', textTransform: 'uppercase', color: P.broken, marginTop: 2 }}>Ciphertext archive</div>
         </div>
       </Html>
 
@@ -629,8 +646,8 @@ function StageScene(props: Omit<QuantumStage3DProps, 'dpr' | 'onReady'>) {
       />
       <Html center distanceFactor={11} position={[SITE_POSITIONS.crqc.x, SITE_POSITIONS.crqc.y + 1.5, SITE_POSITIONS.crqc.z]} style={{ pointerEvents: 'none' }}>
         <div style={{ textAlign: 'center', whiteSpace: 'nowrap', fontFamily: '"JetBrains Mono", monospace' }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: '#e2e8f0', textShadow: '0 2px 12px rgba(0,0,0,0.95)' }}>{sites.crqc}</div>
-          <div style={{ fontSize: 9, letterSpacing: '0.18em', textTransform: 'uppercase', color: resolved ? QSR.quantum : QSR.live, marginTop: 2 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: P.ink, textShadow: `0 2px 12px ${P.labelShadow}` }}>{sites.crqc}</div>
+          <div style={{ fontSize: 9, letterSpacing: '0.18em', textTransform: 'uppercase', color: resolved ? P.quantum : P.live, marginTop: 2 }}>
             {distribution ? `${qubits} qubits · live register` : 'Awaiting register'}
           </div>
         </div>
@@ -638,7 +655,7 @@ function StageScene(props: Omit<QuantumStage3DProps, 'dpr' | 'onReady'>) {
 
       <ShieldDome position={SITE_POSITIONS.server} strength={shielded} animate={animate} />
 
-      {budget.postFx && (
+      {budget.postFx && !light && (
         <EffectComposer multisampling={0}>
           <Bloom intensity={1.15} luminanceThreshold={0.22} luminanceSmoothing={0.5} kernelSize={KernelSize.LARGE} mipmapBlur />
           <Vignette offset={0.28} darkness={0.7} blendFunction={BlendFunction.NORMAL} />
@@ -649,7 +666,7 @@ function StageScene(props: Omit<QuantumStage3DProps, 'dpr' | 'onReady'>) {
 }
 
 export default function QuantumStage3D(props: QuantumStage3DProps) {
-  const { dpr, onReady, ...scene } = props;
+  const { dpr, onReady, theme, ...scene } = props;
   return (
     <Canvas
       dpr={dpr}
@@ -662,7 +679,9 @@ export default function QuantumStage3D(props: QuantumStage3DProps) {
       aria-hidden
       frameloop={scene.budget.animate ? 'always' : 'demand'}
     >
-      <StageScene {...scene} />
+      <QsrThemeProvider value={theme}>
+        <StageScene {...scene} />
+      </QsrThemeProvider>
     </Canvas>
   );
 }

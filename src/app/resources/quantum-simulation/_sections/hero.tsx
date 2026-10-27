@@ -35,7 +35,7 @@ function CountdownCell({ milestoneId, now }: { milestoneId: string; now: number 
   return (
     <div
       className="min-w-0 flex-1 rounded-xl border px-4 py-3.5 backdrop-blur-sm"
-      style={{ borderColor: tint(accent, 0.22), background: 'rgba(4,7,16,0.62)' }}
+      style={{ borderColor: tint(accent, 0.22), background: QSR.well }}
       title={milestone.detail}
     >
       <div className="flex items-center justify-between gap-2">
@@ -99,7 +99,7 @@ export default function Hero({ now, animate, beamCount, onEnterRange }: HeroProp
             </span>
           </div>
 
-          <h1 className="mt-5 text-4xl font-black leading-[1.03] tracking-tight text-white sm:text-5xl md:text-[64px]">
+          <h1 className="mt-5 text-4xl font-black leading-[1.03] tracking-tight qsr-heading sm:text-5xl md:text-[64px]">
             Quantum Attack
             <br />
             <span style={{ color: QSR.live }}>Simulation</span> Range
@@ -116,7 +116,7 @@ export default function Hero({ now, animate, beamCount, onEnterRange }: HeroProp
               type="button"
               onClick={onEnterRange}
               className="inline-flex items-center gap-2 rounded-lg px-5 py-3 font-mono text-[11px] font-bold uppercase tracking-[0.16em] transition-transform hover:scale-[1.02]"
-              style={{ background: QSR.live, color: '#04060e', boxShadow: `0 0 32px ${tint(QSR.live, 0.35)}` }}
+              style={{ background: QSR.live, color: QSR.onAccent, boxShadow: `0 0 32px ${tint(QSR.live, 0.35)}` }}
             >
               Enter the range
             </button>
@@ -153,7 +153,7 @@ export default function Hero({ now, animate, beamCount, onEnterRange }: HeroProp
           animate={{ opacity: 1 }}
           transition={{ duration: 0.8, delay: 0.3 }}
           className="mt-8 rounded-xl border px-4 py-3.5 backdrop-blur-sm"
-          style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.55)' }}
+          style={{ borderColor: QSR.hairline, background: QSR.well }}
         >
           <div className="mb-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.22em]" style={{ color: QSR.inkMuted }}>
             Every number on this page carries one of these

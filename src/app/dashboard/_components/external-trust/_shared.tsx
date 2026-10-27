@@ -165,8 +165,31 @@ export const SUITE_PAGES = [
 
 export type SuiteKey = (typeof SUITE_PAGES)[number]['key']
 
+/** The entity the user is investigating — carried across the suite by ID, never by display name. */
+export interface SuiteContext {
+  vendor?: string | null
+  asset?: string | null
+}
+
+/** Each page's own parameter vocabulary for the same investigation context. */
+export function suiteHref(key: SuiteKey, context?: SuiteContext): string {
+  const page = SUITE_PAGES.find((candidate) => candidate.key === key)!
+  const params = new URLSearchParams()
+  if (key === 'ecosystem') {
+    if (context?.vendor) params.set('focus', `vendor:${context.vendor}`)
+    else if (context?.asset) params.set('focus', `asset:${context.asset}`)
+  } else if (key === 'vendor') {
+    if (context?.vendor) params.set('vendor', context.vendor)
+  } else {
+    if (context?.vendor) params.set('vendor', context.vendor)
+    if (context?.asset) params.set('asset', context.asset)
+  }
+  const query = params.toString()
+  return query ? `${page.route}?${query}` : page.route
+}
+
 /** The four-page rail: shows where the user is in the External Trust flow. */
-export function SuiteRail({ current }: { current: SuiteKey }) {
+export function SuiteRail({ current, context }: { current: SuiteKey; context?: SuiteContext }) {
   return (
     <nav aria-label="External Trust suite" className="flex gap-1.5 overflow-x-auto pb-0.5">
       {SUITE_PAGES.map((page, index) => {
@@ -175,7 +198,7 @@ export function SuiteRail({ current }: { current: SuiteKey }) {
         return (
           <Link
             key={page.key}
-            to={page.route}
+            to={suiteHref(page.key, context)}
             aria-current={active ? 'page' : undefined}
             className={cn(
               'group flex min-w-[168px] flex-1 items-center gap-2 rounded-lg border px-3 py-2 no-underline transition',

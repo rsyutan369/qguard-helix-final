@@ -22,6 +22,8 @@ export const SITE = {
   origin: 'https://qguardhelix.com',
   supportEmail: 'support@qguardhelix.com',
   privacyEmail: 'support@qguardhelix.com',
+  /** Inbox that receives Request Demo submissions (POST /api/v1/demo-request). */
+  salesEmail: 'info@qguardhelix.com',
   /** Operating location — governs the jurisdiction clauses below. */
   city: 'Imus',
   province: 'Cavite',

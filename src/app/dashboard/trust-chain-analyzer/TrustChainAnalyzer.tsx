@@ -1,10 +1,12 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle, ArrowRight, BadgeCheck, FileWarning, FlaskConical, GitCompare,
-  Globe2, Link2, Route, ShieldCheck, Sparkles,
+  Globe2, Link2, Network, Route, ShieldCheck,
 } from 'lucide-react'
+import type { WorkflowNode } from '@/components/trust-workflow/graph-model'
+import { TrustGraph } from './TrustGraph'
 import { cn } from '@/lib/utils'
 import { WorkflowRail } from '@/components/workflow/WorkflowRail'
 import { useTrustChains } from '@/hooks/use-external-trust'
@@ -15,7 +17,7 @@ import {
 import {
   AskSophiaButton, Block, Chip, Drawer, DrawerLink, EmptyState, ErrorState, Field,
   KpiStrip, PageHeader, ProvenanceFooter, RiskChip, SearchInput, SectionCard, Select,
-  SkeletonPage, SuiteRail, TrustChip, dateFmt, numberFmt, relativeTime, scoreFmt,
+  SkeletonPage, SuiteRail, TrustChip, dateFmt, numberFmt, scoreFmt, suiteHref,
   useQueryParam,
 } from '../_components/external-trust/_shared'
 
@@ -53,6 +55,8 @@ function ChainLadder({ nodes, title, tone }: { nodes: TrustNode[]; title: string
 
 export default function TrustChainAnalyzer() {
   const vendorParam = useQueryParam('vendor')
+  const assetParam = useQueryParam('asset')
+  const focusParam = useQueryParam('focus')
   const { data, state, error, live, lastGoodAt, refresh } = useTrustChains()
 
   const [search, setSearch] = useState('')
@@ -61,6 +65,12 @@ export default function TrustChainAnalyzer() {
   const [activeChainId, setActiveChainId] = useState<string | null>(null)
   const [compare, setCompare] = useState(false)
   const [findingDrawer, setFindingDrawer] = useState<TrustFinding | null>(null)
+  // Cross-page context lands on its entity in the graph: an explicit node,
+  // else the asset, else the vendor that operates the chain's CA.
+  const [graphFocus, setGraphFocus] = useState<string | null>(
+    focusParam || (assetParam ? `asset:${assetParam}` : vendorParam ? `vendor:${vendorParam}` : null),
+  )
+  const filtersActive = Boolean(search.trim()) || riskFilter !== 'all' || stateFilter !== 'all'
 
   const chains = useMemo(() => {
     if (!data) return []
@@ -76,8 +86,20 @@ export default function TrustChainAnalyzer() {
 
   useEffect(() => {
     if (!chains.length) { setActiveChainId(null); return }
-    if (!chains.some((chain) => chain.id === activeChainId)) setActiveChainId(chains[0].id)
-  }, [chains, activeChainId])
+    if (chains.some((chain) => chain.id === activeChainId)) return
+    const forAsset = assetParam ? chains.find((chain) => chain.assetIds.includes(assetParam)) : undefined
+    setActiveChainId((forAsset ?? chains[0]).id)
+  }, [chains, activeChainId, assetParam])
+
+  /** Graph selection drives the chain detail below it. */
+  const onGraphSelect = useCallback((node: WorkflowNode | null) => {
+    if (!node) return
+    if (node.kind === 'certificate') setActiveChainId(`chain-${node.id.slice('cert:'.length)}`)
+    else if (node.entity?.type === 'asset') {
+      const match = chains.find((candidate) => candidate.assetIds.includes(node.entity!.id))
+      if (match) setActiveChainId(match.id)
+    }
+  }, [chains])
 
   const chain: TrustChain | null = useMemo(
     () => chains.find((candidate) => candidate.id === activeChainId) ?? chains[0] ?? null,
@@ -110,7 +132,7 @@ export default function TrustChainAnalyzer() {
       `}</style>
 
       <WorkflowRail activeStage="assessment" />
-      <SuiteRail current="trust" />
+      <SuiteRail current="trust" context={{ vendor: chain?.vendorId ?? (vendorParam || null), asset: chain?.assetIds[0] ?? (assetParam || null) }} />
 
       <PageHeader
         title="Trust Chain Analyzer"
@@ -133,6 +155,44 @@ export default function TrustChainAnalyzer() {
             { key: 'external', label: 'External Trust Deps', value: numberFmt(data.summary.externalTrustDependencies), detail: 'externally operated issuers', tone: 'info' },
             { key: 'unknown', label: 'Unknown Relationships', value: numberFmt(data.summary.unknownRelationships), detail: 'insufficient evidence', tone: 'info' },
           ]} />
+
+          {/* Trust graph — shares its filters with the chain list below */}
+          <SectionCard
+            id="trust-graph" title="Trust Graph" icon={Network}
+            right={<span className="font-mono text-[9px] uppercase tracking-widest text-white/30">{numberFmt(chains.length)} / {numberFmt(data.chains.length)} chains</span>}
+          >
+            <div className="mb-3 flex flex-wrap items-center gap-2" role="group" aria-label="Chain filters — applied to the graph and the chain list">
+              <SearchInput value={search} onChange={setSearch} label="Filter chains" placeholder="Filter by subject, issuer, asset…" />
+              <Select label="Risk" value={riskFilter} onChange={setRiskFilter}
+                options={[['all', 'All risk'], ['critical', 'Critical'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low'], ['unknown', 'Unknown']]} />
+              <Select label="Trust state" value={stateFilter} onChange={setStateFilter}
+                options={[['all', 'All states'], ['trusted', 'Trusted'], ['valid', 'Valid'], ['expiring', 'Expiring'], ['weak', 'Weak'], ['broken', 'Broken'], ['unknown', 'Unknown']]} />
+              {filtersActive && (
+                <button type="button" onClick={() => { setSearch(''); setRiskFilter('all'); setStateFilter('all') }}
+                  className="rounded-lg border border-white/12 bg-white/5 px-2.5 py-1.5 text-[9px] font-black uppercase tracking-wider text-white/60">Clear</button>
+              )}
+              {vendorParam && (
+                <span className="rounded border border-cyan-400/25 bg-cyan-500/10 px-2.5 py-1.5 text-[9.5px] text-cyan-200">
+                  Vendor context: chains whose CA this vendor operates. <a href="/dashboard/trust-chain-analyzer" className="underline">Show all</a>
+                </span>
+              )}
+            </div>
+            <TrustGraph
+              chains={chains}
+              findings={data.findings}
+              certificates={data.certificates}
+              generatedAt={data.generatedAt}
+              status="ready"
+              error={error}
+              onRetry={() => void refresh(true)}
+              focusNodeId={graphFocus}
+              onSelectNode={onGraphSelect}
+              filtered={filtersActive || Boolean(vendorParam)}
+            />
+            <p className="mt-2 text-[10px] leading-relaxed text-white/35">
+              Arrows follow trust delegation: anchor → certificate authority → certificate → relying system. Dashed elements are inferred (for example a root that was not captured). Use <b>Trace</b> to explain why a path is trusted, untrusted or unknown.
+            </p>
+          </SectionCard>
 
           {/* Trust agility — the number shared with Crypto Agility */}
           <SectionCard
@@ -177,18 +237,9 @@ export default function TrustChainAnalyzer() {
               {/* Chain selector */}
               <SectionCard title="Trust Chains" icon={Route}
                 right={<span className="font-mono text-[9px] uppercase tracking-widest text-white/30">{numberFmt(chains.length)}</span>}>
-                <div className="mb-2 space-y-2">
-                  <SearchInput value={search} onChange={setSearch} label="Search chains" placeholder="Search subject, issuer, asset…" />
-                  <div className="flex gap-2">
-                    <Select label="Risk" value={riskFilter} onChange={setRiskFilter}
-                      options={[['all', 'All risk'], ['critical', 'Critical'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low'], ['unknown', 'Unknown']]} />
-                    <Select label="Trust state" value={stateFilter} onChange={setStateFilter}
-                      options={[['all', 'All states'], ['trusted', 'Trusted'], ['valid', 'Valid'], ['expiring', 'Expiring'], ['weak', 'Weak'], ['broken', 'Broken'], ['unknown', 'Unknown']]} />
-                  </div>
-                </div>
-                {vendorParam && (
+                {(filtersActive || vendorParam) && (
                   <div className="mb-2 rounded border border-cyan-400/25 bg-cyan-500/10 px-2.5 py-1.5 text-[9.5px] text-cyan-200">
-                    Filtered to vendor-related chains. <a href="/dashboard/trust-chain-analyzer" className="underline">Clear</a>
+                    Filtered by the Trust Graph controls. <a href="#trust-graph" className="underline">Adjust</a>
                   </div>
                 )}
                 {chains.length === 0 ? (
@@ -196,7 +247,8 @@ export default function TrustChainAnalyzer() {
                 ) : (
                   <div className="max-h-[520px] space-y-1.5 overflow-y-auto pr-1 scrollbar-thin">
                     {chains.map((candidate) => (
-                      <button key={candidate.id} type="button" onClick={() => setActiveChainId(candidate.id)}
+                      <button key={candidate.id} type="button"
+                        onClick={() => { setActiveChainId(candidate.id); setGraphFocus(`cert:${candidate.id.slice('chain-'.length)}`) }}
                         className={cn('w-full rounded-lg border p-2.5 text-left transition',
                           candidate.id === chain?.id ? 'border-cyan-400/50 bg-cyan-500/10' : 'border-white/8 bg-white/[0.015] hover:border-white/20')}>
                         <div className="flex items-center justify-between gap-2">

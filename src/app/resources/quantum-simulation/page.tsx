@@ -35,7 +35,9 @@ import React from 'react';
 import { ArrowRight, ExternalLink } from 'lucide-react';
 import { useAdaptiveDpr, useQveBudget } from '@/app/public-scan/_qve/performance-manager';
 import { ATTACK_CHAIN, scenarioPrimitive, type ShorResult } from '@/lib/quantum-sim';
-import { QSR, tint } from './_theme';
+import { useTheme } from '@/contexts/theme-context';
+import { QSR, QsrThemeProvider, qsrThemeVars, tint } from './_theme';
+import { CommandBar } from './_theme-toggle';
 import { SectionHeading } from './_ui';
 import { RunLogContext, useInView, useQuantumRange, useRunLog, useSecondsClock } from './_state';
 import Hero from './_sections/hero';
@@ -50,6 +52,25 @@ export default function QuantumSimulationPage() {
   const dpr = useAdaptiveDpr(budget.maxDpr, budget.core3d);
   const now = useSecondsClock();
   const range = useQuantumRange(budget.animate);
+
+  /** The app-wide theme. The page paints itself from it and keeps no theme state of its own. */
+  const { theme } = useTheme();
+  const pageRef = React.useRef<HTMLDivElement>(null);
+  const firstThemeRender = React.useRef(true);
+
+  // Colours only transition during a switch. A permanent `transition: all` on
+  // this page would also smear every live value the simulation updates.
+  React.useEffect(() => {
+    if (firstThemeRender.current) {
+      firstThemeRender.current = false;
+      return undefined;
+    }
+    const node = pageRef.current;
+    if (!node || !budget.animate) return undefined;
+    node.setAttribute('data-qsr-switching', '');
+    const timer = window.setTimeout(() => node.removeAttribute('data-qsr-switching'), 420);
+    return () => window.clearTimeout(timer);
+  }, [theme, budget.animate]);
 
   /** The last Shor run, shared between the lab, the 3D stage and the evidence panel. */
   const [shorResult, setShorResult] = React.useState<ShorResult | null>(null);
@@ -115,7 +136,14 @@ export default function QuantumSimulationPage() {
 
   return (
     <RunLogContext.Provider value={emit}>
-    <div className="qsr-page min-h-screen" style={{ background: QSR.ground, color: QSR.ink }}>
+    <QsrThemeProvider value={theme}>
+    <div
+      ref={pageRef}
+      className="qsr-page min-h-screen"
+      data-qsr-theme={theme}
+      style={{ ...qsrThemeVars(theme), colorScheme: theme, background: QSR.ground, color: QSR.ink }}
+    >
+      <CommandBar animate={budget.animate} />
       <Hero
         now={now}
         animate={budget.animate}
@@ -125,7 +153,7 @@ export default function QuantumSimulationPage() {
 
       <main className="mx-auto max-w-[1500px] space-y-16 px-4 py-14 sm:px-6 md:space-y-20 md:py-20">
         {/* ── 01 · the range ─────────────────────────────────────────── */}
-        <section ref={rangeRef} className="scroll-mt-6">
+        <section ref={rangeRef} className="scroll-mt-20">
           <SectionHeading
             index="01"
             eyebrow="The simulation range"
@@ -160,7 +188,7 @@ export default function QuantumSimulationPage() {
                 onOpenLab={() => scrollTo(shorRef.current)}
                 lastShorRun={lastShorSummary}
               />
-              <aside className="h-[520px] xl:sticky xl:top-4 xl:h-[calc(100vh-2rem)] xl:max-h-[760px]">
+              <aside className="h-[520px] xl:sticky xl:top-[4.5rem] xl:h-[calc(100vh-5.5rem)] xl:max-h-[760px]">
                 <RunLog entries={entries} onClear={clear} />
               </aside>
             </div>
@@ -168,7 +196,7 @@ export default function QuantumSimulationPage() {
         </section>
 
         {/* ── 02 · Shor laboratory ───────────────────────────────────── */}
-        <section ref={shorRef} className="scroll-mt-6">
+        <section ref={shorRef} className="scroll-mt-20">
           <SectionHeading
             index="02"
             eyebrow="How the break actually works"
@@ -180,7 +208,7 @@ export default function QuantumSimulationPage() {
         </section>
 
         {/* ── 03 · resource estimator ────────────────────────────────── */}
-        <section className="scroll-mt-6">
+        <section className="scroll-mt-20">
           <SectionHeading
             index="03"
             eyebrow="How far away is it"
@@ -192,7 +220,7 @@ export default function QuantumSimulationPage() {
         </section>
 
         {/* ── 04 · Mosca ─────────────────────────────────────────────── */}
-        <section className="scroll-mt-6">
+        <section className="scroll-mt-20">
           <SectionHeading
             index="04"
             eyebrow="How urgent is it"
@@ -204,7 +232,7 @@ export default function QuantumSimulationPage() {
         </section>
 
         {/* ── 05 · vulnerability logic ───────────────────────────────── */}
-        <section className="scroll-mt-6">
+        <section className="scroll-mt-20">
           <SectionHeading
             index="05"
             eyebrow="The vulnerability logic"
@@ -219,7 +247,7 @@ export default function QuantumSimulationPage() {
         </section>
 
         {/* ── 06 · the suite ─────────────────────────────────────────── */}
-        <section ref={suiteRef} className="scroll-mt-6">
+        <section ref={suiteRef} className="scroll-mt-20">
           <SectionHeading
             index="06"
             eyebrow="What replaces it"
@@ -231,7 +259,7 @@ export default function QuantumSimulationPage() {
         </section>
 
         {/* ── 07 · timeline ──────────────────────────────────────────── */}
-        <section className="scroll-mt-6">
+        <section className="scroll-mt-20">
           <SectionHeading
             index="07"
             eyebrow="The published clock"
@@ -245,14 +273,14 @@ export default function QuantumSimulationPage() {
         {/* ── Close ──────────────────────────────────────────────────── */}
         <section
           className="overflow-hidden rounded-2xl border p-6 sm:p-8"
-          style={{ borderColor: tint(QSR.live, 0.2), background: `linear-gradient(135deg, ${tint(QSR.live, 0.08)}, transparent 60%), rgba(6,10,22,0.7)` }}
+          style={{ borderColor: tint(QSR.live, 0.2), background: `linear-gradient(135deg, ${tint(QSR.live, 0.08)}, transparent 60%), ${QSR.panel}` }}
         >
           <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
             <div className="max-w-2xl">
               <div className="font-mono text-[10px] font-bold uppercase tracking-[0.24em]" style={{ color: QSR.live }}>
                 From simulation to your own estate
               </div>
-              <h2 className="mt-2 text-2xl font-black leading-tight tracking-tight text-slate-50 sm:text-3xl">
+              <h2 className="mt-2 text-2xl font-black leading-tight tracking-tight qsr-heading sm:text-3xl">
                 This range runs on synthetic scenarios. Your estate is not synthetic.
               </h2>
               <p className="mt-3 text-[13px] leading-relaxed" style={{ color: QSR.inkSoft }}>
@@ -266,13 +294,13 @@ export default function QuantumSimulationPage() {
               <a
                 href="/public-scan"
                 className="inline-flex items-center justify-center gap-2 rounded-lg px-5 py-3 font-mono text-[11px] font-bold uppercase tracking-[0.14em] transition-transform hover:scale-[1.02]"
-                style={{ background: QSR.live, color: '#04060e' }}
+                style={{ background: QSR.live, color: QSR.onAccent }}
               >
                 Scan a real endpoint <ArrowRight className="h-3.5 w-3.5" />
               </a>
               <a
                 href="/resources/pqc-checklist"
-                className="inline-flex items-center justify-center gap-2 rounded-lg border px-5 py-3 font-mono text-[11px] font-bold uppercase tracking-[0.14em] transition-colors hover:border-cyan-400/40"
+                className="inline-flex items-center justify-center gap-2 rounded-lg border px-5 py-3 font-mono text-[11px] font-bold uppercase tracking-[0.14em] transition-colors qsr-hover-border"
                 style={{ borderColor: QSR.hairlineStrong, color: QSR.inkSoft }}
               >
                 PQC migration checklist <ExternalLink className="h-3.5 w-3.5" />
@@ -282,7 +310,7 @@ export default function QuantumSimulationPage() {
         </section>
 
         {/* ── Method note ────────────────────────────────────────────── */}
-        <footer className="rounded-xl border p-5" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.5)' }}>
+        <footer className="rounded-xl border p-5" style={{ borderColor: QSR.hairline, background: QSR.well }}>
           <div className="font-mono text-[10px] font-bold uppercase tracking-[0.22em]" style={{ color: QSR.inkMuted }}>
             Method
           </div>
@@ -306,6 +334,7 @@ export default function QuantumSimulationPage() {
         </footer>
       </main>
     </div>
+    </QsrThemeProvider>
     </RunLogContext.Provider>
   );
 }

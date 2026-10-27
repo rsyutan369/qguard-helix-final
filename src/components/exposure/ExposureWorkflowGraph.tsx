@@ -32,10 +32,13 @@ import {
   Background,
   BackgroundVariant,
   MiniMap,
+  Panel as FlowPanel,
   Position,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  useStore,
+  useViewport,
   ViewportPortal,
   type Edge,
   type EdgeProps,
@@ -72,12 +75,15 @@ import {
   Layers,
   Maximize2,
   Minimize2,
+  Minus,
   Package,
   Palette,
   Pause,
   Play,
+  Plus,
   Radar,
   RotateCcw,
+  Scan,
   ScanSearch,
   Search,
   Server,
@@ -534,6 +540,114 @@ interface CanvasProps {
   store: FocusStore;
   onSelect: (node: WorkflowNode | null) => void;
   onReady: (instance: ReactFlowInstance) => void;
+  /** Bumped by the toolbar. Counters rather than window events, so two maps
+   *  on one page never act on each other's clicks. */
+  fitRequest: number;
+  relayoutRequest: number;
+  expanded: boolean;
+  onFit: () => void;
+  onToggleExpanded: () => void;
+}
+
+const MIN_ZOOM = 0.12;
+const MAX_ZOOM = 2.6;
+
+/**
+ * Floating zoom bar.
+ *
+ * The canvas pans on scroll (a page-length dashboard cannot hijack the wheel
+ * for zoom), which left pinch / ctrl+wheel as the only way to zoom — invisible
+ * to most users. These are the explicit controls: +/−, the live zoom level
+ * (click to return to 100%), Fit, and full screen.
+ */
+function ZoomControls({
+  expanded,
+  onFit,
+  onToggleExpanded,
+  onUserView,
+}: {
+  expanded: boolean;
+  onFit: () => void;
+  onToggleExpanded: () => void;
+  onUserView: () => void;
+}) {
+  const { zoomIn, zoomOut, zoomTo } = useReactFlow();
+  const { zoom } = useViewport();
+  const reduceMotion = useReducedMotion();
+  const duration = reduceMotion ? 0 : 220;
+  const percent = Math.round(zoom * 100);
+  const button =
+    'grid h-8 w-full place-items-center text-slate-300 transition-colors hover:bg-white/[0.06] hover:text-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-400/60 disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent';
+
+  return (
+    <FlowPanel position="bottom-left" className="qg-workflow-zoom">
+      <div
+        role="toolbar"
+        aria-label="Map zoom and view"
+        aria-orientation="vertical"
+        className="flex w-9 flex-col overflow-hidden rounded-xl border border-white/[0.1] bg-[#050a15]/90 shadow-[0_14px_36px_rgba(0,0,0,0.38)] backdrop-blur-md"
+      >
+        <button
+          type="button"
+          aria-label="Zoom in"
+          title="Zoom in (+)"
+          disabled={zoom >= MAX_ZOOM - 0.005}
+          onClick={() => {
+            onUserView();
+            void zoomIn({ duration });
+          }}
+          className={button}
+        >
+          <Plus aria-hidden className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          aria-label={`Zoom level ${percent}%. Reset to 100%`}
+          title="Reset to 100%"
+          onClick={() => {
+            onUserView();
+            void zoomTo(1, { duration });
+          }}
+          className="h-7 w-full border-y border-white/[0.08] font-mono text-[9.5px] font-bold tabular-nums text-slate-400 transition-colors hover:text-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-400/60"
+        >
+          {percent}%
+        </button>
+        <button
+          type="button"
+          aria-label="Zoom out"
+          title="Zoom out (−)"
+          disabled={zoom <= MIN_ZOOM + 0.005}
+          onClick={() => {
+            onUserView();
+            void zoomOut({ duration });
+          }}
+          className={button}
+        >
+          <Minus aria-hidden className="h-4 w-4" />
+        </button>
+        <span aria-hidden className="h-px bg-white/[0.08]" />
+        <button
+          type="button"
+          aria-label="Fit the whole map"
+          title={expanded ? 'Fit the whole map (0)' : 'Fit the whole map on a full-screen canvas'}
+          onClick={onFit}
+          className={button}
+        >
+          <Scan aria-hidden className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          aria-label={expanded ? 'Exit full screen' : 'Full screen'}
+          aria-pressed={expanded}
+          title={expanded ? 'Exit full screen (Esc)' : 'Full screen'}
+          onClick={onToggleExpanded}
+          className={button}
+        >
+          {expanded ? <Minimize2 aria-hidden className="h-3.5 w-3.5" /> : <Maximize2 aria-hidden className="h-3.5 w-3.5" />}
+        </button>
+      </div>
+    </FlowPanel>
+  );
 }
 
 function WorkflowCanvas({
@@ -548,6 +662,11 @@ function WorkflowCanvas({
   store,
   onSelect,
   onReady,
+  fitRequest,
+  relayoutRequest,
+  expanded,
+  onFit,
+  onToggleExpanded,
 }: CanvasProps) {
   const reduceMotion = useReducedMotion();
   const flow = useReactFlow();
@@ -573,6 +692,12 @@ function WorkflowCanvas({
    * the layout to settle.
    */
   const fittedRef = React.useRef(false);
+
+  /** The lens/filter/physics identity the current simulation was built for.
+   *  A rebuild that keeps it is a DATA refresh (a realtime update), which must
+   *  settle in place and leave the operator's zoom alone — not re-warm the
+   *  whole layout and snap the view back as a fresh lens does. */
+  const builtLayoutRef = React.useRef<string | null>(null);
 
   const degrees = React.useMemo(() => degreeMap(modelEdges), [modelEdges]);
   const extent = React.useMemo(() => extentFor(modelNodes.length), [modelNodes.length]);
@@ -756,10 +881,61 @@ function WorkflowCanvas({
     setClusterBoxes(computeBoxes());
   }, [modelNodes, colourMode, degrees, extent, computeBoxes]);
 
+  /* The loop reads these through refs so a recolour mid-settle paints with the
+     CURRENT colours instead of the ones captured when the loop started. */
+  const paintRef = React.useRef(paint);
+  paintRef.current = paint;
+  const computeBoxesRef = React.useRef(computeBoxes);
+  computeBoxesRef.current = computeBoxes;
+
+  /**
+   * The one animation loop: tick, paint, stop once settled, then fit if no
+   * fit has happened yet. The simulation is ticked ONLY here — d3's own timer
+   * is never started (no `.restart()`), because running both doubled the tick
+   * rate and kept a hidden timer alive after the canvas stopped.
+   *
+   * Physics is paced by WALL-CLOCK time, not by frames. One tick per frame
+   * tied settling to paint cost: a frame repaints every body and edge through
+   * React Flow, and on a busy dashboard frames ran at ~4/s — the ~180 ticks to
+   * converge took 45 s+, which read as a map that never stops moving and a
+   * Re-layout that does nothing. A tick is cheap; the paint is not. So a frame
+   * runs the ticks its elapsed time is owed (one at 60 Hz, so motion looks the
+   * same) and paints once.
+   */
+  const startLoop = React.useCallback(() => {
+    if (frameRef.current !== null) return;
+    let last = performance.now();
+    const step = (now: number) => {
+      const active = simulationRef.current;
+      if (!active) {
+        frameRef.current = null;
+        return;
+      }
+      const owed = Math.min(12, Math.max(1, Math.round((now - last) / (1000 / 60))));
+      last = now;
+      for (let tick = 0; tick < owed && (active.alpha() > 0.006 || draggingRef.current); tick += 1) active.tick();
+      paintRef.current();
+      if (active.alpha() > 0.006 || draggingRef.current) {
+        frameRef.current = requestAnimationFrame(step);
+        return;
+      }
+      frameRef.current = null;
+      setClusterBoxes(computeBoxesRef.current());
+      if (!fittedRef.current) {
+        fittedRef.current = true;
+        void flow.fitView({ padding: 0.18, duration: 420 });
+      }
+    };
+    frameRef.current = requestAnimationFrame(step);
+  }, [flow]);
+
   /* ── (re)build the simulation whenever the projection changes ─────────── */
 
   React.useEffect(() => {
-    fittedRef.current = false;
+    const layoutIdentity = `${layoutKey}|${physics.repulsion}|${physics.linkLength}|${physics.gravity}|${frozen}`;
+    const refresh = builtLayoutRef.current === layoutIdentity && bodiesRef.current.size > 0;
+    builtLayoutRef.current = layoutIdentity;
+    if (!refresh) fittedRef.current = false;
     const previous = bodiesRef.current;
     const bodies = new Map<string, SimBody>();
 
@@ -826,43 +1002,34 @@ function WorkflowCanvas({
       simulation.tick(320);
       paint();
       setClusterBoxes(computeBoxes());
-      fittedRef.current = true;
-      window.setTimeout(() => void flow.fitView({ padding: 0.18, duration: 0 }), 0);
+      if (!refresh) {
+        fittedRef.current = true;
+        window.setTimeout(() => void flow.fitView({ padding: 0.18, duration: 0 }), 0);
+      }
       return () => {
         simulation.stop();
       };
     }
 
-    /* Warm start so the opening frame is already legible rather than a knot. */
-    simulation.tick(60);
-    simulation.alpha(0.9);
-    paint();
-    window.setTimeout(() => void flow.fitView({ padding: 0.2, duration: 0 }), 0);
-
-    const step = () => {
-      const active = simulationRef.current;
-      if (!active) return;
-      active.tick();
+    if (refresh) {
+      /* Bodies carried their positions; a gentle reheat lets new entities
+         find their place without re-spreading everything that is settled. */
+      simulation.alpha(0.3);
+    } else {
+      /* Warm start so the opening frame is already legible rather than a knot. */
+      simulation.tick(60);
+      simulation.alpha(0.9);
       paint();
-      if (active.alpha() > 0.006 || draggingRef.current) {
-        frameRef.current = requestAnimationFrame(step);
-      } else {
-        frameRef.current = null;
-        setClusterBoxes(computeBoxes());
-        if (!fittedRef.current) {
-          fittedRef.current = true;
-          void flow.fitView({ padding: 0.18, duration: 420 });
-        }
-      }
-    };
-    frameRef.current = requestAnimationFrame(step);
+      window.setTimeout(() => void flow.fitView({ padding: 0.2, duration: 0 }), 0);
+    }
+    startLoop();
 
     return () => {
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
       frameRef.current = null;
       simulation.stop();
     };
-  }, [modelNodes, modelEdges, anchors, grouping, degrees, physics, frozen, reduceMotion, paint, flow, layoutKey, extent, computeBoxes]);
+  }, [modelNodes, modelEdges, anchors, grouping, degrees, physics, frozen, reduceMotion, paint, flow, layoutKey, extent, computeBoxes, startLoop]);
 
   /* Repaint (without re-simulating) when only the colouring changed. */
   React.useEffect(() => {
@@ -895,33 +1062,20 @@ function WorkflowCanvas({
 
   /* ── interaction ──────────────────────────────────────────────────────── */
 
+  /** Keep the layout live while a body is dragged; `handleDragStop` drops the
+   *  target back to 0 so it settles. */
   const reheat = React.useCallback(() => {
     const simulation = simulationRef.current;
     if (!simulation || reduceMotion) return;
-    simulation.alphaTarget(0.28).restart();
-    if (frameRef.current === null) {
-      const step = () => {
-        const active = simulationRef.current;
-        if (!active) return;
-        active.tick();
-        paint();
-        if (active.alpha() > 0.006 || draggingRef.current) {
-          frameRef.current = requestAnimationFrame(step);
-        } else {
-          frameRef.current = null;
-          setClusterBoxes(computeBoxes());
-          if (!fittedRef.current) {
-            fittedRef.current = true;
-            void flow.fitView({ padding: 0.18, duration: 420 });
-          }
-        }
-      };
-      frameRef.current = requestAnimationFrame(step);
-    }
-  }, [paint, reduceMotion, computeBoxes, flow]);
+    simulation.alphaTarget(0.28);
+    startLoop();
+  }, [reduceMotion, startLoop]);
 
   const handleDragStart = React.useCallback(() => {
     draggingRef.current = true;
+    /* Arranging the map is taking control of the view: no automatic fit may
+       reframe it afterwards. */
+    fittedRef.current = true;
     reheat();
   }, [reheat]);
 
@@ -949,22 +1103,83 @@ function WorkflowCanvas({
     [],
   );
 
-  /* Expose the release-and-restart action to the toolbar above. */
+  /**
+   * Re-layout: a genuinely FRESH layout, then a fit once it settles.
+   *
+   * The previous handler reheated through `reheat()`, whose drag-time
+   * `alphaTarget(0.28)` was never released — alpha could not decay below 0.28,
+   * the 0.006 convergence test never passed, and the map jiggled forever without
+   * the settle-and-fit ever running. It also restarted from the current
+   * (tangled) positions, so the result was the same tangle shaken. Bodies now
+   * return to their deterministic seeds, every pin is released, and the
+   * simulation decays to rest exactly as on first open.
+   */
+  const handledRelayoutRef = React.useRef(relayoutRequest);
   React.useEffect(() => {
-    const handler = () => {
-      pinnedRef.current.clear();
-      setPinned(new Set());
-      for (const body of bodiesRef.current.values()) {
-        body.fx = undefined;
-        body.fy = undefined;
-      }
-      fittedRef.current = false;
-      simulationRef.current?.alpha(1).restart();
-      reheat();
-    };
-    window.addEventListener('qguard:workflow-relayout', handler);
-    return () => window.removeEventListener('qguard:workflow-relayout', handler);
-  }, [flow, reheat]);
+    if (relayoutRequest === handledRelayoutRef.current) return;
+    handledRelayoutRef.current = relayoutRequest;
+    const simulation = simulationRef.current;
+    if (!simulation) return;
+
+    pinnedRef.current.clear();
+    setPinned(new Set());
+    let index = 0;
+    for (const body of bodiesRef.current.values()) {
+      const seed = seedPosition(index, extent);
+      index += 1;
+      body.x = seed.x;
+      body.y = seed.y;
+      body.vx = 0;
+      body.vy = 0;
+      body.fx = undefined;
+      body.fy = undefined;
+    }
+    simulation.alphaTarget(0);
+    fittedRef.current = false;
+
+    if (reduceMotion || frozen) {
+      simulation.alpha(1);
+      simulation.tick(320);
+      paint();
+      setClusterBoxes(computeBoxes());
+      fittedRef.current = true;
+      void flow.fitView({ padding: 0.18, duration: reduceMotion ? 0 : 420 });
+      return;
+    }
+    simulation.alpha(1);
+    simulation.tick(60);
+    simulation.alpha(0.9);
+    paint();
+    void flow.fitView({ padding: 0.2, duration: 260 });
+    startLoop();
+  }, [relayoutRequest, extent, reduceMotion, frozen, paint, computeBoxes, flow, startLoop]);
+
+  /**
+   * Fit, on request. The request usually arrives together with the switch to
+   * full screen, so the pane is still its old size on this frame: fit now,
+   * and again whenever React Flow reports a new pane size in the next moment.
+   */
+  const fitUntilRef = React.useRef(0);
+  const fitNow = React.useCallback(() => {
+    void flow.fitView({ padding: 0.12, duration: reduceMotion ? 0 : 450 });
+  }, [flow, reduceMotion]);
+  const handledFitRef = React.useRef(fitRequest);
+  React.useEffect(() => {
+    if (fitRequest === handledFitRef.current) return;
+    handledFitRef.current = fitRequest;
+    fitUntilRef.current = performance.now() + 1600;
+    const frame = requestAnimationFrame(fitNow);
+    return () => cancelAnimationFrame(frame);
+  }, [fitRequest, fitNow]);
+  const paneWidth = useStore((state) => state.width);
+  const paneHeight = useStore((state) => state.height);
+  React.useEffect(() => {
+    if (performance.now() < fitUntilRef.current) fitNow();
+  }, [paneWidth, paneHeight, fitNow]);
+
+  const markUserView = React.useCallback(() => {
+    fittedRef.current = true;
+  }, []);
 
   React.useEffect(() => {
     onReady(flow as ReactFlowInstance);
@@ -1016,8 +1231,13 @@ function WorkflowCanvas({
         store.select(null);
         onSelect(null);
       }}
-      minZoom={0.12}
-      maxZoom={2.6}
+      /* `event` is null for programmatic moves (fitView, the zoom buttons) and
+         set for a real pan / pinch / ctrl+wheel — the operator taking control. */
+      onMoveStart={(event) => {
+        if (event) markUserView();
+      }}
+      minZoom={MIN_ZOOM}
+      maxZoom={MAX_ZOOM}
       translateExtent={translateExtent}
       proOptions={{ hideAttribution: true }}
       nodesConnectable={false}
@@ -1028,6 +1248,7 @@ function WorkflowCanvas({
       className="qg-workflow-flow"
     >
       <ClusterLayer boxes={clusterBoxes} />
+      <ZoomControls expanded={expanded} onFit={onFit} onToggleExpanded={onToggleExpanded} onUserView={markUserView} />
       <Background variant={BackgroundVariant.Dots} gap={26} size={1} color="rgba(148,163,184,0.16)" />
       <MiniMap
         pannable
@@ -1602,6 +1823,99 @@ export function ExposureWorkflowGraph({
   const flowRef = React.useRef<ReactFlowInstance | null>(null);
   const store = React.useMemo(() => new FocusStore(), []);
 
+  /* ── full screen ──────────────────────────────────────────────────────
+     `expanded` pins the stage over the viewport (fixed, opaque). The browser
+     Fullscreen API is layered on top when available so the map also gets the
+     whole monitor; if it is refused (iframe, iOS) the pinned stage alone still
+     fills the window. The stage wraps the finding sheet too: an element in
+     browser full screen hides everything outside it. */
+  const stageRef = React.useRef<HTMLDivElement | null>(null);
+  const openFindingRef = React.useRef(openFinding);
+  openFindingRef.current = openFinding;
+  const [fitRequest, setFitRequest] = React.useState(0);
+  const [relayoutRequest, setRelayoutRequest] = React.useState(0);
+
+  const enterFullScreen = React.useCallback(() => {
+    setExpanded(true);
+    const stage = stageRef.current;
+    if (stage && document.fullscreenEnabled && !document.fullscreenElement) {
+      stage.requestFullscreen({ navigationUI: 'hide' }).catch(() => undefined);
+    }
+    /* Move focus into the dialog so keyboard and screen-reader users land in it. */
+    requestAnimationFrame(() => stageRef.current?.focus({ preventScroll: true }));
+  }, []);
+
+  const exitFullScreen = React.useCallback(() => {
+    setExpanded(false);
+    if (document.fullscreenElement && document.fullscreenElement === stageRef.current) {
+      document.exitFullscreen().catch(() => undefined);
+    }
+    setFitRequest((count) => count + 1);
+  }, []);
+
+  const toggleFullScreen = React.useCallback(() => {
+    if (expanded) exitFullScreen();
+    else {
+      enterFullScreen();
+      setFitRequest((count) => count + 1);
+    }
+  }, [expanded, enterFullScreen, exitFullScreen]);
+
+  /** Fit = give the map the whole screen, then frame all of it. */
+  const fitMap = React.useCallback(() => {
+    if (!expanded) enterFullScreen();
+    setFitRequest((count) => count + 1);
+  }, [expanded, enterFullScreen]);
+
+  /* The dashboard content lives in a `z-10` stacking context below the
+     sidebar (`z-50`); without browser full screen the pinned stage would sit
+     under the sidebar. Lift the content layer and stop the page scrolling
+     behind the stage while it is open. */
+  React.useEffect(() => {
+    if (!expanded) return;
+    const root = document.documentElement;
+    root.classList.add('qg-workflow-fullscreen');
+    return () => root.classList.remove('qg-workflow-fullscreen');
+  }, [expanded]);
+
+  /* Esc in browser full screen is consumed by the browser, which only fires
+     `fullscreenchange` — follow it so the pinned stage does not linger. */
+  React.useEffect(() => {
+    const onChange = () => {
+      if (!document.fullscreenElement && expanded) {
+        setExpanded(false);
+        setFitRequest((count) => count + 1);
+      }
+    };
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, [expanded]);
+
+  /* Keyboard while in full screen: Esc exits (when the browser did not take
+     it), + / − zoom, 0 fits. Ignored while typing in the filter. */
+  React.useEffect(() => {
+    if (!expanded) return;
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const flow = flowRef.current;
+      if (event.key === 'Escape') {
+        if (openFindingRef.current) return; /* the finding sheet closes first */
+        exitFullScreen();
+      } else if (event.key === '+' || event.key === '=') {
+        void flow?.zoomIn({ duration: 220 });
+      } else if (event.key === '-' || event.key === '_') {
+        void flow?.zoomOut({ duration: 220 });
+      } else if (event.key === '0') {
+        setFitRequest((count) => count + 1);
+      } else return;
+      event.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expanded, exitFullScreen]);
+
   /* A lens carries its own natural grouping; changing tab adopts it. */
   React.useEffect(() => {
     setGrouping(groupings.includes(lens.groupBy) ? lens.groupBy : 'none');
@@ -1728,8 +2042,18 @@ export function ExposureWorkflowGraph({
   const empty = projection.nodes.length === 0;
 
   return (
-    <>
-      <Panel className="overflow-hidden">
+    <div
+      ref={stageRef}
+      className={cn(
+        'qg-workflow-stage',
+        expanded && 'fixed inset-0 z-[60] flex flex-col bg-[var(--qg-dashboard-bg)] p-2 sm:p-3',
+      )}
+      role={expanded ? 'dialog' : undefined}
+      aria-modal={expanded ? true : undefined}
+      aria-label={expanded ? 'Exposure workflow, full screen' : undefined}
+      tabIndex={expanded ? -1 : undefined}
+    >
+      <Panel className={cn('overflow-hidden', expanded && 'flex min-h-0 flex-1 flex-col')}>
         {/* ── header ─────────────────────────────────────────────────────── */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
           <div className="flex items-center gap-3">
@@ -1744,11 +2068,15 @@ export function ExposureWorkflowGraph({
             </span>
             <button
               type="button"
-              onClick={() => setExpanded((current) => !current)}
+              onClick={toggleFullScreen}
+              aria-pressed={expanded}
               className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-2 py-1 font-mono text-[10px] font-semibold text-slate-400 transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
             >
               {expanded ? <Minimize2 aria-hidden className="h-3 w-3" /> : <Maximize2 aria-hidden className="h-3 w-3" />}
-              {expanded ? 'Collapse' : 'Expand'}
+              {expanded ? 'Exit full screen' : 'Full screen'}
+              {expanded && (
+                <kbd className="rounded border border-white/[0.1] px-1 font-mono text-[9px] text-slate-500">Esc</kbd>
+              )}
             </button>
           </div>
         </div>
@@ -1810,9 +2138,21 @@ export function ExposureWorkflowGraph({
         </div>
 
         {/* ── body ───────────────────────────────────────────────────────── */}
-        <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[15.5rem_minmax(0,1fr)]">
+        <div
+          className={cn(
+            'grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[15.5rem_minmax(0,1fr)]',
+            expanded && 'min-h-0 flex-1 grid-rows-[minmax(0,1fr)]',
+          )}
+        >
           {/* ── sidebar ──────────────────────────────────────────────────── */}
-          <div className="min-w-0 divide-y divide-white/[0.06] border-b border-white/[0.06] lg:border-b-0 lg:border-r">
+          {/* In full screen the controls scroll on their own so the canvas keeps
+              the full height; below lg they give the canvas the whole screen. */}
+          <div
+            className={cn(
+              'min-w-0 divide-y divide-white/[0.06] border-b border-white/[0.06] lg:border-b-0 lg:border-r',
+              expanded && 'overflow-y-auto max-lg:hidden',
+            )}
+          >
             {/* Scoping comes FIRST: on an estate with more than one asset it is
                 the control that makes the rest of the graph readable. Offered
                 only when there is something to choose between. */}
@@ -1991,7 +2331,7 @@ export function ExposureWorkflowGraph({
           </div>
 
           {/* ── canvas ───────────────────────────────────────────────────── */}
-          <div className="relative min-w-0">
+          <div className={cn('relative min-w-0', expanded && 'flex min-h-0 flex-col')}>
             {/* toolbar */}
             <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.06] px-3 py-2">
               <span className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-[#050a15] px-2 py-1 font-mono text-[10.5px] text-slate-400">
@@ -2000,15 +2340,17 @@ export function ExposureWorkflowGraph({
               </span>
               <button
                 type="button"
-                onClick={() => void flowRef.current?.fitView({ padding: 0.18, duration: 420 })}
+                onClick={fitMap}
+                title={expanded ? 'Frame the whole map' : 'Open the map full screen and frame all of it'}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-2 py-1 text-[11px] font-semibold text-slate-400 transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
               >
-                <Maximize2 aria-hidden className="h-3 w-3" />
+                <Scan aria-hidden className="h-3 w-3" />
                 Fit
               </button>
               <button
                 type="button"
-                onClick={() => window.dispatchEvent(new Event('qguard:workflow-relayout'))}
+                onClick={() => setRelayoutRequest((count) => count + 1)}
+                title="Release pinned nodes and compute a fresh layout"
                 className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.08] px-2 py-1 text-[11px] font-semibold text-slate-400 transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
               >
                 <RotateCcw aria-hidden className="h-3 w-3" />
@@ -2049,16 +2391,16 @@ export function ExposureWorkflowGraph({
               * height now scales with the VIEWPORT (a 1440p screen gets a much
               * larger canvas than a laptop) and with the SIZE OF THE GRAPH, so
               * a two-node lens does not reserve a screen of emptiness while a
-              * dense one gets room to breathe. Expanded still goes near-full
-              * height for close reading.
+              * dense one gets room to breathe. Full screen hands the canvas
+              * every pixel the stage has left.
               */}
             <div
-              className="relative w-full"
-              style={{
-                height: expanded
-                  ? 'min(90vh, 1200px)'
-                  : `clamp(${denseGraph ? 660 : 540}px, ${denseGraph ? 78 : 64}vh, ${denseGraph ? 1000 : 760}px)`,
-              }}
+              className={cn('relative w-full', expanded && 'min-h-0 flex-1')}
+              style={
+                expanded
+                  ? undefined
+                  : { height: `clamp(${denseGraph ? 660 : 540}px, ${denseGraph ? 78 : 64}vh, ${denseGraph ? 1000 : 760}px)` }
+              }
             >
               {empty ? (
                 <div className="grid h-full place-items-center px-6 text-center">
@@ -2089,6 +2431,11 @@ export function ExposureWorkflowGraph({
                       onReady={(instance) => {
                         flowRef.current = instance;
                       }}
+                      fitRequest={fitRequest}
+                      relayoutRequest={relayoutRequest}
+                      expanded={expanded}
+                      onFit={fitMap}
+                      onToggleExpanded={toggleFullScreen}
                     />
                   </ReactFlowProvider>
                 </FocusContext.Provider>
@@ -2179,7 +2526,23 @@ export function ExposureWorkflowGraph({
           border: 2px solid #04060e;
           cursor: pointer;
         }
+        .qg-workflow-flow .react-flow__panel.qg-workflow-zoom { margin: 12px; }
+        /* Browser full screen paints the element on a black backdrop by
+           default; the stage brings its own theme ground instead. */
+        .qg-workflow-stage:fullscreen { background: var(--qg-dashboard-bg); }
+        .qg-workflow-stage::backdrop { background: var(--qg-dashboard-bg); }
+        html.qg-workflow-fullscreen .dashboard-theme-scope { z-index: 70; }
+        html.qg-workflow-fullscreen .qg-dashboard-main { overflow: hidden; }
+        .qg-workflow-stage:focus { outline: none; }
+        /* The minimap's colours are props drawn for the dark ground; on
+           parchment it read as a black hole in the corner. */
+        .qg-theme-light .qg-workflow-flow .react-flow__minimap {
+          background-color: var(--qg-dashboard-surface-strong) !important;
+          border-color: var(--qg-dashboard-border) !important;
+          box-shadow: var(--qg-panel-shadow);
+        }
+        .qg-theme-light .qg-workflow-flow .react-flow__minimap-mask { fill: rgba(70, 48, 28, 0.16); }
       `}</style>
-    </>
+    </div>
   );
 }

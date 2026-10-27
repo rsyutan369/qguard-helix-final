@@ -89,15 +89,20 @@ export function refreshExposureAccess(): void {
   cached = null;
 }
 
-export function useExposureAccess(mode: ExposureScanMode): UseExposureAccessResult {
+/**
+ * `enabled: false` skips the server entitlement read — the public website has
+ * no Local/Dev modes and no platform API to ask.
+ */
+export function useExposureAccess(mode: ExposureScanMode, enabled = true): UseExposureAccessResult {
   const { user } = useAuth();
   const subscription = useSubscription();
   const [server, setServer] = React.useState<ServerEntitlement | null>(null);
-  const [serverLoading, setServerLoading] = React.useState(true);
+  const [serverLoading, setServerLoading] = React.useState(enabled);
 
   const userId = user?.id ?? null;
 
   React.useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     setServerLoading(true);
     void loadEntitlement(userId ?? 'anonymous').then((value) => {
@@ -110,7 +115,7 @@ export function useExposureAccess(mode: ExposureScanMode): UseExposureAccessResu
     };
     /* Re-read when the signed-in user or their plan changes — a customer who
        upgrades in another tab should see the gate open here without a reload. */
-  }, [userId, subscription.tier, subscription.status]);
+  }, [enabled, userId, subscription.tier, subscription.status]);
 
   return React.useMemo(() => {
     const local = resolveExposureModeAccess(mode, subscription.tier, subscription.isActive, Boolean(userId));

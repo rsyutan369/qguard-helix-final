@@ -32,7 +32,7 @@ import {
   type ResourceEstimate,
   type ShorResult,
 } from '@/lib/quantum-sim';
-import { QSR, tint } from '../_theme';
+import { QSR, alpha, resolveColour, tint, useQsrTheme } from '../_theme';
 import { ActionButton, Callout, Chip, Cite, DataRow, LogBar, Panel, ProvenanceBadge, Segmented, Slider, StatTile } from '../_ui';
 
 /* ═══════════════════════════════════════════════════════════════ mini charts */
@@ -57,10 +57,15 @@ function DistributionChart({
   height?: number;
 }) {
   const canvas = React.useRef<HTMLCanvasElement>(null);
+  /** Canvas cannot read a CSS variable, so a theme flip has to redraw it. */
+  const theme = useQsrTheme();
 
   React.useEffect(() => {
     const element = canvas.current;
     if (!element) return;
+    const quantum = resolveColour(element, QSR.quantum);
+    const broken = resolveColour(element, QSR.broken);
+    const bar = resolveColour(element, accent);
     const ratio = Math.min(2, window.devicePixelRatio || 1);
     const width = element.clientWidth;
     element.width = width * ratio;
@@ -75,7 +80,7 @@ function DistributionChart({
     if (peak <= 0) peak = 1;
 
     // Comb markers first, so the data draws over them.
-    ctx.strokeStyle = tint(QSR.quantum, 0.45);
+    ctx.strokeStyle = alpha(quantum, 0.45);
     ctx.setLineDash([3, 4]);
     ctx.lineWidth = 1;
     for (const fraction of peakMarkers) {
@@ -91,8 +96,8 @@ function DistributionChart({
     // a sharp peak is never averaged away by downsampling.
     const perPixel = distribution.length / width;
     const gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, accent);
-    gradient.addColorStop(1, tint(accent, 0.12));
+    gradient.addColorStop(0, bar);
+    gradient.addColorStop(1, alpha(bar, 0.12));
     ctx.fillStyle = gradient;
     for (let x = 0; x < width; x += 1) {
       let value = 0;
@@ -104,7 +109,7 @@ function DistributionChart({
     }
 
     if (measured !== null) {
-      ctx.strokeStyle = QSR.broken;
+      ctx.strokeStyle = broken;
       ctx.lineWidth = 1.5;
       const x = measured * width;
       ctx.beginPath();
@@ -112,7 +117,7 @@ function DistributionChart({
       ctx.lineTo(x, height);
       ctx.stroke();
     }
-  }, [distribution, accent, peakMarkers, measured, height]);
+  }, [distribution, accent, peakMarkers, measured, height, theme]);
 
   return <canvas ref={canvas} className="w-full" style={{ height }} />;
 }
@@ -248,7 +253,7 @@ export function ShorLab({ onResult, active }: ShorLabProps) {
                   className="rounded-md border px-2 py-1 font-mono text-[11px] font-bold transition-colors"
                   style={{
                     borderColor: option.N === targetN ? tint(QSR.quantum, 0.5) : QSR.hairline,
-                    background: option.N === targetN ? tint(QSR.quantum, 0.14) : 'rgba(4,7,16,0.5)',
+                    background: option.N === targetN ? tint(QSR.quantum, 0.14) : QSR.well,
                     color: option.N === targetN ? QSR.quantum : QSR.inkMuted,
                   }}
                 >
@@ -293,7 +298,7 @@ export function ShorLab({ onResult, active }: ShorLabProps) {
             hint="Lower t blurs the peaks until continued fractions can no longer resolve the period. This is the phase-estimation precision, and it is the most instructive control on the page."
           />
 
-          <div className="rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.5)' }}>
+          <div className="rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: QSR.well }}>
             <DataRow label="Work register" value={`${workQubits} qubits`} />
             <DataRow label="Control register" value={`${effectiveControl} qubits`} />
             <DataRow label="State vector" value={`2^${workQubits + effectiveControl} = ${(2 ** (workQubits + effectiveControl)).toLocaleString()}`} accent={QSR.live} />
@@ -337,7 +342,7 @@ export function ShorLab({ onResult, active }: ShorLabProps) {
 
               {/* The classical function the register encodes */}
               {result.periodicFunction.length > 0 && (
-                <div className="rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.5)' }}>
+                <div className="rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: QSR.well }}>
                   <div className="mb-1.5 flex items-center justify-between">
                     <span className="font-mono text-[9px] font-bold uppercase tracking-[0.18em]" style={{ color: QSR.inkMuted }}>
                       {result.a}<sup>x</sup> mod {result.N} — the hidden period
@@ -355,7 +360,7 @@ export function ShorLab({ onResult, active }: ShorLabProps) {
               )}
 
               {/* The Born-rule distribution */}
-              <div className="rounded-lg border p-3" style={{ borderColor: tint(QSR.quantum, 0.24), background: 'rgba(4,7,16,0.6)' }}>
+              <div className="rounded-lg border p-3" style={{ borderColor: tint(QSR.quantum, 0.24), background: QSR.well }}>
                 <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
                   <span className="font-mono text-[9px] font-bold uppercase tracking-[0.18em]" style={{ color: QSR.quantum }}>
                     |ψ|² over the control register after the inverse QFT
@@ -378,7 +383,7 @@ export function ShorLab({ onResult, active }: ShorLabProps) {
 
               {/* The classical post-processing */}
               <div className="grid gap-3 lg:grid-cols-2">
-                <div className="rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.5)' }}>
+                <div className="rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: QSR.well }}>
                   <div className="mb-2 font-mono text-[9px] font-bold uppercase tracking-[0.18em]" style={{ color: QSR.inkMuted }}>
                     Continued fractions on {result.measurement}/{2 ** result.controlQubits}
                   </div>
@@ -424,7 +429,7 @@ export function ShorLab({ onResult, active }: ShorLabProps) {
                       {result.failureReason}
                     </Callout>
                   )}
-                  <div className="rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.5)' }}>
+                  <div className="rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: QSR.well }}>
                     <DataRow label="Hadamard gates" value={result.gates.hadamard} />
                     <DataRow label="Controlled phase" value={result.gates.controlledPhase} />
                     <DataRow label="Modular multiplications" value={result.gates.modularMultiply} accent={QSR.quantum} />
@@ -434,7 +439,7 @@ export function ShorLab({ onResult, active }: ShorLabProps) {
               </div>
 
               {/* The stepper */}
-              <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.5)' }}>
+              <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: QSR.well }}>
                 <div className="mb-2.5 font-mono text-[9px] font-bold uppercase tracking-[0.18em]" style={{ color: QSR.inkMuted }}>
                   What the circuit did, step by step
                 </div>
@@ -448,7 +453,7 @@ export function ShorLab({ onResult, active }: ShorLabProps) {
                         {index + 1}
                       </span>
                       <div className="min-w-0">
-                        <div className="text-[12px] font-semibold text-slate-100">{stage.title}</div>
+                        <div className="text-[12px] font-semibold qsr-heading">{stage.title}</div>
                         <p className="mt-0.5 text-[11.5px] leading-relaxed" style={{ color: QSR.inkSoft }}>
                           {stage.detail}
                         </p>
@@ -500,7 +505,7 @@ function EstimateColumn({ estimate, label }: { estimate: ResourceEstimate; label
   }
 
   return (
-    <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.55)' }}>
+    <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: QSR.well }}>
       <div className="flex items-center justify-between">
         <span className="font-mono text-[9px] font-bold uppercase tracking-[0.18em]" style={{ color: QSR.model }}>
           {label}
@@ -633,7 +638,7 @@ export function ResourceEstimatorLab() {
             format={(value) => `${value} ns`}
           />
 
-          <div className="rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.5)' }}>
+          <div className="rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: QSR.well }}>
             <div className="mb-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.18em]" style={{ color: QSR.inkMuted }}>
               Largest reported device
             </div>
@@ -666,7 +671,7 @@ export function ResourceEstimatorLab() {
             <Cite source="roetteler" inline />
           </Callout>
 
-          <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.5)' }}>
+          <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: QSR.well }}>
             <div className="mb-2 flex items-center gap-1.5">
               <Cpu className="h-3.5 w-3.5" style={{ color: QSR.live }} />
               <span className="font-mono text-[9px] font-bold uppercase tracking-[0.18em]" style={{ color: QSR.inkMuted }}>
@@ -785,7 +790,7 @@ export function MoscaLab({ defaultShelfLife }: { defaultShelfLife: number }) {
           </div>
 
           {/* Timeline */}
-          <div className="rounded-lg border p-4" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.55)' }}>
+          <div className="rounded-lg border p-4" style={{ borderColor: QSR.hairline, background: QSR.well }}>
             <div className="mb-3 font-mono text-[9px] font-bold uppercase tracking-[0.18em]" style={{ color: QSR.inkMuted }}>
               Data captured today, on a calendar
             </div>
@@ -801,7 +806,7 @@ export function MoscaLab({ defaultShelfLife }: { defaultShelfLife: number }) {
                       {band.label}
                     </span>
                   </div>
-                  <div className="relative h-2.5 w-full overflow-hidden rounded-full" style={{ background: 'rgba(148,163,184,0.09)' }}>
+                  <div className="relative h-2.5 w-full overflow-hidden rounded-full" style={{ background: QSR.track }}>
                     <motion.div
                       className="absolute inset-y-0 rounded-full"
                       initial={false}

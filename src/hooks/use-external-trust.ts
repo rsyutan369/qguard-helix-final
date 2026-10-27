@@ -150,8 +150,13 @@ export function useVendorReadiness(query = '') {
   return useTrustEndpoint<VendorPayload>('/vendors', query)
 }
 
-export function useEcosystemMap(focus: string | null) {
-  return useTrustEndpoint<EcosystemPayload>('/ecosystem', focus ? `?focus=${encodeURIComponent(focus)}` : '')
+/**
+ * `stream: false` is for a page that already holds an external-trust stream
+ * through another hook: it re-reads this projection when that stream's
+ * snapshot changes, instead of opening a second EventSource.
+ */
+export function useEcosystemMap(focus: string | null, options: { stream?: boolean } = {}) {
+  return useTrustEndpoint<EcosystemPayload>('/ecosystem', focus ? `?focus=${encodeURIComponent(focus)}` : '', options.stream ?? true)
 }
 
 export function useTrustChains() {

@@ -46,7 +46,7 @@ export function Cite({ source, inline = false }: { source: CitationKey; inline?:
       target="_blank"
       rel="noreferrer noopener"
       title={`${citation.title} — ${citation.published}`}
-      className={`font-mono transition-colors hover:text-cyan-300 ${
+      className={`font-mono transition-colors qsr-hover-live ${
         inline ? 'text-[10px] underline decoration-dotted underline-offset-2' : 'text-[10px]'
       }`}
       style={{ color: QSR.inkMuted }}
@@ -84,7 +84,7 @@ export function Panel({ eyebrow, title, subtitle, right, accent = QSR.live, clas
                 {eyebrow}
               </div>
             )}
-            {title && <h3 className="text-[15px] font-bold leading-tight text-slate-100">{title}</h3>}
+            {title && <h3 className="text-[15px] font-bold leading-tight qsr-heading">{title}</h3>}
             {subtitle && <div className="mt-1.5 max-w-3xl text-[12px] leading-relaxed" style={{ color: QSR.inkSoft }}>{subtitle}</div>}
           </div>
           {right && <div className="shrink-0">{right}</div>}
@@ -120,7 +120,7 @@ export function SectionHeading({
         <div className="font-mono text-[10px] font-bold uppercase tracking-[0.28em]" style={{ color: accent }}>
           {eyebrow}
         </div>
-        <h2 className="mt-1.5 text-2xl font-black leading-tight tracking-tight text-slate-50 sm:text-[28px]">{title}</h2>
+        <h2 className="mt-1.5 text-2xl font-black leading-tight tracking-tight qsr-heading sm:text-[28px]">{title}</h2>
         <p className="mt-2.5 max-w-3xl text-[13px] leading-relaxed" style={{ color: QSR.inkSoft }}>
           {lede}
         </p>
@@ -149,7 +149,7 @@ export function StatTile({
   note?: string;
 }) {
   return (
-    <div className="rounded-xl border px-3.5 py-3" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.55)' }}>
+    <div className="rounded-xl border px-3.5 py-3" style={{ borderColor: QSR.hairline, background: QSR.well }}>
       <div className="flex items-start justify-between gap-2">
         <span className="font-mono text-[9px] font-bold uppercase tracking-[0.16em]" style={{ color: QSR.inkMuted }}>
           {label}
@@ -190,7 +190,7 @@ export function DataRow({
   mono?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 border-b py-2 last:border-b-0" style={{ borderColor: 'rgba(56,189,248,0.06)' }}>
+    <div className="flex items-center justify-between gap-3 border-b py-2 last:border-b-0" style={{ borderColor: QSR.rule }}>
       <span className="min-w-0 text-[12px]" style={{ color: QSR.inkSoft }}>
         {label}
       </span>
@@ -220,7 +220,7 @@ export function Segmented<T extends string | number>({
   size?: 'sm' | 'md';
 }) {
   return (
-    <div className="inline-flex flex-wrap gap-1 rounded-lg border p-1" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.6)' }}>
+    <div className="inline-flex flex-wrap gap-1 rounded-lg border p-1" style={{ borderColor: QSR.hairline, background: QSR.well }}>
       {options.map((option) => {
         const active = option.value === value;
         return (
@@ -233,7 +233,7 @@ export function Segmented<T extends string | number>({
               size === 'sm' ? 'px-2 py-1 text-[9px]' : 'px-2.5 py-1.5 text-[10px]'
             }`}
             style={{
-              color: active ? '#04060e' : QSR.inkSoft,
+              color: active ? QSR.onAccent : QSR.inkSoft,
               background: active ? accent : 'transparent',
             }}
           >
@@ -323,7 +323,7 @@ export function ActionButton({
       className={`inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 font-mono text-[11px] font-bold uppercase tracking-[0.14em] transition-opacity disabled:cursor-not-allowed disabled:opacity-45 ${className}`}
       style={
         variant === 'solid'
-          ? { background: accent, color: '#04060e', boxShadow: `0 0 24px ${tint(accent, 0.28)}` }
+          ? { background: accent, color: QSR.onAccent, boxShadow: `0 0 24px ${tint(accent, 0.28)}` }
           : { border: `1px solid ${tint(accent, 0.35)}`, color: accent, background: tint(accent, 0.06) }
       }
     >
@@ -343,7 +343,7 @@ export function ActionButton({
 export function Meter({ value, max = 1, accent = QSR.live, height = 6 }: { value: number; max?: number; accent?: string; height?: number }) {
   const percent = Math.max(0, Math.min(100, (value / max) * 100));
   return (
-    <div className="w-full overflow-hidden rounded-full" style={{ height, background: 'rgba(148,163,184,0.10)' }}>
+    <div className="w-full overflow-hidden rounded-full" style={{ height, background: QSR.track }}>
       <motion.div
         className="h-full rounded-full"
         initial={false}
@@ -377,7 +377,7 @@ export function LogBar({
   const percent = Math.max(0, Math.min(100, ((log - floorLog10) / (ceilLog10 - floorLog10)) * 100));
   return (
     <div>
-      <div className="relative h-2 w-full overflow-hidden rounded-full" style={{ background: 'rgba(148,163,184,0.10)' }}>
+      <div className="relative h-2 w-full overflow-hidden rounded-full" style={{ background: QSR.track }}>
         <motion.div
           className="absolute inset-y-0 left-0 rounded-full"
           initial={false}
@@ -426,7 +426,7 @@ export function Chip({ label, value, accent = QSR.inkSoft }: { label: string; va
   return (
     <span
       className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px]"
-      style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.5)' }}
+      style={{ borderColor: QSR.hairline, background: QSR.well }}
     >
       <span style={{ color: QSR.inkFaint }}>{label}</span>
       <span className="font-bold" style={{ color: accent }}>

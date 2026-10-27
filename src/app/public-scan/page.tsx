@@ -42,8 +42,6 @@ import type { PublicScanReport } from '@/lib/scanner/public-scan/types';
 import { ACCENT, Panel, QuantumField, Reveal, SectionLabel } from './_ui';
 import { QuantumScanHero } from './_qve';
 import { ExposureModeTabs } from '@/components/exposure/ExposureModeTabs';
-import { LocalAssessmentPanel } from '@/components/exposure/LocalAssessmentPanel';
-import { DevAssessmentPanel } from '@/components/exposure/DevAssessmentPanel';
 import { useExposureAccess } from '@/hooks/use-exposure-access';
 import type { ScanMode } from '@/lib/scanner/exposure/types';
 import {
@@ -62,6 +60,30 @@ import {
   Recommendations,
   SophiaInsight,
 } from './_sections';
+
+/**
+ * The public website (`npm run build:public`, src/PublicApp.tsx) ships the Web
+ * assessment only. Local and Dev run the full exposure engine in the browser,
+ * so they are loaded on demand here and compiled out of the website build:
+ * the constant is replaced at build time and the dead `import()` is dropped.
+ */
+const WEBSITE_EDITION = import.meta.env.VITE_SITE_EDITION === 'public';
+
+const LocalAssessmentPanel = WEBSITE_EDITION
+  ? null
+  : React.lazy(() => import('@/components/exposure/LocalAssessmentPanel').then((m) => ({ default: m.LocalAssessmentPanel })));
+const DevAssessmentPanel = WEBSITE_EDITION
+  ? null
+  : React.lazy(() => import('@/components/exposure/DevAssessmentPanel').then((m) => ({ default: m.DevAssessmentPanel })));
+
+function PanelLoading() {
+  return (
+    <div className="flex items-center justify-center gap-2 py-16 text-[13px] text-slate-400">
+      <Loader2 className="h-4 w-4 animate-spin" />
+      Loading assessment…
+    </div>
+  );
+}
 
 /* ---------------------------------------------------------------- chrome --- */
 
@@ -470,8 +492,8 @@ export default function PublicScanPage() {
   /* Lock badges on the tabs. The tabs stay CLICKABLE when locked — the panel
      behind them is the feature disclosure that makes the case for the plan, so
      a visitor who cannot scan should still be able to read what a scan does. */
-  const localAccess = useExposureAccess('local');
-  const devAccess = useExposureAccess('dev');
+  const localAccess = useExposureAccess('local', !WEBSITE_EDITION);
+  const devAccess = useExposureAccess('dev', !WEBSITE_EDITION);
   const lockedModes = React.useMemo(() => {
     const locked: Partial<Record<ScanMode, string>> = {};
     if (!localAccess.loading && !localAccess.allowed) locked.local = localAccess.message;
@@ -483,7 +505,7 @@ export default function PublicScanPage() {
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const requestedMode = params.get('mode');
-    if (requestedMode === 'local' || requestedMode === 'dev') setMode(requestedMode);
+    if (!WEBSITE_EDITION && (requestedMode === 'local' || requestedMode === 'dev')) setMode(requestedMode);
 
     const preset = params.get('target');
     if (preset) {
@@ -524,19 +546,25 @@ export default function PublicScanPage() {
           sideways on a phone. */}
       <main className="mx-auto max-w-[92rem] overflow-x-clip px-4 pb-24 pt-6 sm:px-6">
         {/* ── Assessment mode: Web / Local / Dev (§3) ──────────────────── */}
-        <div className="mb-5">
-          <ExposureModeTabs value={mode} onChange={changeMode} locked={lockedModes} scope="public-scan" />
-        </div>
-
-        {mode === 'local' && (
-          <div role="tabpanel" id="exposure-panel-local" aria-labelledby="exposure-tab-local">
-            <LocalAssessmentPanel upsellSlot={<EnterpriseUpsell />} />
+        {!WEBSITE_EDITION && (
+          <div className="mb-5">
+            <ExposureModeTabs value={mode} onChange={changeMode} locked={lockedModes} scope="public-scan" />
           </div>
         )}
 
-        {mode === 'dev' && (
+        {mode === 'local' && LocalAssessmentPanel && (
+          <div role="tabpanel" id="exposure-panel-local" aria-labelledby="exposure-tab-local">
+            <React.Suspense fallback={<PanelLoading />}>
+              <LocalAssessmentPanel upsellSlot={<EnterpriseUpsell />} />
+            </React.Suspense>
+          </div>
+        )}
+
+        {mode === 'dev' && DevAssessmentPanel && (
           <div role="tabpanel" id="exposure-panel-dev" aria-labelledby="exposure-tab-dev">
-            <DevAssessmentPanel upsellSlot={<EnterpriseUpsell />} />
+            <React.Suspense fallback={<PanelLoading />}>
+              <DevAssessmentPanel upsellSlot={<EnterpriseUpsell />} />
+            </React.Suspense>
           </div>
         )}
 

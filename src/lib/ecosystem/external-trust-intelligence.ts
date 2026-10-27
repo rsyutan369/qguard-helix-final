@@ -723,6 +723,55 @@ export interface ExperimentRecord {
   /** Always true — a laboratory result never proves production security (§52). */
   requiresProductionValidation: boolean
   basis: string
+  /** What a controlled-test handshake actually negotiated; null for simulations. */
+  probe: ExperimentProbe | null
+}
+
+/**
+ * The stored outcome of a READ-ONLY handshake probe. Only facts the TLS engine
+ * observed — `untestableGroups` lists groups the local TLS build could not
+ * offer, which are therefore unmeasured rather than refused.
+ */
+export interface ExperimentProbe {
+  measured: boolean
+  negotiatedProtocol: string | null
+  supportedProtocols: string[]
+  legacyProtocols: string[]
+  hybridGroups: string[]
+  pureKemGroups: string[]
+  hybridProbed: boolean
+  untestableGroups: string[]
+  forwardSecrecy: boolean
+  certificateAlgorithm: string | null
+  certificateIssuer: string | null
+  certificateDaysToExpiry: number | null
+  chainLength: number
+  error: string | null
+}
+
+function toExperimentProbe(value: unknown): ExperimentProbe | null {
+  const probe = recordOf(value)
+  if (!Object.keys(probe).length) return null
+  const list = (entry: unknown) => (Array.isArray(entry) ? entry.map((item) => str(item)).filter(Boolean) : [])
+  const nullable = (entry: unknown) => str(entry) || null
+  return {
+    measured: probe.measured === true,
+    negotiatedProtocol: nullable(probe.negotiatedProtocol),
+    supportedProtocols: list(probe.supportedProtocols),
+    legacyProtocols: list(probe.legacyProtocols),
+    hybridGroups: list(probe.hybridGroups),
+    pureKemGroups: list(probe.pureKemGroups),
+    hybridProbed: probe.hybridProbed === true,
+    untestableGroups: list(probe.untestableGroups),
+    forwardSecrecy: probe.forwardSecrecy === true,
+    certificateAlgorithm: nullable(probe.certificateAlgorithm),
+    certificateIssuer: nullable(probe.certificateIssuer),
+    certificateDaysToExpiry: probe.certificateDaysToExpiry === null || probe.certificateDaysToExpiry === undefined
+      ? null
+      : num(probe.certificateDaysToExpiry),
+    chainLength: num(probe.chainLength),
+    error: nullable(probe.error),
+  }
 }
 
 /* ================================================================== */
@@ -2254,6 +2303,7 @@ export function toExperimentRecord(row: Row, now = Date.now()): ExperimentRecord
     evidenceId: str(row.evidence_id) || null,
     requiresProductionValidation: true,
     basis: str(result.basis) || 'Recorded laboratory experiment.',
+    probe: toExperimentProbe(result.probe),
   }
 }
 

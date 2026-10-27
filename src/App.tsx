@@ -1,6 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/auth-context';
 import { ThemeProvider } from './contexts/theme-context';
+import { UserPreferencesProvider } from './contexts/user-preferences-context';
 import Landing from './pages/Landing';
 import SubscriptionThankYou from './pages/SubscriptionThankYou';
 import VerifyReport from './pages/VerifyReport';
@@ -123,6 +124,7 @@ export default function App() {
   return (
     <ThemeProvider>
       <AuthProvider>
+      <UserPreferencesProvider>
       <Router>
         <Routes>
           <Route path="/" element={<Landing />} />
@@ -325,6 +327,7 @@ export default function App() {
           </Route>
         </Routes>
       </Router>
+      </UserPreferencesProvider>
       </AuthProvider>
     </ThemeProvider>
   );

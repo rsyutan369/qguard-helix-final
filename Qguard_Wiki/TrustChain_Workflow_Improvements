@@ -1,0 +1,401 @@
+# Qguard Helix — Vendor PQC Readiness, Trust Chain & Hybrid Crypto Workflow Visualization
+
+## Objective
+
+Upgrade the following three existing Qguard Helix dashboard pages into a unified, interactive, enterprise-grade visual experience inspired by n8n workflow automation builders.
+
+- `/dashboard/vendor-pqc-readiness`
+- `/dashboard/trust-chain-analyzer`
+- `/dashboard/hybrid-crypto-lab`
+
+The primary objective is to make complex vendor relationships, cryptographic dependencies, trust chains, and post-quantum cryptography (PQC) readiness easy to understand through a visual network of connected nodes, directional edges, workflow branches, and contextual details.
+
+**Do not simply redesign these pages as static diagrams. Build a functional, interactive visualization that represents real application data and existing backend relationships.**
+
+## 1. Design Direction
+
+Create a premium cybersecurity visualization experience consistent with the Qguard Helix enterprise dashboard.
+
+### Visual style
+- Premium enterprise SaaS interface with a clean, professional layout.
+- Light theme as the primary experience, consistent with the existing Qguard Helix dashboard.
+- White and light-gray surfaces, subtle borders, restrained blue and purple accents, and high-contrast typography.
+- Optional dark theme support if the application already implements it.
+- Subtle glassmorphism for selected panels, tooltips, and contextual overlays.
+- Smooth node transitions, animated directional connections, and restrained interaction effects.
+- Consistent spacing, alignment, iconography, and responsive behavior.
+- Use professional vendor logos where available, with recognizable application or protocol icons as fallbacks.
+- Avoid excessive gradients, oversized elements, visual clutter, and decorative animations that reduce readability.
+
+Use the attached n8n-style workflow image as the primary reference for node positioning, curved connections, branching logic, and the visual relationship between workflow steps.
+
+## 2. Build a Reusable Interactive Workflow Canvas
+
+Implement a reusable workflow visualization component that can be shared across all three pages.
+
+Recommended component:
+
+`VendorTrustWorkflowCanvas`
+
+The canvas should support:
+
+- Interactive node-based diagrams.
+- Directional edges representing communication or trust relationships.
+- Curved connectors between nodes.
+- Zoom in, zoom out, fit to screen, and canvas panning.
+- Drag-and-drop node positioning where appropriate.
+- Automatic graph layout with minimal overlapping nodes and edges.
+- Node selection and contextual information panels.
+- Search and filtering of vendors, certificates, algorithms, endpoints, and dependencies.
+- Expandable and collapsible groups for complex vendor ecosystems.
+- Minimap for large graphs.
+- Status indicators and an accessible legend.
+- Loading, empty, error, and partial-data states.
+- Responsive layouts for desktop, tablet, and smaller screens.
+
+### Recommended technology
+
+Inspect the existing repository and reuse its current frontend stack before adding dependencies.
+
+If the project uses React, evaluate:
+
+- **React Flow / `@xyflow/react`** for interactive nodes, edges, handles, selection, and canvas controls.
+- **ELK.js** or Dagre for automatic graph layout.
+- Existing icon libraries, UI components, and animation libraries already present in the project.
+
+Do not introduce a competing visualization framework if the project already has an appropriate solution.
+
+## 3. Page One — Vendor PQC Readiness
+
+Route: `/dashboard/vendor-pqc-readiness`
+
+Transform the page into a visual map of the organization's vendor ecosystem and its post-quantum cryptographic readiness.
+
+### Workflow visualization
+
+Represent vendor relationships as a connected graph:
+
+Organization / Internal Systems
+→ Business Applications
+→ External Vendors
+→ Vendor Infrastructure
+→ Cryptographic Dependencies
+→ Certificates, Keys, and Protocols
+→ PQC Migration Readiness
+
+The exact connections must come from actual application data. Do not create artificial relationships simply to make the graph look connected.
+
+### Vendor nodes
+
+Each vendor node should display:
+
+- Vendor name and logo.
+- Vendor category or service type.
+- PQC readiness status.
+- Risk severity.
+- Current cryptographic posture, when known.
+- Last assessment or synchronization time.
+- Number of connected systems or dependencies.
+
+Use clear status indicators:
+
+- Green: verified PQC-ready or compliant with the applicable configured policy.
+- Blue: hybrid cryptography verified.
+- Amber: assessment incomplete or migration required.
+- Red: confirmed critical cryptographic exposure.
+- Gray: unknown, unassessed, or stale data.
+
+Never label a vendor PQC-ready solely because its assessment is missing or because it claims support for a PQC algorithm.
+
+### Vendor interaction
+
+When a user selects a vendor, open a contextual detail panel containing:
+
+- Vendor overview and business criticality.
+- Connected applications and infrastructure.
+- Supported and observed cryptographic algorithms.
+- RSA, ECC, TLS, certificate, and key dependencies, where available.
+- ML-KEM, ML-DSA, and SLH-DSA support evidence, where available.
+- Known vulnerabilities or migration blockers.
+- Evidence source and last-verified timestamp.
+- Recommended migration actions.
+- Links to existing vendor assessment and remediation workflows.
+
+Include filters for risk, readiness, business criticality, vendor category, and migration status.
+
+## 4. Page Two — Trust Chain Analyzer
+
+Route: `/dashboard/trust-chain-analyzer`
+
+Transform this page into an interactive trust graph that shows how trust is established, inherited, and validated across vendors, systems, certificates, identities, and cryptographic dependencies.
+
+### Trust chain visualization
+
+Represent the actual trust path using a directed graph, for example:
+
+Root Certificate Authority
+→ Intermediate Certificate Authority
+→ Vendor Certificate
+→ Service Identity
+→ Application Endpoint
+→ Dependent Internal System
+
+The example is illustrative only. Render the real trust relationships discovered or configured by the application.
+
+Support multiple roots, branching paths, shared dependencies, and disconnected trust components.
+
+### Node types
+
+Support distinct visual representations for:
+
+- Vendors and third-party services.
+- Applications and infrastructure.
+- Root and intermediate certificate authorities.
+- Certificates and public keys.
+- Workload identities.
+- TLS endpoints.
+- Cryptographic algorithms and key-exchange mechanisms.
+- Trust anchors and policy boundaries.
+
+### Edge semantics
+
+Every connection must communicate its meaning.
+
+Examples:
+
+- Issues certificate.
+- Signed by.
+- Authenticates.
+- Depends on.
+- Establishes TLS session with.
+- Delegates trust to.
+- Uses cryptographic algorithm.
+- Cross-signs.
+- Validated by policy.
+
+Display directional arrows, relationship labels, and edge details on selection or hover.
+
+### Trust analysis
+
+Selecting a node or edge should reveal:
+
+- Trust relationship and direction.
+- Certificate chain validation result, when tested.
+- Issuer, subject, validity dates, and expiration status.
+- Signature and public-key algorithms.
+- Observed TLS protocol and negotiated cipher information, when collected.
+- Trust-policy evaluation results.
+- Missing, expired, revoked, or invalid certificates, where verified.
+- Dependencies and downstream impact.
+- Evidence source and observation timestamp.
+
+Include visual highlighting for broken trust chains, expired certificates, weak or disallowed cryptography, and potential quantum-vulnerable dependencies.
+
+Clearly distinguish observed facts, policy violations, and inferred risks.
+
+Add an interactive **Trace Trust Path** feature that highlights the selected path between two nodes and explains why the relationship is trusted, untrusted, or unknown.
+
+## 5. Page Three — Hybrid Crypto Lab
+
+Route: `/dashboard/hybrid-crypto-lab`
+
+Transform this page into a visual laboratory for understanding, testing, and evaluating classical, hybrid, and post-quantum cryptographic configurations.
+
+### Cryptographic workflow
+
+Visualize the actual configured or tested flow:
+
+Client
+→ TLS Handshake
+→ Key Exchange
+→ Hybrid or PQC Key Encapsulation
+→ Shared Secret Derivation
+→ Session Key Establishment
+→ Encrypted Communication
+→ Validation and Telemetry
+
+Clearly distinguish key establishment, authentication, digital signatures, and symmetric encryption. Do not represent them as interchangeable operations.
+
+### Supported cryptographic representations
+
+Where supported by the existing application, represent:
+
+- Classical key exchange: X25519 and ECDH.
+- Post-quantum key encapsulation: ML-KEM-768 and ML-KEM-1024.
+- Hybrid key establishment: X25519 + ML-KEM-768.
+- Digital signatures: RSA, ECDSA, Ed25519, ML-DSA-65, and SLH-DSA.
+- Hybrid signature combinations where actually implemented.
+- Symmetric encryption: AES-256-GCM.
+- Key derivation: HKDF using the configured hash function.
+- TLS 1.3 negotiation and certificate validation.
+
+Ensure ML-KEM is represented as a key-encapsulation mechanism, not a digital signature algorithm.
+
+Do not claim that a combination is supported or operational unless the underlying implementation confirms it.
+
+### Visual modes
+
+Provide three selectable modes:
+
+**Classical Mode**
+- Show the configured classical cryptographic path.
+- Identify dependencies that may be vulnerable to future quantum attacks.
+- Display relevant test results and configuration details.
+
+**Hybrid Mode**
+- Show classical and post-quantum key-establishment components.
+- Illustrate how their outputs are combined by the implemented protocol and key derivation process.
+- Display the negotiated algorithm group and handshake outcome where observable.
+- Highlight fallback behavior and policy enforcement.
+
+**Post-Quantum Mode**
+- Show the post-quantum configuration and supported algorithms.
+- Identify compatibility constraints, missing implementation support, and certificate or signature limitations.
+- Display actual test outcomes rather than simulated success.
+
+### Interactive testing
+
+Where the existing backend supports testing, allow users to:
+
+- Select a supported cryptographic profile.
+- Choose a test endpoint or approved laboratory environment.
+- Run a cryptographic compatibility test.
+- Inspect handshake results and negotiated parameters.
+- Review execution logs, errors, and performance measurements.
+- Compare classical and hybrid test results.
+- Export a test report.
+
+Use actual cryptographic libraries and real test results. Never fabricate successful handshakes, benchmark measurements, or PQC adoption data.
+
+Tests must run only against authorized endpoints and environments.
+
+## 6. Unified Vendor-to-Trust-to-Cryptography View
+
+The three pages should work as a connected investigation workflow, not as isolated visualizations.
+
+Implement navigation between related entities.
+
+Example:
+
+1. The user selects a vendor in Vendor PQC Readiness.
+2. The application identifies its known connected systems and cryptographic dependencies.
+3. The user opens the vendor's trust relationships in Trust Chain Analyzer.
+4. The application highlights the relevant certificates, identities, endpoints, and trust paths.
+5. The user opens Hybrid Crypto Lab to inspect or test a supported cryptographic configuration.
+6. The resulting evidence is associated with the relevant vendor, dependency, or assessment where supported.
+7. The vendor readiness assessment reflects the new verified evidence after the appropriate backend update and assessment process.
+
+Pass entity IDs or route parameters between pages when possible, rather than relying on display names alone.
+
+Preserve the user's selected vendor, dependency, and relevant context during navigation.
+
+## 7. Data Architecture and Backend Integration
+
+Before implementing the redesign, inspect the existing repository, database schema, API routes, data hooks, and shared components.
+
+Identify the authoritative source for:
+
+- Vendor inventory and relationships.
+- Vendor assessment results.
+- Cryptographic assets and algorithms.
+- Certificate and trust-chain information.
+- TLS observations and cryptographic telemetry.
+- Hybrid cryptography test results.
+- Remediation plans and migration status.
+
+Requirements:
+
+- Reuse existing Supabase tables, APIs, hooks, authentication, and authorization.
+- Preserve existing row-level security and tenant isolation.
+- Use the authenticated user's permitted data.
+- Implement missing integrations only where necessary.
+- Use real backend data for the graph and node details.
+- Maintain stable entity identifiers and explicit relationship types.
+- Deduplicate entities and relationships.
+- Handle stale, incomplete, conflicting, and unavailable evidence.
+- Support pagination or incremental loading for large graphs.
+- Keep graph layout calculations separate from authoritative business data.
+- Ensure that changes to graph presentation never modify underlying records.
+- Persist node positions or saved layouts only if supported and appropriate for the current user or organization.
+
+**Strict requirement:** No fake telemetry, fabricated vendor connections, hardcoded risk scores, randomly generated findings, or mock data presented as production results.
+
+If evidence is unavailable, render an explicit unknown or unassessed state.
+
+## 8. Enterprise Interaction and Usability
+
+Provide a consistent toolbar across the three pages:
+
+- Search.
+- Filter.
+- Zoom in and out.
+- Fit to view.
+- Reset layout.
+- Toggle edge labels.
+- Toggle evidence overlays.
+- Expand or collapse groups.
+- Export graph where supported.
+- Open entity details.
+- Navigate to related assessments.
+
+Add a contextual side panel that opens when users select a node or edge.
+
+For complex graphs, support:
+
+- Grouping by vendor, environment, business unit, or trust boundary.
+- Highlighting direct and transitive dependencies.
+- Isolating a selected vendor and its connected systems.
+- Showing upstream and downstream relationships.
+- Finding shortest known trust paths.
+- Filtering by cryptographic algorithm or PQC readiness.
+- Highlighting migration blockers and affected services.
+
+Use tooltips for concise explanations, with more detailed evidence available in the side panel.
+
+Make node types distinguishable through icons, labels, and shapes, not color alone.
+
+Ensure keyboard navigation, accessible controls, readable text, and visible focus states.
+
+## 9. Performance and Reliability
+
+The implementation must:
+
+- Remain responsive with large vendor inventories and trust graphs.
+- Avoid recalculating the entire graph on every minor UI interaction.
+- Use memoized node and edge components where appropriate.
+- Prevent duplicate API requests and unnecessary re-renders.
+- Handle missing relationships, cycles, and disconnected nodes.
+- Provide clear loading and error states.
+- Avoid infinite animation loops or distracting motion.
+- Respect reduced-motion accessibility preferences.
+- Preserve existing routes and functionality.
+
+## 10. Implementation and Acceptance Criteria
+
+Work directly within the existing codebase.
+
+First inspect the current implementation of all three routes and identify reusable components, data sources, and existing functionality. Then implement the shared visualization architecture and integrate it into each page.
+
+Do not replace functional features with static mockups or remove existing functionality without a justified reason.
+
+### Definition of done
+
+- All three routes display the new interactive workflow visualization.
+- Vendor, trust, and cryptographic entities are represented using accurate node types.
+- Relationships and directional edges are backed by real data or explicitly identified as configured relationships.
+- Selecting a node or edge displays relevant details and evidence.
+- Navigation between the three pages preserves the selected entity context.
+- Filters and search work against the actual graph data.
+- Classical, hybrid, and post-quantum modes reflect the real capabilities of the existing cryptographic implementation.
+- Loading, empty, stale, partial, and error states are handled correctly.
+- Authentication, authorization, RLS, and existing APIs remain functional.
+- No fake telemetry, fabricated test results, or invented vendor relationships are introduced.
+- Existing functionality and unrelated dashboard routes remain intact.
+- TypeScript, linting, builds, and relevant automated tests pass.
+- The finished UI is visually consistent with Qguard Helix's premium enterprise design.
+
+Finally, run the application, inspect each route in the browser, test the interactions and cross-page navigation, and fix any discovered errors before declaring the implementation complete.
+
+Deliver a concise implementation summary describing the files changed, reusable components created, backend integrations used, tests executed, and any remaining limitations.
+
+**Priority:** Accurate relationships and cryptographic evidence first, clear visual communication second, premium styling third. The result should feel like a professional cybersecurity investigation and orchestration platform—not merely a decorative workflow diagram.

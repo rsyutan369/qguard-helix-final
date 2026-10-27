@@ -28,7 +28,11 @@
     "agent:check:rollback:live": "tsx tools/rollback-live-check.ts",
     "check:boundary": "tsx tools/client-bundle-boundary-check.ts",
     "check:deploy": "tsx tools/deploy/deploy-readiness-check.ts",
-    "check:messaging-posture": "tsx tools/messaging-posture-check.ts"
+    "check:messaging-posture": "tsx tools/messaging-posture-check.ts",
+    "check:demo-request": "tsx tools/demo-request-check.ts",
+    "build:public": "vite build --configLoader runner --mode public && node tools/deploy/prune-public-site.mjs && tsx tools/deploy/public-site-check.ts",
+    "check:public-site": "tsx tools/deploy/public-site-check.ts",
+    "start:public-api": "tsx src/api-server/public-standalone.ts"
   },
   "dependencies": {
     "@aws-sdk/client-elastic-load-balancing-v2": "^3.1068.0",
@@ -80,6 +84,7 @@
     "jose": "^6.2.3",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
+    "nodemailer": "^10.1.4",
     "papaparse": "^5.5.4",
     "pdf-lib": "^1.17.1",
     "pixi.js": "^8.19.0",
@@ -106,6 +111,7 @@
     "@types/d3-force": "^3.0.10",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
+    "@types/nodemailer": "^6.4.24",
     "@types/papaparse": "^5.5.2",
     "autoprefixer": "^10.4.21",
     "tailwindcss": "^4.1.14",

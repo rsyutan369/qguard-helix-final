@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence, useMotionValue, useTransform, useSpring } from 'motion/react';
 import Navbar2 from "@/components/ui/navbar2";
 import { Hero195 } from "@/components/ui/hero-195";
@@ -53,6 +53,14 @@ import { CyberBackground } from '../components/CyberBackground';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { TooltipProvider } from '../components/ui/tooltip';
+import {
+  DEMO_FIELD_LIMITS,
+  DEMO_REQUEST_INBOX,
+  DEMO_STAGES,
+  demoStageLabel,
+  validateDemoRequest,
+  type DemoStage,
+} from '@/lib/demo-request';
 import hourGlassVideo from '../assets/Hour_Glass_Video.mp4';
 import hourglassImage from '../assets/images/futuristic_hourglass_sand_1778137402905.png';
 import roadmapImage from '../assets/images/quantum_security_roadmap_assets_1778137420732.png';
@@ -1615,47 +1623,59 @@ type RequestDemoModalProps = {
   onClose: () => void;
 };
 
+type DemoFormState = {
+  name: string;
+  email: string;
+  organization: string;
+  stage: DemoStage;
+  whitepaper: boolean;
+  message: string;
+  /** Honeypot: hidden from people, so only a bot fills it in. */
+  website: string;
+};
+
+const EMPTY_DEMO_FORM: DemoFormState = {
+  name: '',
+  email: '',
+  organization: '',
+  stage: 'researching',
+  whitepaper: true,
+  message: '',
+  website: '',
+};
+
+/** How long the modal waits for the API before offering the email fallback. */
+const DEMO_REQUEST_TIMEOUT_MS = 25_000;
+
+type DemoSendError = {
+  message: string;
+  /** Set when the visitor should email the inbox directly instead. */
+  inbox: string | null;
+};
+
+/** A pre-filled email to the inbox, for when online delivery is unavailable. */
+function demoRequestMailto(inbox: string, data: DemoFormState): string {
+  const subject = `Demo request: ${data.organization || data.name || 'Qguard Helix'}`;
+  const body = [
+    `Name: ${data.name}`,
+    `Work email: ${data.email}`,
+    `Organization: ${data.organization}`,
+    `PQC migration: ${demoStageLabel(data.stage)}`,
+    `Readiness playbook: ${data.whitepaper ? 'Requested' : 'Not requested'}`,
+    '',
+    data.message,
+  ].join('\n');
+  return `mailto:${inbox}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+
 function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
-  const [formData, setFormData] = useState({
-    name: '',
-    email: '',
-    org: '',
-    stage: 'researching',
-    whitepaper: true,
-  });
-  const [step, setStep] = useState<'form' | 'submitting' | 'success'>('form');
-  const [submittingProgress, setSubmittingProgress] = useState<string[]>([]);
-  const [currentProgressIndex, setCurrentProgressIndex] = useState(0);
+  const [formData, setFormData] = useState<DemoFormState>(EMPTY_DEMO_FORM);
+  const [step, setStep] = useState<'form' | 'sending' | 'success'>('form');
+  const [sendError, setSendError] = useState<DemoSendError | null>(null);
+  const [deliveredTo, setDeliveredTo] = useState<string>(DEMO_REQUEST_INBOX);
+  const inFlight = useRef<AbortController | null>(null);
 
-  const submissionSteps = useMemo(
-    () => [
-      'Checking the details you entered...',
-      'Matching your migration stage to the right walkthrough...',
-      'Selecting the modules to cover in the session...',
-      'Preparing your request summary...',
-      'Request summary ready.'
-    ],
-    []
-  );
-
-  useEffect(() => {
-    if (!isOpen || step !== 'submitting') {
-      return;
-    }
-
-    const interval = window.setInterval(() => {
-      if (currentProgressIndex < submissionSteps.length) {
-        setSubmittingProgress((prev) => [...prev, submissionSteps[currentProgressIndex]]);
-        setCurrentProgressIndex((prev) => prev + 1);
-        return;
-      }
-
-      window.clearInterval(interval);
-      setStep('success');
-    }, 1000);
-
-    return () => window.clearInterval(interval);
-  }, [currentProgressIndex, isOpen, step, submissionSteps]);
+  useEffect(() => () => inFlight.current?.abort(), []);
 
   useEffect(() => {
     if (!isOpen) {
@@ -1671,16 +1691,12 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
   }, [isOpen]);
 
   const resetModal = () => {
-    setFormData({
-      name: '',
-      email: '',
-      org: '',
-      stage: 'researching',
-      whitepaper: true,
-    });
+    const pending = inFlight.current;
+    inFlight.current = null;
+    pending?.abort();
+    setFormData(EMPTY_DEMO_FORM);
     setStep('form');
-    setSubmittingProgress([]);
-    setCurrentProgressIndex(0);
+    setSendError(null);
   };
 
   const handleClose = () => {
@@ -1688,16 +1704,70 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
     onClose();
   };
 
-  const handleSubmit = (event: React.FormEvent) => {
+  const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-
-    if (!formData.name || !formData.email || !formData.org) {
+    if (step === 'sending') {
       return;
     }
 
-    setSubmittingProgress([]);
-    setCurrentProgressIndex(0);
-    setStep('submitting');
+    const parsed = validateDemoRequest(formData);
+    if (parsed.ok === false) {
+      setSendError({ message: parsed.message, inbox: null });
+      return;
+    }
+
+    const controller = new AbortController();
+    inFlight.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(), DEMO_REQUEST_TIMEOUT_MS);
+    setSendError(null);
+    setStep('sending');
+
+    try {
+      const response = await fetch('/api/v1/demo-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...parsed.value, website: formData.website }),
+        signal: controller.signal,
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | { ok?: boolean; inbox?: unknown; error?: { message?: unknown; inbox?: unknown } }
+        | null;
+      if (inFlight.current !== controller) {
+        return;
+      }
+
+      if (response.ok && payload?.ok) {
+        setDeliveredTo(typeof payload.inbox === 'string' ? payload.inbox : DEMO_REQUEST_INBOX);
+        setStep('success');
+        return;
+      }
+
+      const error = payload?.error;
+      setSendError({
+        message:
+          typeof error?.message === 'string'
+            ? error.message
+            : `Your request could not be sent. Please email ${DEMO_REQUEST_INBOX}.`,
+        inbox: typeof error?.inbox === 'string' ? error.inbox : response.status >= 500 ? DEMO_REQUEST_INBOX : null,
+      });
+      setStep('form');
+    } catch {
+      // Closing the modal aborts the request on purpose; only a timeout or a
+      // dropped connection is worth telling the visitor about.
+      if (inFlight.current !== controller) {
+        return;
+      }
+      setSendError({
+        message: `The request did not reach us (timed out or the connection dropped). Please try again, or email ${DEMO_REQUEST_INBOX}.`,
+        inbox: DEMO_REQUEST_INBOX,
+      });
+      setStep('form');
+    } finally {
+      window.clearTimeout(timeout);
+      if (inFlight.current === controller) {
+        inFlight.current = null;
+      }
+    }
   };
 
   return (
@@ -1749,8 +1819,23 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
               </button>
             </div>
 
-            {step === 'form' && (
-              <form onSubmit={handleSubmit} className="mt-6 space-y-5" id="demo-request-form">
+            {step !== 'success' && (
+              <form onSubmit={handleSubmit} className="mt-6" id="demo-request-form" noValidate>
+                <fieldset disabled={step === 'sending'} className="space-y-5">
+                <div aria-hidden="true" className="absolute -left-[10000px] h-px w-px overflow-hidden">
+                  <label>
+                    Website
+                    <input
+                      type="text"
+                      name="website"
+                      tabIndex={-1}
+                      autoComplete="off"
+                      value={formData.website}
+                      onChange={(event) => setFormData({ ...formData, website: event.target.value })}
+                    />
+                  </label>
+                </div>
+
                 <div>
                   <label className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-widest text-slate-500">
                     Your Name
@@ -1758,6 +1843,8 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
                   <input
                     type="text"
                     required
+                    autoComplete="name"
+                    maxLength={DEMO_FIELD_LIMITS.name}
                     value={formData.name}
                     onChange={(event) => setFormData({ ...formData, name: event.target.value })}
                     className="w-full rounded-sm border-2 border-slate-950 bg-white px-4 py-3 font-mono text-xs text-slate-800 transition-all placeholder:text-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-0"
@@ -1773,6 +1860,8 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
                     <input
                       type="email"
                       required
+                      autoComplete="email"
+                      maxLength={DEMO_FIELD_LIMITS.email}
                       value={formData.email}
                       onChange={(event) => setFormData({ ...formData, email: event.target.value })}
                       className="w-full rounded-sm border-2 border-slate-950 bg-white px-4 py-3 font-mono text-xs text-slate-800 transition-all placeholder:text-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-0"
@@ -1786,8 +1875,10 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
                     <input
                       type="text"
                       required
-                      value={formData.org}
-                      onChange={(event) => setFormData({ ...formData, org: event.target.value })}
+                      autoComplete="organization"
+                      maxLength={DEMO_FIELD_LIMITS.organization}
+                      value={formData.organization}
+                      onChange={(event) => setFormData({ ...formData, organization: event.target.value })}
                       className="w-full rounded-sm border-2 border-slate-950 bg-white px-4 py-3 font-mono text-xs text-slate-800 transition-all placeholder:text-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-0"
                       placeholder="Agency / Corp"
                     />
@@ -1800,14 +1891,31 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
                   </label>
                   <select
                     value={formData.stage}
-                    onChange={(event) => setFormData({ ...formData, stage: event.target.value })}
+                    onChange={(event) => setFormData({ ...formData, stage: event.target.value as DemoStage })}
                     className="w-full rounded-sm border-2 border-slate-950 bg-white px-4 py-3 font-mono text-xs text-slate-800 transition-all focus:border-cyan-400 focus:outline-none focus:ring-0"
                   >
-                    <option value="researching">Just researching / Educating self</option>
-                    <option value="planning">Actively mapping cryptographic footprint</option>
-                    <option value="piloting">Piloting Post-Quantum Algorithms (ML-KEM / ML-DSA)</option>
-                    <option value="deployed">Fully migrated or in active production transition</option>
+                    {DEMO_STAGES.map((stage) => (
+                      <option key={stage.value} value={stage.value}>{stage.label}</option>
+                    ))}
                   </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="demo-request-message"
+                    className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-widest text-slate-500"
+                  >
+                    Message <span className="font-normal normal-case tracking-normal text-slate-400">(optional)</span>
+                  </label>
+                  <textarea
+                    id="demo-request-message"
+                    rows={4}
+                    maxLength={DEMO_FIELD_LIMITS.message}
+                    value={formData.message}
+                    onChange={(event) => setFormData({ ...formData, message: event.target.value })}
+                    className="w-full resize-y rounded-sm border-2 border-slate-950 bg-white px-4 py-3 font-mono text-xs text-slate-800 transition-all placeholder:text-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-0"
+                    placeholder="What would you like to see? e.g. your environment, timelines, compliance drivers"
+                  />
                 </div>
 
                 <label className="flex cursor-pointer select-none items-start gap-3 pt-1">
@@ -1822,6 +1930,26 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
                   </span>
                 </label>
 
+                {sendError && (
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2 rounded-sm border-2 border-red-600 bg-red-50 p-3 font-mono text-[11px] leading-relaxed text-red-800"
+                  >
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <div>
+                      <p>{sendError.message}</p>
+                      {sendError.inbox && (
+                        <a
+                          href={demoRequestMailto(sendError.inbox, formData)}
+                          className="mt-1 inline-block font-bold underline hover:text-red-950"
+                        >
+                          Open an email to {sendError.inbox} with these details
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 <div className="mt-6 flex justify-end gap-3 border-t border-slate-200 pt-4">
                   <button
                     type="button"
@@ -1833,62 +1961,43 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
                   </button>
                   <button
                     type="submit"
-                    className="flex cursor-pointer items-center gap-1.5 rounded-sm border-2 border-cyan-400 bg-cyan-400 px-6 py-2.5 font-mono text-xs font-black uppercase tracking-widest text-slate-950 transition-all hover:bg-cyan-500 active:scale-95"
+                    className="flex cursor-pointer items-center gap-1.5 rounded-sm border-2 border-cyan-400 bg-cyan-400 px-6 py-2.5 font-mono text-xs font-black uppercase tracking-widest text-slate-950 transition-all hover:bg-cyan-500 active:scale-95 disabled:cursor-wait disabled:opacity-70"
                     id="btn-submit-demo-form"
                   >
-                    Secure Booking
-                    <ArrowRight className="h-4 w-4 text-slate-950" />
+                    {step === 'sending' ? (
+                      <>
+                        Sending…
+                        <Loader className="h-4 w-4 animate-spin text-slate-950" />
+                      </>
+                    ) : (
+                      <>
+                        Request Demo
+                        <ArrowRight className="h-4 w-4 text-slate-950" />
+                      </>
+                    )}
                   </button>
                 </div>
+                </fieldset>
               </form>
-            )}
-
-            {step === 'submitting' && (
-              <div className="mt-8 flex flex-col items-center justify-center py-8">
-                <Loader className="mb-4 h-10 w-10 animate-spin text-cyan-500" />
-                <h4 className="font-mono text-sm font-bold uppercase tracking-wider text-slate-950">
-                  Preparing Your Request...
-                </h4>
-                <p className="mt-1 font-mono text-[10px] uppercase tracking-widest text-cyan-600">
-                  Building your demo request summary
-                </p>
-
-                <div className="mt-6 max-h-40 w-full space-y-1.5 overflow-y-auto rounded-sm border-2 border-slate-950 bg-slate-900 p-4 font-mono text-[10px] text-cyan-400">
-                  {submittingProgress.map((progress, index) => (
-                    <motion.div
-                      key={`${progress}-${index}`}
-                      initial={{ opacity: 0, x: -5 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      className="flex items-center gap-1.5"
-                    >
-                      <span className="text-slate-500">[{index + 1}]</span>
-                      <span>{progress}</span>
-                    </motion.div>
-                  ))}
-                  <div className="py-0.5 font-bold uppercase tracking-wider text-slate-500 animate-pulse">
-                    * Active link channel
-                  </div>
-                </div>
-              </div>
             )}
 
             {step === 'success' && (
               <div className="mt-8 py-4 text-center">
-                <div className="mb-4 inline-flex animate-bounce rounded-sm border-2 border-slate-950 bg-cyan-100 p-3 text-slate-950">
+                <div className="mb-4 inline-flex rounded-sm border-2 border-slate-950 bg-cyan-100 p-3 text-slate-950">
                   <ShieldCheck className="h-8 w-8" />
                 </div>
                 <h4 className="font-sans text-lg font-black uppercase tracking-tight text-slate-950">
-                  Your Request Summary Is Ready
+                  Demo Request Sent
                 </h4>
                 <p className="mx-auto mt-2 max-w-sm font-mono text-[11px] uppercase tracking-wide text-slate-500">
-                  Thanks, <strong>{formData.name}</strong>. Email the details below to support@qguardhelix.com and we will book the session for <strong>{formData.org}</strong>. This form does not send anything on its own.
+                  Thanks, <strong>{formData.name}</strong>. Your request reached <strong>{deliveredTo}</strong>. We will reply to <strong>{formData.email}</strong> to schedule the session for <strong>{formData.organization}</strong>.
                 </p>
                 <div className="my-5 rounded-sm border-2 border-slate-950 bg-slate-50 p-4 text-left">
                   <div className="grid grid-cols-2 gap-y-2 font-mono text-[10px]">
                     <span className="text-slate-500">CONTACT EMAIL:</span>
                     <span className="font-bold text-slate-900">{formData.email}</span>
-                    <span className="text-slate-500">NIST PQC STAGE:</span>
-                    <span className="font-bold uppercase text-slate-900">{formData.stage}</span>
+                    <span className="text-slate-500">PQC MIGRATION STAGE:</span>
+                    <span className="font-bold text-slate-900">{demoStageLabel(formData.stage)}</span>
                     <span className="text-slate-500">READINESS GUIDE:</span>
                     <span className="font-bold text-slate-900">{formData.whitepaper ? 'REQUESTED (.pdf)' : 'NOT REQUESTED'}</span>
                   </div>
@@ -1898,7 +2007,7 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
                   <button
                     type="button"
                     onClick={handleClose}
-                    className="cursor-pointer rounded-sm border-2 border-slate-950 bg-slate-950 px-6 py-2.5 font-mono text-xs font-extrabold uppercase tracking-widest text-white shadow-md transition-all hover:bg-slate-900 active:scale-95"
+                    className="cursor-pointer rounded-sm border-2 border-cyan-400 bg-cyan-400 px-6 py-2.5 font-mono text-xs font-black uppercase tracking-widest text-slate-950 transition-all hover:bg-cyan-500 active:scale-95"
                     id="btn-close-demo-success"
                   >
                     Return to Homepage
@@ -2518,50 +2627,6 @@ function MigrationProcessSection() {
   );
 }
 
-const slideModules = import.meta.glob('/public/slideshow/*.{png,jpg,jpeg,gif,webp}', { eager: true, query: '?url', import: 'default' });
-const QUANTUM_THREAT_SLIDES = Object.keys(slideModules)
-  .map(key => key.replace('/public', ''))
-  .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
-
-function QuantumThreatSlideshow() {
-  const [currentIndex, setCurrentIndex] = useState(0);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentIndex((prev) => (prev + 1) % QUANTUM_THREAT_SLIDES.length);
-    }, 10000);
-    return () => clearInterval(timer);
-  }, []);
-
-  return (
-    <div className="relative w-full aspect-[4/3] sm:aspect-[16/10] lg:aspect-video overflow-hidden bg-transparent group">
-      <AnimatePresence mode="wait">
-        <motion.img
-          key={currentIndex}
-          src={QUANTUM_THREAT_SLIDES[currentIndex]}
-          initial={{ opacity: 0, scale: 1.02, filter: "blur(8px)" }}
-          animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
-          exit={{ opacity: 0, scale: 0.98, filter: "blur(8px)" }}
-          transition={{ duration: 1.2, ease: [0.16, 1, 0.3, 1] }}
-          className="absolute inset-0 w-full h-full object-contain drop-shadow-[0_0_24px_rgba(212,175,55,0.15)]"
-        />
-      </AnimatePresence>
-      <div className="absolute inset-x-0 bottom-6 flex justify-center gap-4 z-20">
-        {QUANTUM_THREAT_SLIDES.map((_, idx) => (
-          <button
-            key={idx}
-            onClick={() => setCurrentIndex(idx)}
-            className={`transition-all duration-500 h-1.5 rounded-full ${idx === currentIndex ? "w-10 bg-gold shadow-[0_0_16px_rgba(212,175,55,0.9)]" : "w-3 bg-white/30 hover:bg-white/60 hover:shadow-[0_0_10px_rgba(255,255,255,0.5)]"
-              }`}
-            aria-label={`Go to slide ${idx + 1}`}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-
 export default function App() {
   const [now, setNow] = useState(() => new Date());
   const [expandedNistPhase, setExpandedNistPhase] = useState<number | null>(null);
@@ -3077,41 +3142,6 @@ export default function App() {
                 ))}
               </div>
             </div>
-          </div>
-        </section>
-
-        {/* Post-Quantum Cryptography Visual Section */}
-        <section className="py-20 relative overflow-hidden">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(212,175,55,0.06),transparent_45%)]" />
-          <div className="max-w-6xl mx-auto px-6">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              className="text-center mb-16"
-            >
-              <h2 className="text-3xl md:text-5xl font-black uppercase tracking-[0.08em] text-white">
-                QGuard Helix — <span className="text-gold gold-glow">Threat Intelligence</span>
-              </h2>
-              <p className="mt-4 text-sm md:text-base text-muted-foreground tracking-widest font-mono uppercase">
-                Preparing Enterprises for the Post-Quantum Era
-              </p>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 30 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.9, ease: "easeOut" }}
-              viewport={{ once: true, amount: 0.2 }}
-              className="relative group"
-            >
-              {/* Outer Glow Ring */}
-              <div className="absolute -inset-1 rounded-2xl bg-gradient-to-br from-gold/25 via-gold/10 to-gold/25 blur-xl opacity-40 group-hover:opacity-80 transition-opacity duration-700 pointer-events-none" />
-
-              {/* Image Container (Frame Removed) */}
-              <div className="relative w-full transition-all duration-700">
-                <QuantumThreatSlideshow />
-              </div>
-            </motion.div>
           </div>
         </section>
 

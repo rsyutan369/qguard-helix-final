@@ -3,6 +3,12 @@ import { createHash, randomBytes } from 'node:crypto'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
 import { createAuthClient, getServerUser } from '@/lib/supabase-server'
 import { trustedClientIp } from './runtime/client-ip'
+import {
+  DEFAULT_THEME,
+  normalizeTheme,
+  validatePreferencePatch,
+  type UserPreferences,
+} from '@/lib/preferences'
 
 type AuthedRequest = Request & {
   user?: User
@@ -130,16 +136,11 @@ function normalizeProfile(row: any, user: User, twoFactorEnabled: boolean, recov
 
 function normalizePreferences(row: any) {
   return {
-    theme: row?.theme || 'gold',
-    language: row?.language || 'en',
-    timezone: row?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    theme: normalizeTheme(row?.theme),
     dashboardDensity: row?.dashboard_density || 'comfortable',
     defaultDashboardView: row?.default_dashboard_view || 'overview',
-    notificationEmail: row?.notification_email ?? true,
     notificationPush: row?.notification_push ?? false,
-    notificationSms: row?.notification_sms ?? false,
     securityAlerts: row?.security_alerts ?? true,
-    productUpdates: row?.product_updates ?? false,
     telemetryOptIn: row?.telemetry_opt_in ?? true,
     updatedAt: row?.updated_at || null,
   }
@@ -332,16 +333,11 @@ async function ensureProfile(client: SupabaseClient, user: User) {
 async function ensurePreferences(client: SupabaseClient, userId: string) {
   const defaults = {
     user_id: userId,
-    theme: 'gold',
-    language: 'en',
-    timezone: 'UTC',
+    theme: DEFAULT_THEME,
     dashboard_density: 'comfortable',
     default_dashboard_view: 'overview',
-    notification_email: true,
     notification_push: false,
-    notification_sms: false,
     security_alerts: true,
-    product_updates: false,
     telemetry_opt_in: true,
   }
 
@@ -688,34 +684,42 @@ router.put('/', async (req: AuthedRequest, res: Response) => {
   }
 })
 
+// Lightweight read for the app-wide preferences provider: it only needs the
+// preference row, not the whole profile/security/devices bundle.
+router.get('/preferences', async (req: AuthedRequest, res: Response) => {
+  try {
+    const row = await ensurePreferences(req.authClient!, req.user!.id)
+    return res.json({ data: { preferences: normalizePreferences(row) } })
+  } catch (err) {
+    console.error('Preferences fetch error:', err)
+    return jsonError(res, 500, 'PREFERENCES_ERROR', 'Failed to load preferences')
+  }
+})
+
 router.put('/preferences', async (req: AuthedRequest, res: Response) => {
   const user = req.user!
   const client = req.authClient!
   try {
-    const allowed: Record<string, string> = {
+    const allowed: Record<keyof Omit<UserPreferences, 'updatedAt'>, string> = {
       theme: 'theme',
-      language: 'language',
-      timezone: 'timezone',
       dashboardDensity: 'dashboard_density',
       defaultDashboardView: 'default_dashboard_view',
-      notificationEmail: 'notification_email',
       notificationPush: 'notification_push',
-      notificationSms: 'notification_sms',
       securityAlerts: 'security_alerts',
-      productUpdates: 'product_updates',
       telemetryOptIn: 'telemetry_opt_in',
     }
-    const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
-
-    for (const [key, column] of Object.entries(allowed)) {
-      if (req.body[key] === undefined) continue
-      if (typeof req.body[key] === 'boolean') updates[column] = req.body[key]
-      else {
-        const value = cleanString(req.body[key], 100)
-        if (value === undefined) return jsonError(res, 400, 'VALIDATION_ERROR', `Invalid value for ${key}`)
-        updates[column] = value
-      }
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Partial<UserPreferences>
+    const patch: Partial<UserPreferences> = {}
+    for (const key of Object.keys(allowed) as (keyof typeof allowed)[]) {
+      if (body[key] !== undefined) (patch as Record<string, unknown>)[key] = body[key]
     }
+    if (Object.keys(patch).length === 0) return jsonError(res, 400, 'VALIDATION_ERROR', 'No preferences supplied')
+
+    const invalid = validatePreferencePatch(patch)
+    if (invalid) return jsonError(res, 400, 'VALIDATION_ERROR', invalid)
+
+    const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
+    for (const key of Object.keys(patch) as (keyof typeof allowed)[]) updates[allowed[key]] = patch[key]
 
     const { data, error } = await client
       .from('user_preferences')
@@ -724,7 +728,12 @@ router.put('/preferences', async (req: AuthedRequest, res: Response) => {
       .single()
 
     if (error || !data) return jsonError(res, 500, 'UPDATE_ERROR', 'Failed to update preferences')
-    await recordSecurityEvent(client, user.id, req, 'preferences.updated', 'info', 'Account preferences updated')
+    // A theme flip is cosmetic and can happen many times a day; the audit
+    // trail records every other preference change with the fields touched.
+    const changed = Object.keys(patch).filter((key) => key !== 'theme')
+    if (changed.length > 0) {
+      await recordSecurityEvent(client, user.id, req, 'preferences.updated', 'info', 'Account preferences updated', { fields: changed })
+    }
     return res.json({ data: { preferences: normalizePreferences(data) } })
   } catch (err) {
     console.error('Preferences update error:', err)

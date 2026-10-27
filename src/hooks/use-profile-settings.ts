@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '@/contexts/auth-context'
+import { useUserPreferences } from '@/contexts/user-preferences-context'
 import { supabase } from '@/lib/supabase'
 
-export type ProfileTheme = 'dark' | 'gold' | 'light' | 'cyber'
+export type { ProfileTheme, UserPreferences } from '@/lib/preferences'
 
 export interface UserProfileSettings {
   id: string
@@ -33,21 +34,6 @@ export interface UserProfileSettings {
     vaultStorageUsed: number
     maxVaultStorage: number
   }
-}
-
-export interface UserPreferences {
-  theme: ProfileTheme
-  language: string
-  timezone: string
-  dashboardDensity: 'compact' | 'comfortable' | 'expanded'
-  defaultDashboardView: string
-  notificationEmail: boolean
-  notificationPush: boolean
-  notificationSms: boolean
-  securityAlerts: boolean
-  productUpdates: boolean
-  telemetryOptIn: boolean
-  updatedAt: string | null
 }
 
 export interface UserSecuritySettings {
@@ -109,7 +95,6 @@ export interface MfaEnrollment {
 
 interface ProfileBundle {
   profile: UserProfileSettings
-  preferences: UserPreferences
   security: UserSecuritySettings
   devices: UserDevice[]
   sessions: UserSession[]
@@ -235,9 +220,15 @@ function mergeProfileUpdate(previous: UserProfileSettings | null, raw: Partial<U
 
 export function useProfileSettings() {
   const { session, user } = useAuth()
+  // Preferences live in the app-wide provider so the theme, density and locale
+  // apply everywhere; this hook only reads and writes them through it.
+  const {
+    preferences,
+    loading: preferencesLoading,
+    updatePreferences,
+  } = useUserPreferences()
   const [deviceId, setDeviceId] = useState('')
   const [profile, setProfile] = useState<UserProfileSettings | null>(null)
-  const [preferences, setPreferences] = useState<UserPreferences | null>(null)
   const [security, setSecurity] = useState<UserSecuritySettings | null>(null)
   const [devices, setDevices] = useState<UserDevice[]>([])
   const [sessions, setSessions] = useState<UserSession[]>([])
@@ -262,7 +253,6 @@ export function useProfileSettings() {
     loadedRef.current = false
     savingRef.current = false
     setProfile(null)
-    setPreferences(null)
     setSecurity(null)
     setDevices([])
     setSessions([])
@@ -321,7 +311,6 @@ export function useProfileSettings() {
 
   const applyBundle = useCallback((bundle: ProfileBundle) => {
     setProfile((prev) => mergeServerObject(prev, bundle.profile))
-    setPreferences((prev) => mergeServerObject(prev, bundle.preferences))
     setSecurity((prev) => mergeServerObject(prev, bundle.security))
     setDevices(bundle.devices || [])
     setSessions(bundle.sessions || [])
@@ -373,10 +362,6 @@ export function useProfileSettings() {
         .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` }, refresh)
         .subscribe(),
       supabase
-        .channel(`profile-preferences-${user.id}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'user_preferences', filter: `user_id=eq.${user.id}` }, refresh)
-        .subscribe(),
-      supabase
         .channel(`profile-security-${user.id}`)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'user_security_settings', filter: `user_id=eq.${user.id}` }, refresh)
         .subscribe(),
@@ -391,8 +376,12 @@ export function useProfileSettings() {
     }
   }, [refresh, refreshActivity, token, user])
 
+  // "Telemetry sync" governs the live profile/activity stream. Opted out, the
+  // page still loads and can be refreshed by hand, but nothing streams.
+  const telemetryEnabled = preferences?.telemetryOptIn === true
+
   useEffect(() => {
-    if (!token || !profile?.id) return
+    if (!token || !profile?.id || !telemetryEnabled) return
 
     let retryTimer: ReturnType<typeof setTimeout> | null = null
     const connect = () => {
@@ -404,12 +393,6 @@ export function useProfileSettings() {
         try {
           const payload = JSON.parse(event.data)
           setProfile((prev) => mergeProfileUpdate(prev, payload))
-        } catch { /* ignore malformed SSE */ }
-      })
-      es.addEventListener('preferences-update', (event) => {
-        try {
-          const payload = JSON.parse(event.data)
-          setPreferences((prev) => mergeServerObject(prev, payload))
         } catch { /* ignore malformed SSE */ }
       })
       es.addEventListener('security-update', (event) => {
@@ -448,7 +431,7 @@ export function useProfileSettings() {
       eventSourceRef.current = null
       setSseConnected(false)
     }
-  }, [profile?.id, token])
+  }, [profile?.id, telemetryEnabled, token])
 
   const withSaving = useCallback(async <T,>(operation: () => Promise<T>) => {
     if (savingRef.current) {
@@ -479,15 +462,6 @@ export function useProfileSettings() {
     })
     setProfile((prev) => mergeServerObject(prev, data.profile))
     return data.profile
-  }), [request, withSaving])
-
-  const updatePreferences = useCallback((updates: Partial<UserPreferences>) => withSaving(async () => {
-    const data = await request<{ preferences: UserPreferences }>('/api/v1/profile/preferences', {
-      method: 'PUT',
-      body: JSON.stringify(updates),
-    })
-    setPreferences((prev) => mergeServerObject(prev, data.preferences))
-    return data.preferences
   }), [request, withSaving])
 
   const updateSecurity = useCallback((updates: Partial<UserSecuritySettings>) => withSaving(async () => {
@@ -612,10 +586,11 @@ export function useProfileSettings() {
     sessions,
     activity,
     telemetry,
-    loading,
+    loading: loading || (Boolean(user) && preferencesLoading),
     saving,
     error,
     sseConnected,
+    telemetryEnabled,
     recoveryCodes,
     clearRecoveryCodes: () => setRecoveryCodes([]),
     refresh,

@@ -18,7 +18,7 @@ import { ChevronDown, Pause, Play, SkipBack, SkipForward, Check, Lock } from 'lu
 import { SCENARIOS, type Scenario } from '@/data/scenario';
 import { ATTACK_CHAIN, namedGroup, type AttackStage, type ScenarioCryptoProfile, type ClassicalPrimitive } from '@/lib/quantum-sim';
 import type { QveBudget } from '@/app/public-scan/_qve/performance-manager';
-import { QSR, TENSE_COLOR, tint, VERDICT_COLOR, VERDICT_LABEL } from '../_theme';
+import { QSR, TENSE_COLOR, tint, useQsrTheme, VERDICT_COLOR, VERDICT_LABEL } from '../_theme';
 import { Callout, Chip, Panel, ProvenanceBadge } from '../_ui';
 import StageFallback from '../_three/StageFallback';
 import type { StageSites } from '../_three/QuantumStage3D';
@@ -57,10 +57,10 @@ function ScenarioSelector({ active, onSelect }: { active: Scenario; onSelect: (i
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         className="flex w-full items-center gap-2.5 rounded-lg border px-3.5 py-2.5 text-left transition-colors"
-        style={{ borderColor: open ? tint(QSR.live, 0.35) : QSR.hairline, background: 'rgba(4,7,16,0.7)' }}
+        style={{ borderColor: open ? tint(QSR.live, 0.35) : QSR.hairline, background: QSR.wellStrong }}
       >
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] font-bold text-slate-100">{active.name}</span>
+          <span className="block truncate text-[13px] font-bold qsr-heading">{active.name}</span>
           <span className="block truncate font-mono text-[9.5px] uppercase tracking-[0.14em]" style={{ color: QSR.inkMuted }}>
             {active.category}
           </span>
@@ -88,8 +88,8 @@ function ScenarioSelector({ active, onSelect }: { active: Scenario; onSelect: (i
                     onSelect(scenario.id);
                     setOpen(false);
                   }}
-                  className="block w-full border-b px-3.5 py-2.5 text-left transition-colors last:border-b-0 hover:bg-cyan-400/[0.07]"
-                  style={{ borderColor: 'rgba(56,189,248,0.07)', background: selected ? tint(QSR.live, 0.1) : undefined }}
+                  className="block w-full border-b px-3.5 py-2.5 text-left transition-colors last:border-b-0 qsr-hover-wash"
+                  style={{ borderColor: QSR.rule, background: selected ? tint(QSR.live, 0.1) : undefined }}
                 >
                   <span className="block text-[12px] font-semibold" style={{ color: selected ? QSR.live : QSR.ink }}>
                     {scenario.name}
@@ -151,7 +151,7 @@ function StageRail({
               className="group relative overflow-hidden rounded-lg border px-2.5 py-2 text-left transition-colors"
               style={{
                 borderColor: active ? tint(accent, 0.5) : QSR.hairline,
-                background: active ? tint(accent, 0.12) : 'rgba(4,7,16,0.55)',
+                background: active ? tint(accent, 0.12) : QSR.well,
               }}
             >
               {active && (
@@ -168,8 +168,8 @@ function StageRail({
                 <span
                   className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full font-mono text-[9px] font-bold"
                   style={{
-                    background: done ? QSR.safe : active ? accent : 'rgba(148,163,184,0.14)',
-                    color: done || active ? '#04060e' : QSR.inkMuted,
+                    background: done ? QSR.safe : active ? accent : QSR.track,
+                    color: done || active ? QSR.onAccent : QSR.inkMuted,
                   }}
                 >
                   {done ? <Check className="h-2.5 w-2.5" strokeWidth={3.5} /> : item.ordinal}
@@ -237,7 +237,7 @@ function StageBrief({ stage, crypto, primitive }: { stage: AttackStage; crypto: 
               {stage.tense === 'present' ? 'Happening today' : stage.tense === 'future' ? 'Requires a CRQC' : 'Remedy'}
             </span>
           </div>
-          <h4 className="mt-1.5 text-lg font-bold leading-tight text-slate-100">{stage.title}</h4>
+          <h4 className="mt-1.5 text-lg font-bold leading-tight qsr-heading">{stage.title}</h4>
         </div>
 
         {rows.map((row) => (
@@ -286,6 +286,7 @@ export interface SimulationRangeProps {
 
 export default function SimulationRange(props: SimulationRangeProps) {
   const { scenario, crypto, primitive, stage, progress, running, budget, dpr, distribution, qubits, resolved } = props;
+  const theme = useQsrTheme();
   const stageMeta = ATTACK_CHAIN[stage - 1];
   const group = namedGroup(crypto.groupId);
   const quantumSafe = group ? !group.quantumBroken : false;
@@ -315,7 +316,7 @@ export default function SimulationRange(props: SimulationRangeProps) {
             type="button"
             onClick={props.onPrevious}
             aria-label="Previous stage"
-            className="rounded-md border p-2 transition-colors hover:border-cyan-400/40"
+            className="rounded-md border p-2 transition-colors qsr-hover-border"
             style={{ borderColor: QSR.hairline, color: QSR.inkSoft }}
           >
             <SkipBack className="h-3.5 w-3.5" />
@@ -325,7 +326,7 @@ export default function SimulationRange(props: SimulationRangeProps) {
             onClick={props.onToggleRunning}
             aria-label={running ? 'Pause simulation' : 'Play simulation'}
             className="rounded-md px-3 py-2 transition-transform hover:scale-105"
-            style={{ background: running ? tint(QSR.live, 0.16) : QSR.live, color: running ? QSR.live : '#04060e' }}
+            style={{ background: running ? tint(QSR.live, 0.16) : QSR.live, color: running ? QSR.live : QSR.onAccent }}
           >
             {running ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
           </button>
@@ -333,7 +334,7 @@ export default function SimulationRange(props: SimulationRangeProps) {
             type="button"
             onClick={props.onNext}
             aria-label="Next stage"
-            className="rounded-md border p-2 transition-colors hover:border-cyan-400/40"
+            className="rounded-md border p-2 transition-colors qsr-hover-border"
             style={{ borderColor: QSR.hairline, color: QSR.inkSoft }}
           >
             <SkipForward className="h-3.5 w-3.5" />
@@ -352,7 +353,7 @@ export default function SimulationRange(props: SimulationRangeProps) {
         {/* ── The stage ──────────────────────────────────────────────── */}
         <div
           className="relative min-h-[420px] overflow-hidden rounded-xl border sm:min-h-[480px]"
-          style={{ borderColor: QSR.hairline, background: 'radial-gradient(ellipse 80% 70% at 50% 40%, rgba(12,20,42,0.9), rgba(3,4,10,0.98))' }}
+          style={{ borderColor: QSR.hairline, background: QSR.stageGround }}
         >
           {use3d ? (
             <React.Suspense fallback={null}>
@@ -365,6 +366,7 @@ export default function SimulationRange(props: SimulationRangeProps) {
                 resolved={resolved}
                 quantumSafe={quantumSafe}
                 budget={budget}
+                theme={theme}
                 dpr={dpr}
                 onReady={() => setWebglReady(true)}
               />
@@ -392,13 +394,13 @@ export default function SimulationRange(props: SimulationRangeProps) {
             <div className="flex flex-wrap items-center gap-1.5">
               <span
                 className="rounded-[3px] border px-1.5 py-[3px] font-mono text-[9px] font-bold uppercase tracking-[0.16em]"
-                style={{ color: TENSE_COLOR[stageMeta.tense], borderColor: tint(TENSE_COLOR[stageMeta.tense], 0.3), background: 'rgba(4,7,16,0.75)' }}
+                style={{ color: TENSE_COLOR[stageMeta.tense], borderColor: tint(TENSE_COLOR[stageMeta.tense], 0.3), background: QSR.wellStrong }}
               >
                 {stageMeta.label}
               </span>
               <span
                 className="rounded-[3px] border px-1.5 py-[3px] font-mono text-[9px] uppercase tracking-[0.14em]"
-                style={{ color: QSR.inkMuted, borderColor: QSR.hairline, background: 'rgba(4,7,16,0.75)' }}
+                style={{ color: QSR.inkMuted, borderColor: QSR.hairline, background: QSR.wellStrong }}
               >
                 {use3d ? 'WebGL' : 'SVG'} stage
               </span>
@@ -425,7 +427,7 @@ export default function SimulationRange(props: SimulationRangeProps) {
         </div>
 
         {/* ── Mechanism brief ────────────────────────────────────────── */}
-        <div className="rounded-xl border p-4" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.5)' }}>
+        <div className="rounded-xl border p-4" style={{ borderColor: QSR.hairline, background: QSR.well }}>
           <StageBrief stage={stageMeta} crypto={crypto} primitive={primitive} />
         </div>
       </div>

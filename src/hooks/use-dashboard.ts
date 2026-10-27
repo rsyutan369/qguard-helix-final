@@ -264,6 +264,7 @@ export function useDashboard() {
   /** PQC-ready confirmations in the event window — counted, not streamed as threats. */
   const [eventsOmitted, setEventsOmitted] = useState(0)
   const [estateWorkflow, setEstateWorkflow] = useState<EstateWorkflow | null>(null)
+  const estateWorkflowTextRef = useRef<string | null>(null)
   const [workflowState, setWorkflowState] = useState<LoadingState>('loading')
   const [recommendations, setRecommendations] = useState<Recommendation[]>([])
   /** Every action derived, before the endpoint's bound — so the panel can disclose it. */
@@ -366,8 +367,17 @@ export function useDashboard() {
     try {
       const res = await fetch('/api/v1/dashboard/estate-workflow', { headers: apiHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const json = await res.json()
-      setEstateWorkflow(json.data || null)
+      const text = await res.text()
+      // Keep the SAME object when nothing changed. Realtime events refetch this
+      // every few seconds while a migration runs; a fresh-but-identical object
+      // made the workflow canvas discard its layout, re-run the physics and
+      // snap the view back each time — the map never settled and Fit was
+      // overwritten within seconds. The payload is deterministic (certificate
+      // days-left is its only clock-derived value), so equal text = equal graph.
+      if (text !== estateWorkflowTextRef.current) {
+        estateWorkflowTextRef.current = text
+        setEstateWorkflow(JSON.parse(text).data || null)
+      }
       setWorkflowState('success')
     } catch (err) {
       console.error('Failed to fetch estate workflow:', err)

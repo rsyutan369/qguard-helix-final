@@ -12,6 +12,7 @@ each platform**, and what is **deliberately deferred**.
 | [03-RUNBOOK.md](03-RUNBOOK.md) | Exact first-time setup and deployment steps (Supabase, DigitalOcean, Cloudflare, Vercel, GitHub), smoke tests, rollback |
 | [04-SECURITY-AND-OPERATIONS.md](04-SECURITY-AND-OPERATIONS.md) | Security findings and fixes, CI security gates, observability, backups, disaster recovery, failure behaviour |
 | [05-READINESS-CHECKLIST.md](05-READINESS-CHECKLIST.md) | Production readiness checklist with current status, and the Phase 2+ roadmap |
+| [06-PUBLIC-WEBSITE.md](06-PUBLIC-WEBSITE.md) | The website edition: marketing pages + free Web assessment on Cloudflare Pages, with the public-only API that serves it |
 
 ## Verdict
 

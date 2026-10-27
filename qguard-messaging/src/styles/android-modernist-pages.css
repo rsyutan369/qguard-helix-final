@@ -695,6 +695,64 @@ html[data-qg-skin="modernist"] .qgm-not { display: none !important; }
   opacity: 0.55;
 }
 
+/* Chat masthead: the page identity and the session suite share the ink block,
+   so the thread below keeps the height a separate page head would take. */
+.qgm-chatmark {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1.5px solid var(--m-accent);
+  color: var(--m-accent);
+  background: color-mix(in srgb, var(--m-accent) 14%, transparent);
+}
+
+.qgm-masthead h1.qgm-wordmark {
+  min-width: 0;
+  font-size: 18px;
+  text-transform: uppercase;
+}
+
+.qgm-chatsuite {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+  font-family: var(--qg-font-display);
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.qgm-chatsuite-lead {
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.qgm-chatchip {
+  flex: none;
+  padding: 3px 6px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  border: 1px solid color-mix(in srgb, var(--m-on-slab) 38%, transparent);
+}
+
+.qgm-chatchip[data-accent="true"] {
+  border-color: var(--m-accent);
+  color: var(--m-on-slab);
+  background: color-mix(in srgb, var(--m-accent) 22%, transparent);
+}
+
+.qgm-chatplus {
+  flex: none;
+  opacity: 0.55;
+}
+
 /* Page identity: a tracked kicker over a heavy, tight display line. */
 .qgm-pagehead {
   border-bottom: 2px solid var(--m-divider);

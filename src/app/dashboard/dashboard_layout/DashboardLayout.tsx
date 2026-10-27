@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Outlet, Link, Navigate, useLocation } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Outlet, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, Map as MapIcon, ShieldAlert, LogOut,
@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/auth-context';
+import { useUserPreferences } from '@/contexts/user-preferences-context';
+import { dashboardViewPath } from '@/lib/preferences';
 import { isOwnerEmail } from '@/lib/admin-access';
 import ThemeToggle from '@/components/theme/ThemeToggle';
 import { useSubscription } from '@/hooks/use-subscription';
@@ -222,6 +224,41 @@ function NoAccessHeader() {
   );
 }
 
+const defaultViewApplied = new Set<string>();
+
+/**
+ * Sends the user to their chosen landing page — once per browser session, and
+ * only when they arrived on the bare /dashboard. Later clicks on "Overview" in
+ * the sidebar must stay on Overview, so the decision is remembered per tab.
+ */
+function DefaultViewRedirect({ userId, tier }: { userId: string; tier: AccessTier }) {
+  const { preferences } = useUserPreferences();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const ready = preferences !== null;
+
+  useEffect(() => {
+    if (!ready || !preferences) return;
+    const key = `qguard-default-view-applied:${userId}`;
+    let alreadyApplied = defaultViewApplied.has(key);
+    try {
+      alreadyApplied = alreadyApplied || window.sessionStorage.getItem(key) === '1';
+      window.sessionStorage.setItem(key, '1');
+    } catch { /* storage blocked: the in-memory flag still holds for this load */ }
+    defaultViewApplied.add(key);
+    if (alreadyApplied) return;
+
+    if (location.pathname.replace(/\/+$/, '') !== '/dashboard') return;
+    const target = dashboardViewPath(preferences.defaultDashboardView);
+    if (target === '/dashboard' || !canAccessPath(tier, target)) return;
+    navigate(target, { replace: true });
+    // Evaluated once, when the preferences first arrive.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready]);
+
+  return null;
+}
+
 export default function DashboardLayout() {
   const location = useLocation();
   const { user, loading } = useAuth();
@@ -362,7 +399,7 @@ export default function DashboardLayout() {
               <div key={section.label} className="space-y-1">
                 {!collapsed && (
                   <div 
-                    className={`px-3 mb-1.5 text-[9px] font-black uppercase tracking-[0.22em] flex items-center justify-between transition-colors group/header ${isCollapsible ? 'cursor-pointer hover:text-cyan-300 text-slate-500' : 'text-slate-600'}`}
+                    className={`qg-sidebar-section px-3 mb-1.5 text-[9px] font-black uppercase tracking-[0.22em] flex items-center justify-between transition-colors group/header ${isCollapsible ? 'cursor-pointer hover:text-cyan-300 text-slate-500' : 'text-slate-600'}`}
                     onClick={() => isCollapsible && toggleSection(section.label)}
                   >
                     <div className="flex items-center gap-2">
@@ -395,18 +432,18 @@ export default function DashboardLayout() {
                             to={item.path}
                             onClick={() => setMobileOpen(false)}
                             title={collapsed ? item.name : undefined}
-                            className={`relative flex items-center gap-2.5 rounded-lg transition-all duration-200 no-underline ${
+                            className={`qg-sidebar-link relative flex items-center gap-2.5 rounded-lg transition-all duration-200 no-underline ${
                               collapsed ? 'justify-center px-2 py-2.5' : 'px-3 py-2.5'
                             } ${
-                              isActive 
-                                ? 'bg-gradient-to-r from-blue-600/20 to-violet-600/14 text-cyan-100 border border-blue-400/30 shadow-[0_12px_30px_rgba(37,99,235,0.12)]' 
+                              isActive
+                                ? 'qg-sidebar-link--active bg-gradient-to-r from-blue-600/20 to-violet-600/14 text-cyan-100 border border-blue-400/30 shadow-[0_12px_30px_rgba(37,99,235,0.12)]'
                                 : 'text-slate-400 hover:bg-white/[0.045] hover:text-slate-100 border border-transparent'
                             }`}
                           >
                             {isActive && (
                               <motion.div 
                                 layoutId="sidebarActive"
-                                className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 bg-gradient-to-b from-blue-400 to-cyan-300 rounded-r-full shadow-[0_0_14px_rgba(6,182,212,0.5)]"
+                                className="qg-sidebar-link__bar absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 bg-gradient-to-b from-blue-400 to-cyan-300 rounded-r-full shadow-[0_0_14px_rgba(6,182,212,0.5)]"
                                 transition={{ type: 'spring', stiffness: 500, damping: 35 }}
                               />
                             )}
@@ -427,7 +464,7 @@ export default function DashboardLayout() {
 
         {/* Bottom controls */}
         <div className="border-t border-slate-700/45 p-2.5 space-y-1.5">
-          <ThemeToggle compact={collapsed} showSystem={!collapsed} className="w-full justify-center" />
+          <ThemeToggle compact={collapsed} showSystem={false} className="w-full justify-center" />
 
           {/* Collapse toggle (desktop) */}
           <button
@@ -490,6 +527,8 @@ export default function DashboardLayout() {
           )}
         </div>
       </main>
+
+      <DefaultViewRedirect userId={user.id} tier={effectiveTier} />
 
       {/* Sophia — AI Security Copilot™, available on every dashboard page. */}
       <SophiaCopilot />

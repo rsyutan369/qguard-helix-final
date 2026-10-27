@@ -120,6 +120,7 @@ export default function MobileShell({
 
   const activeIndex = tabs.findIndex((tab) => tab.route === activePage);
   const live = liveTone(liveStatus.state);
+  const isChat = activePage === "chat";
 
   // Close the sheet on hardware/gesture back so it never traps the user.
   useEffect(() => {
@@ -179,9 +180,22 @@ export default function MobileShell({
               so its caps paint slightly above their line box and would graze
               the status bar on a device reporting a small top inset. */}
           <div className="relative flex items-center gap-2.5 pt-2.5">
-            <span className="qgm-wordmark">QGUARD</span>
-            <span className="qgm-tally" aria-hidden />
-            <span className="ml-auto flex items-center gap-2">
+            {isChat ? (
+              // Chat folds the page identity into the masthead so the thread
+              // gets the height the separate page head used to take.
+              <>
+                <span className="qgm-chatmark" aria-hidden>
+                  <ShieldCheck size={15} strokeWidth={2.2} />
+                </span>
+                <h1 className="qgm-wordmark truncate">{title}</h1>
+              </>
+            ) : (
+              <>
+                <span className="qgm-wordmark">QGUARD</span>
+                <span className="qgm-tally" aria-hidden />
+              </>
+            )}
+            <span className="ml-auto flex shrink-0 items-center gap-2">
               <span
                 className="qgm-kicker flex items-center gap-1.5"
                 style={{ opacity: 0.75 }}
@@ -226,14 +240,25 @@ export default function MobileShell({
               </button>
             </span>
           </div>
-          <div className="qgm-kicker relative mt-1.5">Quantum-safe chat &amp; vault</div>
+          {isChat ? (
+            <div className="qgm-chatsuite relative mt-2" aria-label="End-to-end encrypted with hybrid ML-KEM and X25519 key exchange">
+              <span className="qgm-chatsuite-lead">End-to-end encrypted</span>
+              <span className="qgm-chatchip" data-accent="true">ML-KEM</span>
+              <span className="qgm-chatplus" aria-hidden>+</span>
+              <span className="qgm-chatchip">X25519</span>
+            </div>
+          ) : (
+            <div className="qgm-kicker relative mt-1.5">Quantum-safe chat &amp; vault</div>
+          )}
         </div>
 
         {/* ---- Modernist page identity (Android skin only) ---- */}
-        <div className="qgm-pagehead qgm-only px-5 pb-3.5 pt-2.5">
-          <div className="qgm-pagekicker truncate">{PAGE_KICKER[activePage] ?? "Secure workspace"}</div>
-          <h1 className="qgm-pagetitle mt-1.5 truncate">{title}</h1>
-        </div>
+        {!isChat && (
+          <div className="qgm-pagehead qgm-only px-5 pb-3.5 pt-2.5">
+            <div className="qgm-pagekicker truncate">{PAGE_KICKER[activePage] ?? "Secure workspace"}</div>
+            <h1 className="qgm-pagetitle mt-1.5 truncate">{title}</h1>
+          </div>
+        )}
 
         {/* ---- Cold Fusion header (desktop + narrow windows) ---- */}
         <div

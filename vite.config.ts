@@ -1,6 +1,7 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import {createHash} from 'node:crypto';
+import {mkdirSync, writeFileSync} from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {tsImport} from 'tsx/esm/api';
@@ -80,6 +81,45 @@ function cspMetaPlugin(connectSrc: string[]): Plugin {
   };
 }
 
+/**
+ * Website edition (`vite build --mode public`, i.e. `npm run build:public`).
+ *
+ * The public site is published to static hosting (Cloudflare) and must carry
+ * the marketing pages and the free Web assessment only. This plugin swaps the
+ * entry to src/main-public.tsx (src/PublicApp.tsx routes), and records every
+ * module the bundler actually included in .public-site/modules.json, OUTSIDE
+ * the published folder, so tools/deploy/public-site-check.ts can prove that no
+ * platform module or engine reached the bundle.
+ */
+function websiteEditionPlugin(): Plugin {
+  return {
+    name: 'qguard-website-edition',
+    apply: 'build',
+    transformIndexHtml: {
+      order: 'pre',
+      handler(html: string) {
+        if (!html.includes('/src/main.tsx')) throw new Error('index.html no longer loads /src/main.tsx; update websiteEditionPlugin');
+        return html.replace('/src/main.tsx', '/src/main-public.tsx');
+      },
+    },
+    generateBundle(_options, bundle) {
+      const modules = new Set<string>();
+      for (const output of Object.values(bundle)) {
+        if (output.type !== 'chunk') continue;
+        const ids = (output as {moduleIds?: string[]}).moduleIds ?? Object.keys(output.modules ?? {});
+        for (const id of ids) {
+          const clean = id.replace(/\?.*$/, '').replace(/\\/g, '/');
+          const root = rootDir.replace(/\\/g, '/');
+          if (clean.startsWith(`${root}/`)) modules.add(clean.slice(root.length + 1));
+        }
+      }
+      const reportDir = path.join(rootDir, '.public-site');
+      mkdirSync(reportDir, {recursive: true});
+      writeFileSync(path.join(reportDir, 'modules.json'), JSON.stringify([...modules].sort(), null, 2));
+    },
+  };
+}
+
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const apiServerEntry = path.join(rootDir, 'src/api-server/index.ts');
 const viteConfigUrl = pathToFileURL(path.join(rootDir, 'vite.config.ts')).href;
@@ -115,12 +155,14 @@ export default defineConfig(({mode}) => {
   }
 
   const connectSrc = resolveConnectSrc(env);
+  const websiteEdition = mode === 'public';
 
   return {
     plugins: [
       react(),
       tailwindcss(),
       cspMetaPlugin(connectSrc),
+      ...(websiteEdition ? [websiteEditionPlugin()] : []),
       {
         name: 'api-server',
         configureServer(server) {
@@ -326,7 +368,10 @@ export default defineConfig(({mode}) => {
     ],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+      // 'public' compiles platform-only code paths out (src/app/public-scan/page.tsx).
+      'import.meta.env.VITE_SITE_EDITION': JSON.stringify(websiteEdition ? 'public' : 'platform'),
     },
+    ...(websiteEdition ? {build: {outDir: 'dist-public', emptyOutDir: true}} : {}),
     resolve: {
       alias: {
         '@': path.resolve(rootDir, 'src'),

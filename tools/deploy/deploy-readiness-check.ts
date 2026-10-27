@@ -136,8 +136,12 @@ async function probeChecks() {
   }
   const index = read('src/api-server/index.ts')
   const probesAt = index.indexOf('app.use(healthProbeRoutes)')
-  const httpsAt = index.indexOf('shouldEnforceHttps(req)')
+  const httpsAt = index.indexOf('app.use(enforceHttps)')
   check('probes mounted before HTTPS enforcement', probesAt > 0 && httpsAt > 0 && probesAt < httpsAt)
+  const publicApi = read('src/api-server/public-api.ts')
+  const publicProbesAt = publicApi.indexOf('app.use(publicHealthRoutes())')
+  const publicHttpsAt = publicApi.indexOf('app.use(enforceHttps)')
+  check('public API probes mounted before HTTPS enforcement', publicProbesAt > 0 && publicHttpsAt > 0 && publicProbesAt < publicHttpsAt)
 }
 
 // 6. vercel.json -------------------------------------------------------------------------

@@ -44,8 +44,8 @@ import { ActionButton, Callout, Chip, Cite, DataRow, Panel, ProvenanceBadge, Seg
 function LedgerRow({ item, open, onToggle }: { item: ClassicalPrimitive; open: boolean; onToggle: () => void }) {
   const accent = VERDICT_COLOR[item.verdict];
   return (
-    <div className="border-b last:border-b-0" style={{ borderColor: 'rgba(56,189,248,0.07)' }}>
-      <button type="button" onClick={onToggle} className="flex w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-cyan-400/[0.04]">
+    <div className="border-b last:border-b-0" style={{ borderColor: QSR.rule }}>
+      <button type="button" onClick={onToggle} className="flex w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors qsr-hover-wash">
         <ChevronRight className="h-3.5 w-3.5 shrink-0 transition-transform" style={{ color: QSR.inkFaint, transform: open ? 'rotate(90deg)' : undefined }} />
         <span className="w-[168px] shrink-0 font-mono text-[12px] font-bold" style={{ color: QSR.ink }}>
           {item.name}
@@ -149,7 +149,7 @@ export function VulnerabilityLedger() {
     >
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_300px]">
         <div className="min-w-0">
-          <div className="rounded-lg border" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.5)' }}>
+          <div className="rounded-lg border" style={{ borderColor: QSR.hairline, background: QSR.well }}>
             <div className="flex items-center gap-3 border-b px-3.5 py-2 font-mono text-[9px] font-bold uppercase tracking-[0.14em]" style={{ borderColor: QSR.hairline, color: QSR.inkFaint }}>
               <span className="w-3.5" />
               <span className="w-[168px]">Primitive</span>
@@ -170,7 +170,7 @@ export function VulnerabilityLedger() {
             <StatTile label="Survives" value={safe} provenance="published" accent={QSR.safe} note="symmetric & hashes" />
           </div>
 
-          <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.5)' }}>
+          <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: QSR.well }}>
             <div className="mb-2 flex items-center justify-between">
               <span className="font-mono text-[9px] font-bold uppercase tracking-[0.16em]" style={{ color: QSR.inkMuted }}>
                 Cost vs key size
@@ -259,7 +259,7 @@ export function GroverPanel() {
             <StatTile label="Speed-up from parallelism" value={`${feasibility.parallelSpeedup.toFixed(0)}×`} provenance="model" accent={QSR.live} note={`on 10^${machines} machines`} />
           </div>
 
-          <div className="rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.5)' }}>
+          <div className="rounded-lg border p-3" style={{ borderColor: QSR.hairline, background: QSR.well }}>
             <div className="mb-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.16em]" style={{ color: QSR.inkMuted }}>
               NIST MAXDEPTH bounds
             </div>
@@ -270,7 +270,7 @@ export function GroverPanel() {
         </div>
 
         <div className="min-w-0 space-y-4">
-          <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.55)' }}>
+          <div className="rounded-lg border p-3.5" style={{ borderColor: QSR.hairline, background: QSR.well }}>
             <div className="mb-1.5 flex items-center justify-between">
               <span className="font-mono text-[9px] font-bold uppercase tracking-[0.16em]" style={{ color: QSR.inkMuted }}>
                 Amplitude amplification — success probability per iteration
@@ -315,7 +315,7 @@ export function GroverPanel() {
 function ParameterTable({ title, sets, accent }: { title: string; sets: PqcParameterSet[]; accent: string }) {
   const role = sets[0]?.role;
   return (
-    <div className="rounded-lg border" style={{ borderColor: QSR.hairline, background: 'rgba(4,7,16,0.5)' }}>
+    <div className="rounded-lg border" style={{ borderColor: QSR.hairline, background: QSR.well }}>
       <div className="flex items-center justify-between border-b px-3.5 py-2" style={{ borderColor: QSR.hairline }}>
         <span className="font-mono text-[10px] font-bold uppercase tracking-[0.16em]" style={{ color: accent }}>
           {title}
@@ -335,7 +335,7 @@ function ParameterTable({ title, sets, accent }: { title: string; sets: PqcParam
           </thead>
           <tbody>
             {sets.map((set) => (
-              <tr key={set.id} className="border-t" style={{ borderColor: 'rgba(56,189,248,0.05)' }}>
+              <tr key={set.id} className="border-t" style={{ borderColor: QSR.rule }}>
                 <td className="px-3.5 py-1.5 font-bold" style={{ color: QSR.ink }} title={set.note}>
                   {set.id}
                 </td>
@@ -405,7 +405,7 @@ export function PqcSuite({ active }: { active: boolean }) {
           <ParameterTable title="SLH-DSA · hash-based, small (s) sets" sets={SLH_DSA_SETS.filter((s) => s.id.endsWith('s'))} accent={QSR.safe} />
         </div>
 
-        <div className="rounded-lg border" style={{ borderColor: tint(QSR.live, 0.2), background: 'rgba(4,7,16,0.55)' }}>
+        <div className="rounded-lg border" style={{ borderColor: tint(QSR.live, 0.2), background: QSR.well }}>
           <div className="flex flex-wrap items-center justify-between gap-3 border-b px-3.5 py-2.5" style={{ borderColor: QSR.hairline }}>
             <span className="flex items-center gap-1.5">
               <Gauge className="h-3.5 w-3.5" style={{ color: QSR.live }} />
@@ -435,7 +435,7 @@ export function PqcSuite({ active }: { active: boolean }) {
                   {rows.map((row) => {
                     const accent = row.role === 'kem' ? QSR.quantum : row.algorithm.startsWith('SLH') ? QSR.safe : QSR.live;
                     return (
-                      <tr key={row.algorithm} className="border-t" style={{ borderColor: 'rgba(56,189,248,0.05)' }}>
+                      <tr key={row.algorithm} className="border-t" style={{ borderColor: QSR.rule }}>
                         <td className="px-3.5 py-1.5 font-bold" style={{ color: accent }}>
                           {row.algorithm}
                         </td>
@@ -507,7 +507,7 @@ export function StandardsTimeline({ now }: { now: number }) {
       right={<ProvenanceBadge kind="published" />}
     >
       <div className="relative">
-        <div className="absolute bottom-2 left-[7px] top-2 w-px" style={{ background: 'linear-gradient(180deg, rgba(34,211,238,0.35), rgba(244,63,94,0.35))' }} />
+        <div className="absolute bottom-2 left-[7px] top-2 w-px" style={{ background: `linear-gradient(180deg, ${tint(QSR.live, 0.35)}, ${tint(QSR.broken, 0.35)})` }} />
         <div className="space-y-3">
           {ordered.map((milestone) => {
             const clock = milestoneClock(milestone, now);
@@ -515,7 +515,7 @@ export function StandardsTimeline({ now }: { now: number }) {
             return (
               <div key={milestone.id} className="relative pl-7">
                 <span className="absolute left-0 top-2 h-[15px] w-[15px] rounded-full border-2" style={{ borderColor: accent, background: clock.elapsed ? accent : QSR.panelSolid }} />
-                <div className="rounded-lg border px-3.5 py-2.5" style={{ borderColor: clock.elapsed ? QSR.hairline : tint(accent, 0.24), background: clock.elapsed ? 'rgba(4,7,16,0.4)' : tint(accent, 0.05) }}>
+                <div className="rounded-lg border px-3.5 py-2.5" style={{ borderColor: clock.elapsed ? QSR.hairline : tint(accent, 0.24), background: clock.elapsed ? QSR.well : tint(accent, 0.05) }}>
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <span className="flex items-center gap-2">
                       <span className="font-mono text-[13px] font-bold" style={{ color: accent }}>
@@ -529,7 +529,7 @@ export function StandardsTimeline({ now }: { now: number }) {
                       {clock.elapsed ? 'in effect' : `${clock.days.toLocaleString()} days`}
                     </span>
                   </div>
-                  <div className="mt-1 text-[12.5px] font-semibold text-slate-100">{milestone.title}</div>
+                  <div className="mt-1 text-[12.5px] font-semibold qsr-heading">{milestone.title}</div>
                   <p className="mt-1 text-[11.5px] leading-relaxed" style={{ color: QSR.inkSoft }}>
                     {milestone.detail}
                   </p>

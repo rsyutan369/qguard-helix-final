@@ -150,6 +150,7 @@ Template: `deploy/k8s/secrets.example.env` (names only).
 | `PAYPAL_CLIENT_ID`, `PAYPAL_SECRET_KEY`, `PAYPAL_ENV`, `PAYPAL_PLAN_*` (8) | For billing actions | Subscription revise/cancel from Settings |
 | `PAYPAL_RECONCILE_SECRET` | Optional | Enables `POST /api/v1/paypal/reconcile` (and the CronJob component) |
 | `PAYPAL_WEBHOOK_ID` | **Leave unset** | The live webhook is registered to the Edge Function; register exactly one receiver |
+| `SMTP_HOST`, `SMTP_PORT` (465), `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` (defaults to `SMTP_USER`) | For the Request Demo form | `POST /api/v1/demo-request` emails each request to `DEMO_REQUEST_TO` (default `info@qguardhelix.com`) with the visitor as Reply-To. Unset: the form returns 503 and tells visitors to email the inbox. Port 587 must offer STARTTLS. Limits: `DEMO_REQUEST_MAX_PER_CLIENT` (3 per 10 min), `DEMO_REQUEST_MAX_PER_HOUR` (60). Verify with `npm run check:demo-request` |
 | `GOOGLE_PLAY_*`, `PLAY_RTDN_TOKEN` | Only for Android billing | RTDN URL: `https://api.qguardhelix.com/api/v1/play-billing/rtdn` |
 | `STRIPE_*` | No | Dormant code path |
 

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle, ArrowRight, BadgeCheck, Beaker, CheckCircle2, Download, FileCheck2,
-  FlaskConical, Globe2, Link2, Loader2, Play, ShieldAlert, Sparkles, Wand2,
+  FlaskConical, Globe2, Link2, Loader2, Network, Play, ShieldAlert, Wand2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { WorkflowRail } from '@/components/workflow/WorkflowRail'
@@ -17,8 +17,9 @@ import {
   AskSophiaButton, Block, CapabilityNotice, Chip, Drawer, DrawerLink, EmptyState,
   ErrorState, Field, KpiStrip, OutcomeChip, PageHeader, ProvenanceFooter, RiskChip,
   SearchInput, SectionCard, Select, SkeletonPage, SuiteRail, VerdictChip, csvCell,
-  dateFmt, downloadTextFile, numberFmt, relativeTime, useQueryParam,
+  downloadTextFile, numberFmt, relativeTime, suiteHref, useQueryParam,
 } from '../_components/external-trust/_shared'
+import { LabFlow } from './LabFlow'
 
 /**
  * Hybrid Crypto Lab.
@@ -46,6 +47,7 @@ type Step = 1 | 2 | 3 | 4
 export default function HybridCryptoLab() {
   const vendorParam = useQueryParam('vendor')
   const assetParam = useQueryParam('asset')
+  const targetParam = useQueryParam('target')
   const { data, state, error, live, lastGoodAt, refresh } = useHybridLab()
   const { runExperiment, generateEvidence, loadRecommendation } = useExternalTrustActions()
 
@@ -68,8 +70,10 @@ export default function HybridCryptoLab() {
     if (!data) return []
     const term = targetSearch.trim().toLowerCase()
     return data.targets.filter((target) => {
-      if (vendorParam && target.vendorId !== vendorParam) return false
-      if (assetParam && target.assetId !== assetParam) return false
+      // Asset targets carry no vendorId and vendor targets no assetId, so the
+      // asset context wins when both are present rather than excluding everything.
+      if (assetParam) { if (target.assetId !== assetParam) return false }
+      else if (vendorParam && target.vendorId !== vendorParam) return false
       if (term && !`${target.label} ${target.host}`.toLowerCase().includes(term)) return false
       return true
     })
@@ -83,7 +87,7 @@ export default function HybridCryptoLab() {
   // A cross-page link preselects the target so the user lands mid-flow.
   useEffect(() => {
     if (targetId || !targets.length) return
-    setTargetId(targets[0].id)
+    setTargetId(targets.find((candidate) => candidate.id === targetParam)?.id ?? targets[0].id)
   }, [targets, targetId])
 
   useEffect(() => {
@@ -173,7 +177,7 @@ export default function HybridCryptoLab() {
       `}</style>
 
       <WorkflowRail activeStage="assessment" />
-      <SuiteRail current="lab" />
+      <SuiteRail current="lab" context={{ vendor: target?.vendorId ?? (vendorParam || null), asset: target?.assetId ?? (assetParam || null) }} />
 
       <PageHeader
         title="Hybrid Crypto Lab"
@@ -224,6 +228,33 @@ export default function HybridCryptoLab() {
               </div>
             ))}
           </div>
+
+          {data.targets.length > 0 && (
+            <SectionCard
+              title="Cryptographic Workflow" icon={Network}
+              right={<span className="font-mono text-[9px] uppercase tracking-widest text-white/30">{target ? `${target.host}:${target.port}` : 'no target'}</span>}
+            >
+              <LabFlow
+                targets={targets}
+                target={target}
+                onTargetChange={setTargetId}
+                config={config}
+                onConfigChange={setConfig}
+                executionMode={mode}
+                onExecutionModeChange={setMode}
+                experiments={data.experiments}
+                latestResult={result}
+                observed={observed}
+                configIssues={configIssues}
+                running={running}
+                runError={runError}
+                onRun={() => void run()}
+              />
+              <p className="mt-2 text-[10px] leading-relaxed text-white/35">
+                Key establishment and authentication are drawn as separate branches: ML-KEM establishes the shared secret, ML-DSA signs. Step colours come only from a recorded experiment for this exact target and profile; the builder below offers the full configuration.
+              </p>
+            </SectionCard>
+          )}
 
           {data.targets.length === 0 ? (
             <SectionCard title="Experiment Builder" icon={Beaker}>
@@ -413,8 +444,8 @@ export default function HybridCryptoLab() {
                               <p className="mt-1.5 text-[10.5px] leading-relaxed text-cyan-200/80">{finding.recommendedAction}</p>
                               <div className="mt-2 flex flex-wrap gap-2">
                                 <DrawerLink href={finding.route} primary>Open module <ArrowRight className="h-3 w-3" /></DrawerLink>
-                                <DrawerLink href="/dashboard/trust-chain-analyzer"><Link2 className="h-3 w-3" /> Analyze Trust Chain</DrawerLink>
-                                <DrawerLink href="/dashboard/ecosystem-dependency-map"><Globe2 className="h-3 w-3" /> View Dependencies</DrawerLink>
+                                <DrawerLink href={suiteHref('trust', { asset: result.target.assetId, vendor: result.target.vendorId })}><Link2 className="h-3 w-3" /> Analyze Trust Chain</DrawerLink>
+                                <DrawerLink href={suiteHref('ecosystem', { asset: result.target.assetId, vendor: result.target.vendorId })}><Globe2 className="h-3 w-3" /> View Dependencies</DrawerLink>
                                 <DrawerLink href="/dashboard/migration-planner">Create Migration Task</DrawerLink>
                               </div>
                             </div>
@@ -560,8 +591,8 @@ export default function HybridCryptoLab() {
         onClose={() => setDetail(null)}
         footer={detail && (
           <div className="flex flex-wrap gap-2">
-            <DrawerLink href="/dashboard/trust-chain-analyzer" primary><Link2 className="h-3 w-3" /> Analyze Trust Chain</DrawerLink>
-            <DrawerLink href="/dashboard/ecosystem-dependency-map"><Globe2 className="h-3 w-3" /> Analyze Dependency</DrawerLink>
+            <DrawerLink href={suiteHref('trust', { asset: detail.target.assetId, vendor: detail.target.vendorId })} primary><Link2 className="h-3 w-3" /> Analyze Trust Chain</DrawerLink>
+            <DrawerLink href={suiteHref('ecosystem', { asset: detail.target.assetId, vendor: detail.target.vendorId })}><Globe2 className="h-3 w-3" /> Analyze Dependency</DrawerLink>
             <DrawerLink href="/dashboard/migration-planner">Create Migration Plan</DrawerLink>
             <AskSophiaButton question={`Explain the result of the hybrid experiment on ${detail.target.label}.`} context="Hybrid Crypto Lab" />
           </div>

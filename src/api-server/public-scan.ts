@@ -22,7 +22,7 @@ import { validateAsset } from '@/lib/scanner/asset-validator'
 import { assessPublicTarget, quantumStageDetail } from '@/lib/scanner/public-scan/assess'
 import { ScanCancelledError, tlsStageDetail, type ObservationSink } from '@/lib/scanner/public-scan/engines'
 import type { PublicScanReport, PublicScanStage } from '@/lib/scanner/public-scan/types'
-import { trustedClientIp } from './runtime/client-ip'
+import { readClientIp } from './runtime/client-ip'
 import { PublicScanCoordinator, type CoordinatorOptions, type QueueEvent, type QueueTarget } from './public-scan-queue'
 
 // ─── Limits ───────────────────────────────────────────────────────────────────
@@ -82,25 +82,6 @@ const PRIVATE_IP_PATTERNS = [
   /^fd00:/i,
   /^fe80:/i,
 ]
-
-// ─── Client identity ──────────────────────────────────────────────────────────
-
-/**
- * The client a rate limit and an active-scan cap are charged to.
- *
- * Trustworthy only when `TRUSTED_CLIENT_IP_HEADER` names a header the edge
- * guarantees. Without it the fallback is the leftmost `X-Forwarded-For`, which
- * any caller can set — the deployment config warns about exactly this.
- */
-function readClientIp(req: Request): string {
-  const trusted = trustedClientIp(req)
-  if (trusted) return trusted
-  const forwarded = req.headers['x-forwarded-for']
-  if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0].trim()
-  const realIp = req.headers['x-real-ip']
-  if (typeof realIp === 'string' && realIp.trim()) return realIp.trim()
-  return req.ip || req.socket.remoteAddress || 'unknown'
-}
 
 // ─── Target resolution ────────────────────────────────────────────────────────
 

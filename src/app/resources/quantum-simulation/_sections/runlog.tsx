@@ -35,7 +35,7 @@ function timestamp(date: Date): string {
 
 export default function RunLog({ entries, onClear }: { entries: RunLogEntry[]; onClear: () => void }) {
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-xl border" style={{ borderColor: QSR.hairline, background: '#03050d' }}>
+    <div className="flex h-full flex-col overflow-hidden rounded-xl border" style={{ borderColor: QSR.hairline, background: QSR.wellSolid }}>
       <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2" style={{ borderColor: QSR.hairline }}>
         <span className="flex items-center gap-1.5">
           <Terminal className="h-3.5 w-3.5" style={{ color: QSR.live }} />
@@ -55,7 +55,7 @@ export default function RunLog({ entries, onClear }: { entries: RunLogEntry[]; o
             type="button"
             onClick={onClear}
             aria-label="Clear feed"
-            className="rounded p-1 transition-colors hover:text-slate-200"
+            className="rounded p-1 transition-colors qsr-hover-ink"
             style={{ color: QSR.inkFaint }}
           >
             <Trash2 className="h-3 w-3" />
@@ -82,7 +82,7 @@ export default function RunLog({ entries, onClear }: { entries: RunLogEntry[]; o
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.18 }}
                 className="flex gap-2 border-b py-1 last:border-b-0"
-                style={{ borderColor: 'rgba(56,189,248,0.05)' }}
+                style={{ borderColor: QSR.rule }}
               >
                 <span className="shrink-0" style={{ color: QSR.inkFaint }}>
                   {timestamp(entry.at)}

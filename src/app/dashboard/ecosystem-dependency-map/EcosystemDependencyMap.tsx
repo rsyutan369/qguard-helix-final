@@ -2,22 +2,24 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  AlertTriangle, ArrowRight, BadgeCheck, FlaskConical, Globe2, HelpCircle, Layers,
-  Link2, Network, Radar, Route, ShieldAlert, Sparkles, Target,
+  AlertTriangle, ArrowRight, FlaskConical, Globe2, HelpCircle, Layers,
+  Network, Radar, ShieldAlert, Sparkles, Target,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { WorkflowRail } from '@/components/workflow/WorkflowRail'
 import { useEcosystemMap } from '@/hooks/use-external-trust'
+import { ECOSYSTEM_LAYER_ORDER } from '@/components/trust-workflow/graph-builders'
+import type { WorkflowNode } from '@/components/trust-workflow/graph-model'
 import {
-  DEPENDENCY_LABEL, NODE_KIND_LABEL, READINESS_LABEL, RISK_LABEL,
-  type EcosystemNode, type EcosystemNodeKind, type Readiness, type RiskLevel,
+  NODE_KIND_LABEL, READINESS_LABEL,
+  type EcosystemNodeKind, type Readiness, type RiskLevel,
 } from '@/lib/ecosystem/external-trust-intelligence'
 import {
-  AskSophiaButton, Block, Chip, Drawer, DrawerLink, EmptyState, ErrorState, Field,
-  KpiStrip, PageHeader, ProvenanceFooter, ReadinessChip, RiskChip, SectionCard,
-  SkeletonPage, SuiteRail, numberFmt, relativeTime, useQueryParam,
+  Chip, DrawerLink, EmptyState, ErrorState, Field,
+  KpiStrip, PageHeader, ProvenanceFooter, RiskChip, SectionCard, Select,
+  SkeletonPage, SuiteRail, numberFmt, suiteHref, useQueryParam,
 } from '../_components/external-trust/_shared'
-import { EcosystemGraph, type GraphFilters } from './_graph'
+import { EcosystemMap, type EcosystemFilters } from './EcosystemMap'
 
 /**
  * Ecosystem Dependency Map.
@@ -35,29 +37,47 @@ export default function EcosystemDependencyMap() {
   const [focusId, setFocusId] = useState<string | null>(focusParam || null)
   const { data, state, error, live, lastGoodAt, refresh } = useEcosystemMap(focusId)
 
-  const [selected, setSelected] = useState<EcosystemNode | null>(null)
-  const [filters, setFilters] = useState<GraphFilters>({
+  // `graphFocus` asks the canvas to select/centre a node; `focusId` asks the
+  // server for that node's blast radius. Canvas selection drives both.
+  const [graphFocus, setGraphFocus] = useState<string | null>(focusParam || null)
+  const [filters, setFilters] = useState<EcosystemFilters>({
     kinds: new Set<EcosystemNodeKind>(),
     criticality: 'all',
     readiness: 'all',
-    search: '',
-    maxDepth: 3,
   })
   const [panel, setPanel] = useState<'spof' | 'bottlenecks' | 'unknowns'>('spof')
 
-  useEffect(() => { if (focusParam) setFocusId(focusParam) }, [focusParam])
+  useEffect(() => {
+    if (!focusParam) return
+    setFocusId(focusParam)
+    setGraphFocus(focusParam)
+  }, [focusParam])
 
-  const patchFilters = useCallback((patch: Partial<GraphFilters>) => setFilters((current) => ({ ...current, ...patch })), [])
+  const filtersActive = filters.kinds.size > 0 || filters.criticality !== 'all' || filters.readiness !== 'all'
 
-  const highlighted = useMemo(() => {
-    if (!data?.blastRadius) return null
-    return new Set([data.blastRadius.nodeId, ...data.blastRadius.affectedNodeIds])
-  }, [data?.blastRadius])
+  const toggleKind = (kind: EcosystemNodeKind) => setFilters((current) => {
+    const kinds = new Set(current.kinds)
+    if (kinds.has(kind)) kinds.delete(kind)
+    else kinds.add(kind)
+    return { ...current, kinds }
+  })
 
-  const selectNode = useCallback((node: EcosystemNode | null) => {
-    setSelected(node)
-    setFocusId(node?.id ?? null)
+  const onGraphSelect = useCallback((node: WorkflowNode | null) => {
+    // Collapsed groups are presentation-only: no server blast radius for them.
+    setFocusId(node && node.kind !== 'group' ? node.id : null)
   }, [])
+
+  const focusNode = useCallback((nodeId: string) => {
+    setFocusId(nodeId)
+    setGraphFocus(nodeId)
+    document.getElementById('dependency-graph')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [])
+
+  const focusedSource = useMemo(() => (data && focusId ? data.nodes.find((node) => node.id === focusId) ?? null : null), [data, focusId])
+  const kindsPresent = useMemo(
+    () => ECOSYSTEM_LAYER_ORDER.filter((kind) => data?.nodes.some((node) => node.kind === kind)),
+    [data?.nodes],
+  )
 
   if (state === 'error' && !data) {
     return (
@@ -82,7 +102,10 @@ export default function EcosystemDependencyMap() {
       `}</style>
 
       <WorkflowRail activeStage="assessment" />
-      <SuiteRail current="ecosystem" />
+      <SuiteRail current="ecosystem" context={{
+        vendor: focusedSource?.vendorId ?? null,
+        asset: focusedSource?.id.startsWith('asset:') ? focusedSource.id.slice('asset:'.length) : null,
+      }} />
 
       <PageHeader
         title="Ecosystem Dependency Map"
@@ -107,18 +130,37 @@ export default function EcosystemDependencyMap() {
           ]} />
 
           <SectionCard
-            title="Dependency Graph" icon={Network}
-            right={focusId && (
-              <button type="button" onClick={() => { setFocusId(null); setSelected(null) }}
-                className="rounded border border-white/10 bg-white/5 px-2 py-1 text-[9px] font-black uppercase tracking-wider text-white/55 hover:text-cyan-300">
-                Clear focus
-              </button>
-            )}
+            id="dependency-graph" title="Dependency Graph" icon={Network}
+            right={<span className="font-mono text-[9px] uppercase tracking-widest text-white/30">
+              {numberFmt(data.edges.filter((edge) => edge.explicit).length)} stored · {numberFmt(data.edges.filter((edge) => !edge.explicit).length)} inferred links
+            </span>}
           >
-            <EcosystemGraph
-              nodes={data.nodes} edges={data.edges} focusId={focusId} highlighted={highlighted}
-              filters={filters} onFiltersChange={patchFilters} onSelect={selectNode}
-            />
+            <div className="mb-3 flex flex-wrap items-center gap-2" role="group" aria-label="Dependency filters">
+              <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Node types">
+                {kindsPresent.map((kind) => {
+                  const off = filters.kinds.size > 0 && !filters.kinds.has(kind)
+                  return (
+                    <button key={kind} type="button" onClick={() => toggleKind(kind)} aria-pressed={!off}
+                      className={cn('rounded border px-2 py-1 text-[8.5px] font-black uppercase tracking-wider transition',
+                        off ? 'border-white/8 bg-transparent text-white/30 line-through' : 'border-cyan-400/25 bg-cyan-500/10 text-cyan-200')}>
+                      {NODE_KIND_LABEL[kind]}
+                    </button>
+                  )
+                })}
+              </div>
+              <Select label="Criticality" value={filters.criticality} onChange={(value) => setFilters((current) => ({ ...current, criticality: value as RiskLevel | 'all' }))}
+                options={[['all', 'All criticality'], ['critical', 'Critical'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low'], ['unknown', 'Unknown']]} />
+              <Select label="PQC readiness" value={filters.readiness} onChange={(value) => setFilters((current) => ({ ...current, readiness: value as Readiness | 'all' }))}
+                options={[['all', 'All PQC status'], ['ready', 'Ready'], ['hybrid-ready', 'Hybrid Ready'], ['preparing', 'Preparing'], ['committed', 'Committed'], ['not-ready', 'Not Ready'], ['unknown', 'Unknown']]} />
+              {filtersActive && (
+                <button type="button" onClick={() => setFilters({ kinds: new Set(), criticality: 'all', readiness: 'all' })}
+                  className="rounded-lg border border-white/12 bg-white/5 px-2.5 py-1.5 text-[9px] font-black uppercase tracking-wider text-white/60">Clear</button>
+              )}
+            </div>
+            <EcosystemMap data={data} filters={filters} focusNodeId={graphFocus} onSelectNode={onGraphSelect} filtered={filtersActive} />
+            <p className="mt-2 text-[10px] leading-relaxed text-white/35">
+              Columns follow the stored direction, consumer → dependency. Select a node to compute its blast radius; affected nodes are badged with their depth. Dashed links are inferred from co-occurrence rather than read from a relationship record.
+            </p>
           </SectionCard>
 
           {/* Blast radius */}
@@ -187,7 +229,7 @@ export default function EcosystemDependencyMap() {
                 <div className="space-y-2">
                   {data.singlePointsOfFailure.map((spof) => (
                     <button key={spof.nodeId} type="button"
-                      onClick={() => { const node = data.nodes.find((candidate) => candidate.id === spof.nodeId); if (node) selectNode(node) }}
+                      onClick={() => focusNode(spof.nodeId)}
                       className="w-full rounded-lg border border-white/8 bg-white/[0.015] p-3 text-left transition hover:border-cyan-400/30">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="text-[12px] font-black text-white/90">{spof.label}</span>
@@ -237,9 +279,13 @@ export default function EcosystemDependencyMap() {
                       )}
                       <div className="mt-2 flex flex-wrap gap-2">
                         <DrawerLink href={bottleneck.route} primary>View Vendor Readiness</DrawerLink>
-                        <DrawerLink href={`/dashboard/hybrid-crypto-lab${bottleneck.vendorId ? `?vendor=${encodeURIComponent(bottleneck.vendorId)}` : ''}`}>
+                        <DrawerLink href={suiteHref('lab', { vendor: bottleneck.vendorId })}>
                           <FlaskConical className="h-3 w-3" /> Run Hybrid Test
                         </DrawerLink>
+                        <button type="button" onClick={() => focusNode(bottleneck.nodeId)}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-white/12 bg-white/5 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-white/60 transition hover:text-cyan-300">
+                          <Network className="h-3 w-3" /> Show on map
+                        </button>
                         <span className="inline-flex items-center text-[10px] text-white/40">{bottleneck.recommendedAction}</span>
                       </div>
                     </div>
@@ -300,85 +346,6 @@ export default function EcosystemDependencyMap() {
             extra={`${numberFmt(data.edges.filter((edge) => edge.explicit).length)} explicit / ${numberFmt(data.edges.filter((edge) => !edge.explicit).length)} inferred edges`} />
         </>
       )}
-
-      {/* Node detail drawer */}
-      <Drawer
-        open={Boolean(selected)}
-        title={selected?.label || ''}
-        subtitle={selected ? `${NODE_KIND_LABEL[selected.kind]} · ${selected.external ? 'external' : 'internal'}` : ''}
-        tone={selected ? (selected.risk === 'critical' ? 'critical' : selected.risk === 'high' ? 'warning' : 'neutral') : 'neutral'}
-        onClose={() => setSelected(null)}
-        footer={selected && (
-          <div className="flex flex-wrap gap-2">
-            {selected.vendorId && (
-              <DrawerLink href={`/dashboard/vendor-pqc-readiness?vendor=${encodeURIComponent(selected.vendorId)}`} primary>
-                <BadgeCheck className="h-3 w-3" /> View Vendor Readiness
-              </DrawerLink>
-            )}
-            <DrawerLink href="/dashboard/trust-chain-analyzer"><Link2 className="h-3 w-3" /> Analyze Trust</DrawerLink>
-            <DrawerLink href="/dashboard/hybrid-crypto-lab"><FlaskConical className="h-3 w-3" /> Test Configuration</DrawerLink>
-            <DrawerLink href={selected.route}>Open source module</DrawerLink>
-            <AskSophiaButton question={`In our ecosystem dependency map, what depends on "${selected.label}" and what breaks if it changes?`} context="Ecosystem Dependency Map" />
-          </div>
-        )}
-      >
-        {selected && (
-          <>
-            <div className="flex flex-wrap gap-1.5">
-              <ReadinessChip value={selected.readiness} />
-              <RiskChip value={selected.risk} />
-              <Chip tone="info">{DEPENDENCY_LABEL[selected.dependencyKind]}</Chip>
-              {selected.external && <Chip tone="warning">External</Chip>}
-            </div>
-
-            <Block title="Identity">
-              <div className="grid grid-cols-2 gap-2">
-                <Field label="Type" value={NODE_KIND_LABEL[selected.kind]} />
-                <Field label="Owner" value={selected.owner} />
-                <Field label="Environment" value={selected.environment} />
-                <Field label="Criticality" value={RISK_LABEL[selected.criticality]} />
-              </div>
-            </Block>
-
-            <Block title="Detail">
-              <p className="rounded-lg border border-white/8 bg-black/25 p-2.5 text-[10.5px] leading-relaxed text-white/55">{selected.detail}</p>
-            </Block>
-
-            {selected.algorithms.length > 0 && (
-              <Block title="Cryptography">
-                <div className="rounded-lg border border-white/8 bg-black/25 p-2.5 font-mono text-[10px] text-white/70">
-                  {selected.algorithms.join(', ')}
-                </div>
-              </Block>
-            )}
-
-            {blast && blast.nodeId === selected.id && (
-              <Block title="Blast Radius">
-                <div className="grid grid-cols-2 gap-2">
-                  <Field label="Direct" value={numberFmt(blast.directDependencies)} mono />
-                  <Field label="Indirect" value={numberFmt(blast.indirectDependencies)} mono />
-                  <Field label="Applications" value={numberFmt(blast.applicationsAffected)} mono />
-                  <Field label="Migration plans" value={numberFmt(blast.migrationPlans)} mono />
-                </div>
-              </Block>
-            )}
-
-            <Block title="Evidence">
-              <div className="rounded-lg border border-white/8 bg-black/25 p-2.5">
-                <div className="flex flex-wrap gap-1">
-                  {selected.evidenceSources.map((source) => (
-                    <span key={source} className="rounded border border-white/10 bg-white/5 px-2 py-0.5 text-[9px] text-white/55">{source}</span>
-                  ))}
-                </div>
-                <div className="mt-1.5 text-[9.5px] text-white/35">
-                  {selected.assetIds.length} tenant asset(s) transit this node.
-                  {!selected.hasEvidence && ' No cryptographic evidence has been observed here — its behaviour under migration is undetermined.'}
-                </div>
-              </div>
-            </Block>
-          </>
-        )}
-      </Drawer>
     </div>
   )
 }

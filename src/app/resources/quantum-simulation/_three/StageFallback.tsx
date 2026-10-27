@@ -63,7 +63,7 @@ function Node({
       )}
       <circle r={19} fill={tint(colour, 0.14)} stroke={colour} strokeWidth={1.5} />
       <circle r={7} fill={colour} opacity={active ? 1 : 0.55} />
-      <text x={0} y={40} textAnchor="middle" fill={active ? '#e2e8f0' : QSR.inkSoft} fontSize={12} fontWeight={700} fontFamily='"JetBrains Mono", monospace'>
+      <text x={0} y={40} textAnchor="middle" fill={active ? QSR.ink : QSR.inkSoft} fontSize={12} fontWeight={700} fontFamily='"JetBrains Mono", monospace'>
         {label.length > 22 ? `${label.slice(0, 21)}…` : label}
       </text>
       <text x={0} y={54} textAnchor="middle" fill={colour} fontSize={8.5} letterSpacing="1.6" fontFamily='"JetBrains Mono", monospace'>
@@ -164,8 +164,8 @@ export default function StageFallback({ stage, progress, sites, distribution, re
               width={60 - i * 3}
               height={6}
               rx={1.5}
-              fill={lit ? tint(QSR.broken, 0.55) : 'rgba(22,32,58,0.9)'}
-              stroke={lit ? QSR.broken : 'rgba(56,189,248,0.12)'}
+              fill={lit ? tint(QSR.broken, 0.55) : QSR.plateOff}
+              stroke={lit ? QSR.broken : QSR.plateOffStroke}
               strokeWidth={0.6}
             />
           );
@@ -213,13 +213,13 @@ export default function StageFallback({ stage, progress, sites, distribution, re
         compromised={recovered && !shielded}
         animate={animate}
       />
-      <text x={NODES.archive.x} y={NODES.archive.y + 30} textAnchor="middle" fill="#e2e8f0" fontSize={12} fontWeight={700} fontFamily='"JetBrains Mono", monospace'>
+      <text x={NODES.archive.x} y={NODES.archive.y + 30} textAnchor="middle" fill={QSR.ink} fontSize={12} fontWeight={700} fontFamily='"JetBrains Mono", monospace'>
         {sites.archive.length > 22 ? `${sites.archive.slice(0, 21)}…` : sites.archive}
       </text>
       <text x={NODES.archive.x} y={NODES.archive.y + 44} textAnchor="middle" fill={QSR.broken} fontSize={8.5} letterSpacing="1.6" fontFamily='"JetBrains Mono", monospace'>
         CIPHERTEXT ARCHIVE
       </text>
-      <text x={NODES.crqc.x} y={NODES.crqc.y - 36} textAnchor="middle" fill="#e2e8f0" fontSize={12} fontWeight={700} fontFamily='"JetBrains Mono", monospace'>
+      <text x={NODES.crqc.x} y={NODES.crqc.y - 36} textAnchor="middle" fill={QSR.ink} fontSize={12} fontWeight={700} fontFamily='"JetBrains Mono", monospace'>
         {sites.crqc.length > 22 ? `${sites.crqc.slice(0, 21)}…` : sites.crqc}
       </text>
     </svg>

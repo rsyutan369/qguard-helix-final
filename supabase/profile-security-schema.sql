@@ -90,7 +90,7 @@ CREATE POLICY profiles_update_own ON public.profiles FOR UPDATE USING (id = auth
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.user_preferences (
   user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-  theme TEXT NOT NULL DEFAULT 'gold' CHECK (theme IN ('dark', 'gold', 'light', 'cyber')),
+  theme TEXT NOT NULL DEFAULT 'dark' CHECK (theme IN ('dark', 'light')),
   language TEXT NOT NULL DEFAULT 'en',
   timezone TEXT NOT NULL DEFAULT 'UTC',
   dashboard_density TEXT NOT NULL DEFAULT 'comfortable' CHECK (dashboard_density IN ('compact', 'comfortable', 'expanded')),
@@ -104,6 +104,33 @@ CREATE TABLE IF NOT EXISTS public.user_preferences (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Gold and Cyber themes were retired: only Light and Dark remain. Idempotent
+-- upgrade for databases created before that change. The API already reads
+-- legacy 'gold' / 'cyber' rows as Dark, so applying this is safe at any time.
+DO $$
+DECLARE
+  existing_constraint TEXT;
+BEGIN
+  UPDATE public.user_preferences SET theme = 'dark' WHERE theme NOT IN ('dark', 'light');
+
+  FOR existing_constraint IN
+    SELECT con.conname
+    FROM pg_constraint con
+    JOIN pg_class rel ON rel.oid = con.conrelid
+    JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+    WHERE ns.nspname = 'public'
+      AND rel.relname = 'user_preferences'
+      AND con.contype = 'c'
+      AND pg_get_constraintdef(con.oid) ILIKE '%theme%'
+  LOOP
+    EXECUTE format('ALTER TABLE public.user_preferences DROP CONSTRAINT %I', existing_constraint);
+  END LOOP;
+
+  ALTER TABLE public.user_preferences
+    ADD CONSTRAINT user_preferences_theme_check CHECK (theme IN ('dark', 'light'));
+  ALTER TABLE public.user_preferences ALTER COLUMN theme SET DEFAULT 'dark';
+END $$;
 
 DROP TRIGGER IF EXISTS trg_user_preferences_updated_at ON public.user_preferences;
 CREATE TRIGGER trg_user_preferences_updated_at

@@ -3121,65 +3121,86 @@ html.qg-theme-dark {
   --qg-success-text: #6ee7b7;
 }
 
+/* Light theme — "Parchment". A warm, deliberately mid-tone ground: the old
+   near-white (#f7fbff) washed out every hairline, chip and muted label. Cards
+   sit one step LIGHTER than the page so they lift without heavy shadows, the
+   sidebar sits one step DARKER (light brown) so navigation reads as chrome,
+   and every foreground below clears WCAG AA (4.5:1) on both the page and a
+   card. Brand accent is terracotta; burgundy marks primary/active state;
+   cyan-family classes resolve to the brand accent so the dark theme's
+   identity colour still has a meaning here. */
 html.qg-theme-light {
   color-scheme: light;
   --qg-theme-name: light;
-  --qg-dashboard-bg: #f7fbff;
-  --qg-dashboard-bg-soft: #eef8ff;
-  --qg-dashboard-surface: rgba(255, 255, 255, 0.74);
-  --qg-dashboard-surface-strong: rgba(255, 255, 255, 0.94);
-  --qg-dashboard-panel: rgba(255, 255, 255, 0.86);
-  --qg-dashboard-text: #090d16;
-  --qg-dashboard-text-soft: #334155;
-  --qg-dashboard-text-muted: #64748b;
-  --qg-dashboard-border: rgba(9, 13, 22, 0.12);
-  --qg-dashboard-border-strong: rgba(9, 13, 22, 0.28);
-  --qg-dashboard-grid: rgba(14, 165, 233, 0.07);
-  --qg-black: #f7fbff;
-  --qg-deep: #ffffff;
-  --qg-surface: rgba(255, 255, 255, 0.86);
-  --qg-surface-alt: rgba(236, 249, 255, 0.88);
-  --qg-border: rgba(9, 13, 22, 0.12);
-  --qg-border-bright: rgba(0, 197, 235, 0.36);
-  --qg-text-primary: #090d16;
-  --qg-text-secondary: #334155;
-  --qg-text-muted: #64748b;
-  --qg-accent: #00a6cf;
-  --qg-accent-strong: #00c5eb;
-  --qg-on-accent: #06111f;
-  --qg-accent-cyan: #0284c7;
-  --qg-accent-violet: #7c3aed;
-  --qg-cyan: #0ea5e9;
-  --qg-violet: #7c3aed;
-  --qg-amber: #00a6cf;
-  --qg-green: #059669;
-  --qg-red: #dc2626;
-  --qg-focus-ring: rgba(0, 197, 235, 0.34);
-  --qg-panel-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 20px 64px rgba(14, 116, 144, 0.13), 5px 5px 0 rgba(9, 13, 22, 0.08);
-  --qg-hover-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 24px 72px rgba(14, 116, 144, 0.18), 6px 6px 0 rgba(0, 197, 235, 0.28);
+  --qg-dashboard-bg: #e8e0cf;
+  --qg-dashboard-bg-soft: #dfd5c1;
+  --qg-dashboard-surface: #f3ede1;
+  --qg-dashboard-surface-strong: #f8f4eb;
+  --qg-dashboard-panel: #f3ede1;
+  --qg-dashboard-text: #261b14;
+  --qg-dashboard-text-soft: #463629;
+  --qg-dashboard-text-muted: #6b5645;
+  --qg-dashboard-border: rgba(105, 78, 52, 0.24);
+  --qg-dashboard-border-strong: rgba(105, 78, 52, 0.44);
+  --qg-dashboard-grid: rgba(120, 86, 56, 0.07);
+  --qg-black: #e8e0cf;
+  --qg-deep: #f8f4eb;
+  --qg-surface: #f3ede1;
+  --qg-surface-alt: #ece4d5;
+  --qg-border: rgba(105, 78, 52, 0.24);
+  --qg-border-bright: rgba(140, 79, 51, 0.45);
+  --qg-text-primary: #261b14;
+  --qg-text-secondary: #463629;
+  --qg-text-muted: #6b5645;
+  --qg-accent: #8c4f33;
+  --qg-accent-strong: #965739;
+  --qg-on-accent: #fbf6ee;
+  --qg-accent-cyan: #8c4f33;
+  --qg-accent-violet: #6b3a6e;
+  --qg-cyan: #8c4f33;
+  --qg-violet: #6b3a6e;
+  --qg-amber: #8c4f33;
+  --qg-green: #2f6b45;
+  --qg-red: #b42318;
+  --qg-focus-ring: rgba(140, 79, 51, 0.32);
+  --qg-panel-shadow: inset 0 1px 0 rgba(255, 252, 245, 0.75), 0 1px 2px rgba(60, 40, 22, 0.06), 0 10px 28px rgba(70, 48, 28, 0.09);
+  --qg-hover-shadow: inset 0 1px 0 rgba(255, 252, 245, 0.85), 0 2px 4px rgba(60, 40, 22, 0.07), 0 16px 40px rgba(70, 48, 28, 0.14);
   --qg-text: var(--qg-text-primary);
-  --qg-card-bg: rgba(255, 255, 255, 0.84);
-  --qg-card-bg-strong: rgba(255, 255, 255, 0.94);
-  --qg-card-border: rgba(9, 13, 22, 0.14);
-  --qg-muted-panel: rgba(236, 249, 255, 0.78);
-  --qg-muted-panel-border: rgba(14, 165, 233, 0.24);
-  --qg-module-label: #0e7490;
-  --qg-module-subtitle: #475569;
-  --qg-input-bg: rgba(255, 255, 255, 0.94);
-  --qg-input-border: rgba(15, 23, 42, 0.18);
-  --qg-input-text: #0f172a;
-  --qg-code-bg: #06111f;
-  --qg-code-text: #7dd3fc;
-  --qg-code-muted: rgba(226, 232, 240, 0.78);
-  --qg-icon-plate: rgba(14, 165, 233, 0.1);
-  --qg-disabled-bg: rgba(241, 245, 249, 0.82);
-  --qg-disabled-border: rgba(148, 163, 184, 0.28);
-  --qg-disabled-text: #64748b;
-  --qg-chip-bg: rgba(226, 232, 240, 0.76);
-  --qg-accent-soft: rgba(0, 197, 235, 0.1);
-  --qg-cyan-soft: rgba(14, 165, 233, 0.08);
-  --qg-green-soft: rgba(16, 185, 129, 0.12);
-  --qg-surface-inset: rgba(248, 250, 252, 0.92);
+  --qg-card-bg: #f3ede1;
+  --qg-card-bg-strong: #f8f4eb;
+  --qg-card-border: rgba(105, 78, 52, 0.26);
+  --qg-muted-panel: #ece4d5;
+  --qg-muted-panel-border: rgba(105, 78, 52, 0.22);
+  --qg-module-label: #8c4f33;
+  --qg-module-subtitle: #5a4636;
+  --qg-input-bg: #f8f4ec;
+  --qg-input-border: rgba(105, 78, 52, 0.32);
+  --qg-input-text: #261b14;
+  --qg-code-bg: #2a1f18;
+  --qg-code-text: #f0d9bd;
+  --qg-code-muted: rgba(240, 225, 205, 0.72);
+  --qg-icon-plate: rgba(140, 79, 51, 0.10);
+  --qg-disabled-bg: rgba(223, 213, 193, 0.7);
+  --qg-disabled-border: rgba(105, 78, 52, 0.2);
+  --qg-disabled-text: #7a6655;
+  --qg-chip-bg: #e6dccb;
+  --qg-accent-soft: rgba(140, 79, 51, 0.10);
+  --qg-cyan-soft: rgba(140, 79, 51, 0.08);
+  --qg-green-soft: rgba(47, 107, 69, 0.12);
+  --qg-surface-inset: #ede6d8;
+
+  /* Parchment-only tokens: card fills, the brown sidebar and its active pill. */
+  --qg-surface-fill: linear-gradient(180deg, #f6f1e7 0%, #f1eadd 100%);
+  --qg-surface-fill-hover: linear-gradient(180deg, #f9f5ed 0%, #f4eee3 100%);
+  --qg-primary: #6e2a3a;
+  --qg-primary-text: #fbf3ee;
+  --qg-sidebar-bg: linear-gradient(180deg, #ddcfb5 0%, #d6c6a9 55%, #d1c0a2 100%);
+  --qg-sidebar-border: rgba(96, 70, 44, 0.28);
+  --qg-sidebar-text: #3b2c21;
+  --qg-sidebar-text-muted: #5e4838;
+  --qg-sidebar-hover: rgba(250, 244, 233, 0.55);
+  --qg-sidebar-active-bg: #f6f0e4;
+  --qg-sidebar-active-text: #5c1f2c;
 
   /* Semantic notice surfaces — see the dark block. Foregrounds here are the
      DARK end of each hue so they read against a pale wash; only the token
@@ -3380,6 +3401,13 @@ html.qg-theme-light {
   fill: var(--qg-dashboard-text-muted) !important;
 }
 
+/* Dashboard density (Settings → Preferences). The provider publishes the root
+   font size for the chosen density; rem-based type and spacing follow it. It is
+   scoped to the dashboard shell so marketing pages keep their own scale. */
+html[data-density]:has(.qg-dashboard-shell) {
+  font-size: var(--qg-density-root-size, 16px);
+}
+
 html.qg-theme-ready,
 html.qg-theme-ready body,
 html.qg-theme-ready .qg-dashboard-shell,
@@ -3462,9 +3490,15 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 }
 
 .qg-theme-light .qg-theme-toggle__track {
-  background: linear-gradient(90deg, rgba(237, 247, 255, 0.96), rgba(0, 197, 235, 0.22)), #ffffff;
-  color: #64748b;
-  box-shadow: inset 0 0 0 1px rgba(9, 13, 22, 0.12);
+  background: linear-gradient(90deg, #f6f0e4, rgba(140, 79, 51, 0.18)), #f3ede1;
+  color: var(--qg-dashboard-text-muted);
+  box-shadow: inset 0 0 0 1px var(--qg-dashboard-border);
+}
+
+.qg-theme-light .qg-theme-toggle__thumb {
+  background: var(--qg-primary);
+  color: var(--qg-primary-text);
+  box-shadow: 0 2px 8px rgba(110, 42, 58, 0.35);
 }
 
 .qg-theme-toggle__thumb {
@@ -3517,17 +3551,20 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 }
 
 .qg-theme-light body {
-  background: radial-gradient(circle at 18% 0%, rgba(139, 92, 246, 0.14), transparent 34%), radial-gradient(circle at 82% 4%, rgba(0, 197, 235, 0.14), transparent 32%), #f8fbff;
+  background: var(--qg-dashboard-bg);
   color: var(--qg-dashboard-text);
 }
 
 .qg-theme-light .qg-dashboard-shell {
-  background: radial-gradient(circle at 18% 0%, rgba(139, 92, 246, 0.16), transparent 34%), radial-gradient(circle at 82% 8%, rgba(0, 197, 235, 0.14), transparent 32%), linear-gradient(180deg, #fbfdff 0%, #f7fbff 52%, #eef8ff 100%);
+  background: linear-gradient(180deg, #ebe4d4 0%, #e8e0cf 52%, #e3dac7 100%);
   color: var(--qg-dashboard-text);
 }
 
 .qg-theme-light .qg-dashboard-main {
-  background: radial-gradient(circle at 76% 8%, rgba(0, 197, 235, 0.12), transparent 34%), radial-gradient(circle at 20% 10%, rgba(139, 92, 246, 0.12), transparent 36%), linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(240, 249, 255, 0.96)) !important;
+  background:
+    radial-gradient(ellipse at 78% 0%, rgba(176, 113, 79, 0.10), transparent 46%),
+    radial-gradient(ellipse at 12% 6%, rgba(110, 42, 58, 0.05), transparent 40%),
+    linear-gradient(180deg, #ebe4d4 0%, #e8e0cf 60%, #e4dbc9 100%) !important;
 }
 
 .qg-theme-light .qg-dashboard-bg-layers .bg-\[\#050816\],
@@ -3536,44 +3573,135 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
   background: transparent !important;
 }
 
+/* The dark theme's blue/cyan/violet glow layers read as cold stains on
+   parchment; the warm vignette lives on .qg-dashboard-main instead. */
 .qg-theme-light .qg-dashboard-bg-layers [class*="radial-gradient"] {
-  opacity: 0.7;
+  opacity: 0;
 }
 
 .qg-theme-light .qg-dashboard-sidebar,
 .qg-theme-light .qg-dashboard-mobile-header {
-  border-color: rgba(9, 13, 22, 0.12) !important;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(238, 248, 255, 0.82)), rgba(255, 255, 255, 0.86) !important;
-  box-shadow: 18px 0 48px rgba(14, 116, 144, 0.1);
+  border-color: var(--qg-sidebar-border) !important;
+  background: var(--qg-sidebar-bg) !important;
+  box-shadow: inset -1px 0 0 rgba(255, 248, 236, 0.35), 10px 0 32px rgba(70, 48, 28, 0.10);
+  color: var(--qg-sidebar-text);
+}
+
+.qg-theme-light .qg-dashboard-sidebar [class*="border-slate-"],
+.qg-theme-light .qg-dashboard-mobile-header [class*="border-slate-"] {
+  border-color: var(--qg-sidebar-border) !important;
 }
 
 .qg-theme-light .qg-dashboard-sidebar [class*="text-white"],
-.qg-theme-light .qg-dashboard-mobile-header [class*="text-white"] {
-  color: #334155 !important;
+.qg-theme-light .qg-dashboard-mobile-header [class*="text-white"],
+.qg-theme-light .qg-dashboard-sidebar [class*="text-slate-4"],
+.qg-theme-light .qg-dashboard-mobile-header [class*="text-slate-4"] {
+  color: var(--qg-sidebar-text) !important;
 }
 
+.qg-theme-light .qg-dashboard-sidebar [class*="text-slate-5"],
+.qg-theme-light .qg-dashboard-sidebar [class*="text-slate-6"] {
+  color: var(--qg-sidebar-text-muted) !important;
+}
+
+/* Brand wordmark: `text-slate-50` is drawn for a navy ground and vanished. */
+.qg-theme-light .qg-dashboard-sidebar .text-slate-50,
+.qg-theme-light .qg-dashboard-mobile-header .text-slate-50 {
+  color: var(--qg-dashboard-text) !important;
+}
+
+.qg-theme-light .qg-dashboard-sidebar [class*="text-cyan-"],
+.qg-theme-light .qg-dashboard-mobile-header [class*="text-cyan-"],
 .qg-theme-light .qg-dashboard-sidebar [class*="text-gold"],
 .qg-theme-light .qg-dashboard-mobile-header [class*="text-gold"] {
-  color: #0284c7 !important;
+  color: var(--qg-accent) !important;
   text-shadow: none;
 }
 
 .qg-theme-light .qg-dashboard-sidebar [class*="border-gold"],
 .qg-theme-light .qg-dashboard-mobile-header [class*="border-gold"],
 .qg-theme-light .qg-dashboard-sidebar [class*="border-[#FFD36B]"],
-.qg-theme-light .qg-dashboard-mobile-header [class*="border-[#FFD36B]"] {
-  border-color: rgba(14, 165, 233, 0.22) !important;
+.qg-theme-light .qg-dashboard-mobile-header [class*="border-[#FFD36B]"],
+.qg-theme-light .qg-dashboard-sidebar [class*="border-blue-"],
+.qg-theme-light .qg-dashboard-mobile-header [class*="border-blue-"] {
+  border-color: rgba(140, 79, 51, 0.32) !important;
 }
 
 .qg-theme-light .qg-dashboard-sidebar [class*="bg-gold"],
-.qg-theme-light .qg-dashboard-mobile-header [class*="bg-gold"] {
-  background-color: rgba(236, 249, 255, 0.9) !important;
+.qg-theme-light .qg-dashboard-mobile-header [class*="bg-gold"],
+.qg-theme-light .qg-dashboard-sidebar [class*="bg-blue-"],
+.qg-theme-light .qg-dashboard-mobile-header [class*="bg-blue-"] {
+  background-color: var(--qg-sidebar-active-bg) !important;
+  box-shadow: 0 1px 2px rgba(60, 40, 22, 0.10) !important;
 }
 
 .qg-theme-light .qg-dashboard-sidebar a:hover,
 .qg-theme-light .qg-dashboard-sidebar button:hover {
-  background-color: rgba(236, 249, 255, 0.84) !important;
-  color: #090d16 !important;
+  background-color: var(--qg-sidebar-hover) !important;
+  color: var(--qg-dashboard-text) !important;
+}
+
+/* Nav items. Hooked by class (DashboardLayout) rather than by the Tailwind
+   gradient they carry in the dark theme, whose cyan-on-lavender active pill
+   was unreadable on a light ground. */
+.qg-theme-light .qg-sidebar-link {
+  color: var(--qg-sidebar-text) !important;
+}
+
+.qg-theme-light .qg-sidebar-link svg {
+  color: var(--qg-sidebar-text-muted);
+}
+
+.qg-theme-light .qg-sidebar-link:hover svg {
+  color: var(--qg-accent);
+}
+
+.qg-theme-light .qg-sidebar-link.qg-sidebar-link--active {
+  background: var(--qg-sidebar-active-bg) !important;
+  border-color: rgba(110, 42, 58, 0.30) !important;
+  color: var(--qg-sidebar-active-text) !important;
+  box-shadow: 0 1px 2px rgba(60, 40, 22, 0.10), 0 6px 16px rgba(70, 48, 28, 0.10) !important;
+}
+
+.qg-theme-light .qg-sidebar-link.qg-sidebar-link--active svg {
+  color: var(--qg-primary);
+}
+
+.qg-theme-light .qg-sidebar-link__bar {
+  background: var(--qg-primary) !important;
+  box-shadow: none !important;
+}
+
+/* Scoped through the sidebar so it outranks the sidebar-wide cyan rule above,
+   which the header's own `hover:text-cyan-300` class would otherwise match. */
+.qg-theme-light .qg-dashboard-sidebar .qg-sidebar-section {
+  color: var(--qg-sidebar-text-muted) !important;
+}
+
+.qg-theme-light .qg-dashboard-sidebar .qg-sidebar-section:hover {
+  color: var(--qg-accent) !important;
+}
+
+.qg-theme-light .qg-dashboard-sidebar .qg-theme-toggle__switch,
+.qg-theme-light .qg-dashboard-sidebar .qg-theme-toggle__system {
+  background: rgba(248, 243, 233, 0.7);
+  border-color: var(--qg-sidebar-border);
+  color: var(--qg-sidebar-text);
+  box-shadow: 0 1px 2px rgba(60, 40, 22, 0.08);
+}
+
+/* The global scrollbar track is `bg-cyber-black`, which drew a black strip
+   down the sidebar and page edge in light mode. */
+html.qg-theme-light ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html.qg-theme-light ::-webkit-scrollbar-thumb {
+  background: rgba(105, 78, 52, 0.34);
+}
+
+html.qg-theme-light ::-webkit-scrollbar-thumb:hover {
+  background: rgba(105, 78, 52, 0.5);
 }
 
 .qg-theme-light .dashboard-theme-scope {
@@ -3627,7 +3755,7 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 .qg-theme-light .dashboard-theme-scope [class*="bg-[#0B1120]"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="bg-white/"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="bg-white\\["]:not(.qg-force-dark):not(.qg-force-dark *) {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(236, 249, 255, 0.72)), rgba(255, 255, 255, 0.78) !important;
+  background: var(--qg-surface-fill) !important;
   border-color: var(--qg-dashboard-border) !important;
   box-shadow: var(--qg-panel-shadow) !important;
   color: var(--qg-dashboard-text) !important;
@@ -3637,8 +3765,8 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 .qg-theme-light .dashboard-theme-scope .q-card:hover,
 .qg-theme-light .dashboard-theme-scope [class*="hover:bg-white"]:hover:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="hover:border-gold"]:hover:not(.qg-force-dark):not(.qg-force-dark *) {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(226, 246, 255, 0.82)), #ffffff !important;
-  border-color: rgba(0, 197, 235, 0.4) !important;
+  background: var(--qg-surface-fill-hover) !important;
+  border-color: var(--qg-dashboard-border-strong) !important;
   box-shadow: var(--qg-hover-shadow) !important;
 }
 
@@ -3659,7 +3787,7 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 .qg-theme-light .dashboard-theme-scope [class*="text-white/8"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="text-white/7"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="text-white/6"]:not(.qg-force-dark):not(.qg-force-dark *) {
-  color: #334155 !important;
+  color: var(--qg-dashboard-text-soft) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope [class*="text-white/5"]:not(.qg-force-dark):not(.qg-force-dark *),
@@ -3667,7 +3795,7 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 .qg-theme-light .dashboard-theme-scope [class*="text-white/3"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="text-white/2"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="text-white/1"]:not(.qg-force-dark):not(.qg-force-dark *) {
-  color: #64748b !important;
+  color: var(--qg-dashboard-text-muted) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope [class*="text-gold"]:not(.qg-force-dark):not(.qg-force-dark *),
@@ -3676,7 +3804,7 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 .qg-theme-light .dashboard-theme-scope [class*="text-[#FFD36B]"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .qg-docs-shell [class*="text-gold"],
 .qg-theme-light .qg-docs-shell [class*="hover:text-gold"]:hover {
-  color: #0284c7 !important;
+  color: var(--qg-accent) !important;
   text-shadow: none !important;
 }
 
@@ -3700,19 +3828,19 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 .qg-theme-light .dashboard-theme-scope .text-red-200:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope .text-red-300:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope .text-red-400:not(.qg-force-dark):not(.qg-force-dark *) {
-  color: #dc2626 !important;
+  color: #b42318 !important;
 }
 
 .qg-theme-light .dashboard-theme-scope .text-orange-300:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope .text-orange-400:not(.qg-force-dark):not(.qg-force-dark *) {
-  color: #ea580c !important;
+  color: #a8410c !important;
 }
 
 .qg-theme-light .dashboard-theme-scope .text-amber-300:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope .text-amber-400:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope .text-yellow-300:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope .text-yellow-400:not(.qg-force-dark):not(.qg-force-dark *) {
-  color: #b45309 !important;
+  color: #8a5a00 !important;
 }
 
 .qg-theme-light .dashboard-theme-scope .text-emerald-100:not(.qg-force-dark):not(.qg-force-dark *),
@@ -3721,7 +3849,7 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 .qg-theme-light .dashboard-theme-scope .text-emerald-400:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope .text-green-300:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope .text-green-400:not(.qg-force-dark):not(.qg-force-dark *) {
-  color: #059669 !important;
+  color: #2f6b45 !important;
 }
 
 .qg-theme-light .dashboard-theme-scope .text-sky-300:not(.qg-force-dark):not(.qg-force-dark *),
@@ -3730,53 +3858,47 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 .qg-theme-light .dashboard-theme-scope .text-cyan-400:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope .text-blue-300:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope .text-blue-400:not(.qg-force-dark):not(.qg-force-dark *) {
-  color: #0284c7 !important;
+  color: var(--qg-accent) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope .text-purple-300:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope .text-purple-400:not(.qg-force-dark):not(.qg-force-dark *) {
-  color: #7c3aed !important;
+  color: var(--qg-violet) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope [class*="bg-gold"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .qg-docs-shell [class*="bg-gold"] {
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.97), rgba(236, 249, 255, 0.86)),
-    rgba(255, 255, 255, 0.92) !important;
-  border-color: rgba(148, 163, 184, 0.18) !important;
-  color: #090d16 !important;
+  background: var(--qg-surface-fill) !important;
+  border-color: var(--qg-dashboard-border) !important;
+  color: var(--qg-dashboard-text) !important;
 }
 
-/* Keep light-mode accent surfaces readable without the saturated blue/cyan wash. */
+/* Blue/sky/cyan accent surfaces become a warm tint of the brand accent. */
 .qg-theme-light .dashboard-theme-scope [class*="bg-blue-"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="bg-sky-"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="bg-cyan-"]:not(.qg-force-dark):not(.qg-force-dark *) {
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.97), rgba(247, 250, 252, 0.88)),
-    rgba(255, 255, 255, 0.92) !important;
-  border-color: rgba(148, 163, 184, 0.22) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82), 0 12px 28px rgba(15, 23, 42, 0.08) !important;
+  background: linear-gradient(180deg, rgba(140, 79, 51, 0.07), rgba(140, 79, 51, 0.04)), var(--qg-dashboard-surface-strong) !important;
+  border-color: rgba(140, 79, 51, 0.26) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 252, 245, 0.7) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope [class*="border-blue-"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="border-sky-"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="border-cyan-"]:not(.qg-force-dark):not(.qg-force-dark *) {
-  border-color: rgba(148, 163, 184, 0.22) !important;
+  border-color: rgba(140, 79, 51, 0.28) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope [class*="hover:bg-blue-"]:hover:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="hover:bg-sky-"]:hover:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="hover:bg-cyan-"]:hover:not(.qg-force-dark):not(.qg-force-dark *) {
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.99), rgba(241, 245, 249, 0.94)),
-    rgba(255, 255, 255, 0.96) !important;
-  border-color: rgba(148, 163, 184, 0.28) !important;
+  background: linear-gradient(180deg, rgba(140, 79, 51, 0.12), rgba(140, 79, 51, 0.07)), var(--qg-dashboard-surface-strong) !important;
+  border-color: rgba(140, 79, 51, 0.38) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope [class*="text-blue-"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="text-sky-"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="text-cyan-"]:not(.qg-force-dark):not(.qg-force-dark *) {
-  color: #0f766e !important;
+  color: var(--qg-accent) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope button,
@@ -3798,16 +3920,16 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 .qg-theme-light .qg-docs-shell input,
 .qg-theme-light .qg-docs-shell select,
 .qg-theme-light .qg-docs-shell textarea {
-  background: rgba(255, 255, 255, 0.9) !important;
-  border-color: rgba(9, 13, 22, 0.16) !important;
-  color: #090d16 !important;
+  background: var(--qg-input-bg) !important;
+  border-color: var(--qg-input-border) !important;
+  color: var(--qg-input-text) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope input::placeholder,
 .qg-theme-light .dashboard-theme-scope textarea::placeholder,
 .qg-theme-light .qg-docs-shell input::placeholder,
 .qg-theme-light .qg-docs-shell textarea::placeholder {
-  color: #94a3b8 !important;
+  color: #8a7462 !important;
 }
 
 .qg-theme-light .dashboard-theme-scope input:focus,
@@ -3835,7 +3957,7 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 .qg-theme-light .qg-docs-shell tr,
 .qg-theme-light .qg-docs-shell td,
 .qg-theme-light .qg-docs-shell th {
-  border-color: rgba(9, 13, 22, 0.1) !important;
+  border-color: rgba(105, 78, 52, 0.16) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope pre,
@@ -3845,35 +3967,35 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 .qg-theme-light .dashboard-theme-scope [class*="log"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .qg-docs-shell pre,
 .qg-theme-light .qg-docs-shell code {
-  background: rgba(3, 7, 18, 0.92) !important;
-  border-color: rgba(0, 197, 235, 0.24) !important;
-  color: #e2f8ff !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 14px 44px rgba(2, 6, 23, 0.18) !important;
+  background: var(--qg-code-bg) !important;
+  border-color: rgba(176, 113, 79, 0.32) !important;
+  color: var(--qg-code-text) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 245, 230, 0.05), 0 10px 28px rgba(42, 31, 24, 0.18) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope svg text,
 .qg-theme-light .dashboard-theme-scope svg [fill="#fff"],
 .qg-theme-light .dashboard-theme-scope svg [fill="white"],
 .qg-theme-light .qg-docs-shell svg text {
-  fill: #334155 !important;
+  fill: var(--qg-dashboard-text-soft) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope svg [stroke="#fff"],
 .qg-theme-light .dashboard-theme-scope svg [stroke="white"],
 .qg-theme-light .qg-docs-shell svg [stroke="#fff"],
 .qg-theme-light .qg-docs-shell svg [stroke="white"] {
-  stroke: #64748b !important;
+  stroke: var(--qg-dashboard-text-muted) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope .recharts-cartesian-grid line,
 .qg-theme-light .dashboard-theme-scope .recharts-polar-grid-angle line,
 .qg-theme-light .dashboard-theme-scope .recharts-polar-grid-concentric circle {
-  stroke: rgba(9, 13, 22, 0.14) !important;
+  stroke: rgba(105, 78, 52, 0.18) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope .recharts-text,
 .qg-theme-light .dashboard-theme-scope .recharts-label {
-  fill: #334155 !important;
+  fill: var(--qg-dashboard-text-soft) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope [class*="shadow-[0_0"]:not(.qg-force-dark):not(.qg-force-dark *),
@@ -3882,7 +4004,7 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 }
 
 .qg-theme-light .qg-docs-shell {
-  background: radial-gradient(circle at 18% 0%, rgba(139, 92, 246, 0.16), transparent 34%), radial-gradient(circle at 82% 6%, rgba(0, 197, 235, 0.16), transparent 32%), linear-gradient(180deg, #fbfdff 0%, #f7fbff 52%, #eef8ff 100%) !important;
+  background: radial-gradient(ellipse at 78% 0%, rgba(176, 113, 79, 0.10), transparent 46%), linear-gradient(180deg, #ebe4d4 0%, #e8e0cf 60%, #e4dbc9 100%) !important;
   color: var(--qg-dashboard-text);
 }
 
@@ -3891,7 +4013,7 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 .qg-theme-light .qg-docs-shell [class*="bg-[#07101d]"],
 .qg-theme-light .qg-docs-shell [class*="bg-black/"],
 .qg-theme-light .qg-docs-shell [class*="bg-white/"] {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(236, 249, 255, 0.72)), rgba(255, 255, 255, 0.82) !important;
+  background: var(--qg-surface-fill) !important;
   border-color: var(--qg-dashboard-border) !important;
   color: var(--qg-dashboard-text) !important;
 }
@@ -3911,7 +4033,7 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 
 .qg-theme-light .qc-page:not(.qc-page-home-light) .qg-theme-toggle__switch,
 .qg-theme-light .qc-page-home-light .qg-theme-toggle__switch {
-  background: rgba(255, 255, 255, 0.86);
+  background: var(--qg-dashboard-surface-strong);
 }
 
 /* Dashboard and docs theme compatibility bridge. */
@@ -3935,8 +4057,8 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 
 .qg-theme-light .qg-dashboard-bg-layers::after {
   background:
-    linear-gradient(90deg, transparent, rgba(14, 165, 233, 0.05), transparent),
-    repeating-linear-gradient(180deg, rgba(15, 23, 42, 0.035) 0 1px, transparent 1px 11px);
+    linear-gradient(90deg, transparent, rgba(176, 113, 79, 0.05), transparent),
+    repeating-linear-gradient(180deg, rgba(70, 48, 28, 0.035) 0 1px, transparent 1px 11px);
   opacity: 0.18;
 }
 
@@ -3980,9 +4102,7 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 .qg-theme-light .qg-docs-shell [class*="bg-[#0F172A]"],
 .qg-theme-light .qg-docs-shell [class*="bg-[#0f172a]"],
 .qg-theme-light .qg-docs-shell [class*="bg-[#111827]"] {
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(236, 249, 255, 0.78)),
-    rgba(255, 255, 255, 0.86) !important;
+  background: var(--qg-surface-fill) !important;
   border-color: var(--qg-dashboard-border) !important;
   color: var(--qg-dashboard-text) !important;
   box-shadow: var(--qg-panel-shadow) !important;
@@ -3992,26 +4112,24 @@ html.qg-theme-ready .qg-agent-center *:not(.transition-all) {
 .qg-theme-light .dashboard-theme-scope .glass-panel:hover,
 .qg-theme-light .dashboard-theme-scope .q-card:hover,
 .qg-theme-light .qg-docs-shell [class*="bg-black"]:hover {
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(226, 246, 255, 0.86)),
-    #ffffff !important;
-  border-color: rgba(14, 165, 233, 0.38) !important;
+  background: var(--qg-surface-fill-hover) !important;
+  border-color: var(--qg-dashboard-border-strong) !important;
   box-shadow: var(--qg-hover-shadow) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope .qg-executive-panel::before {
-  background: linear-gradient(90deg, transparent, rgba(14, 165, 233, 0.42), rgba(124, 58, 237, 0.26), transparent);
+  background: linear-gradient(90deg, transparent, rgba(176, 113, 79, 0.55), rgba(110, 42, 58, 0.32), transparent);
 }
 
 .qg-theme-light .dashboard-theme-scope .qg-executive-panel::after {
-  background: linear-gradient(90deg, transparent, rgba(14, 165, 233, 0.18), transparent);
+  background: linear-gradient(90deg, transparent, rgba(176, 113, 79, 0.2), transparent);
 }
 
 .qg-theme-light .dashboard-theme-scope [class*="ring-offset-[#0A1020]"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .dashboard-theme-scope [class*="ring-offset-[#0a1020]"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .qg-docs-shell [class*="ring-offset-[#0A1020]"],
 .qg-theme-light .qg-docs-shell [class*="ring-offset-[#0a1020]"] {
-  --tw-ring-offset-color: #f8fbff !important;
+  --tw-ring-offset-color: var(--qg-dashboard-bg) !important;
 }
 
 .qg-theme-light .dashboard-theme-scope [class*="text-black"]:not(.qg-force-dark):not(.qg-force-dark *),
@@ -4289,9 +4407,11 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
 /* ===============================================================
    QUANTUM SIMULATION RANGE  (/resources/quantum-simulation)
 
-   The page is dark-only and paints its own ground from `_theme.ts`, so there
-   is no page-background colour rule here -- only the things a stylesheet has
-   to own: the hero's 3D beam scene, the range slider, and the scrollbars.
+   The page has a dark and a light theme. Both are defined once, in
+   `_theme.ts`, and written onto `.qsr-page` as `--qsr-*` custom properties by
+   the page root -- so nothing in this block hard-codes a colour. It paints
+   only what a stylesheet has to own: the backdrop grid, the hero's beam scene,
+   the range slider, the scrollbars and the hover states.
 
    The previous incarnation of this block painted `.qs-page` a LIGHT gradient
    while every component inside it rendered on `bg-slate-950`. That is gone.
@@ -4302,17 +4422,77 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
   /* A faint instrument grid over the theme ground, fixed so it reads as a
      backdrop the content moves across rather than a texture on the content. */
   background-image:
-    linear-gradient(rgba(56, 189, 248, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(56, 189, 248, 0.035) 1px, transparent 1px),
-    radial-gradient(ellipse 90% 55% at 50% -8%, rgba(34, 211, 238, 0.10), transparent 62%),
-    radial-gradient(ellipse 60% 45% at 88% 22%, rgba(167, 139, 250, 0.07), transparent 60%);
+    linear-gradient(var(--qsr-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--qsr-grid) 1px, transparent 1px),
+    radial-gradient(ellipse 90% 55% at 50% -8%, var(--qsr-glow-a), transparent 62%),
+    radial-gradient(ellipse 60% 45% at 88% 22%, var(--qsr-glow-b), transparent 60%);
   background-size: 56px 56px, 56px 56px, auto, auto;
   background-attachment: fixed, fixed, fixed, fixed;
 }
 
 .qsr-page ::selection {
-  background: rgba(34, 211, 238, 0.28);
-  color: #f1f5f9;
+  background: var(--qsr-selection);
+  color: var(--qsr-heading);
+}
+
+/* -- theme switch -------------------------------------------------
+   Colours transition only while `data-qsr-switching` is present (set for
+   ~400 ms by the page on a theme change), so the flip is smooth without a
+   permanent `transition: all` smearing every live value the page updates.   */
+
+.qsr-page[data-qsr-switching],
+.qsr-page[data-qsr-switching] *,
+.qsr-page[data-qsr-switching] *::before,
+.qsr-page[data-qsr-switching] *::after {
+  transition-property: background-color, border-color, color, fill, stroke, box-shadow;
+  transition-duration: 320ms;
+  transition-timing-function: ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qsr-page[data-qsr-switching],
+  .qsr-page[data-qsr-switching] *,
+  .qsr-page[data-qsr-switching] *::before,
+  .qsr-page[data-qsr-switching] *::after {
+    transition-duration: 0.01ms;
+  }
+}
+
+.qsr-theme-switch:focus-within {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--qsr-live) 30%, transparent);
+}
+
+.qsr-theme-switch__option:focus-visible {
+  outline: 2px solid var(--qsr-live);
+  outline-offset: 2px;
+}
+
+.qsr-theme-switch__option:not([aria-checked='true']):hover {
+  color: var(--qsr-heading) !important;
+}
+
+/* -- ink and hover states -----------------------------------------
+   Utility classes in place of Tailwind's fixed `text-slate-*` / `hover:*-cyan-*`
+   colours, which cannot follow a theme.                                     */
+
+.qsr-heading {
+  color: var(--qsr-heading);
+}
+
+.qsr-hover-live:hover {
+  color: var(--qsr-live) !important;
+}
+
+.qsr-hover-ink:hover {
+  color: var(--qsr-ink) !important;
+}
+
+.qsr-hover-border:hover {
+  border-color: color-mix(in srgb, var(--qsr-live) 45%, transparent) !important;
+}
+
+.qsr-hover-wash:hover {
+  background: color-mix(in srgb, var(--qsr-live) 8%, transparent);
 }
 
 /* -- hero beam scene ---------------------------------------------
@@ -4323,10 +4503,10 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
 .qs-cybercore-hero {
   min-height: clamp(420px, 46vw, 620px);
   background:
-    linear-gradient(180deg, rgba(3, 5, 13, 0.35), rgba(3, 5, 13, 0.94)),
-    radial-gradient(circle at 20% 20%, rgba(34, 211, 238, 0.16), transparent 34%),
-    radial-gradient(circle at 80% 12%, rgba(99, 102, 241, 0.18), transparent 36%),
-    #03050d;
+    linear-gradient(180deg, color-mix(in srgb, var(--qsr-ground-deep) 35%, transparent), color-mix(in srgb, var(--qsr-ground-deep) 94%, transparent)),
+    radial-gradient(circle at 20% 20%, color-mix(in srgb, var(--qsr-live) 16%, transparent), transparent 34%),
+    radial-gradient(circle at 80% 12%, color-mix(in srgb, var(--qsr-quantum) 18%, transparent), transparent 36%),
+    var(--qsr-ground-deep);
 }
 
 .qs-cybercore-hero::after {
@@ -4336,8 +4516,8 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
   z-index: 1;
   pointer-events: none;
   background:
-    linear-gradient(90deg, rgba(3, 5, 13, 0.9), transparent 55%, rgba(3, 5, 13, 0.4)),
-    linear-gradient(180deg, transparent 0%, rgba(5, 7, 15, 0.9) 100%);
+    linear-gradient(90deg, color-mix(in srgb, var(--qsr-ground-deep) 90%, transparent), transparent 55%, color-mix(in srgb, var(--qsr-ground-deep) 40%, transparent)),
+    linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--qsr-ground) 90%, transparent) 100%);
 }
 
 .qs-cybercore-hero .scene {
@@ -4364,11 +4544,11 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
   transform: perspective(900px) rotateX(62deg);
   transform-origin: center bottom;
   background:
-    linear-gradient(rgba(34, 211, 238, 0.16) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(99, 102, 241, 0.14) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(6, 182, 212, 0.09), rgba(79, 70, 229, 0.02));
+    linear-gradient(color-mix(in srgb, var(--qsr-live) 16%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--qsr-quantum) 14%, transparent) 1px, transparent 1px),
+    linear-gradient(180deg, color-mix(in srgb, var(--qsr-live) 9%, transparent), color-mix(in srgb, var(--qsr-quantum) 2%, transparent));
   background-size: 44px 44px, 44px 44px, 100% 100%;
-  box-shadow: 0 -28px 80px rgba(34, 211, 238, 0.12);
+  box-shadow: 0 -28px 80px color-mix(in srgb, var(--qsr-live) 12%, transparent);
 }
 
 .qs-cybercore-hero .main-column {
@@ -4379,8 +4559,8 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
   height: 58%;
   transform: translateX(-50%);
   background:
-    linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.36), transparent),
-    linear-gradient(180deg, rgba(34, 211, 238, 0), rgba(34, 211, 238, 0.2), rgba(99, 102, 241, 0.04));
+    linear-gradient(90deg, transparent, color-mix(in srgb, var(--qsr-live) 36%, transparent), transparent),
+    linear-gradient(180deg, transparent, color-mix(in srgb, var(--qsr-live) 20%, transparent), color-mix(in srgb, var(--qsr-quantum) 4%, transparent));
   clip-path: polygon(44% 0, 56% 0, 78% 100%, 22% 100%);
   filter: blur(0.2px);
   opacity: 0.7;
@@ -4396,8 +4576,8 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
   bottom: -24%;
   height: 46%;
   border-radius: 999px;
-  background: linear-gradient(180deg, transparent, rgba(34, 211, 238, 0.92), rgba(125, 211, 252, 0.12));
-  box-shadow: 0 0 18px rgba(34, 211, 238, 0.52);
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--qsr-live) 92%, transparent), color-mix(in srgb, var(--qsr-live) 12%, transparent));
+  box-shadow: 0 0 18px color-mix(in srgb, var(--qsr-live) 52%, transparent);
   animation-name: qs-cybercore-rise, qs-cybercore-fade;
   animation-timing-function: linear, ease-in-out;
   animation-iteration-count: infinite, infinite;
@@ -4409,8 +4589,18 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
 }
 
 .qs-cybercore-hero .light-beam.secondary {
-  background: linear-gradient(180deg, transparent, rgba(167, 139, 250, 0.82), rgba(99, 102, 241, 0.08));
-  box-shadow: 0 0 16px rgba(129, 140, 248, 0.4);
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--qsr-quantum) 82%, transparent), color-mix(in srgb, var(--qsr-quantum) 8%, transparent));
+  box-shadow: 0 0 16px color-mix(in srgb, var(--qsr-quantum) 40%, transparent);
+}
+
+/* On a light ground a soft glow reads as a smudge; keep the beams thinner and
+   quieter so they stay an accent rather than a stain. */
+.qsr-page[data-qsr-theme='light'] .qs-cybercore-hero .light-beam {
+  box-shadow: 0 0 10px color-mix(in srgb, var(--qsr-live) 30%, transparent);
+}
+
+.qsr-page[data-qsr-theme='light'] .qs-cybercore-hero .light-beam.secondary {
+  box-shadow: 0 0 10px color-mix(in srgb, var(--qsr-quantum) 24%, transparent);
 }
 
 @keyframes qs-cybercore-rise {
@@ -4438,10 +4628,10 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
   cursor: pointer;
   background: linear-gradient(
     90deg,
-    var(--qsr-accent, #22d3ee) 0%,
-    var(--qsr-accent, #22d3ee) var(--qsr-fill, 50%),
-    rgba(148, 163, 184, 0.16) var(--qsr-fill, 50%),
-    rgba(148, 163, 184, 0.16) 100%
+    var(--qsr-accent, var(--qsr-live)) 0%,
+    var(--qsr-accent, var(--qsr-live)) var(--qsr-fill, 50%),
+    var(--qsr-track) var(--qsr-fill, 50%),
+    var(--qsr-track) 100%
   );
 }
 
@@ -4451,9 +4641,9 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: var(--qsr-accent, #22d3ee);
-  border: 2px solid #05070f;
-  box-shadow: 0 0 10px rgba(34, 211, 238, 0.5);
+  background: var(--qsr-accent, var(--qsr-live));
+  border: 2px solid var(--qsr-ground);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--qsr-live) 50%, transparent);
   transition: transform 0.12s ease;
 }
 
@@ -4465,20 +4655,20 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: var(--qsr-accent, #22d3ee);
-  border: 2px solid #05070f;
-  box-shadow: 0 0 10px rgba(34, 211, 238, 0.5);
+  background: var(--qsr-accent, var(--qsr-live));
+  border: 2px solid var(--qsr-ground);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--qsr-live) 50%, transparent);
 }
 
 .qsr-slider:focus-visible {
-  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.25);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--qsr-live) 25%, transparent);
 }
 
 /* -- scrollbars --------------------------------------------------- */
 
 .qsr-scroll {
   scrollbar-width: thin;
-  scrollbar-color: rgba(34, 211, 238, 0.28) transparent;
+  scrollbar-color: var(--qsr-scroll-thumb) transparent;
 }
 
 .qsr-scroll::-webkit-scrollbar {
@@ -4739,7 +4929,10 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
 .qg-theme-light .qg-dashboard-main [class*="bg-[#0f0f13]"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .qg-dashboard-main [class*="bg-[#0f1428]"]:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .qg-dashboard-main [class*="bg-[#111934]"]:not(.qg-force-dark):not(.qg-force-dark *),
-.qg-theme-light .qg-dashboard-main [class*="bg-[#16161a]"]:not(.qg-force-dark):not(.qg-force-dark *) {
+.qg-theme-light .qg-dashboard-main [class*="bg-[#16161a]"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="bg-[#1a0b0e]"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="bg-[#07170f]"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="bg-[#06131b]"]:not(.qg-force-dark):not(.qg-force-dark *) {
   background-color: var(--qg-dashboard-surface) !important;
 }
 
@@ -4792,7 +4985,8 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
 .qg-theme-light .qg-dashboard-main .bg-\[\#8b2aff\] [class*="text-white"],
 .qg-theme-light .qg-dashboard-main .bg-\[\#9d3dff\] [class*="text-white"],
 .qg-theme-light .qg-dashboard-main .bg-\[\#FFE08A\] [class*="text-white"],
-.qg-theme-light .qg-dashboard-main .bg-\[\#f87171\] [class*="text-white"] {
+.qg-theme-light .qg-dashboard-main .bg-\[\#f87171\] [class*="text-white"],
+.qg-theme-light .qg-dashboard-main .bg-\[\#fbbf24\] [class*="text-white"] {
   color: #ffffff !important;
 }
 
@@ -4909,7 +5103,7 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
 .qg-theme-light .qg-dashboard-main .text-cyan-50:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .qg-dashboard-main .text-cyan-100:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .qg-dashboard-main .text-cyan-200:not(.qg-force-dark):not(.qg-force-dark *) {
-  color: #155e75 !important;
+  color: var(--qg-accent) !important;
 }
 
 .qg-theme-light .qg-dashboard-main .text-sky-50:not(.qg-force-dark):not(.qg-force-dark *),
@@ -4952,4 +5146,39 @@ html.qg-theme-light .qg-agent-center .qg-force-dark {
 .qg-theme-light .qg-dashboard-main .text-pink-100:not(.qg-force-dark):not(.qg-force-dark *),
 .qg-theme-light .qg-dashboard-main .text-pink-200:not(.qg-force-dark):not(.qg-force-dark *) {
   color: #9d174d !important;
+}
+
+/* ---- 10. Opacity variants of the same light-end tints -------------
+   `text-amber-100/80` is its own Tailwind class, so the exact-class flips in
+   rule 9 never reach it: the Exposure Workflow banner and ~170 other notices
+   kept a near-white foreground on parchment. Same mapping, substring-matched.
+   (Cyan is already covered by the scope-wide cyan -> accent rule.) */
+.qg-theme-light .qg-dashboard-main [class*="text-amber-50/"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="text-amber-100/"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="text-amber-200/"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #92400e !important;
+}
+
+.qg-theme-light .qg-dashboard-main [class*="text-red-100/"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="text-red-200/"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #991b1b !important;
+}
+
+.qg-theme-light .qg-dashboard-main [class*="text-rose-100/"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="text-rose-200/"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #9f1239 !important;
+}
+
+.qg-theme-light .qg-dashboard-main [class*="text-emerald-100/"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="text-emerald-200/"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #065f46 !important;
+}
+
+.qg-theme-light .qg-dashboard-main [class*="text-violet-100/"]:not(.qg-force-dark):not(.qg-force-dark *),
+.qg-theme-light .qg-dashboard-main [class*="text-violet-200/"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #5b21b6 !important;
+}
+
+.qg-theme-light .qg-dashboard-main [class*="text-blue-200/"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #1e40af !important;
 }

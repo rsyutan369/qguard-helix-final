@@ -50,6 +50,7 @@ import revenueRoutes from './revenue'
 import adminRoutes from './admin'
 import scannerRoutes from './scanner'
 import publicScanRoutes from './public-scan'
+import demoRequestRoutes from './demo-request'
 import downloadRoutes, { blockPublicInstallerPath } from './downloads'
 import exposureRoutes from './exposure'
 import agentScannerRoutes, { startAgentScannerScheduler } from './agent-scanner'
@@ -65,7 +66,15 @@ import { subscriptionGateway } from './subscription-guard'
 import { emitShareLinkEvent, subscribeOwnerEvents } from '@/lib/vault/share-events'
 import { healthProbeRoutes } from './runtime/health'
 import { requestContext } from './runtime/observability'
-import { trustedClientIp } from './runtime/client-ip'
+import { readClientIp } from './runtime/client-ip'
+import {
+  API_CSP,
+  corsPolicy,
+  enforceHttps,
+  isHttpsRequest,
+  isLocalRequest,
+  securityHeaders,
+} from './runtime/http-baseline'
 
 const shareIpAttempts = new Map<string, { count: number; windowStart: number }>()
 const SHARE_RATE_LIMIT_WINDOW_MS = 60_000
@@ -74,14 +83,6 @@ const SHARE_MAX_PASSWORD_ATTEMPTS = 3
 const DEFAULT_SHARE_EXPIRY_SECONDS = 15 * 60
 const MAX_SHARE_EXPIRY_SECONDS = 7 * 24 * 60 * 60
 const MAX_SHARE_DOWNLOADS = 25
-const HSTS_HEADER = 'max-age=63072000; includeSubDomains; preload'
-const API_CSP = [
-  "default-src 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-  "frame-ancestors 'none'",
-  "object-src 'none'",
-].join('; ')
 const COOKIE_SAMESITE_VALUES = new Set(['Strict', 'Lax', 'None'])
 
 function isShareIpRateLimited(ip: string): boolean {
@@ -95,16 +96,6 @@ function isShareIpRateLimited(ip: string): boolean {
 
   entry.count += 1
   return entry.count > SHARE_RATE_LIMIT_MAX_REQUESTS
-}
-
-function readClientIp(req: express.Request): string {
-  const trusted = trustedClientIp(req)
-  if (trusted) return trusted
-  const forwarded = req.headers['x-forwarded-for']
-  if (typeof forwarded === 'string' && forwarded.trim()) return forwarded.split(',')[0].trim()
-  const realIp = req.headers['x-real-ip']
-  if (typeof realIp === 'string' && realIp.trim()) return realIp.trim()
-  return req.ip || req.socket.remoteAddress || 'unknown'
 }
 
 function byteaToText(value: unknown): string {
@@ -189,25 +180,6 @@ function publicPasswordKdfMetadata(metadata: Record<string, unknown>): Record<st
     : passwordKdf
 }
 
-function isLocalRequest(req: express.Request): boolean {
-  const host = (req.headers.host || '').split(':')[0].toLowerCase()
-  return host === 'localhost' || host === '127.0.0.1' || host === '::1'
-}
-
-function isHttpsRequest(req: express.Request): boolean {
-  const forwardedProto = req.headers['x-forwarded-proto']
-  const proto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto
-  return req.secure || req.protocol === 'https' || String(proto || '').split(',')[0].trim() === 'https'
-}
-
-function shouldEnforceHttps(req: express.Request): boolean {
-  const strictMode = process.env.NODE_ENV === 'production' ||
-    process.env.FORCE_HTTPS === 'true' ||
-    process.env.ENFORCE_HTTPS === 'true'
-
-  return strictMode && !isLocalRequest(req) && !isHttpsRequest(req)
-}
-
 function shouldMarkCookieSecure(req: express.Request): boolean {
   return !isLocalRequest(req) && (
     process.env.NODE_ENV === 'production' ||
@@ -281,42 +253,6 @@ function normalizeShareDownloads(value: unknown): number {
   return Math.max(1, Math.min(MAX_SHARE_DOWNLOADS, Math.floor(requested)))
 }
 
-function allowedOrigin(req: express.Request): string | null {
-  const origin = req.headers.origin
-  if (!origin) return null
-
-  const host = req.headers.host
-  try {
-    const originUrl = new URL(origin)
-    if (host && originUrl.host === host) return origin
-
-    const configured = [
-      process.env.APP_ORIGIN,
-      process.env.VITE_APP_ORIGIN,
-      process.env.PUBLIC_APP_ORIGIN,
-      process.env.ALLOWED_ORIGINS,
-    ]
-      .filter(Boolean)
-      .flatMap((value) => String(value).split(','))
-      .map((value) => value.trim())
-      .filter(Boolean)
-
-    if (configured.includes(origin)) return origin
-    // Optional single-label wildcard (e.g. https://qguard-helix-*.vercel.app for
-    // preview deployments against a STAGING API). `*` never spans a dot, so a
-    // pattern cannot be widened to an attacker-controlled parent domain.
-    for (const pattern of configured) {
-      if (!pattern.includes('*')) continue
-      const expression = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[a-z0-9-]+')
-      if (new RegExp(`^${expression}$`, 'i').test(origin)) return origin
-    }
-  } catch {
-    return null
-  }
-
-  return null
-}
-
 function setNoStoreShareHeaders(res: express.Response) {
   res.setHeader('Cache-Control', 'no-store, max-age=0')
   res.setHeader('Pragma', 'no-cache')
@@ -363,24 +299,7 @@ export function createApiServer() {
 
   app.use(installCookieHardening)
 
-  app.use((req, res, next) => {
-    if (!shouldEnforceHttps(req)) {
-      next()
-      return
-    }
-
-    if (req.method === 'GET' || req.method === 'HEAD') {
-      res.redirect(308, `https://${req.headers.host}${req.originalUrl}`)
-      return
-    }
-
-    res.status(426).json({
-      error: {
-        code: 'HTTPS_REQUIRED',
-        message: 'Secure share operations require HTTPS.',
-      },
-    })
-  })
+  app.use(enforceHttps)
 
   // The raw body is kept for webhook signature checks (billing.ts Stripe HMAC).
   // body-parser hands `verify` a buffer it never mutates or reuses, so keeping
@@ -394,7 +313,7 @@ export function createApiServer() {
   // 80 MB bodies. body-parser skips an already-parsed body, so the general
   // parser below leaves these requests alone.
   app.use(
-    ['/api/v1/auth', '/api/v1/public-scan', '/api/v1/paypal/webhook', '/api/v1/play-billing/rtdn'],
+    ['/api/v1/auth', '/api/v1/public-scan', '/api/v1/demo-request', '/api/v1/paypal/webhook', '/api/v1/play-billing/rtdn'],
     express.json({ limit: process.env.API_PUBLIC_JSON_LIMIT || '256kb', verify: keepRawBody }),
   )
 
@@ -403,46 +322,10 @@ export function createApiServer() {
     verify: keepRawBody,
   }))
 
-  app.use((req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff')
-    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
-    res.setHeader('X-Frame-Options', 'DENY')
-    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=()')
-    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
-    res.setHeader('X-DNS-Prefetch-Control', 'off')
-    res.setHeader('Content-Security-Policy', API_CSP)
-    if (process.env.NODE_ENV === 'production' || isHttpsRequest(req)) {
-      res.setHeader('Strict-Transport-Security', HSTS_HEADER)
-    }
-    next()
-  })
+  app.use(securityHeaders)
 
-  // Same-origin CORS by default. Cross-origin API access can be enabled via
-  // APP_ORIGIN / VITE_APP_ORIGIN / PUBLIC_APP_ORIGIN / ALLOWED_ORIGINS.
-  app.use((req, res, next) => {
-    const origin = req.headers.origin
-    const originAllowed = allowedOrigin(req)
-    if (originAllowed) {
-      res.setHeader('Access-Control-Allow-Origin', originAllowed)
-      res.setHeader('Vary', 'Origin')
-    }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-QGuard-Device-Id, X-QGuard-Refresh-Token, X-QGuard-Agent-Id, X-QGuard-Agent-Token')
-    // Only relevant to a split-origin deployment (SPA on Vercel calling
-    // api.<domain> directly): lets the SPA read export filenames/row counts and
-    // caches preflights so Bearer-authenticated calls are not doubled.
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, X-Report-Rows, Retry-After, X-Request-Id')
-    res.setHeader('Access-Control-Max-Age', '600')
-    if (req.method === 'OPTIONS') {
-      if (origin && !originAllowed) {
-        res.sendStatus(403)
-        return
-      }
-      res.sendStatus(204)
-      return
-    }
-    next()
-  })
+  // Same-origin CORS by default; see runtime/http-baseline.ts for the allow-list.
+  app.use(corsPolicy)
 
   // Health check
   app.get('/api/v1/health', (_req, res) => {
@@ -836,6 +719,11 @@ export function createApiServer() {
   // gateway fails open on an entitlement lookup error so a blip cannot brick
   // the platform, while handing out the signed installer must fail closed.
   app.use('/api/v1/downloads', downloadRoutes)
+
+  // Request Demo submissions from the landing page, emailed to the sales inbox.
+  // Anonymous by design (visitors have no account), so it mounts before the
+  // gateway with its own validation, honeypot and rate limits.
+  app.use('/api/v1/demo-request', demoRequestRoutes)
 
   // Exposure Assessment Engine™ — the Local and Dev counterparts to the public
   // edge scanner. Mounted BEFORE the subscription gateway because capability
