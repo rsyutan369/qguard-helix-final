@@ -20,6 +20,8 @@ import {
   PrimaryButton, RED, SLATE, ScoreDial, SectionHeading, SkeletonGrid, SourceNote, StatusPill,
   fmtInt, fmtPct, relativeTime,
 } from '../_components/intel/kit';
+import { ModuleBrief, SourceHealth as EvidenceSources } from '../_components/intel/kit';
+import { correlationNextStep } from '../_components/intel/next-steps';
 
 type TabKey = 'coverage' | 'conflicts' | 'observations';
 
@@ -44,7 +46,8 @@ const CLASS_HEX: Record<string, string> = { safe: GREEN, hybrid: BLUE, vulnerabl
  * merely mediocre.
  */
 export default function TelemetryCorrelation() {
-  const { data, state, error, live, lastGoodAt, refresh, reconnect } = useTelemetryCorrelation();
+  const { data, state, error, transport, lastVerifiedAt, lastGoodAt, refreshing, refresh, reconnect } = useTelemetryCorrelation();
+  const nextStep = useMemo(() => (data ? correlationNextStep(data) : null), [data]);
 
   const [tab, setTab] = useState<TabKey>('coverage');
   const [filters, setFilters] = useState<CorrelationFilters>(EMPTY_CORRELATION_FILTERS);
@@ -67,9 +70,9 @@ export default function TelemetryCorrelation() {
         accent="Correlation"
         subtitle="See how much of the estate your telemetry actually covers, which observations two independent sources confirm, and where they disagree."
         icon={Network}
-        live={live}
-        lastUpdated={data?.generatedAt ?? lastGoodAt}
-        connecting={state === 'loading' && !data}
+        transport={transport}
+        lastVerifiedAt={lastVerifiedAt}
+        lastUpdated={data?.generatedAt ?? null}
       >
         <HeaderButton onClick={() => setShowFilters((v) => !v)} icon={Filter} active={showFilters}>Filters</HeaderButton>
         <button
@@ -79,11 +82,11 @@ export default function TelemetryCorrelation() {
         >
           <Sparkles className="h-3.5 w-3.5" aria-hidden="true" /> Ask Sophia
         </button>
-        <PrimaryButton onClick={() => void refresh(true)} icon={RefreshCw} spin={state === 'loading'}>Refresh</PrimaryButton>
+        <PrimaryButton onClick={() => void refresh(true)} icon={RefreshCw} spin={refreshing}>Refresh</PrimaryButton>
       </IntelHeader>
 
-      {data && !live && state !== 'loading' ? (
-        <ConnectionLostBanner lastGoodAt={lastGoodAt} error={error} onReconnect={reconnect} />
+      {data && transport !== 'stream' ? (
+        <ConnectionLostBanner lastGoodAt={lastGoodAt} error={error} onReconnect={reconnect} transport={transport} lastVerifiedAt={lastVerifiedAt} />
       ) : null}
 
       {showHardError ? (
@@ -110,13 +113,22 @@ export default function TelemetryCorrelation() {
           ]}
           actions={[
             { href: '/dashboard/scanner', label: 'Run a Scan', primary: true },
-            { href: '/dashboard/scanner?tab=agents', label: 'Deploy an Agent' },
+            { href: '/dashboard/agents', label: 'Deploy an Agent' },
           ]}
         />
       ) : null}
 
       {data && data.hasTelemetry ? (
         <>
+          {nextStep ? (
+            <ModuleBrief
+              what={<>Which telemetry channels — scanner, collector agents, cloud connectors, runtime — observe each asset, which observations two independent sources confirm, and where they disagree.</>}
+              why={<>A single source can be wrong or silent. Coverage you cannot corroborate is an assumption; an asset no source observes is a blind spot, not a safe asset; and two sources reporting different algorithms means one of them is describing the past.</>}
+              next={{ label: nextStep.label, href: nextStep.href, detail: nextStep.detail, tone: nextStep.tone }}
+              scope={<>{data.kpis.assetsCovered} of {data.kpis.assetsTotal} asset(s) observed by at least one of {data.kpis.totalSources} source(s); {data.kpis.corroboratedAssets} corroborated by two or more.</>}
+            />
+          ) : null}
+
           <section aria-label="Telemetry metrics" className="grid grid-cols-2 gap-2.5 lg:grid-cols-3 xl:grid-cols-5">
             <KpiCard
               label="Active Sources"
@@ -391,6 +403,7 @@ export default function TelemetryCorrelation() {
             </div>
           ) : null}
 
+          {data.reads?.length ? <EvidenceSources sources={data.reads} /> : null}
           <SourceNote>{data.evidence.note}</SourceNote>
         </>
       ) : null}

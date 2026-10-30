@@ -5,9 +5,9 @@ import { buildSnapshot as buildQuantumReadinessSnapshot } from './quantum-readin
 import { dedupeGradedObservations, namesCryptography, observationClass } from '@/lib/scanner/finding-identity'
 import { riskBandFor, riskScoreFromLoad } from '@/lib/migration/asset-intelligence'
 import { isSimulationJob, jobPlanId } from '@/lib/migration/job-safety'
-import { describeOperationalWorkflow, type OperationalAgent } from '@/lib/migration/operational-workflow'
-import { resolveWriteAuthority } from '@/lib/agent-installer/agent-scope'
+import { describeOperationalWorkflow } from '@/lib/migration/operational-workflow'
 import { jobExecutionClass } from './agent-scanner'
+import { loadAgentFleet as loadAgentFleetShared, loadPlanApprovals as loadPlanApprovalsShared } from './operational-fleet'
 import {
   ENGINE_PIPELINE_STAGES,
   SIMULATION_TYPES,
@@ -850,69 +850,13 @@ async function safeCount(client: any, table: string, userId: string, apply?: (q:
   } catch { return 0 }
 }
 
-/**
- * Approval records for the plans operational jobs declare.
- *
- * Projects only what `planApproval` reads — a plan's metadata blob is large and
- * this runs on every snapshot. Tolerant on purpose: a failed read must not
- * abort the whole sandbox snapshot, and it must not read as "not approved"
- * either — `queried` lets each job tell "plan read, no approval" apart from
- * "plan never read".
+/*
+ * Plan approvals and the agent fleet are read by the shared, tolerant loaders
+ * in `./operational-fleet` — the orchestration snapshot needs the same two
+ * facts and must reach the same verdicts.
  */
-async function loadPlanApprovals(client: any, userId: string, jobs: any[]) {
-  const planIds = Array.from(new Set(jobs.map((job) => jobPlanId(job)).filter(Boolean))).slice(0, 200)
-  const empty = { plans: new Map<string, { status: unknown; metadata: { approval: unknown } }>(), queried: new Set<string>() }
-  if (planIds.length === 0) return empty
-  try {
-    const { data, error } = await client
-      .from('migration_plans')
-      .select('id, status, approval:metadata->approval')
-      .eq('user_id', userId)
-      .in('id', planIds)
-    if (error) {
-      if (!isMissingTable(error)) console.warn('[sandbox] plan approval read failed:', error.message)
-      return empty
-    }
-    return {
-      plans: new Map(((data as any[]) || []).map((row) => [String(row.id), { status: row.status, metadata: { approval: row.approval } }])),
-      queried: new Set(planIds),
-    }
-  } catch (error: any) {
-    console.warn('[sandbox] plan approval read threw:', error?.message || error)
-    return empty
-  }
-}
-
-/** The tenant's enrolled agents, or null when they could not be read (never "none"). */
-async function loadAgentFleet(client: any, userId: string): Promise<OperationalAgent[] | null> {
-  try {
-    const { data, error } = await client
-      .from('scanner_agents')
-      .select('id, name, hostname, status, last_seen_at, revoked_at, capabilities, role:metadata->>role, remediation_authorized:metadata->remediationAuthorized, migration_authorized:metadata->migrationAuthorized')
-      .eq('user_id', userId)
-      .limit(500)
-    if (error) {
-      // No agent table provisioned means no agent can exist — a measured "none".
-      if (isMissingTable(error)) return []
-      console.warn('[sandbox] agent fleet read failed:', error.message)
-      return null
-    }
-    return ((data as any[]) || []).map((row) => ({
-      id: String(row.id),
-      name: row.name || row.hostname || null,
-      role: row.role || null,
-      lastSeenAt: row.last_seen_at || null,
-      revoked: Boolean(row.revoked_at) || String(row.status || '').toLowerCase() === 'revoked',
-      writeAuthority: resolveWriteAuthority(row.role, row.capabilities, {
-        remediationAuthorized: row.remediation_authorized,
-        migrationAuthorized: row.migration_authorized,
-      }),
-    }))
-  } catch (error: any) {
-    console.warn('[sandbox] agent fleet read threw:', error?.message || error)
-    return null
-  }
-}
+const loadPlanApprovals = (client: any, userId: string, jobs: any[]) => loadPlanApprovalsShared(client, userId, jobs, '[sandbox]')
+const loadAgentFleet = (client: any, userId: string) => loadAgentFleetShared(client, userId, '[sandbox]')
 
 async function safeDeleteRelatedRows(client: any, table: string, userId: string, jobId: string, columns: string[]) {
   for (const column of columns) {

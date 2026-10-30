@@ -4,6 +4,7 @@ import { posix as posixPath } from 'node:path'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
 import { createAuthClient, getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
 import { scanEvidenceWithModules } from '@/lib/scanner/scanner_2/modules'
+import { mergeScanSources, scanSourceFor, type AssetScanSource } from '@/lib/assets/scan-provenance'
 import { matchFingerprints } from '@/lib/scanner/scanner_2/engine/fingerprint-matcher'
 import { evaluateFindings } from '@/lib/scanner/scanner_2/rules/detection-rules'
 import { calculateQuantumRiskScore } from '@/lib/scanner/scanner_2/engine/risk-scoring'
@@ -25,8 +26,19 @@ import {
   type AgentEventName,
 } from '@/lib/agent-installer/agent-release'
 import { publishAgentEvent } from './agent-event-bus'
-import { agentRole } from '@/lib/agent-installer/agent-release'
+import { isHttpsRequest } from './runtime/http-baseline'
 import {
+  SIGNATURE_FAILURE_MESSAGE,
+  createNonceStore,
+  supportedAlgorithms,
+  verifyRequest,
+  type BoundKeys,
+  type SignatureFailure,
+  type SigningAlgorithm,
+} from '@/lib/agent-installer/agent-request-signing'
+import { AGENT_SIGNING_MIN_VERSION, agentRole } from '@/lib/agent-installer/agent-release'
+import {
+  AGENT_SCAN_MODULES,
   authorityFromRequest,
   authorizedCapabilities,
   clampAgentScanTypes,
@@ -49,6 +61,13 @@ import { approvalRefusal, isSimulationJob, jobApproval, jobPlanId } from '@/lib/
 import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
 import { LIBRARY_EVIDENCE_TYPES } from '@/lib/scanner/scanner_2/modules'
 import type { ScannerEvidenceRecord, ScanFinding, FindingSeverity } from '@/types/scanner.types'
+import {
+  agentBindingFromMetadata,
+  bindingStamp,
+  parseBindingRequest,
+  type AgentBinding,
+  type NormalizedBindingRequest,
+} from '@/lib/agent-installer/agent-binding'
 import { messagingDeviceEvidence, type MessagingDeviceRow } from '@/lib/messaging-posture-evidence'
 
 const router = Router()
@@ -59,9 +78,24 @@ type AuthedRequest = Request & {
   client?: SupabaseClient | null
 }
 
+/** What the transport proved about one agent request (recorded on the heartbeat row). */
+interface AgentRequestIntegrity {
+  signed: boolean
+  scheme: string | null
+  algorithms: SigningAlgorithm[]
+  /** Short SHA3-256 fingerprints of the verifying public keys. */
+  keyFingerprints: Partial<Record<SigningAlgorithm, string>>
+  contentSha3: string | null
+  /** Keys are bound to this agent, so any other key is refused. */
+  bound: boolean
+  https: boolean
+  verifiedAt: string
+}
+
 type AgentRequest = Request & {
   agent?: any
   client?: SupabaseClient | null
+  agentIntegrity?: AgentRequestIntegrity
 }
 
 const memoryStore = (() => {
@@ -329,6 +363,159 @@ async function recordAgentSecurityEvent(client: SupabaseClient | null, row: {
   if (error && !isMissingRuntimeTable(error)) console.warn('[agent-scanner] security event insert failed:', error.message)
 }
 
+type BindingResolution =
+  | { ok: true; binding: AgentBinding | null; assetType: string | null; createdAssetId: string | null }
+  | { ok: false; status: number; code: string; message: string; detail?: unknown }
+
+/**
+ * Turn a parsed binding request into a binding this tenant provably owns.
+ *
+ * `existing` is looked up with the caller's user_id, so a foreign asset id is a
+ * 404, never a binding. `new` creates the target asset — refusing a name that
+ * already exists, because the evidence pipeline files findings by asset NAME
+ * and two rows with one name would split them unpredictably. The caller gets
+ * the existing asset back in `detail` so the UI can offer to bind to it.
+ */
+async function resolveBindingTarget(
+  client: SupabaseClient | null,
+  userId: string,
+  request: NormalizedBindingRequest,
+  environment: string | null,
+): Promise<BindingResolution> {
+  if (request.mode === 'none') return { ok: true, binding: null, assetType: null, createdAssetId: null }
+  if (!client) {
+    return { ok: false, status: 503, code: 'BINDING_UNAVAILABLE', message: 'Asset inventory is unavailable, so the agent cannot be bound right now.' }
+  }
+  const now = new Date().toISOString()
+
+  if (request.mode === 'existing') {
+    const { data: asset, error } = await client
+      .from('assets')
+      .select('id, name, type, metadata')
+      .eq('id', request.assetId)
+      .eq('user_id', userId)
+      .limit(1)
+      .maybeSingle()
+    if (error && !isMissingRuntimeTable(error)) {
+      return { ok: false, status: 500, code: 'ASSET_LOOKUP_FAILED', message: error.message }
+    }
+    if (!asset) return { ok: false, status: 404, code: 'ASSET_NOT_FOUND', message: 'The selected asset does not exist in this tenant' }
+    const assetMeta = asRecord((asset as any).metadata)
+    return {
+      ok: true,
+      assetType: (asset as any).type || null,
+      createdAssetId: null,
+      binding: {
+        assetId: asset.id,
+        assetName: asset.name,
+        kind: cleanString(assetMeta.bindingKind, 40) || (asset as any).type || null,
+        path: cleanString(assetMeta.bindingPath, 1000),
+        attribution: request.attribution,
+        boundAt: now,
+        boundBy: userId,
+        createdForBinding: false,
+      },
+    }
+  }
+
+  const { data: clash, error: clashError } = await client
+    .from('assets')
+    .select('id, name, type')
+    .eq('user_id', userId)
+    .eq('name', request.name)
+    .limit(1)
+    .maybeSingle()
+  if (clashError && !isMissingRuntimeTable(clashError)) {
+    return { ok: false, status: 500, code: 'ASSET_LOOKUP_FAILED', message: clashError.message }
+  }
+  if (clash) {
+    return {
+      ok: false,
+      status: 409,
+      code: 'BINDING_NAME_EXISTS',
+      message: `An asset named "${request.name}" already exists. Bind to it instead, or choose another name.`,
+      detail: { asset: clash },
+    }
+  }
+
+  const { data: created, error: createError } = await client
+    .from('assets')
+    .insert({
+      user_id: userId,
+      name: request.name,
+      type: request.kind,
+      environment: environment || null,
+      service_owner: request.owner,
+      status: 'active',
+      metadata: {
+        bindingTarget: true,
+        bindingKind: request.kind,
+        bindingPath: request.path,
+        description: request.description,
+        createdVia: 'agent-binding',
+        createdBy: userId,
+        createdAt: now,
+      },
+    })
+    .select('id, name, type')
+    .single()
+  if (createError || !created) {
+    return { ok: false, status: 500, code: 'BINDING_ASSET_CREATE_FAILED', message: createError?.message || 'The binding target could not be created' }
+  }
+  return {
+    ok: true,
+    assetType: created.type || request.kind,
+    createdAssetId: created.id,
+    binding: {
+      assetId: created.id,
+      assetName: created.name,
+      kind: request.kind,
+      path: request.path,
+      attribution: request.attribution,
+      boundAt: now,
+      boundBy: userId,
+      createdForBinding: true,
+    },
+  }
+}
+
+/**
+ * The binding an uploading agent's findings are filed under, re-verified.
+ *
+ * The bound asset can be deleted after enrolment. Filing findings against a
+ * vanished id would orphan them, so a binding whose asset no longer exists in
+ * the agent's tenant is dropped for the batch (findings fall back to open
+ * discovery) and reported as stale rather than silently honoured.
+ */
+async function verifiedAgentBinding(client: SupabaseClient | null, agent: any): Promise<{ binding: AgentBinding | null; stale: boolean }> {
+  const binding = agentBindingFromMetadata(agent?.metadata)
+  if (!binding || !client) return { binding: null, stale: false }
+  const { data, error } = await client
+    .from('assets')
+    .select('id, name')
+    .eq('id', binding.assetId)
+    .eq('user_id', agent.user_id)
+    .limit(1)
+    .maybeSingle()
+  if (error && !isMissingRuntimeTable(error)) {
+    console.warn('[agent-scanner] binding lookup failed:', error.message)
+    return { binding: null, stale: false }
+  }
+  if (!data) return { binding: null, stale: true }
+  // The asset may have been renamed since binding; file under its current name.
+  return { binding: { ...binding, assetName: data.name || binding.assetName }, stale: false }
+}
+
+/** Binding fields written onto `scanner_agents.metadata`, keeping the legacy keys in step. */
+function bindingMetadata(binding: AgentBinding | null, assetType: string | null) {
+  return {
+    assetId: binding?.assetId || null,
+    assetName: binding?.assetName || null,
+    assetType: binding ? assetType : null,
+    binding: binding || null,
+  }
+}
+
 function connectorProviderCapabilities(providerValue: unknown, scopes: string[], overrides: Record<string, unknown> = {}) {
   const provider = cleanString(providerValue, 100)?.toLowerCase() || 'custom'
   const cloudProvider = /aws|azure|gcp|google|oracle|oci|alibaba|aliyun/.test(provider)
@@ -393,6 +580,140 @@ function getAgentToken(req: Request) {
   return typeof agentToken === 'string' ? agentToken : null
 }
 
+/* ------------------------------------------------------------------ */
+/* Request signing (src/lib/agent-installer/agent-request-signing.ts)  */
+/* ------------------------------------------------------------------ */
+
+/** Algorithms THIS control plane can verify. Only these are ever bound to an agent. */
+const VERIFIABLE_ALGORITHMS = supportedAlgorithms()
+const agentNonceSeen = createNonceStore()
+/**
+ * Refuse unsigned requests from agents that have never signed (pre-1.6 builds).
+ * Off by default so an upgrade of the control plane does not cut off a fleet
+ * mid-rollout; agents that HAVE bound a key are always held to it regardless.
+ */
+const REQUIRE_SIGNED_REQUESTS = /^(1|true|yes)$/i.test(process.env.QGUARD_AGENT_REQUIRE_SIGNED_REQUESTS || '')
+
+const SIGNATURE_GUIDANCE: Partial<Record<SignatureFailure, string>> = {
+  'key-mismatch': 'If this host was rebuilt or its signing-key file was lost, reset the signing key for this agent in the Agent Center (Transport security), then restart the agent.',
+  'missing-bound-algorithm': 'The agent once signed with this algorithm and no longer does. Restore its signing-key file or reset the binding in the Agent Center.',
+  stale: 'Synchronise the host clock (NTP).',
+  unsigned: `Upgrade the agent to a build that signs its requests (v${AGENT_SIGNING_MIN_VERSION} or later).`,
+}
+
+/** One audit row per agent and failure kind per window — a token holder cannot flood the audit log. */
+const signatureAuditThrottle = new Map<string, number>()
+
+/**
+ * The agent's binding, or `available: false` when the database has not been
+ * given the signing columns yet (supabase/agent-request-signing.sql) — then
+ * signatures are still verified per request, but no key can be pinned.
+ */
+function signingBinding(agent: any): { available: boolean; keys: BoundKeys | null; version: number } {
+  if (!agent || !('signing_public_keys' in agent)) return { available: false, keys: null, version: 0 }
+  const keys = agent.signing_public_keys && typeof agent.signing_public_keys === 'object' ? (agent.signing_public_keys as BoundKeys) : null
+  return { available: true, keys: keys && Object.keys(keys).length ? keys : null, version: Number(agent.signing_key_version) || 0 }
+}
+
+/**
+ * Pin `keys` to the agent with compare-and-set on `signing_key_version`, so two
+ * concurrent first requests cannot both bind, and a binding is never silently
+ * overwritten. Returns the binding in force afterwards.
+ */
+async function bindSigningKeys(client: SupabaseClient | null, agent: any, keys: BoundKeys, expectedVersion: number): Promise<BoundKeys | null> {
+  const now = new Date().toISOString()
+  if (!client) {
+    if ((Number(agent.signing_key_version) || 0) !== expectedVersion) return agent.signing_public_keys || null
+    Object.assign(agent, { signing_public_keys: keys, signing_key_bound_at: agent.signing_key_bound_at || now, signing_key_version: expectedVersion + 1 })
+    return keys
+  }
+  const { data, error } = await client
+    .from('scanner_agents')
+    .update({ signing_public_keys: keys, signing_key_bound_at: agent.signing_key_bound_at || now, signing_key_version: expectedVersion + 1 })
+    .eq('id', agent.id)
+    .eq('user_id', agent.user_id)
+    .eq('signing_key_version', expectedVersion)
+    .select('signing_public_keys')
+  if (error) throw new Error(`signing-key binding failed: ${error.message}`)
+  if (data?.length) return keys
+  // Lost the race: whatever another request bound is now authoritative.
+  const { data: current } = await client.from('scanner_agents').select('signing_public_keys').eq('id', agent.id).maybeSingle()
+  return (current?.signing_public_keys as BoundKeys) || null
+}
+
+function sameKeys(a: BoundKeys | null, b: BoundKeys | null) {
+  const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]) as Set<SigningAlgorithm>
+  return [...keys].every((algorithm) => (a || {})[algorithm] === (b || {})[algorithm])
+}
+
+/**
+ * Verify the request signature and enforce the agent's key binding. Returns
+ * the integrity record, or null after sending the refusal.
+ */
+async function verifyAgentSignature(req: AgentRequest, res: Response, agent: any, client: SupabaseClient | null): Promise<AgentRequestIntegrity | null> {
+  const binding = signingBinding(agent)
+  const https = isHttpsRequest(req)
+  const result = verifyRequest({
+    method: req.method,
+    originalUrl: req.originalUrl,
+    agentId: String(agent.id),
+    headers: req.headers,
+    rawBody: (req as Request & { rawBody?: Buffer }).rawBody,
+    bound: binding.keys,
+    verifiable: VERIFIABLE_ALGORITHMS,
+    nonceSeen: agentNonceSeen,
+  })
+
+  if (!result.ok) {
+    // A pre-1.6 agent that has never signed keeps working unless the operator requires signatures.
+    if (result.failure === 'unsigned' && !binding.keys && !REQUIRE_SIGNED_REQUESTS) {
+      return { signed: false, scheme: null, algorithms: [], keyFingerprints: {}, contentSha3: null, bound: false, https, verifiedAt: new Date().toISOString() }
+    }
+    const throttleKey = `${agent.id}:${result.failure}`
+    const last = signatureAuditThrottle.get(throttleKey) || 0
+    if (Date.now() - last > 5 * 60 * 1000) {
+      signatureAuditThrottle.set(throttleKey, Date.now())
+      await recordAgentAudit(client, {
+        userId: agent.user_id,
+        action: 'agent.request_signature_refused',
+        entityType: 'scanner_agent',
+        entityId: agent.id,
+        details: { failure: result.failure, algorithm: result.algorithm || null, method: req.method, path: req.originalUrl.split('?')[0], peer: req.socket.remoteAddress || null, bound: Boolean(binding.keys) },
+      })
+    }
+    const guidance = SIGNATURE_GUIDANCE[result.failure]
+    jsonError(res, 401, `AGENT_SIGNATURE_${result.failure.toUpperCase().replace(/-/g, '_')}`, `${SIGNATURE_FAILURE_MESSAGE[result.failure]}${guidance ? ` ${guidance}` : ''}`)
+    return null
+  }
+
+  let bound = Boolean(binding.keys)
+  if (binding.available) {
+    // First signed request binds; a request still signed by every bound key may
+    // ADD an algorithm (runtime gained ML-DSA). Nothing else changes a binding.
+    const desired: BoundKeys = { ...(binding.keys || {}), ...result.presentedKeys }
+    if (!sameKeys(binding.keys, desired)) {
+      const inForce = await bindSigningKeys(client, agent, desired, binding.version)
+      if (!sameKeys(inForce, desired)) {
+        jsonError(res, 401, 'AGENT_SIGNATURE_KEY_MISMATCH', `${SIGNATURE_FAILURE_MESSAGE['key-mismatch']} ${SIGNATURE_GUIDANCE['key-mismatch']}`)
+        return null
+      }
+      agent.signing_public_keys = desired
+      await recordAgentAudit(client, {
+        userId: agent.user_id,
+        action: binding.keys ? 'agent.signing_key_extended' : 'agent.signing_key_bound',
+        entityType: 'scanner_agent',
+        entityId: agent.id,
+        details: { algorithms: Object.keys(desired), fingerprints: result.fingerprints, peer: req.socket.remoteAddress || null, https },
+      })
+    }
+    bound = true
+  }
+
+  const keyFingerprints: Partial<Record<SigningAlgorithm, string>> = {}
+  for (const [algorithm, fingerprint] of Object.entries(result.fingerprints)) keyFingerprints[algorithm as SigningAlgorithm] = String(fingerprint).slice(0, 16)
+  return { signed: true, scheme: 'qgs1', algorithms: result.algorithms, keyFingerprints, contentSha3: result.contentDigest, bound, https, verifiedAt: new Date().toISOString() }
+}
+
 async function requireAgentAuth(req: AgentRequest, res: Response, next: NextFunction) {
   const agentId = typeof req.headers['x-qguard-agent-id'] === 'string' ? req.headers['x-qguard-agent-id'] : null
   const token = getAgentToken(req)
@@ -421,8 +742,20 @@ async function requireAgentAuth(req: AgentRequest, res: Response, next: NextFunc
     return
   }
 
+  let integrity: AgentRequestIntegrity | null
+  try {
+    integrity = await verifyAgentSignature(req, res, agent, client)
+  } catch (error) {
+    // Fail closed: a binding that cannot be read or written is not a pass.
+    console.error('[agent-scanner] request-signature verification failed:', (error as Error).message)
+    jsonError(res, 503, 'AGENT_SIGNATURE_UNAVAILABLE', 'Request signature could not be verified right now; the agent will retry.')
+    return
+  }
+  if (!integrity) return
+
   req.agent = agent
   req.client = client
+  req.agentIntegrity = integrity
   next()
 }
 
@@ -495,7 +828,10 @@ function normalizeEvidence(raw: any, sourceType: ScannerEvidenceRecord['sourceTy
     packageName: cleanString(raw?.packageName || raw?.package_name, 255),
     packageVersion: cleanString(raw?.packageVersion || raw?.package_version, 100),
     confidence: raw?.confidence === 'low' || raw?.confidence === 'medium' || raw?.confidence === 'high' ? raw.confidence : 'high',
-    rawEvidence: typeof raw?.rawEvidence === 'object' && raw.rawEvidence ? raw.rawEvidence : typeof raw?.raw_evidence === 'object' && raw.raw_evidence ? raw.raw_evidence : {},
+    rawEvidence: {
+      ...(typeof raw?.rawEvidence === 'object' && raw.rawEvidence ? raw.rawEvidence : typeof raw?.raw_evidence === 'object' && raw.raw_evidence ? raw.raw_evidence : {}),
+      scanSource: scanSourceFor({ ...raw, sourceType }, agent, connector),
+    },
     observedAt: cleanString(raw?.observedAt || raw?.observed_at, 80) || new Date().toISOString(),
   }
 }
@@ -880,6 +1216,7 @@ function normalizeRuntimeCryptoEvent(raw: any, sourceType: string, agent?: any, 
   if (!eventType || !assetName) return null
 
   const metadata = (sanitizeRuntimeMetadata(raw?.metadata || raw?.rawEvidence || raw?.raw_evidence || {}) || {}) as Record<string, unknown>
+  metadata.scanSource = scanSourceFor({ ...raw, sourceType }, agent, connector)
   const algorithm = cleanString(raw?.algorithm || raw?.observedAlgorithm || raw?.observed_algorithm, 100)
   const keyExchangeAlgorithm = cleanString(raw?.keyExchangeAlgorithm || raw?.key_exchange_algorithm || metadata.keyExchangeAlgorithm || metadata.key_exchange_algorithm, 100)
   const cipherSuite = cleanString(raw?.cipherSuite || raw?.cipher_suite || metadata.cipherSuite || metadata.cipher_suite, 255)
@@ -1195,13 +1532,20 @@ async function persistEvidenceFindings(
   evidence: ScannerEvidenceRecord[],
   findings: ScanFinding[],
   sourceLabel: string,
-  options: { alertThreshold?: string; persistRuntimeEvents?: boolean } = {}
+  options: EvidenceBatchOptions = {}
 ) {
   const now = new Date().toISOString()
+  /* The agent's asset binding, already re-verified against the tenant by the
+     upload route. `bound` files every finding under the one asset; `grouped`
+     keeps per-target assets and tags them with the bound asset as parent. */
+  const binding = options.binding || null
+  const bound = binding?.attribution === 'bound' ? binding : null
+  const grouped = binding?.attribution === 'grouped' ? binding : null
   const linkedAssetIds: string[] = []
   const linkedCbomIds: string[] = []
   const linkedExposureIds: string[] = []
   const linkedAlertIds: string[] = []
+  const persistedNames = new Set<string>()
   const pqcReadyEvidence = evidence.filter(isPostQuantumEvidence)
 
   /* Each finding carries the id of the evidence that produced it (target.id).
@@ -1262,7 +1606,7 @@ async function persistEvidenceFindings(
     const { data } = await client.from('pqc_scan_sessions').insert({
       user_id: userId,
       status: 'completed',
-      target_scope: `${sourceLabel} evidence batch`,
+      target_scope: binding ? `${binding.assetName} · ${sourceLabel} evidence batch` : `${sourceLabel} evidence batch`,
       progress: 100,
       total_assets: new Set(evidence.map((item) => item.assetName)).size,
       scanned_assets: new Set(evidence.map((item) => item.assetName)).size,
@@ -1271,6 +1615,7 @@ async function persistEvidenceFindings(
         scannerMode: 'continuous-agent-evidence',
         sourceLabel,
         summary: sessionSummary,
+        binding: binding ? { assetId: binding.assetId, assetName: binding.assetName, kind: binding.kind, attribution: binding.attribution } : null,
       },
       started_at: now,
       completed_at: now,
@@ -1278,11 +1623,18 @@ async function persistEvidenceFindings(
     scanSessionId = data?.id || null
   }
 
+  const sourcesFor = (records: ScannerEvidenceRecord[]): AssetScanSource[] => records.map((item) => ({
+    ...(asRecord(item.rawEvidence).scanSource ? asRecord(asRecord(item.rawEvidence).scanSource) as unknown as AssetScanSource : scanSourceFor(item as unknown as Record<string, unknown>)),
+    observedAt: item.observedAt || now,
+    scanSessionId,
+  }))
+
   for (const finding of findings) {
     let assetId: string | null = null
     const evidenceMatch = evidenceFor(finding)
     const verdict = verdicts.get(finding.id)!
     const assetName = finding.target.name
+    persistedNames.add(assetName)
     const riskScore = worstRiskByAsset.get(assetName) ?? Math.max(0, Math.min(100, Math.round(finding.riskScore / 10)))
     const assetMetadata = {
       source: sourceLabel,
@@ -1294,9 +1646,17 @@ async function persistEvidenceFindings(
       riskScore,
       qScore: Math.max(0, 100 - riskScore),
       scannerEvidence: true,
+      scanSources: sourcesFor(evidence.filter((item) => item.assetName === assetName)),
+      ...groupedParentTags(grouped, evidenceMatch?.agentId),
     }
+    /* A grouped agent that observes the bound asset itself files it there
+       directly — an asset is never made its own parent. */
+    const filedUnder = bound || (grouped && grouped.assetName === assetName ? grouped : null)
 
-    if (client) {
+    if (filedUnder) {
+      // The bound asset's own row is refreshed once per batch, below.
+      assetId = filedUnder.assetId
+    } else if (client) {
       const { data: existingAsset } = await client.from('assets').select('*').eq('user_id', userId).eq('name', assetName).limit(1).maybeSingle()
       if (existingAsset?.id) {
         const { data } = await client.from('assets').update({
@@ -1304,7 +1664,7 @@ async function persistEvidenceFindings(
           ip_address: evidenceMatch?.host || null,
           criticality: riskScore >= 80 ? 'critical' : riskScore >= 60 ? 'high' : riskScore >= 40 ? 'medium' : 'low',
           status: 'active',
-          metadata: { ...(existingAsset.metadata || {}), ...assetMetadata },
+          metadata: { ...(existingAsset.metadata || {}), ...assetMetadata, scanSources: mergeScanSources(existingAsset.metadata?.scanSources, assetMetadata.scanSources) },
           updated_at: now,
         }).eq('id', existingAsset.id).eq('user_id', userId).select('id').single()
         assetId = data?.id || existingAsset.id
@@ -1341,6 +1701,10 @@ async function persistEvidenceFindings(
       severityProfile: finding.detectedAlgorithm,
       quantumClass: verdict.anatomy.quantumClass,
       cryptoFamily: verdict.anatomy.family,
+      /* Which binding this finding was filed under, and what was actually
+         observed — kept per finding so a later rebind never rewrites history. */
+      binding: binding ? bindingStamp(binding, evidenceMatch?.agentId, assetName) : null,
+      discoveredTarget: assetName,
     }
 
     if (client) {
@@ -1396,7 +1760,7 @@ async function persistEvidenceFindings(
             evidence_id: evidenceMatch?.id || null,
             severity: finding.severity,
             category: finding.moduleId,
-            title: `${verdict.observed} detected on ${assetName}`,
+            title: `${verdict.observed} detected on ${filedUnder && filedUnder.assetName !== assetName ? `${filedUnder.assetName} (${assetName})` : assetName}`,
             message: finding.description,
             recommendation: finding.recommendation,
             status: 'open',
@@ -1411,6 +1775,7 @@ async function persistEvidenceFindings(
   for (const record of pqcReadyEvidence) {
     if (!client) continue
     const assetName = record.assetName || record.host || record.target || 'PQC-ready asset'
+    persistedNames.add(assetName)
     const assetMetadata = {
       source: sourceLabel,
       evidenceType: record.evidenceType,
@@ -1422,17 +1787,24 @@ async function persistEvidenceFindings(
       qScore: 100,
       scannerEvidence: true,
       pqcReady: true,
+      scanSources: sourcesFor([record]),
+      ...groupedParentTags(grouped, record.agentId),
     }
+    const filedUnder = bound || (grouped && grouped.assetName === assetName ? grouped : null)
 
-    const { data: existingAsset } = await client.from('assets').select('*').eq('user_id', userId).eq('name', assetName).limit(1).maybeSingle()
-    let assetId = existingAsset?.id as string | null
-    if (assetId) {
+    const { data: existingAsset } = filedUnder
+      ? { data: null }
+      : await client.from('assets').select('*').eq('user_id', userId).eq('name', assetName).limit(1).maybeSingle()
+    let assetId = filedUnder ? filedUnder.assetId : existingAsset?.id as string | null
+    if (filedUnder) {
+      // Refreshed once per batch, below.
+    } else if (assetId) {
       await client.from('assets').update({
         type: record.assetType || 'endpoint',
         ip_address: record.host || null,
         criticality: existingAsset.criticality || 'low',
         status: 'active',
-        metadata: { ...(existingAsset.metadata || {}), ...assetMetadata },
+        metadata: { ...(existingAsset.metadata || {}), ...assetMetadata, scanSources: mergeScanSources(existingAsset.metadata?.scanSources, assetMetadata.scanSources) },
         updated_at: now,
       }).eq('id', assetId).eq('user_id', userId)
     } else {
@@ -1456,6 +1828,8 @@ async function persistEvidenceFindings(
       evidenceRecord: record,
       recommendation: 'Maintain PQC/hybrid configuration and monitor vendor implementation maturity.',
       pqcReady: true,
+      binding: binding ? bindingStamp(binding, record.agentId, assetName) : null,
+      discoveredTarget: assetName,
     }
     const { data: cbom } = await client.from('crypto_inventory').insert({
       user_id: userId,
@@ -1486,6 +1860,53 @@ async function persistEvidenceFindings(
     })
   }
 
+  // An observed asset belongs in inventory even if no rule produced a finding.
+  // Its missing risk/PQC score remains unassessed; discovery is not validation.
+  if (client) {
+    const targets = new Map<string, ScannerEvidenceRecord[]>()
+    for (const item of evidence) targets.set(item.assetName, [...(targets.get(item.assetName) || []), item])
+    for (const [name, records] of targets) {
+      const filedUnder = bound || (grouped && grouped.assetName === name ? grouped : null)
+      if (filedUnder) continue
+      if (persistedNames.has(name)) continue
+      const first = records[0]
+      const { data: existing, error: lookupError } = await client.from('assets').select('id, metadata').eq('user_id', userId).eq('name', name).limit(1).maybeSingle()
+      if (lookupError) throw new Error('Unable to read the observed asset inventory')
+      const metadata = {
+        ...(existing?.metadata || {}), source: sourceLabel, scannerEvidence: true,
+        target: first.target, host: first.host, evidenceType: first.evidenceType,
+        last_scanned_at: now, scanSources: mergeScanSources(existing?.metadata?.scanSources, sourcesFor(records)),
+        ...groupedParentTags(grouped, first.agentId),
+      }
+      const write = existing?.id
+        ? client.from('assets').update({ metadata, updated_at: now }).eq('id', existing.id).eq('user_id', userId)
+        : client.from('assets').insert({ user_id: userId, name, type: first.assetType || 'asset', ip_address: first.host || null, status: 'active', metadata })
+      const { data: saved, error: saveError } = await write.select('id').single()
+      if (saveError) throw new Error('Unable to persist the observed asset inventory')
+      if (saved?.id) linkedAssetIds.push(saved.id)
+    }
+  }
+
+  if (client && binding) {
+    /* Every target observed in this batch, at its worst risk; a target with
+       evidence but no risky finding is observed-clean (0), not absent. */
+    const batchTargetRisk = new Map<string, number>()
+    for (const item of evidence) batchTargetRisk.set(item.assetName, worstRiskByAsset.get(item.assetName) ?? 0)
+    for (const [name, risk] of worstRiskByAsset) batchTargetRisk.set(name, risk)
+    await refreshBoundAsset(client, userId, binding, {
+      now,
+      sourceLabel,
+      findingCount: findings.length,
+      batchTargetRisk,
+      childAssetIds: linkedAssetIds.filter((id) => id !== binding.assetId),
+    })
+    const { data: asset } = await client.from('assets').select('metadata').eq('id', binding.assetId).eq('user_id', userId).maybeSingle()
+    if (asset) {
+      const { error } = await client.from('assets').update({ metadata: { ...asset.metadata, scanSources: mergeScanSources(asset.metadata?.scanSources, sourcesFor(evidence)) } }).eq('id', binding.assetId).eq('user_id', userId)
+      if (error) throw new Error('Unable to persist bound asset scan provenance')
+    }
+  }
+
   if (client) {
     await client.from('security_events').insert({
       user_id: userId,
@@ -1508,18 +1929,115 @@ async function persistEvidenceFindings(
   return { scanSessionId, linkedAssetIds, linkedCbomIds, linkedExposureIds, linkedAlertIds }
 }
 
+type EvidenceBatchOptions = {
+  alertThreshold?: string
+  persistRuntimeEvents?: boolean
+  /** The uploading agent's verified asset binding; absent for connectors and unbound agents. */
+  binding?: AgentBinding | null
+}
+
+/** Parent tags a `grouped` binding writes onto each discovered asset. */
+function groupedParentTags(grouped: AgentBinding | null, agentId: string | null | undefined) {
+  if (!grouped) return {}
+  return {
+    parentAssetId: grouped.assetId,
+    parentAssetName: grouped.assetName,
+    boundAgentId: agentId || null,
+  }
+}
+
+/** Bounded so one agent sweeping a large estate cannot grow an asset row without limit. */
+const BOUND_ASSET_TARGET_LIMIT = 500
+
+/**
+ * Refresh the bound asset once per evidence batch.
+ *
+ * Its risk is the worst CURRENT risk across every target that reports into it.
+ * Each target's latest risk is kept in `agentBinding.targetRisk` and replaced
+ * only when that target is observed again — so a later batch that happens to
+ * contain only a clean target cannot lower a binding whose other target is
+ * still critical, and a target that IS remediated stops counting once it is
+ * re-observed clean.
+ *
+ * `grouped` bindings record the same roll-up and their children, but leave the
+ * parent's own risk fields alone: the children carry their own posture.
+ */
+async function refreshBoundAsset(
+  client: SupabaseClient,
+  userId: string,
+  binding: AgentBinding,
+  batch: { now: string; sourceLabel: string; findingCount: number; batchTargetRisk: Map<string, number>; childAssetIds: string[] },
+) {
+  const { data: asset, error } = await client
+    .from('assets')
+    .select('id, metadata')
+    .eq('id', binding.assetId)
+    .eq('user_id', userId)
+    .limit(1)
+    .maybeSingle()
+  if (error || !asset) {
+    if (error && !isMissingRuntimeTable(error)) console.warn('[agent-scanner] bound asset refresh failed:', error.message)
+    return
+  }
+  const metadata = asRecord(asset.metadata)
+  const previous = asRecord(metadata.agentBinding)
+  const targetRisk: Record<string, number> = { ...asRecord(previous.targetRisk) }
+  for (const [name, risk] of batch.batchTargetRisk) {
+    delete targetRisk[name]
+    targetRisk[name] = risk
+  }
+  // Keep the most recently observed targets when over the bound.
+  const targetNames = Object.keys(targetRisk)
+  for (const stale of targetNames.slice(0, Math.max(0, targetNames.length - BOUND_ASSET_TARGET_LIMIT))) delete targetRisk[stale]
+  const risks = Object.values(targetRisk).filter((value) => Number.isFinite(value))
+  const worstRisk = risks.length ? Math.max(...risks) : null
+
+  const childAssetIds = binding.attribution === 'grouped'
+    ? Array.from(new Set([...(Array.isArray(previous.childAssetIds) ? previous.childAssetIds.map(String) : []), ...batch.childAssetIds])).slice(-BOUND_ASSET_TARGET_LIMIT)
+    : []
+
+  const agentBinding = {
+    attribution: binding.attribution,
+    lastEvidenceAt: batch.now,
+    lastSource: batch.sourceLabel,
+    lastBatchFindings: batch.findingCount,
+    targetRisk,
+    targetCount: Object.keys(targetRisk).length,
+    worstTargetRisk: worstRisk,
+    ...(binding.attribution === 'grouped' ? { childAssetIds, childAssetCount: childAssetIds.length } : {}),
+  }
+  const nextMetadata: Record<string, unknown> = { ...metadata, last_scanned_at: batch.now, scannerEvidence: true, agentBinding }
+  const update: Record<string, unknown> = { status: 'active', updated_at: batch.now, metadata: nextMetadata }
+  if (binding.attribution === 'bound' && worstRisk !== null) {
+    nextMetadata.riskScore = worstRisk
+    nextMetadata.qScore = Math.max(0, 100 - worstRisk)
+    update.criticality = worstRisk >= 80 ? 'critical' : worstRisk >= 60 ? 'high' : worstRisk >= 40 ? 'medium' : 'low'
+  }
+  const { error: updateError } = await client.from('assets').update(update).eq('id', binding.assetId).eq('user_id', userId)
+  if (updateError && !isMissingRuntimeTable(updateError)) console.warn('[agent-scanner] bound asset refresh failed:', updateError.message)
+}
+
 async function processEvidenceBatch(
   client: SupabaseClient | null,
   userId: string,
   evidence: ScannerEvidenceRecord[],
   sourceLabel: string,
-  options: { alertThreshold?: string; persistRuntimeEvents?: boolean } = {}
+  options: EvidenceBatchOptions = {}
 ) {
+  const binding = options.binding || null
+  if (binding) {
+    // Raw evidence records the binding it arrived under, alongside the findings.
+    evidence = evidence.map((item) => ({
+      ...item,
+      rawEvidence: { ...asRecord(item.rawEvidence), binding: bindingStamp(binding, item.agentId, item.assetName) },
+    }))
+  }
   const rows = evidence.map((item) => dbEvidenceRow(item, userId))
   let insertedEvidence: ScannerEvidenceRecord[] = evidence
 
   if (client && rows.length > 0) {
-    const { data } = await client.from('scanner_evidence').insert(rows).select('*')
+    const { data, error } = await client.from('scanner_evidence').insert(rows).select('*')
+    if (error) throw new Error('Accepted scan evidence could not be persisted')
     insertedEvidence = (data || []).map((row: any) => ({
       id: row.id,
       userId: row.user_id,
@@ -1586,7 +2104,7 @@ async function processEvidenceBatch(
   }
 
   const links = await persistEvidenceFindings(client, userId, insertedEvidence, enrichedFindings, sourceLabel, options)
-  const certificates = await persistCertificateEvidence(client, userId, insertedEvidence, sourceLabel)
+  const certificates = await persistCertificateEvidence(client, userId, insertedEvidence, sourceLabel, binding)
 
   return {
     evidenceCount: insertedEvidence.length,
@@ -1617,6 +2135,7 @@ async function persistCertificateEvidence(
   userId: string,
   evidence: ScannerEvidenceRecord[],
   sourceLabel: string,
+  binding: AgentBinding | null = null,
 ) {
   const certificateEvidence = evidence.filter(
     /* A certificate is a certificate whether it was presented in a handshake or
@@ -1651,6 +2170,7 @@ async function persistCertificateEvidence(
     const metadata = {
       source: sourceLabel,
       agentId: item.agentId || null,
+      binding: binding ? bindingStamp(binding, item.agentId, item.assetName) : null,
       evidenceId: item.id || null,
       evidenceType: item.evidenceType,
       fingerprintSha256: item.certificateFingerprint,
@@ -1686,7 +2206,7 @@ async function persistCertificateEvidence(
       continue
     }
 
-    const assetId = await resolveAssetIdByName(client, userId, item.assetName)
+    const assetId = binding?.attribution === 'bound' ? binding.assetId : await resolveAssetIdByName(client, userId, item.assetName)
     const row = {
       user_id: userId,
       asset_id: assetId,
@@ -2708,26 +3228,24 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
    * inventory, reports and migration scope. Reject it outright rather than silently
    * dropping it, so the caller learns the binding did not take.
    */
-  const requestedAssetId = cleanString(req.body?.metadata?.assetId, 80)
-  let resolvedAsset: { id: string; name: string; type: string | null } | null = null
-  if (requestedAssetId && client) {
-    const { data: asset, error: assetError } = await client
-      .from('assets')
-      .select('id, name, type')
-      .eq('id', requestedAssetId)
-      .eq('user_id', user.id)
-      .limit(1)
-      .maybeSingle()
-    if (assetError && !isMissingRuntimeTable(assetError)) {
-      jsonError(res, 500, 'ASSET_LOOKUP_FAILED', assetError.message)
-      return
-    }
-    if (!asset) {
-      jsonError(res, 404, 'ASSET_NOT_FOUND', 'The selected asset does not exist in this tenant')
-      return
-    }
-    resolvedAsset = asset as { id: string; name: string; type: string | null }
+  /*
+   * `binding` is the console's richer request (existing asset, or a new named
+   * application / folder / file / profile …); `metadata.assetId` is what the
+   * Agent Center wizard has always sent. Both resolve through one path.
+   */
+  const environment = cleanString(req.body?.environment, 80) || cleanString(req.body?.metadata?.environment, 80) || 'production'
+  const bindingRequest = parseBindingRequest(req.body?.binding, req.body?.metadata?.assetId)
+  if (bindingRequest.ok === false) {
+    jsonError(res, 400, bindingRequest.code, bindingRequest.message)
+    return
   }
+  // A memory-mode server has no inventory to bind to; only refuse when one was asked for.
+  const bindingResolution = await resolveBindingTarget(client, user.id, bindingRequest.value, environment)
+  if (bindingResolution.ok === false) {
+    jsonError(res, bindingResolution.status, bindingResolution.code, bindingResolution.message, bindingResolution.detail)
+    return
+  }
+  const resolvedBinding = bindingResolution.binding
 
   const agentBase = {
     user_id: user.id,
@@ -2747,11 +3265,9 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
     metadata: {
       ...requestedMetadata,
       // Server-resolved, never caller-asserted: the id and display name both come
-      // from the row we just proved this tenant owns.
-      assetId: resolvedAsset?.id || null,
-      assetName: resolvedAsset?.name || null,
-      assetType: resolvedAsset?.type || null,
-      environment: cleanString(req.body?.environment, 80) || cleanString(req.body?.metadata?.environment, 80) || 'production',
+      // from the row we just proved this tenant owns (or just created for it).
+      ...bindingMetadata(resolvedBinding, bindingResolution.assetType),
+      environment,
       enrolledBy: user.id,
       /* Written AFTER the caller's metadata spread so it overwrites any
          `role` the caller supplied. This is the authoritative value; the
@@ -2765,6 +3281,8 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
       scanTypesDeniedByPlan: scanTypeDecision.deniedByPlan,
       /* Modules this ROLE does not run (the Scanner has no runtime collectors). */
       scanTypesDeniedByRole: scanTypeDecision.deniedByRole,
+      // The enrolment policy counts as a change the agent has yet to receive.
+      policyUpdatedAt: now,
       /* Strict booleans, written after the caller's spread so a stray string
          such as "false" can never read as truthy downstream. */
       remediationAuthorized: authority.remediation,
@@ -2789,6 +3307,10 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
   if (client) {
     const { data, error } = await client.from('scanner_agents').insert(agentBase).select('*').single()
     if (error || !data) {
+      // Do not leave behind a target asset that no agent was ever bound to.
+      if (bindingResolution.createdAssetId) {
+        await client.from('assets').delete().eq('id', bindingResolution.createdAssetId).eq('user_id', user.id)
+      }
       jsonError(res, 500, 'AGENT_ENROLL_FAILED', error?.message || 'Agent enrollment failed')
       return
     }
@@ -2859,6 +3381,7 @@ router.post('/agents/enroll', requireUserAuth, async (req: AuthedRequest, res) =
       environment: agentBase.metadata.environment,
       selectedAssetId: agentBase.metadata.assetId || null,
       selectedAssetName: agentBase.metadata.assetName || null,
+      binding: resolvedBinding,
       ipAddress: req.ip?.replace('::ffff:', '') || null,
       userAgent: String(req.headers['user-agent'] || '').slice(0, 500),
       tokenShownOnce: true,
@@ -2955,6 +3478,54 @@ router.post('/agents/:id/revoke', requireUserAuth, async (req: AuthedRequest, re
   }
 
   res.json({ data: { agentId: req.params.id, status: 'revoked', revokedAt: now } })
+})
+
+/**
+ * Clear an agent's bound request-signing keys so its NEXT signed request binds
+ * afresh. For a host whose key file was genuinely lost (rebuild, container
+ * without its state volume). Until that request arrives, whoever holds the
+ * agent token can bind — rotate the token too if it may have leaked.
+ */
+router.post('/agents/:id/signing-key/reset', requireUserAuth, async (req: AuthedRequest, res) => {
+  const client = req.client || null
+  const user = req.user!
+  if (!client) {
+    const agent = memoryStore.agents.find((item) => item.id === req.params.id && item.user_id === user.id) as any
+    if (!agent) return jsonError(res, 404, 'AGENT_NOT_FOUND', 'Agent not found')
+    Object.assign(agent, { signing_public_keys: null, signing_key_bound_at: null, signing_key_version: (Number(agent.signing_key_version) || 0) + 1 })
+    return res.json({ data: { reset: true } })
+  }
+  const { data: agent, error: lookupError } = await client
+    .from('scanner_agents')
+    .select('id, user_id, signing_public_keys, signing_key_version')
+    .eq('id', req.params.id)
+    .eq('user_id', user.id)
+    .limit(1)
+    .maybeSingle()
+  if (lookupError && /signing_/.test(lookupError.message)) {
+    return jsonError(res, 409, 'SIGNING_NOT_PROVISIONED', 'Request-signing columns are missing. Apply supabase/agent-request-signing.sql first.')
+  }
+  if (lookupError || !agent) return jsonError(res, 404, 'AGENT_NOT_FOUND', lookupError?.message || 'Agent not found')
+
+  const previous = agent.signing_public_keys as BoundKeys | null
+  const { data, error } = await client
+    .from('scanner_agents')
+    .update({ signing_public_keys: null, signing_key_bound_at: null, signing_key_version: (Number(agent.signing_key_version) || 0) + 1, updated_at: new Date().toISOString() })
+    .eq('id', req.params.id)
+    .eq('user_id', user.id)
+    .eq('signing_key_version', Number(agent.signing_key_version) || 0)
+    .select('id')
+  if (error) return jsonError(res, 500, 'SIGNING_KEY_RESET_FAILED', error.message)
+  if (!data?.length) return jsonError(res, 409, 'SIGNING_KEY_CHANGED', 'The binding changed while resetting it. Reload and try again.')
+
+  await recordAgentAudit(client, {
+    userId: user.id,
+    action: 'agent.signing_key_reset',
+    entityType: 'scanner_agent',
+    entityId: req.params.id,
+    details: { previousAlgorithms: previous ? Object.keys(previous) : [], resetBy: user.id },
+  })
+  res.json({ data: { reset: true } })
 })
 
 router.post('/agents/:id/token/rotate', requireUserAuth, async (req: AuthedRequest, res) => {
@@ -3101,6 +3672,85 @@ router.get('/agents/:id/heartbeats', requireUserAuth, async (req: AuthedRequest,
   res.json({ data: { heartbeats: memoryStore.heartbeats.filter((item) => item.agent_id === req.params.id && item.user_id === user.id) } })
 })
 
+/**
+ * Rebind (or unbind) an agent after enrolment.
+ *
+ * Takes the same `binding` body as enrolment and resolves it through the same
+ * tenant-scoped path. The change applies to evidence uploaded FROM NOW ON:
+ * findings already recorded stay filed where they were, because each one
+ * carries the binding it was filed under and rewriting history would break
+ * that trail. Both the previous and the new binding are audit-logged.
+ */
+router.put('/agents/:id/binding', requireUserAuth, async (req: AuthedRequest, res) => {
+  const client = req.client || null
+  const user = req.user!
+  if (!client) {
+    jsonError(res, 503, 'BINDING_UNAVAILABLE', 'Asset inventory is unavailable, so the agent cannot be rebound right now.')
+    return
+  }
+  const { data: agentRow, error: agentError } = await client
+    .from('scanner_agents')
+    .select('id, name, status, revoked_at, metadata')
+    .eq('id', req.params.id)
+    .eq('user_id', user.id)
+    .limit(1)
+    .maybeSingle()
+  if (agentError && !isMissingRuntimeTable(agentError)) {
+    jsonError(res, 500, 'AGENT_LOOKUP_FAILED', agentError.message)
+    return
+  }
+  if (!agentRow) {
+    jsonError(res, 404, 'AGENT_NOT_FOUND', 'Agent not found for this tenant')
+    return
+  }
+  if (agentRow.revoked_at || agentRow.status === 'revoked') {
+    jsonError(res, 409, 'AGENT_REVOKED', 'This agent is revoked; its binding can no longer be changed.')
+    return
+  }
+
+  const bindingRequest = parseBindingRequest(req.body?.binding ?? { mode: 'none' })
+  if (bindingRequest.ok === false) {
+    jsonError(res, 400, bindingRequest.code, bindingRequest.message)
+    return
+  }
+  const metadata = asRecord(agentRow.metadata)
+  const resolution = await resolveBindingTarget(client, user.id, bindingRequest.value, cleanString(metadata.environment, 80))
+  if (resolution.ok === false) {
+    jsonError(res, resolution.status, resolution.code, resolution.message, resolution.detail)
+    return
+  }
+  const previous = agentBindingFromMetadata(metadata)
+  const nextMetadata = { ...metadata, ...bindingMetadata(resolution.binding, resolution.assetType) }
+
+  const { error: updateError } = await client
+    .from('scanner_agents')
+    .update({ metadata: nextMetadata, updated_at: new Date().toISOString() })
+    .eq('id', agentRow.id)
+    .eq('user_id', user.id)
+  if (updateError) {
+    if (resolution.createdAssetId) {
+      await client.from('assets').delete().eq('id', resolution.createdAssetId).eq('user_id', user.id)
+    }
+    jsonError(res, 500, 'AGENT_BINDING_UPDATE_FAILED', updateError.message)
+    return
+  }
+
+  await recordAgentAudit(client, {
+    userId: user.id,
+    action: resolution.binding ? 'scanner_agent_binding_changed' : 'scanner_agent_binding_removed',
+    entityType: 'scanner_agent',
+    entityId: agentRow.id,
+    details: {
+      agentName: agentRow.name,
+      previous,
+      next: resolution.binding,
+      createdAssetId: resolution.createdAssetId,
+      appliesTo: 'evidence uploaded after this change',
+    },
+  })
+  res.json({ data: { binding: resolution.binding, previous } })
+})
+
 router.put('/agents/:id/policy', requireUserAuth, async (req: AuthedRequest, res) => {
   const client = req.client || null
   const user = req.user!
@@ -3143,20 +3793,45 @@ router.put('/agents/:id/policy', requireUserAuth, async (req: AuthedRequest, res
   }
 
   const role = cleanString(agentRow.metadata?.role, 40) || 'collector'
-  const clamp = await clampPolicyScanTypes(req as AgentEntitlementRequest, role, policy.scanTypes)
+  /* A module id the agent runtime does not implement is refused and reported.
+     Stored, it would read as "scanned" while the agent never collects it. */
+  const knownModules = new Set(AGENT_SCAN_MODULES.map((module) => module.id))
+  const unknownModules = policy.scanTypes.filter((id) => !knownModules.has(id))
+  const knownRequested = policy.scanTypes.filter((id) => knownModules.has(id))
+  /* An edit must name at least one real module. clampPolicyScanTypes reads an
+     empty list as "use the role defaults" (right for enrolment), which here
+     would turn an empty or all-unknown edit into a WIDER scope than before. */
+  if (knownRequested.length === 0) {
+    jsonError(res, 400, 'POLICY_SCOPE_EMPTY', 'Select at least one scan module this agent can run.', {
+      deniedByPlan: [],
+      deniedByRole: [],
+      unknown: unknownModules,
+    })
+    return
+  }
+  const clamp = await clampPolicyScanTypes(req as AgentEntitlementRequest, role, knownRequested)
   policy.scanTypes = clamp.allowed
   if (policy.scanTypes.length === 0) {
     jsonError(res, 400, 'POLICY_SCOPE_EMPTY', 'None of the requested scan modules are available to this agent\'s role and plan.', {
       deniedByPlan: clamp.deniedByPlan,
       deniedByRole: clamp.deniedByRole,
+      unknown: unknownModules,
     })
     return
   }
+  const policyUpdatedAt = new Date().toISOString()
 
   if (client) {
-    const { data: existing } = await client.from('scanner_agent_policies').select('id').eq('agent_id', req.params.id).eq('user_id', user.id).limit(1).maybeSingle()
+    // Every write is checked: answering "Policy updated" over a failed write
+    // leaves the operator believing a scope is in force that the agent never sees.
+    const { data: existing, error: lookupError } = await client.from('scanner_agent_policies').select('id').eq('agent_id', req.params.id).eq('user_id', user.id).limit(1).maybeSingle()
+    if (lookupError && !isMissingRuntimeTable(lookupError)) {
+      jsonError(res, 500, 'AGENT_POLICY_UPDATE_FAILED', lookupError.message)
+      return
+    }
+    let writeError: { message: string } | null = null
     if (existing?.id) {
-      await client.from('scanner_agent_policies').update({
+      ;({ error: writeError } = await client.from('scanner_agent_policies').update({
         enabled: policy.enabled,
         interval_seconds: policy.intervalSeconds,
         allowed_targets: policy.allowedTargets,
@@ -3170,10 +3845,10 @@ router.put('/agents/:id/policy', requireUserAuth, async (req: AuthedRequest, res
           localCollector: LOCAL_COLLECTOR_CLARIFICATION,
           executionContract: remediationExecutionContract(),
         },
-        updated_at: new Date().toISOString(),
-      }).eq('id', existing.id).eq('user_id', user.id)
+        updated_at: policyUpdatedAt,
+      }).eq('id', existing.id).eq('user_id', user.id))
     } else {
-      await client.from('scanner_agent_policies').insert({
+      ;({ error: writeError } = await client.from('scanner_agent_policies').insert({
         user_id: user.id,
         agent_id: req.params.id,
         enabled: policy.enabled,
@@ -3189,17 +3864,30 @@ router.put('/agents/:id/policy', requireUserAuth, async (req: AuthedRequest, res
           localCollector: LOCAL_COLLECTOR_CLARIFICATION,
           executionContract: remediationExecutionContract(),
         },
-      })
+      }))
     }
-    await client.from('scanner_agents').update({
+    if (writeError && !isMissingRuntimeTable(writeError)) {
+      jsonError(res, 500, 'AGENT_POLICY_UPDATE_FAILED', writeError.message)
+      return
+    }
+    const { error: agentWriteError } = await client.from('scanner_agents').update({
       policy,
       metadata: {
         ...(agentRow.metadata || {}),
         scanTypesDeniedByPlan: clamp.deniedByPlan,
         scanTypesDeniedByRole: clamp.deniedByRole,
+        /* When the policy last changed and by whom. /agent/policy stamps
+           policyDeliveredAt when it next hands this policy to the agent, so
+           the console can show "in effect" versus "waiting for check-in". */
+        policyUpdatedAt,
+        policyUpdatedBy: user.id,
       },
-      updated_at: new Date().toISOString(),
+      updated_at: policyUpdatedAt,
     }).eq('id', req.params.id).eq('user_id', user.id)
+    if (agentWriteError) {
+      jsonError(res, 500, 'AGENT_POLICY_UPDATE_FAILED', agentWriteError.message)
+      return
+    }
 
     await recordAgentAudit(client, {
       userId: user.id,
@@ -3216,13 +3904,14 @@ router.put('/agents/:id/policy', requireUserAuth, async (req: AuthedRequest, res
         scanTypes: policy.scanTypes,
         deniedByPlan: clamp.deniedByPlan,
         deniedByRole: clamp.deniedByRole,
+        unknownModules,
         alertThreshold: policy.alertThreshold,
       },
     })
   } else {
-    Object.assign(agentRow, { policy })
+    Object.assign(agentRow, { policy, metadata: { ...(agentRow.metadata || {}), policyUpdatedAt } })
   }
-  res.json({ data: { policy, denied: { plan: clamp.deniedByPlan, role: clamp.deniedByRole } } })
+  res.json({ data: { policy, policyUpdatedAt, denied: { plan: clamp.deniedByPlan, role: clamp.deniedByRole, unknown: unknownModules } } })
 })
 
 /**
@@ -4181,13 +4870,16 @@ router.post('/agent/heartbeat', requireAgentAuth, async (req: AgentRequest, res)
   const agent = req.agent!
   const now = new Date().toISOString()
   const telemetry = typeof req.body?.telemetry === 'object' && req.body.telemetry ? req.body.telemetry : {}
+  // Provenance stored WITH the row: whether these bytes arrived over TLS,
+  // signed by the agent's bound key, and the SHA3-256 of exactly what was signed.
+  const transportIntegrity = req.agentIntegrity || null
 
   if (client) {
     await client.from('agent_heartbeats').insert({
       user_id: agent.user_id,
       agent_id: agent.id,
       status: cleanString(req.body?.status, 50) || 'online',
-      telemetry,
+      telemetry: { ...telemetry, transportIntegrity },
       ip_address: req.ip?.replace('::ffff:', '') || null,
       user_agent: String(req.headers['user-agent'] || 'qguard-agent').slice(0, 500),
       observed_at: now,
@@ -4204,6 +4896,7 @@ router.post('/agent/heartbeat', requireAgentAuth, async (req: AgentRequest, res)
         lastIpAddress: req.ip?.replace('::ffff:', '') || null,
         lastUserAgent: String(req.headers['user-agent'] || 'qguard-agent').slice(0, 500),
         lastTelemetry: telemetry,
+        transportSecurity: transportIntegrity,
       },
     }).eq('id', agent.id).eq('user_id', agent.user_id)
   } else {
@@ -4252,15 +4945,27 @@ router.get('/agent/policy', requireAgentAuth, async (req: AgentRequest, res) => 
    */
   const queue: any[] = Array.isArray(agent.metadata?.commandQueue) ? agent.metadata.commandQueue : []
   const deliverable = queue.filter((item) => item?.status === 'queued' || item?.status === 'delivered')
+  /* Policy delivery receipt: stamped once per policy change (not on every
+     poll), the first time the agent pulls the changed policy. */
+  const policyUpdatedAt = typeof agent.metadata?.policyUpdatedAt === 'string' ? agent.metadata.policyUpdatedAt : null
+  const policyDeliveredAt = typeof agent.metadata?.policyDeliveredAt === 'string' ? agent.metadata.policyDeliveredAt : null
+  const stampDelivery = Boolean(policyUpdatedAt && (!policyDeliveredAt || policyDeliveredAt < policyUpdatedAt))
 
-  if (client && deliverable.length > 0) {
+  if (client && (deliverable.length > 0 || stampDelivery)) {
     const now = new Date().toISOString()
     const updatedQueue = queue.map((item) =>
       item?.status === 'queued' ? { ...item, status: 'delivered', deliveredAt: now } : item,
     )
     const { error } = await client
       .from('scanner_agents')
-      .update({ metadata: { ...(agent.metadata || {}), commandQueue: updatedQueue }, updated_at: now })
+      .update({
+        metadata: {
+          ...(agent.metadata || {}),
+          commandQueue: updatedQueue,
+          ...(stampDelivery ? { policyDeliveredAt: now } : {}),
+        },
+        updated_at: now,
+      })
       .eq('id', agent.id)
       .eq('user_id', agent.user_id)
     if (error && !isMissingRuntimeTable(error)) {
@@ -4325,7 +5030,7 @@ router.post('/agent/commands/:id/ack', requireAgentAuth, async (req: AgentReques
   const errorMessage = cleanString(req.body?.error, 500)
   const result = typeof req.body?.result === 'object' && req.body.result ? req.body.result : null
   const settled = status === 'completed' || status === 'failed'
-  const updated = { ...command, status, completedAt: settled ? now : null, result, error: errorMessage }
+  const updated = { ...command, status, startedAt: command.startedAt || (status === 'running' ? now : null), completedAt: settled ? now : null, result, error: errorMessage }
 
   const nextQueue = settled ? queue.filter((item) => item?.id !== commandId) : queue.map((item) => (item?.id === commandId ? updated : item))
   const nextHistory = settled ? [updated, ...history].slice(0, MAX_COMMAND_HISTORY) : history
@@ -4413,7 +5118,7 @@ router.post('/agent/scan-progress', requireAgentAuth, async (req: AgentRequest, 
       user_id: agent.user_id,
       agent_id: agent.id,
       status: 'scan_progress',
-      telemetry: { stage, progress, message, ...metadata },
+      telemetry: { ...metadata, stage, progress, message },
       observed_at: now,
     })
     if (error && !isMissingRuntimeTable(error)) {
@@ -4425,7 +5130,7 @@ router.post('/agent/scan-progress', requireAgentAuth, async (req: AgentRequest, 
     agent.user_id,
     stage === 'scan_complete' ? 'agent.scan_completed' : 'agent.scan_progress',
     agent.id,
-    { stage, progress, message, ...metadata },
+    { ...metadata, stage, progress, message },
   )
 
   res.json({ data: { accepted: true, stage, progress, observedAt: now } })
@@ -4518,10 +5223,17 @@ router.post('/agent/runtime-events', requireAgentAuth, async (req: AgentRequest,
 
   const persistence = await persistRuntimeCryptoEvents(client, agent.user_id, policyAllowed)
   const evidence = policyAllowed.map(runtimeEventToEvidence)
+  const runtimeBinding = await verifiedAgentBinding(client, agent)
   const evidenceResult = await processEvidenceBatch(client, agent.user_id, evidence, `agent-runtime:${agent.name || agent.id}`, {
     alertThreshold: policy.alertThreshold,
     persistRuntimeEvents: false,
+    binding: runtimeBinding.binding,
+  }).catch((error) => {
+    console.warn('[agent-scanner] runtime evidence publication failed:', (error as Error).message)
+    jsonError(res, 503, 'EVIDENCE_PUBLICATION_FAILED', 'Runtime evidence could not be published to inventory. Review agent scan errors and retry.')
+    return null
   })
+  if (!evidenceResult) return
 
   if (client) {
     await client.from('agent_heartbeats').insert({
@@ -4533,6 +5245,7 @@ router.post('/agent/runtime-events', requireAgentAuth, async (req: AgentRequest,
         insertedRuntimeEvents: persistence.inserted,
         duplicateRuntimeEvents: persistence.duplicateCount,
         rejectedEventCount,
+        ...(runtimeBinding.stale ? { bindingStale: true } : {}),
       },
       observed_at: new Date().toISOString(),
     })
@@ -4543,6 +5256,7 @@ router.post('/agent/runtime-events', requireAgentAuth, async (req: AgentRequest,
       ...persistence,
       acceptedEventCount: policyAllowed.length,
       rejectedEventCount,
+      bindingStale: runtimeBinding.stale,
       outOfPolicy: false,
       evidence: {
         evidenceCount: evidenceResult.evidenceCount,
@@ -4605,10 +5319,28 @@ router.post('/agent/evidence', requireAgentAuth, async (req: AgentRequest, res) 
       observed_at: new Date().toISOString(),
     })
   }
+  const { binding, stale: bindingStale } = await verifiedAgentBinding(client, agent)
+  if (client && bindingStale) {
+    // The bound asset was deleted. Findings fall back to open discovery; the
+    // operator sees why on the agent's heartbeat trail instead of guessing.
+    await client.from('agent_heartbeats').insert({
+      user_id: agent.user_id,
+      agent_id: agent.id,
+      status: 'binding_stale',
+      telemetry: { boundAssetId: agentBindingFromMetadata(agent.metadata)?.assetId || null, reason: 'bound_asset_missing' },
+      observed_at: new Date().toISOString(),
+    })
+  }
   const result = await processEvidenceBatch(client, agent.user_id, evidence, `agent:${agent.name || agent.id}`, {
     alertThreshold: policy.alertThreshold,
+    binding,
+  }).catch((error) => {
+    console.warn('[agent-scanner] evidence publication failed:', (error as Error).message)
+    jsonError(res, 503, 'EVIDENCE_PUBLICATION_FAILED', 'Scan evidence could not be published to inventory. Review agent scan errors and retry.')
+    return null
   })
-  res.json({ data: { ...result, rejectedEvidenceCount } })
+  if (!result) return
+  res.json({ data: { ...result, rejectedEvidenceCount, bindingStale } })
 })
 
 router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest, res) => {

@@ -54,9 +54,26 @@ const EMPTY_REQUIREMENT_COUNTS: Record<MigrationRequirement, number> = {
   unknown: 0,
 }
 
-/** A key counts as ready when its OBSERVED material is PQC or hybrid. */
-function isReady(key: ManagedKey): boolean {
+/**
+ * Posture rests on evidence: a source observed the algorithm, or this platform
+ * generated the key. A registry declaration alone is not evidence (§3F).
+ */
+export function isEvidenced(key: Pick<ManagedKey, 'postureEvidence'>): boolean {
+  return key.postureEvidence === 'observed' || key.postureEvidence === 'generated'
+}
+
+function isPqcPosture(key: ManagedKey): boolean {
   return key.posture === 'post-quantum' || key.posture === 'hybrid'
+}
+
+/** A key counts as ready when its EVIDENCED material is PQC or hybrid. */
+function isReady(key: ManagedKey): boolean {
+  return isPqcPosture(key) && isEvidenced(key)
+}
+
+/** PQC or hybrid on paper only — reported, never counted ready. */
+function isDeclaredOnly(key: ManagedKey): boolean {
+  return isPqcPosture(key) && !isEvidenced(key)
 }
 
 function band(
@@ -68,16 +85,18 @@ function band(
   notApplicableDetail: string,
 ): ReadinessBand {
   if (!applicable.length) {
-    return { key, label, applicable: 0, ready: 0, percent: null, detail: notApplicableDetail }
+    return { key, label, applicable: 0, ready: 0, declared: 0, percent: null, detail: notApplicableDetail }
   }
-  const ready = applicable.filter(readyPredicate).length
+  const ready = applicable.filter((row) => readyPredicate(row) && isEvidenced(row)).length
+  const declared = applicable.filter((row) => readyPredicate(row) && !isEvidenced(row)).length
   return {
     key,
     label,
     applicable: applicable.length,
     ready,
+    declared,
     percent: Math.round((ready / applicable.length) * 100),
-    detail: `${ready} of ${applicable.length} ${applicableDetail}`,
+    detail: `${ready} of ${applicable.length} ${applicableDetail}${declared ? ` ${declared} more are declared in the registry but unverified, so they are not counted.` : ''}`,
   }
 }
 
@@ -180,6 +199,7 @@ export function buildPrechecks(
   const noRotationEvidence = live.filter((key) => key.rotation === 'unknown' || key.rotation === 'never-rotated')
   const criticalViolationKeys = new Set(violations.filter((row) => row.severity === 'critical').map((row) => row.keyId))
   const criticalOffenders = live.filter((key) => criticalViolationKeys.has(key.id))
+  const declaredPqc = live.filter(isDeclaredOnly)
   const migrationRequired = live.filter((key) => key.migrationRequirement === 'required')
   const signingGaps = migrationRequired.filter((key) => key.keyClass === 'signature' || key.keyClass === 'certificate')
   const kemGaps = migrationRequired.filter((key) => key.keyClass === 'key-establishment')
@@ -214,6 +234,12 @@ export function buildPrechecks(
       "{n} key(s) could not be classified, so their migration requirement is unknown.",
       'Every key in service resolves to a known primitive.',
       'Classify the unknown keys — an unclassified key cannot be migrated, only guessed at.',
+    ),
+    precheck(
+      'posture-evidence', 'Post-quantum posture is evidenced', declaredPqc, 'warn',
+      '{n} key(s) are post-quantum or hybrid by registry declaration only; no scan, certificate or platform record has verified the algorithm.',
+      'Every post-quantum or hybrid key is backed by an observation or a platform record.',
+      'Scan the hosts or import the certificates that carry these keys, so their algorithm is observed rather than declared.',
     ),
     precheck(
       'expiry', 'No expired key still in service', expired, 'warn',
@@ -295,7 +321,8 @@ export function buildMigrationGate(
 
   const live = keys.filter((key) => key.lifecycle !== 'revoked' && key.lifecycle !== 'decommissioned' && key.lifecycle !== 'retired')
   const needsMigration = live.filter((key) => key.migrationRequirement === 'required' || key.migrationRequirement === 'recommended')
-  const migrated = live.filter((key) => key.posture === 'post-quantum' || key.posture === 'hybrid')
+  // Migrated means EVIDENCED post-quantum material; a declaration cannot carry the gate to MIGRATED.
+  const migrated = live.filter(isReady)
 
   const blockers = blocking.map((row) => `${row.label}: ${row.detail}`)
   const requiredActions = [...blocking, ...warning]
@@ -379,6 +406,9 @@ export function buildReadiness(
 
   return {
     overall: decisionScope.length ? Math.round((ready / decisionScope.length) * 100) : null,
+    verifiedReady: ready,
+    declaredOnly: decisionScope.filter(isDeclaredOnly).length,
+    decisionScope: decisionScope.length,
     bands: buildReadinessBands(keys),
     postureCounts,
     requirementCounts,

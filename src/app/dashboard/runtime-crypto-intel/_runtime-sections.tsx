@@ -935,7 +935,7 @@ export function NoTelemetryState({
         <ol className="mt-2 space-y-1.5 text-[11.5px] leading-relaxed text-white/55">
           {silent ? (
             <>
-              <li>1. Open the Agents tab and check the collector's last-seen time and enrolment status.</li>
+              <li>1. Open Agents Collector (Discovery → PQC Scanner) and check the collector's last-seen time and enrolment status.</li>
               <li>2. Confirm the agent process is running on the host and its token has not been revoked or rotated.</li>
               <li>3. Confirm the host has outbound access to the QGuard ingest endpoint.</li>
               <li>4. Events appear here within seconds of the first successful report.</li>
@@ -976,7 +976,7 @@ export function NoTelemetryState({
 
       <div className="mt-5 flex flex-wrap justify-center gap-2">
         <a
-          href="/dashboard/scanner?tab=agents"
+          href="/dashboard/agents"
           className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/50 bg-cyan-500/15 px-4 py-2.5 text-[10px] font-black uppercase tracking-wider text-cyan-200 no-underline transition hover:bg-cyan-500/25"
         >
           {silent ? 'Check Collector Status' : 'Deploy a Collector Agent'}

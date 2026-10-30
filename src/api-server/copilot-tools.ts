@@ -1711,7 +1711,7 @@ register({
     const online = rows.filter(agentOnline)
     return ok(
       { agents: rows.length, online: online.length, offline: rows.length - online.length, latestHeartbeat: rows.map((r) => str(r.last_seen_at)).filter(Boolean).sort().pop() || null },
-      [ev('Agent Collectors', 'Agent heartbeats', `${online.length}/${rows.length} online`, { deepLink: modulePath('collectors') })],
+      [ev('Agents Collector', 'Agent heartbeats', `${online.length}/${rows.length} online`, { deepLink: modulePath('collectors') })],
       rows.length,
     )
   },
@@ -1728,7 +1728,7 @@ register({
     for (const r of rows) byStatus[str(r.status) || 'unknown'] = (byStatus[str(r.status) || 'unknown'] || 0) + 1
     return ok(
       { total: rows.length, byStatus, online: rows.filter(agentOnline).length },
-      [ev('Agent Collectors', 'Agent health', Object.entries(byStatus).map(([k, v]) => `${k}:${v}`).join(' · ') || 'no agents', { deepLink: modulePath('collectors') })],
+      [ev('Agents Collector', 'Agent health', Object.entries(byStatus).map(([k, v]) => `${k}:${v}`).join(' · ') || 'no agents', { deepLink: modulePath('collectors') })],
       rows.length,
     )
   },
@@ -1743,7 +1743,7 @@ register({
     const rows = await tenantRows(ctx, 'scanner_agents', AGENT_SELECT, (q) => q.order('created_at', { ascending: false }), 100)
     return ok(
       { collectors: rows.map((r) => ({ id: str(r.id), name: str(r.name), status: str(r.status), platform: str(r.platform), online: agentOnline(r), lastSeenAt: str(r.last_seen_at) || null })) },
-      [ev('Agent Collectors', 'Enrolled collectors', String(rows.length), { deepLink: modulePath('collectors') })],
+      [ev('Agents Collector', 'Enrolled collectors', String(rows.length), { deepLink: modulePath('collectors') })],
       rows.length,
     )
   },
@@ -1774,7 +1774,7 @@ register({
         onlineWindowMinutes: ONLINE_WINDOW_MS / 60000,
         agents: agents.sort((a, b) => Number(a.online) - Number(b.online)).slice(0, 40),
       },
-      [ev('Agent Collectors', 'Fleet status', rows.length ? `${online}/${rows.length} online` : 'no collectors enrolled', { deepLink: modulePath('collectors') })],
+      [ev('Agents Collector', 'Fleet status', rows.length ? `${online}/${rows.length} online` : 'no collectors enrolled', { deepLink: modulePath('collectors') })],
       rows.length,
     )
   },
@@ -1793,7 +1793,7 @@ register({
     const patchers = agents.filter((a) => JSON.stringify(a.capabilities || '').toLowerCase().includes('patch'))
     return ok(
       { patchers: patchers.map((r) => ({ id: str(r.id), name: str(r.name), online: agentOnline(r) })), recentPatchActions: actions.length },
-      [ev('Agent Collectors', 'Patch-capable agents', String(patchers.length), { detail: `${actions.length} recent operator action(s)`, deepLink: modulePath('collectors') })],
+      [ev('Agents Collector', 'Patch-capable agents', String(patchers.length), { detail: `${actions.length} recent operator action(s)`, deepLink: modulePath('collectors') })],
       patchers.length + actions.length,
     )
   },

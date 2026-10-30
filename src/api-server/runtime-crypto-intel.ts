@@ -9,7 +9,9 @@ import {
   type RuntimeIntelInputs,
   type TimeWindowKey,
 } from '@/lib/runtime-crypto/runtime-intelligence'
-import type { Row } from '@/lib/migration/asset-intelligence'
+import type { SourceRead } from '@/lib/source-read'
+import { streamLiveSnapshot } from './live-snapshot-stream'
+import { createSourceLedger } from './source-ledger'
 
 /**
  * QGuard Helix — Runtime Cryptographic Intelligence aggregation router.
@@ -36,18 +38,13 @@ const router = Router()
 
 type AuthedRequest = Request & { user?: { id: string; email?: string | null }; token?: string }
 
-function tokenFromRequest(req: Request): string | null {
-  const headerToken = getToken(req)
-  if (headerToken) return headerToken
-  // EventSource cannot set an Authorization header. The dashboard hook streams
-  // over fetch() WITH a header, so this fallback exists only for compatibility
-  // with any client that cannot.
-  const queryToken = req.query.token
-  return typeof queryToken === 'string' && queryToken.length > 0 ? queryToken : null
-}
-
+/*
+ * Authorization header only. The "compatibility" `?token=` fallback this
+ * replaces had no client — and because the subscription gateway reads only the
+ * header, any request using it skipped the Pro gate entirely.
+ */
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const token = tokenFromRequest(req)
+  const token = getToken(req)
   if (!token) return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
   const user = await getServerUser(token)
   if (!user) return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } })
@@ -67,26 +64,12 @@ const num = (v: unknown) => {
  *  suppress month-over-month claims that a truncated window would distort. */
 const RUNTIME_EVENT_CAP = 5000
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function safeRows(client: any, table: string, build: (query: any) => any): Promise<Row[]> {
-  try {
-    const { data, error } = await build(client.from(table))
-    if (error) {
-      console.warn(`Runtime crypto intel ${table} query skipped:`, error.message || error)
-      return []
-    }
-    return (data as Row[]) || []
-  } catch (error) {
-    console.warn(`Runtime crypto intel ${table} query failed:`, (error as Error)?.message || error)
-    return []
-  }
-}
 
 /* ------------------------------------------------------------------ */
 /* Shared single-flight input cache                                    */
 /* ------------------------------------------------------------------ */
 
-type RuntimeInputBundle = Omit<RuntimeIntelInputs, 'window' | 'eventLimit' | 'now'>
+type RuntimeInputBundle = Omit<RuntimeIntelInputs, 'window' | 'eventLimit' | 'now'> & { reads: SourceRead[] }
 
 /**
  * Mirrors the platform contract used by buildSnapshot / buildPortfolio: one
@@ -104,9 +87,10 @@ async function loadInputs(token: string, userId: string): Promise<RuntimeInputBu
   if (!client) throw new Error('Database connection failed')
 
   const [snapshot, portfolio] = await Promise.all([buildSnapshot(token, userId), buildPortfolio(token, userId)])
+  const ledger = createSourceLedger('Runtime crypto intel')
 
   const [runtimeEvents, migrationJobs, scannerAgents, connectorAccounts] = await Promise.all([
-    safeRows(client, 'runtime_crypto_events', (q) =>
+    ledger.read(client, 'runtime_crypto_events', 'Runtime telemetry', RUNTIME_EVENT_CAP, (q) =>
       q
         .select(
           'id, agent_id, connector_account_id, asset_id, source_type, event_type, operation_type, severity, risk_score, asset_name, asset_type, host, port, protocol, tls_version, cipher_suite, key_exchange_algorithm, algorithm, key_size, certificate_fingerprint, package_name, package_version, process_name, is_pqc, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, metadata, observed_at, created_at',
@@ -115,17 +99,17 @@ async function loadInputs(token: string, userId: string): Promise<RuntimeInputBu
         .order('observed_at', { ascending: false })
         .limit(RUNTIME_EVENT_CAP),
     ),
-    safeRows(client, 'migration_jobs', (q) =>
+    ledger.read(client, 'migration_jobs', 'Migration jobs', 400, (q) =>
       q
         .select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at')
         .eq('user_id', userId)
         .order('updated_at', { ascending: false })
         .limit(400),
     ),
-    safeRows(client, 'scanner_agents', (q) =>
+    ledger.read(client, 'scanner_agents', 'Agent fleet', 250, (q) =>
       q.select('id, name, status, hostname, platform, last_seen_at, created_at, updated_at').eq('user_id', userId).limit(250),
     ),
-    safeRows(client, 'connector_accounts', (q) => q.select('id, provider, status').eq('user_id', userId).limit(400)),
+    ledger.read(client, 'connector_accounts', 'Connectors', 400, (q) => q.select('id, provider, status').eq('user_id', userId).limit(400)),
   ])
 
   return {
@@ -153,6 +137,7 @@ async function loadInputs(token: string, userId: string): Promise<RuntimeInputBu
     scannerAgents,
     connectorAccounts,
     runtimeEventsTruncated: runtimeEvents.length >= RUNTIME_EVENT_CAP,
+    reads: ledger.reads,
   }
 }
 
@@ -174,12 +159,15 @@ export async function buildRuntimeIntel(
   userId: string,
   options: { window?: TimeWindowKey; eventLimit?: number; force?: boolean } = {},
 ): Promise<RuntimeCryptoIntelligence> {
-  const inputs = await cachedInputs(token, userId, options.force)
-  return buildRuntimeCryptoIntelligence({
-    ...inputs,
-    window: options.window,
-    eventLimit: options.eventLimit,
-  })
+  const { reads, ...inputs } = await cachedInputs(token, userId, options.force)
+  return {
+    ...buildRuntimeCryptoIntelligence({
+      ...inputs,
+      window: options.window,
+      eventLimit: options.eventLimit,
+    }),
+    reads,
+  }
 }
 
 function windowParam(req: Request): TimeWindowKey {
@@ -217,45 +205,16 @@ router.get('/', async (req: Request, res: Response) => {
  * KPI cards, the activity table and the risk list from ever disagreeing
  * mid-update.
  */
-router.get('/stream', async (req: Request, res: Response) => {
+router.get('/stream', (req: Request, res: Response) => {
   const { token, user } = req as AuthedRequest
   const window = windowParam(req)
   const eventLimit = num(req.query.limit) || undefined
-
-  res.status(200)
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
-  res.flushHeaders?.()
-
-  let closed = false
-  const send = (event: string, data: unknown) => {
-    if (closed) return
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-  }
-
-  send('connected', { at: new Date().toISOString() })
-
-  const push = async () => {
-    try {
-      const data = await buildRuntimeIntel(token!, user!.id, { window, eventLimit })
-      send('runtime-intel', data)
-    } catch (error) {
-      send('runtime-error', { message: error instanceof Error ? error.message : 'Runtime telemetry unavailable' })
-    }
-  }
-
-  void push()
-  const interval = setInterval(() => void push(), 10_000)
-  const heartbeat = setInterval(() => {
-    if (!closed) res.write(': heartbeat\n\n')
-  }, 25_000)
-
-  req.on('close', () => {
-    closed = true
-    clearInterval(interval)
-    clearInterval(heartbeat)
+  // Full frame only when the projected model changes; `runtime-intel-unchanged`
+  // proves the server re-checked without re-sending ~the whole event table.
+  streamLiveSnapshot(req, res, {
+    event: 'runtime-intel',
+    build: () => buildRuntimeIntel(token!, user!.id, { window, eventLimit }),
+    intervalMs: 10_000,
   })
 })
 

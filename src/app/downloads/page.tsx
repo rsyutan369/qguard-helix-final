@@ -167,10 +167,10 @@ export default function DownloadsPage() {
     <Shell
       leading={
         <Link
-          to="/dashboard/scanner?tab=agents"
+          to="/dashboard/agents"
           className="inline-flex items-center gap-1.5 text-[11px] font-bold text-white/40 no-underline transition hover:text-cyan-200"
         >
-          <ArrowLeft className="h-3.5 w-3.5" /> Agent Collector Console
+          <ArrowLeft className="h-3.5 w-3.5" /> Agents Collector
         </Link>
       }
     >
@@ -508,7 +508,7 @@ export default function DownloadsPage() {
                     key={agent.id}
                     agent={agent}
                     progress={installer.scanProgress[agent.id]?.progress}
-                    busy={installer.busy}
+                    busy={installer.busy || installer.scanning}
                     onOpen={() => setSelectedId(agent.id)}
                     onScan={() => void installer.requestScan(agent.id)}
                   />
@@ -635,6 +635,7 @@ function AgentRow({
             disabled={busy || revoked}
             onClick={onScan}
             title="Queue a scan for this agent"
+            aria-label={`Scan ${agent.name}`}
             className="rounded-lg border border-white/12 bg-white/[0.04] p-1.5 text-white/55 transition hover:border-cyan-400/40 hover:text-cyan-200 disabled:opacity-30"
           >
             <ScanLine className="h-3.5 w-3.5" />

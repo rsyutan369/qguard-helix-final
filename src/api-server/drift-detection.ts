@@ -3,6 +3,9 @@ import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server
 import { buildPortfolio } from './migration-planner'
 import { buildDriftIntelligence, type DriftIntelligence } from '@/lib/drift/drift-intelligence'
 import type { Row } from '@/lib/migration/asset-intelligence'
+import { streamLiveSnapshot } from './live-snapshot-stream'
+import { createSourceLedger } from './source-ledger'
+import { SIMULATION_MARKER_SELECT } from '@/lib/migration/job-safety'
 
 /**
  * QGuard Helix — Cryptographic Drift Detection router.
@@ -21,15 +24,13 @@ const router = Router()
 
 type AuthedRequest = Request & { user?: { id: string; email?: string | null }; token?: string }
 
-function tokenFromRequest(req: Request): string | null {
-  const headerToken = getToken(req)
-  if (headerToken) return headerToken
-  const queryToken = req.query.token
-  return typeof queryToken === 'string' && queryToken.length > 0 ? queryToken : null
-}
-
+/*
+ * Authorization header only. The subscription gateway reads the header, so a
+ * `?token=` fallback let a request skip the Pro gate — and wrote the bearer
+ * token into access logs and browser history. The page streams over fetch().
+ */
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const token = tokenFromRequest(req)
+  const token = getToken(req)
   if (!token) return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
   const user = await getServerUser(token)
   if (!user) return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } })
@@ -41,20 +42,6 @@ router.use(requireAuth)
 
 const str = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : String(v))
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function safeRows(client: any, table: string, build: (query: any) => any): Promise<Row[]> {
-  try {
-    const { data, error } = await build(client.from(table))
-    if (error) {
-      console.warn(`Drift detection ${table} query skipped:`, error.message || error)
-      return []
-    }
-    return (data as Row[]) || []
-  } catch (error) {
-    console.warn(`Drift detection ${table} query failed:`, (error as Error)?.message || error)
-    return []
-  }
-}
 
 const CACHE_TTL_MS = 15_000
 const cache = new Map<string, { at: number; promise: Promise<DriftIntelligence> }>()
@@ -62,32 +49,36 @@ const cache = new Map<string, { at: number; promise: Promise<DriftIntelligence> 
 async function compute(token: string, userId: string, force: boolean): Promise<DriftIntelligence> {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
+  const ledger = createSourceLedger('Drift detection')
 
   const [portfolio, scanSessions, scanResults, runtimeEvents, migrationJobs] = await Promise.all([
     buildPortfolio(token, userId, force),
-    safeRows(client, 'pqc_scan_sessions', (q) =>
+    ledger.read(client, 'pqc_scan_sessions', 'Scan sessions', 60, (q) =>
       q.select('id, status, total_assets, scanned_assets, findings_count, started_at, completed_at, created_at').eq('user_id', userId).order('completed_at', { ascending: false }).limit(60),
     ),
     // Bounded to the findings of the sessions we can actually compare. Ordered
     // newest-first so a truncated result keeps the two most recent sessions.
-    safeRows(client, 'pqc_scan_results', (q) =>
+    ledger.read(client, 'pqc_scan_results', 'Scan findings', 4000, (q) =>
       q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(4000),
     ),
-    safeRows(client, 'runtime_crypto_events', (q) =>
+    ledger.read(client, 'runtime_crypto_events', 'Runtime telemetry', 1000, (q) =>
       q.select('id, asset_id, asset_name, host, algorithm, key_exchange_algorithm, downgrade_detected, observed_at, created_at').eq('user_id', userId).eq('downgrade_detected', true).order('observed_at', { ascending: false }).limit(1000),
     ),
-    safeRows(client, 'migration_jobs', (q) =>
-      q.select('id, asset_id, name, status, target_algorithm, completed_at, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(400),
+    ledger.read(client, 'migration_jobs', 'Migration jobs', 400, (q) =>
+      q.select(`id, asset_id, name, job_type, status, target_algorithm, completed_at, updated_at, created_at, ${SIMULATION_MARKER_SELECT}`).eq('user_id', userId).order('updated_at', { ascending: false }).limit(400),
     ),
   ])
 
-  return buildDriftIntelligence({
-    scanSessions,
-    scanResults,
-    runtimeEvents,
-    migrationJobs,
-    assets: portfolio.assets,
-  })
+  return {
+    ...buildDriftIntelligence({
+      scanSessions,
+      scanResults,
+      runtimeEvents,
+      migrationJobs,
+      assets: portfolio.assets,
+    }),
+    reads: ledger.reads,
+  }
 }
 
 export async function buildDrift(token: string, userId: string, force = false): Promise<DriftIntelligence> {
@@ -113,37 +104,10 @@ router.get('/', async (req: Request, res: Response) => {
   }
 })
 
-router.get('/stream', async (req: Request, res: Response) => {
+/** Full frame when the comparison changes, `drift-unchanged` otherwise (live-snapshot-stream contract). */
+router.get('/stream', (req: Request, res: Response) => {
   const { token, user } = req as AuthedRequest
-  res.status(200)
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
-  res.flushHeaders?.()
-
-  let closed = false
-  const send = (event: string, data: unknown) => {
-    if (!closed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-  }
-  send('connected', { at: new Date().toISOString() })
-
-  const push = async () => {
-    try {
-      send('drift', await buildDrift(token!, user!.id))
-    } catch (error) {
-      send('drift-error', { message: error instanceof Error ? error.message : 'Drift assessment unavailable' })
-    }
-  }
-
-  void push()
-  const interval = setInterval(() => void push(), 20_000)
-  const heartbeat = setInterval(() => { if (!closed) res.write(': heartbeat\n\n') }, 25_000)
-  req.on('close', () => {
-    closed = true
-    clearInterval(interval)
-    clearInterval(heartbeat)
-  })
+  streamLiveSnapshot(req, res, { event: 'drift', build: () => buildDrift(token!, user!.id), intervalMs: 20_000 })
 })
 
 export default router

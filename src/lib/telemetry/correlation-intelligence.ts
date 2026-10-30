@@ -41,6 +41,7 @@ import {
   type Row,
 } from '@/lib/migration/asset-intelligence'
 import { analyzeCryptoObservation, type QuantumClass } from '@/lib/crypto/suite-anatomy'
+import type { SourceRead } from '@/lib/source-read'
 
 /* ================================================================== */
 /* Vocabulary                                                          */
@@ -129,6 +130,8 @@ export interface CorrelationScore {
 }
 
 export interface CorrelationIntelligence {
+  /** Read outcome of every evidence source (published by the router; absent in pure fixtures). */
+  reads?: SourceRead[]
   generatedAt: string
   hasTelemetry: boolean
   coverageScore: CorrelationScore

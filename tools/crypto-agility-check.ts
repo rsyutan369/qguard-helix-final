@@ -243,7 +243,7 @@ function main() {
   /* ---------------------------------------------------------------- */
   console.log('\n[6] Policy evaluation flags exactly what is present')
   const violated = new Set(intel.policy.violations.map((v) => v.ruleId))
-  assert(violated.has('pol-rsa-2048'), 'RSA 2048 raises the WARN rule')
+  assert(violated.has('pol-rsa'), 'RSA 2048 raises the WARN rule (pol-rsa: RSA 2048-bit and above)')
   assert(violated.has('pol-broken-hash'), 'SHA-1 raises the BLOCK rule')
   assert(violated.has('pol-aes128'), 'AES-128 raises the WARN rule')
   assert(violated.has('pol-tls12'), 'TLS 1.2 raises the transport WARN rule')
@@ -507,12 +507,57 @@ function main() {
   /* ---------------------------------------------------------------- */
   console.log('\n[17] Recommendations are bounded and cite evidence')
   assert(intel.recommendations.length > 0 && intel.recommendations.length <= 8, 'recommendations are present and bounded', String(intel.recommendations.length))
-  assert(intel.recommendations.every((r) => r.expectedScoreGain >= 0 && r.expectedScoreGain <= 100), 'expected score gains are plausible')
+  assert(intel.recommendations.every((r) => r.expectedScoreGain === null || (r.expectedScoreGain >= 0 && r.expectedScoreGain <= 100)), 'expected score gains are plausible or withheld (null) when not modelled')
   assert(
     intel.recommendations.every((r) => r.dependencyReductionPct === null || (r.dependencyReductionPct >= 0 && r.dependencyReductionPct <= 100)),
     'dependency-reduction shares are real percentages',
   )
   assert(intel.recommendations.every((r) => r.route.startsWith('/dashboard') || r.route.startsWith('#')), 'every recommendation routes somewhere real')
+
+  /* ---------------------------------------------------------------- */
+  console.log('\n[18] Statuses are disjoint, scores traceable, simulations and unreadable sources excluded')
+  const statusAlgorithms = intel.algorithmStatus.reduce((sum, s) => sum + s.algorithms, 0)
+  assert(statusAlgorithms === intel.replaceability.length, 'every matrix row carries exactly one algorithm status', `${statusAlgorithms} / ${intel.replaceability.length}`)
+  const laneAlgorithms = intel.transitions.reduce((sum, lane) => sum + lane.algorithms, 0)
+  assert(laneAlgorithms === intel.replaceability.length, 'transition lanes partition the matrix rows', `${laneAlgorithms} / ${intel.replaceability.length}`)
+  assert(
+    intel.replaceability.every((r) => r.algorithmStatus !== 'approved' || r.observedInOperation),
+    'no algorithm is Approved without operational evidence',
+  )
+  assert(
+    !intel.transitions.some((lane) => lane.role === 'signature' && /ML-KEM/.test(lane.target ?? '')),
+    'the signature lane never targets ML-KEM',
+    intel.transitions.find((l) => l.role === 'signature')?.target ?? 'no signature lane',
+  )
+  for (const domain of intel.domains.filter((d) => d.score !== null && d.factors.length)) {
+    const measured = domain.factors.filter((f) => f.measured)
+    const weight = measured.reduce((sum, f) => sum + f.effectiveWeight, 0)
+    assert(Math.abs(weight - 1) < 0.01, `${domain.key}: measured factor weights sum to 1`, weight.toFixed(3))
+    assert(domain.factors.filter((f) => !f.measured).every((f) => f.value === null && f.effectiveWeight === 0), `${domain.key}: unmeasured factors carry no value and no weight`)
+  }
+  assert(intel.assets.filter((a) => a.hasEvidence && a.agilityScore !== null).every((a) => a.scoreFactors.length > 0), 'every scored asset publishes its score factors')
+  assert(intel.nextStep.label.length > 0 && intel.nextStep.route.startsWith('/'), 'a next step is published with a real route', intel.nextStep.label)
+
+  const withSimulation = buildCryptoAgilityIntelligence({
+    ...inputs,
+    migrationJobs: [
+      ...migrationJobs,
+      { id: 'sim1', asset_id: 'a1', name: 'sandbox run', job_type: 'tls_migration', status: 'failed', target_algorithm: 'ML-KEM-768', sandbox_mode: 'true', created_at: '2026-08-07T00:00:00Z', updated_at: '2026-08-07T00:00:00Z' },
+    ],
+  })
+  const a1Before = intel.assets.find((a) => a.id === 'a1')
+  const a1After = withSimulation.assets.find((a) => a.id === 'a1')
+  assert(a1After?.agilityState === a1Before?.agilityState && a1After?.agilityScore === a1Before?.agilityScore, 'a failed sandbox simulation does not move an asset', `${a1Before?.agilityState}/${a1Before?.agilityScore} → ${a1After?.agilityState}/${a1After?.agilityScore}`)
+  assert(!withSimulation.changeTracking.changes.some((c) => c.id === 'job-sim1'), 'a sandbox simulation is not a recorded configuration change')
+
+  const certsUnreadable = buildCryptoAgilityIntelligence({
+    ...inputs,
+    certificates: [],
+    sourceHealth: [{ key: 'certificates', label: 'Certificates', state: 'unavailable', rows: 0, limit: 1500, detail: 'query failed' }],
+  })
+  const certDomain = certsUnreadable.domains.find((d) => d.key === 'certificate')!
+  assert(certDomain.score === null && /could not be read/.test(certDomain.basis), 'an unreadable certificate source withholds the certificate domain', certDomain.basis.slice(0, 90))
+  assert(certsUnreadable.nextStep.label === 'Refresh the assessment', 'an unreadable source becomes the next step', certsUnreadable.nextStep.label)
 
   /* ---------------------------------------------------------------- */
   console.log(`\n${failures === 0 ? '✓ ALL CRYPTO AGILITY INVARIANTS HOLD' : `✗ ${failures} INVARIANT(S) FAILED`}\n`)

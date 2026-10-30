@@ -16,7 +16,15 @@ import type {
   CouplingFinding, CryptoAgilityIntelligence, LifecycleStage, MigrationReadinessState,
   PolicyEvaluation, ReplaceabilityClass, ReplaceabilityRow, ResponsibilityRow, RuntimeCryptoEvent,
 } from '@/lib/crypto-agility/agility-intelligence';
-import { AGILITY_STATE_DEFINITION, CONTROL_DOMAIN_LABEL } from '@/lib/crypto-agility/agility-intelligence';
+import { AGILITY_STATE_DEFINITION, ALGORITHM_STATUS_LABEL, CONTROL_DOMAIN_LABEL, type AlgorithmStatus } from '@/lib/crypto-agility/agility-intelligence';
+
+/** Status is never carried by colour alone — every status ships a glyph and a word. */
+export const ALGORITHM_STATUS_TONE: Record<AlgorithmStatus, Tone> = {
+  unsupported: 'critical', deprecated: 'warning', configured: 'info', approved: 'good', detected: 'neutral', unknown: 'neutral',
+};
+export const ALGORITHM_STATUS_GLYPH: Record<AlgorithmStatus, string> = {
+  unsupported: '✕', deprecated: '!', configured: '◐', approved: '✓', detected: '○', unknown: '?',
+};
 import {
   AGILITY_STATE_LABEL, CONTROL_DOMAIN_TONE, MIGRATION_READINESS_LABEL, READINESS_TONE,
   REPLACEABILITY_GLYPH, REPLACEABILITY_LABEL, REPLACEABILITY_TONE, SEVERITY_TONE,
@@ -496,7 +504,10 @@ export function ReplaceabilityMatrix({
                   <tr key={row.id} className="cursor-pointer transition hover:bg-cyan-500/[0.05]" onClick={() => onSelect(row)}>
                     <td className="px-2.5 py-2">
                       <div className="font-mono text-[11px] font-black text-white/90">{row.currentAlgorithm}</div>
-                      <div className="mt-0.5 text-[8.5px] uppercase tracking-wider text-white/30">{row.classification}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1">
+                        <Chip tone={ALGORITHM_STATUS_TONE[row.algorithmStatus]} title={row.statusReason} glyph={ALGORITHM_STATUS_GLYPH[row.algorithmStatus]}>{ALGORITHM_STATUS_LABEL[row.algorithmStatus]}</Chip>
+                      </div>
+                      <div className="mt-0.5 text-[8.5px] text-white/35">{row.roleLabel}{row.observedInOperation ? ' · seen in operation' : ' · not seen in operation'}</div>
                     </td>
                     <td className="px-2.5 py-2">
                       <div className="font-mono text-[10.5px] font-bold text-cyan-300">{row.proposedReplacement}</div>
@@ -981,9 +992,12 @@ export function PolicyPanel({ policy }: { policy: PolicyEvaluation }) {
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <MiniField label="Active policy" value={policy.policyName} />
         <MiniField label="Version" value={policy.version} />
-        <MiniField label="Last evaluated" value={relativeTime(policy.lastEvaluatedAt)} />
-        <MiniField label="Exceptions" value={`${policy.exceptions.length} recorded`} />
+        <MiniField label="Mode" value="Evaluated, not enforced" />
+        <MiniField label="Exceptions" value={policy.exceptionsAvailable ? `${policy.exceptions.length} recorded` : 'Could not be read'} />
       </div>
+      <p className="mt-2 rounded-lg border border-amber-400/25 bg-amber-500/[0.05] px-3 py-2 text-[10px] leading-relaxed text-white/55">
+        {policy.enforcement.detail}
+      </p>
 
       {policy.violations.length === 0 ? (
         <div className="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/[0.06] p-3">
@@ -1019,7 +1033,7 @@ export function PolicyPanel({ policy }: { policy: PolicyEvaluation }) {
           <div className="space-y-1">
             {policy.exceptions.slice(0, 5).map((exception) => (
               <div key={exception.id} className="flex flex-wrap items-center gap-2 text-[10px] text-white/50">
-                <Chip tone="warning">{exception.status}</Chip>
+                <Chip tone={exception.state === 'active' ? 'info' : exception.state === 'expired' || exception.state === 'rejected' ? 'critical' : 'warning'}>{exception.state === 'other' ? exception.status : exception.state}</Chip>
                 <span className="truncate">{exception.policy}</span>
                 {exception.expiresAt && <span className="text-white/30">· expires {relativeTime(exception.expiresAt)}</span>}
               </div>

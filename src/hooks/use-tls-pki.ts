@@ -1,5 +1,6 @@
 'use client';
 
+import type { SourceRead } from '@/lib/source-read';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
@@ -29,6 +30,8 @@ interface CommonPayload {
   generatedAt: string;
   latestEvidenceAt: string | null;
   hasData: boolean;
+  /** Outcome of every source read. `unavailable` = the query FAILED, so dependent figures are incomplete, not zero. */
+  reads: SourceRead[];
   posture: PqcTlsPosture;
   telemetry: TelemetryHealth;
   timeline: Array<{ label: string; date: string; observations: number; certificates: number; findings: number }>;
@@ -49,7 +52,7 @@ interface CommonPayload {
 
 export type EndpointSummary = Pick<
   TlsEndpoint,
-  'id' | 'assetId' | 'name' | 'host' | 'port' | 'environment' | 'internetFacing' | 'posture' | 'riskLevel' | 'riskScore' | 'negotiatedVersion'
+  'id' | 'assetId' | 'name' | 'host' | 'port' | 'environment' | 'internetFacing' | 'posture' | 'riskLevel' | 'riskScore' | 'negotiatedVersion' | 'transportBasis'
 >;
 
 export interface TelemetryPayload extends CommonPayload {
@@ -150,6 +153,9 @@ const REALTIME_TABLES = [
   'migration_plans',
   'scanner_agents',
 ] as const;
+
+/** Distinguishes realtime channel topics between hook instances. */
+let nextRealtimeInstance = 0;
 
 /** Reconnect backoff bounds for the SSE stream, in milliseconds. */
 const RETRY_MIN_MS = 3_000;
@@ -283,6 +289,11 @@ export function useTlsPkiView<T extends TlsPkiPayload>(view: TlsPkiView): UseTls
         } catch {
           /* malformed frame - ignore rather than blank the page */
         }
+      } else if (eventName === 'tls-pki-unchanged') {
+        // The server re-checked the estate and nothing changed: the data on
+        // screen is re-verified, so freshness advances without re-sending it.
+        setLastSyncedAt(new Date().toISOString());
+        setLive(true);
       } else if (eventName === 'tls-pki-error') {
         try {
           setError(String(JSON.parse(body)?.message || 'TLS/PKI stream error'));
@@ -335,12 +346,23 @@ export function useTlsPkiView<T extends TlsPkiPayload>(view: TlsPkiView): UseTls
     };
   }, [token, view, apply]);
 
+  /* ---- Tenant change: nothing from the previous tenant may remain ---- */
+  useEffect(() => {
+    lastGeneratedRef.current = 0;
+    setData(null);
+    setLastSyncedAt(null);
+  }, [user?.id]);
+
   /* ---- Supabase realtime: nudge on the tenant's own writes -------- */
   useEffect(() => {
     if (!user) return;
+    // Topic unique per user AND hook instance: supabase.channel() returns the
+    // existing channel for a duplicate topic, and .on() after .subscribe()
+    // throws — two mounts of one view would blank the page (common-issues #63).
+    const instance = nextRealtimeInstance++;
     const channels = REALTIME_TABLES.map((table) =>
       supabase
-        .channel(`tls-pki-${view}-${table}`)
+        .channel(`tls-pki-${view}-${table}-${user.id}-${instance}`)
         .on('postgres_changes', { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` }, queueRefresh)
         .subscribe(),
     );

@@ -76,7 +76,7 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   // PRO — Discovery (remaining) / Operations / Ecosystem / Intelligence / PQAuth / Observability / Trust Center
   { prefix: '/api/v1/migration', tier: 'pro' }, // timeline / phases / live-migration (NOT migration-planner: longer prefix wins)
   { prefix: '/api/v1/migration-snapshots', tier: 'pro' }, // Snapshot Management for safe rollback (live-migration)
-  { prefix: '/api/v1/migration-orchestrator', tier: 'pro' }, // Massive-scale orchestration engine (live-migration)
+  { prefix: '/api/v1/migration-orchestrator', tier: 'pro' }, // Massive-scale orchestration engine (migration-timeline, pqc-orchestration)
   { prefix: '/api/v1/dashboard/pqauth', tier: 'pro' },
   { prefix: '/api/v1/dashboard/telemetry-correlation', tier: 'pro' },
   { prefix: '/api/v1/dashboard/quantum-risk-scoring', tier: 'pro' },
@@ -142,7 +142,7 @@ export type Entitlement = EntitlementRecord
  * billing.ts) and falls back to profiles.tier only for the free/none case — a
  * paid tier requires a real active subscription row. Owner emails always
  * resolve to Elite. THROWS on infra failure (no client / query error) so the
- * gateway can fail OPEN rather than lock out a real subscriber.
+ * gateway can report temporary unavailability without granting unverified access.
  */
 export async function resolveEntitlement(userId: string, email: string | null | undefined, token: string): Promise<Entitlement> {
   if (isOwnerEmail(email)) {
@@ -188,7 +188,10 @@ export async function subscriptionGateway(req: Request, res: Response, next: Nex
   const required = requiredTierForPath(path)
   if (!required) return next() // ungated module (billing, paypal, profile, overview, ...)
 
-  const token = getToken(req)
+  // Some legacy EventSource routers still accept query credentials. Gate the
+  // SAME credential those routers will use, otherwise a header-less request
+  // skips subscription enforcement before the router authenticates it.
+  const token = getToken(req) || (typeof req.query.token === 'string' ? req.query.token : null)
   if (!token) return next() // let the router's auth layer answer with 401
 
   try {
@@ -208,10 +211,10 @@ export async function subscriptionGateway(req: Request, res: Response, next: Nex
     console.warn(`[subscription] DENY: ${user.id} tier=${ent.tier} (${ent.status}) needs ${required} for ${path}`)
     return deny(res, required, ent)
   } catch (err) {
-    // Infra error resolving entitlement — fail OPEN (log) rather than brick the
-    // platform; the frontend gate still applies and this can't be attacker-forced.
-    console.error('[subscription] gateway error (allowing through):', err)
-    return next()
+    // A frontend route guard cannot authorize an API request. A billing outage
+    // must never grant access that the server could not establish.
+    console.error('[subscription] entitlement check unavailable:', err)
+    return res.status(503).json({ error: { code: 'ENTITLEMENT_UNAVAILABLE', message: 'Unable to verify module access. Please try again shortly.' } })
   }
 }
 

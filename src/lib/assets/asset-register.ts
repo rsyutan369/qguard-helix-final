@@ -20,6 +20,7 @@ import { algorithmFamily } from '@/lib/governance/subjects'
 import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
 import { UNASSESSED_BAND, pqcTargetFor, riskBandFor, type RiskBandKey } from '@/lib/migration/asset-intelligence'
 import { STALE_AFTER_HOURS, describeAge } from '@/lib/dashboard-freshness'
+import { assetScanSources, type AssetScanSource, type ScanSourceKind } from './scan-provenance'
 
 /* ================================================================== */
 /* Vocabulary                                                          */
@@ -181,6 +182,7 @@ export interface AssetRegisterRow {
   name: string
   type: string
   typeLabel: string
+  sources: AssetScanSource[]
   target: string
   host: string
   status: string
@@ -543,6 +545,7 @@ function deriveRow(
     name,
     type,
     typeLabel: labelize(type),
+    sources: assetScanSources(asset),
     target,
     host,
     status: text(asset.status) || 'active',
@@ -805,6 +808,8 @@ export function buildAssetRegister(input: RegisterInput): AssetRegister {
 export type RegisterSort = 'risk' | 'vulnerable' | 'last-scanned' | 'name'
 
 export interface RegisterFilter {
+  agentId?: string | null
+  sourceKind?: ScanSourceKind | null
   query?: string
   bands?: RegisterBandKey[] | null
   statuses?: PqcStatus[] | null
@@ -814,6 +819,8 @@ export interface RegisterFilter {
 export function filterRows(rows: AssetRegisterRow[], filter: RegisterFilter): AssetRegisterRow[] {
   const query = text(filter.query).toLowerCase()
   return rows.filter((row) => {
+    if (filter.agentId && !row.sources.some((source) => source.agentId === filter.agentId)) return false
+    if (filter.sourceKind && !row.sources.some((source) => source.kind === filter.sourceKind)) return false
     if (filter.bands?.length && !filter.bands.includes(row.risk.key)) return false
     if (filter.statuses?.length && !filter.statuses.includes(row.pqcStatus)) return false
     if (filter.freshness?.length && !filter.freshness.includes(row.freshness.state)) return false
@@ -827,6 +834,7 @@ export function filterRows(rows: AssetRegisterRow[], filter: RegisterFilter): As
       row.risk.label,
       row.owner,
       row.environment,
+      ...row.sources.flatMap((source) => [source.label, source.agentName, source.collectorHost, source.collectorPlatform]),
       row.lifecycle?.label,
       ...row.algorithms,
       ...row.componentList.flatMap((c) => [c.name, c.classLabel, c.riskBearing, c.evidence, c.recommendation, c.pqcReplacement]),

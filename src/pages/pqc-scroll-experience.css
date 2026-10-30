@@ -1,0 +1,26 @@
+.pqc-reading-progress { position: fixed; left: 0; right: 0; top: 64px; height: 3px; z-index: 45; pointer-events: none; }
+.pqc-reading-progress > div { height: 100%; background: linear-gradient(90deg, #7c3aed, #8b5cf6 45%, #06b6d4); transform: scaleX(0); transform-origin: left; }
+.pqc-scroll-experience .pqc-hero-copy { transform: translate3d(0, var(--pqc-hero-depth, 0px), 0); }
+.pqc-scroll-experience .pqc-scanner { transform: scale(var(--pqc-stage-scale, 1)); transform-origin: center 30%; }
+.pqc-scroll-experience section:not(.pqc-solutions-hero) img { transform: translate3d(0, var(--pqc-image-y, 0px), 0) scale(var(--pqc-image-scale, 1)); }
+.pqc-story-chapter { position: relative; }
+.pqc-story-chapter::before, .pqc-story-chapter::after { content: ''; position: absolute; left: -21px; top: 6px; bottom: 0; width: 2px; border-radius: 2px; pointer-events: none; }
+.pqc-story-chapter::before { background: #e2e8f0; }
+.pqc-story-chapter::after { background: linear-gradient(#8b5cf6, #06b6d4); transform: scaleY(var(--pqc-chapter-progress, 0)); transform-origin: top; }
+.pqc-scroll-experience #problems { padding-left: 48px; }
+.pqc-scroll-experience h1, .pqc-scroll-experience h2, .pqc-scroll-experience h3 { text-wrap: balance; }
+.pqc-scroll-experience p { text-wrap: pretty; }
+@media(max-width: 767px) {
+  .pqc-scroll-experience #problems { padding-left: 32px; padding-right: 20px; }
+  .pqc-story-chapter::before, .pqc-story-chapter::after { left: -15px; }
+}
+@media(prefers-reduced-motion: reduce) {
+  .pqc-reading-progress { display: none; }
+  .pqc-scroll-experience .pqc-hero-copy, .pqc-scroll-experience .pqc-scanner,
+  .pqc-scroll-experience section:not(.pqc-solutions-hero) img { transform: none !important; }
+  .pqc-scroll-experience section:not(.pqc-solutions-hero) [style*="opacity"],
+  .pqc-scroll-experience .pqc-hero-copy > [style*="opacity"] { opacity: 1 !important; }
+  .pqc-scroll-experience section:not(.pqc-solutions-hero) [style*="transform"],
+  .pqc-scroll-experience .pqc-hero-copy > [style*="transform"] { transform: none !important; }
+  .pqc-story-chapter::after { transform: none; }
+}

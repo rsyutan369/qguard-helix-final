@@ -867,8 +867,8 @@ function buildFindings(input: {
       observed: `${input.fleet.total} collector(s) registered · 0 heartbeat rows`,
       remediation: 'Confirm the collector build supports heartbeats and that its outbound path to the ingest endpoint is open.',
       affects: ['Agent Collector Console', 'every freshness indicator in the platform'],
-      actionHref: '/dashboard/scanner?tab=agents',
-      actionLabel: 'Collector console',
+      actionHref: '/dashboard/agents',
+      actionLabel: 'Agents Collector',
     })
   }
 

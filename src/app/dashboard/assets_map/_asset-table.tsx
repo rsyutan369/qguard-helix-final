@@ -117,6 +117,7 @@ export function AssetTable({
                         <span className="block truncate font-mono text-[10px] text-[var(--qg-text-muted)]" title={row.target}>{row.target}</span>
                         <span className="mt-1 flex flex-wrap items-center gap-1">
                           <span className="rounded border border-[var(--qg-card-border)] px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-[var(--qg-dashboard-text-soft)]">{row.typeLabel}</span>
+                          {Array.from(new Set(row.sources.map((source) => source.label))).map((label) => <span key={label} className="rounded border border-cyan-500/25 bg-cyan-500/5 px-1.5 py-0.5 text-[9px] font-bold text-[var(--qg-dashboard-text-soft)]" title={row.sources.filter((source) => source.label === label).map((source) => [source.agentName, source.collectorHost, source.collectorPlatform, source.observedAt ? `Observed ${new Date(source.observedAt).toLocaleString()}` : null].filter(Boolean).join(' · ')).join('\n')}>{label}</span>)}
                           {row.internetFacing ? <span className="inline-flex items-center gap-1 rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-cyan-700 dark:text-cyan-200"><Globe2 className="h-3 w-3" aria-hidden />Internet-facing</span> : null}
                           {row.scanning.active ? <span className="inline-flex items-center gap-1 rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-200"><Radio className="h-3 w-3 animate-pulse" aria-hidden />Scanning{row.scanning.progress !== null ? ` ${Math.round(row.scanning.progress)}%` : ''}</span> : null}
                           {row.evidenceOnly ? <span className="rounded border border-slate-400/30 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-[var(--qg-text-muted)]" title="Discovered from scanner evidence; no asset record has been created yet.">Evidence only</span> : null}
@@ -280,10 +281,11 @@ export function AssetDetail({ row, now, onReport }: { row: AssetRegisterRow; now
         <p className="mb-3 rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] p-2.5 text-[11px] font-semibold leading-relaxed text-[var(--qg-dashboard-text)]">{row.pqcStatusReason}</p>
         <Fact label="Target"><span className="break-all font-mono">{row.target}</span></Fact>
         <Fact label="Type">{row.typeLabel}</Fact>
+        <Fact label="Discovery source"><span className="space-y-1">{row.sources.map((source, index) => <span key={`${source.kind}:${source.agentId}:${index}`} className="block">{source.label}{source.agentName ? ` · ${source.agentName}` : ''}{source.collectorHost ? ` · ${source.collectorHost}` : ''}{source.collectorPlatform ? ` · ${source.collectorPlatform}` : ''}{source.systemModel ? <span className="block text-[var(--qg-text-muted)]">Hardware: {source.systemModel}</span> : null}</span>)}</span></Fact>
         <Fact label="Owner">{row.owner ?? <span className="italic text-[var(--qg-text-muted)]">Unassigned</span>}</Fact>
         <Fact label="Environment">{row.environment ?? '—'}</Fact>
         <Fact label="Criticality">{row.criticality ?? '—'}</Fact>
-        <Fact label="Exposure">{row.internetFacing ? 'Internet-facing' : 'Internal / not public'}</Fact>
+        <Fact label="Exposure">{row.internetFacing ? 'Internet-facing' : 'Internet exposure not confirmed'}</Fact>
         <Fact label="TLS version">{row.tlsVersion ?? '—'}</Fact>
         <Fact label="Scanner risk"><BandPill band={row.risk} score={row.riskScore} /></Fact>
         <Fact label="Last scanned">

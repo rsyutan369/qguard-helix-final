@@ -10,11 +10,10 @@
  * counts, percentages, ROI figures or other outcome metrics are invented — the
  * hero statistics are verifiable facts about the platform and the NIST timeline.
  *
- * Media: hero film and section imagery generated with Higgsfield, optimised to
- * WebP / faststart H.264 in public/helix-features.
+ * Media: the hero books reuse each module's local artwork; there is no hero video.
  */
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import React, { useEffect } from 'react';
+import { FeaturesBookHero } from './_features-book-hero';
 import {
   Activity,
   Award,
@@ -65,9 +64,6 @@ import {
   EMERALD,
   FinalCTA,
   GOLD,
-  HeroKicker,
-  HeroStat,
-  HeroStage,
   LifecycleRail,
   ModuleNavigator,
   ModuleShowcase,
@@ -762,16 +758,6 @@ function usePageMeta() {
 }
 
 export default function QguardHelixFeatures() {
-  const [currentWord, setCurrentWord] = useState(0);
-  const words = ['Algorithm', 'Certificate', 'Trust Relationship'];
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setCurrentWord((prev) => (prev + 1) % words.length);
-    }, 3500);
-    return () => clearInterval(interval);
-  }, []);
-
   usePageMeta();
 
   return (
@@ -792,74 +778,7 @@ export default function QguardHelixFeatures() {
       footerGroups={FOOTER_GROUPS}
     >
       {/* ============================================================ hero == */}
-      <HeroStage video={`${MEDIA}/hero-quantum-migration.mp4`} poster={`${MEDIA}/hero-poster.webp`}>
-        <div className="max-w-4xl">
-          <HeroKicker>The Post-Quantum Platform</HeroKicker>
-
-          <motion.h1
-            initial={{ opacity: 0, y: 26 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, delay: 0.1, ease: [0.22, 1, 0.36, 1] }}
-            className="mt-6 text-4xl font-black leading-[1.05] tracking-tight text-[#f8fafc] sm:text-6xl lg:text-7xl"
-          >
-            <span>For Every </span>
-            <AnimatePresence mode="wait">
-              <motion.span
-                key={currentWord}
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -12 }}
-                transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-                className="inline-block bg-gradient-to-r from-cyan-300 via-[#f3d98b] to-violet-400 bg-clip-text text-transparent"
-              >
-                {words[currentWord]}.
-              </motion.span>
-            </AnimatePresence>
-            <br />
-            <span className="bg-gradient-to-r from-cyan-300 via-[#f3d98b] to-violet-400 bg-clip-text text-transparent">
-              Be Ready for What Comes Next.
-            </span>
-          </motion.h1>
-
-          <motion.p
-            initial={{ opacity: 0, y: 22 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, delay: 0.24, ease: [0.22, 1, 0.36, 1] }}
-            className="mt-6 max-w-2xl text-base leading-relaxed text-[#cbd5e1] sm:text-lg"
-          >
-            Quantum computers won't simply introduce a new cyber threat&mdash;they will redefine
-            cryptographic security. QGuard Helix gives your organization complete visibility into
-            every cryptographic dependency, measures quantum exposure with evidence-backed intelligence,
-            prioritizes the highest-risk migrations, safely validates every change before production,
-            and continuously proves your quantum readiness through a single enterprise platform.
-            <br />
-            <br />
-            <span className="font-semibold">Discover. Assess. Migrate. Validate. Prove.</span>
-          </motion.p>
-
-          <motion.div
-            initial={{ opacity: 0, y: 18 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.7, delay: 0.38, ease: [0.22, 1, 0.36, 1] }}
-            className="mt-8 flex flex-wrap gap-3"
-          >
-            <DarkButton to="/public-scan">Start a free assessment</DarkButton>
-            <a
-              href="#modules"
-              className="inline-flex items-center justify-center gap-2 rounded-lg border border-[#475569] bg-[#0f172a]/55 px-6 py-3 text-sm font-bold uppercase tracking-wide text-[#e2e8f0] no-underline backdrop-blur-xl transition-all duration-200 hover:-translate-y-0.5 hover:border-[#94a3b8]"
-            >
-              Explore the platform
-            </a>
-          </motion.div>
-
-          <div className="mt-12 grid max-w-3xl grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-            <HeroStat value={15} label="Platform modules" detail="Discovery through governance" delay={0.5} />
-            <HeroStat value={7} label="Lifecycle stages" detail="Discover → Govern" delay={0.58} />
-            <HeroStat value={3} label="NIST PQC standards" detail="FIPS 203 · 204 · 205" delay={0.66} />
-            <HeroStat value={2035} grouping={false} label="Classical crypto disallowed" detail="NIST IR 8547 timeline" delay={0.74} />
-          </div>
-        </div>
-      </HeroStage>
+      <FeaturesBookHero modules={MODULES} />
 
       {/* ====================================================== lifecycle == */}
       <section id="lifecycle" className="mx-auto max-w-[96rem] scroll-mt-28 px-4 py-20 sm:px-6">

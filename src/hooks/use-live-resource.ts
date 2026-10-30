@@ -34,6 +34,7 @@ export type LiveLoadState = 'loading' | 'success' | 'error';
 export type LiveTransport = 'connecting' | 'stream' | 'polling' | 'offline';
 
 const FIRST_FRAME_TIMEOUT_MS = 4_000;
+let nextChannelSeq = 0;
 const MAX_BACKOFF_MS = 30_000;
 const REALTIME_DEBOUNCE_MS = 600;
 
@@ -60,7 +61,17 @@ export interface LiveResource<T> {
   transport: LiveTransport;
   /** Last time the server confirmed this payload is current (full or unchanged frame, or REST). */
   lastVerifiedAt: string | null;
-  refresh: () => Promise<void>;
+  /**
+   * `refresh({ force: true })` asks the server to bypass its single-flight
+   * cache (`?refresh=1`). Typed `unknown` on purpose: pages pass `refresh`
+   * straight to `onClick`, so a click event must be an acceptable argument
+   * (it is simply not a force request).
+   */
+  refresh: (options?: unknown) => Promise<void>;
+}
+
+function isForceRequest(options: unknown): boolean {
+  return Boolean(options && typeof options === 'object' && (options as { force?: unknown }).force === true);
 }
 
 export function useLiveResource<T>(options: LiveResourceOptions<T>): LiveResource<T> {
@@ -97,10 +108,11 @@ export function useLiveResource<T>(options: LiveResourceOptions<T>): LiveResourc
     setData(next);
   }, []);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options?: unknown) => {
     if (!token) return;
     try {
-      const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      const target = isForceRequest(options) ? `${url}${url.includes('?') ? '&' : '?'}refresh=1` : url;
+      const response = await fetch(target, { headers: { Authorization: `Bearer ${token}` } });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
       apply(payload.data ?? {});
@@ -230,9 +242,13 @@ export function useLiveResource<T>(options: LiveResourceOptions<T>): LiveResourc
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => void refresh(), REALTIME_DEBOUNCE_MS);
     };
+    // Topic is unique PER HOOK INSTANCE: supabase.channel() returns the existing
+    // channel for a duplicate topic, and .on() after .subscribe() throws — two
+    // components on one page using the same page hook would blank the tree.
+    const instance = nextChannelSeq++;
     const channels = tablesKey.split(',').map((table) =>
       supabase
-        .channel(`${channelPrefix}-${table}-${userId}`)
+        .channel(`${channelPrefix}-${table}-${userId}-${instance}`)
         .on('postgres_changes', { event: '*', schema: 'public', table, filter: `user_id=eq.${userId}` }, nudge)
         .subscribe(),
     );
@@ -243,6 +259,69 @@ export function useLiveResource<T>(options: LiveResourceOptions<T>): LiveResourc
   }, [userId, tablesKey, channelPrefix, refresh]);
 
   return { data, state, error, sseConnected, transport, lastVerifiedAt, refresh };
+}
+
+/**
+ * useLiveModel — `useLiveResource` for a page whose model is "absent until the
+ * server answers" (`data: T | null`), as the Intelligence dashboards render it.
+ *
+ * Adds the two things those pages need and the raw resource does not carry:
+ *  • `lastGoodAt` — when the data on screen was COMPUTED (its `generatedAt`),
+ *    distinct from `lastVerifiedAt`, when the server last confirmed it is still
+ *    current. A connection-lost banner quotes the first; a freshness chip the second.
+ *  • `refreshing` — a user-initiated refresh in flight, so a Refresh button can
+ *    spin without the page dropping back into its loading skeleton.
+ */
+export interface LiveModel<T> {
+  data: T | null;
+  state: LiveLoadState;
+  error: string | null;
+  /** True only while the server stream is open and answering. */
+  live: boolean;
+  transport: LiveTransport;
+  lastVerifiedAt: string | null;
+  lastGoodAt: string | null;
+  refreshing: boolean;
+  /** `force` bypasses the server's single-flight cache. */
+  refresh: (force?: boolean) => Promise<void>;
+  /** Manual recovery for the connection-lost state: a forced REST read. */
+  reconnect: () => void;
+}
+
+export function useLiveModel<T extends { generatedAt?: string | null }>(
+  options: Omit<LiveResourceOptions<T | null>, 'empty' | 'normalize'>,
+): LiveModel<T> {
+  const resource = useLiveResource<T | null>({
+    ...options,
+    empty: null,
+    normalize: (raw) => raw as unknown as T,
+  });
+  const [refreshing, setRefreshing] = useState(false);
+  const { refresh: refreshResource } = resource;
+
+  const refresh = useCallback(async (force = false) => {
+    setRefreshing(true);
+    try {
+      await refreshResource({ force });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshResource]);
+
+  const reconnect = useCallback(() => { void refresh(true); }, [refresh]);
+
+  return {
+    data: resource.data,
+    state: resource.state,
+    error: resource.error,
+    live: resource.sseConnected,
+    transport: resource.transport,
+    lastVerifiedAt: resource.lastVerifiedAt,
+    lastGoodAt: resource.data?.generatedAt ?? resource.lastVerifiedAt,
+    refreshing,
+    refresh,
+    reconnect,
+  };
 }
 
 /** Download a payload as pretty JSON (shared by the evidence-export buttons). */

@@ -45,6 +45,9 @@ PQC validations) streams live so users watch assets become quantum-secure.
 
 ## Enterprise enhancement band (additive — `Live_Migration_Enhancements`)
 
+> **Superseded 2026-10-27** — most of this band was removed; see
+> "Panel reduction (2026-10-27)" at the end of this document.
+
 Per `Qguard_Wiki/Live_Migration_Enhancements`, an additive business-outcome
 band was added above the existing operations surface (nothing removed — the
 header, metric cards, telemetry, jobs list, log terminal and action bar all
@@ -91,3 +94,130 @@ untouched.
   SSE stream emitted a live frame. No API changes.
 - Access: Live Migration is a Pro+ module (Basic sees the upgrade gate) —
   unchanged.
+
+## Panel reduction (2026-10-27)
+
+The page was too crowded. Removed at the owner's request, together with their
+page-level wiring:
+
+| Removed panel | Wiring removed from this page |
+| --- | --- |
+| Post-Quantum Migration Workflow™ rail | `<WorkflowRail>` + the page's `useMigrationWorkflow()` subscription |
+| Quantum Migration Progress hero | `_enhancements.tsx` (deleted) and its derived props |
+| Executive Outcomes (10 KPIs) | same |
+| AI Migration Advisor | same |
+| Certification Progress (+ the 100% success banner, which was its end state) | same |
+| Enterprise Migration Orchestrator | `_orchestration.tsx` (deleted) — the page no longer polls `/api/v1/migration-orchestrator` or opens its SSE stream |
+
+Shared backends were **not** deleted: `/api/v1/migration-orchestrator` still
+feeds Migration Timeline and PQC Orchestration, and `/api/v1/migration-workflow`
+feeds the workflow rail on ~30 other pages.
+
+Kept: header and stream indicator, planner handoff, the four job metric cards,
+Real-Time Telemetry, Activity Feed, Migration Jobs, job detail, Migration Log,
+Snapshot Management, the action bar and the confirmation dialog — all still fed
+by `GET /api/v1/migration/live`, the `/live/stream` SSE (`migration-update`)
+and Supabase realtime on the 9 migration tables.
+
+Also corrected:
+
+- **Cryptographic Upgrade — Before → After** (now `_crypto-upgrade.tsx`) shows
+  only transitions recorded on the tenant's real, non-sandbox jobs, with a
+  completed/total job count. The generic "canonical upgrade paths" fallback was
+  removed, because with no jobs it read as if those transitions had been found
+  in the estate; an empty state is shown instead. The FIPS label now comes from
+  the target algorithm rather than a fixed string.
+- The Migration Log "Live" dot was always green; it now follows the stream
+  (Live / Reconnecting / Stale), like the header.
+- The Real-Time Telemetry health pill was always green, even for "Degraded";
+  its tone now follows the server verdict.
+
+## Four-agent PQC Migration Workflow command center (2026-10-28)
+
+Built per `Qguard_Wiki/Agent_Workflow_Animation`. The top of
+`/dashboard/live-migration` is now a real-time **Collector → Scanner → Patcher →
+Migration Operator** workflow. The job board, job detail (target algorithm,
+migration type, strategy, agent status, asset type, owner, Local Config
+Ownership, Connector / Operator Credentials), rollback, snapshots,
+pause/resume, export and the confirmation dialog are all kept below it.
+
+### What already existed (reused, not replaced)
+
+| Capability | Where |
+| --- | --- |
+| Four agent roles + write authority | `lib/agent-installer/agent-release.ts`, `agent-scope.ts` (`resolveWriteAuthority`) |
+| Agent scan frames (`connecting` … `scan_complete`) | agent runtime `reportScanStage` → `POST /agent/scan-progress` → `agent_heartbeats` (status `scan_progress`) |
+| Host health telemetry (memory %, load, counters) | agent heartbeat → `scanner_agents.metadata.lastTelemetry` + `agent_heartbeats` |
+| Execution class (who may run a job) | `jobExecutionClass` in `api-server/agent-scanner.ts` |
+| Approval / dispatch-block / snapshot gates | `lib/migration/job-safety.ts`, `operational-workflow.ts`, agent poll |
+| Agent realtime bus with sequence ids | `api-server/agent-event-bus.ts` |
+| Live snapshot + SSE + Supabase realtime | `GET /api/v1/migration/live`, `/live/stream` |
+
+### What was added
+
+- **`src/lib/migration/agent-workflow.ts`** — pure, isomorphic model:
+  per-stage status (`idle | queued | waiting | running | blocked |
+  awaiting_approval | paused | retrying | completed | failed | cancelled`),
+  reason, current task, measured progress (or `null` = indeterminate), units,
+  fleet (enrolled / online / authorised), host metrics, outputs, findings,
+  next action; edges with recorded handoff timestamps; a bounded (400),
+  attributed, redacted event stream; vulnerability summary; `deriveRisks`
+  (PQC Risks & Guardrails) and `safetyChecklist` (12 safeguards: Verified /
+  Pending / Failed / Not applicable).
+- **Snapshot** (`api-server/migration.ts`): adds `agentWorkflow`, `runs` (plan
+  selector) and `workflowDegraded`. New reads are optional — a failure yields
+  `null`/Unknown, never zero and never an aborted snapshot.
+- **SSE** `/live/stream` now subscribes to the agent bus: `agent-event` frames
+  carry the bus sequence as the SSE `id`, so a reconnect replays via
+  `Last-Event-ID`; each burst triggers one debounced, single-flight snapshot
+  rebuild. Payloads are redacted; delivery is tenant-filtered.
+- **UI** (`live_migration_ops/_workflow-*.tsx`, `live-workflow.css`): React Flow
+  canvas (pan/zoom/fit, keyboard focus, stacked cards below `lg`, screen-reader
+  list + live region), GSAP-driven status/progress/check/timeline/notification
+  motion, header (status, agents online, stage-weighted progress, elapsed,
+  errors/warnings, Pause/Resume/Cancel, run selector, More Actions), live
+  notifications (dismiss + severity preference, per browser), execution
+  timeline (agent/severity/type filters, live toggle, expandable evidence),
+  agent metrics, vulnerability donut, agent insights (live output JSON), logs
+  (filters, search, CSV of visible lines + full server export), guardrails
+  (hover highlights the affected agent) and the safety checklist.
+
+### Truth rules
+
+- Collector/Scanner progress is the agent's own reported stage %; a run with no
+  frame for 10 min is **Blocked**, not Running. Patcher/Operator progress is
+  finished jobs ÷ countable jobs. Overall = 4 × 25 % over stages that have
+  measurable work; the basis names unmeasured stages.
+- Handoff packets animate only when an edge's recorded `lastHandoffAt` advances
+  (collector `scan_complete` frame; remediation job created; remediation
+  validated) — never on page load, never on a timer.
+- Sandbox simulations are excluded from agent stages (count disclosed).
+- CPU is 1-min load ÷ cores as the agent reports it; Windows hosts report no
+  load average, so it shows "—". API latency is this browser's measured
+  round trip of the snapshot request.
+- Checklist items turn Verified only from recorded evidence (approval verdict,
+  `preChangeSnapshotId`, passing validation, persisted execution records…).
+
+### Verification
+
+- `npm run check:live-workflow` — 51 offline assertions incl. negative controls
+  (idle tenant, stalled run, silent agent, sandbox exclusion, approval /
+  authority gates, Windows load, checklist, guardrails, redaction, bounds).
+- `npx tsx tools/rollback-check.ts` — still passes.
+- `tsc --noEmit` — clean.
+- Fixture harness through the real components in the browser pane: four nodes,
+  model-driven edge states, packet fires only on the edge whose handoff
+  advanced, status changes announced, no horizontal scroll at 375 px. (A React
+  Flow edge remount bug that swallowed the packet was found and fixed here.)
+- `/api/v1/migration/live` and `/live/stream` load and return 401 without a
+  session.
+
+### Known limitations
+
+- Not yet verified against a signed-in tenant with live agents (the page is
+  login-gated); `vite build` was not run (blocked by Smart App Control here).
+- Collector/Scanner have no server-side pause — header Pause/Resume act on
+  migration jobs; agent schedules stay in the Agent Center (the disabled
+  button says so).
+- The agent bus replay buffer is in-process (500 events); after a server
+  restart the next snapshot reconciles state.

@@ -301,5 +301,23 @@ console.log('\n7. Every roll-up reconciles with the event list')
   assert(regressions.length === model.kpis.regressions, 'and matches the KPI', String(regressions.length))
 }
 
+console.log('\n[sim] A sandbox simulation never explains drift on a production asset')
+{
+  // The same new X25519 on a-pay, now with a COMPLETED sandbox run targeting it.
+  // Before the fix the simulation counted as the "planned" change and the
+  // regression disappeared into the planned column.
+  const withSimulation = buildDriftIntelligence({
+    ...base,
+    migrationJobs: [
+      ...migrationJobs,
+      { id: 'sim', asset_id: 'a-pay', name: 'Payments key exchange', job_type: 'tls_migration', status: 'completed', target_algorithm: 'X25519', sandbox_mode: 'true', completed_at: daysAgo(2), updated_at: daysAgo(2), created_at: daysAgo(3) },
+    ],
+  })
+  const x25519 = (m: typeof model) => m.events.find((e) => e.assetId === 'a-pay' && e.algorithm === 'X25519' && e.source === 'scan-comparison')
+  assert(x25519(withSimulation)?.driftClass === 'regression', 'the new classical primitive stays a regression', x25519(withSimulation)?.driftClass ?? 'missing')
+  assert(!x25519(withSimulation)?.explainedBy, 'and is not explained by the simulation', x25519(withSimulation)?.explainedBy ?? 'unexplained')
+  assert(withSimulation.kpis.regressions === model.kpis.regressions, 'the regression count is unchanged by a simulation', `${model.kpis.regressions} → ${withSimulation.kpis.regressions}`)
+}
+
 console.log(`\n${failures === 0 ? '✓ All drift detection invariants hold.' : `✗ ${failures} invariant(s) FAILED.`}`)
 process.exit(failures === 0 ? 0 : 1)

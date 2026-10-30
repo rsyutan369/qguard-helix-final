@@ -1,0 +1,829 @@
+# MASTER IMPLEMENTATION PROMPT
+# Qguard Helix — Production-Ready Real-Time PQC Migration Agent Workflow Dashboard
+
+## 1. Primary Objective
+
+Implement a fully functional, production-ready **Real-Time Agentic Workflow Execution Tracker** inside the existing **Qguard Helix Agents Dashboard**.
+
+Transform the current agents interface into a premium, interactive, futuristic **PQC Migration Command Center**, matching the supplied dashboard design references.
+
+This must be a fully integrated, operational system—not a static UI, mockup, animation prototype, or disconnected frontend demonstration.
+
+**Core technology requirements:**
+- React and TypeScript, following the existing application's framework and conventions.
+- `@xyflow/react` (React Flow) for connected, interactive agent workflow nodes.
+- GSAP for smooth, event-driven workflow animations and transitions.
+- Existing backend execution and orchestration services as the source of truth.
+- Existing authentication, authorization, tenant isolation, and audit infrastructure.
+- Authenticated SSE, WebSockets, or the application's existing real-time messaging mechanism.
+- Three.js or React Three Fiber only for optional, lightweight visual enhancement after all core integrations are functional.
+
+**Non-negotiable principle:** All statuses, execution events, progress percentages, findings, errors, timestamps, metrics, and results displayed in the dashboard must originate from verifiable execution evidence.
+
+Do not fabricate agent activities, pretend that simulated jobs are real, or generate artificial progress to make the dashboard appear active.
+
+---
+
+## 2. Phase 1 — Deep Architecture and Backend Audit (Highest Priority)
+
+Before implementing new features, inspect the existing Qguard Helix repository and identify:
+
+1. The four agents' implementations and their existing capabilities.
+2. The agent orchestrator, workflow engine, task dispatcher, and execution lifecycle.
+3. Current agent status and task-state models.
+4. Backend APIs and real-time event mechanisms.
+5. Database schemas, execution records, audit logs, and persistence layers.
+6. Existing approval gates, safety constraints, and migration authorization processes.
+7. Authentication, RBAC, tenant isolation, and asset-level permissions.
+8. Error handling, retries, cancellation, and recovery mechanisms.
+9. Existing frontend frameworks, dashboard components, design tokens, and state-management patterns.
+10. Existing tests, deployment configurations, observability, and infrastructure.
+
+Document the actual architecture and the integration points before making architectural changes.
+
+Reuse existing capabilities wherever practical. Do not unnecessarily replace working APIs, databases, agents, event buses, or orchestration components.
+
+Provide a clear distinction between capabilities that already exist, capabilities that require changes, and infrastructure that is genuinely missing.
+
+**Do not proceed with fake integration if an expected backend capability is unavailable.** Implement the missing backend capability when feasible, or identify the blocker clearly.
+
+---
+
+## 3. Phase 2 — Real Agent Execution State and Event Pipeline
+
+Establish a consistent, authoritative execution state model for each agent and workflow run.
+
+### Required agent state
+
+Track the following fields wherever they can be supported by actual execution data:
+
+- Agent ID and name
+- Workflow run ID and execution ID
+- Tenant and scoped asset identifiers
+- Current execution status
+- Current task and task description
+- Current stage and active operation
+- Completed and total measurable work units
+- Progress percentage, when computable
+- Start time, update time, and completion time
+- Elapsed execution duration
+- Agent dependencies and blocking conditions
+- Current tool or execution operation
+- Latest execution events
+- Outputs, artifacts, and evidence references
+- Findings, warnings, and errors
+- Retry and recovery status
+- Approval requirements
+- Next eligible action
+- Final result and independently verifiable completion evidence
+
+### Supported execution statuses
+
+Implement clear, consistent states:
+
+`idle`, `queued`, `waiting`, `running`, `blocked`, `awaiting_approval`, `paused`, `retrying`, `completed`, `failed`, and `cancelled`.
+
+Map existing backend states into the presentation model without losing meaningful distinctions.
+
+### Event-driven execution
+
+Capture and publish actual execution events such as:
+
+- Workflow created, queued, started, paused, resumed, completed, or failed
+- Agent task dispatched
+- Agent execution started
+- Tool invocation started and finished
+- Progress checkpoint recorded
+- Asset or endpoint scanned
+- Vulnerability or cryptographic finding detected
+- Evidence artifact produced
+- Dependency satisfied or blocked
+- Approval requested, granted, or rejected
+- Agent-to-agent handoff started and confirmed
+- Configuration backup or snapshot created
+- Remediation applied or rejected
+- Validation passed or failed
+- Migration cutover started, verified, or rolled back
+- Agent retry, error, timeout, or cancellation
+
+Persist durable events and expose them through authenticated APIs and a resumable real-time stream.
+
+Each event should contain, as applicable, an event ID, schema version, workflow ID, execution ID, agent ID, event type, timestamp, ordering sequence, correlation ID, severity, and typed payload.
+
+Use server-authoritative sequencing where necessary. Support idempotency, deduplication, reconnect replay, event ordering, snapshot reconciliation, and retention policies.
+
+Handle duplicate, delayed, missing, and out-of-order messages without showing false state transitions.
+
+**The backend remains the only authoritative source of execution truth.**
+
+---
+
+## 4. Phase 3 — Interactive Four-Agent Workflow Canvas
+
+Build a visually rich, interactive workflow diagram using React Flow.
+
+### Main agent pipeline
+
+**Collector → Scanner → Patcher → Migration Operator**
+
+Each agent appears as a premium, futuristic, glassmorphic card with a distinct accent color and connected workflow edges.
+
+### Agent 1 — Collector (Emerald / Cyan)
+
+Purpose: Continuous cryptographic inventory and CBOM evidence collection.
+
+Display real information about:
+
+- TLS and certificates
+- Cryptographic keys and algorithms
+- SSH and configuration evidence
+- Cryptographic dependencies
+- Discovered assets
+- Evidence inventory
+- Collection coverage
+- Completed collection tasks
+
+**Safety:** Collector must remain read-only and never modify host configuration.
+
+### Agent 2 — Scanner (Electric Blue)
+
+Purpose: Quantum-vulnerability assessment.
+
+Display:
+
+- Endpoints analyzed
+- Cryptographic findings
+- Vulnerable assets
+- Algorithm classification
+- Risk categories
+- Relevant FIPS 203 / 204 / 205 considerations
+- Completed and remaining scan operations
+- Generated vulnerability reports
+
+The Scanner must remain read-only and must not silently execute host-side collectors or modify endpoint configurations.
+
+### Agent 3 — Patcher (Amber / Gold)
+
+Purpose: Approved post-quantum cryptography configuration remediation.
+
+Display:
+
+- Approved remediation jobs
+- Authorized configuration paths
+- Pending and completed remediation tasks
+- Backup or snapshot state
+- Applied configuration changes
+- Validation results
+- Failed operations
+- Rollback eligibility and status
+
+**Safety:** Patcher must never modify configuration without valid authorization. Enforce allowed paths, permission checks, pre-change safeguards, and post-change validation.
+
+Patcher must not perform Live Migration cutovers.
+
+### Agent 4 — Migration Operator (Violet / Purple)
+
+Purpose: Execute authorized live PQC migration cutovers.
+
+Display:
+
+- Approved migration jobs
+- Target assets and services
+- Current cutover stage
+- Cryptographic migration status
+- Dependency readiness
+- Verification and health-check results
+- Migration outputs
+- Failure and rollback information
+
+**Safety:** Never claim an unapproved migration job. Never execute a cutover without the required approvals, asset scope, and authorization checks.
+
+Preserve existing live-migration safety behavior.
+
+### Each workflow node must show
+
+- Agent icon and name
+- Agent purpose
+- Live status badge
+- Current task
+- Actual progress bar
+- Completed / total units when available
+- Duration
+- Latest meaningful event
+- Dependencies
+- Warning or error indicator
+- View Details action
+- View Output action when an actual artifact exists
+
+When progress cannot be measured, display an indeterminate progress indicator and explain what is being processed.
+
+Never display an invented percentage or ETA.
+
+---
+
+## 5. Phase 4 — Advanced Visual Design and Animated Workflow
+
+Recreate the provided visual reference as a professional, high-resolution cybersecurity operations interface.
+
+### Visual direction
+
+Use a premium dark theme featuring:
+
+- Deep navy / near-black background
+- Glassmorphic agent cards
+- Cyan and electric-blue neon connections
+- Emerald completed states
+- Gold / amber waiting and remediation states
+- Violet migration visualization
+- Red for errors and critical alerts
+- Subtle grid lines and digital circuit patterns
+- Soft glows, fine borders, and layered depth
+- Crisp typography and clearly separated information panels
+
+Avoid excessive glow, flashing, or distracting motion that interferes with readability.
+
+### React Flow animations
+
+Implement visually connected workflow edges with state-driven styling:
+
+**Idle:** Dim, stable connection.
+
+**Running:** Animated energy flow along the active execution path.
+
+**Completed:** Brief success pulse followed by a stable completed indication.
+
+**Waiting:** Muted connector with a dependency indicator.
+
+**Blocked:** Warning-colored connector and visible blocking reason.
+
+**Failed:** Red error indication and a clear path to inspect the failure.
+
+**Handoff:** An animated data packet or pulse traveling from the originating agent to the receiving agent.
+
+A successful handoff animation must correspond to a real backend handoff event.
+
+### GSAP animations
+
+Implement smooth:
+
+- Agent-card activation and deactivation
+- Progress changes
+- Status badge changes
+- Handoff transitions
+- Completion checkmarks
+- Warning notifications
+- Expandable detail panels
+- Timeline additions
+- Error emphasis
+- Dependency transitions
+- Output and result notifications
+
+Animate from confirmed execution-state changes, not arbitrary frontend timers.
+
+Use lightweight effects with proper animation cleanup, reduced-motion support, and browser performance safeguards.
+
+### Optional 3D elements
+
+After the functional implementation is complete, evaluate a subtle Three.js visual layer featuring a floating PQC shield, cryptographic network, or softly animated security hologram.
+
+This must remain purely decorative and must not consume excessive GPU resources, obscure information, or become a requirement for using the dashboard.
+
+---
+
+## 6. Phase 5 — Dashboard Information Architecture
+
+Implement a complete, responsive operations dashboard with the following areas.
+
+### A. Global Execution Header
+
+At the top, display:
+
+**Qguard Helix | PQC Migration Workflow**
+
+Include:
+
+- Actual workflow status
+- Active agents / total agents
+- Overall measurable progress
+- Workflow elapsed duration
+- Current stage
+- Warning and error count
+- Connection health indicator
+- Pause / Resume / Cancel controls only when backend-supported and authorized
+- Workflow history and execution selector
+
+Do not equate the number of configured agents with the number currently online.
+
+Calculate overall progress using documented, measurable workflow units or explicitly defined stage weights. Otherwise display stage completion without an artificial percentage.
+
+### B. Main Workflow Canvas
+
+Prominently display the four connected agents.
+
+Support:
+
+- Node selection
+- Pan and zoom
+- Fit-to-view
+- Dependency inspection
+- Active workflow highlighting
+- Expandable or collapsible details
+- Keyboard navigation
+- Large-workflow performance optimization
+
+Maintain an accessible representation of the workflow for users who cannot use a graphical canvas.
+
+### C. Live Execution Timeline
+
+Provide a chronological, updating timeline showing:
+
+- Timestamp
+- Agent
+- Event
+- Severity
+- Execution status
+- Related task
+- Duration when applicable
+- Linked evidence or output
+- Expandable details
+
+Enable filtering by agent, event type, severity, status, and execution run.
+
+Provide sensible retention and pagination or virtualization for extensive execution histories.
+
+### D. Selected Agent Details
+
+Selecting an agent opens a rich side panel containing:
+
+- Agent overview
+- Current task
+- Current status
+- Real progress
+- Start time and duration
+- Completed and pending tasks
+- Dependency status
+- Latest events
+- Current findings
+- Outputs and artifacts
+- Error details
+- Recovery actions
+- Next eligible step
+
+Provide task-level and workflow-level detail without requiring users to inspect raw logs.
+
+### E. Real-Time Agent Metrics
+
+Add compact metric cards showing actual available telemetry:
+
+- CPU utilization
+- Memory usage
+- Task throughput
+- API latency
+- Execution duration
+- Completed tasks
+- Failed tasks
+- Scanned assets
+- Collected evidence
+- Vulnerability findings
+
+Use small animated trend charts where appropriate.
+
+Do not invent metrics when telemetry is unavailable.
+
+Distinguish agent-level metrics from host-level and workflow-level metrics.
+
+### F. Cryptographic Vulnerability Summary
+
+Implement a live, evidence-based vulnerability summary with:
+
+- Critical findings
+- High findings
+- Medium findings
+- Low findings
+- Affected assets
+- Algorithm categories
+- Relevant cryptographic risks
+- PQC readiness information
+- Remediation eligibility
+- Migration readiness
+
+Use interactive charts, filters, drill-downs, and linked evidence.
+
+Do not infer that an asset is compliant solely because it uses a particular algorithm. Base classifications on explicit policies, standards, and available evidence.
+
+---
+
+## 7. Phase 6 — Security Alerts, Hidden Risks, and Operator Safety
+
+Integrate the secondary visual reference's floating notification panels, hidden-risk visualization, and safety checklist into the PQC workflow.
+
+These must be meaningful operational features, not decorative imitations.
+
+### A. Live Security and Workflow Notifications
+
+Implement unobtrusive notification cards for events such as:
+
+- New cryptographic vulnerability discovered
+- Unexpected certificate or algorithm detected
+- Unapproved configuration modification attempted
+- Suspicious or untrusted update artifact identified
+- Unknown asset discovered
+- Agent dependency blocked
+- Migration approval required
+- Configuration validation failed
+- Migration health verification failed
+- Rollback initiated or completed
+
+Support severity colors, timestamps, links to evidence, dismissal, and notification preferences.
+
+Only generate notifications from verified backend events or clearly labeled policy assessments.
+
+### B. The Hidden Trap → PQC Risks & Guardrails
+
+Add a dedicated panel titled:
+
+**PQC Risks & Guardrails**
+
+Visually connect detected risks to their affected agent, task, configuration, or migration step using subtle glowing relationships.
+
+Examples:
+
+- Legacy cryptographic algorithms
+- Unsupported post-quantum configurations
+- Untrusted remediation packages
+- Unauthorized configuration paths
+- Unverified certificate chains
+- Incomplete asset inventory
+- Unmet migration dependencies
+- Missing authorization or validation
+
+Display severity, source evidence, affected resources, and recommended review actions.
+
+### C. The Better Habit → Safe Migration Checklist
+
+Add a second section titled:
+
+**PQC Migration Safety Checklist**
+
+Use animated checkmarks only when the corresponding safeguard is actually verified.
+
+Checklist items should include:
+
+- Verify target asset and authorization
+- Validate cryptographic inventory
+- Review vulnerability evidence
+- Confirm configuration change approval
+- Verify trusted package and configuration sources
+- Create a recovery snapshot where supported
+- Validate proposed PQC settings
+- Confirm dependency readiness
+- Verify post-remediation service health
+- Confirm cutover authorization
+- Validate migration completion
+- Record final evidence and audit trail
+
+Checklist statuses must include **Verified**, **Pending**, **Failed**, and **Not Applicable**, based on real backend information.
+
+Do not mark safeguards complete merely because an operator opened the checklist.
+
+---
+
+## 8. Phase 7 — Real-Time Logs, Results, and Evidence
+
+Implement a real-time execution log viewer with:
+
+- Timestamped log entries
+- Agent and execution filters
+- Severity classifications
+- Search
+- Structured-event details
+- Tool execution information
+- Error stack traces when authorized
+- Correlation identifiers
+- Linked evidence
+- Export functionality subject to permissions
+
+Support streaming logs with efficient batching, bounded memory use, and virtualized rendering.
+
+Redact credentials, private keys, tokens, secrets, and sensitive tenant data before exposing logs to the browser.
+
+### Agent outputs
+
+Allow authorized users to inspect actual:
+
+- Cryptographic inventory results
+- CBOM evidence
+- Vulnerability findings
+- Scan reports
+- Remediation records
+- Configuration validation results
+- Migration execution records
+- Rollback records
+- Audit evidence
+
+Include metadata such as creation time, source agent, execution ID, asset scope, and artifact status.
+
+Never invent files or claim that an artifact exists without a persisted reference.
+
+---
+
+## 9. Phase 8 — Workflow Controls, Approvals, and Recovery
+
+Implement operational controls only if supported by actual backend behavior.
+
+Potential actions include:
+
+- Start workflow
+- Pause or resume execution
+- Cancel execution
+- Retry failed task
+- Inspect failed operation
+- Approve eligible remediation
+- Approve eligible migration cutover
+- Review dependency failures
+- Trigger supported recovery or rollback operation
+
+Every mutation must enforce server-side authorization and tenant isolation.
+
+For configuration changes and migration cutovers, require the approval and confirmation safeguards defined by the existing application.
+
+Use idempotent commands where appropriate and record command initiation, acceptance, rejection, and actual execution results separately.
+
+Never show that an operation succeeded merely because an API request was accepted.
+
+If a control is unavailable, disabled, or unsupported, communicate why.
+
+---
+
+## 10. Phase 9 — Real-Time Reliability and Production Hardening
+
+Ensure the dashboard operates correctly under realistic production conditions.
+
+### Backend and networking
+
+Implement:
+
+- Authenticated event subscriptions
+- Secure tenant-scoped event delivery
+- Connection lifecycle tracking
+- Heartbeats when supported
+- Automatic reconnection with bounded backoff
+- Event replay or state resynchronization
+- Duplicate-event handling
+- Event-ordering guarantees or reconciliation
+- Snapshot recovery after missed events
+- Bounded event queues and backpressure handling
+- Graceful handling of expired sessions and revoked permissions
+
+### Frontend
+
+Implement:
+
+- Stable node identifiers
+- Efficient React Flow state updates
+- Fine-grained component subscriptions
+- Debounced or batched visual updates
+- GSAP animation cleanup
+- Long-running workflow support
+- Virtualized activity feeds
+- Responsive desktop and tablet layouts
+- Practical mobile monitoring views
+- Accessible color contrast
+- Keyboard-operated controls
+- Screen-reader-friendly status announcements
+- `prefers-reduced-motion` support
+
+### State correctness
+
+Clearly differentiate:
+
+- Live connected
+- Reconnecting
+- Disconnected
+- Historical execution
+- Simulated test execution
+- Unknown execution state
+
+When the event connection is lost, do not silently continue showing stale information as though it were current.
+
+Display the last confirmed update timestamp and reconcile the state when connectivity returns.
+
+---
+
+## 11. Phase 10 — Detailed UI Layout
+
+Build the dashboard using the following composition.
+
+### Top Navigation
+
+Qguard Helix branding, page title, connection indicator, workflow metrics, elapsed time, workflow selector, and authorized execution actions.
+
+### Main Upper Section
+
+Four large horizontally connected React Flow agent nodes:
+
+**Collector (Green) → Scanner (Blue) → Patcher (Amber) → Migration Operator (Purple)**
+
+Use glowing state-dependent connections, animated handoffs, progress indicators, and concise execution details.
+
+### Upper-Right Floating Area
+
+Stacked real-time event notification cards and an optional decorative PQC security shield.
+
+### Middle-Left Area
+
+Full-width interactive execution timeline.
+
+### Middle-Center Area
+
+Agent metrics and cryptographic vulnerability summary.
+
+### Middle-Right Area
+
+Selectable agent details, current task, live progress, latest outputs, and next eligible steps.
+
+### Bottom-Left Area
+
+Live terminal-style execution logs, including filtering and search.
+
+### Bottom-Center Area
+
+PQC Risks & Guardrails, showing detected risks, warning severity, and investigation actions.
+
+### Bottom-Right Area
+
+PQC Migration Safety Checklist, showing dynamically verified safety checks.
+
+Allow panels to collapse or resize where practical.
+
+Use the supplied reference image as the primary visual target, but prioritize readability, responsive behavior, and production usability over exact pixel reproduction.
+
+---
+
+## 12. Phase 11 — Testing and Verification
+
+Implement meaningful tests covering the actual application architecture.
+
+### Backend tests
+
+Verify:
+
+- Agent state transitions
+- Accurate progress calculations
+- Execution-event persistence
+- Event sequencing and deduplication
+- Approval enforcement
+- Tenant isolation
+- Workflow dependencies
+- Handoff confirmation
+- Retry and recovery behavior
+- Failure reporting
+- Cancellation behavior
+- Artifact and audit integrity
+
+### Frontend tests
+
+Verify:
+
+- Correct rendering of agent states
+- Accurate node and connection behavior
+- Real-time event consumption
+- Timeline updates
+- Detail-panel synchronization
+- Progress display correctness
+- Waiting and blocked states
+- Security alerts
+- Authorization-dependent controls
+- Historical-run navigation
+- Reduced-motion behavior
+
+### End-to-end tests
+
+Use a controlled test environment to verify the complete workflow:
+
+1. Start an authorized test execution.
+2. Confirm that Collector reports actual collection events.
+3. Confirm that Scanner receives the required dependency output.
+4. Verify that real execution updates move through the event pipeline.
+5. Confirm that Patcher remains gated until the appropriate approvals and dependencies are satisfied.
+6. Confirm that Migration Operator does not perform an unauthorized cutover.
+7. Verify the visual representation of completed, pending, blocked, and failed states.
+8. Test connection interruption, reconnection, replay, and reconciliation.
+9. Verify that logs, evidence, and execution summaries agree with backend records.
+10. Verify that no fake execution activity appears in production mode.
+
+Do not run destructive remediation or live migration operations against production assets as part of automated testing.
+
+Run linting, type checks, unit tests, integration tests, and relevant end-to-end tests. Report what actually passed, failed, or could not be executed.
+
+---
+
+## 13. Required Deliverables
+
+Produce actual source-code changes within the existing Qguard Helix project, including as applicable:
+
+1. Backend execution tracking and persistence improvements.
+2. Event publication and authenticated real-time subscription support.
+3. React Flow workflow canvas and custom agent nodes.
+4. GSAP state-driven animation integration.
+5. Live execution timeline.
+6. Agent details and outputs panels.
+7. Execution logs and metrics.
+8. Cryptographic vulnerability summary.
+9. Security alert and risk panels.
+10. Migration safety checklist.
+11. Authorized controls and approval workflows.
+12. Database migrations where genuinely needed.
+13. Automated tests.
+14. Configuration and deployment documentation.
+15. Operational and architectural documentation.
+
+Reuse the project's existing organization and dependencies where appropriate.
+
+Do not introduce unnecessary services, duplicate state stores, or competing event mechanisms.
+
+---
+
+## 14. Final Acceptance Criteria
+
+The implementation is complete only when all applicable criteria below are verified:
+
+- All four agents are represented as interactive, connected workflow nodes.
+- Agent status reflects actual backend state.
+- Progress values are evidence-based or explicitly indeterminate.
+- Animated handoffs occur only when real events support them.
+- Execution details update without manual page refresh.
+- Timeline events match persisted execution history.
+- Outputs and vulnerability findings link to actual evidence.
+- Waiting, blocked, approval, failed, and recovery states are accurately represented.
+- Authorized operations enforce existing safety and permission controls.
+- Scanner and Collector remain read-only.
+- Patcher and Migration Operator do not perform unauthorized writes.
+- Event reconnection and state reconciliation work correctly.
+- Historical execution can be inspected without being mislabeled live.
+- Sensitive information is protected.
+- Existing application functionality remains intact.
+- The UI follows the supplied futuristic Qguard Helix dashboard reference.
+- Relevant automated tests have been executed and their actual results reported.
+
+**Critical instruction:** Do not declare the implementation production-ready without supporting test results and a review of outstanding risks.
+
+---
+
+## 15. Implementation Instructions to the Coding Agent
+
+Begin by inspecting the existing repository and identifying the actual backend architecture, frontend architecture, agent lifecycle, and real-time infrastructure.
+
+Then implement the system incrementally in the following priority order:
+
+**Priority 1 — Execution Truth:** Establish reliable, persisted agent state and execution evidence.
+
+**Priority 2 — Real-Time Delivery:** Expose authenticated, reconnectable, correctly ordered execution updates.
+
+**Priority 3 — Operational Workflow Canvas:** Build the React Flow interface and connect it to authoritative backend state.
+
+**Priority 4 — Visual Fidelity:** Recreate the premium futuristic dashboard, connected agents, progress visualizations, and glowing information flow.
+
+**Priority 5 — GSAP Animation:** Add smooth transitions driven exclusively by confirmed execution events.
+
+**Priority 6 — Intelligence and Safety:** Integrate vulnerability findings, evidence, alerts, approval gates, and the safe migration checklist.
+
+**Priority 7 — Reliability:** Complete error handling, reconnection, accessibility, performance, and security hardening.
+
+**Priority 8 — Verification:** Execute available tests and validate real end-to-end behavior.
+
+Work directly with the existing implementation rather than creating a separate disconnected demo.
+
+Do not replace existing working features without a documented technical reason.
+
+Do not silently weaken permissions, approval gates, validation checks, or tenant boundaries to enable a visual feature.
+
+Do not confuse UI animation with evidence of successful execution.
+
+For each completed phase, summarize the actual files changed, backend integrations implemented, test results, and remaining limitations. Continue through the subsequent phases wherever the available repository and environment permit.
+
+### Expected final result
+
+Deliver a fully integrated, visually impressive **Qguard Helix Real-Time PQC Migration Command Center** where users can immediately understand:
+
+**WHAT** each agent is doing.
+
+**WHICH** assets or tasks it is processing.
+
+**HOW MUCH** verified work has been completed.
+
+**WHEN** execution started and last changed.
+
+**WHY** an agent is waiting, blocked, or failing.
+
+**WHAT** vulnerabilities, risks, and findings have been discovered.
+
+**WHICH** operations require authorization.
+
+**WHAT** results, reports, and evidence have been produced.
+
+**WHAT HAPPENS NEXT** in the migration workflow.
+
+The final experience should combine the visual quality of an advanced cybersecurity operations center with the accuracy, security, transparency, and reliability required for real-world post-quantum cryptography migration operations.
+
+**FINAL DIRECTIVE: BUILD THE FUNCTIONAL SYSTEM, NOT JUST THE APPEARANCE.**

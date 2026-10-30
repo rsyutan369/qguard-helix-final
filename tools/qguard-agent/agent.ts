@@ -1,9 +1,10 @@
 import { createHash, createPrivateKey, createPublicKey, X509Certificate } from 'node:crypto'
-import { promises as fs, readFileSync } from 'node:fs'
+import { promises as fs, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import tls from 'node:tls'
+import { collectHostIdentity } from './host-identity.ts'
 import { collectNativeRuntimeEvents, nativeRuntimeCollectorsEnabled, type NativeRuntimeEvent } from './native-runtime-collectors.ts'
 import {
   MANDATORY_PQC_CONFIG_VALUES,
@@ -21,6 +22,14 @@ import {
   validateControlPlane,
 } from '../../src/lib/agent-installer/agent-environment.ts'
 import { RULE_SET_VERSION } from '../../src/lib/crypto/knowledge-base/rules.ts'
+import {
+  generateAgentKeyPair,
+  keyFingerprint,
+  signRequest,
+  supportedAlgorithms,
+  type AgentKeyPair,
+  type SigningAlgorithm,
+} from '../../src/lib/agent-installer/agent-request-signing.ts'
 import {
   clampAgentScanTypes,
   configEvidenceInScope,
@@ -278,7 +287,7 @@ const API_URL = (process.env.QGUARD_API_URL || DEFAULT_API_URL).replace(/\/+$/, 
 const AGENT_ID = process.env.QGUARD_AGENT_ID || ''
 const AGENT_TOKEN = process.env.QGUARD_AGENT_TOKEN || ''
 /** Injected at bundle time by tools/build-agent-release.mjs; falls back for `tsx` runs. */
-const AGENT_VERSION = process.env.QGUARD_AGENT_BUILD_VERSION || process.env.QGUARD_AGENT_VERSION || '1.5.5'
+const AGENT_VERSION = process.env.QGUARD_AGENT_BUILD_VERSION || process.env.QGUARD_AGENT_VERSION || '1.6.1'
 const AGENT_ROLE = (process.env.QGUARD_AGENT_ROLE || 'collector').toLowerCase()
 const REMEDIATION_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_REMEDIATION || '')
 const CONFIG_PATCHES_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_CONFIG_PATCHES || '')
@@ -332,7 +341,7 @@ function isoNow() {
  * Host health snapshot. Deliberately limited to process/host resource counters —
  * no user, file or personal data is collected (spec §24).
  */
-function hostHealthTelemetry(): Record<string, unknown> {
+function hostHealthTelemetry() {
   const totalMemory = os.totalmem()
   const freeMemory = os.freemem()
   const load = os.loadavg()
@@ -400,31 +409,198 @@ function hostHealthTelemetry(): Record<string, unknown> {
   }
 }
 
+/** Strict environments refuse what development only warns about. */
+const STRICT_TRANSPORT = AGENT_ENVIRONMENT !== 'development'
+
+function refuseToStart(reasons: string[], fix: string): never {
+  console.error(`Insecure agent transport for environment "${AGENT_ENVIRONMENT}":`)
+  for (const reason of reasons) console.error(`  • ${reason}`)
+  console.error(`\n  ${fix}`)
+  console.error('[qguard-agent] Refusing to start. No telemetry was sent and no host was read.')
+  process.exit(78) // EX_CONFIG
+}
+
+/**
+ * Process-wide TLS settings that would quietly void HTTPS for the control-plane
+ * connection. The validator above checks WHERE the agent connects; this checks
+ * that the connection is still verified when it gets there.
+ */
+function assertTrustedTransport(): void {
+  const problems: string[] = []
+  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
+    problems.push('NODE_TLS_REJECT_UNAUTHORIZED=0 disables certificate verification for every HTTPS connection, so anything on the network path could impersonate the control plane.')
+  }
+  if (tls.DEFAULT_MIN_VERSION === 'TLSv1' || tls.DEFAULT_MIN_VERSION === 'TLSv1.1') {
+    problems.push(`The process TLS floor was lowered to ${tls.DEFAULT_MIN_VERSION} (NODE_OPTIONS --tls-min-v1.x). The control plane requires TLS 1.2 or newer.`)
+  }
+  if (problems.length) {
+    // Development against a loopback plaintext URL is not using TLS at all; anything else is.
+    if (STRICT_TRANSPORT || API_URL.startsWith('https:')) {
+      refuseToStart(problems, 'Remove the override from the service environment. A TLS-inspection proxy should be trusted through NODE_EXTRA_CA_CERTS, not by disabling verification.')
+    }
+    for (const problem of problems) console.warn(`[qguard-agent] ${problem}`)
+  }
+  if (process.env.NODE_EXTRA_CA_CERTS) {
+    console.warn('[qguard-agent] Extra CA certificates are trusted (NODE_EXTRA_CA_CERTS) — usually a TLS-inspection proxy. It can read telemetry in transit; request signatures stop it from altering or forging any.')
+  }
+}
+
+/**
+ * A file holding a credential must be readable by its owner only. POSIX
+ * permissions are checked here; on Windows the installer sets the ACL
+ * (SYSTEM + Administrators) because Node cannot read one.
+ */
+function assertOwnerOnly(filePath: string, what: string): void {
+  if (process.platform === 'win32') return
+  let stat
+  try {
+    stat = statSync(filePath)
+  } catch {
+    return
+  }
+  const loose = (stat.mode & 0o077) !== 0
+  const foreignOwner = typeof process.getuid === 'function' && stat.uid !== process.getuid() && stat.uid !== 0
+  if (!loose && !foreignOwner) return
+  const reasons = [
+    ...(loose ? [`${what} ${filePath} is readable by other users (mode ${(stat.mode & 0o777).toString(8)}); anyone who can read it can act as this agent.`] : []),
+    ...(foreignOwner ? [`${what} ${filePath} is owned by another user (uid ${stat.uid}), who could replace it.`] : []),
+  ]
+  if (STRICT_TRANSPORT) refuseToStart(reasons, `Run: chmod 600 "${filePath}" && chown "$(id -u)" "${filePath}"`)
+  for (const reason of reasons) console.warn(`[qguard-agent] ${reason}`)
+}
+
+/* ------------------------------------------------------------------ */
+/* Request-signing keys (see src/lib/agent-installer/agent-request-signing.ts) */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Where the signing keys live. They are generated on this host and never
+ * leave it; the control plane only ever holds the public halves. The state
+ * directory must survive restarts — a lost key means the operator has to reset
+ * the binding in the Agent Center.
+ */
+function signingStateDir(): string {
+  if (process.env.QGUARD_STATE_DIR) return process.env.QGUARD_STATE_DIR
+  if (process.platform === 'win32') {
+    return path.join(process.env.ProgramData || 'C:\\ProgramData', 'QGuardHelix', 'Agent', 'state')
+  }
+  if (CONFIG_FILE_PATH && CONFIG_FILE_PATH.startsWith('/etc/')) return '/var/lib/qguard-agent'
+  return path.join(os.homedir(), '.qguard-agent')
+}
+
+interface StoredKeyFile {
+  version: 1
+  agentId: string
+  createdAt: string
+  keys: Array<{ algorithm: SigningAlgorithm; privateKeyPem: string }>
+}
+
+let SIGNING_KEYS: AgentKeyPair[] = []
+
+function writeOwnerOnly(filePath: string, contents: string) {
+  const temporary = `${filePath}.${process.pid}.tmp`
+  writeFileSync(temporary, contents, { mode: 0o600, flag: 'wx' })
+  renameSync(temporary, filePath)
+}
+
+/**
+ * Load this agent's signing keys, creating them on first run. When the runtime
+ * gains ML-DSA (a Node upgrade), an ML-DSA key is added; the control plane
+ * extends the binding because the request is still signed by the bound
+ * Ed25519 key.
+ */
+function loadSigningKeys(): AgentKeyPair[] {
+  const directory = signingStateDir()
+  const filePath = path.join(directory, `signing-keys-${AGENT_ID.replace(/[^A-Za-z0-9_-]/g, '_')}.json`)
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
+
+  let stored: StoredKeyFile | null = null
+  try {
+    assertOwnerOnly(filePath, 'Signing-key file')
+    stored = JSON.parse(readFileSync(filePath, 'utf8')) as StoredKeyFile
+    if (stored.agentId !== AGENT_ID) throw new Error(`key file belongs to agent ${stored.agentId}`)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      refuseToStart([`Signing-key file ${filePath} is unreadable or invalid: ${(error as Error).message}`], 'Restore it from backup, or delete it and reset the signing key for this agent in the Agent Center.')
+    }
+  }
+
+  const supported = supportedAlgorithms()
+  const keys: AgentKeyPair[] = (stored?.keys || [])
+    .filter((entry) => supported.includes(entry.algorithm))
+    .map((entry) => {
+      const privateKey = createPrivateKey(entry.privateKeyPem)
+      return { algorithm: entry.algorithm, privateKey, publicKeyDer: createPublicKey(privateKey).export({ type: 'spki', format: 'der' }) as Buffer }
+    })
+  const missing = supported.filter((algorithm) => !keys.some((key) => key.algorithm === algorithm))
+  if (missing.length) {
+    for (const algorithm of missing) keys.push(generateAgentKeyPair(algorithm))
+    const file: StoredKeyFile = {
+      version: 1,
+      agentId: AGENT_ID,
+      createdAt: stored?.createdAt || isoNow(),
+      keys: keys.map((key) => ({ algorithm: key.algorithm, privateKeyPem: key.privateKey.export({ type: 'pkcs8', format: 'pem' }) as string })),
+    }
+    writeOwnerOnly(filePath, JSON.stringify(file, null, 2))
+    console.log(`[qguard-agent] ${stored ? 'Added' : 'Generated'} request-signing key(s): ${missing.join(', ')} → ${filePath} (owner-only)`)
+  }
+  for (const key of keys) {
+    console.log(`[qguard-agent] Signing with ${key.algorithm} key ${keyFingerprint(key.publicKeyDer).slice(0, 16)}…`)
+  }
+  return keys
+}
+
 function requireEnrollment() {
   /* Security gate first: an unenrolled agent pointed at an insecure control
      plane should be told about the control plane, because that is the problem
      that survives fixing the credentials. */
   assertSecureControlPlane()
+  assertTrustedTransport()
+  if (CONFIG_FILE_PATH) assertOwnerOnly(CONFIG_FILE_PATH, 'Agent configuration (holds the agent token)')
   if (!AGENT_ID || !AGENT_TOKEN) {
     console.error('QGuard agent is not enrolled. Set QGUARD_AGENT_ID and QGUARD_AGENT_TOKEN before running.')
     console.error('Install a generated package from the Qguard Helix Agent Center (/downloads), or set the')
     console.error('variables manually: QGUARD_AGENT_ID=<id> QGUARD_AGENT_TOKEN=<token> npm run agent:scan')
     process.exit(1)
   }
+  if (!SIGNING_KEYS.length) SIGNING_KEYS = loadSigningKeys()
 }
 
+const CONTROL_PLANE_TIMEOUT_MS = Math.max(5_000, Math.min(120_000, Number(process.env.QGUARD_REQUEST_TIMEOUT_MS) || 30_000))
+
 async function requestJson<T>(pathName: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${API_URL}${pathName}`, {
-    ...init,
-    headers: {
-      'content-type': 'application/json',
-      'user-agent': `qguard-helix-agent/${AGENT_VERSION} (${AGENT_ROLE}; ${os.platform()}-${os.arch()})`,
-      'x-qguard-agent-id': AGENT_ID,
-      'x-qguard-agent-token': AGENT_TOKEN,
-      'x-qguard-agent-version': AGENT_VERSION,
-      ...(init.headers || {}),
-    },
-  })
+  if (init.body != null && typeof init.body !== 'string') throw new Error('Agent request bodies must be serialised JSON strings so the signed bytes are the sent bytes')
+  const method = (init.method || 'GET').toUpperCase()
+  const body = (init.body as string | undefined) ?? null
+  const url = `${API_URL}${pathName}`
+  let response: Response
+  try {
+    response = await fetch(url, {
+      ...init,
+      method,
+      body,
+      // Never follow a redirect: fetch would replay the agent's credential
+      // headers to wherever it points — another host, or plain HTTP.
+      redirect: 'error',
+      signal: AbortSignal.timeout(CONTROL_PLANE_TIMEOUT_MS),
+      headers: {
+        'content-type': 'application/json',
+        'user-agent': `qguard-helix-agent/${AGENT_VERSION} (${AGENT_ROLE}; ${os.platform()}-${os.arch()})`,
+        'x-qguard-agent-id': AGENT_ID,
+        'x-qguard-agent-token': AGENT_TOKEN,
+        'x-qguard-agent-version': AGENT_VERSION,
+        ...signRequest({ method, url, agentId: AGENT_ID, body, keys: SIGNING_KEYS }),
+        ...(init.headers || {}),
+      },
+    })
+  } catch (error) {
+    const cause = String((error as { cause?: unknown })?.cause ?? '')
+    if (/redirect/i.test(`${(error as Error).message} ${cause}`)) {
+      throw new Error(`Control plane answered ${method} ${pathName} with a redirect; refusing to follow it with agent credentials. Point QGUARD_CONTROL_PLANE_URL at the final HTTPS endpoint.`)
+    }
+    if ((error as Error).name === 'TimeoutError') throw new Error(`Control plane did not answer ${method} ${pathName} within ${CONTROL_PLANE_TIMEOUT_MS / 1000}s`)
+    throw error
+  }
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) {
     const message = payload?.error?.message || response.statusText || 'Agent API request failed'
@@ -479,6 +655,8 @@ async function acknowledgeCommand(
 }
 
 async function sendHeartbeat(status: string, telemetry: Record<string, unknown> = {}) {
+  const identity = await collectHostIdentity()
+  const health = hostHealthTelemetry()
   await requestJson('/api/v1/agent-scanner/agent/heartbeat', {
     method: 'POST',
     body: JSON.stringify({
@@ -486,7 +664,7 @@ async function sendHeartbeat(status: string, telemetry: Record<string, unknown> 
       hostname: os.hostname(),
       platform: `${os.platform()} ${os.release()} ${os.arch()}`,
       version: AGENT_VERSION,
-      telemetry: { ...hostHealthTelemetry(), ...telemetry },
+      telemetry: { ...health, host: { ...health.host, ...identity }, ...telemetry },
     }),
   })
 }

@@ -24,6 +24,8 @@ import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server
 import { buildSnapshot } from './quantum-readiness'
 import { buildPortfolio } from './migration-planner'
 import { buildTlsPkiIntelligence } from '@/lib/tls-pki/intelligence'
+import { streamLiveSnapshot } from './live-snapshot-stream'
+import { createSourceLedger, type SourceRead } from './source-ledger'
 import type { TlsPkiIntelligence, TlsEndpoint, PkiCertificate, TlsFinding, OrchestrationItem } from '@/lib/tls-pki/types'
 
 type Row = Record<string, unknown>
@@ -48,37 +50,22 @@ function num(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function safeRows(client: any, table: string, build: (query: any) => any): Promise<Row[]> {
-  try {
-    const { data, error } = await build(client.from(table))
-    if (error) {
-      console.warn(`[tls-pki] ${table} query skipped:`, error.message || error)
-      return []
-    }
-    return (data as Row[]) || []
-  } catch (error) {
-    console.warn(`[tls-pki] ${table} query failed:`, (error as Error)?.message || error)
-    return []
-  }
-}
+/** The model as published: the intelligence plus the outcome of every source read. */
+export type TlsPkiModel = TlsPkiIntelligence & { reads: SourceRead[] }
 
 /* ------------------------------------------------------------------ */
 /* Auth                                                                */
 /* ------------------------------------------------------------------ */
 
 /**
- * EventSource cannot set headers, so the legacy streams accepted `?token=`,
- * which writes a bearer token into access logs, proxies and browser history.
- * The new hooks stream over fetch + ReadableStream with an Authorization
- * header. The query fallback is kept ONLY so an already-open legacy tab does
- * not hard-fail during a deploy; nothing in the new frontend uses it.
+ * Authorization header ONLY. The `?token=` fallback this replaced let a BASIC
+ * tenant read all four Pro pages: the subscription gateway reads only the
+ * header and passes a header-less request through for the router to answer,
+ * and the router then accepted the token from the URL (common-issues #63/#66).
+ * Every frontend hook already streams over fetch() with the header.
  */
 function tokenFromRequest(req: Request): string | null {
-  const header = getToken(req)
-  if (header) return header
-  const query = req.query.token
-  return typeof query === 'string' && query.length > 0 ? query : null
+  return getToken(req)
 }
 
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -122,11 +109,17 @@ const CAP = {
 /* ------------------------------------------------------------------ */
 
 const MODEL_TTL_MS = 15_000
-const modelCache = new Map<string, { at: number; promise: Promise<TlsPkiIntelligence> }>()
+const modelCache = new Map<string, { at: number; promise: Promise<TlsPkiModel> }>()
 
-async function computeModel(token: string, userId: string): Promise<TlsPkiIntelligence> {
+async function computeModel(token: string, userId: string): Promise<TlsPkiModel> {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
+  // A failed read still degrades to [] (one broken table never blanks the
+  // page) but is RECORDED as unavailable and published, so its zeros are never
+  // read as measurements (common-issues #64).
+  const ledger = createSourceLedger('tls-pki')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const safeRows = (c: any, table: string, build: (query: any) => any) => ledger.read(c, table, table.replace(/_/g, ' '), null, build)
 
   // Canonical estate truth first: these two are themselves cached per tenant,
   // so asking for them here is nearly free and guarantees this page agrees with
@@ -260,7 +253,7 @@ async function computeModel(token: string, userId: string): Promise<TlsPkiIntell
     certificates.length >= CAP.certificates ||
     scannerEvidence.length >= CAP.scannerEvidence
 
-  return buildTlsPkiIntelligence({
+  const intelligence = buildTlsPkiIntelligence({
     assets: portfolio.assets,
     snapshot: {
       quantumReadiness: snapshot.scores.quantumReadiness,
@@ -286,9 +279,10 @@ async function computeModel(token: string, userId: string): Promise<TlsPkiIntell
     queuedAssetIds: portfolio.assets.filter((asset) => asset.queued).map((asset) => asset.id),
     truncated,
   })
+  return Object.assign(intelligence, { reads: ledger.reads })
 }
 
-export async function buildTlsPkiModel(token: string, userId: string, force = false): Promise<TlsPkiIntelligence> {
+export async function buildTlsPkiModel(token: string, userId: string, force = false): Promise<TlsPkiModel> {
   const cached = modelCache.get(userId)
   if (!force && cached && Date.now() - cached.at < MODEL_TTL_MS) return cached.promise
   const promise = computeModel(token, userId)
@@ -314,11 +308,13 @@ export function invalidateTlsPkiModel(userId: string) {
 const PAGE = { endpoints: 60, certificates: 60, findings: 40, items: 60 } as const
 
 /** Fields every page shares, so the header is identical on all four. */
-function commonEnvelope(model: TlsPkiIntelligence) {
+function commonEnvelope(model: TlsPkiModel) {
   return {
     generatedAt: model.generatedAt,
     latestEvidenceAt: model.latestEvidenceAt,
     hasData: model.hasData,
+    /** Outcome of every source read: `unavailable` means the query FAILED, not "none". */
+    reads: model.reads,
     posture: model.posture,
     telemetry: model.telemetry,
     timeline: model.timeline,
@@ -362,10 +358,11 @@ function endpointSummary(endpoint: TlsEndpoint) {
     riskLevel: endpoint.riskLevel,
     riskScore: endpoint.riskScore,
     negotiatedVersion: endpoint.negotiatedVersion,
+    transportBasis: endpoint.transportBasis,
   }
 }
 
-export function projectView(model: TlsPkiIntelligence, view: TlsPkiView) {
+export function projectView(model: TlsPkiModel, view: TlsPkiView) {
   const base = commonEnvelope(model)
 
   switch (view) {
@@ -428,6 +425,25 @@ export function projectView(model: TlsPkiIntelligence, view: TlsPkiView) {
         findings: model.findings.slice(0, PAGE.findings),
       }
   }
+}
+
+/**
+ * One projection per (cached model, view): every open tab of a tenant shares the
+ * object, so the stream's fingerprint is computed once per model, not per tab.
+ */
+const projectionMemo = new WeakMap<TlsPkiModel, Map<TlsPkiView, ReturnType<typeof projectView>>>()
+function projectedView(model: TlsPkiModel, view: TlsPkiView) {
+  let byView = projectionMemo.get(model)
+  if (!byView) {
+    byView = new Map()
+    projectionMemo.set(model, byView)
+  }
+  let projected = byView.get(view)
+  if (!projected) {
+    projected = projectView(model, view)
+    byView.set(view, projected)
+  }
+  return projected
 }
 
 /* ------------------------------------------------------------------ */
@@ -581,46 +597,15 @@ function buildRouter(view: TlsPkiView): Router {
    * stops the KPI strip, the tables and the charts from disagreeing mid-update.
    * Every connected client of a tenant collapses onto the one cached model.
    */
-  router.get('/stream', async (req: AuthedRequest, res: Response) => {
-    res.status(200)
-    res.setHeader('Content-Type', 'text/event-stream')
-    res.setHeader('Cache-Control', 'no-cache, no-transform')
-    res.setHeader('Connection', 'keep-alive')
-    res.setHeader('X-Accel-Buffering', 'no')
-    res.flushHeaders?.()
-
-    let closed = false
-    const send = (event: string, data: unknown) => {
-      if (closed) return
-      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-    }
-
-    send('connected', { at: new Date().toISOString(), view })
-
-    let lastGeneratedAt = ''
-    const push = async () => {
-      try {
-        const data = await model(req)
-        // Suppress identical frames: within the cache window the model is the
-        // same object, and re-sending it only burns bandwidth and re-renders.
-        if (data.generatedAt === lastGeneratedAt) return
-        lastGeneratedAt = data.generatedAt
-        send('tls-pki', projectView(data, view))
-      } catch (error) {
-        send('tls-pki-error', { message: error instanceof Error ? error.message : 'TLS/PKI telemetry unavailable' })
-      }
-    }
-
-    void push()
-    const interval = setInterval(() => void push(), 10_000)
-    const heartbeat = setInterval(() => {
-      if (!closed) res.write(': heartbeat\n\n')
-    }, 25_000)
-
-    req.on('close', () => {
-      closed = true
-      clearInterval(interval)
-      clearInterval(heartbeat)
+  router.get('/stream', (req: AuthedRequest, res: Response) => {
+    // The platform stream: a full frame only when CONTENT changes (fingerprint
+    // excludes generatedAt), otherwise a ~150-byte `tls-pki-unchanged` proof of
+    // re-verification. Deduplicating on `generatedAt` re-sent the whole payload
+    // every time the 15s cache recomputed, changed or not.
+    streamLiveSnapshot(req, res, {
+      event: 'tls-pki',
+      build: async () => projectedView(await model(req), view),
+      intervalMs: 10_000,
     })
   })
 

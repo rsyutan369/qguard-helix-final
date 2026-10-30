@@ -28,6 +28,9 @@ const STATUS_COLORS: Record<WorkflowStage['status'], string> = {
   blocked: '#EF4444',
 };
 
+/** Active-stage TEXT colour from the theme token, so it stays legible on the light (parchment) theme. */
+const ACTIVE_TEXT = 'var(--qg-accent-cyan, #22D3EE)';
+
 function StageIcon({ stage }: { stage: WorkflowStage }) {
   const color = STATUS_COLORS[stage.status];
   if (stage.status === 'complete') return <CheckCircle2 className="h-3.5 w-3.5" style={{ color }} />;
@@ -58,7 +61,8 @@ export function WorkflowRail({ activeStage, tone = 'dark' }: { activeStage: Work
       <div className="flex flex-wrap items-center justify-between gap-2 pb-2">
         <div className="flex items-center gap-2.5">
           <span className={`text-[10px] font-black uppercase tracking-[0.1em] ${subtext}`}>Post-Quantum Migration Workflow™</span>
-          <span className="text-[11px] font-bold" style={{ color: STATUS_COLORS.active }}>
+          {/* Text uses the theme token (cyan on dark, parchment accent on light): the raw #22D3EE measured 1.5:1 on parchment. */}
+          <span className="text-[11px] font-bold" style={{ color: ACTIVE_TEXT }}>
             {workflow.overallProgressPct}% complete
           </span>
           <span className={`hidden text-[11px] sm:inline ${subtext}`}>
@@ -100,7 +104,7 @@ export function WorkflowRail({ activeStage, tone = 'dark' }: { activeStage: Work
                   {index + 1}. {stage.shortLabel}
                 </span>
                 {isCurrent ? (
-                  <span className="rounded px-1 text-[8px] font-black uppercase" style={{ color: STATUS_COLORS.active, backgroundColor: `${STATUS_COLORS.active}1f` }}>
+                  <span className="rounded px-1 text-[8px] font-black uppercase" style={{ color: ACTIVE_TEXT, backgroundColor: `${STATUS_COLORS.active}1f` }}>
                     Now
                   </span>
                 ) : null}

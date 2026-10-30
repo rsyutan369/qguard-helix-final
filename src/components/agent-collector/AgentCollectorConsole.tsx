@@ -1,12 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   Activity,
   ArrowRight,
   CheckCircle2,
   ChevronDown,
-  Circle,
+  ChevronRight,
   Clock,
   Copy,
   Cpu,
@@ -17,6 +18,7 @@ import {
   HelpCircle,
   Info,
   KeyRound,
+  Link2,
   Loader2,
   Play,
   Plus,
@@ -28,6 +30,7 @@ import {
   ShieldCheck,
   Terminal,
   Trash2,
+  TriangleAlert,
   Wifi,
   WifiOff,
   X,
@@ -35,7 +38,6 @@ import {
   Zap,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
-import { mandatoryPqcStackMetadata } from '@/lib/crypto/mandatory-pqc-stack';
 import {
   AGENT_PLATFORMS,
   AGENT_ROLLBACK_MIN_VERSION,
@@ -50,8 +52,22 @@ import {
   isAgentOnline,
   useAgentCollector,
   type AgentPolicyInput,
+  type BindingConflict,
   type CollectorAgent,
+  type ScannerAlertRow,
+  type ScannerEvidenceRow,
 } from '@/hooks/use-agent-collector';
+import { agentBindingFromMetadata, bindingKind, type AgentBinding } from '@/lib/agent-installer/agent-binding';
+import { PATH_ISSUE_COPY, agentPathIssue } from '@/lib/agent-installer/agent-scope';
+import {
+  AssetBindingPicker,
+  EMPTY_BINDING_DRAFT,
+  bindingDraftIssue,
+  bindingIcon,
+  bindingRequestFromDraft,
+  type BindingDraft,
+} from './AssetBindingPicker';
+import { CollectorSettings } from './AgentSettingsConsole';
 
 /* ------------------------------------------------------------------ */
 /* Constants — scan types, environments, install tabs                  */
@@ -89,8 +105,6 @@ const NAV = [
   { id: 'help', label: 'Help', icon: HelpCircle },
 ] as const;
 type NavId = (typeof NAV)[number]['id'];
-
-const MANDATORY_STACK = mandatoryPqcStackMetadata();
 
 /* ------------------------------------------------------------------ */
 /* Small presentational primitives                                     */
@@ -174,6 +188,41 @@ function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Asset binding — read from the rows themselves                       */
+/* ------------------------------------------------------------------ */
+
+/** The binding a stored evidence row or alert was filed under (not the agent's current one). */
+function filedBindingId(row: ScannerEvidenceRow | ScannerAlertRow): string | null {
+  const source = 'raw_evidence' in row ? row.raw_evidence : (row as ScannerAlertRow).metadata;
+  const binding = source && typeof source === 'object' ? (source as Record<string, unknown>).binding : null;
+  const id = binding && typeof binding === 'object' ? (binding as Record<string, unknown>).assetId : null;
+  return typeof id === 'string' ? id : null;
+}
+
+const isOpenAlert = (a: ScannerAlertRow) => !['resolved', 'closed', 'suppressed'].includes(String(a.status || 'open').toLowerCase());
+
+function BindingChip({ binding, compact = false }: { binding: AgentBinding | null; compact?: boolean }) {
+  if (!binding) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] font-bold text-white/45" title="Findings are filed under each discovered host, file or package.">
+        <Radar className="h-3 w-3" /> Open discovery
+      </span>
+    );
+  }
+  const Icon = bindingIcon(binding.kind);
+  return (
+    <span
+      className="inline-flex max-w-[220px] items-center gap-1 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2 py-0.5 text-[10px] font-bold text-cyan-100"
+      title={`${bindingKind(binding.kind)?.label || binding.kind || 'Asset'} · ${binding.attribution === 'bound' ? 'all findings filed here' : 'discovered assets grouped here'}${binding.path ? ` · ${binding.path}` : ''}`}
+    >
+      <Icon className="h-3 w-3 shrink-0" />
+      <span className="truncate">{binding.assetName}</span>
+      {!compact ? <span className="shrink-0 text-[9px] font-black uppercase opacity-60">{binding.attribution === 'bound' ? 'filed' : 'grouped'}</span> : null}
+    </span>
+  );
+}
+
 function fmtDate(value?: string | null): string {
   if (!value) return 'Never';
   const d = new Date(value);
@@ -195,10 +244,23 @@ function relTime(value?: string | null): string {
 /* ------------------------------------------------------------------ */
 /* Console                                                             */
 /* ------------------------------------------------------------------ */
+const isNavId = (value: string | null): value is NavId => NAV.some((item) => item.id === value);
+
 export default function AgentCollectorConsole() {
   const { user } = useAuth();
   const collector = useAgentCollector(true);
-  const [nav, setNav] = useState<NavId>('overview');
+  // The section lives in ?view= so every section is deep-linkable and survives a reload.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const viewParam = searchParams.get('view');
+  const nav: NavId = isNavId(viewParam) ? viewParam : 'overview';
+  const setNav = useCallback((next: NavId) => {
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      if (next === 'overview') params.delete('view');
+      else params.set('view', next);
+      return params;
+    }, { replace: true });
+  }, [setSearchParams]);
   const [drawerAgentId, setDrawerAgentId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ tone: 'ok' | 'bad'; text: string } | null>(null);
 
@@ -226,28 +288,16 @@ export default function AgentCollectorConsole() {
         </div>
       ) : null}
 
-      {/* Header + sub-nav */}
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h2 className="text-xl font-black tracking-tight text-white">Agent Collectors</h2>
-          <p className="mt-1 text-sm text-white/50">Deploy a collector and start your first scan in under five minutes.</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11px] font-bold text-white/60">
-            {collector.sseConnected ? <Wifi className="h-3.5 w-3.5 text-emerald-300" /> : <WifiOff className="h-3.5 w-3.5 text-amber-300" />}
-            {collector.sseConnected ? 'Live' : 'Reconnecting'}
-          </span>
-          <button
-            type="button"
-            onClick={() => void collector.refresh()}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/12 bg-white/[0.04] px-3 py-1.5 text-xs font-bold text-white/75 transition hover:border-cyan-400/40 hover:text-cyan-200"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${collector.busy ? 'animate-spin' : ''}`} /> Refresh
-          </button>
-        </div>
-      </div>
+      <ConsoleHeader
+        collector={collector}
+        onDeploy={() => {
+          setNav('overview');
+          // The wizard mounts with the Overview section; scroll once it has.
+          requestAnimationFrame(() => document.getElementById('agents-quick-start')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+        }}
+      />
 
-      <nav className="flex flex-wrap gap-1.5" aria-label="Agent collector sections">
+      <nav className="flex gap-1 overflow-x-auto rounded-2xl border border-white/8 bg-white/[0.02] p-1" aria-label="Agents Collector sections">
         {NAV.map((item) => {
           const Icon = item.icon;
           const active = nav === item.id;
@@ -257,8 +307,8 @@ export default function AgentCollectorConsole() {
               type="button"
               onClick={() => setNav(item.id)}
               aria-current={active ? 'page' : undefined}
-              className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-sm font-bold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400 ${
-                active ? 'border-cyan-400/40 bg-cyan-400/10 text-cyan-200' : 'border-white/8 bg-white/[0.02] text-white/55 hover:border-white/20 hover:text-white/80'
+              className={`inline-flex shrink-0 items-center gap-2 rounded-xl border px-3.5 py-2 text-sm font-bold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400 ${
+                active ? 'border-cyan-400/40 bg-cyan-400/10 text-cyan-200 shadow-[0_0_0_1px_rgba(34,211,238,0.12)]' : 'border-transparent text-white/55 hover:bg-white/[0.03] hover:text-white/80'
               }`}
             >
               <Icon className="h-4 w-4" /> {item.label}
@@ -277,7 +327,7 @@ export default function AgentCollectorConsole() {
       {nav === 'collectors' && <CollectorsSection collector={collector} onView={setDrawerAgentId} />}
       {nav === 'scans' && <ScansSection collector={collector} onToast={showToast} />}
       {nav === 'operations' && <OperationsSection collector={collector} onToast={showToast} />}
-      {nav === 'settings' && <SettingsSection collector={collector} onToast={showToast} />}
+      {nav === 'settings' && <CollectorSettings collector={collector} onToast={showToast} />}
       {nav === 'help' && <HelpSection />}
 
       {drawerAgent ? (
@@ -295,6 +345,95 @@ export default function AgentCollectorConsole() {
 }
 
 type CollectorApi = ReturnType<typeof useAgentCollector>;
+
+/* ------------------------------------------------------------------ */
+/* Page header — identity, live fleet status, primary actions          */
+/* ------------------------------------------------------------------ */
+function ConsoleHeader({ collector, onDeploy }: { collector: CollectorApi; onDeploy: () => void }) {
+  const s = collector.summary;
+  const loading = collector.state === 'loading';
+  const active = collector.agents.filter((a) => !a.revoked_at && a.status !== 'revoked');
+  const bound = active.filter((a) => agentBindingFromMetadata(a.metadata)).length;
+  // Every figure is read from the live fleet; nothing is shown until it has loaded.
+  const status: Array<{ label: string; value: string; hint: string; tone: 'ok' | 'warn' | 'bad' | 'idle' }> = [
+    { label: 'Fleet', value: String(s.registered), hint: `${s.revoked} revoked`, tone: 'idle' },
+    { label: 'Online', value: `${s.online}/${active.length}`, hint: `${s.awaitingInstall} awaiting install · ${s.offline} offline`, tone: s.online > 0 ? 'ok' : active.length ? 'warn' : 'idle' },
+    { label: 'Bound to assets', value: `${bound}/${active.length}`, hint: `${active.length - bound} on open discovery`, tone: active.length && bound === active.length ? 'ok' : 'idle' },
+    // Open alerts include collector health (offline) alerts, so they are not labelled as quantum risk alone.
+    { label: 'Open alerts', value: String(s.quantumRisks), hint: 'Findings and collector health', tone: s.quantumRisks > 0 ? 'warn' : 'ok' },
+    { label: 'Last heartbeat', value: relTime(s.lastHeartbeat), hint: s.lastHeartbeat ? fmtDate(s.lastHeartbeat) : 'No collector has checked in yet', tone: s.lastHeartbeat ? 'ok' : 'idle' },
+  ];
+
+  return (
+    <header className={`${PANEL} relative overflow-hidden`}>
+      <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/50 to-transparent" />
+      <div className="px-5 pb-4 pt-4 sm:px-6">
+        <nav aria-label="Breadcrumb" className="flex flex-wrap items-center gap-1 text-[11px] font-bold text-white/40">
+          <span>Discovery</span>
+          <ChevronRight className="h-3 w-3" />
+          <Link to="/dashboard/scanner" className="text-white/50 no-underline transition hover:text-cyan-200">PQC Scanner</Link>
+          <ChevronRight className="h-3 w-3" />
+          <span aria-current="page" className="text-cyan-200">Agents Collector</span>
+        </nav>
+
+        <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex min-w-0 items-start gap-3.5">
+            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl border border-cyan-400/30 bg-gradient-to-br from-cyan-400/15 to-blue-500/10 text-cyan-200 shadow-[0_0_24px_rgba(34,211,238,0.15)]">
+              <Server className="h-6 w-6" />
+            </span>
+            <div className="min-w-0">
+              <h1 className="text-2xl font-black tracking-tight text-white">Agents Collector</h1>
+              <p className="mt-1 max-w-2xl text-sm leading-relaxed text-white/55">
+                Deploy collectors onto your hosts, bind each one to the asset, folder, file or profile its findings belong to,
+                and watch the fleet report back in real time. Collectors only read what their policy allows.
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-[11px] font-bold text-white/60" role="status">
+              {collector.sseConnected ? <Wifi className="h-3.5 w-3.5 text-emerald-300" /> : <WifiOff className="h-3.5 w-3.5 text-amber-300" />}
+              {collector.sseConnected ? 'Live' : 'Reconnecting'}
+            </span>
+            <button
+              type="button"
+              onClick={() => void collector.refresh()}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/12 bg-white/[0.04] px-3 py-2 text-xs font-bold text-white/75 transition hover:border-cyan-400/40 hover:text-cyan-200"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${collector.busy ? 'animate-spin' : ''}`} /> Refresh
+            </button>
+            <Link
+              to="/downloads"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/12 bg-white/[0.04] px-3 py-2 text-xs font-bold text-white/75 no-underline transition hover:border-cyan-400/40 hover:text-cyan-200"
+            >
+              <Download className="h-3.5 w-3.5" /> Agent downloads
+            </Link>
+            <button
+              type="button"
+              onClick={onDeploy}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/40 bg-gradient-to-r from-cyan-500/80 to-blue-500/70 px-3.5 py-2 text-xs font-black text-white shadow-lg transition hover:from-cyan-400 hover:to-blue-400"
+            >
+              <Plus className="h-3.5 w-3.5" /> Deploy agent
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <dl className="grid grid-cols-2 border-t border-white/8 sm:grid-cols-3 lg:grid-cols-5">
+        {status.map((item, i) => (
+          <div key={item.label} className={`px-5 py-3 sm:px-6 ${i > 0 ? 'border-l border-white/8' : ''}`}>
+            <dt className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-[0.12em] text-white/40">
+              <StatusDot tone={item.tone} /> {item.label}
+            </dt>
+            <dd className="mt-1">
+              {loading ? <Skeleton className="h-6 w-14" /> : <span className="text-lg font-black tabular-nums text-white">{item.value}</span>}
+              <span className="mt-0.5 block truncate text-[11px] text-white/40" title={item.hint}>{loading ? ' ' : item.hint}</span>
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </header>
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /* Overview — summary cards + Quick Start wizard                       */
@@ -368,7 +507,25 @@ function QuickStartWizard({ collector, onCreated, onView }: { collector: Collect
   const [description, setDescription] = useState('');
   const [tags, setTags] = useState('');
   const [targets, setTargets] = useState('');
+  const [bindingDraft, setBindingDraft] = useState<BindingDraft>(EMPTY_BINDING_DRAFT);
+  const [bindingConflict, setBindingConflict] = useState<BindingConflict | null>(null);
+  const [scanBoundPath, setScanBoundPath] = useState(true);
+  const [submitted, setSubmitted] = useState(false);
   const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
+
+  /* An inventory with nothing in it has nothing to pick: start on "create new". */
+  useEffect(() => {
+    if (collector.bindingTargetsState === 'success' && collector.bindingTargets.length === 0) {
+      setBindingDraft((current) => (current.mode === 'existing' && !current.assetId ? { ...current, mode: 'new' } : current));
+    }
+  }, [collector.bindingTargetsState, collector.bindingTargets.length]);
+
+  const bindingIssue = bindingDraftIssue(bindingDraft, collector.bindingTargets);
+  // A folder or file target is only scanned if it is also in the agent's allowed paths.
+  const boundPath = bindingDraft.mode === 'new' && bindingKind(bindingDraft.kind)?.needsPath && bindingDraft.kind !== 'repository'
+    ? bindingDraft.path.trim()
+    : '';
+  const boundPathIssue = boundPath ? agentPathIssue(boundPath) : null;
 
   const tenantId = user?.id || 'tenant_id_here';
   const apiUrl = typeof window !== 'undefined' ? window.location.origin : 'https://api.yourdomain.com';
@@ -384,11 +541,14 @@ function QuickStartWizard({ collector, onCreated, onView }: { collector: Collect
   );
 
   const handleCreate = useCallback(async () => {
+    setSubmitted(true);
+    if (bindingIssue) return;
+    setBindingConflict(null);
     const policy: AgentPolicyInput = {
       enabled: true,
       intervalSeconds: 60,
       allowedTargets: targets.split(/\r?\n|,/).map((t) => t.trim()).filter(Boolean),
-      allowedPaths: [],
+      allowedPaths: boundPath && scanBoundPath && !boundPathIssue ? [boundPath] : [],
       scanTypes: DEFAULT_POLICY_SCAN_TYPES,
       alertThreshold: 'moderate',
     };
@@ -398,16 +558,21 @@ function QuickStartWizard({ collector, onCreated, onView }: { collector: Collect
       description: description.trim(),
       tags: tags.split(/,/).map((t) => t.trim()).filter(Boolean),
       policy,
+      binding: bindingRequestFromDraft(bindingDraft),
     });
+    if (result.conflict) {
+      setBindingConflict(result.conflict);
+      return;
+    }
     if (result.ok && result.token) {
       setCreatedAgentId(result.token.agentId);
       setStep(1);
       onCreated('Collector created — copy the enrollment token now.');
     }
-  }, [collector, name, environment, description, tags, targets, onCreated]);
+  }, [collector, name, environment, description, tags, targets, onCreated, bindingDraft, bindingIssue, boundPath, boundPathIssue, scanBoundPath]);
 
   return (
-    <div className={`${PANEL} overflow-hidden`}>
+    <div id="agents-quick-start" className={`${PANEL} scroll-mt-4 overflow-hidden`}>
       <div className="border-b border-white/8 px-5 py-4">
         <div className="flex items-center gap-2">
           <Zap className="h-4 w-4 text-cyan-300" />
@@ -444,7 +609,7 @@ function QuickStartWizard({ collector, onCreated, onView }: { collector: Collect
 
       <div className="p-5">
         {step === 0 ? (
-          <div className="max-w-2xl space-y-4">
+          <div className="max-w-3xl space-y-4">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <label className="block">
                 <span className="mb-1.5 block text-xs font-bold text-white/60">Collector Name</span>
@@ -500,6 +665,40 @@ function QuickStartWizard({ collector, onCreated, onView }: { collector: Collect
                 />
               </label>
             </div>
+
+            <div className="border-t border-white/8 pt-4">
+              <AssetBindingPicker
+                value={bindingDraft}
+                onChange={(next) => { setBindingDraft(next); setBindingConflict(null); }}
+                targets={collector.bindingTargets}
+                targetsState={collector.bindingTargetsState}
+                onReloadTargets={() => void collector.loadBindingTargets()}
+                conflict={bindingConflict}
+                agentName={name}
+              />
+              {boundPath ? (
+                <label className="mt-3 flex items-start gap-2.5 rounded-xl border border-white/8 bg-white/[0.02] px-3.5 py-2.5">
+                  <input
+                    type="checkbox"
+                    checked={scanBoundPath}
+                    onChange={(e) => setScanBoundPath(e.target.checked)}
+                    disabled={Boolean(boundPathIssue)}
+                    className="mt-0.5 h-4 w-4 accent-cyan-400"
+                  />
+                  <span className="text-[12px] leading-relaxed text-white/65">
+                    Authorize this agent to scan <code className="font-mono text-cyan-200">{boundPath}</code> (adds it to the agent&apos;s allowed paths).
+                    {boundPathIssue ? <span className="mt-0.5 block text-[var(--qg-notice-text)]">{PATH_ISSUE_COPY[boundPathIssue]}</span> : null}
+                  </span>
+                </label>
+              ) : null}
+            </div>
+
+            {submitted && bindingIssue ? (
+              <div role="alert" className="flex items-center gap-2 rounded-lg border border-[var(--qg-notice-border)] bg-[var(--qg-notice-bg)] px-3 py-2 text-[12px] text-[var(--qg-notice-text)]">
+                <TriangleAlert className="h-4 w-4 shrink-0 text-amber-300" /> {bindingIssue}
+              </div>
+            ) : null}
+
             <button
               type="button"
               onClick={() => void handleCreate()}
@@ -533,10 +732,20 @@ function QuickStartWizard({ collector, onCreated, onView }: { collector: Collect
               Your collector is connected. It scans only its assigned targets and paths from policy, then streams evidence
               back to every module — Assets, CBOM, Risk Analysis, Remediation and Certification update automatically.
             </p>
+            {/* What the server stored, not what the form asked for. */}
+            <div className="flex flex-wrap items-center gap-2 text-[12px] text-white/55">
+              <Link2 className="h-3.5 w-3.5 text-cyan-300" /> Findings filed under
+              <BindingChip binding={agentBindingFromMetadata(createdAgent?.metadata)} />
+            </div>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => createdAgentId && onView(createdAgentId)}
+                onClick={async () => {
+                  if (!createdAgentId) return;
+                  const result = await collector.requestScan(createdAgentId);
+                  if (!result.ok) collector.setError(result.message || 'Unable to queue the scan.');
+                }}
+                disabled={collector.busy}
                 className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/40 bg-cyan-400/10 px-4 py-2.5 text-sm font-black text-cyan-200 transition hover:bg-cyan-400/20"
               >
                 <Play className="h-4 w-4" /> Start Scan
@@ -806,65 +1015,169 @@ function CollectorsSection({ collector, onView }: { collector: CollectorApi; onV
     );
   }
   return (
-    <div className={`${PANEL} overflow-hidden`}>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[980px] text-left text-sm">
-          <thead>
-            <tr className="border-b border-white/8 text-[10px] uppercase tracking-[0.12em] text-white/40">
-              <th className="px-5 py-3 font-black">Collector</th>
-              <th className="px-4 py-3 font-black">Agent Type</th>
-              <th className="px-4 py-3 font-black">Environment</th>
-              <th className="px-4 py-3 font-black">Status</th>
-              <th className="px-4 py-3 font-black">Version</th>
-              <th className="px-4 py-3 font-black">Last Seen</th>
-              <th className="px-4 py-3 font-black">Assets</th>
-              <th className="px-4 py-3 font-black">Health</th>
-              <th className="px-4 py-3 font-black">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {collector.agents.map((agent) => {
-              const assetsForAgent = new Set(collector.evidence.filter((e) => e.agent_id === agent.id).map((e) => e.asset_name || e.host || e.id)).size;
-              const health = agentHealthScore(agent);
-              const healthColor = health >= 70 ? 'text-emerald-300' : health >= 40 ? 'text-amber-300' : 'text-red-300';
-              return (
-                <tr key={agent.id} className="border-b border-white/5 transition hover:bg-white/[0.02]">
-                  <td className="px-5 py-3">
-                    <button type="button" onClick={() => onView(agent.id)} className="text-left font-bold text-white/90 hover:text-cyan-200">
-                      {agent.name}
-                    </button>
-                  </td>
-                  <td className="px-4 py-3"><RoleChip agent={agent} /></td>
-                  <td className="px-4 py-3 capitalize text-white/60">{String(agent.metadata?.environment || '—')}</td>
-                  <td className="px-4 py-3"><StatusBadge status={agentDisplayStatus(agent)} /></td>
-                  <td className="px-4 py-3 font-mono text-white/55">
-                    <span className="whitespace-nowrap">{agent.version || '—'}</span>
-                    {/* Rollback needs a runtime that understands the command; an
-                        older host is told so here rather than at the moment an
-                        operator needs the rollback to work. */}
-                    {agent.version && !agentVersionAtLeast(agent.version, AGENT_ROLLBACK_MIN_VERSION) && (
-                      <span
-                        className="ml-1.5 inline-block whitespace-nowrap rounded border border-amber-400/30 bg-amber-400/10 px-1 py-0.5 font-sans text-[9px] font-bold text-amber-200"
-                        title={`Rollback execution requires agent ${AGENT_ROLLBACK_MIN_VERSION} or later. Upgrade this host to make snapshot restore available on it.`}
-                      >
-                        no rollback
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-white/55">{relTime(agent.last_seen_at)}</td>
-                  <td className="px-4 py-3 tabular-nums text-white/70">{assetsForAgent}</td>
-                  <td className={`px-4 py-3 font-bold tabular-nums ${healthColor}`}>{health}/100</td>
-                  <td className="px-4 py-3">
-                    <button type="button" onClick={() => onView(agent.id)} className="rounded-lg border border-white/12 bg-white/[0.04] px-2.5 py-1 text-[11px] font-bold text-white/70 transition hover:border-cyan-400/40 hover:text-cyan-200">
-                      Details
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+    <div className="space-y-4">
+      <BindingsOverview collector={collector} onView={onView} />
+      <div className={`${PANEL} overflow-hidden`}>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1120px] text-left text-sm">
+            <thead>
+              <tr className="border-b border-white/8 text-[10px] uppercase tracking-[0.12em] text-white/40">
+                <th className="px-5 py-3 font-black">Collector</th>
+                <th className="px-4 py-3 font-black">Bound To</th>
+                <th className="px-4 py-3 font-black">Agent Type</th>
+                <th className="px-4 py-3 font-black">Environment</th>
+                <th className="px-4 py-3 font-black">Status</th>
+                <th className="px-4 py-3 font-black">Version</th>
+                <th className="px-4 py-3 font-black">Last Seen</th>
+                <th className="px-4 py-3 font-black">Assets</th>
+                <th className="px-4 py-3 font-black">Health</th>
+                <th className="px-4 py-3 font-black">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {collector.agents.map((agent) => {
+                const assetsForAgent = new Set(collector.evidence.filter((e) => e.agent_id === agent.id).map((e) => e.asset_name || e.host || e.id)).size;
+                const health = agentHealthScore(agent);
+                const healthColor = health >= 70 ? 'text-emerald-300' : health >= 40 ? 'text-amber-300' : 'text-red-300';
+                return (
+                  <tr key={agent.id} className="border-b border-white/5 transition hover:bg-white/[0.02]">
+                    <td className="px-5 py-3">
+                      <button type="button" onClick={() => onView(agent.id)} className="text-left font-bold text-white/90 hover:text-cyan-200">
+                        {agent.name}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3"><BindingChip binding={agentBindingFromMetadata(agent.metadata)} /></td>
+                    <td className="px-4 py-3"><RoleChip agent={agent} /></td>
+                    <td className="px-4 py-3 capitalize text-white/60">{String(agent.metadata?.environment || '—')}</td>
+                    <td className="px-4 py-3"><StatusBadge status={agentDisplayStatus(agent)} /></td>
+                    <td className="px-4 py-3 font-mono text-white/55">
+                      <span className="whitespace-nowrap">{agent.version || '—'}</span>
+                      {/* Rollback needs a runtime that understands the command; an
+                          older host is told so here rather than at the moment an
+                          operator needs the rollback to work. */}
+                      {agent.version && !agentVersionAtLeast(agent.version, AGENT_ROLLBACK_MIN_VERSION) && (
+                        <span
+                          className="ml-1.5 inline-block whitespace-nowrap rounded border border-amber-400/30 bg-amber-400/10 px-1 py-0.5 font-sans text-[9px] font-bold text-amber-200"
+                          title={`Rollback execution requires agent ${AGENT_ROLLBACK_MIN_VERSION} or later. Upgrade this host to make snapshot restore available on it.`}
+                        >
+                          no rollback
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-white/55">{relTime(agent.last_seen_at)}</td>
+                    <td className="px-4 py-3 tabular-nums text-white/70">{assetsForAgent}</td>
+                    <td className={`px-4 py-3 font-bold tabular-nums ${healthColor}`}>{health}/100</td>
+                    <td className="px-4 py-3">
+                      <button type="button" onClick={() => onView(agent.id)} className="rounded-lg border border-white/12 bg-white/[0.04] px-2.5 py-1 text-[11px] font-bold text-white/70 transition hover:border-cyan-400/40 hover:text-cyan-200">
+                        Details
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Every binding target with the agents reporting into it and what has been
+ * filed under it. Counts come from the binding stamped on each evidence row
+ * and alert when it was recorded — so a rebind moves future findings, never
+ * past ones — and cover the recent records the console has loaded.
+ */
+function BindingsOverview({ collector, onView }: { collector: CollectorApi; onView: (id: string) => void }) {
+  const groups = useMemo(() => {
+    const byAsset = new Map<string, { binding: AgentBinding; agents: CollectorAgent[]; evidence: number; openAlerts: number; critical: number }>();
+    for (const agent of collector.agents) {
+      const binding = agentBindingFromMetadata(agent.metadata);
+      if (!binding || agent.revoked_at || agent.status === 'revoked') continue;
+      const group = byAsset.get(binding.assetId) || { binding, agents: [], evidence: 0, openAlerts: 0, critical: 0 };
+      group.agents.push(agent);
+      byAsset.set(binding.assetId, group);
+    }
+    for (const row of collector.evidence) {
+      const group = byAsset.get(filedBindingId(row) || '');
+      if (group) group.evidence += 1;
+    }
+    for (const alert of collector.alerts) {
+      const group = byAsset.get(filedBindingId(alert) || '');
+      if (!group || !isOpenAlert(alert)) continue;
+      group.openAlerts += 1;
+      if (String(alert.severity).toLowerCase() === 'critical') group.critical += 1;
+    }
+    return Array.from(byAsset.values()).sort((a, b) => b.openAlerts - a.openAlerts || a.binding.assetName.localeCompare(b.binding.assetName));
+  }, [collector.agents, collector.evidence, collector.alerts]);
+
+  const active = collector.agents.filter((a) => !a.revoked_at && a.status !== 'revoked');
+  const unbound = active.filter((a) => !agentBindingFromMetadata(a.metadata));
+
+  return (
+    <div className={`${PANEL} p-5`}>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Link2 className="h-4 w-4 text-cyan-300" />
+          <h3 className="text-sm font-black uppercase tracking-wide text-white/80">Asset Bindings</h3>
+        </div>
+        <span className="text-[11px] text-white/45">
+          {active.length - unbound.length} of {active.length} active collector{active.length === 1 ? '' : 's'} bound · {unbound.length} on open discovery
+        </span>
+      </div>
+      {groups.length ? (
+        <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:grid-cols-3">
+          {groups.map(({ binding, agents, evidence, openAlerts, critical }) => {
+            const Icon = bindingIcon(binding.kind);
+            return (
+              <div key={binding.assetId} className="rounded-xl border border-white/8 bg-white/[0.02] p-3.5">
+                <div className="flex items-start gap-2.5">
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-cyan-400/25 bg-cyan-400/10 text-cyan-200">
+                    <Icon className="h-4 w-4" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-bold text-white/90">{binding.assetName}</div>
+                    <div className="truncate text-[11px] text-white/40">
+                      {bindingKind(binding.kind)?.label || binding.kind || 'Asset'}
+                      {binding.path ? ` · ${binding.path}` : ''}
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-1.5 text-center">
+                  {[
+                    ['Agents', agents.length, 'text-white/85'],
+                    ['Evidence', evidence, 'text-white/85'],
+                    ['Open alerts', openAlerts, critical > 0 ? 'text-red-300' : openAlerts > 0 ? 'text-amber-300' : 'text-emerald-300'],
+                  ].map(([label, value, tone]) => (
+                    <div key={String(label)} className="rounded-lg border border-white/8 bg-white/[0.02] px-2 py-1.5">
+                      <div className={`text-base font-black tabular-nums ${tone}`}>{value as number}</div>
+                      <div className="text-[9px] font-bold uppercase tracking-wide text-white/35">{label}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-2.5 flex flex-wrap gap-1">
+                  {agents.map((agent) => (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      onClick={() => onView(agent.id)}
+                      className="inline-flex items-center gap-1 rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-bold text-white/60 transition hover:border-cyan-400/40 hover:text-cyan-200"
+                    >
+                      <StatusDot tone={isAgentOnline(agent) ? 'ok' : 'idle'} /> {agent.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="text-sm text-white/45">
+          No collector is bound to an asset yet. Bind one from its details drawer, or choose a target when you create a collector,
+          to file its findings under an application, folder, file or profile of your choosing.
+        </p>
+      )}
     </div>
   );
 }
@@ -1068,49 +1381,6 @@ function OperationsSection({ collector, onToast }: { collector: CollectorApi; on
 }
 
 /* ------------------------------------------------------------------ */
-/* Settings — Cryptographic Policies (Security Standards)              */
-/* ------------------------------------------------------------------ */
-function SettingsSection({ collector, onToast }: { collector: CollectorApi; onToast: (tone: 'ok' | 'bad', text: string) => void }) {
-  const groups = [
-    { title: 'Libraries', items: MANDATORY_STACK.requiredLibraries },
-    { title: 'Key Establishment', items: [MANDATORY_STACK.keyExchange.primary, MANDATORY_STACK.keyExchange.hybrid] },
-    { title: 'Signatures', items: [MANDATORY_STACK.signatures.primary, MANDATORY_STACK.signatures.hybrid] },
-    { title: 'Data Protection', items: [MANDATORY_STACK.encryption.symmetric, MANDATORY_STACK.kdf.primary, ...MANDATORY_STACK.hashes] },
-    { title: 'TLS Policy', items: [MANDATORY_STACK.tls.minProtocol, `${MANDATORY_STACK.tls.preferredGroup} preferred`, 'Hybrid TLS enabled'] },
-    { title: 'High Security Profile', items: [MANDATORY_STACK.highSecurityProfile.keyExchange, ...MANDATORY_STACK.highSecurityProfile.signatures] },
-  ];
-  void collector; void onToast;
-  return (
-    <div className="space-y-4">
-      <div className={`${PANEL} p-5`}>
-        <div className="flex items-center gap-2">
-          <ShieldCheck className="h-4 w-4 text-emerald-300" />
-          <h3 className="text-sm font-black uppercase tracking-wide text-white/80">Security Standards</h3>
-        </div>
-        <p className="mt-1 text-sm text-white/50">
-          The mandatory post-quantum cryptographic stack collectors enforce and migrate toward. Aligned with NIST FIPS 203
-          (ML-KEM), FIPS 204 (ML-DSA), FIPS 205 (SLH-DSA) and NSA CNSA 2.0.
-        </p>
-        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {groups.map((g) => (
-            <div key={g.title} className="rounded-xl border border-white/8 bg-white/[0.02] p-4">
-              <div className="mb-2 text-[11px] font-black uppercase tracking-wide text-emerald-300/80">{g.title}</div>
-              <ul className="space-y-1">
-                {g.items.filter(Boolean).map((item, i) => (
-                  <li key={i} className="flex items-center gap-2 text-[12px] text-white/70">
-                    <Circle className="h-1.5 w-1.5 fill-emerald-400 text-emerald-400" /> {item}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
 /* Help — How Collectors Work                                          */
 /* ------------------------------------------------------------------ */
 function HelpSection() {
@@ -1154,6 +1424,150 @@ function HelpSection() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Drawer — asset binding                                              */
+/* ------------------------------------------------------------------ */
+function draftFromBinding(binding: AgentBinding | null): BindingDraft {
+  return binding
+    ? { ...EMPTY_BINDING_DRAFT, mode: 'existing', assetId: binding.assetId, attribution: binding.attribution }
+    : { ...EMPTY_BINDING_DRAFT };
+}
+
+function BindingSection({ agent, collector, isRevoked, onToast }: {
+  agent: CollectorAgent;
+  collector: CollectorApi;
+  isRevoked: boolean;
+  onToast: (tone: 'ok' | 'bad', text: string) => void;
+}) {
+  const binding = agentBindingFromMetadata(agent.metadata);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<BindingDraft>(() => draftFromBinding(binding));
+  const [conflict, setConflict] = useState<BindingConflict | null>(null);
+  const [issue, setIssue] = useState<string | null>(null);
+
+  const filedEvidence = binding ? collector.evidence.filter((e) => e.agent_id === agent.id && filedBindingId(e) === binding.assetId).length : 0;
+  const filedOpenAlerts = binding ? collector.alerts.filter((a) => a.agent_id === agent.id && filedBindingId(a) === binding.assetId && isOpenAlert(a)).length : 0;
+  const Icon = bindingIcon(binding?.kind);
+  const unchanged = (draft.mode === 'none' && !binding)
+    || (draft.mode === 'existing' && binding && draft.assetId === binding.assetId && draft.attribution === binding.attribution);
+
+  const save = async () => {
+    const problem = bindingDraftIssue(draft, collector.bindingTargets);
+    setIssue(problem);
+    if (problem) return;
+    const result = await collector.updateBinding(agent.id, bindingRequestFromDraft(draft));
+    if (result.conflict) {
+      setConflict(result.conflict);
+      return;
+    }
+    onToast(result.ok ? 'ok' : 'bad', result.message || (result.ok ? 'Binding updated.' : 'Binding update failed.'));
+    if (result.ok) setEditing(false);
+  };
+
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between">
+        <h4 className="text-[11px] font-black uppercase tracking-wide text-white/40">Asset Binding</h4>
+        {!isRevoked && !editing ? (
+          <button
+            type="button"
+            onClick={() => { setDraft(draftFromBinding(binding)); setConflict(null); setIssue(null); setEditing(true); }}
+            className="inline-flex items-center gap-1 rounded-lg border border-white/12 bg-white/[0.04] px-2.5 py-1 text-[11px] font-bold text-white/70 transition hover:border-cyan-400/40 hover:text-cyan-200"
+          >
+            <Link2 className="h-3.5 w-3.5" /> {binding ? 'Change binding' : 'Bind to asset'}
+          </button>
+        ) : null}
+      </div>
+
+      {!editing ? (
+        binding ? (
+          <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.05] p-4">
+            <div className="flex items-start gap-3">
+              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-cyan-400/30 bg-cyan-400/10 text-cyan-200">
+                <Icon className="h-5 w-5" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-black text-white">{binding.assetName}</div>
+                <div className="truncate text-[11px] text-white/50">
+                  {bindingKind(binding.kind)?.label || binding.kind || 'Asset'}
+                  {binding.path ? <> · <span className="font-mono">{binding.path}</span></> : null}
+                </div>
+                <div className="mt-1 text-[11px] text-white/55">
+                  {binding.attribution === 'bound' ? 'Every finding is filed under this target.' : 'Discovered assets are grouped under this target.'}
+                </div>
+              </div>
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+              {[
+                ['Filed evidence', String(filedEvidence)],
+                ['Open alerts', String(filedOpenAlerts)],
+                ['Bound', binding.boundAt ? relTime(binding.boundAt) : '—'],
+              ].map(([k, v]) => (
+                <div key={k} className="rounded-lg border border-white/8 bg-white/[0.02] px-2 py-2">
+                  <div className="text-[9px] font-bold uppercase tracking-wide text-white/35">{k}</div>
+                  <div className="mt-0.5 text-[12px] font-bold tabular-nums text-white/80">{v}</div>
+                </div>
+              ))}
+            </div>
+            <a
+              href="/dashboard/assets"
+              className="mt-3 inline-flex items-center gap-1 text-[11px] font-bold text-cyan-200 no-underline hover:text-cyan-100"
+            >
+              Open in Assets <ArrowRight className="h-3 w-3" />
+            </a>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-white/8 bg-white/[0.02] px-4 py-3 text-[12px] leading-relaxed text-white/55">
+            <span className="mb-1 flex items-center gap-1.5 font-bold text-white/75"><Radar className="h-3.5 w-3.5" /> Open discovery</span>
+            Findings are filed under each host, file or package this collector observes. Bind it to an asset to file them under a
+            name of your choosing.
+          </div>
+        )
+      ) : (
+        <div className="space-y-3 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+          <AssetBindingPicker
+            value={draft}
+            onChange={(next) => { setDraft(next); setConflict(null); setIssue(null); }}
+            targets={collector.bindingTargets}
+            targetsState={collector.bindingTargetsState}
+            onReloadTargets={() => void collector.loadBindingTargets()}
+            conflict={conflict}
+            agentName={agent.name}
+            currentAssetId={binding?.assetId || null}
+          />
+          <p className="text-[11px] leading-relaxed text-white/40">
+            Applies to evidence this collector uploads from now on. Findings already recorded stay filed where they were, so the
+            audit trail is never rewritten.
+          </p>
+          {issue ? (
+            <div role="alert" className="flex items-center gap-2 rounded-lg border border-[var(--qg-notice-border)] bg-[var(--qg-notice-bg)] px-3 py-2 text-[12px] text-[var(--qg-notice-text)]">
+              <TriangleAlert className="h-4 w-4 shrink-0 text-amber-300" /> {issue}
+            </div>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void save()}
+              disabled={collector.busy || Boolean(unchanged)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/40 bg-cyan-400/10 px-3.5 py-2 text-xs font-black text-cyan-100 transition hover:bg-cyan-400/20 disabled:opacity-40"
+            >
+              {collector.busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+              {draft.mode === 'none' ? 'Remove binding' : 'Save binding'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              className="rounded-lg border border-white/12 bg-white/[0.04] px-3.5 py-2 text-xs font-bold text-white/70 transition hover:text-white"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Collector Details Drawer                                            */
 /* ------------------------------------------------------------------ */
 function CollectorDrawer({ agent, tenantId, apiUrl, collector, onClose, onToast }: {
@@ -1177,7 +1591,6 @@ function CollectorDrawer({ agent, tenantId, apiUrl, collector, onClose, onToast 
   const assetCount = new Set(evidence.map((e) => e.asset_name || e.host || e.id)).size;
   const health = agentHealthScore(agent);
   const policy = (agent.policy || {}) as Record<string, unknown>;
-  const scanTypes = Array.isArray(policy.scanTypes) ? (policy.scanTypes as string[]) : Array.isArray(policy.scan_types) ? (policy.scan_types as string[]) : [];
   const overview = [
     ['Platform', String(agent.platform || 'customer-managed')],
     ['OS / Hostname', String(agent.hostname || 'Pending install')],
@@ -1193,7 +1606,7 @@ function CollectorDrawer({ agent, tenantId, apiUrl, collector, onClose, onToast 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label={`Collector ${agent.name}`}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} aria-hidden="true" />
-      <div className="relative flex h-full w-full max-w-lg flex-col overflow-hidden border-l border-white/10 bg-[#0b1120] shadow-2xl">
+      <div className="relative flex h-full w-full max-w-xl flex-col overflow-hidden border-l border-white/10 bg-[#0b1120] shadow-2xl">
         <div className="flex items-start justify-between gap-3 border-b border-white/8 px-5 py-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -1220,6 +1633,8 @@ function CollectorDrawer({ agent, tenantId, apiUrl, collector, onClose, onToast 
               ))}
             </div>
           </section>
+
+          <BindingSection agent={agent} collector={collector} isRevoked={isRevoked} onToast={onToast} />
 
           {/* Health */}
           <section>
@@ -1248,27 +1663,17 @@ function CollectorDrawer({ agent, tenantId, apiUrl, collector, onClose, onToast 
             <section>
               <h4 className="mb-2 text-[11px] font-black uppercase tracking-wide text-white/40">Start Scan</h4>
               <div className="flex flex-wrap gap-2">
-                {SCAN_TYPES.slice(0, 4).map((st) => (
                   <button
-                    key={st.id}
                     type="button"
                     onClick={async () => {
-                      const merged = Array.from(new Set([...(scanTypes.length ? scanTypes : DEFAULT_POLICY_SCAN_TYPES)]));
-                      const r = await collector.updatePolicy(agent.id, {
-                        enabled: true,
-                        intervalSeconds: Math.max(30, Math.min(60, Number(policy.intervalSeconds || policy.interval_seconds || 60))),
-                        allowedTargets: Array.isArray(policy.allowedTargets) ? (policy.allowedTargets as string[]) : Array.isArray(policy.allowed_targets) ? (policy.allowed_targets as string[]) : [],
-                        allowedPaths: Array.isArray(policy.allowedPaths) ? (policy.allowedPaths as string[]) : Array.isArray(policy.allowed_paths) ? (policy.allowed_paths as string[]) : [],
-                        scanTypes: merged,
-                        alertThreshold: String(policy.alertThreshold || policy.alert_threshold || 'moderate'),
-                      });
-                      onToast(r.ok ? 'ok' : 'bad', r.ok ? `${st.label} queued — collector will run it on next heartbeat.` : r.message || 'Failed');
+                      const r = await collector.requestScan(agent.id);
+                      if (!r.ok) onToast('bad', r.message || 'Unable to queue the scan.');
                     }}
+                    disabled={collector.busy || policy.enabled === false}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/[0.08] px-3 py-2 text-xs font-bold text-cyan-200 transition hover:bg-cyan-400/15"
                   >
-                    <Play className="h-3.5 w-3.5" /> {st.label}
+                    <Play className="h-3.5 w-3.5" /> Scan authorized scope
                   </button>
-                ))}
               </div>
               <p className="mt-2 text-[11px] text-white/40">Scans respect the collector's authorized targets and paths from policy.</p>
             </section>

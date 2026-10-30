@@ -1,5 +1,6 @@
 'use client';
 
+import type { SourceRead } from '@/lib/source-read';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
@@ -25,6 +26,8 @@ export interface EncryptionPayload {
   generatedAt: string;
   latestEvidenceAt: string | null;
   hasData: boolean;
+  /** Outcome of every source read. `unavailable` = the query FAILED, so dependent figures are incomplete, not zero. */
+  reads: SourceRead[];
   posture: DataProtectionPosture;
   telemetry: TelemetryHealth;
   timeline: EncryptionIntelligence['timeline'];
@@ -76,6 +79,8 @@ const REALTIME_TABLES = [
   'scanner_alerts',
 ] as const;
 
+/** Distinguishes realtime channel topics between hook instances. */
+let nextRealtimeInstance = 0;
 const RETRY_MIN_MS = 3_000;
 const RETRY_MAX_MS = 30_000;
 
@@ -183,7 +188,11 @@ export function useEncryptionMonitoring() {
         } catch {
           /* malformed frame — keep the last good model */
         }
-      } else if (eventName === 'encryption-error') {
+      } else if (eventName === 'encryption-intel-unchanged') {
+        // Re-verified by the server with no content change: freshness advances.
+        setLastSyncedAt(new Date().toISOString());
+        setLive(true);
+      } else if (eventName === 'encryption-intel-error' || eventName === 'encryption-error') {
         try {
           setError(String(JSON.parse(body)?.message || 'Encryption telemetry stream error'));
         } catch {
@@ -235,12 +244,21 @@ export function useEncryptionMonitoring() {
     };
   }, [token, apply]);
 
+  /* ---- Tenant change: nothing from the previous tenant may remain ---- */
+  useEffect(() => {
+    lastGeneratedRef.current = 0;
+    setData(null);
+    setLastSyncedAt(null);
+  }, [user?.id]);
+
   /* ---- Supabase realtime -------------------------------------------- */
   useEffect(() => {
     if (!user) return;
+    // Unique per user AND hook instance (common-issues #63).
+    const instance = nextRealtimeInstance++;
     const channels = REALTIME_TABLES.map((table) =>
       supabase
-        .channel(`encryption-monitoring-${table}`)
+        .channel(`encryption-monitoring-${table}-${user.id}-${instance}`)
         .on('postgres_changes', { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` }, queueRefresh)
         .subscribe(),
     );

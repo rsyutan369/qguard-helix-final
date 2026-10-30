@@ -1,0 +1,58 @@
+[
+  {
+    "width": 1440,
+    "height": 1000,
+    "clipped": [],
+    "overflowingText": [],
+    "tickingAnimation": "none",
+    "heroHeight": 1215,
+    "errors": []
+  },
+  {
+    "width": 1024,
+    "height": 768,
+    "clipped": [],
+    "overflowingText": [],
+    "tickingAnimation": "none",
+    "heroHeight": 1372,
+    "errors": []
+  },
+  {
+    "width": 768,
+    "height": 1024,
+    "clipped": [],
+    "overflowingText": [],
+    "tickingAnimation": "none",
+    "heroHeight": 1813,
+    "errors": []
+  },
+  {
+    "width": 390,
+    "height": 844,
+    "clipped": [],
+    "overflowingText": [],
+    "tickingAnimation": "none",
+    "heroHeight": 2072,
+    "errors": []
+  },
+  {
+    "width": 320,
+    "height": 740,
+    "clipped": [],
+    "overflowingText": [],
+    "tickingAnimation": "none",
+    "heroHeight": 2359,
+    "errors": []
+  },
+  {
+    "motion": {
+      "names": "hero-timebomb-tick, hero-timebomb-glow",
+      "states": [
+        "running",
+        "running"
+      ],
+      "text": "TICKING"
+    },
+    "countdownAdvances": true
+  }
+]

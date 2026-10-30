@@ -270,10 +270,15 @@ export function buildTrustFabricIntelligence(inputs: TrustFabricInputs): TrustFa
     const issuer = str(entry.certificates[0].issuer)
     const id = nodeId.ca(issuer)
     const measuredCert = entry.measuredCert
-    // Root when the CA certificate we hold is self-issued, or when nothing in
-    // the tenant issued the issuer. Intermediate when it has a parent of its own.
+    // Root ONLY when we hold the CA certificate and it is self-issued (or names
+    // no parent). An issuer known by NAME alone is an issuing CA: publicly
+    // trusted roots may not sign subscriber certificates directly (CA/Browser
+    // Forum Baseline Requirements §6.1.7), so a leaf's issuer is an
+    // intermediate. Defaulting the unknown to "root" filed COMODO RSA DV, Let's
+    // Encrypt YR1 and Google Trust Services WE1/WR2 as root authorities and let
+    // the Intermediate CA check PASS with "issued directly by a root".
     const parentIssuer = measuredCert ? str(measuredCert.issuer).toLowerCase() : ''
-    const isRoot = !parentIssuer || parentIssuer === key
+    const isRoot = Boolean(measuredCert) && (!parentIssuer || parentIssuer === key)
     const covered = entry.certificates
     const expiring = covered.filter((cert) => cert.daysToExpiry !== null && cert.daysToExpiry <= 30).length
     const vulnerable = covered.filter((cert) => cert.posture === 'quantum-vulnerable' || cert.posture === 'legacy').length
@@ -298,7 +303,7 @@ export function buildTrustFabricIntelligence(inputs: TrustFabricInputs): TrustFa
       id,
       kind: isRoot ? 'root-ca' : 'intermediate-ca',
       label: issuer,
-      subtitle: measuredCert ? `Certificate collected - ${measuredCert.algorithmLabel}` : 'Issuer name only, not measured',
+      subtitle: measuredCert ? `Certificate collected - ${measuredCert.algorithmLabel}` : 'Issuing CA - name only, not measured',
       state,
       stateReason: reason,
       posture: measuredCert?.posture ?? 'unknown',
@@ -1037,6 +1042,22 @@ function deriveComplianceState(
   return { state: 'not-assessed', detail: 'Compliance evidence exists but records no pass or fail outcome.' }
 }
 
+/**
+ * Failed checks that make a certificate untrustworthy NOW: chain, signature,
+ * revocation, hostname, key/algorithm strength. Two are excluded:
+ *   - `validity`: an expired certificate is reported as expired and one near
+ *     expiry as expiring; calling a still-valid certificate "invalid" or a
+ *     "trust-chain failure" because it has five days left conflated two
+ *     different conditions.
+ *   - `tls-compatibility`: the ENDPOINT accepting TLS 1.0 is a protocol finding
+ *     on that endpoint, not a defect of the certificate it serves.
+ * Both remain in the certificate's own check list.
+ */
+const NOT_TRUST_DEFECTS = new Set<ChainCheck['key']>(['validity', 'tls-compatibility'])
+export function failedTrustChecks(record: { checks: ChainCheck[] }): ChainCheck[] {
+  return record.checks.filter((check) => check.status === 'fail' && !NOT_TRUST_DEFECTS.has(check.key))
+}
+
 /* ================================================================== */
 /* Chain validation (section 5)                                        */
 /* ================================================================== */
@@ -1055,8 +1076,26 @@ function buildChainChecks(input: {
   const rootNode = path?.nodeIds.map((id) => nodes.get(id)).find((node) => node?.kind === 'root-ca')
 
   /* ---- root CA ---- */
+  // A self-signed certificate SERVED by an endpoint is checked first: its chain
+  // "anchors" on itself, which previously read as a PASS ("anchored to ...,
+  // whose certificate is held in inventory") and kept it out of the Invalid KPI
+  // whose definition names self-signed certificates. A self-signed ROOT held in
+  // inventory and not served is a legitimate trust anchor and is unaffected.
+  // "Served" needs a real host: observed transport, or at least a DNS hostname.
+  // A certificate-only record keyed on its subject ("cn=acme internal root")
+  // is not an endpoint anyone connects to.
+  const servedSelfSigned = certificate.selfSigned && Boolean(endpoint) &&
+    (endpoint!.hasTransportEvidence || /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(endpoint!.host))
   checks.push(
-    rootNode
+    servedSelfSigned
+      ? {
+          key: 'root-ca',
+          label: 'Root CA',
+          status: 'fail',
+          detail: `Self-signed certificate served by ${endpoint!.host}: no external authority vouches for it, so clients using public trust stores reject it unless it is explicitly pinned.`,
+          severity: 'high',
+        }
+      : rootNode
       ? rootNode.measured
         ? { key: 'root-ca', label: 'Root CA', status: 'pass', detail: `Anchored to ${rootNode.label}, whose certificate is held in inventory.`, severity: null }
         : {
@@ -1811,8 +1850,10 @@ function buildEvents(input: {
       })
     }
 
-    if (record.failedChecks > 0) {
-      const failure = record.checks.find((check) => check.status === 'fail')
+    // Expiry is reported by the certificate-lifecycle event above; only a failed
+    // chain / signature / revocation / hostname check is a trust-chain failure.
+    if (failedTrustChecks(record).length > 0) {
+      const failure = failedTrustChecks(record)[0]
       push({
         id: `event:chain-failure:${certificate.id}`,
         kind: 'trust-chain-failure',
@@ -2029,7 +2070,7 @@ function buildEvents(input: {
       detail: `Agent status ${str(agent.status) || 'unknown'} on ${str(agent.platform) || 'an unrecorded platform'}.`,
       severity: 'low',
       subject: str(agent.name) || 'Collector agent',
-      subjectHref: '/dashboard/scanner?tab=agents',
+      subjectHref: '/dashboard/agents',
       assetId: null,
       certificateId: null,
       provider: null,
@@ -2302,7 +2343,8 @@ function buildKpis(input: {
 
   const byBand = (band: ExpiryBand) => certificateTrust.filter((record) => record.band === band)
   const active = certificateTrust.filter((record) => record.band !== 'expired' && record.band !== 'unknown')
-  const invalid = certificateTrust.filter((record) => record.failedChecks > 0 && record.band !== 'expired')
+  // Expiry has its own KPIs; a still-valid certificate a few days from expiry is not "invalid".
+  const invalid = certificateTrust.filter((record) => record.band !== 'expired' && failedTrustChecks(record).length > 0)
   const weak = certificates.filter(
     (certificate) =>
       (certificate.keySize !== null && /rsa/i.test(certificate.publicKeyAlgorithm) && certificate.keySize < 2048) ||
@@ -2385,7 +2427,7 @@ function buildKpis(input: {
       'expired',
       'Expired',
       byBand('expired').length,
-      byBand('expired').length > 0 ? 'TLS handshakes using these already fail' : 'No expired certificates in inventory',
+      byBand('expired').length > 0 ? 'Past notAfter - clients that check expiry reject them' : 'No expired certificates in inventory',
       byBand('expired').length > 0 ? 'critical' : 'good',
       '/dashboard/certificate-telemetry?band=expired',
       byBand('expired').map((record) => record.certificateId),
@@ -2395,7 +2437,7 @@ function buildKpis(input: {
       'invalid',
       'Invalid',
       invalid.length,
-      'At least one chain validation check is failing',
+      'Failing a chain, signature, revocation or hostname check',
       invalid.length > 0 ? 'critical' : 'good',
       '/dashboard/certificate-telemetry?state=invalid',
       invalid.map((record) => record.certificateId),
@@ -2602,7 +2644,7 @@ function buildReconciliation(input: {
       sourceTable: 'runtime_crypto_events',
       affectedIds: [],
       remediation: 'Check collector agents and cloud connectors, then re-run discovery.',
-      href: '/dashboard/scanner?tab=agents',
+      href: '/dashboard/agents',
     })
   }
 

@@ -1,0 +1,4 @@
+import {createRequire} from 'node:module';
+const require=createRequire('C:/Users/ruel3/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/_entry.cjs');
+const {chromium}=require('playwright'); const browser=await chromium.launch({channel:'chrome'});
+for(const width of [1440,390]){const page=await browser.newPage({viewport:{width,height:900}}); await page.goto('http://localhost:3000/qguard-helix-features'); await page.waitForSelector('#feature-library-title'); console.log(await page.locator('#feature-library-title').innerText()); console.log(await page.evaluate(()=>({width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth})));await page.screenshot({path:`artifacts/governance-hero/features-headline-${width}.png`});await page.close();}await browser.close();

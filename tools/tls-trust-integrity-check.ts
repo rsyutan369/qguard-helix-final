@@ -1,0 +1,173 @@
+/**
+ * TLS / PKI / Trust Fabric — offline integrity check.
+ *
+ *     npx tsx tools/tls-trust-integrity-check.ts
+ *
+ * Exercises the pure builders behind seven pages (TLS Telemetry, PKI
+ * Visibility, Protocol Analytics, TLS Orchestrator, Encryption Monitoring is
+ * covered by its own router path, Trust Dashboard, Trust-State Discovery) with
+ * controlled fixtures — no network, no database. Each section guards a defect
+ * found on live tenants by the 2026-10-28 audit (Technical_Audit_3):
+ *
+ *   A. "Scanner agent offline" (agent-heartbeat) and a config-file RSA finding
+ *      were filed as TLS findings, inflating totals and spiking the timeline.
+ *   B. Substring relevance: "dhe" matched "adhere", "kem" matched "kemp".
+ *   C. An issuer known only by name was labelled a ROOT CA, so the
+ *      Intermediate CA check PASSED with "issued directly by a root".
+ *   D. "Quantum vulnerable endpoints" excluded legacy endpoints, printing 0
+ *      beside "2 classical-only" for the same endpoints.
+ *   E. Scanner-probe facts were labelled "negotiated"; they are what the
+ *      server ACCEPTS, not what clients negotiate.
+ *   F. A still-valid certificate 5 days from expiry was counted "Invalid" and
+ *      raised a "Trust-chain failure" event.
+ */
+import { buildTlsPkiIntelligence, isTransportAlert, isTransportRelevant } from '../src/lib/tls-pki/intelligence'
+import { buildTrustFabricIntelligence, failedTrustChecks } from '../src/lib/trust-fabric/intelligence'
+
+let failures = 0
+function assert(cond: boolean, label: string, extra = '') {
+  console.log(`  ${cond ? '✓' : '✗ FAIL'} ${label}${extra ? ` — ${extra}` : ''}`)
+  if (!cond) failures += 1
+}
+
+const NOW = Date.parse('2026-10-28T12:00:00Z')
+const AT = '2026-10-20T10:00:00.000Z'
+const days = (n: number) => new Date(NOW + n * 86_400_000).toISOString()
+
+/* ---- Fixtures (controlled, labelled test data) -------------------- */
+const inventory = [
+  // legacy.example.test — the scanner enumerated TLS 1.0 and TLS 1.2 (probe results).
+  { id: 'inv-1', asset_id: null, item_type: 'protocol', name: 'TLS protocol', algorithm: 'TLS 1.0', protocol: 'TLS 1.0', metadata: { host: 'legacy.example.test' }, discovered_at: AT },
+  { id: 'inv-2', asset_id: null, item_type: 'protocol', name: 'TLS protocol', algorithm: 'TLS 1.2', protocol: 'TLS 1.2', metadata: { host: 'legacy.example.test' }, discovered_at: AT },
+  { id: 'inv-3', asset_id: null, item_type: 'cipher_suite', name: 'Cipher suite', algorithm: 'TLS_RSA_WITH_AES_128_CBC_SHA', protocol: 'TLS 1.2', metadata: { host: 'legacy.example.test' }, discovered_at: AT },
+  // modern.example.test — TLS 1.3 with classical ECDHE only (probe).
+  { id: 'inv-4', asset_id: null, item_type: 'key_exchange', name: 'Key exchange', algorithm: 'ECDHE x25519', protocol: 'TLS 1.3', metadata: { host: 'modern.example.test' }, discovered_at: AT },
+]
+const runtimeEvents = [
+  // live.example.test — a runtime agent saw a real hybrid handshake.
+  { id: 'rt-1', asset_id: null, event_type: 'tls_handshake', host: 'live.example.test', port: 443, protocol: 'TLS', tls_version: 'TLS 1.3', key_exchange_algorithm: 'X25519MLKEM768', cipher_suite: 'TLS_AES_256_GCM_SHA384', metadata: {}, observed_at: AT },
+]
+const certificates = [
+  // Leaf whose issuer certificate was never collected (a public intermediate).
+  { id: 'c-leaf', asset_id: null, name: 'TLS certificate for legacy.example.test', algorithm: 'RSA', key_size: 2048, issuer: "C=US, O=Let's Encrypt, CN=R11", subject: 'CN=legacy.example.test', serial_number: '01', not_before: days(-60), not_after: days(30 + 60), status: 'active', metadata: { host: 'legacy.example.test' }, updated_at: AT },
+  // Still valid, 5 days left — expiring, NOT invalid.
+  { id: 'c-soon', asset_id: null, name: 'TLS certificate for modern.example.test', algorithm: 'ECDSA', key_size: 256, issuer: 'C=US, O=Google Trust Services, CN=WE1', subject: 'CN=modern.example.test', serial_number: '02', not_before: days(-80), not_after: days(5), status: 'active', metadata: { host: 'modern.example.test' }, updated_at: AT },
+  // A genuine self-signed certificate — the one case that IS a root.
+  { id: 'c-self', asset_id: null, name: 'Internal root', algorithm: 'RSA', key_size: 4096, issuer: 'CN=Acme Internal Root', subject: 'CN=Acme Internal Root', serial_number: '03', not_before: days(-300), not_after: days(3000), status: 'active', metadata: {}, updated_at: AT },
+  // A self-signed certificate SERVED by an endpoint: no external authority vouches for it.
+  { id: 'c-selfleaf', asset_id: null, name: 'TLS certificate for selfsigned.example.test', algorithm: 'RSA', key_size: 2048, issuer: 'CN=selfsigned.example.test', subject: 'CN=selfsigned.example.test', serial_number: '04', not_before: days(-30), not_after: days(300), status: 'active', metadata: { host: 'selfsigned.example.test' }, updated_at: AT },
+]
+const scannerAlerts = [
+  { id: 'al-heartbeat', category: 'agent-heartbeat', title: 'Scanner agent offline: Collector 1', message: 'Agent has not sent a heartbeat since 2026-09-24.', recommendation: 'Verify the local scanner service has outbound HTTPS access to QGuard.', severity: 'high', metadata: {}, updated_at: days(0) },
+  { id: 'al-config', category: 'critical-infrastructure-scanner', title: 'RSA detected on build-host', message: 'RSA-2048 is classically secure but quantum-vulnerable.', recommendation: 'Migrate to ML-KEM key encapsulation.', severity: 'high', metadata: { evidence: { source: 'local-agent:config-reference', detail: 'server.conf' } }, updated_at: days(0) },
+  // These two mention TLS in their OWN text, so only the category / evidence gate can exclude them.
+  { id: 'al-heartbeat-tls', category: 'agent-heartbeat', title: 'Collector cannot reach QGuard', message: 'TLS connection to the QGuard API failed: certificate verify error.', recommendation: '', severity: 'high', metadata: {}, updated_at: days(0) },
+  { id: 'al-config-tls', category: 'critical-infrastructure-scanner', title: 'Weak ssl_ciphers directive in nginx.conf', message: 'The TLS cipher list in a config file allows RSA key transport.', recommendation: '', severity: 'medium', metadata: { evidence: { source: 'local-agent:config-reference', detail: 'nginx.conf' } }, updated_at: days(0) },
+  { id: 'al-tls', category: 'certificate-authority-trust-scanner', title: 'Weak cipher suite accepted on legacy.example.test', message: 'TLS_RSA_WITH_AES_128_CBC_SHA has no forward secrecy.', recommendation: 'Disable RSA key transport suites.', severity: 'high', metadata: { algorithm: 'TLS_RSA_WITH_AES_128_CBC_SHA' }, updated_at: AT },
+]
+
+const tls = buildTlsPkiIntelligence({
+  assets: [],
+  snapshot: { quantumReadiness: 40, quantumRisk: 60, quantumRiskLevel: 'High', assetsAssessed: 3 },
+  runtimeEvents, cryptoInventory: inventory, certificates, scannerEvidence: [], scanResults: [], cryptoExposures: [], scannerAlerts,
+  securityEvents: [], migrationJobs: [], migrationPlans: [], scanSessions: [], scannerAgents: [], connectorAccounts: [], agentHeartbeats: [],
+  validationLogs: [], queuedAssetIds: [], now: NOW,
+})
+
+/* ------------------------------------------------------------------ */
+console.log('\nA. Only transport / PKI alerts become TLS findings')
+{
+  const alert = (id: string) => scannerAlerts.find((a) => a.id === id)!
+  assert(!isTransportAlert(alert('al-heartbeat'), {}), 'an agent-heartbeat alert is not a TLS finding')
+  assert(!isTransportAlert(alert('al-config'), alert('al-config').metadata as Record<string, unknown>), 'a finding from a config file is not a TLS finding')
+  assert(isTransportAlert(alert('al-tls'), alert('al-tls').metadata as Record<string, unknown>), 'a genuine TLS alert is admitted')
+  const ids = tls.findings.flatMap((f) => f.evidence.map((e) => e.recordId))
+  assert(!ids.includes('al-heartbeat') && !ids.includes('al-config'), 'neither excluded alert appears in the model findings', ids.join(','))
+  assert(!ids.includes('al-heartbeat-tls'), 'an agent-health alert is excluded even when its own text mentions TLS')
+  assert(!ids.includes('al-config-tls'), 'a config-file finding is excluded even when its own text mentions TLS ciphers')
+  assert(ids.includes('al-tls'), 'the genuine TLS alert does appear')
+  const today = tls.timeline[tls.timeline.length - 1]
+  assert(today.findings === 0, 'the heartbeat touch no longer spikes today\'s timeline', `today findings = ${today.findings}`)
+}
+
+/* ------------------------------------------------------------------ */
+console.log('\nB. Relevance is word-bounded and ignores remediation prose')
+{
+  assert(!isTransportRelevant('Please adhere to the retention policy'), '"adhere" does not match DHE')
+  assert(!isTransportRelevant('Kemp load balancer firmware out of date'), '"Kemp" does not match KEM')
+  assert(isTransportRelevant('Weak cipher suite accepted'), 'cipher suite text is relevant')
+  assert(isTransportRelevant('Server does not offer ML-KEM key exchange'), 'ML-KEM key exchange is relevant')
+  assert(isTransportRelevant('Expired certificate'), 'certificate text is relevant')
+}
+
+/* ------------------------------------------------------------------ */
+console.log('\nC. An issuer known only by name is an issuing CA, never a root')
+{
+  const le = tls.trustChains.find((n) => /Let's Encrypt|R11/.test(n.label))
+  assert(Boolean(le) && le!.kind === 'intermediate' && !le!.measured, "the uncollected Let's Encrypt R11 issuer is an unmeasured intermediate", `${le?.kind}/${le?.measured}`)
+  const self = tls.trustChains.find((n) => /Acme Internal Root/.test(n.label))
+  assert(Boolean(self) && self!.kind === 'root', 'a self-signed certificate is the one case shown as a root', self?.kind)
+
+  const trust = buildTrustFabricIntelligence({
+    tlsPki: tls, assets: [],
+    snapshot: { quantumReadiness: 40, quantumRisk: 60, quantumRiskLevel: 'High', assetsAssessed: 3, certificatesAnalyzed: 3, complianceScore: null, vulnerableComponents: 2, totalComponents: 4, pqcReadyComponents: 0 },
+    assetRows: [], assetRelationships: [], connectorAccounts: [], securityEvents: [], scanSessions: [], migrationJobs: [], scannerAgents: [], complianceEvidence: [], cryptoInventory: [], runtimeEvents: [], now: NOW,
+  })
+  const caNodes = trust.nodes.filter((n) => n.kind === 'root-ca' || n.kind === 'intermediate-ca')
+  const leNode = caNodes.find((n) => /Let's Encrypt|R11/.test(n.label))
+  assert(Boolean(leNode) && leNode!.kind === 'intermediate-ca', 'trust graph files the uncollected issuer as an intermediate CA', leNode?.kind)
+  // Trust records are keyed by certificate id; resolve through the certificate list.
+  const trustFor = (pattern: RegExp) => {
+    const cert = tls.certificates.find((c) => pattern.test(c.subject))
+    return cert ? trust.certificateTrust.find((r) => r.certificateId === cert.id) : undefined
+  }
+  const leafTrust = trustFor(/legacy\.example\.test/)
+  const inter = leafTrust?.checks.find((c) => c.key === 'intermediate-ca')
+  assert(Boolean(inter) && inter!.status !== 'pass', 'the Intermediate CA check no longer PASSES for an uncollected issuer', `${inter?.status}: ${inter?.detail}`)
+  assert(!/directly by a root/i.test(inter?.detail || ''), 'it no longer claims "issued directly by a root authority"')
+  const rev = leafTrust?.checks.find((c) => c.key === 'revocation')
+  assert(rev?.status === 'not-evaluated', 'revocation stays "not evaluated" without an OCSP/CRL result', rev?.status)
+
+  /* ---------------------------------------------------------------- */
+  console.log('\nF. Near-expiry is "expiring", not "invalid" or a chain failure')
+  const soon = trustFor(/modern\.example\.test/)
+  assert(Boolean(soon) && soon!.checks.some((c) => c.key === 'validity' && c.status === 'fail'), 'the 5-day certificate fails the validity-window check (control)')
+  assert(soon ? failedTrustChecks(soon).length === 0 : false, 'but has no failed TRUST check')
+  const invalidKpi = trust.kpis.find((k) => k.key === 'invalid')
+  assert(Boolean(soon) && !(invalidKpi?.scopeIds ?? []).includes(soon!.certificateId), 'the Invalid KPI does not count it', `invalid scope = ${(invalidKpi?.scopeIds ?? []).join(',')}`)
+  const anchor = tls.certificates.find((c) => /Acme Internal Root/.test(c.subject))
+  assert(Boolean(anchor) && !(invalidKpi?.scopeIds ?? []).includes(anchor!.id), 'a self-signed ROOT held in inventory is a trust anchor, not invalid (control)')
+  const selfLeaf = tls.certificates.find((c) => /selfsigned.example.test/.test(c.subject))
+  assert(Boolean(selfLeaf) && (invalidKpi?.scopeIds ?? []).includes(selfLeaf!.id), 'a self-signed certificate SERVED by an endpoint counts as invalid', selfLeaf?.id)
+  // An endpoint accepting TLS 1.0 is a protocol finding, not a defect of the certificate it serves.
+  assert(leafTrust?.checks.some((c) => c.key === 'tls-compatibility' && c.status === 'fail') === true, 'the TLS 1.0 endpoint\'s certificate fails tls-compatibility (control)')
+  assert(Boolean(leafTrust) && !(invalidKpi?.scopeIds ?? []).includes(leafTrust!.certificateId), 'that certificate is NOT counted invalid for its endpoint\'s protocol')
+  const chainFailure = trust.events.find((e) => e.kind === 'trust-chain-failure' && /modern\.example\.test/.test(e.title))
+  assert(!chainFailure, 'no "Trust-chain failure" event is raised for it')
+  const expiredKpi = trust.kpis.find((k) => k.key === 'expired')
+  assert(!/already fail/i.test(expiredKpi?.detail || ''), 'the Expired KPI no longer claims handshakes "already fail"', expiredKpi?.detail)
+}
+
+/* ------------------------------------------------------------------ */
+console.log('\nD. Every classical-only endpoint counts as quantum-vulnerable')
+{
+  const legacy = tls.endpoints.find((e) => e.host === 'legacy.example.test')
+  assert(legacy?.posture === 'legacy', 'the TLS 1.0 endpoint has the exclusive "legacy" posture (control)', legacy?.posture)
+  assert(tls.posture.quantumVulnerableEndpoints === tls.posture.classicalOnlyEndpoints, 'quantum-vulnerable equals classical-only', `${tls.posture.quantumVulnerableEndpoints} vs ${tls.posture.classicalOnlyEndpoints}`)
+  assert(tls.posture.quantumVulnerableEndpoints >= 1, 'the legacy endpoint is counted', `${tls.posture.quantumVulnerableEndpoints}`)
+}
+
+/* ------------------------------------------------------------------ */
+console.log('\nE. Probe facts are "accepted", live facts are "negotiated"')
+{
+  const legacy = tls.endpoints.find((e) => e.host === 'legacy.example.test')
+  const live = tls.endpoints.find((e) => e.host === 'live.example.test')
+  assert(legacy?.transportBasis === 'scanner-probe', 'scanner-enumerated versions are a scanner probe', legacy?.transportBasis ?? 'null')
+  assert(live?.transportBasis === 'live-traffic', 'a runtime handshake is live traffic', live?.transportBasis ?? 'null')
+  const probeObs = tls.observations.find((o) => o.endpointId === legacy?.id && o.kind === 'protocol' && o.observed === 'TLS 1.0')
+  assert(probeObs?.basis === 'scanner-probe' && /accepted/i.test(probeObs.evidence.detail) && !/^Negotiated/i.test(probeObs.evidence.detail), 'a probed version is described as accepted, not negotiated', probeObs?.evidence.detail)
+  assert(tls.observations.every((o) => ['live-traffic', 'scanner-probe', 'inventory-record'].includes(o.basis)), 'every observation carries a basis')
+}
+
+console.log(failures === 0 ? '\n✓ TLS / PKI / TRUST INTEGRITY INVARIANTS HOLD\n' : `\n✗ ${failures} CHECK(S) FAILED\n`)
+process.exit(failures === 0 ? 0 : 1)

@@ -1,21 +1,44 @@
 import { randomUUID } from 'crypto'
 import { Router, Request, Response, NextFunction } from 'express'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
-import { buildTenantTelemetrySync } from './tenant-telemetry-sync'
+import { streamLiveSnapshot } from './live-snapshot-stream'
+import { createSourceLedger, type SourceLedger } from './source-ledger'
+import { probeIdentityInfrastructure } from '@/lib/scanner/identity/identity-probe'
+import { assetProbeTarget, buildIdentityModel } from '@/lib/pqauth/identity-model'
+import { identityReportToRows } from '@/lib/pqauth/identity-persistence'
 import type {
+  PQAuthActiveRun,
   PQAuthAlgorithmExposure,
-  PQAuthCompatibilitySurface,
   PQAuthComplianceRow,
   PQAuthCountRow,
-  PQAuthDigitalTwinScenario,
-  PQAuthMigrationPhase,
   PQAuthMode,
   PQAuthRow,
   PQAuthRuntimeMetric,
-  PQAuthSignal,
   PQAuthSnapshot,
   PQAuthSourceHealth,
 } from '@/types/pqauth-dashboard'
+
+/**
+ * PQAuth™ Identity Migration Engine — API.
+ *
+ *   GET  /api/v1/dashboard/pqauth[/:mode]      one tenant snapshot (all modes share it)
+ *   GET  /api/v1/dashboard/pqauth/stream       live snapshot (SSE, fingerprint de-duplicated)
+ *   POST /api/v1/dashboard/pqauth/discovery/run  probe the tenant's authorized hosts for identity metadata
+ *
+ * Audit fixes carried by this file (see qguard-common-issues-fixes):
+ *   • The bearer token is read from the Authorization header ONLY. The old
+ *     `?token=` fallback let the stream and REST routes skip the Pro
+ *     subscription gate, which reads only the header.
+ *   • Rows leave through `projectRow`, an allow-list. Spreading raw rows sent
+ *     session-token hashes, agent token hashes, IPs and user agents to the
+ *     browser and into the JSON export.
+ *   • Pattern matching reads descriptive fields only (`structuredText`), never
+ *     the whole row: hex hashes and UUIDs made "F5" and "Entra" appear in
+ *     tenants that run neither.
+ *   • The stream is fingerprinted. It used to emit an update every 8 s whether
+ *     or not anything changed, so each open tab re-downloaded ~1 MB.
+ */
 
 type AuthedRequest = Request & {
   user?: { id: string; email?: string | null }
@@ -36,61 +59,12 @@ const MODES = new Set<PQAuthMode>([
   'qkms',
 ])
 
-const ONE_DAY_MS = 24 * 60 * 60 * 1000
-const SOURCE_STALE_MS = ONE_DAY_MS
-
-const PROVIDER_PATTERNS = [
-  ['keycloak', 'Keycloak', 'OAuth/OIDC Provider'],
-  ['auth0', 'Auth0', 'OAuth/OIDC Provider'],
-  ['okta', 'Okta', 'OAuth/OIDC Provider'],
-  ['entra|azure active directory|aad', 'Microsoft Entra ID', 'OIDC/SAML Provider'],
-  ['ping identity|pingfederate|pingone', 'Ping Identity', 'Federation Provider'],
-  ['forgerock|openam', 'ForgeRock', 'Identity Platform'],
-  ['cognito', 'AWS Cognito', 'Cloud IdP'],
-  ['google identity|google oauth|accounts\\.google', 'Google Identity', 'Cloud IdP'],
-  ['custom oauth|oauth provider|authorization server', 'Custom OAuth Provider', 'Authorization Server'],
-] as const
-
-const GATEWAY_PATTERNS = [
-  ['kong', 'Kong', 'API Gateway'],
-  ['apigee', 'Apigee', 'API Gateway'],
-  ['nginx', 'NGINX', 'Reverse Proxy'],
-  ['f5|big-ip', 'F5', 'Load Balancer'],
-  ['azure api management|apim', 'Azure API Management', 'API Gateway'],
-  ['gateway|proxy|waf|service mesh|ingress', 'Gateway / WAF / Mesh', 'Policy Enforcement'],
-] as const
-
-const SERVICE_PATTERNS = [
-  ['jwt issuer|issuer|jwks', 'JWT Issuers', 'Signing Authority'],
-  ['token validator|validator|introspection|verification', 'Token Validators', 'Verification Service'],
-  ['authorization server|authz server', 'Authorization Servers', 'OAuth Core'],
-  ['resource server|api server|microservice', 'Resource Servers', 'Protected API'],
-  ['certificate|x509|pki|ca\\b|trust anchor', 'Certificates', 'Trust Material'],
-] as const
-
-const FLOW_PATTERNS = [
-  ['oauth|authorization code|client credentials|device code', 'OAuth 2.0', 'Authorization Flow'],
-  ['oidc|openid|id token', 'OpenID Connect', 'Identity Flow'],
-  ['saml', 'SAML', 'Federation Flow'],
-  ['jwt|jws|jwe|opaque token|refresh token|access token', 'JWT / Token', 'Token Flow'],
-] as const
-
 const ALGORITHM_PATTERNS = [
-  { id: 'rsa', label: 'RSA', family: 'Classical public-key', regex: /\bRSA(?:[-_\s]?(1024|2048|3072|4096))?\b|\bRS(256|384|512)\b/i, replacement: 'ML-DSA for signatures; ML-KEM for key establishment', risk: 'Shor-vulnerable' },
-  { id: 'ecc', label: 'ECC', family: 'Elliptic curve', regex: /\bECC\b|\bP-(256|384|521)\b|\bsecp(256|384|521)|prime256v1/i, replacement: 'ML-DSA or hybrid certificate profiles', risk: 'Shor-vulnerable' },
-  { id: 'ecdsa', label: 'ECDSA', family: 'JWT / certificate signatures', regex: /\bECDSA\b|\bES(256|384|512)\b/i, replacement: 'ML-DSA token signing', risk: 'Shor-vulnerable' },
-  { id: 'eddsa', label: 'EdDSA', family: 'JWT signatures', regex: /\bEdDSA\b|\bEd25519\b|\bEd448\b/i, replacement: 'ML-DSA token signing', risk: 'Quantum transition required' },
-  { id: 'dh', label: 'DH', family: 'Key agreement', regex: /\bDH\b|\bdiffie[-\s]?hellman\b/i, replacement: 'ML-KEM or hybrid TLS KEX', risk: 'Shor-vulnerable' },
-  { id: 'ecdh', label: 'ECDH', family: 'Key agreement', regex: /\bECDH\b|\bX25519\b|\bX448\b/i, replacement: 'ML-KEM hybrid KEX', risk: 'Shor-vulnerable' },
-] as const
-
-const COMPATIBILITY_SURFACES = [
-  { id: 'apps', label: 'Applications', regex: /application|frontend|spa|service|client/i, icon: 'Boxes' },
-  { id: 'apis', label: 'APIs', regex: /api|resource server|endpoint|rest|graphql/i, icon: 'Globe' },
-  { id: 'mobile', label: 'Mobile Apps', regex: /mobile|ios|android/i, icon: 'Fingerprint' },
-  { id: 'gateways', label: 'Gateways / WAFs', regex: /gateway|waf|proxy|ingress|nginx|kong|apigee|f5/i, icon: 'Network' },
-  { id: 'mesh', label: 'Service Meshes', regex: /mesh|sidecar|istio|linkerd|envoy/i, icon: 'Workflow' },
-  { id: 'cloud', label: 'Cloud Platforms', regex: /aws|azure|gcp|cloud|cognito|entra/i, icon: 'Cpu' },
+  { id: 'rsa', label: 'RSA', family: 'Classical public-key', regex: /\bRSA(?:[-_\s]?(1024|2048|3072|4096))?\b|\b(RS|PS)(256|384|512)\b/i, replacement: 'ML-DSA for signatures; ML-KEM for key establishment', risk: 'Shor-vulnerable' },
+  { id: 'ecdsa', label: 'ECDSA', family: 'Certificate and token signatures', regex: /\bECDSA\b|\bES(256|384|512)\b/i, replacement: 'ML-DSA signing', risk: 'Shor-vulnerable' },
+  { id: 'eddsa', label: 'EdDSA', family: 'Token signatures', regex: /\bEdDSA\b|\bEd25519\b|\bEd448\b/i, replacement: 'ML-DSA signing', risk: 'Shor-vulnerable' },
+  { id: 'ecdh', label: 'ECDH / X25519', family: 'Key agreement', regex: /\bECDHE?\b|\bX25519\b(?!\s*\+?\s*ML-?KEM)|\bX448\b/i, replacement: 'ML-KEM (hybrid X25519MLKEM768 during transition)', risk: 'Shor-vulnerable' },
+  { id: 'dh', label: 'Finite-field DH', family: 'Key agreement', regex: /\bDHE?\b(?!-)|\bdiffie[-\s]?hellman\b/i, replacement: 'ML-KEM key establishment', risk: 'Shor-vulnerable' },
 ] as const
 
 const COMPLIANCE_FRAMEWORKS = [
@@ -104,28 +78,27 @@ const COMPLIANCE_FRAMEWORKS = [
   'FedRAMP',
 ] as const
 
-function tokenFromRequest(req: Request) {
-  const headerToken = getToken(req)
-  if (headerToken) return headerToken
-  const queryToken = req.query.token
-  return typeof queryToken === 'string' && queryToken.length > 0 ? queryToken : null
-}
+/* ------------------------------------------------------------------ */
+/* Auth — Authorization header only                                    */
+/* ------------------------------------------------------------------ */
 
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const token = tokenFromRequest(req)
+  const token = getToken(req)
   if (!token) {
     return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
   }
-
   const user = await getServerUser(token)
   if (!user) {
     return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } })
   }
-
   ;(req as AuthedRequest).user = user
   ;(req as AuthedRequest).token = token
   next()
 }
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
 
 function recordOf(value: unknown): Record<string, unknown> {
   if (typeof value === 'string' && value.trim()) {
@@ -143,11 +116,6 @@ function textValue(value: unknown, fallback = '') {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback
 }
 
-function numberValue(value: unknown, fallback = 0) {
-  const number = Number(value)
-  return Number.isFinite(number) ? number : fallback
-}
-
 function dateMs(value: unknown) {
   const ms = new Date(String(value || '')).getTime()
   return Number.isFinite(ms) ? ms : 0
@@ -160,11 +128,9 @@ function latestDate(...values: unknown[]) {
 
 function rowTimestamp(row: any) {
   return row?.observed_at
-    || row?.processed_at
-    || row?.completed_at
-    || row?.started_at
     || row?.last_seen_at
     || row?.updated_at
+    || row?.completed_at
     || row?.discovered_at
     || row?.created_at
     || row?.timestamp
@@ -175,165 +141,114 @@ function clamp(value: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, Math.round(value)))
 }
 
-function percentOf(value: number, total: number) {
-  return total > 0 ? clamp((value / total) * 100) : 0
-}
-
-function titleCase(value: unknown, fallback = 'PQAuth Signal') {
-  const text = String(value || fallback).replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
-  return text.replace(/\b\w/g, (char) => char.toUpperCase()) || fallback
-}
-
 function severityRank(value: unknown) {
   const lower = String(value || '').toLowerCase()
   if (lower.includes('critical')) return 4
-  if (lower.includes('high') || lower.includes('error') || lower.includes('failed')) return 3
-  if (lower.includes('medium') || lower.includes('moderate') || lower.includes('warning')) return 2
+  if (lower.includes('high')) return 3
+  if (lower.includes('medium') || lower.includes('moderate')) return 2
   if (lower.includes('low') || lower.includes('info')) return 1
   return 0
 }
 
-function normalizeJobStatus(value: unknown) {
-  const status = String(value || '').toLowerCase()
-  if (/complete|success|done/.test(status)) return 'completed'
-  if (/fail|error|blocked|cancel/.test(status)) return 'failed'
-  if (/running|progress|active|queued|pending|scheduled/.test(status)) return 'running'
-  return status || 'pending'
+/**
+ * The descriptive fields of a row — what a person would read. Pattern matching
+ * runs against this, never against the serialised row: ids, hashes and
+ * fingerprints contain substrings ("f5", "dh", "rsa") that are not evidence.
+ */
+function structuredText(row: any): string {
+  const metadata = recordOf(row?.metadata)
+  return [
+    row?.name, row?.title, row?.algorithm, row?.asset_name, row?.finding_type, row?.event_type,
+    row?.operation_type, row?.category, row?.type, row?.description, row?.message, row?.detail,
+    row?.framework, row?.control, row?.requirement, row?.key_exchange_algorithm, row?.protocol,
+    metadata.algorithm, metadata.framework, metadata.control,
+  ].filter((v) => typeof v === 'string' && v).join(' ')
 }
 
-function isPqcAlgorithm(value: string) {
-  return /ml-kem|ml_dsa|ml-dsa|slh-dsa|slh_dsa|sphincs|kyber|dilithium|falcon|bike|hqc|ntru|hybrid|pqc|post.quantum/i.test(value)
+const EMAIL_RE = /([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,})/g
+
+/** Data minimisation for free text that may carry an identity: mask local parts. */
+function minimise(value: unknown, max = 240): string | null {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!text) return null
+  return text.replace(EMAIL_RE, '$1•••@$2').slice(0, max)
 }
 
-function isClassicalVulnerable(value: string, keySize = 0) {
-  const text = `${value} ${keySize}`.toLowerCase()
-  if (/rsa[_ -]?(1024|2048)?|ecdh|ecdsa|ecc|p-?256|p-?384|p-?521|secp|prime256v1|ed25519|ed448|diffie|dh\b/.test(text)) return true
-  return /rsa/.test(text) && (!keySize || keySize < 3072)
-}
-
-async function safeRows(client: any, table: string, build: (query: any) => any) {
-  try {
-    const { data, error } = await build(client.from(table))
-    if (error) {
-      console.warn(`PQAuth ${table} query skipped:`, error.message || error)
-      return []
-    }
-    return data || []
-  } catch (error: any) {
-    console.warn(`PQAuth ${table} query failed:`, error?.message || error)
-    return []
-  }
-}
-
-function rowText(row: any) {
-  return Object.values(row || {})
-    .map((value) => {
-      if (value == null) return ''
-      if (typeof value === 'object') return JSON.stringify(value).slice(0, 500)
-      return String(value)
-    })
-    .join(' ')
-}
-
-function rowLabel(row: any, fallback = 'Identity signal') {
-  const metadata = recordOf(row?.metadata || row?.metadata_json || row?.details)
-  return textValue(
-    row?.name,
-    textValue(
-      row?.title,
-      textValue(
-        row?.asset_name,
-        textValue(row?.resource_name, textValue(metadata.name, textValue(row?.target, textValue(row?.host, fallback)))),
-      ),
-    ),
-  )
-}
-
-function normalizeDisplayRow(row: any, sourceTable: string, originService: string, correlationId: string) {
-  const metadata = recordOf(row?.metadata || row?.metadata_json || row?.details)
-  const id = textValue(row?.id, `${sourceTable}:${rowLabel(row)}`)
+/**
+ * Allow-list projection. A source row is NEVER spread into the payload:
+ * user_sessions carries session_token_hash, scanner_agents token_hash, and
+ * several tables ip_address / user_agent / session_id.
+ */
+function projectRow(row: any, sourceTable: string): PQAuthRow {
+  const metadata = recordOf(row?.metadata)
+  const name = textValue(row?.name, textValue(row?.title, textValue(row?.asset_name, textValue(metadata.name, textValue(row?.event_type, sourceTable.replace(/_/g, ' '))))))
   return {
-    ...row,
-    id,
-    name: rowLabel(row, id),
-    detail: textValue(row?.detail, textValue(row?.message, textValue(row?.description, textValue(row?.evidence, titleCase(row?.event_type || row?.finding_type || sourceTable))))),
+    id: textValue(row?.id, `${sourceTable}:${name}`),
     sourceTable,
-    originService,
-    assetId: textValue(row?.asset_id, textValue(metadata.assetId || metadata.asset_id, '')) || null,
-    telemetryId: id,
-    correlationId,
-    lastUpdated: rowTimestamp(row),
+    name: minimise(name, 160) || sourceTable,
+    type: textValue(row?.type, textValue(row?.asset_type, textValue(row?.finding_type, textValue(row?.operation_type, textValue(row?.category))))) || null,
+    status: textValue(row?.status) || null,
+    severity: textValue(row?.severity, textValue(row?.threat_level, textValue(row?.risk_level))) || null,
+    algorithm: textValue(row?.algorithm) || null,
+    assetId: textValue(row?.asset_id, textValue(metadata.assetId, textValue(metadata.asset_id))) || null,
+    detail: minimise(row?.description ?? row?.message ?? row?.detail ?? row?.evidence),
+    lastUpdated: rowTimestamp(row) || null,
   }
 }
 
-function withLineage(table: string, rows: any[], originService: string, correlationId: string) {
-  return (rows || []).map((row) => normalizeDisplayRow(row, table, originService, correlationId))
+/** Sources shown in the page's evidence strip, in display order, with their labels. */
+const SOURCE_LABELS: Array<[string, string]> = [
+  ['assets', 'Asset inventory'],
+  ['identity_providers', 'Identity providers'],
+  ['identity_signing_keys', 'Identity signing keys'],
+  ['identity_trust_relationships', 'Identity trust'],
+  ['identity_discovery_probes', 'Discovery probes'],
+  ['certificates', 'Certificates'],
+  ['migration_jobs', 'Migration jobs'],
+  ['runtime_crypto_events', 'Runtime crypto events'],
+  ['crypto_inventory', 'Crypto inventory'],
+  ['crypto_exposures', 'Crypto exposures'],
+  ['asset_relationships', 'Asset relationships'],
+  ['auth_events', 'Auth events'],
+  ['compliance_evidence', 'Compliance evidence'],
+  ['qkms_keys', 'QKMS keys'],
+]
+
+/**
+ * The evidence strip, from the platform's source ledger (#64): a failed read
+ * is `unavailable` — its empty list is not a measurement of zero.
+ */
+function sourceHealthFrom(ledger: SourceLedger, rowsByTable: Map<string, any[]>): PQAuthSourceHealth[] {
+  const byKey = new Map(ledger.reads.map((read) => [read.key, read]))
+  return SOURCE_LABELS.flatMap(([table, label]) => {
+    const read = byKey.get(table)
+    if (!read) return []
+    return [{
+      id: table,
+      label,
+      table,
+      count: read.rows,
+      latestAt: latestDate(...(rowsByTable.get(table) ?? []).map(rowTimestamp)),
+      state: read.state,
+    }]
+  })
 }
 
-function dedupeRows(rows: any[]) {
-  const byId = new Map<string, any>()
-  for (const row of rows) {
-    const key = `${row.sourceTable || 'source'}:${row.id || row.telemetryId || rowLabel(row)}`
-    const existing = byId.get(key)
-    if (!existing || dateMs(row.lastUpdated) > dateMs(existing.lastUpdated)) byId.set(key, row)
-  }
-  return [...byId.values()]
+const PQC_ALGORITHM_RE = /ml-?kem|ml-?dsa|slh-?dsa|sphincs|kyber|dilithium|falcon/i
+
+/** PQC-ready ONLY from an explicit flag or a named PQC algorithm — never from the word "pqc". */
+function isPqcReady(row: any) {
+  return row?.is_quantum_safe === true || row?.pqc_ready === true || PQC_ALGORITHM_RE.test(textValue(row?.algorithm))
 }
 
-function countMatches(rows: any[], regex: RegExp) {
-  return rows.reduce((count, row) => count + (regex.test(rowText(row)) ? 1 : 0), 0)
+function isClassical(row: any) {
+  return !isPqcReady(row) && ALGORITHM_PATTERNS.some((pattern) => pattern.regex.test(`${textValue(row?.algorithm)} ${textValue(row?.name)}`))
 }
 
-function matchedTables(rows: any[], regex: RegExp) {
-  return Array.from(new Set(rows.filter((row) => regex.test(rowText(row))).map((row) => String(row.sourceTable || 'unknown'))))
-}
-
-function latestForRows(rows: any[]) {
-  return latestDate(...rows.map(rowTimestamp), ...rows.map((row) => row.lastUpdated))
-}
-
-function collectSignals(rows: any[], patterns: readonly (readonly [string, string, string])[]): PQAuthSignal[] {
-  return patterns
-    .map(([pattern, label, category]) => {
-      const regex = new RegExp(pattern, 'i')
-      const matches = rows.filter((row) => regex.test(rowText(row)))
-      return {
-        id: label.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-        label,
-        category,
-        count: matches.length,
-        sourceTables: Array.from(new Set(matches.map((row) => String(row.sourceTable || 'unknown')))),
-        latestAt: latestForRows(matches),
-      }
-    })
-    .filter((signal) => signal.count > 0)
-}
-
-function sourceHealth(label: string, table: string, rows: any[], staleAfterMs = SOURCE_STALE_MS): PQAuthSourceHealth {
-  const latestAt = latestDate(...(rows || []).map(rowTimestamp))
-  const latestMs = dateMs(latestAt)
-  const count = (rows || []).length
-  const status = count === 0
-    ? 'waiting'
-    : latestMs && Date.now() - latestMs <= staleAfterMs
-      ? 'live'
-      : 'stale'
-
-  return {
-    id: table,
-    label,
-    table,
-    count,
-    latestAt,
-    status,
-    percent: status === 'live' ? 100 : status === 'stale' ? 45 : 0,
-  }
-}
-
-function buildAlgorithms(rows: any[]): PQAuthAlgorithmExposure[] {
+function buildAlgorithms(rows: Array<{ row: any; table: string }>): PQAuthAlgorithmExposure[] {
   return ALGORITHM_PATTERNS
     .map((algorithm) => {
-      const matches = rows.filter((row) => algorithm.regex.test(rowText(row)))
+      const matches = rows.filter(({ row }) => algorithm.regex.test(structuredText(row)))
       return {
         id: algorithm.id,
         label: algorithm.label,
@@ -341,294 +256,16 @@ function buildAlgorithms(rows: any[]): PQAuthAlgorithmExposure[] {
         replacement: algorithm.replacement,
         risk: algorithm.risk,
         count: matches.length,
-        sourceTables: Array.from(new Set(matches.map((row) => String(row.sourceTable || 'unknown')))),
-        latestAt: latestForRows(matches),
+        sourceTables: Array.from(new Set(matches.map(({ table }) => table))),
+        latestAt: latestDate(...matches.map(({ row }) => rowTimestamp(row))),
       }
     })
     .filter((algorithm) => algorithm.count > 0)
 }
 
-function tokenSize(row: any) {
-  const metadata = recordOf(row.metadata || row.metadata_json || row.details)
-  const candidates = [
-    row.token_size,
-    row.tokenSize,
-    row.jwt_size,
-    row.jwtSize,
-    row.size,
-    row.header_size && row.payload_size && row.signature_size
-      ? numberValue(row.header_size) + numberValue(row.payload_size) + numberValue(row.signature_size)
-      : undefined,
-    metadata.token_size,
-    metadata.tokenSize,
-    metadata.jwt_size,
-    metadata.totalTokenSize,
-  ]
-  const found = candidates.map((value) => numberValue(value, 0)).find((value) => value > 0)
-  return found || 0
-}
-
-function algorithmFromRow(row: any) {
-  const metadata = recordOf(row.metadata || row.metadata_json || row.details)
-  return textValue(
-    row.algorithm,
-    textValue(
-      row.signing_algorithm,
-      textValue(row.alg, textValue(metadata.algorithm, textValue(metadata.alg, rowText(row)))),
-    ),
-  )
-}
-
-function pqcSignatureSizeFor(algorithm: string) {
-  if (/es256|p-?256|ecdsa/i.test(algorithm)) return { target: 'ML-DSA-44', size: 2420 }
-  if (/rs512|rsa-4096|es512|p-?521/i.test(algorithm)) return { target: 'ML-DSA-87', size: 4627 }
-  return { target: 'ML-DSA-65', size: 3309 }
-}
-
-function currentSignatureSizeFor(algorithm: string, fallbackSize: number) {
-  if (/es256|es384|es512|eddsa|ed25519|ed448/i.test(algorithm)) return fallbackSize || 64
-  if (/rs512|rsa-4096/i.test(algorithm)) return fallbackSize || 512
-  if (/rs256|rs384|rsa/i.test(algorithm)) return fallbackSize || 256
-  return fallbackSize || 0
-}
-
-function buildTokenImpacts(tokenRows: any[]) {
-  return tokenRows
-    .filter((row) => /jwt|jws|jwe|token|rs256|rs384|rs512|es256|es384|es512|eddsa|rsa|ecdsa/i.test(rowText(row)))
-    .slice(0, 12)
-    .map((row, index) => {
-      const algorithm = algorithmFromRow(row)
-      const currentSize = currentSignatureSizeFor(algorithm, tokenSize(row))
-      const target = pqcSignatureSizeFor(algorithm)
-      const expansion = currentSize > 0 ? Number((target.size / currentSize).toFixed(1)) : 0
-      return {
-        id: `${row.sourceTable || 'token'}:${row.id || index}`,
-        current: algorithm && algorithm.length < 80 ? algorithm : 'Discovered token signature',
-        currentSize,
-        target: target.target,
-        pqcSize: target.size,
-        expansion,
-        risk: expansion >= 20 ? 'Header, proxy, cookie, and mobile limit review' : expansion >= 8 ? 'Gateway and browser limit review' : 'Compatibility validation required',
-        projected: true,
-        sourceTable: String(row.sourceTable || 'unknown'),
-        telemetryId: textValue(row.telemetryId || row.id, '') || null,
-        latestAt: rowTimestamp(row),
-      }
-    })
-}
-
-function countAssetsForRows(rows: any[]) {
-  const ids = new Set<string>()
-  for (const row of rows) {
-    const assetId = textValue(row.asset_id, textValue(row.assetId, textValue(row.assetId, '')))
-    if (assetId) ids.add(assetId)
-  }
-  return ids.size || rows.length
-}
-
-function buildTrustGraph(input: {
-  providers: PQAuthSignal[]
-  gateways: PQAuthSignal[]
-  authServices: PQAuthSignal[]
-  tokenRows: any[]
-  dependencies: any[]
-  certificates: any[]
-  keys: any[]
-  assets: any[]
-  relationships: any[]
-  correlationId: string
-}) {
-  const nodes = []
-  const edges = []
-  const subjectCount = input.assets.length
-  if (subjectCount) {
-    nodes.push({
-      id: 'subjects',
-      label: 'Users / Machines / Apps',
-      detail: `${subjectCount} tenant asset(s)`,
-      x: 7,
-      y: 38,
-      color: '#22D3EE',
-      icon: 'UserCheck',
-      sourceTable: 'assets',
-      assetId: null,
-      correlationId: input.correlationId,
-      latestAt: latestForRows(input.assets),
-    })
-  }
-  if (input.providers.length) {
-    nodes.push({
-      id: 'provider',
-      label: input.providers[0].label,
-      detail: `${input.providers.length} provider type(s)`,
-      x: 25,
-      y: 18,
-      color: '#2478FF',
-      icon: 'Fingerprint',
-      sourceTable: input.providers[0].sourceTables[0] || 'discovery',
-      assetId: null,
-      correlationId: input.correlationId,
-      latestAt: input.providers[0].latestAt,
-    })
-  }
-  if (input.tokenRows.length || input.authServices.length) {
-    nodes.push({
-      id: 'issuer',
-      label: input.authServices.find((row) => /issuer/i.test(row.label))?.label || 'JWT Issuer',
-      detail: `${input.tokenRows.length} token signal(s)`,
-      x: 45,
-      y: 38,
-      color: '#FBBF24',
-      icon: 'KeyRound',
-      sourceTable: input.tokenRows[0]?.sourceTable || input.authServices[0]?.sourceTables[0] || 'runtime',
-      assetId: input.tokenRows[0]?.assetId || null,
-      correlationId: input.correlationId,
-      latestAt: latestForRows(input.tokenRows),
-    })
-  }
-  if (input.gateways.length) {
-    nodes.push({
-      id: 'gateway',
-      label: input.gateways[0].label,
-      detail: `${input.gateways.length} gateway type(s)`,
-      x: 65,
-      y: 18,
-      color: '#8B5CF6',
-      icon: 'Network',
-      sourceTable: input.gateways[0].sourceTables[0] || 'discovery',
-      assetId: null,
-      correlationId: input.correlationId,
-      latestAt: input.gateways[0].latestAt,
-    })
-  }
-  if (input.dependencies.length) {
-    nodes.push({
-      id: 'resource',
-      label: 'APIs / Resource Servers',
-      detail: `${input.dependencies.length} dependency row(s)`,
-      x: 84,
-      y: 38,
-      color: '#F97316',
-      icon: 'Globe',
-      sourceTable: input.dependencies[0]?.sourceTable || 'asset_relationships',
-      assetId: input.dependencies[0]?.assetId || null,
-      correlationId: input.correlationId,
-      latestAt: latestForRows(input.dependencies),
-    })
-  }
-  if (input.certificates.length || input.keys.length) {
-    nodes.push({
-      id: 'trust-material',
-      label: 'Certificates / Keys',
-      detail: `${input.certificates.length + input.keys.length} trust material row(s)`,
-      x: 50,
-      y: 76,
-      color: '#14B8A6',
-      icon: 'Database',
-      sourceTable: input.certificates[0]?.sourceTable || input.keys[0]?.sourceTable || 'certificates',
-      assetId: input.certificates[0]?.assetId || input.keys[0]?.assetId || null,
-      correlationId: input.correlationId,
-      latestAt: latestForRows([...input.certificates, ...input.keys]),
-    })
-  }
-
-  const addEdge = (from: string, to: string, label: string, sourceTable: string) => {
-    if (!nodes.some((node) => node.id === from) || !nodes.some((node) => node.id === to)) return
-    edges.push({ id: `${from}-${to}`, from, to, label, sourceTable, correlationId: input.correlationId })
-  }
-  addEdge('subjects', 'provider', 'OIDC / SAML', 'auth_events')
-  addEdge('provider', 'issuer', 'JWT / JWS', 'runtime_crypto_events')
-  addEdge('issuer', 'gateway', 'verify', 'scanner_evidence')
-  addEdge('gateway', 'resource', 'authorize', 'asset_relationships')
-  addEdge('resource', 'trust-material', 'trust chain', 'certificates')
-  addEdge('provider', 'trust-material', 'signing keys', 'qkms_keys')
-
-  for (const relationship of input.relationships.slice(0, 6)) {
-    if (nodes.length < 2) break
-    edges.push({
-      id: `relationship:${relationship.id}`,
-      from: nodes[0].id,
-      to: nodes[Math.min(nodes.length - 1, 3)].id,
-      label: titleCase(relationship.relationship_type || relationship.type || 'depends on'),
-      sourceTable: 'asset_relationships',
-      correlationId: input.correlationId,
-    })
-  }
-
-  return { nodes, edges }
-}
-
-function buildPhaseRows(hasEvidence: boolean, readinessScore: number, blockers: number, evidenceRows: any[]): PQAuthMigrationPhase[] {
-  const phaseDefs = [
-    ['discovery', 'Discovery', 'Discover providers, gateways, JWT issuers, keys, certificates, and dependencies.', /discover|provider|gateway|asset|scan|evidence/i],
-    ['assessment', 'Assessment', 'Score RSA, ECC, ECDSA, EdDSA, DH, ECDH, token flows, and exposed applications.', /risk|vulnerab|exposure|rsa|ecdsa|ecdh|finding/i],
-    ['dependency', 'Dependency Analysis', 'Resolve applications, APIs, proxies, WAFs, and service mesh dependencies.', /relationship|dependency|gateway|api|service|mesh/i],
-    ['simulation', 'Simulation', 'Model RSA to ML-DSA, ECDSA to ML-DSA, ECDH to ML-KEM, and hybrid deployments.', /simulation|sandbox|migration|ml-dsa|ml-kem|hybrid/i],
-    ['pilot', 'Pilot Deployment', 'Pilot PQ token verification, hybrid certificates, and gateway compatibility.', /pilot|compatib|gateway|certificate|verify/i],
-    ['hybrid', 'Hybrid Deployment', 'Bridge legacy applications through PQ token gateway and hybrid verification.', /hybrid|bridge|legacy|gateway/i],
-    ['rollout', 'Full PQC Rollout', 'Enforce NIST FIPS 203, FIPS 204, and FIPS 205 migration policy.', /rollout|completed|ml-kem|ml-dsa|slh-dsa/i],
-    ['validation', 'Validation', 'Validate readiness, interoperability, performance, compliance, and rollback criteria.', /validate|compliance|audit|evidence|policy/i],
-    ['monitoring', 'Continuous Monitoring', 'Monitor identity drift, trust failures, runtime token validation, and audit evidence.', /runtime|auth|telemetry|event|monitor/i],
-  ] as const
-
-  return phaseDefs.map(([id, label, objective, regex], index) => {
-    const matches = evidenceRows.filter((row) => regex.test(rowText(row)))
-    const score = hasEvidence ? clamp(readinessScore - index * 8 + Math.min(28, matches.length * 4) - blockers * 2) : 0
-    const status = !hasEvidence
-      ? (index === 0 ? 'active' : 'waiting')
-      : score >= 82
-        ? 'complete'
-        : score >= 48
-          ? 'active'
-          : blockers > 0 && index >= 3
-            ? 'review'
-            : 'waiting'
-    return {
-      id,
-      label,
-      objective,
-      status,
-      score,
-      evidence: matches.length,
-      sourceTables: Array.from(new Set(matches.map((row) => String(row.sourceTable || 'unknown')))),
-    }
-  })
-}
-
-function buildSourceCountRow(id: string, label: string, count: number, detail: string, status?: string, sourceTables: string[] = []): PQAuthCountRow {
-  return { id, label, count, detail, status, sourceTables }
-}
-
 /* ------------------------------------------------------------------ */
 /* Evidence-honesty derivations (pure — covered by tools/pqauth-check)  */
 /* ------------------------------------------------------------------ */
-
-/**
- * Compatibility surfaces are scored ONLY where evidence for that surface was
- * actually matched. A surface with no matched rows has not been assessed —
- * scoring it would convert "we never saw this" into "this looks fine", which is
- * exactly the absence-as-success error the data-integrity contract bans.
- */
-export function deriveCompatibilitySurfaces(
-  evidenceRows: PQAuthRow[],
-  readinessScore: number,
-  compatibilityBlockers: number,
-): PQAuthCompatibilitySurface[] {
-  return COMPATIBILITY_SURFACES.map((surface) => {
-    const matches = evidenceRows.filter((row) => surface.regex.test(rowText(row)))
-    const assessed = matches.length > 0
-    return {
-      id: surface.id,
-      label: surface.label,
-      count: matches.length,
-      score: assessed ? clamp(readinessScore - compatibilityBlockers * 4) : 0,
-      icon: surface.icon,
-      sourceTables: Array.from(new Set(matches.map((row) => String(row.sourceTable || 'unknown')))),
-      latestAt: latestForRows(matches),
-      assessed,
-    }
-  })
-}
 
 /**
  * A framework is scored only from evidence that names THAT framework.
@@ -637,19 +274,19 @@ export function deriveCompatibilitySurfaces(
  * attributing other frameworks' records to this one. Unmatched now reports Not
  * Assessed with zero evidence, as the governance contract requires.
  */
-export function deriveComplianceRows(complianceEvidence: PQAuthRow[], complianceBase: number): PQAuthComplianceRow[] {
+export function deriveComplianceRows(complianceEvidence: Array<Record<string, unknown>>, complianceBase: number): PQAuthComplianceRow[] {
   return COMPLIANCE_FRAMEWORKS.map((framework) => {
     const regex = new RegExp(framework.replace(/[.\s-]+/g, '.*'), 'i')
-    const matches = complianceEvidence.filter((row) => regex.test(rowText(row)))
+    const matches = complianceEvidence.filter((row) => regex.test(structuredText(row)))
     const assessed = matches.length > 0
     return {
       id: framework.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
       label: framework,
       score: assessed ? clamp(complianceBase + Math.min(10, matches.length * 3)) : 0,
-      evidence: assessed ? `${matches.length} evidence signal(s)` : 'No framework-specific evidence',
+      evidence: assessed ? `${matches.length} evidence record(s)` : 'No framework-specific evidence',
       evidenceCount: matches.length,
-      sourceTables: assessed ? Array.from(new Set(matches.map((row) => String(row.sourceTable || 'unknown')))) : [],
-      latestAt: assessed ? latestForRows(matches) : null,
+      sourceTables: assessed ? Array.from(new Set(matches.map((row) => String(row.sourceTable || 'compliance_evidence')))) : [],
+      latestAt: assessed ? latestDate(...matches.map(rowTimestamp)) : null,
       assessed,
     }
   })
@@ -667,18 +304,18 @@ export function deriveComplianceRows(complianceEvidence: PQAuthRow[], compliance
  * never observed. With no runtime evidence the tiles report unmeasured and the
  * UI shows "Awaiting telemetry" rather than a zero that reads as clean.
  */
-export function deriveRuntimeMetrics(runtimeIdentityRows: PQAuthRow[], runtimeEvents: PQAuthRow[]): PQAuthRuntimeMetric[] {
+export function deriveRuntimeMetrics(runtimeIdentityRows: Array<Record<string, unknown>>, runtimeEvents: Array<Record<string, unknown>>): PQAuthRuntimeMetric[] {
   const truthy = (value: unknown) => value === true || value === 'true' || value === 1 || value === '1'
   const hasIdentityTelemetry = runtimeIdentityRows.length > 0
-  const tokenValidationEvents = runtimeIdentityRows.filter((row) => /jwt|jws|jwe|token|assertion|sign|verify|introspect/i.test(rowText(row))).length
+  const tokenValidationEvents = runtimeIdentityRows.filter((row) => /jwt|jws|jwe|token|assertion|sign|verify|introspect/i.test(structuredText(row))).length
   const certificateUsageEvents = new Set(
     runtimeEvents.map((row) => String(row.certificate_fingerprint || '')).filter((fingerprint) => fingerprint.length > 0),
   ).size
   const trustFailureEvents = runtimeIdentityRows.filter(
-    (row) => truthy(row.downgrade_detected) || /fail|failure|error|denied|reject|invalid|expired|revoked|untrusted|unauthori/i.test(rowText(row)),
+    (row) => truthy(row.downgrade_detected) || /fail|failure|error|denied|reject|invalid|expired|revoked|untrusted|unauthori/i.test(`${structuredText(row)} ${String(row.status || '')}`),
   ).length
   const identityDriftEvents = runtimeIdentityRows.filter(
-    (row) => truthy(row.shadow_crypto) || truthy(row.is_legacy) || /drift|unexpected|unapproved|policy.?violation|deviat/i.test(rowText(row)),
+    (row) => truthy(row.shadow_crypto) || truthy(row.is_legacy) || /drift|unexpected|unapproved|policy.?violation|deviat/i.test(structuredText(row)),
   ).length
   return [
     { id: 'runtime-events', label: 'Runtime Events', value: runtimeIdentityRows.length, detail: 'authentication, authorization, session and token events observed', measured: hasIdentityTelemetry },
@@ -689,465 +326,408 @@ export function deriveRuntimeMetrics(runtimeIdentityRows: PQAuthRow[], runtimeEv
   ]
 }
 
-async function buildPQAuthSnapshot(mode: PQAuthMode, token: string, userId: string): Promise<PQAuthSnapshot> {
+function countRow(id: string, label: string, count: number, detail: string, sourceTables: string[], status?: string): PQAuthCountRow {
+  return { id, label, count, detail, sourceTables, status: status ?? (count > 0 ? 'active' : 'waiting') }
+}
+
+/* ------------------------------------------------------------------ */
+/* Identity discovery runs (in-process)                                */
+/* ------------------------------------------------------------------ */
+
+/** Hosts probed per run — each costs ≤ 5 well-known requests + 1 JWKS fetch per provider. */
+const MAX_HOSTS_PER_RUN = 25
+const RUN_CONCURRENCY = 3
+/** A finished run stays visible this long so the page can show its outcome. */
+const RUN_VISIBLE_MS = 5 * 60 * 1000
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Runs execute in this API process. One run per tenant at a time: a second
+ * request while one is in flight is refused (409) rather than doubling the
+ * outbound probe traffic against the same hosts.
+ */
+const activeRuns = new Map<string, PQAuthActiveRun>()
+
+function visibleRun(userId: string): PQAuthActiveRun | null {
+  const run = activeRuns.get(userId)
+  if (!run) return null
+  if (run.status === 'running') return { ...run }
+  if (run.finishedAt && Date.now() - dateMs(run.finishedAt) <= RUN_VISIBLE_MS) return { ...run }
+  return null
+}
+
+async function recordAudit(client: SupabaseClient, userId: string, action: string, runId: string, details: Record<string, unknown>) {
+  const { error } = await client.from('audit_logs').insert({
+    user_id: userId,
+    action,
+    entity_type: 'identity_discovery',
+    entity_id: UUID_RE.test(runId) ? runId : null,
+    details,
+  })
+  if (error) console.warn('[pqauth] audit insert failed:', error.message)
+}
+
+async function persistIdentityReport(client: SupabaseClient, write: ReturnType<typeof identityReportToRows>): Promise<number> {
+  if (write.probes.length) {
+    const { error } = await client.from('identity_discovery_probes').insert(write.probes)
+    if (error) throw new Error(`identity_discovery_probes: ${error.message}`)
+  }
+  let providers = 0
+  for (const provider of write.providers) {
+    const { data, error } = await client
+      .from('identity_providers')
+      .upsert(provider.row, { onConflict: 'user_id,issuer' })
+      .select('id')
+      .single()
+    if (error || !data) throw new Error(`identity_providers: ${error?.message || 'no id returned'}`)
+    providers += 1
+    const providerId = (data as { id: string }).id
+    if (provider.keys.length) {
+      const { error: keyError } = await client
+        .from('identity_signing_keys')
+        .upsert(provider.keys.map((key) => ({ ...key, provider_id: providerId })), { onConflict: 'provider_id,key_id' })
+      if (keyError) throw new Error(`identity_signing_keys: ${keyError.message}`)
+    }
+    if (provider.declaredTrust) {
+      const trust: Record<string, unknown> = { ...provider.declaredTrust, target_provider_id: providerId }
+      const { data: existing } = await client
+        .from('identity_trust_relationships')
+        .select('id')
+        .eq('user_id', String(trust.user_id))
+        .eq('source_asset_id', String(trust.source_asset_id))
+        .eq('target_provider_id', providerId)
+        .eq('relationship_type', 'TRUSTS')
+        .limit(1)
+      const existingId = (existing as Array<{ id: string }> | null)?.[0]?.id
+      const { error: trustError } = existingId
+        ? await client.from('identity_trust_relationships').update({ evidence: trust.evidence, source_url: trust.source_url, last_seen_at: trust.last_seen_at }).eq('id', existingId)
+        : await client.from('identity_trust_relationships').insert(trust)
+      if (trustError) throw new Error(`identity_trust_relationships: ${trustError.message}`)
+    }
+  }
+  return providers
+}
+
+async function executeRun(token: string, userId: string, run: PQAuthActiveRun, targets: Array<{ assetId: string; host: string }>) {
+  const client = createAuthClient(token)
+  if (!client) {
+    run.status = 'failed'
+    run.error = 'Database connection failed'
+    run.finishedAt = new Date().toISOString()
+    return
+  }
+  const failures: string[] = []
+  const queue = [...targets]
+  const worker = async () => {
+    for (let target = queue.shift(); target; target = queue.shift()) {
+      run.currentHost = target.host
+      try {
+        const report = await probeIdentityInfrastructure(target.host)
+        const write = identityReportToRows(report, {
+          userId,
+          assetId: target.assetId,
+          assetHost: target.host,
+          runId: run.runId,
+          observedAt: new Date().toISOString(),
+        })
+        run.providersFound += await persistIdentityReport(client, write)
+      } catch (error: any) {
+        failures.push(`${target.host}: ${error?.message || 'probe failed'}`)
+        console.warn('[pqauth] identity discovery failed for', target.host, error?.message || error)
+      } finally {
+        run.hostsDone += 1
+        invalidateSnapshot(userId)
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(RUN_CONCURRENCY, targets.length) }, worker))
+  run.currentHost = null
+  run.finishedAt = new Date().toISOString()
+  run.status = failures.length === targets.length ? 'failed' : 'completed'
+  run.error = failures.length ? `${failures.length} host(s) could not be recorded: ${failures.slice(0, 2).join('; ')}` : null
+  invalidateSnapshot(userId)
+  await recordAudit(client, userId, 'pqauth.identity_discovery.completed', run.runId, {
+    hosts: targets.length,
+    providers_found: run.providersFound,
+    failures: failures.length,
+  })
+}
+
+/* ------------------------------------------------------------------ */
+/* Snapshot                                                            */
+/* ------------------------------------------------------------------ */
+
+async function buildPQAuthSnapshot(token: string, userId: string): Promise<PQAuthSnapshot> {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
+  const own = (q: any) => q.eq('user_id', userId)
+  const tenant = (q: any) => q.eq('tenant_id', userId)
+  const ledger = createSourceLedger('PQAuth')
+  const rowsByTable = new Map<string, any[]>()
+  // Every read goes through the shared ledger, so a failed query is published
+  // as `unavailable` rather than as zero rows.
+  const read = async (table: string, limit: number, build: (query: any) => any): Promise<any[]> => {
+    const label = SOURCE_LABELS.find(([key]) => key === table)?.[1] ?? table
+    const rows = await ledger.read(client, table, label, limit, (q: any) => build(q.select('*')).limit(limit))
+    rowsByTable.set(table, rows)
+    return rows
+  }
 
   const [
-    assets,
-    relationships,
-    cryptoInventory,
-    cryptoExposures,
-    vulnerabilities,
-    certificates,
-    generatedKeys,
-    runtimeEvents,
-    scannerEvidence,
-    scannerAlerts,
-    scanSessions,
-    scanResults,
-    migrationJobs,
-    complianceEvidence,
-    securityEvents,
-    authEvents,
-    userSessions,
-    userSecurityEvents,
-    qkmsKeys,
-    qkmsAuditEvents,
-    qkmsRotationJobs,
-    qkmsPolicies,
-    connectorAccounts,
-    scannerAgents,
-    agentHeartbeats,
-    vaultAuditLogs,
+    assets, relationships, cryptoInventory, cryptoExposures, vulnerabilities, certificates, generatedKeys,
+    runtimeEvents, scannerAlerts, scanResults, migrationJobs, complianceEvidence, securityEvents, authEvents,
+    userSessions, userSecurityEvents, qkmsKeys, qkmsRotationJobs,
+    identityProviders, identitySigningKeys, identityTrust, identityProbes,
   ] = await Promise.all([
-    safeRows(client, 'assets', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2500)),
-    safeRows(client, 'asset_relationships', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1800)),
-    safeRows(client, 'crypto_inventory', (q) => q.select('*').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(3000)),
-    safeRows(client, 'crypto_exposures', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2500)),
-    safeRows(client, 'vulnerabilities', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2200)),
-    safeRows(client, 'certificates', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2200)),
-    safeRows(client, 'generated_keys', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(2200)),
-    safeRows(client, 'runtime_crypto_events', (q) => q.select('*').eq('user_id', userId).order('observed_at', { ascending: false }).limit(5000)),
-    safeRows(client, 'scanner_evidence', (q) => q.select('*').eq('user_id', userId).order('observed_at', { ascending: false }).limit(3000)),
-    safeRows(client, 'scanner_alerts', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1800)),
-    safeRows(client, 'pqc_scan_sessions', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(800)),
-    safeRows(client, 'pqc_scan_results', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(3000)),
-    safeRows(client, 'migration_jobs', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1400)),
-    safeRows(client, 'compliance_evidence', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1800)),
-    safeRows(client, 'security_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1800)),
-    safeRows(client, 'auth_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1800)),
-    safeRows(client, 'user_sessions', (q) => q.select('*').eq('user_id', userId).order('last_seen_at', { ascending: false }).limit(1200)),
-    safeRows(client, 'user_security_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1200)),
-    safeRows(client, 'qkms_keys', (q) => q.select('*').eq('tenant_id', userId).order('updated_at', { ascending: false }).limit(1800)),
-    safeRows(client, 'qkms_audit_events', (q) => q.select('*').eq('tenant_id', userId).order('created_at', { ascending: false }).limit(1800)),
-    safeRows(client, 'qkms_rotation_jobs', (q) => q.select('*').eq('tenant_id', userId).order('updated_at', { ascending: false }).limit(1200)),
-    safeRows(client, 'qkms_policies', (q) => q.select('*').eq('tenant_id', userId).order('updated_at', { ascending: false }).limit(800)),
-    safeRows(client, 'connector_accounts', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(800)),
-    safeRows(client, 'scanner_agents', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(800)),
-    safeRows(client, 'agent_heartbeats', (q) => q.select('*').eq('user_id', userId).order('observed_at', { ascending: false }).limit(1600)),
-    safeRows(client, 'vault_audit_logs', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(1600)),
+    read('assets', 2500, (q) => own(q).order('updated_at', { ascending: false })),
+    read('asset_relationships', 1800, (q) => own(q).order('created_at', { ascending: false })),
+    read('crypto_inventory', 3000, (q) => own(q).order('discovered_at', { ascending: false })),
+    read('crypto_exposures', 2500, (q) => own(q).order('updated_at', { ascending: false })),
+    read('vulnerabilities', 2200, (q) => own(q).order('updated_at', { ascending: false })),
+    read('certificates', 2200, (q) => own(q).order('updated_at', { ascending: false })),
+    read('generated_keys', 2200, (q) => own(q).order('created_at', { ascending: false })),
+    read('runtime_crypto_events', 5000, (q) => own(q).order('observed_at', { ascending: false })),
+    read('scanner_alerts', 1800, (q) => own(q).order('created_at', { ascending: false })),
+    read('pqc_scan_results', 3000, (q) => own(q).order('created_at', { ascending: false })),
+    read('migration_jobs', 1400, (q) => own(q).order('updated_at', { ascending: false })),
+    read('compliance_evidence', 1800, (q) => own(q).order('updated_at', { ascending: false })),
+    read('security_events', 1800, (q) => own(q).order('created_at', { ascending: false })),
+    read('auth_events', 1800, (q) => own(q).order('created_at', { ascending: false })),
+    read('user_sessions', 1200, (q) => own(q).order('last_seen_at', { ascending: false })),
+    read('user_security_events', 1200, (q) => own(q).order('created_at', { ascending: false })),
+    read('qkms_keys', 1800, (q) => tenant(q).order('updated_at', { ascending: false })),
+    read('qkms_rotation_jobs', 1200, (q) => tenant(q).order('updated_at', { ascending: false })),
+    read('identity_providers', 500, (q) => own(q).order('last_seen_at', { ascending: false })),
+    read('identity_signing_keys', 2000, (q) => own(q).order('last_seen_at', { ascending: false })),
+    read('identity_trust_relationships', 2000, (q) => own(q).order('last_seen_at', { ascending: false })),
+    read('identity_discovery_probes', 3000, (q) => own(q).order('observed_at', { ascending: false })),
   ])
 
-  const correlationId = randomUUID()
-  const originService = 'PQAuth Identity Migration Engine'
-  const sourceRows = {
-    assets: withLineage('assets', assets, originService, correlationId),
-    relationships: withLineage('asset_relationships', relationships, originService, correlationId),
-    cryptoInventory: withLineage('crypto_inventory', cryptoInventory, originService, correlationId),
-    cryptoExposures: withLineage('crypto_exposures', cryptoExposures, originService, correlationId),
-    vulnerabilities: withLineage('vulnerabilities', vulnerabilities, originService, correlationId),
-    certificates: withLineage('certificates', certificates, originService, correlationId),
-    generatedKeys: withLineage('generated_keys', generatedKeys, originService, correlationId),
-    runtimeEvents: withLineage('runtime_crypto_events', runtimeEvents, originService, correlationId),
-    scannerEvidence: withLineage('scanner_evidence', scannerEvidence, originService, correlationId),
-    scannerAlerts: withLineage('scanner_alerts', scannerAlerts, originService, correlationId),
-    scanSessions: withLineage('pqc_scan_sessions', scanSessions, originService, correlationId),
-    scanResults: withLineage('pqc_scan_results', scanResults, originService, correlationId),
-    migrationJobs: withLineage('migration_jobs', migrationJobs, originService, correlationId),
-    complianceEvidence: withLineage('compliance_evidence', complianceEvidence, originService, correlationId),
-    securityEvents: withLineage('security_events', securityEvents, originService, correlationId),
-    authEvents: withLineage('auth_events', authEvents, originService, correlationId),
-    userSessions: withLineage('user_sessions', userSessions, originService, correlationId),
-    userSecurityEvents: withLineage('user_security_events', userSecurityEvents, originService, correlationId),
-    qkmsKeys: withLineage('qkms_keys', qkmsKeys, originService, correlationId),
-    qkmsAuditEvents: withLineage('qkms_audit_events', qkmsAuditEvents, originService, correlationId),
-    qkmsRotationJobs: withLineage('qkms_rotation_jobs', qkmsRotationJobs, originService, correlationId),
-    qkmsPolicies: withLineage('qkms_policies', qkmsPolicies, originService, correlationId),
-    connectorAccounts: withLineage('connector_accounts', connectorAccounts, originService, correlationId),
-    scannerAgents: withLineage('scanner_agents', scannerAgents, originService, correlationId),
-    agentHeartbeats: withLineage('agent_heartbeats', agentHeartbeats, originService, correlationId),
-    vaultAuditLogs: withLineage('vault_audit_logs', vaultAuditLogs, originService, correlationId),
-  }
-
-  const allEvidenceRows = dedupeRows([
-    ...sourceRows.assets,
-    ...sourceRows.relationships,
-    ...sourceRows.cryptoInventory,
-    ...sourceRows.cryptoExposures,
-    ...sourceRows.vulnerabilities,
-    ...sourceRows.certificates,
-    ...sourceRows.generatedKeys,
-    ...sourceRows.runtimeEvents,
-    ...sourceRows.scannerEvidence,
-    ...sourceRows.scannerAlerts,
-    ...sourceRows.scanSessions,
-    ...sourceRows.scanResults,
-    ...sourceRows.migrationJobs,
-    ...sourceRows.complianceEvidence,
-    ...sourceRows.securityEvents,
-    ...sourceRows.authEvents,
-    ...sourceRows.userSessions,
-    ...sourceRows.userSecurityEvents,
-    ...sourceRows.qkmsKeys,
-    ...sourceRows.qkmsAuditEvents,
-    ...sourceRows.qkmsRotationJobs,
-    ...sourceRows.qkmsPolicies,
-    ...sourceRows.connectorAccounts,
-    ...sourceRows.scannerAgents,
-    ...sourceRows.agentHeartbeats,
-    ...sourceRows.vaultAuditLogs,
-  ])
-
-  const identityRegex = /oauth|oidc|openid|saml|jwt|jws|jwe|token|identity|auth|sso|mfa|session|issuer|jwks|certificate|pki|keycloak|auth0|okta|entra|ping|forgerock|cognito|google identity|user|service account|machine/i
-  const tokenRegex = /jwt|jws|jwe|opaque token|refresh token|access token|id token|rs256|rs384|rs512|es256|es384|es512|eddsa|signing|verification/i
-  const exposureRegex = /rsa|ecc|ecdsa|eddsa|ed25519|ed448|dh|ecdh|rs256|rs384|rs512|es256|es384|es512|vulnerab|weak|legacy|downgrade|hndl|harvest/i
-
-  const identityRows = allEvidenceRows.filter((row) => identityRegex.test(rowText(row)) || exposureRegex.test(rowText(row))).slice(0, 700)
-  const tokenRows = allEvidenceRows.filter((row) => tokenRegex.test(rowText(row))).slice(0, 500)
-  const exposureRows = identityRows.filter((row) => exposureRegex.test(rowText(row))).slice(0, 500)
-  const providers = collectSignals(allEvidenceRows, PROVIDER_PATTERNS)
-  const gateways = collectSignals(allEvidenceRows, GATEWAY_PATTERNS)
-  const authServices = collectSignals(allEvidenceRows, SERVICE_PATTERNS)
-  const flows = collectSignals(allEvidenceRows, FLOW_PATTERNS)
-  const algorithms = buildAlgorithms(identityRows.length ? identityRows : allEvidenceRows)
-  const dependencies = dedupeRows([
-    ...sourceRows.relationships,
-    ...sourceRows.assets.filter((row) => /api|application|service|gateway|identity|oauth|oidc|saml|jwt/i.test(rowText(row))),
-    ...identityRows.filter((row) => /dependency|depends|resource server|api|application|gateway|service/i.test(rowText(row))),
-  ]).slice(0, 60)
-  const runtimeIdentityRows = dedupeRows([
-    ...sourceRows.runtimeEvents.filter((row) => /auth|jwt|token|sign|verify|certificate|identity|session/i.test(rowText(row))),
-    ...sourceRows.authEvents,
-    ...sourceRows.userSessions,
-    ...sourceRows.userSecurityEvents,
-    ...sourceRows.securityEvents.filter((row) => /auth|identity|session|token|mfa/i.test(rowText(row))),
-  ]).slice(0, 120)
-
-  const hasEvidence = allEvidenceRows.length > 0
-  const classicalExposureSignals = algorithms.reduce((sum, algorithm) => sum + algorithm.count, 0)
-  const criticalFindings = allEvidenceRows.filter((row) => severityRank(row.severity || row.threat_level || row.threatLevel || row.riskSeverity || row.status) >= 4).length
-  const highFindings = allEvidenceRows.filter((row) => severityRank(row.severity || row.threat_level || row.threatLevel || row.riskSeverity || row.status) >= 3).length
-  const vulnerableComponents = exposureRows.length
-  const pqcReadyCryptoRows = [
-    ...sourceRows.cryptoInventory,
-    ...sourceRows.certificates,
-    ...sourceRows.generatedKeys,
-    ...sourceRows.qkmsKeys,
-  ].filter((row) => row.is_quantum_safe || row.quantumReady || row.pqc_ready || isPqcAlgorithm(`${row.algorithm || ''} ${row.pqc_readiness || ''} ${row.status || ''}`))
-  const pqcReadySystems = countAssetsForRows(pqcReadyCryptoRows)
-  const quantumVulnerableSystems = countAssetsForRows(exposureRows.filter((row) => {
-    const keySize = numberValue(row.key_size || row.keySize || row.bit_length || row.bitLength)
-    return isClassicalVulnerable(rowText(row), keySize)
-  }))
-  const totalCryptoItems = sourceRows.cryptoInventory.length + sourceRows.certificates.length + sourceRows.generatedKeys.length + sourceRows.qkmsKeys.length
-  const readinessScore = hasEvidence ? percentOf(pqcReadyCryptoRows.length, Math.max(1, totalCryptoItems)) : 0
-  const coverageScore = percentOf(identityRows.length, Math.max(1, sourceRows.assets.length + totalCryptoItems + sourceRows.runtimeEvents.length))
-  const riskPressure = clamp(criticalFindings * 10 + highFindings * 6 + classicalExposureSignals * 2 + tokenRows.length)
-  const identityRiskScore = hasEvidence ? clamp(riskPressure + Math.max(0, 40 - readinessScore) + (providers.length ? 0 : 6)) : 0
-  const oauthReadiness = hasEvidence ? clamp((readinessScore * 0.65) + (coverageScore * 0.25) + (flows.some((flow) => flow.label === 'OAuth 2.0') ? 10 : 0) - gateways.length) : 0
-  const oidcReadiness = hasEvidence ? clamp((readinessScore * 0.62) + (coverageScore * 0.23) + (flows.some((flow) => flow.label === 'OpenID Connect') ? 15 : 0) - Math.min(12, tokenRows.length)) : 0
-  const jwtMigrationScore = hasEvidence ? clamp((readinessScore * 0.7) + (tokenRows.length ? 8 : 0) - Math.min(34, algorithms.filter((row) => /RSA|ECDSA|EdDSA/.test(row.label)).reduce((sum, row) => sum + row.count, 0))) : 0
-  const trustReadiness = hasEvidence ? clamp((readinessScore * 0.5) + percentOf(dependencies.length, Math.max(1, sourceRows.assets.length)) * 0.25 + (sourceRows.certificates.length ? 15 : 0) + (sourceRows.qkmsKeys.length ? 10 : 0)) : 0
-  const slhDsaReadiness = hasEvidence ? clamp(readinessScore + countMatches([...sourceRows.certificates, ...sourceRows.generatedKeys, ...sourceRows.qkmsKeys], /slh-dsa|sphincs/i) * 8 - classicalExposureSignals) : 0
-  const tokenImpacts = buildTokenImpacts(tokenRows)
-  const tokenImpactBlockers = tokenImpacts.filter((row) => row.expansion >= 8).length + countMatches(tokenRows, /header limit|cookie limit|proxy limit|gateway limit|browser limit|mobile constraint/i)
-  const compatibilityBlockers = algorithms.length + tokenImpactBlockers + (readinessScore < 55 && hasEvidence ? 1 : 0)
-  const migrationCompleted = sourceRows.migrationJobs.filter((job) => normalizeJobStatus(job.status) === 'completed').length
-  const migrationRunning = sourceRows.migrationJobs.filter((job) => normalizeJobStatus(job.status) === 'running').length
-  const migrationFailed = sourceRows.migrationJobs.filter((job) => normalizeJobStatus(job.status) === 'failed').length
-
-  const compatibilitySurfaces = deriveCompatibilitySurfaces(allEvidenceRows, readinessScore, compatibilityBlockers)
-
-  const graph = buildTrustGraph({
-    providers,
-    gateways,
-    authServices,
-    tokenRows,
-    dependencies,
-    certificates: sourceRows.certificates,
-    keys: [...sourceRows.generatedKeys, ...sourceRows.qkmsKeys],
-    assets: sourceRows.assets,
-    relationships: sourceRows.relationships,
-    correlationId,
+  const identity = buildIdentityModel({
+    assets: assets,
+    providers: identityProviders,
+    signingKeys: identitySigningKeys,
+    trustRelationships: identityTrust,
+    probes: identityProbes,
+    assetRelationships: relationships,
+    certificates: certificates,
+    migrationJobs: migrationJobs,
+    runtimeEvents: runtimeEvents,
+    activeRun: visibleRun(userId),
   })
 
-  const sourceHealthRows = [
-    sourceHealth('Asset Inventory', 'assets', assets),
-    sourceHealth('Asset Relationships', 'asset_relationships', relationships),
-    sourceHealth('Crypto Inventory', 'crypto_inventory', cryptoInventory),
-    sourceHealth('Crypto Exposures', 'crypto_exposures', cryptoExposures),
-    sourceHealth('Certificates', 'certificates', certificates),
-    sourceHealth('Runtime Crypto Events', 'runtime_crypto_events', runtimeEvents),
-    sourceHealth('Scanner Evidence', 'scanner_evidence', scannerEvidence),
-    sourceHealth('Scanner Alerts', 'scanner_alerts', scannerAlerts),
-    sourceHealth('Scan Sessions', 'pqc_scan_sessions', scanSessions),
-    sourceHealth('Scan Results', 'pqc_scan_results', scanResults),
-    sourceHealth('Auth Events', 'auth_events', authEvents),
-    sourceHealth('User Sessions', 'user_sessions', userSessions),
-    sourceHealth('Migration Jobs', 'migration_jobs', migrationJobs),
-    sourceHealth('Compliance Evidence', 'compliance_evidence', complianceEvidence),
-    sourceHealth('QKMS Keys', 'qkms_keys', qkmsKeys),
-    sourceHealth('QKMS Audit', 'qkms_audit_events', qkmsAuditEvents),
+  /* ---- Estate crypto (Exposure Analysis) ---------------------------- */
+  const componentRows = [
+    ...cryptoInventory.map((row) => ({ row, table: 'crypto_inventory' })),
+    ...certificates.map((row) => ({ row, table: 'certificates' })),
+    ...generatedKeys.map((row) => ({ row, table: 'generated_keys' })),
+    ...qkmsKeys.map((row) => ({ row, table: 'qkms_keys' })),
   ]
-  const tenantSync = buildTenantTelemetrySync({
-    assets,
-    scannerAgents,
-    connectorAccounts,
-    agentHeartbeats,
-    scanSessions,
-    runtimeEvents,
-    scannerEvidence,
-    scannerAlerts,
-    scanResults,
-    cryptoInventory,
-    cryptoExposures,
-    securityEvents,
-    generatedKeys,
-    certificates,
-    vaultAuditLogs,
-    vulnerabilities,
-    authEvents,
-    userSecurityEvents,
-    userSessions,
-    complianceEvidence,
-    migrationJobs,
-  })
-  const activeSources = sourceHealthRows.filter((row) => row.status === 'live').length
-  const staleSources = sourceHealthRows.filter((row) => row.status === 'stale').length
-  const normalizedRecords = allEvidenceRows.length
-  const duplicateRecords = [
-    ...sourceRows.cryptoInventory,
-    ...sourceRows.certificates,
-    ...sourceRows.generatedKeys,
-    ...sourceRows.qkmsKeys,
-  ].length - dedupeRows([...sourceRows.cryptoInventory, ...sourceRows.certificates, ...sourceRows.generatedKeys, ...sourceRows.qkmsKeys]).length
-  const generatedAt = new Date().toISOString()
-  const latestTelemetry = latestDate(
-    ...sourceRows.runtimeEvents.map(rowTimestamp),
-    ...sourceRows.authEvents.map(rowTimestamp),
-    ...sourceRows.userSecurityEvents.map(rowTimestamp),
-    ...sourceRows.qkmsAuditEvents.map(rowTimestamp),
+  const findingRows = [
+    ...cryptoExposures.map((row) => ({ row, table: 'crypto_exposures' })),
+    ...vulnerabilities.map((row) => ({ row, table: 'vulnerabilities' })),
+    ...scannerAlerts.map((row) => ({ row, table: 'scanner_alerts' })),
+    ...scanResults.map((row) => ({ row, table: 'pqc_scan_results' })),
+  ]
+  const algorithms = buildAlgorithms([...componentRows, ...findingRows])
+  const vulnerableComponents = componentRows.filter(({ row }) => isClassical(row))
+  const pqcReadyComponents = componentRows.filter(({ row }) => isPqcReady(row)).length
+  const exposureRows = [
+    ...vulnerableComponents,
+    ...findingRows.filter(({ row }) => ALGORITHM_PATTERNS.some((p) => p.regex.test(structuredText(row)))),
+  ]
+    .sort((a, b) => dateMs(rowTimestamp(b.row)) - dateMs(rowTimestamp(a.row)))
+    .slice(0, 80)
+    .map(({ row, table }) => projectRow(row, table))
+
+  /* ---- Runtime identity telemetry ------------------------------------ */
+  const identityPath = /auth|jwt|token|sign|verify|certificate|identity|session|saml|oidc|oauth/i
+  const runtimeIdentity = [
+    ...runtimeEvents.filter((row) => identityPath.test(structuredText(row))).map((row) => ({ row, table: 'runtime_crypto_events' })),
+    ...authEvents.map((row) => ({ row, table: 'auth_events' })),
+    ...userSessions.map((row) => ({ row, table: 'user_sessions' })),
+    ...userSecurityEvents.map((row) => ({ row, table: 'user_security_events' })),
+    ...securityEvents.filter((row) => /auth|identity|session|token|mfa/i.test(structuredText(row))).map((row) => ({ row, table: 'security_events' })),
+  ].sort((a, b) => dateMs(rowTimestamp(b.row)) - dateMs(rowTimestamp(a.row)))
+  const runtimeMetrics = deriveRuntimeMetrics(runtimeIdentity.map(({ row }) => row), runtimeEvents)
+
+  /* ---- Compliance ------------------------------------------------------ */
+  const readinessScore = componentRows.length ? clamp((pqcReadyComponents / componentRows.length) * 100) : 0
+  const complianceRows = deriveComplianceRows(
+    complianceEvidence.map((row) => ({ ...row, sourceTable: 'compliance_evidence' })),
+    readinessScore,
   )
 
-  const metrics = {
-    identityRiskScore,
-    readinessScore,
-    oauthReadiness,
-    oidcReadiness,
-    jwtMigrationScore,
-    trustReadiness,
-    slhDsaReadiness,
-    totalAssets: sourceRows.assets.length,
-    totalComponents: totalCryptoItems,
-    totalFindings: sourceRows.scanResults.length + sourceRows.scannerAlerts.length + sourceRows.vulnerabilities.length + sourceRows.cryptoExposures.length,
-    criticalFindings,
-    vulnerableComponents,
-    pqcReadyComponents: pqcReadyCryptoRows.length,
-    tokenImpactBlockers,
-    compatibilityBlockers,
-    runtimeSignals: runtimeIdentityRows.length || sourceRows.runtimeEvents.length,
-    totalIdentityProviders: providers.length,
-    authenticationFlows: flows.length,
-    tokenRecords: tokenRows.length,
-    trustDependencies: dependencies.length,
-    gatewaySignals: gateways.length,
-    authServiceSignals: authServices.length,
-    classicalExposureSignals,
-    certificateSignals: sourceRows.certificates.length,
-    qkmsKeySignals: sourceRows.qkmsKeys.length + sourceRows.generatedKeys.length,
-    activeJwtSignatures: tokenRows.filter((row) => /sign|signed|signature|jwt|jws|rs256|es256|eddsa/i.test(rowText(row))).length,
-    pqcReadySystems,
-    quantumVulnerableSystems,
-  }
-
-  const complianceBase = hasEvidence ? clamp((readinessScore * 0.55) + ((100 - identityRiskScore) * 0.25) + (sourceRows.complianceEvidence.length ? 20 : 0)) : 0
-  const complianceRows = deriveComplianceRows(sourceRows.complianceEvidence, complianceBase)
-
-  const phases = buildPhaseRows(hasEvidence, readinessScore, compatibilityBlockers, allEvidenceRows)
-  const digitalTwinScenarios: PQAuthDigitalTwinScenario[] = [
-    { id: 'rsa-ml-dsa', label: 'RSA to ML-DSA', active: algorithms.some((row) => row.id === 'rsa'), detail: 'Token and certificate signature replacement', status: algorithms.some((row) => row.id === 'rsa') ? 'active' : 'waiting', sourceTables: matchedTables(identityRows, /rsa/i), evidence: countMatches(identityRows, /rsa/i) },
-    { id: 'ecdsa-ml-dsa', label: 'ECDSA to ML-DSA', active: algorithms.some((row) => row.id === 'ecdsa' || row.id === 'ecc'), detail: 'JWT and identity signature replacement', status: algorithms.some((row) => row.id === 'ecdsa' || row.id === 'ecc') ? 'active' : 'waiting', sourceTables: matchedTables(identityRows, /ecdsa|ecc|p-?256|secp/i), evidence: countMatches(identityRows, /ecdsa|ecc|p-?256|secp/i) },
-    { id: 'ecdh-ml-kem', label: 'ECDH to ML-KEM', active: algorithms.some((row) => row.id === 'ecdh' || row.id === 'dh'), detail: 'Hybrid TLS key establishment', status: algorithms.some((row) => row.id === 'ecdh' || row.id === 'dh') ? 'active' : 'waiting', sourceTables: matchedTables(identityRows, /ecdh|diffie|dh\b|x25519/i), evidence: countMatches(identityRows, /ecdh|diffie|dh\b|x25519/i) },
-    { id: 'hybrid-deployment', label: 'Hybrid Deployment', active: compatibilityBlockers > 0 || migrationRunning > 0, detail: 'Legacy and PQC verification bridge', status: compatibilityBlockers > 0 ? 'review' : migrationRunning > 0 ? 'active' : 'waiting', sourceTables: ['migration_jobs', 'runtime_crypto_events'], evidence: compatibilityBlockers + migrationRunning },
-  ]
-
-  const failurePredictions = [
-    buildSourceCountRow('token-rejection', 'Token Rejection', tokenImpactBlockers, 'JWT size or algorithm compatibility blockers', undefined, ['runtime_crypto_events', 'scanner_evidence']),
-    buildSourceCountRow('gateway-failure', 'Gateway Failure', gateways.length ? compatibilityBlockers : 0, 'Gateway, proxy, WAF, and ingress compatibility signals', undefined, gateways.flatMap((row) => row.sourceTables)),
-    buildSourceCountRow('certificate-issue', 'Certificate Issue', countMatches(sourceRows.certificates, /rsa|ecdsa|ecc|expired|expiring|weak/i), 'Classical or expiring certificate evidence', undefined, ['certificates']),
-    buildSourceCountRow('performance-degradation', 'Performance Degradation', tokenImpactBlockers + compatibilityBlockers, 'Token expansion and runtime compatibility pressure', undefined, ['runtime_crypto_events', 'pqc_scan_results']),
-    buildSourceCountRow('trust-chain-breakage', 'Trust Chain Breakage', dependencies.length && classicalExposureSignals ? classicalExposureSignals : 0, 'Dependency and trust-material breakage signals', undefined, ['asset_relationships', 'certificates', 'qkms_keys']),
-  ]
-  const rollbackGates = [
-    buildSourceCountRow('auth-failures', 'Authentication Failures', criticalFindings, 'Critical authentication or identity security signals', criticalFindings ? 'review' : 'ready', ['auth_events', 'security_events']),
-    buildSourceCountRow('token-validation', 'Token Validation Failures', tokenImpactBlockers, 'Token validation and size-impact blockers', tokenImpactBlockers ? 'review' : 'ready', ['runtime_crypto_events']),
-    buildSourceCountRow('performance', 'Performance Thresholds Exceeded', compatibilityBlockers, 'Compatibility blockers requiring staged rollout', compatibilityBlockers ? 'review' : 'ready', ['pqc_scan_results', 'scanner_evidence']),
-    buildSourceCountRow('trust-chain', 'Trust Chain Failures', classicalExposureSignals, 'Classical algorithm exposure in identity trust chains', classicalExposureSignals ? 'review' : 'ready', ['crypto_inventory', 'certificates']),
-  ]
-  const runtimeMetrics = deriveRuntimeMetrics(runtimeIdentityRows, sourceRows.runtimeEvents)
+  /* ---- QKMS identity key domains (key tables only) -------------------- */
+  const keyRows = [...qkmsKeys, ...generatedKeys]
+  const keyMatches = (regex: RegExp) => keyRows.filter((row) => regex.test(`${structuredText(row)} ${textValue(row.purpose)} ${textValue(row.key_usage)} ${textValue(row.usage)}`)).length
   const qkmsKeyDomains = [
-    buildSourceCountRow('signing-keys', 'Signing Keys', tokenRows.length + countMatches(sourceRows.qkmsKeys, /sign|verify|ml-dsa|slh-dsa|ecdsa|rsa/i), 'ML-DSA verification and signing readiness', undefined, ['qkms_keys', 'generated_keys', 'runtime_crypto_events']),
-    buildSourceCountRow('verification-keys', 'Verification Keys', authServices.length + countMatches(sourceRows.qkmsKeys, /verify|jwks|issuer/i), 'JWT issuer and validator ownership', undefined, ['qkms_keys', 'scanner_evidence']),
-    buildSourceCountRow('tls-keys', 'TLS Keys', countMatches([...sourceRows.certificates, ...sourceRows.qkmsKeys], /tls|https|certificate|x509|ml-kem/i), 'ML-KEM and hybrid TLS key establishment', undefined, ['certificates', 'qkms_keys']),
-    buildSourceCountRow('certificate-keys', 'Certificate Keys', sourceRows.certificates.length, 'SLH-DSA long-term trust anchors', undefined, ['certificates']),
-    buildSourceCountRow('identity-keys', 'Identity Keys', providers.length + flows.length + countMatches(sourceRows.qkmsKeys, /identity|saml|oauth|oidc/i), 'operator, workload, and federation identity keys', undefined, ['qkms_keys', 'auth_events']),
-    buildSourceCountRow('machine-identity-keys', 'Machine Identity Keys', countMatches(identityRows, /machine|device|service account|workload|agent/i), 'service account and workload identity custody', undefined, ['assets', 'scanner_agents', 'qkms_keys']),
+    countRow('signing-keys', 'Signing Keys', keyMatches(/sign|ml-dsa|slh-dsa|ecdsa|eddsa|\brs\d|\bes\d/i), 'keys whose recorded purpose or algorithm is signing', ['qkms_keys', 'generated_keys']),
+    countRow('identity-provider-keys', 'Identity Provider Keys', identity.tokens.keys.filter((k) => k.lifecycle === 'published').length, 'public JWKS keys observed by identity discovery', ['identity_signing_keys']),
+    countRow('tls-keys', 'TLS / Key-Establishment Keys', keyMatches(/tls|ml-kem|kyber|x25519|ecdh|key.?exchange/i), 'keys whose recorded purpose or algorithm is key establishment', ['qkms_keys', 'generated_keys']),
+    countRow('certificate-keys', 'Certificates', certificates.length, 'certificates in the tenant inventory', ['certificates']),
+    countRow('machine-identity-keys', 'Machine Identity Keys', keyMatches(/machine|workload|service.?account|device|agent/i), 'keys recorded for workloads, devices or service accounts', ['qkms_keys', 'generated_keys']),
   ]
+  const certAndKeys = [...certificates, ...keyRows]
   const lifecycleControls = [
-    buildSourceCountRow('ownership', 'Ownership', countMatches([...sourceRows.qkmsKeys, ...sourceRows.generatedKeys], /owner|owned|assigned/i), 'Owner mapping evidence', sourceRows.qkmsKeys.length || sourceRows.generatedKeys.length ? 'active' : 'waiting', ['qkms_keys', 'generated_keys']),
-    buildSourceCountRow('rotation', 'Rotation', qkmsRotationJobs.length + countMatches(sourceRows.generatedKeys, /rotated|rotation/i), 'Rotation job and key history evidence', qkmsRotationJobs.length ? 'active' : 'waiting', ['qkms_rotation_jobs', 'generated_keys']),
-    buildSourceCountRow('expiration', 'Expiration', countMatches([...sourceRows.certificates, ...sourceRows.generatedKeys, ...sourceRows.qkmsKeys], /expire|not_after|expires/i), 'Expiration tracking evidence', 'active', ['certificates', 'generated_keys', 'qkms_keys']),
-    buildSourceCountRow('revocation', 'Revocation', countMatches([...sourceRows.certificates, ...sourceRows.generatedKeys, ...sourceRows.qkmsKeys], /revoked|disabled|blocked|compromised/i), 'Revocation and block evidence', 'active', ['certificates', 'generated_keys', 'qkms_keys']),
-    buildSourceCountRow('pqc-readiness', 'PQC Readiness', pqcReadyCryptoRows.length, 'PQC readiness evidence', pqcReadyCryptoRows.length ? 'active' : 'waiting', ['crypto_inventory', 'certificates', 'qkms_keys']),
+    countRow('ownership', 'Ownership', keyRows.filter((row) => textValue(row.owner) || textValue(row.owner_id) || textValue(row.service_owner)).length, 'keys with a recorded owner', ['qkms_keys', 'generated_keys']),
+    countRow('rotation', 'Rotation', qkmsRotationJobs.length, 'recorded rotation jobs', ['qkms_rotation_jobs']),
+    countRow('expiration', 'Expiration', certAndKeys.filter((row) => row.not_after || row.expires_at || row.expiration_date).length, 'certificates and keys with a recorded expiry', ['certificates', 'qkms_keys', 'generated_keys']),
+    countRow('revocation', 'Revocation', certAndKeys.filter((row) => /revoked|disabled|compromised|destroyed/i.test(textValue(row.status))).length, 'revoked, disabled or compromised material', ['certificates', 'qkms_keys', 'generated_keys']),
+    countRow('pqc-readiness', 'PQC Readiness', pqcReadyComponents, 'components with an explicit PQC flag or a named PQC algorithm', ['crypto_inventory', 'certificates', 'qkms_keys', 'generated_keys']),
   ]
 
-  const freshness = {
-    lastTelemetryReceived: latestTelemetry,
-    lastScanTimestamp: tenantSync.latestScanAt,
-    lastIdentitySync: latestDate(latestTelemetry, ...sourceRows.authEvents.map(rowTimestamp), ...sourceRows.userSessions.map(rowTimestamp)),
-    lastOAuthDiscovery: latestForRows(allEvidenceRows.filter((row) => /oauth|oidc|saml|keycloak|auth0|okta|entra|cognito/i.test(rowText(row)))),
-    lastJwtAnalysis: latestForRows(tokenRows),
-    lastRiskCalculation: generatedAt,
-    lastComplianceEvaluation: latestForRows(sourceRows.complianceEvidence),
-  }
-  const telemetryIds = allEvidenceRows
-    .slice()
-    .sort((a, b) => dateMs(rowTimestamp(b)) - dateMs(rowTimestamp(a)))
-    .slice(0, 24)
-    .map((row) => `${row.sourceTable}:${row.id}`)
+  const hasEvidence = [assets, identityProviders, identityProbes, cryptoInventory, certificates, runtimeEvents].some((read) => read.length > 0)
 
   return {
-    generatedAt,
+    generatedAt: new Date().toISOString(),
+    mode: 'tenant',
     hasEvidence,
-    mode,
-    providers,
-    gateways,
-    authServices,
-    flows,
+    identity,
     algorithms,
-    identityRows: identityRows.slice(0, 120),
-    exposureRows: exposureRows.slice(0, 120),
-    tokenRows: tokenRows.slice(0, 120),
-    dependencies,
-    runtimeEvents: runtimeIdentityRows,
-    trustNodes: graph.nodes,
-    trustEdges: graph.edges,
-    phases,
-    complianceRows,
-    compatibilitySurfaces,
-    tokenImpacts,
-    digitalTwinScenarios: digitalTwinScenarios.map((row) => ({ ...row })),
-    failurePredictions,
-    rollbackGates,
+    exposureRows,
+    runtimeEvents: runtimeIdentity.slice(0, 60).map(({ row, table }) => projectRow(row, table)),
     runtimeMetrics,
+    complianceRows,
     qkmsKeyDomains,
     lifecycleControls,
-    sourceHealth: sourceHealthRows,
-    freshness,
-    lineage: {
-      source: 'api-server/pqauth-dashboard',
-      originService,
-      generatedAt,
-      correlationId,
-      sourceTables: sourceHealthRows.filter((row) => row.count > 0).map((row) => row.table),
-      telemetryIds,
+    sourceHealth: sourceHealthFrom(ledger, rowsByTable),
+    metrics: {
+      totalAssets: assets.length,
+      totalComponents: componentRows.length,
+      totalFindings: findingRows.length,
+      criticalFindings: findingRows.filter(({ row }) => severityRank(row.severity ?? row.threat_level ?? row.risk_level) >= 4).length,
+      vulnerableComponents: vulnerableComponents.length,
+      pqcReadyComponents,
+      classicalExposureSignals: algorithms.reduce((sum, a) => sum + a.count, 0),
+      certificateSignals: certificates.length,
+      qkmsKeySignals: keyRows.length,
     },
-    integrity: {
-      duplicateRecords: Math.max(0, duplicateRecords),
-      normalizedRecords,
-      deterministicTransforms: true,
-      staleSources,
-      activeSources,
-    },
-    metrics,
   }
 }
 
-function sseHeaders(res: Response) {
-  res.status(200)
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
-  res.flushHeaders?.()
+/* Per-tenant single-flight cache. Every mode reads the same snapshot, so a
+ * user moving between the seven pages (or with several tabs open) builds it
+ * once per TTL instead of once per request. */
+const SNAPSHOT_TTL_MS = 15_000
+const snapshotCache = new Map<string, { at: number; promise: Promise<PQAuthSnapshot> }>()
+
+function invalidateSnapshot(userId: string) {
+  snapshotCache.delete(userId)
 }
 
-function writeSse(res: Response, event: string, data: unknown) {
-  if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+function cachedSnapshot(token: string, userId: string, force = false): Promise<PQAuthSnapshot> {
+  const cached = snapshotCache.get(userId)
+  if (!force && cached && Date.now() - cached.at < SNAPSHOT_TTL_MS) return cached.promise
+  const promise = buildPQAuthSnapshot(token, userId)
+  snapshotCache.set(userId, { at: Date.now(), promise })
+  // A failed build is never cached.
+  promise.catch(() => {
+    if (snapshotCache.get(userId)?.promise === promise) snapshotCache.delete(userId)
+  })
+  return promise
 }
+
+/* ------------------------------------------------------------------ */
+/* Routes                                                              */
+/* ------------------------------------------------------------------ */
 
 const router = Router()
 router.use(requireAuth)
 
-router.get('/stream', async (req: AuthedRequest, res: Response) => {
-  if (!req.user) {
+router.get('/stream', (req: AuthedRequest, res: Response) => {
+  if (!req.user || !req.token) {
     return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
   }
-
-  sseHeaders(res)
-  writeSse(res, 'pqauth-connected', {
-    timestamp: new Date().toISOString(),
-    source: 'dashboard.pqauth',
+  const { token } = req
+  const userId = req.user.id
+  streamLiveSnapshot(req, res, {
+    event: 'pqauth-update',
+    // Cached: most ticks are a cache read; a discovery run invalidates the
+    // cache after every host, so its progress reaches the page within a tick.
+    build: () => cachedSnapshot(token, userId),
+    intervalMs: 5_000,
   })
+})
 
-  let closed = false
-  const emitUpdate = () => {
-    if (closed) return
-    writeSse(res, 'pqauth-update', {
-      timestamp: new Date().toISOString(),
-      source: 'dashboard.pqauth',
-      reason: 'tenant-pqauth-sync',
+router.post('/discovery/run', async (req: AuthedRequest, res: Response) => {
+  try {
+    if (!req.user || !req.token) return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
+    const userId = req.user.id
+    const current = activeRuns.get(userId)
+    if (current?.status === 'running') {
+      return res.status(409).json({ error: { code: 'DISCOVERY_RUNNING', message: 'An identity discovery run is already in progress for this tenant.' }, data: current })
+    }
+
+    const requested = (req.body as { assetIds?: unknown } | undefined)?.assetIds
+    if (requested !== undefined && (!Array.isArray(requested) || requested.length > MAX_HOSTS_PER_RUN || !requested.every((id) => typeof id === 'string' && UUID_RE.test(id)))) {
+      return res.status(400).json({ error: { code: 'INVALID_ASSETS', message: `assetIds must be an array of at most ${MAX_HOSTS_PER_RUN} asset UUIDs.` } })
+    }
+
+    const client = createAuthClient(req.token)
+    if (!client) return res.status(500).json({ error: { code: 'DB_UNAVAILABLE', message: 'Database connection failed' } })
+    // Only the caller's own assets are probe candidates (user_id filter + RLS).
+    let query = client.from('assets').select('id,name,type,metadata').eq('user_id', userId)
+    if (Array.isArray(requested) && requested.length) query = query.in('id', requested as string[])
+    const { data: assets, error } = await query.limit(2500)
+    if (error) return res.status(500).json({ error: { code: 'ASSETS_UNAVAILABLE', message: error.message } })
+
+    const seen = new Set<string>()
+    const targets: Array<{ assetId: string; host: string }> = []
+    for (const asset of assets || []) {
+      const target = assetProbeTarget(asset)
+      if (!target.eligible || !target.host || seen.has(target.host)) continue
+      seen.add(target.host)
+      targets.push({ assetId: String((asset as { id: string }).id), host: target.host })
+    }
+    if (!targets.length) {
+      return res.status(422).json({ error: { code: 'NO_ELIGIBLE_TARGETS', message: 'None of the selected assets has a public hostname that identity discovery may probe.' } })
+    }
+    const selected = targets.slice(0, MAX_HOSTS_PER_RUN)
+
+    const run: PQAuthActiveRun = {
+      runId: randomUUID(),
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      hostsTotal: selected.length,
+      hostsDone: 0,
+      currentHost: null,
+      providersFound: 0,
+      error: targets.length > selected.length ? `${targets.length - selected.length} further host(s) exceed the ${MAX_HOSTS_PER_RUN}-host limit for one run.` : null,
+    }
+    activeRuns.set(userId, run)
+    invalidateSnapshot(userId)
+    await recordAudit(client, userId, 'pqauth.identity_discovery.started', run.runId, { hosts: selected.map((t) => t.host) })
+
+    void executeRun(req.token, userId, run, selected).catch((err) => {
+      run.status = 'failed'
+      run.error = err instanceof Error ? err.message : 'Discovery run failed'
+      run.finishedAt = new Date().toISOString()
+      invalidateSnapshot(userId)
     })
-  }
-
-  emitUpdate()
-  const heartbeat = setInterval(() => {
-    if (!closed) res.write(': pqauth heartbeat\n\n')
-  }, 25000)
-  const syncPoll = setInterval(emitUpdate, 8000)
-
-  req.on('close', () => {
-    closed = true
-    clearInterval(heartbeat)
-    clearInterval(syncPoll)
-  })
-})
-
-router.get('/', async (req: AuthedRequest, res: Response) => {
-  try {
-    if (!req.user || !req.token) return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
-    const data = await buildPQAuthSnapshot('overview', req.token, req.user.id)
-    return res.json({ data })
+    return res.status(202).json({ data: run })
   } catch (error: any) {
-    console.error('PQAuth dashboard overview error:', error)
-    return res.status(500).json({ error: { code: 'PQAUTH_OVERVIEW_FAILED', message: error?.message || 'Failed to fetch PQAuth dashboard data' } })
+    console.error('PQAuth discovery run error:', error)
+    return res.status(500).json({ error: { code: 'DISCOVERY_FAILED', message: error?.message || 'Failed to start identity discovery' } })
   }
 })
 
-router.get('/:mode', async (req: AuthedRequest, res: Response) => {
+async function serveSnapshot(req: AuthedRequest, res: Response, mode: string) {
   try {
     if (!req.user || !req.token) return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
-    const mode = String(req.params.mode || 'overview') as PQAuthMode
-    if (!MODES.has(mode)) {
+    if (!MODES.has(mode as PQAuthMode)) {
       return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'PQAuth page not found' } })
     }
-    const data = await buildPQAuthSnapshot(mode, req.token, req.user.id)
-    return res.json({ data })
+    const data = await cachedSnapshot(req.token, req.user.id, req.query.refresh === '1')
+    return res.json({ data: { ...data, mode } })
   } catch (error: any) {
     console.error('PQAuth dashboard error:', error)
     return res.status(500).json({ error: { code: 'PQAUTH_SNAPSHOT_FAILED', message: error?.message || 'Failed to fetch PQAuth dashboard data' } })
   }
-})
+}
+
+router.get('/', (req: AuthedRequest, res: Response) => serveSnapshot(req, res, 'overview'))
+router.get('/:mode', (req: AuthedRequest, res: Response) => serveSnapshot(req, res, String(req.params.mode || 'overview')))
 
 export default router

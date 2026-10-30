@@ -7,14 +7,20 @@
     "src/api-server/copilot-tools.ts",
     "src/api-server/copilot-knowledge.ts",
     "src/api-server/copilot-answers.ts",
+    "src/api-server/copilot-llm.ts",
+    "src/lib/copilot-llm-catalog.ts",
     "src/types/copilot.ts",
     "src/hooks/use-copilot.ts",
+    "src/hooks/use-copilot-llm.ts",
     "src/components/copilot/SophiaMessage.tsx",
     "src/components/copilot/SophiaCopilot.tsx",
+    "src/components/copilot/SophiaModelSettings.tsx",
+    "src/components/copilot/SophiaNarrative.tsx",
     "src/app/dashboard/sophia/page.tsx",
     "tools/copilot-check.ts",
     "tools/sophia-check.ts",
     "tools/sophia-question-audit.ts",
+    "tools/copilot-byok-check.ts",
     "src/vite-env.d.ts"
   ]
 }

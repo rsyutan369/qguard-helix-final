@@ -11,6 +11,7 @@ import { HEARTBEAT_ONLINE_WINDOW_MS } from '@/lib/agent-installer/agent-release'
 import {
   approvalRecord,
   approvalRefusal,
+  isPassingValidation,
   isSimulationJob,
   jobApproval,
   jobPlanId,
@@ -18,7 +19,11 @@ import {
   type ApprovalVerdict,
 } from '@/lib/migration/job-safety'
 import { dispatchBlockFor } from '@/lib/migration/operational-workflow'
+import { buildAgentWorkflow, redactDetail, type WorkflowHeartbeatRow } from '@/lib/migration/agent-workflow'
+import { resolveWriteAuthority } from '@/lib/agent-installer/agent-scope'
 import { dispatchSnapshotRollback } from './migration-snapshots'
+import { jobExecutionClass } from './agent-scanner'
+import { busStats, eventsSince, subscribe as subscribeAgentEvents } from './agent-event-bus'
 
 type AuthenticatedRequest = Request & {
   user?: { id: string; email?: string | null }
@@ -66,6 +71,8 @@ type LiveMigrationJob = {
   migrationType: string
   /** Raw `job_type` — the operation class is decided from this, never from display text. */
   jobType: string
+  /** Which agent role may execute it — `jobExecutionClass`, the rule the agent poll enforces. */
+  executionClass: 'migration' | 'remediation'
   status: LiveMigrationStatus
   /** Why this job is not being executed, when something is blocking it. */
   dispatchBlock: { kind: string; requires: string; reason: string; at: string } | null
@@ -620,10 +627,69 @@ async function fetchAuditRows(client: any, userId: string, planId?: string | nul
 async function fetchAgentRows(client: any, userId: string) {
   return liveRows('scanner_agents', () => client
     .from('scanner_agents')
-    .select('id, name, hostname, status, version, last_seen_at, revoked_at, metadata')
+    .select('id, name, hostname, status, version, last_seen_at, revoked_at, capabilities, metadata')
     .eq('user_id', userId)
     .limit(500))
 }
+
+/*
+ * Enrichment reads for the agent workflow canvas. They are OPTIONAL: a failure
+ * yields `null` (rendered "Unknown"), never a zero and never an aborted
+ * snapshot — the job board must not disappear because a heartbeat read failed.
+ */
+async function optionalRows(label: string, exec: () => any): Promise<any[] | null> {
+  try {
+    const { data, error } = await exec()
+    if (error) {
+      if (!isMissingTable(error) && !isSchemaShapeError(error)) console.warn(`[migration-live] optional ${label} read failed:`, error.message)
+      return null
+    }
+    return data || []
+  } catch (err) {
+    console.warn(`[migration-live] optional ${label} read crashed:`, err instanceof Error ? err.message : err)
+    return null
+  }
+}
+
+async function optionalCount(client: any, table: string, userId: string, apply?: (query: any) => any): Promise<number | null> {
+  try {
+    let query = client.from(table).select('id', { count: 'exact', head: true }).eq('user_id', userId)
+    if (apply) query = apply(query)
+    const { count, error } = await query
+    return error ? null : count || 0
+  } catch {
+    return null
+  }
+}
+
+const SCAN_EVENT_STATUSES = ['scan_progress', 'error', 'degraded', 'disabled', 'telemetry', 'command:scan:running', 'command:scan:completed', 'command:scan:failed', 'command:rescan_validation:running', 'command:rescan_validation:completed', 'command:rescan_validation:failed']
+
+/** Scan frames + notable heartbeats (24 h, bounded) and routine heartbeats for host-metric series. */
+async function fetchWorkflowHeartbeats(client: any, userId: string): Promise<WorkflowHeartbeatRow[] | null> {
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+  const base = () => client
+    .from('agent_heartbeats')
+    .select('id, agent_id, status, telemetry, observed_at')
+    .eq('user_id', userId)
+    .gte('observed_at', since)
+    .order('observed_at', { ascending: false })
+  const [notable, routine] = await Promise.all([
+    optionalRows('agent_heartbeats(scan)', () => base().in('status', SCAN_EVENT_STATUSES).limit(400)),
+    optionalRows('agent_heartbeats(routine)', () => base().not('status', 'in', `(${SCAN_EVENT_STATUSES.join(',')})`).limit(240)),
+  ])
+  if (notable === null && routine === null) return null
+  return [...(notable || []), ...(routine || [])]
+    .filter((row: any) => typeof row?.agent_id === 'string')
+    .map((row: any) => ({
+      id: String(row.id),
+      agentId: row.agent_id,
+      status: String(row.status || ''),
+      telemetry: asRecord(row.telemetry),
+      observedAt: String(row.observed_at),
+    }))
+}
+
+const EXPOSURE_SAMPLE_LIMIT = 5000
 
 async function fetchInventory(client: any, userId: string, assetIds: string[]) {
   if (assetIds.length === 0) return []
@@ -689,18 +755,11 @@ function executionEvidenceInMetadata(metadata: Record<string, unknown>) {
 }
 
 /**
- * Did a validation actually PASS?
- *
- * Exact tokens only. The counters used `/pass|success|valid/`, and `/valid/`
- * also matches "invalid", "validation_failed" and "unvalidated" — so a failed
- * validation was counted as Verified, and `validationSeverity` rendered
- * "invalid" in the success colour.
+ * Did a validation actually PASS? The rule lives in the isomorphic
+ * `job-safety` module so the orchestration model and the UI read the same
+ * exact-token predicate; re-exported here for existing importers.
  */
-export function isPassingValidation(status: unknown): boolean {
-  const value = String(status || '').toLowerCase().trim()
-  if (!value || /fail|invalid|error|pending|unvalid|unverif|\bnot\b|blocked/.test(value)) return false
-  return ['passed', 'pass', 'success', 'successful', 'validated', 'valid', 'verified'].includes(value)
-}
+export { isPassingValidation }
 
 function validationStatusFromRows(rows: any[], metadata: Record<string, unknown>) {
   const latest = rows[rows.length - 1]
@@ -821,6 +880,21 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     liveCount(client, 'crypto_exposures', userId, (query) => query.eq('severity', 'high')),
     latestScanAt(client, userId),
   ])
+  const [heartbeatRows, exposureSample, mediumExposures, lowExposures, inventoryItems, certificateItems, keyItems, quantumSafeItems, vulnerableItems] = await Promise.all([
+    fetchWorkflowHeartbeats(client, userId),
+    optionalRows('crypto_exposures(sample)', () => client
+      .from('crypto_exposures')
+      .select('asset_id, exposure_type, severity')
+      .eq('user_id', userId)
+      .limit(EXPOSURE_SAMPLE_LIMIT)),
+    optionalCount(client, 'crypto_exposures', userId, (query) => query.in('severity', ['medium', 'moderate'])),
+    optionalCount(client, 'crypto_exposures', userId, (query) => query.eq('severity', 'low')),
+    optionalCount(client, 'crypto_inventory', userId),
+    optionalCount(client, 'crypto_inventory', userId, (query) => query.eq('item_type', 'certificate')),
+    optionalCount(client, 'crypto_inventory', userId, (query) => query.eq('item_type', 'key')),
+    optionalCount(client, 'crypto_inventory', userId, (query) => query.eq('is_quantum_safe', true)),
+    optionalCount(client, 'crypto_inventory', userId, (query) => query.eq('is_vulnerable', true)),
+  ])
 
   const eventsByJob = new Map<string, LiveMigrationEvent[]>()
   for (const event of eventRows) {
@@ -940,6 +1014,7 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
       toAlgo,
       migrationType: String(pickString(metadata, ['migrationType', 'migration_type']) || strategy || prettify(row.job_type, 'PQC Migration')),
       jobType: String(row.job_type || '').toLowerCase(),
+      executionClass: jobExecutionClass(row),
       status,
       rawStatus: String(row.status || status),
       progress,
@@ -1057,6 +1132,56 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     if (Array.isArray(context.assets) && context.assets.length) plannerHandoff = context
   }
 
+  // Four-agent workflow (Collector → Scanner → Patcher → Migration Operator),
+  // derived from the same rows plus agent scan frames and heartbeats.
+  const agentWorkflow = buildAgentWorkflow({
+    agents: agentRows.map((agent: any) => {
+      const metadata = asRecord(agent.metadata)
+      const role = String(metadata.role || '').toLowerCase() || null
+      return {
+        id: String(agent.id),
+        name: agent.name || null,
+        hostname: agent.hostname || null,
+        status: agent.status || null,
+        version: agent.version || null,
+        lastSeenAt: agent.last_seen_at || null,
+        revoked: Boolean(agent.revoked_at) || String(agent.status || '').toLowerCase() === 'revoked',
+        role,
+        writeAuthority: resolveWriteAuthority(role, asRecord(agent.capabilities), metadata),
+        telemetry: Object.keys(asRecord(metadata.lastTelemetry)).length ? asRecord(metadata.lastTelemetry) : null,
+      }
+    }),
+    heartbeats: heartbeatRows || [],
+    jobs,
+    evidence: {
+      totalAssets,
+      inventoryItems,
+      certificates: certificateItems,
+      keys: keyItems,
+      quantumSafeItems,
+      vulnerableItems,
+      findings,
+      exposures: { critical: criticalExposures, high: highExposures, medium: mediumExposures ?? 0, low: lowExposures ?? 0 },
+      exposureSample: (exposureSample || []).map((row: any) => ({
+        assetId: row.asset_id || null,
+        exposureType: String(row.exposure_type || 'other').toLowerCase(),
+        severity: String(row.severity || '').toLowerCase(),
+      })),
+      exposureTotal: criticalExposures + highExposures + (mediumExposures ?? 0) + (lowExposures ?? 0),
+      lastScanAt: scanAt,
+    },
+  })
+
+  // Execution runs for the workflow selector: real plans, newest first. The
+  // planner's asset queue is a working list, not a run.
+  const planList = await optionalRows('migration_plans(list)', () => client
+    .from('migration_plans')
+    .select('id, status, created_at, updated_at')
+    .eq('user_id', userId)
+    .neq('status', 'migration_queue')
+    .order('updated_at', { ascending: false })
+    .limit(25))
+
   return {
     generatedAt: new Date().toISOString(),
     planId: planId || null,
@@ -1065,6 +1190,19 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     jobs,
     timeline: buildTimeline(jobs),
     telemetry: buildLiveTelemetry(jobs, telemetryRows, validationRows, auditRows),
+    agentWorkflow,
+    /** Which optional enrichment reads failed — the UI shows those as Unknown. */
+    workflowDegraded: {
+      heartbeats: heartbeatRows === null,
+      exposures: exposureSample === null,
+      inventory: inventoryItems === null,
+    },
+    runs: (planList || []).map((plan: any) => ({
+      id: String(plan.id),
+      status: String(plan.status || ''),
+      createdAt: plan.created_at || null,
+      updatedAt: plan.updated_at || null,
+    })),
   }
 }
 
@@ -3600,17 +3738,68 @@ router.get('/live/stream', requireAuth, async (req: AuthenticatedRequest, res) =
   sseHeaders(res)
   writeSse(res, 'connected', { timestamp: new Date().toISOString() })
 
+  const userId = req.user!.id
+  let closed = false
+  let building = false
+  let rebuildQueued = false
   const emitSnapshot = async () => {
-    const planId = typeof req.query.planId === 'string' ? req.query.planId : null
-    const snapshot = await buildLiveMigrationSnapshot(client, req.user!.id, planId)
-    writeSse(res, 'migration-update', snapshot)
+    // Single-flight: an event burst must not stack concurrent snapshot builds.
+    if (building) {
+      rebuildQueued = true
+      return
+    }
+    building = true
+    try {
+      const planId = typeof req.query.planId === 'string' ? req.query.planId : null
+      const snapshot = await buildLiveMigrationSnapshot(client, userId, planId)
+      if (!closed) writeSse(res, 'migration-update', snapshot)
+    } finally {
+      building = false
+      if (rebuildQueued && !closed) {
+        rebuildQueued = false
+        void emitSnapshot().catch(() => undefined)
+      }
+    }
   }
 
+  /*
+   * Agent lifecycle events (scan frames, heartbeats, errors, migration
+   * progress) are pushed the moment the agent reports them, tagged with the
+   * bus's server-assigned sequence as the SSE id. A reconnecting browser sends
+   * that id back as Last-Event-ID and is replayed what it missed; the snapshot
+   * remains the source of truth for state, so a lost buffer only delays a
+   * correction, never shows a wrong one.
+   */
+  // First connect starts at "now" — history arrives in the snapshot, which
+  // reads the persisted rows. Only a reconnect replays from its last id.
+  let cursor = Number(req.headers['last-event-id'] || req.query.lastEventId || 0) || busStats().sequence
+  let snapshotTimer: ReturnType<typeof setTimeout> | null = null
+  const flushAgentEvents = () => {
+    if (closed) return
+    const pending = eventsSince(userId, cursor)
+    if (!pending.length) return
+    for (const event of pending) {
+      cursor = event.id
+      res.write(`id: ${event.id}\nevent: agent-event\ndata: ${JSON.stringify({ id: event.id, name: event.name, agentId: event.agentId, at: event.at, payload: redactDetail(event.payload) })}\n\n`)
+    }
+    if (!snapshotTimer) {
+      snapshotTimer = setTimeout(() => {
+        snapshotTimer = null
+        void emitSnapshot().catch(() => undefined)
+      }, 1500)
+    }
+  }
+  const unsubscribe = subscribeAgentEvents(userId, flushAgentEvents)
+
   await emitSnapshot().catch(() => undefined)
+  flushAgentEvents()
   const heartbeat = setInterval(() => writeSse(res, 'heartbeat', { ts: Date.now() }), 15000)
   const poll = setInterval(() => emitSnapshot().catch(() => undefined), 7000)
 
   req.on('close', () => {
+    closed = true
+    unsubscribe()
+    if (snapshotTimer) clearTimeout(snapshotTimer)
     clearInterval(heartbeat)
     clearInterval(poll)
     res.end()

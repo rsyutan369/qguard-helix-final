@@ -32,6 +32,7 @@ import type {
   LifecycleState,
   ManagedKey,
   PipelineStatus,
+  PostureEvidence,
   QkmsEvidenceRef,
   QkmsEvidenceSource,
   QkmsIntelligence,
@@ -64,10 +65,11 @@ import {
   classifyCustody,
   evaluateGovernance,
   isApprovedCustody,
+  policyCoversKey,
   ruleLabel,
 } from './governance'
 import { assessKeyRisk, riskLevelOf } from './risk'
-import { buildMigrationGate, buildPrechecks, buildReadiness } from './readiness'
+import { buildMigrationGate, buildPrechecks, buildReadiness, isEvidenced } from './readiness'
 
 type Row = Record<string, unknown>
 
@@ -185,6 +187,8 @@ export interface QkmsInputs {
   scanSessions: Row[]
   /** true when any query hit its row cap — the model is a bounded sample. */
   truncated: boolean
+  /** Auxiliary tables whose query failed; their rows are absent, not empty. */
+  degradedSources?: string[]
   now?: number
 }
 
@@ -495,6 +499,9 @@ function fromScannerEvidence(row: Row, assetEnvironment: string): KeyObservation
 /* Merge                                                               */
 /* ------------------------------------------------------------------ */
 
+/** Sources that OBSERVED the key, as opposed to declaring or generating it. */
+const OBSERVED_TABLES = new Set(['certificates', 'crypto_inventory', 'scanner_evidence'])
+
 /** Registry rows win over discoveries; discoveries fill gaps registry lacks. */
 const SOURCE_PRIORITY: Record<string, number> = {
   qkms_keys: 5,
@@ -563,7 +570,7 @@ const PLACEHOLDER_RISK: KeyRiskAssessment = {
 /* Rotation jobs                                                       */
 /* ------------------------------------------------------------------ */
 
-function normaliseJobStatus(value: string): RotationJobStatus {
+export function normaliseJobStatus(value: string): RotationJobStatus {
   const text = value.toLowerCase()
   if (/cancel/.test(text)) return 'cancelled'
   if (/fail|error/.test(text)) return 'failed'
@@ -735,13 +742,45 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
 
   for (const [id, group] of grouped) {
     const merged = mergeObservations(group)
+
+    /*
+     * Posture evidence (audit brief §3F). The registry wins every OTHER field —
+     * owner, alias, custody are the tenant's to declare — but not the
+     * algorithm: a registry row can only DECLARE one. The algorithm that decides
+     * posture is the one this platform generated, else the newest one a source
+     * actually observed; a declaration decides it only when nothing observed the
+     * key, and is then marked unverified. Letting the declaration win published
+     * a key the scanner saw as RSA-2048 as post-quantum because its registry
+     * entry said "ML-KEM-768".
+     */
+    const generatedObservation = group.find((row) => row.table === 'generated_keys' && row.algorithm)
+    const observedObservation = group
+      .filter((row) => OBSERVED_TABLES.has(row.table) && row.algorithm)
+      .sort((a, b) => (SOURCE_PRIORITY[b.table] || 0) - (SOURCE_PRIORITY[a.table] || 0)
+        || (dateMs(b.observedAt) ?? 0) - (dateMs(a.observedAt) ?? 0))[0]
+    const declaredObservation = group.find((row) => row.table === 'qkms_keys' && row.algorithm)
+    const evidenced = generatedObservation || observedObservation || null
+    const postureEvidence: PostureEvidence = generatedObservation
+      ? 'generated'
+      : observedObservation ? 'observed' : declaredObservation ? 'declared' : 'none'
+    if (evidenced) {
+      merged.algorithm = evidenced.algorithm
+      merged.keySize = evidenced.keySize ?? merged.keySize
+    }
+    const algorithmConflict = declaredObservation && evidenced
+      && classifyKey(declaredObservation.algorithm).family !== classifyKey(evidenced.algorithm).family
+      ? { declared: declaredObservation.algorithm, observed: evidenced.algorithm }
+      : null
+
     if (!merged.algorithm && !merged.alias) continue
 
     const classification = classifyKey(
       merged.algorithm,
       merged.keySize,
       `${merged.purpose} ${merged.alias || ''}`,
-      merged.table === 'certificates' ? 'certificate' : '',
+      // Certificate-borne whenever ANY source is a certificate — a registered
+      // certificate key has the registry, not the certificate, as its primary.
+      group.some((row) => row.table === 'certificates') ? 'certificate' : '',
     )
 
     const custodyHints = [
@@ -893,8 +932,10 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
 
     const capabilities: KeyCapabilities = {
       // A work order can be raised against any live key: it governs the
-      // operation, it does not claim to perform the cryptography.
-      requestRotation: !terminal,
+      // operation, it does not claim to perform the cryptography. Not while one
+      // is already open, though — two concurrent orders for one key would each
+      // mint a version and race to validate the same material.
+      requestRotation: !terminal && !rotationInProgress,
       // Recording an executed rotation mints a version record, which requires a
       // registry row this platform owns.
       recordRotation: !terminal,
@@ -905,7 +946,9 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
       decommission: writable && !terminal,
       reason: terminal
         ? 'The key is in a terminal lifecycle state; no further key operations are accepted.'
-        : writable
+        : rotationInProgress
+          ? 'A rotation work order is already open for this key; advance or close it before raising another.'
+          : writable
           ? 'This key has a QKMS-owned record, so lifecycle operations write directly to it.'
           : 'This key was discovered by scan or telemetry. QKMS will create a governed registry record for it on the first write, and cannot mutate the discovery row itself.',
     }
@@ -926,7 +969,17 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
       purpose: merged.purpose || inferPurpose(classification),
       posture: classification.posture,
       migrationRequirement: classification.migrationRequirement,
-      postureReason: classification.reason,
+      postureReason: [
+        algorithmConflict
+          ? `The registry declares ${algorithmConflict.declared}, but ${algorithmConflict.observed} was observed; the observed algorithm decides posture.`
+          : '',
+        classification.reason,
+        postureEvidence === 'declared' && (classification.posture === 'post-quantum' || classification.posture === 'hybrid')
+          ? 'This posture rests on a registry declaration only — no scan, certificate or platform record has verified the algorithm, so the key is not counted as PQC-ready.'
+          : '',
+      ].filter(Boolean).join(' '),
+      postureEvidence,
+      algorithmConflict,
 
       owner,
       assetId: merged.assetId,
@@ -1003,7 +1056,8 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
     owner: 'Tenant policy',
     keysInScope: 0,
     violations: 0,
-    compliance: 100,
+    compliance: null,
+    evaluation: 'no-keys-in-scope',
     updatedAt: iso(row.updated_at ?? row.created_at),
   }))
 
@@ -1024,14 +1078,24 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
   }
 
   /* ---- Risk (after governance, so violations feed the score) ------ */
+  const enabledPolicies = allPolicies.filter((policy) => policy.enabled)
   for (const key of keys) {
     const keyViolations = violationsByKey.get(key.id) || []
     key.violationIds = keyViolations.map((row) => row.id)
+    /*
+     * "Compliant" means at least one ENABLED policy covers this key and none of
+     * them found a violation. Every key carries evidence (it was observed), so
+     * the previous `evidence.length ? 'compliant'` marked every key compliant
+     * even with every policy switched off — compliance implied by existence.
+     */
+    const covered = enabledPolicies.some((policy) => policyCoversKey(policy, key))
     key.complianceStatus = keyViolations.length
       ? 'violation'
-      : key.evidence.length || key.auditTrail.length
-        ? 'compliant'
-        : 'evidence-required'
+      : !covered
+        ? 'not-evaluated'
+        : key.evidence.length || key.auditTrail.length
+          ? 'compliant'
+          : 'evidence-required'
 
     const classification = classifyKey(key.algorithm, key.keySize, key.purpose)
     key.risk = assessKeyRisk({
@@ -1157,10 +1221,6 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
   const live = keys.filter((key) => key.lifecycle !== 'revoked' && key.lifecycle !== 'decommissioned' && key.lifecycle !== 'retired')
   const governedRotation = keys.filter((key) => ROTATION_GOVERNED.includes(key.rotation))
   const custodyScope = live.filter((key) => key.custody !== 'unknown')
-  const decisionScope = keys.filter((key) =>
-    key.posture === 'post-quantum' || key.posture === 'hybrid' || key.posture === 'quantum-vulnerable'
-    || (key.posture === 'deprecated' && key.keyClass !== 'symmetric-encryption' && key.keyClass !== 'hash-kdf'))
-  const pqcReady = decisionScope.filter((key) => key.posture === 'post-quantum' || key.posture === 'hybrid')
 
   const auditRecords: AuditEvidenceRecord[] = [
     ...inputs.qkmsAuditEvents.map((row) => {
@@ -1213,13 +1273,20 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
   const openRotationJobs = jobs.filter((job) => !TERMINAL_JOB.includes(job.status)).length
   const unvalidatedRotationJobs = jobs.filter((job) => job.status === 'completed' && job.validationStatus !== 'passed').length
 
-  const prechecks = buildPrechecks(keys, violations, auditRecords.length)
+  /*
+   * Evidence of KEY OPERATIONS is the QKMS audit trail. Vault custody logs and
+   * compliance documents are listed alongside it, but counting them here let an
+   * uploaded compliance PDF satisfy "audit evidence is available" — and with it
+   * the MIGRATED gate state — for keys no QKMS operation ever touched.
+   */
+  const keyOperationAuditCount = inputs.qkmsAuditEvents.length
+  const prechecks = buildPrechecks(keys, violations, keyOperationAuditCount)
   const gate = buildMigrationGate(keys, prechecks, {
     openMigrationJobs,
     completedMigrationJobs,
     openRotationJobs,
     unvalidatedRotationJobs,
-    auditRecordCount: auditRecords.length,
+    auditRecordCount: keyOperationAuditCount,
     evidence: keys.slice(0, 4).flatMap((key) => key.evidence.slice(0, 1)),
     nowIso,
   })
@@ -1364,6 +1431,7 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
     sources,
     truncated: inputs.truncated,
     absentSources: sources.filter((source) => source.count === 0).map((source) => source.label),
+    degradedSources: inputs.degradedSources || [],
   }
 
   /* ---- Metrics --------------------------------------------------------- */
@@ -1381,8 +1449,10 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
     neverRotatedKeys: rotationCounts['never-rotated'],
     deprecatedKeys: keys.filter((key) => key.posture === 'deprecated').length,
     quantumVulnerableKeys: keys.filter((key) => key.posture === 'quantum-vulnerable').length,
-    pqcReadyKeys: keys.filter((key) => key.posture === 'post-quantum').length,
-    hybridKeys: keys.filter((key) => key.posture === 'hybrid').length,
+    // Evidenced only: a registry declaration of ML-KEM is counted in declaredPqcKeys, not here.
+    pqcReadyKeys: keys.filter((key) => key.posture === 'post-quantum' && isEvidenced(key)).length,
+    hybridKeys: keys.filter((key) => key.posture === 'hybrid' && isEvidenced(key)).length,
+    declaredPqcKeys: keys.filter((key) => (key.posture === 'post-quantum' || key.posture === 'hybrid') && !isEvidenced(key)).length,
     keysRequiringMigration: keys.filter((key) => key.migrationRequirement === 'required').length,
     orphanedKeys: live.filter((key) => !key.owner).length,
     unmanagedCustodyKeys: live.filter((key) => key.custody === 'unmanaged' || key.custody === 'unknown').length,
@@ -1397,15 +1467,19 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
     auditEvidenceRecords: auditRecords.length,
 
     averageRiskScore: riskScores.length ? Math.round(riskScores.reduce((sum, value) => sum + value, 0) / riskScores.length) : null,
-    pqcReadinessPercent: decisionScope.length ? Math.round((pqcReady.length / decisionScope.length) * 100) : null,
+    // ONE readiness formula: the header figure is the Readiness page's headline.
+    // A second inline definition here differed for deprecated keys of unknown
+    // class, so Overview and Readiness could show two percentages for one estate.
+    pqcReadinessPercent: readiness.overall,
     custodyCoveragePercent: custodyScope.length
       ? Math.round((custodyScope.filter((key) => isApprovedCustody(key.custody)).length / custodyScope.length) * 100)
       : null,
-    // Audit readiness is the share of LIVE keys carrying at least one audit or
-    // evidence record. It is a coverage figure with a stated denominator, not
-    // the predecessor's blend of four unrelated ratios.
+    // Audit readiness is the share of LIVE keys with at least one QKMS audit
+    // record — a governed operation on file. It used to accept "any evidence",
+    // and every key has evidence (that is how it was discovered), so the figure
+    // was 100% by construction whatever had been audited.
     auditReadinessPercent: live.length
-      ? Math.round((live.filter((key) => key.auditTrail.length > 0 || key.evidence.length > 0).length / live.length) * 100)
+      ? Math.round((live.filter((key) => key.auditTrail.length > 0).length / live.length) * 100)
       : null,
     rotationHealthPercent: rotationPosture.healthPercent,
   }
@@ -1485,13 +1559,13 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
     },
 
     distributions: {
-      algorithms: distribution(keys.map((key) => ({ label: key.algorithm || 'Unknown', keyId: key.id })), 12),
-      families: distribution(keys.map((key) => ({ label: key.family, keyId: key.id })), 12),
+      algorithms: withPosture(distribution(keys.map((key) => ({ label: key.algorithm || 'Unknown', keyId: key.id })), 12), keyById),
+      families: withPosture(distribution(keys.map((key) => ({ label: key.family, keyId: key.id })), 12), keyById),
       keyClasses: distribution(keys.map((key) => ({ label: key.keyType, keyId: key.id })), 10),
       owners: distribution(keys.map((key) => ({ label: key.owner || 'Unassigned', keyId: key.id })), 10),
       environments: distribution(keys.map((key) => ({ label: key.environment, keyId: key.id })), 6),
       custody: distribution(keys.map((key) => ({ label: key.backend, keyId: key.id })), 10),
-      postures: distribution(keys.map((key) => ({ label: postureLabel(key.posture), keyId: key.id })), 8),
+      postures: withPosture(distribution(keys.map((key) => ({ label: postureLabel(key.posture), keyId: key.id })), 8), keyById),
     },
 
     audit: auditRecords,
@@ -1499,6 +1573,23 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
   }
 
   return intelligence
+}
+
+/**
+ * Tag each distribution row with the model's posture for the keys behind it
+ * (the most common one). The pages coloured these rows by regex over the label,
+ * which put Ed25519 and X25519 — Shor-breakable — in the neutral colour.
+ */
+function withPosture(rows: DistributionRow[], keyById: Map<string, ManagedKey>): DistributionRow[] {
+  return rows.map((row) => {
+    const counts = new Map<KeyPqcPosture, number>()
+    for (const id of row.keyIds || []) {
+      const posture = keyById.get(id)?.posture
+      if (posture) counts.set(posture, (counts.get(posture) || 0) + 1)
+    }
+    const dominant = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
+    return dominant ? { ...row, posture: dominant } : row
+  })
 }
 
 export function postureLabel(posture: KeyPqcPosture): string {
@@ -1541,6 +1632,7 @@ export function toIndexEntry(key: ManagedKey): KeyIndexEntry {
     riskLevel: key.risk.level,
     violations: key.violationIds.length,
     complianceStatus: key.complianceStatus,
+    postureEvidence: key.postureEvidence,
     lastObservedAt: key.lastObservedAt,
   }
 }

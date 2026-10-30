@@ -42,7 +42,16 @@ export interface InstallerContext {
   agentToken: string
   agentName: string
   role: AgentRole
+  /** The scanned host's environment label (asset metadata) — QGUARD_AGENT_ENVIRONMENT. */
   environment: string
+  /**
+   * The control-plane trust environment the URL was validated against when
+   * this package was generated — QGUARD_ENVIRONMENT. The agent re-validates
+   * the same URL against the same environment at boot, so generation and
+   * runtime apply identical rules. Defaults to development (the strictest
+   * reading of a missing value is the doc's "safe-to-be-wrong" default).
+   */
+  controlPlaneEnvironment?: string
   version: string
   /** SHA-256 (hex) of the published runtime bundle this installer will accept. */
   runtimeSha256: string
@@ -119,6 +128,45 @@ interface NormalisedContext extends InstallerContext {
   allowedTargetsYaml: string
   allowedPathsYaml: string
   roleLabel: string
+  controlPlaneEnvironment: 'development' | 'staging' | 'production'
+  /** curl flags: HTTPS only, TLS 1.2+ (empty for a plaintext development control plane). */
+  curlTls: string
+}
+
+/**
+ * Windows PowerShell 5.1 on older .NET can negotiate SSL 3 / TLS 1.0. Raise
+ * the floor to TLS 1.2 (keeping 1.3 where the OS offers it) before any request.
+ */
+const POWERSHELL_TLS_FLOOR = `# TLS 1.2+ only — Windows PowerShell 5.1 can otherwise negotiate SSL 3 / TLS 1.0.
+[Net.ServicePointManager]::SecurityProtocol = ([Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12) -band -bnot ([Net.SecurityProtocolType]::Ssl3 -bor [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11)`
+
+/**
+ * Container runtime download. Node's own fetch: verified TLS, no redirects
+ * (a redirect would replay the agent token to wherever it points), HTTPS
+ * required outside development, bounded by a timeout. Written to a file and
+ * run as a script, never as an inline one-liner. Contains no "$" so it embeds
+ * in compose unescaped.
+ */
+const CONTAINER_FETCH_SCRIPT = `import { writeFileSync } from 'node:fs'
+const [url, out] = process.argv.slice(2)
+if (!url.startsWith('https://') && process.env.QGUARD_ENVIRONMENT !== 'development') {
+  console.error('[qguard] refusing to download the runtime over plaintext: ' + url)
+  process.exit(1)
+}
+const response = await fetch(url, {
+  redirect: 'error',
+  signal: AbortSignal.timeout(120000),
+  headers: { 'x-qguard-agent-id': process.env.QGUARD_AGENT_ID, 'x-qguard-agent-token': process.env.QGUARD_AGENT_TOKEN },
+})
+if (!response.ok) {
+  console.error('[qguard] runtime download failed: HTTP ' + response.status)
+  process.exit(1)
+}
+writeFileSync(out, Buffer.from(await response.arrayBuffer()), { mode: 0o600 })`
+
+function indent(text: string, spaces: number) {
+  const pad = ' '.repeat(spaces)
+  return text.split('\n').map((line) => (line ? pad + line : line)).join('\n')
 }
 
 function normalise(context: InstallerContext): NormalisedContext {
@@ -156,6 +204,8 @@ function normalise(context: InstallerContext): NormalisedContext {
     allowedTargetsYaml: yamlScalar(allowedTargetsCsv),
     allowedPathsYaml: yamlScalar(allowedPathsCsv),
     roleLabel: agentRole(context.role).label,
+    controlPlaneEnvironment: (['development', 'staging', 'production'] as const).find((value) => value === String(context.controlPlaneEnvironment || '').toLowerCase()) || 'development',
+    curlTls: apiUrl.startsWith('https://') ? "--proto '=https' --tlsv1.2 " : '',
   }
 }
 
@@ -204,7 +254,7 @@ fail() { printf '\\033[31m  FAILED\\033[0m %s\\n' "$1" >&2; }
 # Phase reporting. Never prints or logs the token; failures are non-fatal so a
 # transient control-plane outage cannot block a local installation.
 report() {
-  curl -fsS -m 15 -X POST "${context.eventUrl}" \\
+  curl ${context.curlTls}-fsS -m 15 -X POST "${context.eventUrl}" \\
     -H "content-type: application/json" \\
     -H "x-qguard-agent-id: $AGENT_ID" \\
     -H "x-qguard-agent-token: $AGENT_TOKEN" \\
@@ -278,7 +328,8 @@ install -d -m 0755 "$INSTALL_DIR"
 install -d -m 0700 "$CONFIG_DIR"
 TMP_RUNTIME="$(mktemp)"
 log "Downloading agent runtime v$AGENT_VERSION"
-curl -fsSL -m 120 "${context.runtimeUrl}" \\
+# No -L: a redirect would replay the agent token to wherever it points.
+curl ${context.curlTls}-fsS -m 120 "${context.runtimeUrl}" \\
   -H "x-qguard-agent-id: $AGENT_ID" \\
   -H "x-qguard-agent-token: $AGENT_TOKEN" \\
   -o "$TMP_RUNTIME"
@@ -308,8 +359,10 @@ QGUARD_TENANT_ID=${context.tenantId}
 QGUARD_AGENT_ID=${context.agentId}
 QGUARD_AGENT_TOKEN=${context.agentToken}
 QGUARD_AGENT_ROLE=${context.role}
+QGUARD_ENVIRONMENT=${context.controlPlaneEnvironment}
 QGUARD_AGENT_ENVIRONMENT=${context.environment}
 QGUARD_AGENT_VERSION=${context.version}
+QGUARD_STATE_DIR=/var/lib/qguard-agent
 QGUARD_SCAN_TYPES=${context.scanTypesCsv}
 QGUARD_ALLOWED_TARGETS=${context.allowedTargetsCsv}
 QGUARD_ALLOWED_PATHS=${context.allowedPathsCsv}
@@ -321,6 +374,12 @@ QGUARD_CONFIG_EOF
 chmod 0600 "$CONFIG_FILE"
 chown root:root "$CONFIG_FILE"
 ok "Configuration written to $CONFIG_FILE (0600 root)"
+
+# Request-signing keys are generated by the agent on first start and never
+# leave this host. 0700 root, and it must persist: a lost key has to be reset
+# in the Agent Center before the agent is accepted again.
+install -d -m 0700 -o root -g root /var/lib/qguard-agent
+ok "Signing-key state directory /var/lib/qguard-agent (0700 root)"
 
 # --- 5. systemd service ------------------------------------------------------
 NODE_BIN="$(command -v node)"
@@ -339,6 +398,8 @@ Restart=always
 RestartSec=15
 User=root
 WorkingDirectory=$INSTALL_DIR
+StateDirectory=qguard-agent
+StateDirectoryMode=0700
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectKernelTunables=true
@@ -370,7 +431,7 @@ fi
 log "Verifying backend connection"
 CONNECTED="no"
 for attempt in $(seq 1 20); do
-  RESPONSE="$(curl -fsS -m 10 "${context.selfUrl}" \\
+  RESPONSE="$(curl ${context.curlTls}-fsS -m 10 "${context.selfUrl}" \\
     -H "x-qguard-agent-id: $AGENT_ID" \\
     -H "x-qguard-agent-token: $AGENT_TOKEN" 2>/dev/null || echo '')"
   case "$RESPONSE" in
@@ -406,6 +467,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+${POWERSHELL_TLS_FLOOR}
 
 $ApiUrl        = '${context.apiUrl}'
 $TenantId      = '${context.tenantId}'
@@ -414,6 +476,7 @@ $AgentToken    = '${context.agentToken}'
 $AgentVersion  = '${context.version}'
 $RuntimeSha256 = '${context.runtimeSha256}'
 $InstallDir    = Join-Path $env:ProgramData 'QGuardHelix\\Agent'
+$StateDir      = Join-Path $InstallDir 'state'
 $ConfigFile    = Join-Path $InstallDir 'agent.env'
 $RuntimeFile   = Join-Path $InstallDir '${AGENT_RUNTIME_FILENAME}'
 $TaskName      = 'QGuardHelixAgent'
@@ -426,7 +489,7 @@ function Write-Fail($Message) { Write-Host "  FAILED $Message" -ForegroundColor 
 function Report-Phase($Phase, $Detail) {
   try {
     $body = @{ phase = $Phase; detail = "$Detail"; platform = 'windows'; version = $AgentVersion } | ConvertTo-Json -Compress
-    Invoke-RestMethod -Method Post -Uri "${context.eventUrl}" -TimeoutSec 15 -ContentType 'application/json' \`
+    Invoke-RestMethod -Method Post -Uri "${context.eventUrl}" -TimeoutSec 15 -MaximumRedirection 0 -ContentType 'application/json' \`
       -Headers @{ 'x-qguard-agent-id' = $AgentId; 'x-qguard-agent-token' = $AgentToken } -Body $body | Out-Null
   } catch { }
 }
@@ -461,7 +524,8 @@ function Resolve-NodePath {
 $NodePath = Resolve-NodePath
 if ($NodePath) {
   $nodeMajor = 0
-  try { $nodeMajor = [int]((& $NodePath -p 'process.versions.node.split(".")[0]') 2>$null) } catch { }
+  # Avoid embedded quotes: Windows PowerShell 5.1 strips them for native commands.
+  try { $nodeMajor = [int]((& $NodePath -p 'parseInt(process.versions.node,10)') 2>$null) } catch { }
   if ($nodeMajor -lt ${AGENT_MIN_NODE_MAJOR}) { $NodePath = $null; Write-Step "Installed Node.js is older than v${AGENT_MIN_NODE_MAJOR}" }
 }
 
@@ -489,7 +553,7 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $TempRuntime = Join-Path $env:TEMP ("qguard-agent-" + [guid]::NewGuid().ToString('N') + '.cjs')
 Write-Step "Downloading agent runtime v$AgentVersion"
 try {
-  Invoke-WebRequest -Uri "${context.runtimeUrl}" -OutFile $TempRuntime -TimeoutSec 120 -UseBasicParsing \`
+  Invoke-WebRequest -Uri "${context.runtimeUrl}" -OutFile $TempRuntime -TimeoutSec 120 -MaximumRedirection 0 -UseBasicParsing \`
     -Headers @{ 'x-qguard-agent-id' = $AgentId; 'x-qguard-agent-token' = $AgentToken }
 } catch {
   Write-Fail "Runtime download failed: $($_.Exception.Message)"
@@ -520,8 +584,10 @@ $configLines = @(
   "QGUARD_AGENT_ID=${context.agentId}",
   "QGUARD_AGENT_TOKEN=${context.agentToken}",
   "QGUARD_AGENT_ROLE=${context.role}",
+  "QGUARD_ENVIRONMENT=${context.controlPlaneEnvironment}",
   "QGUARD_AGENT_ENVIRONMENT=${context.environment}",
   "QGUARD_AGENT_VERSION=${context.version}",
+  "QGUARD_STATE_DIR=$StateDir",
   "QGUARD_SCAN_TYPES=${context.scanTypesCsv}",
   "QGUARD_ALLOWED_TARGETS=${context.allowedTargetsCsv}",
   "QGUARD_ALLOWED_PATHS=${context.allowedPathsCsv}",
@@ -542,6 +608,20 @@ foreach ($identity in @('NT AUTHORITY\\SYSTEM', 'BUILTIN\\Administrators')) {
 }
 Set-Acl -Path $ConfigFile -AclObject $acl
 Write-Ok "Configuration written to $ConfigFile (SYSTEM + Administrators only)"
+
+# Request-signing keys: generated by the agent on first start, never leave this
+# host. Same ACL as the token, set on the directory BEFORE any key is written so
+# every file created inside inherits it.
+New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+$stateAcl = Get-Acl $StateDir
+$stateAcl.SetAccessRuleProtection($true, $false)
+$stateAcl.Access | ForEach-Object { $stateAcl.RemoveAccessRule($_) | Out-Null }
+foreach ($identity in @('NT AUTHORITY\\SYSTEM', 'BUILTIN\\Administrators')) {
+  $rule = New-Object Security.AccessControl.FileSystemAccessRule($identity, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+  $stateAcl.AddAccessRule($rule)
+}
+Set-Acl -Path $StateDir -AclObject $stateAcl
+Write-Ok "Signing-key state directory $StateDir (SYSTEM + Administrators only)"
 
 # --- 5. Supervised startup task (runs as SYSTEM, restarts on failure) -------
 $action = New-ScheduledTaskAction -Execute $NodePath -Argument "\`"$RuntimeFile\`" watch" -WorkingDirectory $InstallDir
@@ -571,7 +651,7 @@ Write-Step 'Verifying backend connection'
 $connected = $false
 for ($i = 0; $i -lt 20; $i++) {
   try {
-    $status = Invoke-RestMethod -Method Get -Uri "${context.selfUrl}" -TimeoutSec 10 \`
+    $status = Invoke-RestMethod -Method Get -Uri "${context.selfUrl}" -TimeoutSec 10 -MaximumRedirection 0 \`
       -Headers @{ 'x-qguard-agent-id' = $AgentId; 'x-qguard-agent-token' = $AgentToken }
     if ($status.data.connected -eq $true) { $connected = $true; break }
   } catch { }
@@ -609,6 +689,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+${POWERSHELL_TLS_FLOOR}
 
 $AgentId       = '${context.agentId}'
 $AgentToken    = '${context.agentToken}'
@@ -625,7 +706,7 @@ New-Item -ItemType Directory -Force -Path $workDir | Out-Null
 $runtime = Join-Path $workDir '${AGENT_RUNTIME_FILENAME}'
 
 Write-Host '[qguard] Downloading agent runtime v${context.version}' -ForegroundColor Cyan
-Invoke-WebRequest -Uri "${context.runtimeUrl}" -OutFile $runtime -TimeoutSec 120 -UseBasicParsing \`
+Invoke-WebRequest -Uri "${context.runtimeUrl}" -OutFile $runtime -TimeoutSec 120 -MaximumRedirection 0 -UseBasicParsing \`
   -Headers @{ 'x-qguard-agent-id' = $AgentId; 'x-qguard-agent-token' = $AgentToken }
 
 $actual = (Get-FileHash -Path $runtime -Algorithm SHA256).Hash.ToLower()
@@ -641,7 +722,11 @@ $env:QGUARD_TENANT_ID               = '${context.tenantId}'
 $env:QGUARD_AGENT_ID                = $AgentId
 $env:QGUARD_AGENT_TOKEN             = $AgentToken
 $env:QGUARD_AGENT_ROLE              = '${context.role}'
+$env:QGUARD_ENVIRONMENT             = '${context.controlPlaneEnvironment}'
 $env:QGUARD_AGENT_ENVIRONMENT       = '${context.environment}'
+# Signing keys persist in this user's profile (private by default) so later runs
+# present the same key; ProgramData would leave them readable by local users.
+$env:QGUARD_STATE_DIR               = Join-Path $env:LOCALAPPDATA 'QGuardHelix\\Agent\\state'
 $env:QGUARD_AGENT_VERSION           = '${context.version}'
 $env:QGUARD_SCAN_TYPES              = '${context.scanTypesCsv}'
 $env:QGUARD_ALLOWED_TARGETS         = '${context.allowedTargetsCsv}'
@@ -687,8 +772,10 @@ services:
       QGUARD_AGENT_ID: "${context.agentId}"
       QGUARD_AGENT_TOKEN: "${context.agentToken}"
       QGUARD_AGENT_ROLE: "${context.role}"
+      QGUARD_ENVIRONMENT: "${context.controlPlaneEnvironment}"
       QGUARD_AGENT_ENVIRONMENT: "${context.environment}"
       QGUARD_AGENT_VERSION: "${context.version}"
+      QGUARD_STATE_DIR: "/var/lib/qguard-agent"
       QGUARD_SCAN_TYPES: "${context.scanTypesYaml}"
       QGUARD_ALLOWED_TARGETS: "${context.allowedTargetsYaml}"
       QGUARD_ALLOWED_PATHS: "${context.allowedPathsYaml}"
@@ -697,15 +784,20 @@ services:
       QGUARD_ENABLE_MIGRATION: "${context.migrationEnabled ? 'true' : 'false'}"
       QGUARD_NATIVE_RUNTIME_ENABLED: "true"
       QGUARD_RUNTIME_SHA256: "${context.runtimeSha256}"
+    # Request-signing keys must survive container re-creation; a lost key has
+    # to be reset in the Agent Center. Do not run "down -v" on this volume.
+    volumes:
+      - qguard-agent-state:/var/lib/qguard-agent
     command:
       - sh
       - -c
       - |
         set -eu
         echo "[qguard] downloading agent runtime v${context.version}"
-        wget -q --header="x-qguard-agent-id: $$QGUARD_AGENT_ID" \\
-             --header="x-qguard-agent-token: $$QGUARD_AGENT_TOKEN" \\
-             -O /tmp/${AGENT_RUNTIME_FILENAME} "${context.runtimeUrl}"
+        cat > /tmp/qguard-fetch.mjs <<'QGUARD_FETCH_EOF'
+${indent(CONTAINER_FETCH_SCRIPT, 8)}
+        QGUARD_FETCH_EOF
+        node /tmp/qguard-fetch.mjs "${context.runtimeUrl}" /tmp/${AGENT_RUNTIME_FILENAME}
         echo "$$QGUARD_RUNTIME_SHA256  /tmp/${AGENT_RUNTIME_FILENAME}" | sha256sum -c - \\
           || { echo "[qguard] FAILED checksum mismatch - refusing to run"; exit 1; }
         echo "[qguard] SHA-256 verified"
@@ -721,6 +813,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  qguard-agent-state:
 `
 }
 
@@ -770,8 +865,10 @@ data:
   QGUARD_API_URL: "${context.apiUrl}"
   QGUARD_TENANT_ID: "${context.tenantId}"
   QGUARD_AGENT_ROLE: "${context.role}"
+  QGUARD_ENVIRONMENT: "${context.controlPlaneEnvironment}"
   QGUARD_AGENT_ENVIRONMENT: "${context.environment}"
   QGUARD_AGENT_VERSION: "${context.version}"
+  QGUARD_STATE_DIR: "/var/lib/qguard-agent"
   QGUARD_SCAN_TYPES: "${context.scanTypesYaml}"
   QGUARD_ALLOWED_TARGETS: "${context.allowedTargetsYaml}"
   QGUARD_ALLOWED_PATHS: "${context.allowedPathsYaml}"
@@ -780,6 +877,19 @@ data:
   QGUARD_ENABLE_MIGRATION: "${context.migrationEnabled ? 'true' : 'false'}"
   QGUARD_NATIVE_RUNTIME_ENABLED: "true"
   QGUARD_RUNTIME_SHA256: "${context.runtimeSha256}"
+---
+# Request-signing keys are generated in the pod and must survive rescheduling;
+# a lost key has to be reset in the Agent Center. Uses the default StorageClass.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qguard-agent-state
+  namespace: qguard-helix
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 16Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -807,6 +917,9 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
+        # Re-chowning on every mount would add group read to the 0600 key file,
+        # which the agent then refuses to use. Only fix ownership once.
+        fsGroupChangePolicy: "OnRootMismatch"
       containers:
         - name: agent
           image: node:22-alpine
@@ -821,9 +934,10 @@ spec:
             - |
               set -eu
               echo "[qguard] downloading agent runtime v${context.version}"
-              wget -q --header="x-qguard-agent-id: $QGUARD_AGENT_ID" \\
-                   --header="x-qguard-agent-token: $QGUARD_AGENT_TOKEN" \\
-                   -O /tmp/${AGENT_RUNTIME_FILENAME} "${context.runtimeUrl}"
+              cat > /tmp/qguard-fetch.mjs <<'QGUARD_FETCH_EOF'
+${indent(CONTAINER_FETCH_SCRIPT, 14)}
+              QGUARD_FETCH_EOF
+              node /tmp/qguard-fetch.mjs "${context.runtimeUrl}" /tmp/${AGENT_RUNTIME_FILENAME}
               echo "$QGUARD_RUNTIME_SHA256  /tmp/${AGENT_RUNTIME_FILENAME}" | sha256sum -c - \\
                 || { echo "[qguard] FAILED checksum mismatch - refusing to run"; exit 1; }
               echo "[qguard] SHA-256 verified"
@@ -843,9 +957,14 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: state
+              mountPath: /var/lib/qguard-agent
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: state
+          persistentVolumeClaim:
+            claimName: qguard-agent-state
 `
 }
 

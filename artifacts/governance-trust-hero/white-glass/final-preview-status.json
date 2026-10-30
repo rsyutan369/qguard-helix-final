@@ -1,0 +1,8 @@
+{
+  "status": 200,
+  "renderer": "webgl",
+  "background": "rgb(255, 255, 255)",
+  "detailOpened": "Audit evidence",
+  "escapeClosed": true,
+  "errors": []
+}

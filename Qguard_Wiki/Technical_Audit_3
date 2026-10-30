@@ -1,0 +1,459 @@
+# Qguard Helix — TLS, PKI, Encryption Monitoring, and Trust Intelligence: Deep Technical Audit and Enterprise UI/UX Enhancement
+
+## 1. Objective
+
+Perform a comprehensive technical audit, functional review, data-integrity assessment, and visual redesign of the following seven Qguard Helix dashboard modules.
+
+The primary objective is to ensure that every module is correctly wired to the existing frontend, backend, APIs, database, telemetry collectors, event pipelines, and real-time update mechanisms where applicable.
+
+Verify that all displayed assets, TLS connections, certificates, encryption configurations, protocol statistics, trust relationships, security findings, orchestration tasks, and operational statuses accurately reflect the user's actual authorized environment and verified system data.
+
+After correcting functional and data-integrity issues, improve each module's visual representation, workflow visibility, process diagrams, navigation, and customer experience to achieve a consistent, elegant, premium, and enterprise-grade cybersecurity platform.
+
+**Do not perform a cosmetic-only redesign.** Audit the underlying implementation, fix verified defects, validate the results, and then improve the UI/UX without breaking existing functionality.
+
+## 2. Pages to Audit
+
+Review each page individually and investigate all shared dependencies, components, APIs, backend services, database queries, hooks, event subscriptions, and related modules.
+
+1. **TLS Telemetry**
+   `http://localhost:3001/dashboard/tls-telemetry`
+
+2. **PKI Visibility**
+   `http://localhost:3001/dashboard/pki-visibility`
+
+3. **Protocol Analytics**
+   `http://localhost:3001/dashboard/protocol-analytics`
+
+4. **Encryption Monitoring**
+   `http://localhost:3001/dashboard/encryption-monitoring`
+
+5. **TLS Orchestrator**
+   `http://localhost:3001/dashboard/tls-orchestrator`
+
+6. **Trust Dashboard**
+   `http://localhost:3001/dashboard/trust-dashboard`
+
+7. **Trust State Discovery**
+   `http://localhost:3001/dashboard/trust-state-discovery`
+
+First inspect the existing codebase to understand what each module currently implements, which data sources it uses, and how it integrates with the broader Qguard Helix architecture.
+
+Do not assume a capability exists merely because the page name or a UI control suggests it should.
+
+## 3. Deep Technical Audit
+
+### A. Frontend and backend integration
+
+Trace the complete data flow from the original data source to the rendered dashboard.
+
+Inspect:
+
+- React components, hooks, state management, and lifecycle behavior.
+- API clients, endpoints, request parameters, response schemas, and error handling.
+- Express routes, controllers, services, and business logic where applicable.
+- Supabase tables, queries, authentication, authorization, and RLS policies where applicable.
+- TLS and certificate telemetry collectors and ingestion pipelines.
+- SSE, WebSockets, Supabase Realtime, or polling mechanisms where implemented.
+- Data validation, normalization, caching, aggregation, and rendering.
+- Loading, empty, error, stale-data, and disconnected states.
+- Navigation and shared dependencies across all seven modules.
+
+Identify and fix:
+
+- Incorrect API endpoints or missing integrations.
+- Broken hooks and state synchronization.
+- Stale or duplicated data.
+- Incorrect status mappings and metric calculations.
+- Duplicate requests, race conditions, and memory leaks.
+- Missing cleanup of event listeners or subscriptions.
+- Silent API failures and misleading fallback values.
+- Hardcoded metrics, mock telemetry, and fabricated security findings.
+
+Reuse existing services and shared components wherever appropriate. Avoid introducing duplicate data pipelines or unnecessary architectural rewrites.
+
+### B. Real-time telemetry and event handling
+
+Determine which modules require real-time updates and verify that their existing update mechanisms work correctly.
+
+For applicable SSE, WebSocket, or Realtime integrations, validate:
+
+- Connection establishment and authenticated access.
+- Correct association between events, assets, endpoints, certificates, and connections.
+- Event validation and schema compatibility.
+- State updates without unnecessary page refreshes.
+- Reconnection behavior after network interruptions.
+- Handling of duplicate, delayed, and out-of-order events.
+- Subscription cleanup when users navigate away.
+- Event timestamps, data freshness, and connection health.
+- Tenant isolation and authorization of received events.
+
+Distinguish live telemetry from cached, historical, delayed, inferred, and unavailable information.
+
+Do not introduce SSE if the existing architecture uses a more appropriate mechanism. Do not simulate a live connection or fabricate events to make a dashboard appear operational.
+
+If telemetry collection is missing or disconnected, display an accurate status and identify the missing integration.
+
+## 4. Validate Actual Security Data and Status Accuracy
+
+Use the appropriate authorized source records and verified operational observations as the source of truth.
+
+Audit the accuracy of:
+
+- Discovered TLS endpoints and connections.
+- TLS protocol versions and negotiated cipher suites.
+- Certificate identities, issuers, validity periods, and chains.
+- Certificate expiration and renewal status.
+- Public Key Infrastructure (PKI) dependencies.
+- Encryption configurations and cryptographic algorithms.
+- Protocol usage and traffic analytics.
+- Trust relationships and validation results.
+- Orchestration jobs and execution outcomes.
+- Security findings, severity, timestamps, and remediation status.
+
+Verify that dashboard totals, percentages, charts, status badges, and summary cards are derived from the underlying records rather than hardcoded values.
+
+Ensure that related modules use consistent asset identifiers, certificate identifiers, status definitions, and timestamps.
+
+Distinguish between:
+
+- **Observed:** Directly supported by collected telemetry or a verified operation.
+- **Validated:** Successfully checked against an explicitly defined validation procedure.
+- **Inferred:** Derived from evidence but not directly observed.
+- **Stale:** Previously collected information that may no longer reflect the current environment.
+- **Unknown:** Insufficient evidence to determine the current state.
+- **Unavailable:** The required data source or integration is not functioning.
+
+Never label a connection secure, a certificate trusted, an encryption configuration compliant, or a protocol quantum-safe without the evidence and validation criteria required for that conclusion.
+
+## 5. Module-Specific Audit and Improvement Requirements
+
+### A. TLS Telemetry
+
+Audit the collection, processing, and presentation of actual TLS observations.
+
+Where supported by the telemetry source, display:
+
+- Discovered endpoints and observed TLS connections.
+- Negotiated protocol versions and cipher suites.
+- Handshake success and failure statistics.
+- Certificate associations.
+- Connection timestamps and observation freshness.
+- TLS configuration weaknesses and actionable findings.
+- Hybrid or post-quantum key establishment observations, where actually measurable.
+
+Provide visual timelines, endpoint drill-downs, connection summaries, and clear indicators of collection health.
+
+Distinguish actual negotiated connection properties from configurations that are merely advertised or configured.
+
+Do not claim visibility into traffic or connections that are not instrumented or otherwise observable.
+
+### B. PKI Visibility
+
+Review the certificate inventory, certificate discovery, trust-chain analysis, and lifecycle tracking.
+
+Where supported, provide:
+
+- Certificate inventory and ownership associations.
+- Subject, issuer, serial number, validity period, and relevant identifiers.
+- Expiration and renewal status.
+- Certificate chain and trust-anchor relationships.
+- Revocation status when verified through an applicable mechanism.
+- Algorithm and key-strength information.
+- Certificate dependencies and affected services.
+- Certificate lifecycle events and remediation actions.
+
+Visualize certificate chains and PKI dependencies using an understandable interactive graph.
+
+Make it easy to identify expired, expiring, invalid, untrusted, or unverified certificates, while preserving the distinction between those conditions.
+
+Do not infer successful revocation checking or certificate trust validation when the relevant checks have not occurred.
+
+### C. Protocol Analytics
+
+Audit the accuracy of protocol discovery, aggregation, categorization, and reporting.
+
+Where supported, display:
+
+- Observed protocol versions and usage.
+- TLS version distribution.
+- Cipher-suite distribution.
+- Endpoint and service coverage.
+- Negotiation failures and compatibility issues.
+- Legacy or deprecated protocol usage.
+- Trends over time and relevant changes.
+- Quantum-readiness considerations for observed cryptographic configurations.
+
+Provide meaningful charts, protocol comparison views, trend timelines, and drill-downs to the underlying observations.
+
+Ensure that percentages and totals use clearly defined denominators and that incomplete telemetry does not create misleading conclusions.
+
+Distinguish actual observed usage from configured capabilities and inferred protocol support.
+
+### D. Encryption Monitoring
+
+Verify how encryption-related configurations, observations, and findings are collected and evaluated.
+
+Where supported, monitor:
+
+- Cryptographic algorithm usage.
+- TLS encryption configurations.
+- Cipher suites and key-exchange mechanisms.
+- Certificate and key metadata.
+- Weak or deprecated cryptographic configurations.
+- Configuration changes and detected deviations.
+- Hybrid and post-quantum cryptographic capabilities.
+- Relevant security findings and remediation status.
+
+Show the affected asset, observed configuration, expected policy, evidence, severity, and recommended next action where applicable.
+
+Use clear visual comparisons to highlight configuration differences and security implications.
+
+Do not claim to monitor encryption activity that the available instrumentation cannot observe. Never expose private keys, credentials, session secrets, or other sensitive cryptographic material.
+
+### E. TLS Orchestrator
+
+Audit the complete orchestration lifecycle, including planning, configuration changes, execution, validation, and operational reporting.
+
+Where implemented, visualize:
+
+1. Endpoint discovery.
+2. TLS configuration assessment.
+3. Policy and compatibility evaluation.
+4. Migration or configuration planning.
+5. Approval and prerequisite checks.
+6. Execution.
+7. Post-change validation.
+8. Monitoring and audit evidence.
+
+Display actual orchestration jobs, dependencies, execution progress, blockers, errors, retries, and completion states.
+
+Clearly distinguish planned, queued, running, blocked, failed, completed, and validated operations where supported.
+
+Verify that:
+
+- Submitted tasks reach the intended backend.
+- Operations respect authentication and authorization.
+- Configuration changes are confirmed before being reported as successful.
+- Failed operations expose useful diagnostic information.
+- Retries are safe and do not create unintended duplicate operations.
+- Rollback is offered only when implemented and supported.
+- Execution history and audit evidence remain traceable.
+
+Do not apply configuration changes or migrations merely to populate a workflow diagram. Sensitive operations must retain appropriate approval, validation, and audit controls.
+
+### F. Trust Dashboard
+
+Review how the dashboard calculates and communicates the overall trust posture.
+
+Where supported, display:
+
+- Trust status of observed endpoints and services.
+- Certificate-chain validation outcomes.
+- Relevant PKI dependencies.
+- TLS configuration and protocol findings.
+- Trust failures and unresolved validation issues.
+- Asset coverage and telemetry freshness.
+- Risk summaries and recommended actions.
+
+Ensure that organization-level summaries accurately aggregate eligible underlying records.
+
+Provide drill-downs from high-level indicators to the affected endpoint, certificate, trust relationship, finding, and supporting evidence.
+
+Document the criteria used to calculate trust status. Do not use a single green indicator to imply that every security property has been validated.
+
+### G. Trust State Discovery
+
+Audit the discovery process used to identify and evaluate trust relationships.
+
+Where supported, visualize the progression through:
+
+1. Discovery scope and initiation.
+2. Endpoint and certificate identification.
+3. Trust-chain and dependency analysis.
+4. Validation and evidence collection.
+5. Finding generation.
+6. Results review and follow-up actions.
+
+Display actual discovery status, discovered entities, timestamps, errors, incomplete checks, and findings.
+
+Make it easy to understand which trust relationships are verified, invalid, unresolved, inferred, or unknown.
+
+Ensure that each relationship can be traced to its source evidence and that failed discovery is not interpreted as proof that no security issue exists.
+
+## 6. Improve Workflow Visualization and Process Clarity
+
+Redesign the seven modules so that customers can understand their purpose and operational processes without needing to interpret raw technical data alone.
+
+Use visualizations appropriate to each module, including:
+
+- TLS connection-flow diagrams.
+- Certificate-chain and PKI dependency graphs.
+- Protocol distribution and trend charts.
+- Encryption configuration comparison views.
+- TLS orchestration workflows and timelines.
+- Trust posture summaries and evidence drill-downs.
+- Trust discovery process diagrams.
+- Asset-to-finding relationship views.
+- Expandable diagnostic and remediation panels.
+
+Make workflow stages, dependencies, decision points, errors, and next actions visually clear.
+
+Where appropriate, allow users to select nodes, inspect relationships, filter by status, navigate to related assets, and examine the supporting evidence.
+
+Avoid excessive information density and decorative diagrams that do not help customers understand the actual system.
+
+## 7. Premium Enterprise UI/UX Design
+
+Apply a consistent Qguard Helix design language across all seven pages.
+
+### Visual requirements
+
+- Elegant, modern, professional enterprise interface.
+- Consistent light-theme styling aligned with the existing product.
+- Restrained light-blue and purple accents.
+- Clear typography, spacing, and visual hierarchy.
+- Consistent cards, tables, charts, icons, borders, and status indicators.
+- Professional data-dense layouts that remain readable.
+- Responsive desktop, laptop, and tablet support.
+- Accessible contrast, keyboard navigation, and clear focus states.
+- Consistent loading skeletons, empty states, error states, and freshness indicators.
+
+Each page should have its own appropriate visualization while retaining consistent navigation and component styling.
+
+### Animation and interaction
+
+Add subtle, purposeful motion where it improves usability:
+
+- Smooth workflow transitions.
+- Gentle graph-node and relationship highlighting.
+- Animated progress indicators for actual ongoing operations.
+- Expandable evidence panels.
+- Smooth chart updates when real data changes.
+- Clear hover, focus, and selection feedback.
+
+Respect reduced-motion preferences and avoid unnecessary animations that impair accessibility or performance.
+
+All motion must reflect genuine application state. Do not animate a migration, discovery operation, or TLS connection as active when it is not actually running.
+
+## 8. Cross-Module Consistency
+
+Validate the data relationships and dependencies between all seven modules.
+
+Ensure consistent handling of:
+
+- Endpoint and asset identifiers.
+- TLS connection observations.
+- Certificate and trust-chain records.
+- Protocol and cipher-suite metadata.
+- Encryption findings.
+- Orchestration tasks.
+- Trust validation results.
+- Security status and severity.
+- Event timestamps and data freshness.
+
+Where modules share the same underlying record, ensure that their displayed information remains consistent.
+
+When a source record changes, dependent modules should update through the existing supported event or data-refresh mechanisms.
+
+Avoid duplicated business logic, competing sources of truth, and inconsistent status definitions.
+
+## 9. Testing and Verification
+
+After implementing the fixes and UI/UX improvements, perform appropriate automated and manual testing.
+
+### Functional tests
+
+- Verify that all seven routes load.
+- Test API requests, responses, and error handling.
+- Validate hooks, state updates, and lifecycle cleanup.
+- Test Realtime or SSE functionality where applicable.
+- Verify chart interactions, filtering, navigation, and supported actions.
+- Test authentication, authorization, and tenant isolation.
+- Confirm that sensitive cryptographic material is never exposed.
+
+### Data-integrity tests
+
+- Compare displayed totals against source records.
+- Verify TLS protocol and cipher-suite statistics.
+- Validate certificate expiration and trust-chain results.
+- Test encryption monitoring findings.
+- Verify orchestration state transitions.
+- Check trust-status aggregation.
+- Test missing, stale, duplicate, malformed, and out-of-order events.
+- Confirm that resolved findings and completed operations display their actual current states.
+
+### Regression tests
+
+- Run relevant existing tests.
+- Execute available type checks, linting, and production builds.
+- Inspect browser console errors and failed network requests.
+- Verify responsive behavior and accessibility.
+- Ensure existing Qguard Helix functionality remains intact.
+
+Report the commands actually executed and the results obtained. Distinguish tests using real infrastructure from tests using controlled fixtures.
+
+## 10. Non-Negotiable Implementation Rules
+
+1. No fabricated telemetry, certificates, connections, trust relationships, or orchestration results.
+2. No hardcoded operational metrics where actual source data is available.
+3. No cosmetic-only fixes that hide functional defects.
+4. No unsupported claims of successful validation, trust, encryption, or migration.
+5. No exposure of credentials, private keys, tokens, or session secrets.
+6. No weakening of authentication, authorization, tenant isolation, or auditability.
+7. No unnecessary rewrites or duplicate data pipelines.
+8. No destructive database changes without justification and migration review.
+9. No unsupported claims of post-quantum protection or quantum safety.
+10. No nonfunctional buttons or misleading status indicators.
+11. No unnecessary dependencies or excessive animations.
+12. No claims that a defect is fixed or a test has passed without verification.
+
+If an integration is missing or cannot be tested, document the limitation and provide an accurate status rather than hiding it.
+
+## 11. Required Final Report
+
+Provide a structured implementation report containing:
+
+### A. Executive summary
+Summarize the main findings, security implications, fixes implemented, and outstanding blockers.
+
+### B. Seven-page audit matrix
+For every page, report:
+
+- Frontend and backend integration status.
+- Actual data-source verification.
+- Hook and lifecycle correctness.
+- Realtime implementation status where applicable.
+- Security and authorization findings.
+- Metric and status accuracy.
+- Workflow visualization improvements.
+- Functional test results.
+- Remaining issues.
+
+Use **PASS**, **FAIL**, **PARTIAL**, **NOT VERIFIED**, or **NOT APPLICABLE**, with supporting evidence.
+
+### C. Defect and remediation log
+Document each significant defect, root cause, affected files, fix implemented, and verification method.
+
+### D. UI/UX improvements
+Describe the visualizations, workflows, interactions, animations, and usability improvements completed for each module.
+
+### E. Test results
+List the actual commands executed, test outcomes, build status, and any verification blocked by unavailable infrastructure.
+
+### F. Outstanding work
+Identify missing integrations, infrastructure dependencies, incomplete features, and remaining security or data-quality risks.
+
+## Final Execution Instructions
+
+Start by inspecting the repository, application architecture, all seven dashboard pages, shared components, backend APIs, database schema, telemetry sources, and existing event mechanisms.
+
+Then proceed systematically:
+
+**Inspect → Audit → Trace Data Flow → Identify Root Causes → Fix → Improve Visualization → Test → Verify → Report**
+
+Prioritize data accuracy, security, and operational reliability before visual polish.
+
+Implement the improvements directly in the existing codebase wherever feasible. Preserve working features and existing architectural conventions. Do not stop after providing recommendations.
+
+The final result should be a trustworthy, intuitive, and visually cohesive Qguard Helix platform that gives customers clear visibility into TLS telemetry, PKI infrastructure, protocol usage, encryption configurations, orchestration workflows, and trust relationships, with every displayed status grounded in actual evidence.

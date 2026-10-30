@@ -78,7 +78,7 @@ export const AGENT_SCAN_MODULES: AgentScanModule[] = [
     id: 'certificates',
     label: 'Certificates',
     group: 'transport',
-    does: 'Parses certificate and key files (.pem .crt .cer .der .key …) under allowed paths — algorithm, key size, issuer and expiry.',
+    does: 'Parses certificate and key files (.pem .crt .cer .der .key …) under allowed paths — algorithm, key size, issuer and expiry — plus the JWKS and SAML metadata that publish signing keys (shared with PKI metadata).',
     inputs: ['paths'],
   },
   {

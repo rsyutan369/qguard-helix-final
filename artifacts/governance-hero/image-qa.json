@@ -1,0 +1,46 @@
+{
+  "desktop": {
+    "brokenImages": [],
+    "overflow": false,
+    "generated": [
+      {
+        "src": "/governance/estate-governance.webp",
+        "width": 1440,
+        "height": 960
+      },
+      {
+        "src": "/governance/policy-enforcement.webp",
+        "width": 1440,
+        "height": 960
+      },
+      {
+        "src": "/governance/audit-evidence.webp",
+        "width": 1440,
+        "height": 960
+      }
+    ],
+    "errors": []
+  },
+  "mobile": {
+    "brokenImages": [],
+    "overflow": false,
+    "generated": [
+      {
+        "src": "/governance/estate-governance.webp",
+        "width": 1440,
+        "height": 960
+      },
+      {
+        "src": "/governance/policy-enforcement.webp",
+        "width": 1440,
+        "height": 960
+      },
+      {
+        "src": "/governance/audit-evidence.webp",
+        "width": 1440,
+        "height": 960
+      }
+    ],
+    "errors": []
+  }
+}

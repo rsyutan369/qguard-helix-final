@@ -1,0 +1,289 @@
+/*
+ * Live Migration — four-agent workflow canvas.
+ *
+ * Edge styling is driven ONLY by the `data-state` the workflow model assigns
+ * (idle / waiting / active / completed / blocked / failed). The flowing dash on
+ * an active edge is presentation of a recorded "running" state; handoff packets
+ * are fired from TypeScript when a recorded handoff timestamp changes.
+ */
+
+/* ---------------- Theme tokens ----------------
+ * Every surface and accent on the page reads these variables, so Light mode
+ * is a token swap, not a second set of classes. Light accents are the DARK
+ * end of each hue (AA on parchment). The canvas, agent cards, terminals and
+ * JSON output are deliberate dark "screens" (`qg-force-dark`) in both themes:
+ * the island re-declares the dark values for its own subtree.
+ */
+.qg-lw,
+html.qg-theme-light .qg-lw .qg-force-dark {
+  --lw-panel: rgba(7, 13, 28, 0.8);
+  --lw-panel-solid: #070d1c;
+  --lw-raised: rgba(10, 17, 36, 0.9);
+  --lw-field: #070d1c;
+  --lw-card: rgba(6, 12, 26, 0.92);
+  --lw-screen: rgba(5, 10, 22, 0.95);
+  --lw-ink: #ffffff;
+  --lw-ink-soft: rgba(255, 255, 255, 0.7);
+  --lw-ink-muted: rgba(255, 255, 255, 0.45);
+  --lw-line: rgba(255, 255, 255, 0.1);
+  --lw-track: rgba(255, 255, 255, 0.08);
+  --lw-cyan: #22d3ee;
+  --lw-sky: #38bdf8;
+  --lw-green: #34d399;
+  --lw-amber: #fbbf24;
+  --lw-orange: #fb923c;
+  --lw-red: #f87171;
+  --lw-rose: #f43f5e;
+  --lw-violet: #a78bfa;
+  --lw-slate: #94a3b8;
+  --lw-slate-soft: #cbd5e1;
+  --lw-glow: 1;
+  color-scheme: dark;
+}
+
+html.qg-theme-light .qg-lw {
+  --lw-panel: #f6f1e7;
+  --lw-panel-solid: #f8f4eb;
+  --lw-raised: #fbf8f1;
+  --lw-field: #fbf8f1;
+  --lw-ink: var(--qg-dashboard-text, #261b14);
+  --lw-ink-soft: var(--qg-dashboard-text-soft, #463629);
+  --lw-ink-muted: var(--qg-dashboard-text-muted, #6b5645);
+  --lw-line: rgba(105, 78, 52, 0.24);
+  --lw-track: rgba(105, 78, 52, 0.14);
+  --lw-cyan: #0e7490;
+  --lw-sky: #0369a1;
+  --lw-green: #1f6b45;
+  --lw-amber: #92400e;
+  --lw-orange: #b4410c;
+  --lw-red: #b42318;
+  --lw-rose: #be123c;
+  --lw-violet: #6d28d9;
+  --lw-slate: #6b5645;
+  --lw-slate-soft: #463629;
+  --lw-glow: 0;
+  color-scheme: light;
+}
+
+html.qg-theme-light .qg-lw .qg-force-dark {
+  color-scheme: dark;
+  color: #ffffff;
+}
+
+/*
+ * The job board below the workflow predates the tokens and paints its accents
+ * with fixed hex utilities (`text-[#22d3ee]`) tuned for a dark ground. On
+ * parchment those are ~1.5:1, so — for this page only — map each accent hex to
+ * its dark end in Light mode. Substring match covers `/alpha` and `hover:`.
+ */
+html.qg-theme-light .qg-lw [class*="text-[#22d3ee]"]:not(.qg-force-dark):not(.qg-force-dark *),
+html.qg-theme-light .qg-lw [class*="text-[#ffe7a3]"]:not(.qg-force-dark):not(.qg-force-dark *),
+html.qg-theme-light .qg-lw [class*="text-[#fff3c1]"]:not(.qg-force-dark):not(.qg-force-dark *),
+html.qg-theme-light .qg-lw [class*="text-cyan-"]:not(.qg-force-dark):not(.qg-force-dark *) { color: #0e7490 !important; }
+html.qg-theme-light .qg-lw [class*="text-[#34d399]"]:not(.qg-force-dark):not(.qg-force-dark *) { color: #1f6b45 !important; }
+html.qg-theme-light .qg-lw [class*="text-[#fbbf24]"]:not(.qg-force-dark):not(.qg-force-dark *) { color: #92400e !important; }
+html.qg-theme-light .qg-lw [class*="text-[#f87171]"]:not(.qg-force-dark):not(.qg-force-dark *),
+html.qg-theme-light .qg-lw [class*="text-[#ff6b61]"]:not(.qg-force-dark):not(.qg-force-dark *) { color: #b42318 !important; }
+html.qg-theme-light .qg-lw [class*="text-[#a78bfa]"]:not(.qg-force-dark):not(.qg-force-dark *) { color: #6d28d9 !important; }
+html.qg-theme-light .qg-lw [class*="border-[#22d3ee]"]:not(.qg-force-dark):not(.qg-force-dark *) { border-color: rgba(14, 116, 144, 0.35) !important; }
+html.qg-theme-light .qg-lw select option { background: #fbf8f1; color: #261b14; }
+
+.qg-lw-canvas {
+  position: relative;
+  border-radius: 1rem;
+  background:
+    radial-gradient(1200px 260px at 50% 0%, rgba(34, 211, 238, 0.07), transparent 70%),
+    linear-gradient(rgba(148, 163, 184, 0.045) 1px, transparent 1px) 0 0 / 28px 28px,
+    linear-gradient(90deg, rgba(148, 163, 184, 0.045) 1px, transparent 1px) 0 0 / 28px 28px,
+    #050a17;
+}
+
+.qg-lw-canvas .react-flow {
+  --xy-background-color: transparent;
+}
+
+/*
+ * Full screen. The stage is pinned over the viewport even when the browser
+ * refuses the Fullscreen API (iframe, iOS). Its panel ancestors use
+ * backdrop-filter, which would make `position: fixed` relative to the panel,
+ * so those ancestors drop it while the stage is expanded. The dashboard
+ * content layer (z-10) is lifted above the sidebar (z-50) and the page behind
+ * stops scrolling.
+ */
+.qg-lw-canvas[data-expanded='true'] {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+html.qg-lw-fullscreen .qg-lw :has(.qg-lw-canvas[data-expanded='true']) {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transform: none;
+  filter: none;
+}
+
+/* A full screen narrower than `lg` must not hide the canvas it is showing. */
+html.qg-lw-fullscreen .qg-lw-canvas-host:has(.qg-lw-canvas[data-expanded='true']) {
+  display: block;
+}
+
+html.qg-lw-fullscreen .dashboard-theme-scope { z-index: 70; }
+html.qg-lw-fullscreen .qg-dashboard-main { overflow: hidden; }
+
+.qg-lw-canvas .react-flow__node {
+  cursor: pointer;
+}
+
+.qg-lw-canvas .react-flow__node:focus-visible {
+  outline: none;
+}
+
+.qg-lw-canvas .react-flow__node:focus-visible > div {
+  box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.85), 0 0 40px rgba(34, 211, 238, 0.25);
+}
+
+.qg-lw-handle {
+  width: 8px !important;
+  height: 8px !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  opacity: 0;
+}
+
+/* ---------------- Edges ---------------- */
+
+.qg-lw-edge {
+  fill: none;
+  stroke-linecap: round;
+  transition: stroke 400ms ease, opacity 400ms ease;
+}
+
+.qg-lw-edge--glow {
+  stroke-width: 9;
+  opacity: 0.18;
+  filter: blur(4px);
+}
+
+.qg-lw-edge--line {
+  stroke-width: 2.25;
+}
+
+/* Workflow tree: stage → deployed agents. The shared trunk is neutral; each
+   branch stub and its joint carry that agent's own data-state. */
+.qg-lw-trunk {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+.qg-lw-edge--branch {
+  stroke-width: 1.75;
+}
+
+.qg-lw-trunk-root {
+  position: absolute;
+  top: calc(100% - 3px);
+  width: 7px;
+  height: 7px;
+  margin-left: -3.5px;
+  border-radius: 9999px;
+  pointer-events: none;
+}
+
+.qg-lw-branch-joint {
+  fill: rgba(148, 163, 184, 0.45);
+  transition: fill 400ms ease;
+}
+.qg-lw-branch-joint[data-state='active'],
+.qg-lw-branch-joint[data-state='completed'] { fill: var(--edge-color, #22d3ee); }
+.qg-lw-branch-joint[data-state='blocked'] { fill: #fbbf24; }
+.qg-lw-branch-joint[data-state='failed'] { fill: #f87171; }
+
+.qg-lw-edge[data-state='idle'] { stroke: rgba(148, 163, 184, 0.28); }
+.qg-lw-edge[data-state='waiting'] { stroke: rgba(148, 163, 184, 0.5); stroke-dasharray: 3 7; }
+.qg-lw-edge[data-state='active'] { stroke: var(--edge-color, #22d3ee); stroke-dasharray: 10 8; animation: qg-lw-flow 0.9s linear infinite; }
+.qg-lw-edge[data-state='completed'] { stroke: var(--edge-color, #34d399); }
+.qg-lw-edge[data-state='blocked'] { stroke: #fbbf24; stroke-dasharray: 6 6; }
+.qg-lw-edge[data-state='failed'] { stroke: #f87171; }
+
+.qg-lw-edge--glow[data-state='idle'],
+.qg-lw-edge--glow[data-state='waiting'] { opacity: 0; }
+.qg-lw-edge--glow[data-state='active'] { animation: none; stroke-dasharray: none; opacity: 0.32; }
+.qg-lw-edge--glow[data-state='failed'],
+.qg-lw-edge--glow[data-state='blocked'] { stroke-dasharray: none; opacity: 0.22; }
+
+@keyframes qg-lw-flow {
+  to { stroke-dashoffset: -36; }
+}
+
+.qg-lw-packet {
+  pointer-events: none;
+  opacity: 0;
+}
+
+/* ---------------- Indeterminate progress ---------------- */
+
+.qg-lw-indeterminate {
+  position: relative;
+  overflow: hidden;
+}
+
+.qg-lw-indeterminate::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--bar-color, #22d3ee), transparent);
+  animation: qg-lw-sweep 1.4s ease-in-out infinite;
+}
+
+@keyframes qg-lw-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(250%); }
+}
+
+.qg-lw-spin {
+  animation: qg-lw-rotate 1.2s linear infinite;
+  transform-origin: center;
+}
+
+@keyframes qg-lw-rotate {
+  to { transform: rotate(360deg); }
+}
+
+/* ---------------- Terminal ---------------- */
+
+.qg-lw-terminal::-webkit-scrollbar { width: 8px; }
+.qg-lw-terminal::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.22); border-radius: 8px; }
+
+.qg-lw-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qg-lw-edge[data-state='active'],
+  .qg-lw-indeterminate::after,
+  .qg-lw-spin {
+    animation: none !important;
+  }
+  .qg-lw-indeterminate::after {
+    width: 100%;
+    opacity: 0.35;
+  }
+}

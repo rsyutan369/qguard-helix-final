@@ -461,6 +461,28 @@ system Chrome (`channel: 'chrome'`). Nothing is added to the repo.
 - Console errors: `ConsoleMessage.location().url` names the failing resource.
   `/favicon.ico` 404 on `/downloads` is pre-existing (no `<link rel="icon">`).
 
+### PQAuth (/dashboard/pqauth/*)
+
+```bash
+npx tsx tools/pqauth-identity-check.ts    # 79 offline: parser → persistence → model, negative-controlled
+npx tsx tools/pqauth-check.ts             # compliance + runtime evidence honesty
+npx tsx tools/identity-discovery-check.ts # discovery parser invariants
+npx tsx tools/pqauth-live-check.ts        # 39 live, read-only (dev server): gate, leaks, vendors, stream
+```
+
+- The QA tenants' hosts publish no identity metadata, so the provider-found UI cannot be
+  seen on live data. To exercise it WITHOUT inventing tenant data, run
+  `probeIdentityInfrastructure('accounts.google.com')` (public OIDC + JWKS, nothing
+  written), push the report through `identityReportToRows` → `buildIdentityModel`, and
+  render the real views in a throw-away Vite harness (`tools/<name>/index.html` +
+  `main.tsx` in a `MemoryRouter` + `IntelShell`). Delete the harness afterwards.
+- A live discovery run (`POST …/discovery/run`) sends ≤ 5 well-known GETs per authorized
+  host and writes identity rows for that tenant — use a QA tenant.
+- Contrast audit: composite backgrounds up the ancestor chain AND parse alpha for every
+  colour function. An `oklab(… / 0.02)` wash read as opaque white produced dozens of false
+  1.00:1 failures. Inline hues (`style={{ color }}`) escape the shell's light-theme class
+  overrides; that audit is what found them (1.3–2.8:1).
+
 ### Quantum Readiness page family — offline (no browser, no credentials)
 
 When minting a tenant session is not an option (the auto-mode classifier refuses

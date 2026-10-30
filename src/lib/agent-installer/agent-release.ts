@@ -11,7 +11,13 @@
  */
 
 /** Runtime version of the lightweight agent bundle. Bump on any agent.ts change. */
-export const AGENT_VERSION = '1.5.5'
+export const AGENT_VERSION = '1.6.1'
+
+/**
+ * First runtime that signs its requests (agent-request-signing.ts) and refuses
+ * redirects, weakened TLS and loosely-permissioned credential files.
+ */
+export const AGENT_SIGNING_MIN_VERSION = '1.6.0'
 
 /**
  * First runtime that understands the `rollback` command.
@@ -425,6 +431,7 @@ export interface AgentCommand {
   payload?: Record<string, unknown>
   status: 'queued' | 'delivered' | 'running' | 'completed' | 'failed'
   deliveredAt?: string | null
+  startedAt?: string | null
   completedAt?: string | null
   result?: Record<string, unknown> | null
   error?: string | null

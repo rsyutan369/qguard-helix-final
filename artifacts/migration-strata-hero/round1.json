@@ -1,0 +1,161 @@
+[
+  {
+    "size": {
+      "name": "desktop",
+      "width": 1440,
+      "height": 900
+    },
+    "errors": [],
+    "heroHeight": 907,
+    "overflow": false,
+    "lines": [
+      {
+        "text": "See every asset.",
+        "width": 636,
+        "scroll": 636
+      },
+      {
+        "text": "Plan every wave.",
+        "width": 636,
+        "scroll": 636
+      },
+      {
+        "text": "Migrate with control.",
+        "width": 636,
+        "scroll": 636
+      }
+    ],
+    "fonts": [
+      {
+        "family": "Migration DM Sans",
+        "status": "loaded"
+      },
+      {
+        "family": "Migration Inter",
+        "status": "loaded"
+      }
+    ]
+  },
+  {
+    "size": {
+      "name": "tablet",
+      "width": 1024,
+      "height": 768
+    },
+    "errors": [],
+    "heroHeight": 804,
+    "overflow": false,
+    "lines": [
+      {
+        "text": "See every asset.",
+        "width": 469,
+        "scroll": 469
+      },
+      {
+        "text": "Plan every wave.",
+        "width": 469,
+        "scroll": 469
+      },
+      {
+        "text": "Migrate with control.",
+        "width": 469,
+        "scroll": 469
+      }
+    ],
+    "fonts": [
+      {
+        "family": "Migration DM Sans",
+        "status": "loaded"
+      },
+      {
+        "family": "Migration Inter",
+        "status": "loaded"
+      }
+    ]
+  },
+  {
+    "size": {
+      "name": "mobile",
+      "width": 390,
+      "height": 844
+    },
+    "errors": [],
+    "heroHeight": 1347.421875,
+    "overflow": false,
+    "lines": [
+      {
+        "text": "See every asset.",
+        "width": 346,
+        "scroll": 346
+      },
+      {
+        "text": "Plan every wave.",
+        "width": 346,
+        "scroll": 346
+      },
+      {
+        "text": "Migrate with control.",
+        "width": 346,
+        "scroll": 346
+      }
+    ],
+    "fonts": [
+      {
+        "family": "Migration DM Sans",
+        "status": "loaded"
+      },
+      {
+        "family": "Migration Inter",
+        "status": "loaded"
+      }
+    ]
+  },
+  {
+    "size": {
+      "name": "small",
+      "width": 320,
+      "height": 740
+    },
+    "errors": [],
+    "heroHeight": 1287.953125,
+    "overflow": false,
+    "lines": [
+      {
+        "text": "See every asset.",
+        "width": 284,
+        "scroll": 284
+      },
+      {
+        "text": "Plan every wave.",
+        "width": 284,
+        "scroll": 284
+      },
+      {
+        "text": "Migrate with control.",
+        "width": 284,
+        "scroll": 284
+      }
+    ],
+    "fonts": [
+      {
+        "family": "Migration DM Sans",
+        "status": "loaded"
+      },
+      {
+        "family": "Migration Inter",
+        "status": "loaded"
+      }
+    ]
+  },
+  {
+    "video": {
+      "time": 0.3359,
+      "paused": false,
+      "width": 960,
+      "height": 960,
+      "duration": 5.041667,
+      "ready": 4
+    },
+    "secondTime": 1.015
+  }
+]

@@ -101,6 +101,28 @@ Nothing is trained or inferred: it is the tenant's own history of measured
 values. Unanswerable questions are audited as `copilot.knowledge_gap`, ratings as
 `copilot.feedback`, so coverage gaps are visible and can be closed.
 
+## Bring-your-own-key models (narrative layer)
+
+`src/api-server/copilot-llm.ts` + `src/lib/copilot-llm-catalog.ts`. A Pro/Elite
+tenant connects their own Anthropic, OpenAI, Hermes, Kimi, GLM or DeepSeek key
+(console → **AI Models**). The platform engine still builds the full
+`CopilotAnswer`; the connected model only writes `answer.narrative` from a
+redacted evidence pack of THAT answer — it never calls tools, so it sees exactly
+what the caller's role could already see.
+
+- **Keys**: verified live before storing (a rejected key is never saved), sealed
+  AES-256-GCM (HKDF-SHA3-256 from `COPILOT_BYOK_SECRET`, AAD = user + provider),
+  never returned — 4-char hint only. Table `copilot_llm_providers` has RLS on and
+  no client policies; the server reads it with the service client pinned to the
+  token's user id (`supabase/sophia-byok-schema.sql`).
+- **Endpoints are a closed allowlist** in the catalog — never add a free-form base
+  URL (SSRF). Model ids are free-form but pattern-bounded; Verify proves them.
+- **Grounding check**: `checkGrounding` flags any figure in the prose that is not
+  in the evidence pack; the UI shows it. Don't loosen it to make badges green.
+- A failed/refused model call leaves the platform answer intact — never block it.
+- Streaming: `answer` → `narrative_start` → `narrative` deltas → `narrative_done`.
+- Verified by `tools/copilot-byok-check.ts` (`npm run check:sophia-byok`).
+
 ## Checklist
 
 - [ ] A new suggested question is added to `tools/sophia-question-audit.ts`
@@ -112,5 +134,5 @@ values. Unanswerable questions are audited as `copilot.knowledge_gap`, ratings a
 - [ ] Retrieved content treated as untrusted data.
 - [ ] Insights cite evidence and state scope.
 - [ ] Unmeasured values reported as unknown, never inferred.
-- [ ] `tools/copilot-check.ts`, `tools/sophia-check.ts` and
-      `tools/sophia-question-audit.ts` pass.
+- [ ] `tools/copilot-check.ts`, `tools/sophia-check.ts`,
+      `tools/sophia-question-audit.ts` and `tools/copilot-byok-check.ts` pass.

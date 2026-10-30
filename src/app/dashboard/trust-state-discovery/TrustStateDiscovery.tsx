@@ -279,7 +279,7 @@ export default function TrustStateDiscovery() {
       <TrustPanel index={0}>
         <SectionLabel
           icon={Share2}
-          hint="Root CA down to cloud resource. Click a subject to focus its blast radius; dashed links and dimmed boxes are inferred, not measured."
+          hint="Certificate authority down to cloud resource. Click a subject to focus its blast radius; dashed links and dimmed boxes are inferred, not measured. A CA is shown as a root only when its own self-issued certificate was collected."
           meta={`${fmtNumber(graphNodes.length)} in scope`}
         >
           Trust relationship graph
@@ -513,7 +513,17 @@ export default function TrustStateDiscovery() {
                     className="cursor-pointer border-b border-white/5 last:border-0 transition hover:bg-white/[0.04]"
                   >
                     <Td>
-                      <span className="block max-w-[230px] truncate text-[11.5px] font-bold text-white/85">{node.label}</span>
+                      {/* A real button so the drawer opens from the keyboard too; the row click stays as a mouse shortcut. */}
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void openNode(node.id);
+                        }}
+                        className="block max-w-[230px] truncate text-left text-[11.5px] font-bold text-white/85 hover:text-cyan-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
+                      >
+                        {node.label}
+                      </button>
                       <span className="block max-w-[230px] truncate text-[9.5px] text-white/35">{node.subtitle}</span>
                     </Td>
                     <Td>
@@ -578,7 +588,7 @@ export default function TrustStateDiscovery() {
         </TrustPanel>
       </div>
 
-      <ProvenanceFooter telemetry={data.telemetry} />
+      <ProvenanceFooter telemetry={data.telemetry} reads={data.reads} />
 
       <Drawer
         open={drawerOpen}

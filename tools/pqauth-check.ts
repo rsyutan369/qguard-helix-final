@@ -1,8 +1,8 @@
 /**
  * PQAuth™ Identity Migration Engine — offline evidence-honesty check.
  *
- * Exercises the pure derivations behind the three PQAuth surfaces that publish
- * a verdict: `/dashboard/pqauth/compatibility`, `/dashboard/pqauth/compliance`
+ * Exercises the pure derivations behind the two estate-wide PQAuth surfaces that publish
+ * a verdict: `/dashboard/pqauth/compliance`
  * and `/dashboard/pqauth/runtime-telemetry`. No Supabase / server required:
  *
  *     npx tsx tools/pqauth-check.ts
@@ -11,9 +11,9 @@
  * statement about a customer's identity layer. Specifically, each one guards a
  * defect that was actually shipped:
  *
- *   1. A compatibility surface with NO matched evidence was still scored from
- *      the estate readiness score, so a surface the tenant has never deployed
- *      rendered as a percentage with a coloured bar — absence read as a pass.
+ *   1. (Retired) Compatibility "surfaces" were scored from regex matches on
+ *      row text; that view is now the evidence-based provider matrix, guarded
+ *      by tools/pqauth-identity-check.ts.
  *   2. A compliance framework with NO matching evidence borrowed the tenant's
  *      unrelated compliance / vault-audit / security-event row count and
  *      presented it as that framework's own evidence, attributing other
@@ -24,7 +24,6 @@
  *      zero runtime telemetry still saw non-zero runtime failures.
  */
 import {
-  deriveCompatibilitySurfaces,
   deriveComplianceRows,
   deriveRuntimeMetrics,
 } from '../src/api-server/pqauth-dashboard'
@@ -34,38 +33,6 @@ function assert(cond: boolean, label: string, extra = '') {
   console.log(`  ${cond ? '✓' : '✗ FAIL'} ${label}${extra ? ` — ${extra}` : ''}`)
   if (!cond) failures += 1
 }
-
-/* ------------------------------------------------------------------ */
-/* 1. Compatibility surfaces — no evidence means Not Assessed          */
-/* ------------------------------------------------------------------ */
-console.log('\n[1] Compatibility surfaces are scored only where evidence exists')
-
-// A tenant running web apps and APIs behind a gateway. No mobile app, no
-// service mesh, nothing in a cloud identity provider.
-const compatEvidence = [
-  { sourceTable: 'assets', name: 'checkout-application', asset_type: 'application', observed_at: '2026-08-20T10:00:00Z' },
-  { sourceTable: 'assets', name: 'payments API endpoint', asset_type: 'api', observed_at: '2026-08-20T10:05:00Z' },
-  { sourceTable: 'scanner_evidence', name: 'nginx ingress gateway', observed_at: '2026-08-20T10:10:00Z' },
-]
-const surfaces = deriveCompatibilitySurfaces(compatEvidence, 72, 3)
-const byId = Object.fromEntries(surfaces.map((s) => [s.id, s]))
-
-assert(byId.apps.assessed && byId.apps.count > 0, 'a surface WITH evidence is assessed', `apps count ${byId.apps.count}`)
-assert(byId.apps.score > 0, 'an assessed surface carries a score', `${byId.apps.score}`)
-assert(!byId.mobile.assessed, 'a surface with no evidence is NOT assessed', 'mobile')
-assert(byId.mobile.score === 0, 'an unassessed surface publishes no score', `mobile score ${byId.mobile.score}`)
-assert(byId.mobile.count === 0 && byId.mobile.sourceTables.length === 0, 'an unassessed surface cites no evidence', 'mobile')
-assert(!byId.mesh.assessed && byId.mesh.score === 0, 'service mesh with no sidecar evidence is unassessed')
-assert(byId.gateways.assessed, 'the gateway surface matches ingress/nginx evidence')
-assert(
-  surfaces.every((s) => s.assessed === s.count > 0),
-  'assessed is exactly "matched at least one evidence row" for every surface',
-  `${surfaces.filter((s) => s.assessed).length}/${surfaces.length} assessed`,
-)
-assert(
-  deriveCompatibilitySurfaces([], 88, 0).every((s) => !s.assessed && s.score === 0),
-  'an empty estate scores NO surface, however high the readiness score is',
-)
 
 /* ------------------------------------------------------------------ */
 /* 2. Compliance frameworks — evidence is never borrowed               */

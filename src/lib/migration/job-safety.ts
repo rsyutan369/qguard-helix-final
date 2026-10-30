@@ -90,6 +90,32 @@ export function isSimulationJob(job: { job_type?: unknown; name?: unknown; metad
   )
 }
 
+/**
+ * PostgREST projection of exactly the metadata keys `isSimulationJob` reads.
+ * Readers that do not need the whole JSONB blob select these instead, and pass
+ * the row to `isSimulationRow`.
+ */
+export const SIMULATION_MARKER_SELECT =
+  'sandbox_mode:metadata->>sandboxMode, dry_run:metadata->>dryRun, execution_mode:metadata->>executionMode, run_mode:metadata->>runMode, mode_hint:metadata->>mode'
+
+/** `isSimulationJob` over a row carrying either `metadata` or the projected `SIMULATION_MARKER_SELECT` columns. */
+export function isSimulationRow(row: Record<string, unknown> | null | undefined): boolean {
+  if (!row) return false
+  const metadata = rec(row.metadata)
+  return isSimulationJob({
+    job_type: row.job_type,
+    name: row.name,
+    metadata: {
+      ...metadata,
+      sandboxMode: metadata.sandboxMode ?? row.sandbox_mode,
+      dryRun: metadata.dryRun ?? row.dry_run,
+      executionMode: metadata.executionMode ?? row.execution_mode,
+      runMode: metadata.runMode ?? row.run_mode,
+      mode: metadata.mode ?? row.mode_hint,
+    },
+  })
+}
+
 /* ------------------------------------------------------------------ */
 /* 2. Approval                                                         */
 /* ------------------------------------------------------------------ */
@@ -184,6 +210,31 @@ export function approvalRecord(decidedBy: string, decidedAt: string, via: string
     reason: reason || 'Approved for agent execution.',
     via,
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* 3. Verification                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Did a validation actually PASS?
+ *
+ * Exact tokens only. The counters used `/pass|success|valid/`, and `/valid/`
+ * also matches "invalid", "validation_failed" and "unvalidated" — so a failed
+ * validation was counted as Verified, and `validationSeverity` rendered
+ * "invalid" in the success colour. Lives here (isomorphic) so Live Migration,
+ * the orchestration model and the UI read one rule.
+ */
+export function isPassingValidation(status: unknown): boolean {
+  const value = String(status || '').toLowerCase().trim()
+  if (!value || /fail|invalid|error|pending|unvalid|unverif|\bnot\b|blocked/.test(value)) return false
+  return ['passed', 'pass', 'success', 'successful', 'validated', 'valid', 'verified'].includes(value)
+}
+
+/** Did a validation record an explicit FAILURE (as opposed to "not yet passed")? */
+export function isFailingValidation(status: unknown): boolean {
+  const value = String(status || '').toLowerCase().trim()
+  return /fail|invalid|error|rejected/.test(value)
 }
 
 /** Operator-facing refusal naming the action that unblocks the work. */

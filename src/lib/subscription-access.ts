@@ -125,6 +125,9 @@ const MODULE_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   // this loop — it visualizes the same scanner CBOM inventory (/api/v1/scanner/*,
   // already a BASIC API), so it belongs to the BASIC discovery experience.
   { prefix: '/dashboard/scanner', tier: 'basic' },
+  // Agents Collector — BASIC deploys the read-only roles; the write roles are
+  // gated to PRO per role by the server (api-server/agent-entitlement.ts).
+  { prefix: '/dashboard/agents', tier: 'basic' },
   { prefix: '/dashboard/assets', tier: 'basic' },
   { prefix: '/dashboard/assets_map', tier: 'basic' },
   { prefix: '/dashboard/cbom', tier: 'basic' },

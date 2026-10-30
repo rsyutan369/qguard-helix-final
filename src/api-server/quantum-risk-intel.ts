@@ -6,6 +6,8 @@ import {
   buildQuantumRiskIntelligence,
   type QuantumRiskIntelligence,
 } from '@/lib/quantum-risk/risk-intelligence'
+import { streamLiveSnapshot } from './live-snapshot-stream'
+import { createSourceLedger } from './source-ledger'
 
 /**
  * QGuard Helix — Quantum Risk Scoring aggregation router.
@@ -30,15 +32,13 @@ const router = Router()
 
 type AuthedRequest = Request & { user?: { id: string; email?: string | null }; token?: string }
 
-function tokenFromRequest(req: Request): string | null {
-  const headerToken = getToken(req)
-  if (headerToken) return headerToken
-  const queryToken = req.query.token
-  return typeof queryToken === 'string' && queryToken.length > 0 ? queryToken : null
-}
-
+/*
+ * Authorization header only. The subscription gateway reads the header, so a
+ * `?token=` fallback let a request skip the Pro gate — and wrote the bearer
+ * token into access logs and browser history. The page streams over fetch().
+ */
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const token = tokenFromRequest(req)
+  const token = getToken(req)
   if (!token) return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
   const user = await getServerUser(token)
   if (!user) return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } })
@@ -50,9 +50,35 @@ router.use(requireAuth)
 
 const str = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : String(v))
 
-export async function buildQuantumRisk(token: string, userId: string, force = false): Promise<QuantumRiskIntelligence> {
+/*
+ * Per-tenant single-flight over the (already cached) upstream models, so the
+ * page, its stream and the asset feed project ONE object per window — which is
+ * also what lets the stream's fingerprint be computed once, not per client.
+ */
+const TTL_MS = 10_000
+const cache = new Map<string, { at: number; promise: Promise<QuantumRiskIntelligence> }>()
+
+export function buildQuantumRisk(token: string, userId: string, force = false): Promise<QuantumRiskIntelligence> {
+  const cached = cache.get(userId)
+  if (!force && cached && Date.now() - cached.at < TTL_MS) return cached.promise
+  const promise = computeQuantumRisk(token, userId, force)
+  cache.set(userId, { at: Date.now(), promise })
+  promise.catch(() => cache.delete(userId))
+  if (cache.size > 500) {
+    const now = Date.now()
+    for (const [key, value] of cache) if (now - value.at > TTL_MS) cache.delete(key)
+  }
+  return promise
+}
+
+async function computeQuantumRisk(token: string, userId: string, force: boolean): Promise<QuantumRiskIntelligence> {
   const [snapshot, portfolio] = await Promise.all([buildSnapshot(token, userId), buildPortfolio(token, userId, force)])
-  return buildQuantumRiskIntelligence({
+  // No direct table read here: both inputs are upstream models that throw on
+  // failure (a 500 + hard-error panel), so what reaches this point was read.
+  const ledger = createSourceLedger('Quantum risk')
+  ledger.note('quantum_readiness', 'Quantum Readiness assessment', snapshot.hasData ? 'ok' : 'empty', snapshot.inventory.assetsAssessed, snapshot.hasData ? `${snapshot.inventory.assetsAssessed} asset(s) assessed.` : 'No assessment recorded yet.')
+  ledger.note('asset_portfolio', 'Asset portfolio', portfolio.assets.length ? 'ok' : 'empty', portfolio.assets.length, portfolio.assets.length ? `${portfolio.assets.length} asset(s) read.` : 'No asset recorded.')
+  const model = buildQuantumRiskIntelligence({
     snapshot: {
       hasData: snapshot.hasData,
       lastAssessmentAt: snapshot.lastAssessmentAt,
@@ -81,6 +107,7 @@ export async function buildQuantumRisk(token: string, userId: string, force = fa
     },
     assets: portfolio.assets,
   })
+  return { ...model, reads: ledger.reads }
 }
 
 /* ------------------------------------------------------------------ */
@@ -104,42 +131,9 @@ router.get('/', async (req: Request, res: Response) => {
  * Both upstream models are per-tenant single-flight cached, so every connected
  * dashboard of a tenant collapses onto one computation per window.
  */
-router.get('/stream', async (req: Request, res: Response) => {
+router.get('/stream', (req: Request, res: Response) => {
   const { token, user } = req as AuthedRequest
-  res.status(200)
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
-  res.flushHeaders?.()
-
-  let closed = false
-  const send = (event: string, data: unknown) => {
-    if (closed) return
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-  }
-
-  send('connected', { at: new Date().toISOString() })
-
-  const push = async () => {
-    try {
-      send('quantum-risk', await buildQuantumRisk(token!, user!.id))
-    } catch (error) {
-      send('quantum-risk-error', { message: error instanceof Error ? error.message : 'Risk assessment unavailable' })
-    }
-  }
-
-  void push()
-  const interval = setInterval(() => void push(), 15_000)
-  const heartbeat = setInterval(() => {
-    if (!closed) res.write(': heartbeat\n\n')
-  }, 25_000)
-
-  req.on('close', () => {
-    closed = true
-    clearInterval(interval)
-    clearInterval(heartbeat)
-  })
+  streamLiveSnapshot(req, res, { event: 'quantum-risk', build: () => buildQuantumRisk(token!, user!.id), intervalMs: 15_000 })
 })
 
 /** GET /assets — server-side filtered, paginated asset risk feed (§26). */

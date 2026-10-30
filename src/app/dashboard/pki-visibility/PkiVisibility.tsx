@@ -545,7 +545,7 @@ export default function PkiVisibility() {
             )}
           </Panel>
 
-          <ProvenanceFooter telemetry={data.telemetry} />
+          <ProvenanceFooter telemetry={data.telemetry} reads={data.reads} />
         </>
       ) : null}
 

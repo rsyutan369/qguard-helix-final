@@ -136,8 +136,8 @@ export const TRUST_STATE_HINT: Record<TrustState, string> = {
   'migration-required': 'Classical cryptography scheduled for replacement.',
   'quantum-vulnerable': 'Classical cryptography that a quantum computer will break.',
   critical: 'Critical findings open, or fewer than seven days of certificate validity.',
-  expired: 'Validity window has passed - handshakes using it already fail.',
-  invalid: 'Revoked, self-signed, or failing a chain validation check.',
+  expired: 'Validity window has passed - clients that check expiry reject it.',
+  invalid: 'Revoked, self-signed, name-mismatched or weakly signed - a trust check fails while the certificate is still in its validity window.',
   unknown: 'No measurement exists yet. This is not the same as healthy.',
 };
 
@@ -385,7 +385,8 @@ export function TrustKpiTile({
     <>
       <div className="flex items-center gap-1.5 text-[9.5px] font-black uppercase tracking-[0.12em] text-white/45">
         {label}
-        {hint ? <Term hint={hint} label={label} /> : null}
+        {/* Above the stretched control so the explanation stays independently focusable and clickable. */}
+        {hint ? <span className="pointer-events-auto relative z-10"><Term hint={hint} label={label} /></span> : null}
       </div>
       <div className={cn('mt-2 text-[26px] font-black leading-none', measured ? t.text : 'text-white/35')}>
         {measured ? <LiveValue value={fmtNumber(value)} /> : 'Not measured'}
@@ -400,25 +401,25 @@ export function TrustKpiTile({
   );
 
   const shared =
-    'qg-executive-panel tf-rise tf-hover-lift group relative block overflow-hidden rounded-xl p-4 text-left text-white no-underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70';
+    'qg-executive-panel tf-rise tf-hover-lift group relative block overflow-hidden rounded-xl p-4 text-left text-white no-underline focus-within:ring-2 focus-within:ring-cyan-300/70';
 
-  if (onClick) {
-    return (
-      <button type="button" onClick={onClick} style={riseStyle(index)} className={cn(shared, 'w-full')}>
-        {body}
-      </button>
-    );
-  }
-  if (href) {
-    return (
-      <Link to={href} style={riseStyle(index)} className={shared}>
-        {body}
-      </Link>
-    );
-  }
+  /*
+   * Stretched control: the tile is a container and the button / link that
+   * makes it clickable is a SIBLING of the body, covering it. Wrapping the body
+   * in a <button> or <a> nested the hint's own <button> inside it — invalid
+   * HTML that React reports as a hydration error and that breaks keyboard and
+   * screen-reader navigation of the hint.
+   */
+  const stretched = 'absolute inset-0 z-0 rounded-xl focus-visible:outline-none';
+  const accessibleName = `${label}: ${measured ? fmtNumber(value) : 'not measured'}${detail ? ` — ${detail}` : ''}`;
   return (
-    <div style={riseStyle(index)} className={cn(shared, 'cursor-default')}>
-      {body}
+    <div style={riseStyle(index)} className={cn(shared, !onClick && !href && 'cursor-default')}>
+      {onClick ? (
+        <button type="button" onClick={onClick} aria-label={accessibleName} className={stretched} />
+      ) : href ? (
+        <Link to={href} aria-label={accessibleName} className={stretched} />
+      ) : null}
+      <div className="pointer-events-none relative">{body}</div>
     </div>
   );
 }
@@ -606,7 +607,7 @@ export function ProviderChip({ provider, label }: { provider: CloudProviderId; l
   const accent = PROVIDER_ACCENT[provider] ?? PROVIDER_ACCENT.other;
   return (
     <span
-      className="inline-flex items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider"
+      className="tlspki-ink inline-flex items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider"
       style={{ borderColor: `${accent}55`, backgroundColor: `${accent}14`, color: accent }}
     >
       <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: accent }} aria-hidden="true" />

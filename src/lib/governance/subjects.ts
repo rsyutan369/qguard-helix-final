@@ -191,6 +191,13 @@ export function assetIsInternetFacing(asset: Row | undefined): boolean {
   if (meta.internet_facing === true || meta.public === true) return true
   const exposure = str(meta.exposure || meta.exposure_level).toLowerCase()
   if (/internet|public|external/.test(exposure)) return true
+  // Reading a local key/configuration does not establish network exposure.
+  // The generic "endpoint-security" scanner type otherwise matched "endpoint"
+  // below and incorrectly published local agent files as Internet-facing.
+  const localEvidence = /^(certificate-file|key-file|config-reference|package-manifest|crypto-library)$/.test(str(meta.evidenceType))
+  const sources = Array.isArray(meta.scanSources) ? meta.scanSources : []
+  const localSources = sources.length > 0 && sources.every((source) => /^(windows-device|linux-device|macos-device|virtual-machine|repository|github-repository)$/.test(str(recordOf(source).kind)))
+  if ((localEvidence && !meta.port) || localSources) return false
   const type = str(asset.type).toLowerCase()
   if (/web|domain|tls|endpoint|site|host|gateway|cdn|proxy|load|dns|ingress|api/.test(type)) return true
   const name = str(asset.name)

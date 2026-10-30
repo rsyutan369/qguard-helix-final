@@ -44,6 +44,7 @@ export function useCopilot(currentPage?: string) {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<CopilotMessage[]>([]);
   const [streaming, setStreaming] = useState<StreamingState>(IDLE_STREAM);
+  const [narratingAnswerId, setNarratingAnswerId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
@@ -174,7 +175,23 @@ export function useCopilot(currentPage?: string) {
     abortRef.current = controller;
 
     let finalAnswer: CopilotAnswer | null = null;
+    let answerShown = false;
     let conversationId = activeConversationId;
+
+    // The platform answer renders the moment it arrives; the connected model's
+    // narrative then streams into that same message. Deltas are batched per
+    // animation frame so a fast model never re-renders the list per token.
+    const patchAnswer = (answerId: string, patch: (a: CopilotAnswer) => CopilotAnswer) => {
+      setMessages((prev) => prev.map((m) => (m.answer && m.answer.id === answerId ? { ...m, answer: patch(m.answer) } : m)));
+    };
+    const pending: { text: string; answerId: string; frame: number | null } = { text: '', answerId: '', frame: null };
+    const flushDelta = () => {
+      pending.frame = null;
+      if (!pending.text) return;
+      const delta = pending.text;
+      pending.text = '';
+      patchAnswer(pending.answerId, (a) => (a.narrative ? { ...a, narrative: { ...a.narrative, content: a.narrative.content + delta } } : a));
+    };
 
     const handleEvent = (event: CopilotStreamEvent & { conversationId?: string }) => {
       switch (event.type) {
@@ -184,8 +201,46 @@ export function useCopilot(currentPage?: string) {
         case 'tool':
           setStreaming((prev) => ({ ...prev, toolRuns: [...prev.toolRuns, event.run] }));
           break;
-        case 'answer':
-          finalAnswer = event.answer;
+        case 'answer': {
+          const answer = event.answer;
+          finalAnswer = answer;
+          answerShown = true;
+          setMessages((prev) => [...prev, {
+            id: answer.id,
+            conversationId: conversationId || 'pending',
+            role: 'assistant',
+            content: answer.summary,
+            answer,
+            createdAt: answer.generatedAt,
+          }]);
+          break;
+        }
+        case 'narrative_start':
+          setNarratingAnswerId(event.answerId);
+          patchAnswer(event.answerId, (a) => ({
+            ...a,
+            narrative: {
+              provider: event.provider,
+              providerLabel: event.providerLabel,
+              model: event.model,
+              status: 'partial',
+              content: '',
+              latencyMs: 0,
+              grounding: { checked: 0, verified: 0, unverified: [] },
+              generatedAt: new Date().toISOString(),
+            },
+          }));
+          break;
+        case 'narrative':
+          pending.answerId = event.answerId;
+          pending.text += event.delta;
+          if (pending.frame === null) pending.frame = requestAnimationFrame(flushDelta);
+          break;
+        case 'narrative_done':
+          if (pending.frame !== null) { cancelAnimationFrame(pending.frame); pending.frame = null; }
+          pending.text = '';
+          patchAnswer(event.answerId, (a) => ({ ...a, narrative: event.narrative }));
+          setNarratingAnswerId(null);
           break;
         case 'error':
           setError(event.message);
@@ -238,7 +293,9 @@ export function useCopilot(currentPage?: string) {
         setError((err as Error)?.message || 'Sophia could not answer.');
       }
     } finally {
-      if (finalAnswer) {
+      if (pending.frame !== null) { cancelAnimationFrame(pending.frame); flushDelta(); }
+      setNarratingAnswerId(null);
+      if (finalAnswer && !answerShown) {
         const assistantMessage: CopilotMessage = {
           id: (finalAnswer as CopilotAnswer).id,
           conversationId: conversationId || 'pending',
@@ -299,6 +356,7 @@ export function useCopilot(currentPage?: string) {
     activeConversationId,
     messages,
     streaming,
+    narratingAnswerId,
     error,
     // actions
     sendMessage,

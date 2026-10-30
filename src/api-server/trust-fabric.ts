@@ -26,6 +26,8 @@ import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server
 import { buildSnapshot } from './quantum-readiness'
 import { buildPortfolio } from './migration-planner'
 import { buildTlsPkiModel } from './tls-pki'
+import { streamLiveSnapshot } from './live-snapshot-stream'
+import { createSourceLedger, type SourceRead } from './source-ledger'
 import { buildTrustFabricIntelligence } from '@/lib/trust-fabric/intelligence'
 import type {
   CertificateTrustRecord,
@@ -60,19 +62,19 @@ function num(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function safeRows(client: any, table: string, build: (query: any) => any): Promise<Row[]> {
-  try {
-    const { data, error } = await build(client.from(table))
-    if (error) {
-      console.warn(`[trust-fabric] ${table} query skipped:`, error.message || error)
-      return []
-    }
-    return (data as Row[]) || []
-  } catch (error) {
-    console.warn(`[trust-fabric] ${table} query failed:`, (error as Error)?.message || error)
-    return []
+/** The model as published: the intelligence plus the outcome of every source read. */
+export type TrustFabricModel = TrustFabricIntelligence & { reads: SourceRead[] }
+
+const READ_RANK: Record<SourceRead['state'], number> = { unavailable: 3, truncated: 2, ok: 1, empty: 0 }
+
+/** One entry per table across both ledgers; the worst outcome wins (a failure is never hidden by a success). */
+function mergeReads(...ledgers: SourceRead[][]): SourceRead[] {
+  const byKey = new Map<string, SourceRead>()
+  for (const read of ledgers.flat()) {
+    const existing = byKey.get(read.key)
+    if (!existing || READ_RANK[read.state] > READ_RANK[existing.state]) byKey.set(read.key, read)
   }
+  return [...byKey.values()]
 }
 
 /* ------------------------------------------------------------------ */
@@ -80,17 +82,12 @@ async function safeRows(client: any, table: string, build: (query: any) => any):
 /* ------------------------------------------------------------------ */
 
 /**
- * EventSource cannot set headers, so legacy streams accepted `?token=`, which
- * writes a bearer token into access logs, proxies and browser history. The
- * hooks here stream over fetch + ReadableStream with an Authorization header.
- * The query fallback exists only so an already-open legacy tab does not
- * hard-fail during a deploy.
+ * Authorization header ONLY. The `?token=` fallback this replaced served all
+ * four Pro trust pages to BASIC tenants: the subscription gateway reads only
+ * the header, so a header-less request skipped the tier check.
  */
 function tokenFromRequest(req: Request): string | null {
-  const header = getToken(req)
-  if (header) return header
-  const query = req.query.token
-  return typeof query === 'string' && query.length > 0 ? query : null
+  return getToken(req)
 }
 
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -129,11 +126,15 @@ const CAP = {
 /* ------------------------------------------------------------------ */
 
 const MODEL_TTL_MS = 15_000
-const modelCache = new Map<string, { at: number; promise: Promise<TrustFabricIntelligence> }>()
+const modelCache = new Map<string, { at: number; promise: Promise<TrustFabricModel> }>()
 
-async function computeModel(token: string, userId: string): Promise<TrustFabricIntelligence> {
+async function computeModel(token: string, userId: string): Promise<TrustFabricModel> {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
+  // Failed reads degrade to [] but are recorded and published (common-issues #64).
+  const ledger = createSourceLedger('trust-fabric')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const safeRows = (c: any, table: string, build: (query: any) => any): Promise<Row[]> => ledger.read(c, table, table.replace(/_/g, ' '), null, build)
 
   // Canonical estate truth first. All three are themselves cached per tenant on
   // the same 15s window, so asking for them here is nearly free and is what
@@ -232,7 +233,7 @@ async function computeModel(token: string, userId: string): Promise<TrustFabricI
     return Math.round((passing.length / graded.length) * 100)
   })()
 
-  return buildTrustFabricIntelligence({
+  const intelligence = buildTrustFabricIntelligence({
     tlsPki,
     assets: portfolio.assets,
     snapshot: {
@@ -260,9 +261,10 @@ async function computeModel(token: string, userId: string): Promise<TrustFabricI
     cryptoInventory,
     runtimeEvents,
   })
+  return Object.assign(intelligence, { reads: mergeReads(tlsPki.reads, ledger.reads) })
 }
 
-export async function buildTrustFabricModel(token: string, userId: string, force = false): Promise<TrustFabricIntelligence> {
+export async function buildTrustFabricModel(token: string, userId: string, force = false): Promise<TrustFabricModel> {
   const cached = modelCache.get(userId)
   if (!force && cached && Date.now() - cached.at < MODEL_TTL_MS) return cached.promise
   const promise = computeModel(token, userId)
@@ -288,11 +290,13 @@ export function invalidateTrustFabricModel(userId: string) {
 const PAGE = { nodes: 80, certificates: 60, resources: 60, events: 60, findings: 40, relationships: 220 } as const
 
 /** Fields every page shares, so the header is identical on all four. */
-function commonEnvelope(model: TrustFabricIntelligence) {
+function commonEnvelope(model: TrustFabricModel) {
   return {
     generatedAt: model.generatedAt,
     latestEvidenceAt: model.latestEvidenceAt,
     hasData: model.hasData,
+    /** Outcome of every source read (this model AND the TLS/PKI model it composes). */
+    reads: model.reads,
     stale: model.stale,
     staleSinceHours: model.staleSinceHours,
     scores: model.scores,
@@ -342,7 +346,23 @@ function nodeSummary(node: TrustNode) {
   }
 }
 
-export function projectView(model: TrustFabricIntelligence, view: TrustView) {
+/** One projection per (cached model, view), so the stream fingerprints once per model, not per open tab. */
+const projectionMemo = new WeakMap<TrustFabricModel, Map<TrustView, ReturnType<typeof projectView>>>()
+function projectedView(model: TrustFabricModel, view: TrustView) {
+  let byView = projectionMemo.get(model)
+  if (!byView) {
+    byView = new Map()
+    projectionMemo.set(model, byView)
+  }
+  let projected = byView.get(view)
+  if (!projected) {
+    projected = projectView(model, view)
+    byView.set(view, projected)
+  }
+  return projected
+}
+
+export function projectView(model: TrustFabricModel, view: TrustView) {
   const base = commonEnvelope(model)
 
   switch (view) {
@@ -704,50 +724,14 @@ function buildRouter(view: TrustView): Router {
    * The client replaces state atomically rather than patching, which is what
    * stops the KPI strip, the tables and the charts from disagreeing mid-update.
    * Every connected client of a tenant collapses onto the one cached model, and
-   * identical frames are suppressed so an idle dashboard costs nothing.
+   * identical CONTENT is suppressed (fingerprint, not `generatedAt`): an idle
+   * dashboard receives a ~150-byte `trust-fabric-unchanged` frame per tick.
    */
-  router.get('/stream', async (req: AuthedRequest, res: Response) => {
-    res.status(200)
-    res.setHeader('Content-Type', 'text/event-stream')
-    res.setHeader('Cache-Control', 'no-cache, no-transform')
-    res.setHeader('Connection', 'keep-alive')
-    res.setHeader('X-Accel-Buffering', 'no')
-    res.flushHeaders?.()
-
-    let closed = false
-    const send = (event: string, data: unknown) => {
-      if (closed) return
-      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-    }
-
-    send('connected', { at: new Date().toISOString(), view })
-
-    let lastGeneratedAt = ''
-    const push = async () => {
-      try {
-        const data = await model(req)
-        // Suppress identical frames: within the cache window the model is the
-        // same object, and re-sending it only burns bandwidth and re-renders.
-        if (data.generatedAt === lastGeneratedAt) return
-        lastGeneratedAt = data.generatedAt
-        send('trust-fabric', projectView(data, view))
-      } catch (error) {
-        send('trust-fabric-error', {
-          message: error instanceof Error ? error.message : 'Trust telemetry unavailable',
-        })
-      }
-    }
-
-    void push()
-    const interval = setInterval(() => void push(), 10_000)
-    const heartbeat = setInterval(() => {
-      if (!closed) res.write(': heartbeat\n\n')
-    }, 25_000)
-
-    req.on('close', () => {
-      closed = true
-      clearInterval(interval)
-      clearInterval(heartbeat)
+  router.get('/stream', (req: AuthedRequest, res: Response) => {
+    streamLiveSnapshot(req, res, {
+      event: 'trust-fabric',
+      build: async () => projectedView(await model(req), view),
+      intervalMs: 10_000,
     })
   })
 

@@ -1,282 +1,299 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
-  Rocket, RefreshCw, Command as CommandIcon, Maximize2, Minimize2, Play, Download,
+  CalendarRange, Command as CommandIcon, Download, Maximize2, Minimize2, RefreshCw, Sparkles, X,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import { useAuth } from '@/contexts/auth-context';
-import { useScannerIntelligence } from '@/lib/scanner/use-scanner-intelligence';
-import { useMigrationWorkflow } from '@/hooks/use-migration-workflow';
+import { askSophia } from '@/lib/sophia-bridge';
+import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 import { useMigrationOrchestrator } from '@/hooks/use-migration-orchestrator';
+import { downloadJsonFile } from '@/hooks/use-live-resource';
+import { nextActionKey, type JobDisplayStatus, type NextActionKey } from '@/lib/migration/orchestration-model';
+import { Panel } from '../_components/executive/primitives';
 import {
-  buildExecutiveBanner, buildKpis, buildWaves, activeWave, buildPhaseGates, buildTimelineCards,
-  buildDigitalTwin, buildLiveJobs, buildHealth, buildRiskBurndown, buildAssetRows,
-  buildDependencyGraph, buildActivityFeed, buildAuditTrail, hasAnyEvidence, relativeTime,
-  downloadTextFile, type OpsInputs,
-} from './_ops-lib';
+  AMBER, CYAN, ConnectionLostBanner, GREEN, HardErrorPanel, HeaderButton, IntelHeader, IntelShell, IntelTabs,
+  KpiCard, ModuleBrief, NoEvidenceState, PrimaryButton, RED, SLATE, SkeletonGrid, SourceHealth, SourceNote,
+  fmtInt, fmtPct,
+} from '../_components/intel/kit';
+import { exactCounts } from '../pqc-orchestration/_flow-lib';
 import {
-  ExecutiveBanner, KpiHeader, WaveOverview, PhaseGates, TimelineSection, DigitalTwinPanel,
-  LiveTelemetry, AiRecommendationsPanel, HealthDashboard, RiskBurndownPanel, AssetTable,
-  DependencyGraphPanel, ActivityFeed, AuditTrailPanel, ComplianceStrip, type OpsRecommendation,
-} from './_ops-sections';
-import { DetailsDrawer, CommandPalette, type DrawerSelection, type Command } from './_ops-drawer';
+  CommandPalette, JobTable, NextActionsList, OrchThemeBridge, sourceRows, useCommandPaletteHotkey, useFullscreen, type PaletteCommand,
+} from '../pqc-orchestration/_orch-ui';
+import { JobDrawer } from '../pqc-orchestration/_job-drawer';
+import { DEFAULT_TIMELINE_FILTERS, buildChronology, buildTimeline, type TimeWindow } from './_timeline-lib';
+import { ChronologyPanel, PhasesPanel, ScheduleGantt, ThroughputPanel } from './_timeline-views';
 
-/* -- AI recommendations: reuse the same real endpoint as Executive -- */
+type TabKey = 'chronology' | 'phases' | 'jobs' | 'throughput';
 
-function recRoute(r: { action?: string; category?: string; assetId?: string | null }): string {
-  const a = String(r.action || '').toLowerCase();
-  const c = String(r.category || '').toLowerCase();
-  if (a.includes('scan') || c.includes('discover')) return '/dashboard/scanner';
-  if (a.includes('migrat') || c.includes('migration')) return '/dashboard/live-migration';
-  if (a.includes('cert') || c.includes('certificate')) return '/dashboard/certificate-telemetry';
-  if (a.includes('tls') || a.includes('protocol') || c.includes('protocol')) return '/dashboard/encryption-monitoring';
-  if (r.assetId) return `/dashboard/assets?asset=${encodeURIComponent(r.assetId)}`;
-  return '/dashboard/migration-planner';
-}
-
-function useAiRecommendations() {
-  const { session } = useAuth();
-  const token = session?.access_token;
-  const [recs, setRecs] = useState<OpsRecommendation[]>([]);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    if (!token) { setLoading(false); return; }
-    let active = true;
-    (async () => {
-      try {
-        const res = await fetch('/api/v1/dashboard/recommendations', { headers: { Authorization: `Bearer ${token}` } });
-        const json = await res.json().catch(() => ({}));
-        const list = (json?.data?.recommendations || []) as Array<Record<string, any>>;
-        if (active) {
-          setRecs(list.map((r) => ({
-            id: String(r.id), priority: Number(r.priority ?? 3), category: String(r.category || 'migration'),
-            title: String(r.title || 'Recommendation'), description: String(r.description || ''),
-            action: String(r.action || ''), estimatedEffort: String(r.estimatedEffort || '—'),
-            assetId: r.assetId ?? null, route: recRoute(r),
-          })));
-        }
-      } catch { /* auxiliary — stays empty on error */ } finally {
-        if (active) setLoading(false);
-      }
-    })();
-    return () => { active = false; };
-  }, [token]);
-  return { recs, loading };
-}
-
-/* ------------------------------------------------------------------ */
-
+/**
+ * Migration Timeline — the TIME view of real migration work.
+ *
+ * Reads only the orchestration snapshot (migration_jobs, plans, validation
+ * logs, events, agents). It replaced a "Migration Operations Center" whose
+ * waves, NIST phase gates, Digital Twin, health scores, risk burn-down,
+ * dependency graph and timeline cards were derived from scanner percentages
+ * and fixed offsets — and whose orchestration panels never showed a job,
+ * because the orchestrator's select failed on a non-existent column.
+ *
+ * Its sibling, PQC Orchestration, is the FLOW view (which gate holds each
+ * job); this page answers WHEN: what was recorded, started, finished and
+ * verified, and what must happen next.
+ */
 export default function MigrationTimeline() {
-  const { data: scanner, loading, error, connected, refresh } = useScannerIntelligence();
-  const { workflow, refresh: refreshWorkflow } = useMigrationWorkflow();
-  const { data: orch, sseConnected, refresh: refreshOrchestrator } = useMigrationOrchestrator(true);
-  const { recs, loading: recsLoading } = useAiRecommendations();
+  const { data, state, error, transport, lastVerifiedAt, refresh } = useMigrationOrchestrator();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const planId = searchParams.get('planId');
 
-  const [selection, setSelection] = useState<DrawerSelection | null>(null);
+  const [tab, setTab] = useState<TabKey>('chronology');
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>('all');
+  const [statusFilter, setStatusFilter] = useState<JobDisplayStatus | 'all'>('all');
+  const [actionFilter, setActionFilter] = useState<NextActionKey | null>(null);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const { isFullscreen, toggle: toggleFullscreen } = useFullscreen(rootRef);
+  useCommandPaletteHotkey(setPaletteOpen);
 
-  const input: OpsInputs = useMemo(() => ({ scanner, workflow, orch }), [scanner, workflow, orch]);
+  const answered = Boolean(data.generatedAt);
+  const now = Date.now();
+  const filters = useMemo(() => ({ ...DEFAULT_TIMELINE_FILTERS, window: timeWindow, status: statusFilter, planId }), [timeWindow, statusFilter, planId]);
+  const model = useMemo(() => buildTimeline(data, filters, now), [data, filters]); // eslint-disable-line react-hooks/exhaustive-deps
+  const chronology = useMemo(() => buildChronology(data, { planId, search: '' }, now), [data, planId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const counts = useMemo(() => exactCounts(data), [data]);
+  const planName = planId ? data.plans.find((plan) => plan.id === planId)?.name || `Plan ${planId.slice(0, 8)}` : null;
 
-  const banner = useMemo(() => buildExecutiveBanner(input), [input]);
-  const kpis = useMemo(() => buildKpis(input), [input]);
-  const waves = useMemo(() => buildWaves(scanner), [scanner]);
-  const activeWaveObj = useMemo(() => activeWave(waves), [waves]);
-  const gates = useMemo(() => buildPhaseGates(input), [input]);
-  const timelineCards = useMemo(() => buildTimelineCards(input), [input]);
-  const twin = useMemo(() => buildDigitalTwin(input), [input]);
-  const liveJobs = useMemo(() => buildLiveJobs(input), [input]);
-  const health = useMemo(() => buildHealth(input), [input]);
-  const riskBurndown = useMemo(() => buildRiskBurndown(input), [input]);
-  const assetRows = useMemo(() => buildAssetRows(input), [input]);
-  const depGraph = useMemo(() => buildDependencyGraph(scanner), [scanner]);
-  const activity = useMemo(() => buildActivityFeed(input), [input]);
-  const audit = useMemo(() => buildAuditTrail(input), [input]);
+  const tableJobs = useMemo(() => data.jobs.filter((job) => (!planId || job.planId === planId) && (!actionFilter || nextActionKey(job) === actionFilter)), [data.jobs, planId, actionFilter]);
+  const activeAction = actionFilter ? counts.nextActions?.find((action) => action.key === actionFilter) ?? null : null;
 
-  const live = connected || sseConnected;
-  const hasEvidence = hasAnyEvidence(input);
+  const doRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try { await refresh({ force: true }); } finally { setRefreshing(false); }
+  }, [refresh]);
 
-  /* -- selection handlers -- */
-  const selectTimeline = useCallback((id: string) => {
-    const card = timelineCards.find((c) => c.id === id);
-    if (card) setSelection({ kind: 'timeline', card });
-  }, [timelineCards]);
-  const selectAsset = useCallback((id: string) => {
-    const row = assetRows.find((r) => r.id === id);
-    if (row) setSelection({ kind: 'asset', row });
-  }, [assetRows]);
-  const selectJob = useCallback((id: string) => {
-    const job = liveJobs.find((j) => j.id === id);
-    if (job) setSelection({ kind: 'job', job });
-  }, [liveJobs]);
-  const selectNode = useCallback((id: string) => {
-    const node = depGraph.nodes.find((n) => n.id === id);
-    if (node) setSelection({ kind: 'node', node });
-  }, [depGraph.nodes]);
-  const explainRec = useCallback((rec: OpsRecommendation) => setSelection({ kind: 'rec', rec }), []);
-  const dismissRec = useCallback((id: string) => setDismissed((s) => new Set(s).add(id)), []);
+  const exportModel = useCallback(() => {
+    downloadJsonFile('qguard-migration-timeline', {
+      exportedAt: new Date().toISOString(),
+      page: 'Migration Timeline',
+      scope: data.scopeNote,
+      filters: { planId, window: timeWindow, status: statusFilter },
+      snapshot: data,
+    });
+  }, [data, planId, timeWindow, statusFilter]);
 
-  const refreshAll = useCallback(() => { refresh(); refreshWorkflow(); refreshOrchestrator(); }, [refresh, refreshWorkflow, refreshOrchestrator]);
+  const ask = useCallback(() => {
+    const m = data.metrics;
+    askSophia(
+      'Which of my migration jobs are stalled, failed or completed but unverified, and what should happen next?',
+      `Migration Timeline: ${m.total} operational jobs, ${m.completed} completed (${m.verified} verified, ${m.completedUnverified} unverified, ${m.completedValidationFailed} validation failed), ${m.phases.failed} failed, ${m.staleExecutions} silent executors, ${data.plans.length} plans, ${m.overduePlans ?? 0} past their recorded scheduled start.`,
+    );
+  }, [data]);
 
-  const exportSnapshot = useCallback(() => {
-    const payload = { generatedAt: new Date().toISOString(), banner, kpis, waves, gates, timelineCards, twin, health, riskBurndown, assets: assetRows.length };
-    downloadTextFile(`qguard-migration-ops-${Date.now()}.json`, JSON.stringify(payload, null, 2), 'application/json;charset=utf-8');
-  }, [banner, kpis, waves, gates, timelineCards, twin, health, riskBurndown, assetRows]);
-
-  /* -- fullscreen -- */
-  const toggleFullscreen = useCallback(() => {
-    const el = rootRef.current;
-    if (!el) return;
-    if (!document.fullscreenElement) el.requestFullscreen?.().catch(() => {});
-    else document.exitFullscreen?.().catch(() => {});
-  }, []);
-  useEffect(() => {
-    const handler = () => setIsFullscreen(Boolean(document.fullscreenElement));
-    document.addEventListener('fullscreenchange', handler);
-    return () => document.removeEventListener('fullscreenchange', handler);
+  const focusAction = useCallback((key: NextActionKey) => {
+    setActionFilter(key);
+    setStatusFilter('all');
+    setTab('jobs');
+    document.getElementById('tl-tabs')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
 
-  /* -- Cmd/Ctrl+K palette -- */
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPaletteOpen((o) => !o); }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  const clearPlan = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('planId');
+    setSearchParams(next);
+  }, [searchParams, setSearchParams]);
 
-  const scrollTo = useCallback((id: string) => {
-    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, []);
+  const commands: PaletteCommand[] = useMemo(() => [
+    { id: 'refresh', label: 'Refresh the orchestration snapshot', hint: 'sync', run: () => void doRefresh() },
+    { id: 'export', label: 'Export the timeline model (JSON)', hint: 'export', run: exportModel },
+    { id: 'fullscreen', label: isFullscreen ? 'Exit full screen' : 'Full screen', hint: 'view', run: toggleFullscreen },
+    { id: 'schedule', label: 'Jump to the migration schedule', hint: 'section', run: () => document.getElementById('tl-schedule')?.scrollIntoView({ behavior: 'smooth' }) },
+    ...(['chronology', 'phases', 'jobs', 'throughput'] as TabKey[]).map((key) => ({ id: `tab-${key}`, label: `Open the ${key} tab`, hint: 'tab', run: () => { setTab(key); document.getElementById('tl-tabs')?.scrollIntoView({ behavior: 'smooth' }); } })),
+    ...(['7d', '30d', '90d', 'all'] as TimeWindow[]).map((w) => ({ id: `window-${w}`, label: `Time window: ${w === 'all' ? 'all recorded' : w}`, hint: 'filter', run: () => setTimeWindow(w) })),
+    { id: 'failed', label: 'Show failed jobs', hint: 'filter', run: () => { setStatusFilter('failed'); setTab('jobs'); } },
+    { id: 'unverified', label: 'Show completed but unverified jobs', hint: 'filter', run: () => { setStatusFilter('completed-unverified'); setTab('jobs'); } },
+    { id: 'live', label: 'Open Live Migration', hint: 'module', run: () => { window.location.href = '/dashboard/live-migration'; } },
+    { id: 'planner', label: 'Open Migration Planner', hint: 'module', run: () => { window.location.href = '/dashboard/migration-planner'; } },
+    { id: 'orchestration', label: 'Open PQC Orchestration (flow view)', hint: 'module', run: () => { window.location.href = '/dashboard/pqc-orchestration'; } },
+    { id: 'agents', label: 'Open Agent Center', hint: 'module', run: () => { window.location.href = '/downloads'; } },
+  ], [doRefresh, exportModel, isFullscreen, toggleFullscreen]);
 
-  const commands: Command[] = useMemo(() => {
-    const jumps: Array<[string, string]> = [
-      ['sec-waves', 'Jump: Migration Waves'], ['sec-gates', 'Jump: NIST Phase Gates'],
-      ['sec-timeline', 'Jump: Migration Timeline'], ['sec-twin', 'Jump: Digital Twin'],
-      ['sec-telemetry', 'Jump: Live Telemetry'], ['sec-ai', 'Jump: AI Recommendations'],
-      ['sec-health', 'Jump: Migration Health'], ['sec-risk', 'Jump: Risk Burn-down'],
-      ['sec-assets', 'Jump: Asset Table'], ['sec-deps', 'Jump: Dependency Graph'],
-      ['sec-activity', 'Jump: Activity Feed'], ['sec-audit', 'Jump: Audit Trail'],
-    ];
-    const navs: Array<[string, string]> = [
-      ['/dashboard/live-migration', 'Open: Live Migration Ops'],
-      ['/dashboard/migration-planner', 'Open: Migration Planner'],
-      ['/dashboard/migration-sandbox', 'Open: Migration Sandbox (Digital Twin)'],
-      ['/dashboard/quantum-readiness', 'Open: Quantum Readiness'],
-      ['/dashboard/compliance', 'Open: Compliance'],
-    ];
-    return [
-      { id: 'refresh', label: 'Refresh all evidence', hint: 'sync', run: refreshAll },
-      { id: 'export', label: 'Export operations snapshot', hint: 'JSON', run: exportSnapshot },
-      { id: 'fullscreen', label: 'Toggle full-screen command center', hint: 'view', run: toggleFullscreen },
-      ...jumps.map(([id, label]) => ({ id, label, hint: 'section', run: () => scrollTo(id) })),
-      ...navs.map(([href, label]) => ({ id: href, label, hint: 'module', run: () => { window.location.href = href; } })),
-    ];
-  }, [refreshAll, exportSnapshot, toggleFullscreen, scrollTo]);
+  const m = data.metrics;
+  const inScope = m.total - m.phases.cancelled;
+  const inFlight = m.phases.executing + m.phases.validating;
+  const waiting = m.phases['awaiting-approval'] + m.phases.blocked + m.phases.ready + m.phases.paused;
+  const top = counts.nextActions?.[0] ?? null;
+
+  const showSkeleton = state === 'loading' && !answered;
+  const showHardError = state === 'error' && !answered;
+  const empty = answered && !data.hasData;
 
   return (
-    <div ref={rootRef} className="mig-ops-shell min-h-screen space-y-5 p-4 lg:p-6">
-      {/* Theme-aware surface: dark navy in dark mode, near-white in light mode.
-          Remaps the hard-coded dark utility surfaces/text used across the center
-          so light mode is not a black canvas (mirrors the platform hndl-shell pattern). */}
-      <style>{`
-        .mig-ops-shell { background: var(--qg-dashboard-bg, #0a1020); }
-        .qg-theme-light .mig-ops-shell [class*="bg-black/"] { background-color: rgba(255,255,255,0.55) !important; }
-        .qg-theme-light .mig-ops-shell [class*="bg-[#0b1120]"],
-        .qg-theme-light .mig-ops-shell [class*="bg-[#070b18]"],
-        .qg-theme-light .mig-ops-shell [class*="bg-[#0a0f1e]"],
-        .qg-theme-light .mig-ops-shell [class*="bg-[#070b16]"] { background-color: rgba(255,255,255,0.86) !important; }
-        .qg-theme-light .mig-ops-shell [class*="border-white/"] { border-color: rgba(9,13,22,0.10) !important; }
-        .qg-theme-light .mig-ops-shell .text-white { color: var(--qg-dashboard-text) !important; }
-        .qg-theme-light .mig-ops-shell [class*="text-white/"] { color: var(--qg-dashboard-text-soft) !important; }
-        .qg-theme-light .mig-ops-shell .text-cyan-200,
-        .qg-theme-light .mig-ops-shell .text-cyan-300,
-        .qg-theme-light .mig-ops-shell .text-cyan-400 { color: #0e7490 !important; }
-        .qg-theme-light .mig-ops-shell .text-emerald-300,
-        .qg-theme-light .mig-ops-shell .text-emerald-400 { color: #047857 !important; }
-        .qg-theme-light .mig-ops-shell .text-amber-300,
-        .qg-theme-light .mig-ops-shell .text-amber-400 { color: #b45309 !important; }
-        .qg-theme-light .mig-ops-shell .text-red-300,
-        .qg-theme-light .mig-ops-shell .text-red-400 { color: #dc2626 !important; }
-        .qg-theme-light .mig-ops-shell .text-blue-300 { color: #1d4ed8 !important; }
-        .qg-theme-light .mig-ops-shell .text-violet-300 { color: #7c3aed !important; }
-        .qg-theme-light .mig-ops-shell input::placeholder { color: rgba(9,13,22,0.35) !important; }
-      `}</style>
-      {/* Header */}
-      <header className="flex flex-col gap-4 border-b border-white/10 pb-4 xl:flex-row xl:items-end xl:justify-between">
-        <div className="flex items-center gap-3">
-          <div className="grid h-11 w-11 place-items-center rounded-xl border border-cyan-400/30 bg-cyan-500/10 text-cyan-300 shadow-[0_0_28px_rgba(34,211,238,0.2)]">
-            <Rocket className="h-5 w-5" />
+    <IntelShell name="timeline-shell">
+      <div ref={rootRef} className="timeline-shell space-y-4">
+        <OrchThemeBridge scope="timeline-shell" />
+        <WorkflowRail activeStage="execution" />
+
+        <IntelHeader
+          title="Migration"
+          accent="Timeline"
+          subtitle="When your real migration work was recorded, approved, started, finished and verified — and what has to happen next."
+          icon={CalendarRange}
+          transport={transport}
+          lastVerifiedAt={lastVerifiedAt}
+          lastUpdated={answered ? data.generatedAt : null}
+        >
+          <HeaderButton onClick={() => setPaletteOpen(true)} icon={CommandIcon}>⌘K</HeaderButton>
+          <button
+            type="button"
+            onClick={ask}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/45 bg-violet-500/12 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-violet-200 transition hover:bg-violet-500/22 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300/70"
+          >
+            <Sparkles className="h-3.5 w-3.5" aria-hidden="true" /> Ask Sophia
+          </button>
+          <HeaderButton onClick={exportModel} icon={Download} disabled={!answered}>Export</HeaderButton>
+          <HeaderButton onClick={toggleFullscreen} icon={isFullscreen ? Minimize2 : Maximize2}>{isFullscreen ? 'Exit' : 'Full screen'}</HeaderButton>
+          <PrimaryButton onClick={() => void doRefresh()} icon={RefreshCw} spin={refreshing}>Refresh</PrimaryButton>
+        </IntelHeader>
+
+        {answered && transport !== 'stream' ? (
+          <ConnectionLostBanner lastGoodAt={data.generatedAt} error={error} onReconnect={() => void doRefresh()} transport={transport} lastVerifiedAt={lastVerifiedAt} />
+        ) : null}
+
+        {showHardError ? (
+          <HardErrorPanel
+            title="Migration Timeline Unavailable"
+            message="The orchestration snapshot could not be read. No dates or progress are shown rather than presenting an empty schedule as fact."
+            error={error}
+            onRetry={() => void doRefresh()}
+          />
+        ) : null}
+
+        {showSkeleton ? <SkeletonGrid cards={6} panels={2} /> : null}
+
+        {planId && answered ? (
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-cyan-400/30 bg-cyan-500/[0.06] px-3 py-2 text-[11px] text-white/70">
+            <span className="font-black uppercase tracking-wider text-cyan-300">Plan filter</span>
+            <span>{planName}{data.plans.some((plan) => plan.id === planId) ? '' : ' — no operational job references this plan'}</span>
+            <button type="button" onClick={clearPlan} className="ml-auto inline-flex min-h-[30px] items-center gap-1 rounded-md border border-white/12 px-2 text-[9.5px] font-black uppercase tracking-wider text-white/60 hover:bg-white/[0.06] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70">
+              <X className="h-3 w-3" aria-hidden="true" /> Show all plans
+            </button>
           </div>
-          <div>
-            <h1 className="text-2xl font-black uppercase leading-none tracking-tight text-white lg:text-[26px]">
-              Migration <span className="text-cyan-300">Operations Center</span>
-            </h1>
-            <p className="mt-1.5 text-[12px] font-medium text-white/45">
-              Enterprise PQC Migration Command Center · NIST SP 1800-38 · CNSA 2.0 · Evidence-Driven
-            </p>
-          </div>
-        </div>
+        ) : null}
 
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-[10px] uppercase tracking-widest text-white/30">Synced {relativeTime(scanner.generatedAt)}</span>
-          <span className={cn('flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[9px] font-black uppercase tracking-widest', live ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-300' : 'border-amber-400/40 bg-amber-500/10 text-amber-300')}>
-            <span className={cn('h-1.5 w-1.5 rounded-full', live ? 'animate-pulse bg-emerald-400' : 'bg-amber-300')} />
-            {loading ? 'Syncing' : live ? 'Live' : 'Snapshot'}
-          </span>
-          <HeaderButton onClick={() => setPaletteOpen(true)} icon={CommandIcon} title="Command palette (Ctrl/Cmd+K)">⌘K</HeaderButton>
-          <HeaderButton onClick={refreshAll} icon={RefreshCw} title="Refresh">Refresh</HeaderButton>
-          <HeaderButton onClick={exportSnapshot} icon={Download} title="Export snapshot">Export</HeaderButton>
-          <HeaderButton onClick={toggleFullscreen} icon={isFullscreen ? Minimize2 : Maximize2} title="Full screen">{isFullscreen ? 'Exit' : 'Full'}</HeaderButton>
-          <a href="/dashboard/live-migration" className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/50 bg-cyan-500/15 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-cyan-200 transition hover:bg-cyan-500/25">
-            <Play className="h-3.5 w-3.5" /> Start Migration
-          </a>
-        </div>
-      </header>
+        {empty ? (
+          <NoEvidenceState
+            icon={CalendarRange}
+            title="No Migration Work Recorded Yet"
+            body={`The timeline places real migration jobs on a time axis. None is recorded for this tenant${m.simulationsExcluded ? ` — ${m.simulationsExcluded} sandbox simulation(s) exist, but simulations never reach an agent and are not shown here` : ''}.`}
+            bullets={[
+              'Create a migration plan from your scanned assets in the Migration Planner — each selected asset becomes a migration job.',
+              'Record an approval decision on the plan. No agent takes work until a named person approves it.',
+              'Install a Migration Operator agent from the Agent Center so approved cutovers can be claimed and executed.',
+              'Start execution in Live Migration. Each job then appears here when it is started, completed and verified.',
+            ]}
+            actions={[
+              { href: '/dashboard/migration-planner', label: 'Open Migration Planner', primary: true },
+              { href: '/downloads', label: 'Agent Center' },
+              { href: '/dashboard/live-migration', label: 'Live Migration' },
+            ]}
+          />
+        ) : null}
 
-      {error && <div className="rounded-xl border border-red-500/25 bg-red-500/10 p-4 text-sm font-semibold text-red-300">{error}</div>}
+        {answered && data.hasData ? (
+          <>
+            <ModuleBrief
+              what={<>Every recorded migration plan and job on one time axis — when it was recorded, approved, started and finished, and whether the change was verified.</>}
+              why={<>A completed job is not a migrated asset. The time view shows whether work is moving, where it has stalled, and which recorded dates have passed — so the next decision is made on evidence, not on an estimate.</>}
+              next={top
+                ? { label: top.hrefLabel, href: top.href, detail: <><strong className="text-white/90">{top.title}.</strong> {top.detail}</>, tone: top.tone === 'calm' ? 'calm' : top.tone === 'action' ? 'action' : 'warning' }
+                : { label: 'Live Migration', href: '/dashboard/live-migration', detail: counts.reason || 'Open Live Migration to follow the current work.' }}
+              scope={<>{data.scopeNote}{data.jobsTruncated ? ' The job list is capped at the 2,000 most recently updated rows.' : ''}</>}
+            />
 
-      {loading && !hasEvidence ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-          {Array.from({ length: 15 }).map((_, i) => <div key={i} className="h-28 animate-pulse rounded-xl border border-white/10 bg-white/[0.03]" />)}
-        </div>
-      ) : (
-        <>
-          <div id="sec-banner"><ExecutiveBanner metrics={banner} /></div>
-          <div id="sec-kpis"><KpiHeader kpis={kpis} /></div>
-          <ComplianceStrip />
-          <div id="sec-waves"><WaveOverview waves={waves} activeId={activeWaveObj?.id ?? null} /></div>
-          <div id="sec-gates"><PhaseGates gates={gates} /></div>
-          <div id="sec-timeline"><TimelineSection cards={timelineCards} onSelect={selectTimeline} /></div>
-          <div id="sec-twin"><DigitalTwinPanel twin={twin} /></div>
-          <div id="sec-telemetry"><LiveTelemetry jobs={liveJobs} live={sseConnected} onSelect={selectJob} /></div>
-          <div id="sec-ai"><AiRecommendationsPanel recs={recs} loading={recsLoading} dismissed={dismissed} onDismiss={dismissRec} onExplain={explainRec} /></div>
-          <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-            <div id="sec-health"><HealthDashboard metrics={health} score={scanner.summary.qScore} /></div>
-            <div id="sec-risk"><RiskBurndownPanel data={riskBurndown} /></div>
-          </div>
-          <div id="sec-assets"><AssetTable rows={assetRows} onSelect={selectAsset} /></div>
-          <div id="sec-deps"><DependencyGraphPanel graph={depGraph} onSelectNode={selectNode} /></div>
-          <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-            <div id="sec-activity"><ActivityFeed events={activity} /></div>
-            <div id="sec-audit"><AuditTrailPanel rows={audit} /></div>
-          </div>
-        </>
-      )}
+            <section aria-label="Timeline metrics" className="grid grid-cols-2 gap-2.5 lg:grid-cols-3 xl:grid-cols-6">
+              <KpiCard label="Completed" value={fmtPct(m.completionPct)} detail={`${fmtInt(m.completed)} of ${fmtInt(inScope)} jobs (cancelled excluded)`} color={CYAN} footnote="executor-reported; not proof of migration" />
+              <KpiCard label="Verified" value={fmtPct(m.verifiedPct)} detail={`${fmtInt(m.verified)} with a passing validation record`} color={GREEN} footnote={`of the same ${fmtInt(inScope)} jobs`} />
+              <KpiCard label="Unverified completions" value={fmtInt(m.completedUnverified + m.completedValidationFailed)} detail={`${fmtInt(m.completedUnverified)} no passing record · ${fmtInt(m.completedValidationFailed)} validation failed`} color={m.completedUnverified + m.completedValidationFailed > 0 ? AMBER : GREEN} />
+              <KpiCard label="In flight" value={fmtInt(inFlight)} detail={`running or validating on an agent · ${fmtInt(m.staleExecutions)} executor silent`} color={m.staleExecutions > 0 ? RED : CYAN} />
+              <KpiCard label="Waiting" value={fmtInt(waiting)} detail={`${fmtInt(m.phases['awaiting-approval'])} approval · ${fmtInt(m.phases.blocked)} blocked/held · ${fmtInt(m.phases.ready)} ready · ${fmtInt(m.phases.paused)} paused`} color={waiting > 0 ? AMBER : GREEN} />
+              <KpiCard
+                label="Recorded schedule"
+                value={data.plans.length ? `${fmtInt(model.scheduleRecorded)}/${fmtInt(data.plans.length)}` : '—'}
+                detail={data.plans.length ? `plans with a scheduled start · ${fmtInt(m.overduePlans ?? 0)} passed with nothing started` : 'no migration plan recorded'}
+                color={(m.overduePlans ?? 0) > 0 ? AMBER : SLATE}
+                footnote="no target completion date is recorded by the platform"
+              />
+            </section>
 
-      <DetailsDrawer selection={selection} onClose={() => setSelection(null)} />
-      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
-    </div>
-  );
-}
+            <div className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(0,1fr)]">
+              <ScheduleGantt model={model} window={timeWindow} onWindow={setTimeWindow} onOpen={setSelectedJobId} />
+              <Panel className="p-4 sm:p-5">
+                <h2 className="mb-1 text-[11px] font-black uppercase tracking-[0.18em] text-white/70">What must happen next — and why</h2>
+                <p className="mb-3 text-[10.5px] leading-relaxed text-white/50">Ranked by urgency over every operational job. Each job counts once, under the first rule it meets.</p>
+                <NextActionsList actions={counts.nextActions} unavailableReason={counts.reason} onFocus={focusAction} />
+              </Panel>
+            </div>
 
-function HeaderButton({ onClick, icon: Icon, title, children }: { onClick: () => void; icon: ComponentType<{ className?: string }>; title: string; children: ReactNode }) {
-  return (
-    <button type="button" onClick={onClick} title={title} className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-white/60 transition hover:border-cyan-400/40 hover:text-cyan-300">
-      <Icon className="h-3.5 w-3.5" />{children}
-    </button>
+            <div id="tl-tabs">
+              <IntelTabs<TabKey>
+                idPrefix="tl"
+                active={tab}
+                onChange={setTab}
+                tabs={[
+                  { key: 'chronology', label: 'Chronology' },
+                  { key: 'phases', label: 'Plans & phases' },
+                  { key: 'jobs', label: 'Jobs', badge: m.phases.failed + m.staleExecutions + m.completedValidationFailed || undefined },
+                  { key: 'throughput', label: 'Throughput' },
+                ]}
+              />
+              <div role="tabpanel" id={`tl-panel-${tab}`} aria-labelledby={`tl-tab-${tab}`} className="pt-3">
+                <Panel className="p-4 sm:p-5">
+                  {tab === 'chronology' ? <ChronologyPanel days={chronology.days} total={chronology.total} capped={chronology.capped} onOpen={setSelectedJobId} /> : null}
+                  {tab === 'phases' ? <PhasesPanel snapshot={data} planId={planId} /> : null}
+                  {tab === 'throughput' ? <ThroughputPanel snapshot={data} /> : null}
+                  {tab === 'jobs' ? (
+                    <>
+                      {activeAction ? (
+                        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-500/[0.06] px-3 py-2 text-[11px] text-white/70">
+                          <span className="font-black text-cyan-300">Showing:</span> {activeAction.title}
+                          <button type="button" onClick={() => setActionFilter(null)} className="ml-auto inline-flex items-center gap-1 rounded-md border border-white/12 px-2 py-1 text-[9.5px] font-black uppercase tracking-wider text-white/60 hover:bg-white/[0.06]">
+                            <X className="h-3 w-3" aria-hidden="true" /> Clear
+                          </button>
+                        </div>
+                      ) : null}
+                      <JobTable
+                        idPrefix="tl-jobs"
+                        jobs={tableJobs}
+                        onOpen={setSelectedJobId}
+                        variant="time"
+                        statusFilter={statusFilter}
+                        onStatusFilter={setStatusFilter}
+                        caption={<>{fmtInt(tableJobs.length)} listed job{tableJobs.length === 1 ? '' : 's'}{data.jobsListed < m.total ? ` (the ${fmtInt(data.jobsListed)} most urgent of ${fmtInt(m.total)})` : ''}</>}
+                        emptyText="No listed job matches these filters."
+                      />
+                    </>
+                  ) : null}
+                </Panel>
+              </div>
+            </div>
+          </>
+        ) : null}
+
+        {answered ? (
+          <SourceHealth
+            sources={sourceRows(data)}
+            note={<>Only recorded timestamps are placed: job recorded / started / completed, validation passed, plan approval and the plan's recorded scheduled start. {data.jobsTruncated ? 'The job read was capped at 2,000 rows.' : ''}</>}
+          />
+        ) : null}
+
+        <SourceNote>
+          Job, plan, validation and event records come from the PQC orchestration snapshot (migration_jobs, migration_plans, migration_validation_logs, migration_events, scanner_agents) — the same model PQC Orchestration renders. Changes are executed and validated through Live Migration; this page never writes.
+        </SourceNote>
+
+        <JobDrawer jobId={selectedJobId} jobs={data.jobs} onClose={() => setSelectedJobId(null)} />
+        <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
+      </div>
+    </IntelShell>
   );
 }

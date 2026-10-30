@@ -53,6 +53,23 @@ export type EvidenceSource =
   | 'exposure'
   | 'security-event'
 
+/**
+ * HOW a transport fact was obtained — the distinction between what clients
+ * actually negotiate and what a server merely accepts.
+ *
+ *   live-traffic      a runtime agent saw this in a real connection
+ *   scanner-probe     an active scan offered it and the server accepted it
+ *                     (e.g. TLS 1.0 accepted when ONLY TLS 1.0 was offered)
+ *   inventory-record  read from a stored record (certificate store)
+ */
+export type ObservationBasis = 'live-traffic' | 'scanner-probe' | 'inventory-record'
+
+export function observationBasisFor(source: EvidenceSource): ObservationBasis {
+  if (source === 'runtime-telemetry') return 'live-traffic'
+  if (source === 'certificate-store') return 'inventory-record'
+  return 'scanner-probe'
+}
+
 export interface EvidenceRef {
   source: EvidenceSource
   /** The row that carries the statement - clickable provenance. */
@@ -89,6 +106,8 @@ export interface TlsObservation {
   severity: Severity | null
   observedAt: string | null
   evidence: EvidenceRef
+  /** How this fact was obtained. A merged fact keeps the strongest basis (live traffic wins). */
+  basis: ObservationBasis
   /**
    * Handshakes represented by this observation, when the telemetry actually
    * carries a count. `null` means the source recorded a configuration fact, not
@@ -164,6 +183,13 @@ export interface TlsEndpoint {
    * percentage rather than diluting the denominator.
    */
   hasTransportEvidence: boolean
+  /**
+   * How this endpoint's protocol / suite / key-agreement facts were obtained.
+   * `scanner-probe` means "the server ACCEPTS these when offered", not "clients
+   * negotiate these"; only `live-traffic` describes real connections.
+   * null when there is no transport evidence.
+   */
+  transportBasis: 'live-traffic' | 'scanner-probe' | 'mixed' | null
 }
 
 /* ------------------------------------------------------------------ */

@@ -147,9 +147,10 @@ export default defineConfig(({mode}) => {
   // so they are never exposed to the browser bundle. .env is authoritative in
   // dev, so ALWAYS override (no `!process.env[key]` guard) — otherwise a
   // changed credential/plan id stays pinned to the first value the server saw
-  // and edits appear to "not take" until a full restart.
+  // and edits appear to "not take" until a full restart. COPILOT_BYOK_SECRET
+  // seals tenants' own model API keys (Sophia BYOK) — server-side only.
   for (const key of Object.keys(env)) {
-    if (key.startsWith('PAYPAL_') || key === 'APP_ORIGIN' || key === 'PUBLIC_APP_ORIGIN') {
+    if (key.startsWith('PAYPAL_') || key === 'APP_ORIGIN' || key === 'PUBLIC_APP_ORIGIN' || key === 'COPILOT_BYOK_SECRET') {
       if (env[key]) process.env[key] = env[key];
     }
   }

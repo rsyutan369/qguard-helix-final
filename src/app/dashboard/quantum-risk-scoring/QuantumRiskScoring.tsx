@@ -20,6 +20,8 @@ import {
   RED, ScoreDial, SectionHeading, SkeletonGrid, SourceNote, StatusPill,
   fmtInt, fmtPct, fmtScore, levelHex, relativeTime,
 } from '../_components/intel/kit';
+import { ModuleBrief, SourceHealth as EvidenceSources } from '../_components/intel/kit';
+import { quantumRiskNextStep } from '../_components/intel/next-steps';
 
 type TabKey = 'overview' | 'assets' | 'drivers';
 
@@ -39,7 +41,8 @@ type TabKey = 'overview' | 'assets' | 'drivers';
  * and the provenance is printed on the page so a reader can check.
  */
 export default function QuantumRiskScoring() {
-  const { data, state, error, live, lastGoodAt, refresh, reconnect } = useQuantumRisk();
+  const { data, state, error, transport, lastVerifiedAt, lastGoodAt, refreshing, refresh, reconnect } = useQuantumRisk();
+  const nextStep = useMemo(() => (data ? quantumRiskNextStep(data) : null), [data]);
 
   const [tab, setTab] = useState<TabKey>('overview');
   const [filters, setFilters] = useState<RiskAssetFilters>(EMPTY_RISK_FILTERS);
@@ -98,9 +101,9 @@ export default function QuantumRiskScoring() {
         accent="Risk Scoring"
         subtitle="See how exposed the estate is to a cryptographically relevant quantum computer, which assets carry that exposure, what drives it, and what would reduce it."
         icon={Target}
-        live={live}
-        lastUpdated={data?.generatedAt ?? lastGoodAt}
-        connecting={state === 'loading' && !data}
+        transport={transport}
+        lastVerifiedAt={lastVerifiedAt}
+        lastUpdated={data?.generatedAt ?? null}
       >
         <HeaderButton onClick={() => setShowFilters((v) => !v)} icon={Filter} active={showFilters}>Filters</HeaderButton>
         <HeaderButton onClick={exportCsv} icon={Download} disabled={!data || assets.length === 0}>Export</HeaderButton>
@@ -111,11 +114,11 @@ export default function QuantumRiskScoring() {
         >
           <Sparkles className="h-3.5 w-3.5" aria-hidden="true" /> Ask Sophia
         </button>
-        <PrimaryButton onClick={() => void refresh(true)} icon={RefreshCw} spin={state === 'loading'}>Refresh</PrimaryButton>
+        <PrimaryButton onClick={() => void refresh(true)} icon={RefreshCw} spin={refreshing}>Refresh</PrimaryButton>
       </IntelHeader>
 
-      {data && !live && state !== 'loading' ? (
-        <ConnectionLostBanner lastGoodAt={lastGoodAt} error={error} onReconnect={reconnect} />
+      {data && transport !== 'stream' ? (
+        <ConnectionLostBanner lastGoodAt={lastGoodAt} error={error} onReconnect={reconnect} transport={transport} lastVerifiedAt={lastVerifiedAt} />
       ) : null}
 
       {showHardError ? (
@@ -148,6 +151,15 @@ export default function QuantumRiskScoring() {
 
       {data && data.hasData ? (
         <>
+          {nextStep ? (
+            <ModuleBrief
+              what={<>How exposed the estate is to a cryptographically relevant quantum computer — the canonical score from Quantum Readiness, decomposed per asset and per factor so every point is traceable.</>}
+              why={<>Risk decides order. The assets with the highest quantum risk and the longest-lived data are the ones a harvest-now, decrypt-later adversary targets first, so they are the ones to migrate first.</>}
+              next={{ label: nextStep.label, href: nextStep.href, detail: nextStep.detail, tone: nextStep.tone }}
+              scope={<>{data.coverage.assetsAssessed} asset(s) assessed · {data.coverage.assetsUnassessed} without cryptographic evidence ({data.coverage.coveragePct}% coverage).</>}
+            />
+          ) : null}
+
           <IntelTabs<TabKey>
             idPrefix="qrs"
             active={tab}
@@ -226,6 +238,7 @@ export default function QuantumRiskScoring() {
             </div>
           ) : null}
 
+          {data.reads?.length ? <EvidenceSources sources={data.reads} /> : null}
           <SourceNote>{data.evidence.note}</SourceNote>
         </>
       ) : null}

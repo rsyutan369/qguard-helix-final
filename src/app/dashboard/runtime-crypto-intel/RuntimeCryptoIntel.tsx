@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { AlertTriangle, Download, Filter, Microscope, RefreshCw, WifiOff } from 'lucide-react';
+import { AlertTriangle, Download, Filter, Microscope, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/auth-context';
 import { askSophia } from '@/lib/sophia-bridge';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 import { Panel } from '../_components/executive/primitives';
 import { useRuntimeCryptoIntel } from '@/hooks/use-runtime-crypto-intel';
+import { ConnectionLostBanner, LiveStatus, ModuleBrief, SourceHealth } from '../_components/intel/kit';
 import type { RuntimeEvent, RuntimeIssue } from '@/lib/runtime-crypto/runtime-intelligence';
 import {
   AttentionRequired, CoverageStrip, HndlRiskPanel, LiveCryptoActivity, MigrationVerificationPanel,
@@ -19,7 +20,7 @@ import {
 import { RuntimeDetailDrawer, type DrawerSelection } from './_runtime-drawer';
 import {
   EMPTY_FILTERS, activeFilterCount, downloadTextFile, eventsToCsv, filterEvents, filterIssues,
-  filtersFromSearchParams, filtersToSearchParams, relativeTime, sophiaContextFor, type RuntimeFilters,
+  filtersFromSearchParams, filtersToSearchParams, runtimeNextStep, sophiaContextFor, type RuntimeFilters,
 } from './_runtime-lib';
 
 /**
@@ -64,7 +65,8 @@ export default function RuntimeCryptoIntel() {
   const [explainerOpen, setExplainerOpen] = useState(false);
   const [queueState, setQueueState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle');
 
-  const { data, state, error, live, lastGoodAt, refresh, reconnect } = useRuntimeCryptoIntel(filters.window);
+  const { data, state, error, live, transport, lastVerifiedAt, lastGoodAt, refreshing, refresh, reconnect } = useRuntimeCryptoIntel(filters.window);
+  const nextStep = useMemo(() => (data ? runtimeNextStep(data) : null), [data]);
 
   /* ---- URL query-state: filters survive reload and sharing --------- */
   const filterQuery = useMemo(() => filtersToSearchParams(filters), [filters]);
@@ -130,7 +132,7 @@ export default function RuntimeCryptoIntel() {
   const showSkeleton = state === 'loading' && !data;
   const showHardError = state === 'error' && !data;
   const noTelemetry = Boolean(data && data.telemetry.mode === 'none');
-  const connectionLost = Boolean(data && !live && state !== 'loading');
+  const connectionLost = Boolean(data && transport !== 'stream');
   const filterCount = activeFilterCount(filters);
 
   return (
@@ -178,23 +180,7 @@ export default function RuntimeCryptoIntel() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex flex-col items-end">
-            <span
-              className={cn(
-                'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[9px] font-black uppercase tracking-widest',
-                live
-                  ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-300'
-                  : 'border-amber-400/40 bg-amber-500/10 text-amber-300',
-              )}
-              role="status"
-            >
-              <span className={cn('h-1.5 w-1.5 rounded-full', live ? 'animate-pulse bg-emerald-400' : 'bg-amber-300')} aria-hidden="true" />
-              {state === 'loading' && !data ? 'Connecting' : live ? 'Live' : 'Connection lost'}
-            </span>
-            <span className="mt-1 font-mono text-[9.5px] text-white/30">
-              Last updated: {relativeTime(data?.generatedAt ?? lastGoodAt)}
-            </span>
-          </div>
+          <LiveStatus transport={transport} lastVerifiedAt={lastVerifiedAt} generatedAt={data?.generatedAt ?? null} />
 
           <button
             type="button"
@@ -222,29 +208,14 @@ export default function RuntimeCryptoIntel() {
             onClick={() => void refresh(true)}
             className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/50 bg-cyan-500/15 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-cyan-200 transition hover:bg-cyan-500/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
           >
-            <RefreshCw className={cn('h-3.5 w-3.5', state === 'loading' && 'animate-spin')} aria-hidden="true" /> Refresh
+            <RefreshCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin')} aria-hidden="true" /> Refresh
           </button>
         </div>
       </header>
 
       {/* ---- Connection lost (§20) — never present stale data as live --- */}
       {connectionLost && data ? (
-        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
-          <WifiOff className="h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
-          <div className="min-w-0 flex-1">
-            <div className="text-[11.5px] font-black text-amber-200">Connection lost — this is the last successful sync, not live data</div>
-            <div className="truncate text-[10px] text-white/45">
-              Last update {relativeTime(lastGoodAt)}{error ? ` · ${error}` : ''}
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={reconnect}
-            className="rounded border border-amber-400/40 bg-amber-500/10 px-3 py-1.5 text-[9px] font-black uppercase tracking-wider text-amber-200 transition hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/70"
-          >
-            Reconnect
-          </button>
-        </div>
+        <ConnectionLostBanner lastGoodAt={lastGoodAt} error={error} onReconnect={reconnect} transport={transport} lastVerifiedAt={lastVerifiedAt} />
       ) : null}
 
       {/* ---- Hard error -------------------------------------------------- */}
@@ -291,6 +262,15 @@ export default function RuntimeCryptoIntel() {
       {/* ---- Main ---------------------------------------------------------- */}
       {data && !noTelemetry ? (
         <>
+          {nextStep ? (
+            <ModuleBrief
+              what={<>The cryptography your systems actually negotiate while running — protocols, key exchange, ciphers and certificates observed by agents and connectors in {data.window.label.toLowerCase()}.</>}
+              why={<>A scan says what is configured; runtime says what is used. A classical fallback after a cutover, a downgrade or harvestable traffic only shows up here — and a migration is only proven when the new algorithm is observed in operation.</>}
+              next={{ label: nextStep.label, href: nextStep.href, detail: nextStep.detail, tone: nextStep.tone }}
+              scope={<>{data.telemetry.eventsInWindow} observation(s) from {data.telemetry.coveredAssets} asset(s) · {data.telemetry.activeAgents} of {data.telemetry.totalAgents} agent(s) reporting{data.telemetry.truncated ? ' · event read capped at the most recent rows' : ''}.</>}
+            />
+          ) : null}
+
           {/* Tabs (§18) */}
           <div role="tablist" aria-label="Runtime intelligence views" className="flex flex-wrap gap-1.5 border-b border-white/10 pb-1">
             {TABS.map((entry) => (
@@ -398,6 +378,7 @@ export default function RuntimeCryptoIntel() {
             </div>
           ) : null}
 
+          {data.reads?.length ? <SourceHealth sources={data.reads} /> : null}
           <p className="px-1 pb-2 text-[10px] leading-relaxed text-white/25">{data.evidence.note}</p>
         </>
       ) : null}

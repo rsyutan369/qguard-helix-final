@@ -1,0 +1,447 @@
+# Qguard Helix — Deep Technical Audit, Data Integrity Validation, and Enterprise UI/UX Enhancement
+
+## Objective
+
+Perform a comprehensive, end-to-end technical audit, validation, and improvement of the following seven Qguard Helix dashboard modules. Verify that every page is correctly integrated with the actual backend, database, APIs, hooks, Server-Sent Events (SSE), real-time event streams, and other relevant data sources.
+
+The primary objective is to ensure that all displayed metrics, asset inventories, statuses, findings, workflows, risk scores, migration progress, and recommendations accurately reflect the user's **actual assets, real system state, and verified operational events**.
+
+After completing the technical audit, improve each module's visual presentation, workflow representation, usability, and customer experience to achieve a polished, premium, modern, and enterprise-grade cybersecurity platform.
+
+**Important:** Do not merely redesign the frontend. Investigate, validate, repair, and test the complete data flow from the source of truth to the backend, frontend hooks, real-time updates, calculations, and final UI rendering.
+
+---
+
+## 1. Pages to Audit
+
+Review all seven pages individually and validate their integration with related Qguard Helix modules.
+
+1. Migration Timeline  
+   `http://localhost:3000/dashboard/migration-timeline`
+
+2. PQC Orchestration  
+   `http://localhost:3000/dashboard/pqc-orchestration`
+
+3. Crypto Agility  
+   `http://localhost:3000/dashboard/crypto-agility`
+
+4. Runtime Crypto Intelligence  
+   `http://localhost:3000/dashboard/runtime-crypto-intel`
+
+5. Telemetry Correlation  
+   `http://localhost:3000/dashboard/telemetry-correlation`
+
+6. Cryptographic Drift Detection  
+   `http://localhost:3000/dashboard/drift`
+
+7. Quantum Risk Scoring  
+   `http://localhost:3000/dashboard/quantum-risk-scoring`
+
+Also inspect any shared components, backend routes, services, database tables, migrations, hooks, event publishers, and related modules that supply data to these pages.
+
+Do not assume that a page is correctly implemented simply because it loads successfully or displays information.
+
+## 2. Perform a Deep Technical Audit
+
+### A. Frontend and backend integration
+
+For every page, trace the complete data flow:
+
+- Frontend components and page initialization.
+- React hooks, including `useState`, `useEffect`, `useMemo`, `useCallback`, and custom hooks where applicable.
+- API clients, request parameters, authentication, authorization, and error handling.
+- Express backend routes, controllers, services, and database queries.
+- Supabase database records, Realtime subscriptions, and Row Level Security (RLS) policies where applicable.
+- SSE connections, WebSockets, polling mechanisms, and event subscriptions used by the existing architecture.
+- Loading states, empty states, error states, retry behavior, and component cleanup.
+- Data transformation, normalization, aggregation, filtering, sorting, and rendering.
+
+Verify that each page consumes the correct data source and that the backend returns the expected schema.
+
+Identify and repair:
+
+- Broken or incomplete API integrations.
+- Incorrect endpoint URLs or request parameters.
+- Missing or incorrectly configured React hooks.
+- Stale closures, stale cached values, race conditions, and duplicated requests.
+- Memory leaks caused by unclosed SSE connections or subscriptions.
+- Incorrect event listeners, missing cleanup functions, and duplicate subscriptions.
+- Authentication or RLS failures that silently prevent users from accessing their authorized data.
+- Hardcoded metrics, mock responses, placeholder records, and fabricated operational statuses.
+- Incorrect fallback logic that presents unavailable information as verified information.
+
+Reuse existing project architecture and shared services wherever appropriate instead of introducing unnecessary duplicate implementations.
+
+### B. Real-time data and SSE validation
+
+Verify whether each module requires real-time updates and whether its implementation is functioning correctly.
+
+For every applicable SSE, WebSocket, or Supabase Realtime integration, verify:
+
+- The connection is established against the correct backend endpoint.
+- The authenticated user receives only events they are authorized to access.
+- Events are associated with the correct asset, tenant, assessment, migration job, or operational task.
+- Incoming events are validated and mapped to the correct frontend state.
+- New events update the UI without requiring a manual page refresh.
+- Reconnection and retry mechanisms work after temporary network or server failures.
+- Duplicate, delayed, and out-of-order events are handled safely.
+- Event subscriptions are cleaned up when components unmount or users navigate away.
+- Connection health and last-event timestamps are observable.
+- The UI distinguishes live updates from cached, historical, delayed, or unavailable data.
+
+If the existing implementation uses polling rather than SSE, determine whether polling is appropriate before changing it. Do not introduce SSE merely for architectural consistency if another mechanism is better suited to the existing system.
+
+**Never simulate a live connection or fabricate incoming events to make a module appear operational.**
+
+If real-time functionality is unavailable, display a truthful connection or data-freshness state and identify the missing backend capability.
+
+## 3. Validate Actual Asset Data and Status Accuracy
+
+Treat the existing authorized database records and verified operational events as the source of truth.
+
+For each module, verify that its displayed information corresponds to the user's actual assets and their current or explicitly timestamped status.
+
+Audit the following:
+
+- Total discovered assets and asset identifiers.
+- Cryptographic libraries, algorithms, certificates, keys, protocols, endpoints, and other supported cryptographic inventory.
+- Classical, hybrid, and post-quantum cryptographic implementations.
+- Actual migration status, completed steps, failed operations, and pending tasks.
+- Runtime cryptographic observations and verified events.
+- Cryptographic configuration drift and its baseline.
+- Quantum risk scores and their underlying findings.
+- Asset ownership, tenant boundaries, and assessment scope.
+- Timestamps, event ordering, data freshness, and historical records.
+- Duplicate findings and inconsistent asset counts across related modules.
+
+Verify that all asset totals, percentages, risk distributions, status badges, charts, tables, and summary cards are derived from the appropriate underlying records.
+
+Do not assume that every asset supports every capability. Apply appropriate validation and clearly distinguish confirmed, inferred, unknown, and unavailable information.
+
+Where multiple modules consume the same underlying data, establish consistent asset identity, status definitions, and aggregation rules. Reuse shared data services or selectors where appropriate to avoid conflicting results.
+
+Never mark an asset as protected, migrated, compliant, or quantum-safe unless the relevant evidence and validation criteria support that status.
+
+## 4. Module-Specific Functional Validation
+
+### A. Migration Timeline
+
+Verify that the timeline represents actual migration plans, dependencies, milestones, and execution progress.
+
+- Display real migration tasks and their current statuses.
+- Validate start dates, target dates, dependencies, blockers, and completion timestamps.
+- Distinguish planned, queued, running, blocked, failed, completed, and cancelled tasks where supported.
+- Ensure progress percentages are calculated from actual task states.
+- Identify overdue milestones and dependency conflicts accurately.
+- Connect timeline entries to the corresponding assets and migration operations.
+- Make it easy to identify what must happen next and why.
+
+### B. PQC Orchestration
+
+Validate the complete orchestration workflow, including task execution, dependencies, policy enforcement, and operational outcomes.
+
+- Display actual orchestration jobs and execution states.
+- Show the relationship between assets, migration tasks, cryptographic changes, and validation steps.
+- Verify job submission, progress updates, completion, and failure handling.
+- Surface failed tasks, retry eligibility, dependency blockers, and actionable error details.
+- Ensure that the UI never reports successful migration before the operation and required validation have completed.
+- Make execution history and audit evidence accessible.
+
+Where applicable, validate migration paths from RSA, ECDSA, and ECDH to appropriate post-quantum or hybrid alternatives, using the correct cryptographic roles and supported algorithms.
+
+For example, ML-KEM is a key-encapsulation mechanism, while ML-DSA and SLH-DSA are digital-signature schemes. Do not incorrectly represent key encapsulation as a signature operation.
+
+### C. Crypto Agility
+
+Validate the platform's ability to inventory, evaluate, and manage cryptographic configurations and supported algorithm transitions.
+
+- Display actual algorithm and protocol usage where collected.
+- Identify cryptographic dependencies and compatibility constraints.
+- Show supported replacement algorithms and migration options.
+- Distinguish configured, detected, approved, deprecated, and unsupported algorithms using explicit status definitions.
+- Verify policy enforcement and configuration-change tracking.
+- Identify dependencies that could prevent a safe transition.
+- Show evidence supporting recommendations and readiness indicators.
+
+Do not label an algorithm or system quantum-safe solely because a particular algorithm appears in a configuration record.
+
+### D. Runtime Crypto Intelligence
+
+Validate that runtime intelligence is based on actual collected observations rather than fabricated events.
+
+- Display real observations with timestamps and source identifiers.
+- Associate events with the correct asset, process, endpoint, service, or cryptographic component where available.
+- Show the algorithm, protocol, certificate, or cryptographic operation only when supported by the collected evidence.
+- Distinguish observed activity from inferred intelligence.
+- Surface collection errors, stale observations, and missing instrumentation.
+- Verify that runtime findings link to relevant assets and remediation actions.
+
+Do not invent runtime events or claim visibility into systems that are not instrumented.
+
+### E. Telemetry Correlation
+
+Validate the event-correlation engine and its relationship to the underlying telemetry sources.
+
+- Verify event ingestion, normalization, deduplication, and correlation logic.
+- Show which events, assets, findings, or rules contributed to each correlation.
+- Preserve timestamps, source references, and evidence provenance.
+- Validate correlation windows, event relationships, and severity calculations.
+- Prevent unrelated events from being grouped into misleading incidents.
+- Distinguish confirmed relationships from suspected or heuristic correlations.
+- Ensure correlated findings link back to their original records.
+
+Where practical, provide an explainable view of why events were correlated, what evidence supports the relationship, and what action the customer should take next.
+
+### F. Cryptographic Drift Detection
+
+Verify that drift findings compare actual observed configurations against the correct approved baseline or reference state.
+
+- Display the affected asset and cryptographic component.
+- Identify the expected configuration and observed configuration.
+- Show when the drift was first detected and when it was last observed.
+- Distinguish new, ongoing, resolved, accepted, and unverified findings where supported.
+- Validate severity and risk calculations.
+- Prevent resolved drift from remaining active because of stale frontend state.
+- Provide traceability to the originating observation and remediation workflow.
+
+Never generate a drift finding without a valid baseline and supporting evidence.
+
+### G. Quantum Risk Scoring
+
+Audit the complete risk-scoring pipeline, including data inputs, scoring rules, weighting, aggregation, and presentation.
+
+- Identify the actual inputs used in each asset or organizational risk score.
+- Verify the scoring formula and all weighting factors.
+- Ensure that missing or stale data is handled explicitly.
+- Prevent duplicate findings from inflating risk scores.
+- Distinguish inherent risk, exposure, mitigation, and residual risk where the existing methodology supports them.
+- Ensure that organization-level scores correctly aggregate eligible asset-level results.
+- Provide an explanation of the principal factors contributing to each score.
+- Verify that changes in underlying findings produce the expected score updates.
+
+Document the scoring methodology and test boundary conditions, including zero assets, missing inputs, duplicate records, and extreme values.
+
+Do not invent a new risk formula or silently change established scoring rules. If the existing methodology is incorrect or undocumented, propose and implement a justified, testable correction that preserves compatibility where possible.
+
+## 5. Improve Visual Workflows and Customer Understanding
+
+Once the functional audit is complete, redesign the presentation of all seven modules to make their purpose, workflows, and outcomes immediately understandable to cybersecurity teams, IT administrators, and executive stakeholders.
+
+Use a consistent, premium enterprise design language aligned with the existing Qguard Helix application.
+
+### Visual design requirements
+
+- Clean, modern, enterprise-grade dashboard layouts.
+- Consistent typography, spacing, iconography, cards, charts, and status indicators.
+- Clear visual hierarchy between executive summaries, detailed evidence, and operational actions.
+- Professional light-theme styling consistent with the existing product.
+- Coordinated light-blue and purple accents where appropriate.
+- Subtle borders, restrained shadows, polished surfaces, and consistent corner radii.
+- Responsive layouts for desktop, laptop, and tablet.
+- Accessible contrast, readable labels, keyboard navigation, and clear interaction states.
+- Consistent loading skeletons, empty states, error messages, and freshness indicators.
+
+Avoid excessive gradients, oversized cards, distracting effects, unnecessary decoration, and dense visualizations that obscure important information.
+
+### Workflow and process visualization
+
+Where appropriate, introduce clear visual representations such as:
+
+- Interactive workflow diagrams.
+- Asset-to-finding relationship graphs.
+- Migration dependency graphs.
+- Timeline and milestone views.
+- Event-correlation diagrams.
+- Expected-versus-observed configuration comparisons.
+- Risk-contribution breakdowns.
+- Status distribution charts.
+- Step-by-step operational flows.
+- Expandable evidence and remediation details.
+
+For example, the PQC Orchestration page should make it easy to understand how an asset moves from discovery through assessment, planning, migration, validation, and monitoring.
+
+The Telemetry Correlation page should clearly illustrate how source events are normalized, correlated, and converted into actionable findings.
+
+The Quantum Risk Scoring page should explain which assets and findings contribute to the overall score and why.
+
+Use the visual representation that best explains each module's actual functionality. Do not force every page into the same generic workflow layout.
+
+### Animation and motion
+
+Introduce subtle, purposeful animations where they improve comprehension:
+
+- Smooth transitions when statuses change.
+- Animated progress indicators for genuine ongoing operations.
+- Carefully controlled node or connection animations in live workflows.
+- Expandable evidence panels and contextual details.
+- Gentle transitions between filters, tabs, and visualization states.
+- Lightweight hover and focus effects.
+
+Animations must reflect real application state. Do not animate completed operations as if they were running, or display moving telemetry and workflow connections without corresponding events.
+
+Respect reduced-motion preferences and avoid unnecessary animation that affects performance or accessibility.
+
+## 6. Improve Usability and Operational Clarity
+
+Each module should help users answer five questions:
+
+1. **What am I looking at?** — Explain the module's purpose in plain language.
+2. **What is happening now?** — Show actual statuses, progress, and data freshness.
+3. **Why does it matter?** — Explain the security or operational impact.
+4. **What evidence supports this?** — Provide traceable findings and source records.
+5. **What should I do next?** — Present relevant recommendations or supported actions.
+
+Where appropriate, provide:
+
+- Search and filtering.
+- Sorting and pagination.
+- Asset and finding drill-downs.
+- Contextual tooltips and concise explanations.
+- Actionable remediation recommendations.
+- Links to related Qguard Helix modules.
+- Export options using existing supported functionality.
+- Confirmation dialogs for sensitive or destructive operations.
+
+Ensure that every visible button, menu, tab, filter, chart interaction, and workflow action is functional. Remove misleading controls or clearly mark capabilities that are not yet available.
+
+Do not introduce new actions that bypass existing authentication, authorization, approval, or audit requirements.
+
+## 7. Cross-Module Consistency and Data Integrity
+
+Investigate how these seven modules interact with one another and with shared Qguard Helix services.
+
+Validate consistency across:
+
+- Asset inventories and unique asset identifiers.
+- Cryptographic algorithm inventories.
+- Migration task states.
+- Runtime observations.
+- Telemetry findings.
+- Drift records.
+- Risk scores.
+- Remediation status.
+- Event timestamps and freshness.
+- Tenant isolation and access controls.
+
+Ensure that a change in a source record propagates to dependent modules through the existing data flow, without requiring manual refresh when real-time updates are supported.
+
+Identify circular dependencies, duplicate data transformations, inconsistent status mappings, and competing sources of truth.
+
+Do not create a parallel mock-data system or a second independent implementation of existing business logic.
+
+## 8. Testing and Verification
+
+Perform appropriate automated and manual validation.
+
+### Functional testing
+
+- Verify that every page loads correctly.
+- Test all API requests and their responses.
+- Validate hook behavior and component lifecycle management.
+- Test SSE or Realtime connections where applicable.
+- Test filtering, sorting, navigation, and supported actions.
+- Verify error handling and recovery behavior.
+- Check authentication, authorization, and tenant isolation.
+
+### Data integrity testing
+
+- Compare displayed asset totals against authorized source records.
+- Validate status counts and percentages against their underlying records.
+- Verify risk calculations using known test cases.
+- Confirm that duplicate events do not produce duplicate findings.
+- Test stale, missing, malformed, and out-of-order data.
+- Confirm that resolved findings no longer appear active when the underlying records show resolution.
+- Validate migration completion only after the required operations and checks succeed.
+
+### Regression testing
+
+Ensure that improvements do not break existing Qguard Helix features, shared components, authentication, routing, database access, or related dashboards.
+
+Run the existing test suite, relevant type checks, linting, and build commands. Add targeted tests for any defects discovered.
+
+Where practical, test actual data updates end to end, from the source record or event through the backend and frontend to the rendered result.
+
+Clearly distinguish tests performed against real infrastructure from tests performed using controlled fixtures.
+
+## 9. Implementation Rules
+
+Follow these non-negotiable requirements:
+
+1. **No fake telemetry:** Do not introduce fabricated assets, events, findings, migration jobs, risk scores, or operational statuses.
+2. **No hardcoded operational metrics:** Derive values from the appropriate authorized data source.
+3. **No cosmetic-only fixes:** Resolve underlying data-flow and functional defects rather than hiding them in the UI.
+4. **No unsupported success states:** Never claim that an operation completed without confirming its actual result.
+5. **No silent failures:** Surface meaningful errors and logging while protecting sensitive information.
+6. **No unnecessary rewrites:** Preserve working architecture and existing features.
+7. **No security regressions:** Preserve authentication, authorization, tenant isolation, RLS, validation, and auditability.
+8. **No destructive changes without justification:** Review database migrations and schema changes carefully.
+9. **No unsupported algorithm claims:** Use technically accurate cryptographic terminology and evidence-based security classifications.
+10. **No premature completion claims:** Report only defects fixed and tests actually executed.
+11. **No unnecessary dependencies:** Reuse existing libraries and components unless a new dependency has a clear technical benefit.
+12. **No hidden assumptions:** Document unresolved dependencies, unavailable data sources, and incomplete integrations.
+
+If a backend capability or telemetry source is missing, document the gap and implement the safest appropriate integration where feasible. Do not conceal the limitation with placeholder data.
+
+## 10. Required Deliverables
+
+Upon completion, provide a structured audit and implementation report containing:
+
+### A. Executive summary
+- Overall implementation status.
+- Major findings and risks.
+- Improvements completed.
+- Outstanding blockers.
+
+### B. Seven-page audit matrix
+
+For each page, report:
+
+- Frontend wiring status.
+- Backend/API integration status.
+- Hook and lifecycle correctness.
+- SSE/Realtime implementation status, where applicable.
+- Actual data-source verification.
+- Metric and status accuracy.
+- Security and authorization findings.
+- UI/UX improvements.
+- Test results.
+- Remaining issues.
+
+Use explicit statuses such as **PASS**, **FAIL**, **PARTIAL**, and **NOT APPLICABLE**, supported by evidence. Use **NOT VERIFIED** when the available evidence is insufficient.
+
+### C. Defects and remediation log
+
+For every significant issue, document:
+
+- The defect and its impact.
+- Root cause.
+- Files or components affected.
+- Fix implemented.
+- Verification method.
+- Remaining limitations.
+
+### D. Data-flow and workflow documentation
+
+Explain how data moves from the source of truth through backend services and event streams into each dashboard, including shared dependencies between modules.
+
+### E. Test results
+
+Report the actual commands executed, tests passed, tests failed, and any tests that could not be run. Include relevant error details without exposing secrets.
+
+### F. Final implementation status
+
+Summarize what is fully functional, partially implemented, blocked by missing infrastructure, or still awaiting verification.
+
+---
+
+## Final Instruction
+
+Begin by inspecting the existing codebase, architecture, shared services, database schema, API routes, hooks, event mechanisms, and all seven pages. Establish the actual source of truth before changing the implementation.
+
+Proceed systematically: **audit → identify root causes → implement fixes → improve visualizations → test → verify → report**.
+
+Prioritize data correctness, security, functional reliability, and operational transparency before visual polish.
+
+The final result should be a genuinely functional, data-driven, real-time-capable Qguard Helix platform in which customers can trust the displayed asset information, understand the security implications, follow workflows easily, and take informed action.
+
+Do not stop after producing recommendations. Implement the verified improvements directly in the existing codebase where feasible, preserve working functionality, and provide an evidence-based report of the actual results.

@@ -371,7 +371,7 @@ export default function ProtocolAnalytics() {
             )}
           </Panel>
 
-          <ProvenanceFooter telemetry={data.telemetry} />
+          <ProvenanceFooter telemetry={data.telemetry} reads={data.reads} />
         </>
       ) : null}
 

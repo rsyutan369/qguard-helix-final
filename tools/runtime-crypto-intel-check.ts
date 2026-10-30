@@ -443,5 +443,18 @@ console.log('\n14. The time window scopes every runtime figure')
   assert(stale.securityStatus.score === null, 'an empty window publishes no score rather than 0')
 }
 
+console.log('\n[sim] A sandbox simulation is never a cutover awaiting runtime confirmation')
+{
+  const withSimulation = buildRuntimeCryptoIntelligence({
+    ...inputs,
+    migrationJobs: [
+      ...migrationJobs,
+      { id: 'sim', asset_id: 'a-legacy', name: '[DRY RUN] Legacy API — hybrid TLS', job_type: 'transport', status: 'completed', target_algorithm: 'X25519MLKEM768', progress: 100, metadata: { dryRun: true }, completed_at: minutesAgo(5), updated_at: minutesAgo(5), created_at: minutesAgo(10) },
+    ],
+  })
+  assert(!withSimulation.migrationVerification.some((row) => row.jobId === 'sim'), 'a completed simulation is not listed for runtime verification')
+  assert(withSimulation.migrationVerification.length === model.migrationVerification.length, 'and the verification list is otherwise unchanged', `${model.migrationVerification.length} → ${withSimulation.migrationVerification.length}`)
+}
+
 console.log(`\n${failures === 0 ? '✓ All runtime cryptographic intelligence invariants hold.' : `✗ ${failures} invariant(s) FAILED.`}`)
 process.exit(failures === 0 ? 0 : 1)

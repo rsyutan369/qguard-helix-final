@@ -39,6 +39,17 @@ export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info'
  * breaks the latter. Sharing one vocabulary is what makes a platform publish
  * AES-256-GCM as a critical quantum vulnerability.
  */
+/**
+ * The basis of a key's posture (audit brief §3F: "Do not infer quantum safety
+ * solely from an algorithm name or a declared configuration").
+ *
+ *   observed   a certificate, the CBOM or an agent scan saw the algorithm
+ *   generated  this platform generated the key, so its algorithm is known
+ *   declared   only a registry entry names the algorithm — unverified
+ *   none       no source names an algorithm at all
+ */
+export type PostureEvidence = 'observed' | 'generated' | 'declared' | 'none'
+
 export type KeyPqcPosture =
   /** ML-KEM / ML-DSA / SLH-DSA key material. */
   | 'post-quantum'
@@ -324,6 +335,10 @@ export interface ManagedKey {
   migrationRequirement: MigrationRequirement
   /** Plain-language justification for `posture` — never a bare verdict. */
   postureReason: string
+  /** What the posture rests on. Only `observed` / `generated` can make a key PQC-ready. */
+  postureEvidence: PostureEvidence
+  /** Set when the registry DECLARES one algorithm and a scan OBSERVED another. */
+  algorithmConflict: { declared: string; observed: string } | null
 
   /* Ownership & placement ------------------------------------------ */
   owner: string | null
@@ -410,6 +425,7 @@ export interface KeyIndexEntry {
   riskLevel: RiskLevel
   violations: number
   complianceStatus: ManagedKey['complianceStatus']
+  postureEvidence: PostureEvidence
   lastObservedAt: string | null
 }
 
@@ -465,8 +481,14 @@ export interface QkmsPolicy {
   /** Keys this policy's scope actually selected. The violation denominator. */
   keysInScope: number
   violations: number
-  /** Percent of in-scope keys with no violation of this policy. */
-  compliance: number
+  /**
+   * Percent of in-scope keys with no violation of this policy. `null` when the
+   * policy evaluated nothing — disabled, or no key in its scope — which is not
+   * 100% compliance.
+   */
+  compliance: number | null
+  /** Whether this policy was actually evaluated against keys. */
+  evaluation: 'evaluated' | 'disabled' | 'no-keys-in-scope'
   updatedAt: string | null
 }
 
@@ -622,7 +644,10 @@ export interface ReadinessBand {
   label: string
   /** Keys this band applies to. `0` means the band is NOT APPLICABLE. */
   applicable: number
+  /** Ready on OBSERVED or platform-GENERATED evidence. */
   ready: number
+  /** PQC by registry declaration only — unverified, NOT counted in `ready`. */
+  declared: number
   /** `null` when the band has no applicable key — never rendered as 0%. */
   percent: number | null
   detail: string
@@ -675,6 +700,12 @@ export interface MigrationGate {
 export interface PqcReadiness {
   /** PQC/hybrid keys ÷ keys that need a PQC decision. `null` when none do. */
   overall: number | null
+  /** Keys counted ready in `overall` — evidenced PQC or hybrid material. */
+  verifiedReady: number
+  /** Keys whose PQC posture rests on a registry declaration alone. */
+  declaredOnly: number
+  /** Keys that need a post-quantum decision — `overall`'s denominator. */
+  decisionScope: number
   bands: ReadinessBand[]
   postureCounts: Record<KeyPqcPosture, number>
   requirementCounts: Record<MigrationRequirement, number>
@@ -691,6 +722,9 @@ export interface DistributionRow {
   percent: number
   /** Ids behind the bar, so every chart segment drills down. */
   keyIds?: string[]
+  /** The model's posture for the keys behind this row (most common), so the
+   *  UI colours by classification instead of re-deriving it from a label. */
+  posture?: KeyPqcPosture
 }
 
 /**
@@ -713,6 +747,8 @@ export interface QkmsMetrics {
   deprecatedKeys: number
   quantumVulnerableKeys: number
   pqcReadyKeys: number
+  /** PQC or hybrid by registry declaration only — unverified, excluded from readiness. */
+  declaredPqcKeys: number
   hybridKeys: number
   keysRequiringMigration: number
   orphanedKeys: number
@@ -759,6 +795,8 @@ export interface QkmsTelemetryHealth {
   /** true when a row cap was hit and the model is a bounded sample. */
   truncated: boolean
   absentSources: string[]
+  /** Auxiliary sources whose query FAILED (not empty) — figures that use them are incomplete. */
+  degradedSources: string[]
 }
 
 export interface AuditEvidenceRecord {

@@ -1,0 +1,79 @@
+{
+  "desktop": {
+    "overflow": false,
+    "heading": "Govern your estate.\nProve compliance.",
+    "canvas": true,
+    "video": {
+      "ready": 4,
+      "paused": false,
+      "time": 6.3155
+    },
+    "heroHeight": 1000,
+    "links": [
+      "/checkout?plan=Elite&cycle=yearly",
+      "/#pricing",
+      "#capabilities"
+    ],
+    "errors": [],
+    "pauseWorks": true,
+    "resumeWorks": true,
+    "anchor": "#capabilities"
+  },
+  "mobile": {
+    "overflow": false,
+    "heading": "Govern your estate.\nProve compliance.",
+    "canvas": true,
+    "video": {
+      "ready": 4,
+      "paused": false,
+      "time": 5.1681
+    },
+    "heroHeight": 907.25,
+    "links": [
+      "/checkout?plan=Elite&cycle=yearly",
+      "/#pricing",
+      "#capabilities"
+    ],
+    "errors": [],
+    "pauseWorks": true,
+    "resumeWorks": true,
+    "anchor": "#capabilities"
+  },
+  "tablet": {
+    "overflow": false,
+    "heading": "Govern your estate.\nProve compliance.",
+    "canvas": true,
+    "video": {
+      "ready": 4,
+      "paused": false,
+      "time": 5.6143
+    },
+    "heroHeight": 1024,
+    "links": [
+      "/checkout?plan=Elite&cycle=yearly",
+      "/#pricing",
+      "#capabilities"
+    ],
+    "errors": [],
+    "pauseWorks": true,
+    "resumeWorks": true,
+    "anchor": "#capabilities"
+  },
+  "reduced": {
+    "overflow": false,
+    "heading": "Govern your estate.\nProve compliance.",
+    "canvas": true,
+    "video": {
+      "ready": 4,
+      "paused": true,
+      "time": 0
+    },
+    "heroHeight": 900,
+    "links": [
+      "/checkout?plan=Elite&cycle=yearly",
+      "/#pricing",
+      "#capabilities"
+    ],
+    "errors": []
+  }
+}

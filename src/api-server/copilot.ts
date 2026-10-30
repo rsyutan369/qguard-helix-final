@@ -24,6 +24,25 @@ import {
 } from './copilot-knowledge'
 import { setToolAuditSink, type ToolContext } from './copilot-tools'
 import { buildInsights, runCopilotQuery, type PriorFigures, type QueryOutcome } from './copilot-engine'
+import {
+  byokEntitled,
+  composeNarrative,
+  connectionAfterUse,
+  deleteConnection,
+  encryptionMode,
+  getActiveConnection,
+  getConnection,
+  keyHintOf,
+  openApiKey,
+  saveConnection,
+  sealApiKey,
+  setActiveProvider,
+  settingsFor,
+  validateConnectionInput,
+  verifyConnection,
+  type LlmConnection,
+} from './copilot-llm'
+import { isCopilotLlmProviderId, providerSpec, type CopilotLlmProviderId } from '@/lib/copilot-llm-catalog'
 import { EMPTY_MEMORY, type CopilotAnswer, type CopilotContext, type CopilotConversation, type CopilotMemoryState, type CopilotMessage, type CopilotRole, type CopilotStreamEvent } from '@/types/copilot'
 
 const router = Router()
@@ -392,7 +411,10 @@ router.get('/context', async (req: Request, res: Response) => {
     tier: copilotTier || 'none',
     capabilities: ROLE_CAPABILITIES[role],
     persistence: schemaMissing ? 'memory' : 'database',
+    engine: null,
   }
+  const engine = await activeEngineFor(copilotCtx!).catch(() => null)
+  if (engine) context.engine = { provider: engine.provider, label: providerSpec(engine.provider)!.label, model: engine.model }
   // Probe persistence once so the flag is accurate before the first chat.
   if (!schemaMissing) {
     try {
@@ -573,6 +595,250 @@ router.post('/feedback', async (req: Request, res: Response) => {
 })
 
 /* ------------------------------------------------------------------ */
+/* Bring-your-own-key model connections (Pro and above)                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The tenant's connected model, if it may be used right now: plan still
+ * entitles BYOK, sealing is configured, and the key is not known-bad.
+ */
+async function activeEngineFor(ctx: ToolContext): Promise<LlmConnection | null> {
+  if (!byokEntitled(ctx.tier) || encryptionMode() === 'unavailable') return null
+  const connection = await getActiveConnection(ctx.userId)
+  return connection && connection.status !== 'invalid' ? connection : null
+}
+
+function providerFrom(req: Request, res: Response): CopilotLlmProviderId | null {
+  const provider = req.params.provider
+  if (!isCopilotLlmProviderId(provider)) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Unknown model provider' } })
+    return null
+  }
+  return provider
+}
+
+/** Mutations need the plan and a sealing secret; reads stay open so the UI can explain what is missing. */
+function requireByok(ctx: ToolContext, res: Response): boolean {
+  if (!byokEntitled(ctx.tier)) {
+    res.status(402).json({ error: { code: 'PLAN_REQUIRED', message: 'Connecting your own AI model is included in the Pro and Elite plans.' } })
+    return false
+  }
+  if (encryptionMode() === 'unavailable') {
+    res.status(503).json({ error: { code: 'CONFIG_ERROR', message: 'Key sealing is not configured on the server — set COPILOT_BYOK_SECRET (32+ characters).' } })
+    return false
+  }
+  return true
+}
+
+router.get('/llm/settings', async (req: Request, res: Response) => {
+  const { copilotCtx } = req as AuthedRequest
+  try {
+    res.json({ data: await settingsFor(copilotCtx!.userId, copilotCtx!.tier) })
+  } catch (error) {
+    console.error('[copilot] llm settings failed:', (error as Error)?.message)
+    res.status(500).json({ error: { code: 'LLM_SETTINGS_ERROR', message: 'Unable to load model connections' } })
+  }
+})
+
+/**
+ * Connect (or update) a provider. A new key is verified LIVE before it is
+ * stored — a key the provider rejects is never saved — and a verified
+ * connection becomes the active engine immediately.
+ */
+router.put('/llm/providers/:provider', async (req: Request, res: Response) => {
+  const { copilotCtx } = req as AuthedRequest
+  const ctx = copilotCtx!
+  const provider = providerFrom(req, res)
+  if (!provider || !requireByok(ctx, res)) return
+  const body = rec(req.body)
+  const parsed = validateConnectionInput(provider, body)
+  if (!parsed.value) {
+    res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: parsed.message } })
+    return
+  }
+  const rate = checkChatRateLimit(ctx.userId)
+  if (!rate.allowed) {
+    res.status(429).json({ error: { code: 'RATE_LIMITED', message: `Too many requests — retry in ${rate.retryAfterSec}s`, retryAfterSec: rate.retryAfterSec } })
+    return
+  }
+
+  const existing = await getConnection(ctx.userId, provider)
+  if (!parsed.value.apiKey && !existing) {
+    res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'An API key is required to connect this provider' } })
+    return
+  }
+  // Sending tenant evidence to a third-party model is the tenant's decision — recorded once per key.
+  if (parsed.value.apiKey && body.consent !== true) {
+    res.status(400).json({ error: { code: 'CONSENT_REQUIRED', message: 'Confirm that platform evidence may be sent to this provider under your account' } })
+    return
+  }
+
+  let apiKey: string
+  try {
+    apiKey = parsed.value.apiKey || openApiKey(existing!.keyEnvelope, ctx.userId, provider)
+  } catch (error) {
+    res.status(409).json({ error: { code: 'KEY_UNREADABLE', message: (error as Error).message } })
+    return
+  }
+
+  const spec = providerSpec(provider)!
+  const check = await verifyConnection(spec, parsed.value.endpoint, parsed.value.model, apiKey)
+  if (check.error) {
+    await recordAudit(ctx.userId, 'copilot.llm.verify_failed', { provider, model: parsed.value.model, endpoint: parsed.value.endpoint, kind: check.error.kind })
+    res.status(422).json({ error: { code: 'PROVIDER_REJECTED', message: check.error.message, kind: check.error.kind } })
+    return
+  }
+
+  const now = new Date().toISOString()
+  const connection: LlmConnection = {
+    provider,
+    model: parsed.value.model,
+    endpoint: parsed.value.endpoint,
+    keyEnvelope: parsed.value.apiKey ? sealApiKey(apiKey, ctx.userId, provider) : existing!.keyEnvelope,
+    keyHint: parsed.value.apiKey ? keyHintOf(apiKey) : existing!.keyHint,
+    isActive: existing?.isActive || false,
+    status: 'verified',
+    lastVerifiedAt: now,
+    lastError: null,
+    lastUsedAt: existing?.lastUsedAt || null,
+    requestCount: existing?.requestCount || 0,
+    inputTokens: existing?.inputTokens || 0,
+    outputTokens: existing?.outputTokens || 0,
+    consentAt: parsed.value.apiKey ? now : existing?.consentAt || now,
+    updatedAt: now,
+  }
+  try {
+    await saveConnection(ctx.userId, connection)
+    if (body.activate !== false) await setActiveProvider(ctx.userId, provider)
+  } catch (error) {
+    console.error('[copilot] llm save failed:', (error as Error)?.message)
+    res.status(500).json({ error: { code: 'LLM_SAVE_ERROR', message: 'The key was verified but could not be stored — please retry' } })
+    return
+  }
+  await recordAudit(ctx.userId, parsed.value.apiKey ? 'copilot.llm.connected' : 'copilot.llm.updated', {
+    provider, model: connection.model, endpoint: connection.endpoint, keyHint: connection.keyHint, latencyMs: check.latencyMs, activated: body.activate !== false,
+  })
+  res.json({ data: { settings: await settingsFor(ctx.userId, ctx.tier), latencyMs: check.latencyMs } })
+})
+
+/** Re-check a stored key (e.g. after a provider outage or quota top-up). */
+router.post('/llm/providers/:provider/verify', async (req: Request, res: Response) => {
+  const { copilotCtx } = req as AuthedRequest
+  const ctx = copilotCtx!
+  const provider = providerFrom(req, res)
+  if (!provider || !requireByok(ctx, res)) return
+  const existing = await getConnection(ctx.userId, provider)
+  if (!existing) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'This provider is not connected' } })
+    return
+  }
+  const rate = checkChatRateLimit(ctx.userId)
+  if (!rate.allowed) {
+    res.status(429).json({ error: { code: 'RATE_LIMITED', message: `Too many requests — retry in ${rate.retryAfterSec}s`, retryAfterSec: rate.retryAfterSec } })
+    return
+  }
+  let apiKey: string
+  try {
+    apiKey = openApiKey(existing.keyEnvelope, ctx.userId, provider)
+  } catch (error) {
+    res.status(409).json({ error: { code: 'KEY_UNREADABLE', message: (error as Error).message } })
+    return
+  }
+  const check = await verifyConnection(providerSpec(provider)!, existing.endpoint, existing.model, apiKey)
+  const now = new Date().toISOString()
+  await saveConnection(ctx.userId, !check.error
+    ? { ...existing, status: 'verified', lastVerifiedAt: now, lastError: null, updatedAt: now }
+    : { ...existing, status: check.error.kind === 'auth' ? 'invalid' : 'error', lastError: check.error.message, updatedAt: now })
+  await recordAudit(ctx.userId, check.error ? 'copilot.llm.verify_failed' : 'copilot.llm.verified', { provider, model: existing.model, kind: check.error?.kind ?? null })
+  res.json({ data: { settings: await settingsFor(ctx.userId, ctx.tier), ok: !check.error, message: check.error?.message ?? null } })
+})
+
+/** Choose which connected provider composes answers — or null for the platform engine only. */
+router.post('/llm/active', async (req: Request, res: Response) => {
+  const { copilotCtx } = req as AuthedRequest
+  const ctx = copilotCtx!
+  const raw = rec(req.body).provider
+  const requested = raw === null ? null : isCopilotLlmProviderId(raw) ? raw : undefined
+  if (requested === undefined) {
+    res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'provider must be a known provider id or null' } })
+    return
+  }
+  if (requested !== null) {
+    if (!requireByok(ctx, res)) return
+    const existing = await getConnection(ctx.userId, requested)
+    if (!existing) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Connect this provider before activating it' } })
+      return
+    }
+    if (existing.status === 'invalid') {
+      res.status(409).json({ error: { code: 'KEY_INVALID', message: 'The provider rejected this key — update it before activating' } })
+      return
+    }
+  }
+  await setActiveProvider(ctx.userId, requested)
+  await recordAudit(ctx.userId, requested ? 'copilot.llm.activated' : 'copilot.llm.deactivated', { provider: requested })
+  res.json({ data: { settings: await settingsFor(ctx.userId, ctx.tier) } })
+})
+
+router.delete('/llm/providers/:provider', async (req: Request, res: Response) => {
+  const { copilotCtx } = req as AuthedRequest
+  const ctx = copilotCtx!
+  const provider = providerFrom(req, res)
+  if (!provider) return
+  await deleteConnection(ctx.userId, provider)
+  await recordAudit(ctx.userId, 'copilot.llm.disconnected', { provider })
+  res.json({ data: { settings: await settingsFor(ctx.userId, ctx.tier) } })
+})
+
+/**
+ * Narrative step: the tenant's own model writes the analysis for an answer the
+ * platform engine already built. Streams deltas, records usage + an audit entry
+ * (metadata only — never prompt or completion text), and returns the answer
+ * with the narrative attached. A failed call leaves the platform answer intact.
+ */
+async function attachNarrative(
+  ctx: ToolContext,
+  connection: LlmConnection,
+  question: string,
+  answer: CopilotAnswer,
+  history: CopilotMessage[],
+  page: string,
+  send: (event: CopilotStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<CopilotAnswer> {
+  const narrative = await composeNarrative({
+    userId: ctx.userId,
+    connection,
+    question,
+    answer,
+    history,
+    roleLabel: ROLE_LABELS[ctx.role],
+    page: page || undefined,
+    signal,
+    onStart: (meta) => {
+      send({ type: 'stage', stage: 'generating', label: `Composing the analysis with ${meta.providerLabel} · ${meta.model}…` })
+      send({ type: 'narrative_start', answerId: answer.id, ...meta })
+    },
+    onDelta: (delta) => send({ type: 'narrative', answerId: answer.id, delta }),
+  })
+  send({ type: 'narrative_done', answerId: answer.id, narrative })
+  try {
+    await saveConnection(ctx.userId, connectionAfterUse(connection, narrative))
+  } catch { /* usage counters are best-effort */ }
+  await recordAudit(ctx.userId, 'copilot.llm.completion', {
+    provider: narrative.provider,
+    model: narrative.model,
+    status: narrative.status,
+    latencyMs: narrative.latencyMs,
+    inputTokens: narrative.usage?.inputTokens ?? null,
+    outputTokens: narrative.usage?.outputTokens ?? null,
+    figuresChecked: narrative.grounding.checked,
+    figuresUnverified: narrative.grounding.unverified.length,
+  })
+  return { ...answer, narrative }
+}
+
+/* ------------------------------------------------------------------ */
 /* Chat — JSON + SSE streaming                                         */
 /* ------------------------------------------------------------------ */
 
@@ -605,6 +871,9 @@ router.post('/chat', async (req: Request, res: Response) => {
   }
 
   const sanitized = sanitizePrompt(rawMessage)
+  // The tenant's own model (if connected) needs the turns BEFORE this one.
+  const engine = sanitized.blocked ? null : await activeEngineFor(ctx).catch(() => null)
+  const history = engine ? await listMessages(ctx, conversationId).catch(() => [] as CopilotMessage[]) : []
   await appendMessage(ctx, conversationId, 'user', sanitized.text || rawMessage.slice(0, 2000))
   await recordAudit(ctx.userId, 'copilot.chat.query', {
     conversationId,
@@ -642,11 +911,17 @@ router.post('/chat', async (req: Request, res: Response) => {
     }
     send({ type: 'stage', stage: 'thinking', label: 'Connected to Sophia' })
     const heartbeat = setInterval(() => { try { res.write(': keep-alive\n\n') } catch { /* noop */ } }, 15_000)
+    // Stop paying for model tokens the moment the user stops or leaves.
+    const clientGone = new AbortController()
+    res.on('close', () => { if (!res.writableEnded) clientGone.abort() })
     try {
       const outcome = await runCopilotQuery(ctx, rawMessage, memory, send, undefined, { priorFigures })
       saveMemory(conversationId, outcome.memory)
       recordGap(outcome)
-      await appendMessage(ctx, conversationId, 'assistant', outcome.answer.summary, outcome.answer)
+      const answer = engine && !outcome.answer.blocked
+        ? await attachNarrative(ctx, engine, sanitized.text, outcome.answer, history, page, send, clientGone.signal)
+        : outcome.answer
+      await appendMessage(ctx, conversationId, 'assistant', answer.summary, answer)
       res.write(`event: meta\ndata: ${JSON.stringify({ type: 'meta', conversationId })}\n\n`)
     } catch (error) {
       console.error('[copilot] chat stream failed:', error)
@@ -663,8 +938,11 @@ router.post('/chat', async (req: Request, res: Response) => {
     const outcome = await runCopilotQuery(ctx, rawMessage, memory, (event) => events.push(event), undefined, { priorFigures })
     saveMemory(conversationId, outcome.memory)
     recordGap(outcome)
-    await appendMessage(ctx, conversationId, 'assistant', outcome.answer.summary, outcome.answer)
-    res.json({ data: { conversationId, answer: outcome.answer, stages: events.filter((e) => e.type === 'stage') } })
+    const answer = engine && !outcome.answer.blocked
+      ? await attachNarrative(ctx, engine, sanitized.text, outcome.answer, history, page, (event) => { if (event.type === 'stage') events.push(event) })
+      : outcome.answer
+    await appendMessage(ctx, conversationId, 'assistant', answer.summary, answer)
+    res.json({ data: { conversationId, answer, stages: events.filter((e) => e.type === 'stage') } })
   } catch (error) {
     console.error('[copilot] chat failed:', error)
     res.status(500).json({ error: { code: 'COPILOT_ERROR', message: 'Sophia was unable to answer — please retry' } })

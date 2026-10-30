@@ -290,3 +290,68 @@ export function sophiaContextFor(data: RuntimeCryptoIntelligence | null): string
     `Estate PQC adoption (Quantum Readiness): ${data.pqcAdoption.estateAdoptionPct}%.`,
   ].join(' ');
 }
+
+/* ------------------------------------------------------------------ */
+/* Recommended next step                                               */
+/* ------------------------------------------------------------------ */
+
+export interface RuntimeNextStep {
+  label: string;
+  detail: string;
+  href: string;
+  tone: 'action' | 'warning' | 'calm';
+}
+
+/**
+ * The single most valuable action the runtime evidence supports, in a fixed
+ * order: a collector that went silent → a cutover whose runtime shows a
+ * classical fallback → the top critical/high issue → a completed cutover never
+ * observed at runtime → the top remaining issue → keep collecting. Computed
+ * from the model only; never a static line.
+ */
+export function runtimeNextStep(data: RuntimeCryptoIntelligence): RuntimeNextStep {
+  const t = data.telemetry;
+  if (t.collectorState === 'registered-silent') {
+    return {
+      label: 'Agent Center',
+      href: '/downloads',
+      tone: 'warning',
+      detail: `${t.totalAgents} collector(s) are registered but none reported ${t.latestEventAt ? `since ${relativeTime(t.latestEventAt)}` : 'yet'}. Runtime findings below describe the past, not now — check the agents first.`,
+    };
+  }
+  const fallback = data.migrationVerification.filter((row) => row.status === 'fallback-detected');
+  if (fallback.length) {
+    return {
+      label: 'Live Migration',
+      href: fallback[0].href || '/dashboard/live-migration',
+      tone: 'warning',
+      detail: `${fallback.length} completed cutover(s) still negotiate a classical primitive at runtime (first: ${fallback[0].assetName}). The change did not take everywhere — investigate before treating the asset as migrated.`,
+    };
+  }
+  const urgent = data.issues.find((issue) => issue.severity === 'critical' || issue.severity === 'high');
+  if (urgent) {
+    return {
+      label: urgent.actionLabel,
+      href: urgent.actionHref,
+      tone: 'warning',
+      detail: `${urgent.title} on ${urgent.assetName} (${urgent.observations} observation(s)). ${urgent.recommendedAction}`,
+    };
+  }
+  const unobserved = data.migrationVerification.filter((row) => row.status === 'not-observed');
+  if (unobserved.length) {
+    return {
+      label: 'Live Migration',
+      href: '/dashboard/live-migration',
+      tone: 'action',
+      detail: `${unobserved.length} completed cutover(s) have not yet been observed at runtime. Runtime confirmation is the evidence that the new algorithm is actually negotiated.`,
+    };
+  }
+  const top = data.issues[0];
+  if (top) return { label: top.actionLabel, href: top.actionHref, tone: 'action', detail: `${top.title} on ${top.assetName}. ${top.recommendedAction}` };
+  return {
+    label: 'Drift Detection',
+    href: '/dashboard/drift',
+    tone: 'calm',
+    detail: `No open runtime finding in ${data.window.label.toLowerCase()}. Keep collectors reporting; Drift Detection flags any regression between scans.`,
+  };
+}

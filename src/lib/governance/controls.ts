@@ -691,7 +691,7 @@ const EVALUATORS: Record<string, Evaluator> = {
             ? `Last report ${Math.floor((inputs.now - lastSeen) / 3_600_000)}h ago.`
             : 'Never reported.',
         severity: healthy ? null : 'medium',
-        href: source.kind === 'collector' ? '/dashboard/scanner?tab=agents' : '/dashboard/multi-cloud-telemetry',
+        href: source.kind === 'collector' ? '/dashboard/agents' : '/dashboard/multi-cloud-telemetry',
         table: source.table,
         recordId: str(row.id),
         observedAt: lastSeen ? new Date(lastSeen).toISOString() : null,
@@ -755,7 +755,7 @@ const EVALUATORS: Record<string, Evaluator> = {
         status: str(row.status) || 'open',
         openedAt: ms(row.created_at),
         assetId: null,
-        href: '/dashboard/scanner?tab=agents',
+        href: '/dashboard/agents',
       })
     }
     for (const row of inputs.cryptoExposures) {

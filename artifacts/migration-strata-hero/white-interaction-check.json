@@ -1,0 +1,18 @@
+{
+  "playback": {
+    "first": {
+      "time": 2.4061,
+      "frames": 62
+    },
+    "second": {
+      "time": 2.8855,
+      "frames": 73
+    }
+  },
+  "pause": true,
+  "recoverySelection": true,
+  "mobileMenu": true,
+  "whiteMenuContrast": true,
+  "mobileSelection": true,
+  "errors": []
+}

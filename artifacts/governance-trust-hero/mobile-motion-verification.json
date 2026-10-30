@@ -1,0 +1,5 @@
+{
+  "mobileAmbientAdvances": true,
+  "touchSelection": true,
+  "livePreferenceChangeStopsMotion": true
+}

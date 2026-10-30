@@ -1904,12 +1904,12 @@ function composeSnapshots(d: FocusInput): FocusAnswer {
 
 function composeCollectors(d: FocusInput): FocusAnswer {
   const r = d.tool('getCollectorsStatus')
-  if (!r) return unavailable(d, 'collectors', 'getCollectorsStatus', 'Agent Collectors', 'collectors', 'the health of your collectors')
+  if (!r) return unavailable(d, 'collectors', 'getCollectorsStatus', 'Agents Collector', 'collectors', 'the health of your collectors')
   const fleet = num(r.data.fleet)
   const agents = arr<{ name: string; hostname: string | null; platform: string | null; version: string | null; online: boolean; lastSeenAt: string | null }>(r.data.agents)
   const offline = agents.filter((a) => !a.online)
   if (fleet === 0) {
-    return { ...base('collectors'), headline: 'No collector agents are enrolled. Discovery relies on remote scans only — enroll collectors on key hosts for runtime telemetry and internal visibility.', risk: { level: 'medium', drivers: ['no collectors'] }, noData: true, nextActions: [{ label: 'Open Agent Collectors', path: modulePath('collectors'), reason: 'Enroll an agent.' }] }
+    return { ...base('collectors'), headline: 'No collector agents are enrolled. Discovery relies on remote scans only — enroll collectors on key hosts for runtime telemetry and internal visibility.', risk: { level: 'medium', drivers: ['no collectors'] }, noData: true, nextActions: [{ label: 'Open Agents Collector', path: modulePath('collectors'), reason: 'Enroll an agent.' }] }
   }
   return {
     ...base('collectors'),
@@ -1923,13 +1923,13 @@ function composeCollectors(d: FocusInput): FocusAnswer {
       columns: [{ key: 'name', label: 'Agent' }, { key: 'host', label: 'Host' }, { key: 'platform', label: 'Platform' }, { key: 'status', label: 'Status' }, { key: 'seen', label: 'Last heartbeat' }],
       rows: agents.map((a) => ({ cells: { name: a.name, host: a.hostname || '—', platform: a.platform || '—', status: a.online ? 'Online' : 'Offline', seen: a.lastSeenAt ? ago(a.lastSeenAt) : 'never' }, tone: a.online ? 'good' : 'high', deepLink: modulePath('collectors') })),
       total: fleet,
-      source: 'Agent Collectors',
+      source: 'Agents Collector',
       deepLink: modulePath('collectors'),
     }],
     recommendations: offline.length ? [{ title: 'Recover the offline collectors', detail: 'Check the agent service and network path on each host; offline collectors create blind spots in discovery and runtime telemetry.', priority: 'high', standards: [STANDARDS.CIS_V8], deepLink: modulePath('collectors') }] : [],
-    nextActions: [{ label: 'Open Agent Collectors', path: modulePath('collectors'), reason: 'Heartbeats, versions and health.' }],
+    nextActions: [{ label: 'Open Agents Collector', path: modulePath('collectors'), reason: 'Heartbeats, versions and health.' }],
     risk: { level: offline.length ? 'medium' : 'low', drivers: offline.length ? [`${offline.length} offline collector(s)`] : [] },
-    figures: [figure('collectors.offline', 'Offline collectors', offline.length, 'lower', 'Agent Collectors'), figure('collectors.fleet', 'Enrolled collectors', fleet, 'neutral', 'Agent Collectors')],
+    figures: [figure('collectors.offline', 'Offline collectors', offline.length, 'lower', 'Agents Collector'), figure('collectors.fleet', 'Enrolled collectors', fleet, 'neutral', 'Agents Collector')],
   }
 }
 
@@ -1940,7 +1940,7 @@ function composeRuntimeEvents(d: FocusInput): FocusAnswer {
   const recent = arr<{ algorithm: string; severity: string; is_legacy: boolean; is_pqc: boolean; hndl_risk: boolean; observed_at: string }>(r.data.recent)
   const wantsLegacy = /legacy|weak|vulnerab/.test(d.question.toLowerCase())
   const shown = wantsLegacy ? recent.filter((e) => e.is_legacy) : recent
-  if (!events) return { ...base('runtime_events'), headline: 'No runtime cryptographic events have been recorded — runtime telemetry needs an enrolled collector with runtime capture.', noData: true, risk: { level: 'info', drivers: [] }, nextActions: [{ label: 'Open Agent Collectors', path: modulePath('collectors'), reason: 'Enable runtime capture.' }] }
+  if (!events) return { ...base('runtime_events'), headline: 'No runtime cryptographic events have been recorded — runtime telemetry needs an enrolled collector with runtime capture.', noData: true, risk: { level: 'info', drivers: [] }, nextActions: [{ label: 'Open Agents Collector', path: modulePath('collectors'), reason: 'Enable runtime capture.' }] }
   return {
     ...base('runtime_events'),
     headline: `Your collectors recorded ${count(events, 'recent runtime crypto event')}: ${num(r.data.legacyEvents)} using legacy cryptography, ${num(r.data.pqcEvents)} post-quantum, ${num(r.data.hndlFlagged)} flagged for Harvest-Now exposure. Latest ${ago(str(r.data.latestAt))}.`,

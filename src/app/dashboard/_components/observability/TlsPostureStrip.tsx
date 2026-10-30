@@ -42,20 +42,22 @@ function Metric({
     <>
       <div className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-[0.12em] text-white/40">
         {label}
-        {hint ? <Term hint={hint} label={label} /> : null}
+        {/* Above the stretched link so the explanation stays independently focusable. */}
+        {hint ? <span className="pointer-events-auto relative z-10"><Term hint={hint} label={label} /></span> : null}
       </div>
       <div className={cn('mt-1.5 text-[22px] font-black leading-none', TONE[tone].text)}>{value}</div>
       <div className="mt-1 text-[9.5px] font-medium leading-snug text-white/35">{basis}</div>
     </>
   );
   if (href) {
+    // Stretched link: a sibling of the body, not its wrapper. Wrapping the body
+    // in <Link> nested the hint's <button> inside an <a> — invalid interactive
+    // nesting that breaks keyboard and screen-reader use of the hint.
     return (
-      <Link
-        to={href}
-        className="block rounded-lg border border-white/8 bg-black/20 p-3 no-underline transition hover:border-cyan-400/35 hover:bg-black/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
-      >
-        {body}
-      </Link>
+      <div className="relative rounded-lg border border-white/8 bg-black/20 p-3 transition focus-within:ring-2 focus-within:ring-cyan-300/70 hover:border-cyan-400/35 hover:bg-black/35">
+        <Link to={href} aria-label={`${label}: ${value} — ${basis}`} className="absolute inset-0 z-0 rounded-lg no-underline focus-visible:outline-none" />
+        <div className="pointer-events-none relative">{body}</div>
+      </div>
     );
   }
   return <div className="rounded-lg border border-white/8 bg-black/20 p-3">{body}</div>;

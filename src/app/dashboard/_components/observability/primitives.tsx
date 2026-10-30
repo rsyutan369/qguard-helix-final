@@ -15,6 +15,7 @@ import {
 import { cn } from '@/lib/utils';
 import { POSTURE_LABEL } from '@/lib/tls-pki/classify';
 import type { PipelineStatus, PqcPosture, RiskLevel, Severity } from '@/lib/tls-pki/types';
+import type { SourceRead } from '@/lib/source-read';
 
 /* ------------------------------------------------------------------ */
 /* Domain-neutral shapes                                               */
@@ -83,6 +84,27 @@ export const SHELL_CSS = `
   .qg-theme-light .tlspki-shell .text-violet-300 { color: #7c3aed !important; }
   .qg-theme-light .tlspki-shell input::placeholder,
   .qg-theme-light .tlspki-shell select { color: var(--qg-dashboard-text) !important; }
+  /*
+   * Light-theme text inks measured against these pages (WCAG audit, 2026-10-28).
+   * The global layer remaps only EXACT hue classes, so alpha variants
+   * (text-amber-200/70, text-amber-300/60) kept their pale dark-theme colour and
+   * measured 1.15-1.2:1 on parchment; the global status inks measured
+   * 4.27-4.47:1 when set on a tinted chip wash. Doubled .tlspki-shell plus the
+   * :not() guards out-rank the global layer without touching it.
+   */
+  .qg-theme-light .tlspki-shell.tlspki-shell [class*="text-amber-"]:not(.qg-force-dark):not(.qg-force-dark *),
+  .qg-theme-light .tlspki-shell.tlspki-shell [class*="text-yellow-"]:not(.qg-force-dark):not(.qg-force-dark *) { color: #6f4700 !important; }
+  .qg-theme-light .tlspki-shell.tlspki-shell [class*="text-emerald-"]:not(.qg-force-dark):not(.qg-force-dark *),
+  .qg-theme-light .tlspki-shell.tlspki-shell [class*="text-green-"]:not(.qg-force-dark):not(.qg-force-dark *) { color: #245a39 !important; }
+  .qg-theme-light .tlspki-shell.tlspki-shell [class*="text-red-"]:not(.qg-force-dark):not(.qg-force-dark *),
+  .qg-theme-light .tlspki-shell.tlspki-shell [class*="text-rose-"]:not(.qg-force-dark):not(.qg-force-dark *) { color: #9b1c12 !important; }
+  .qg-theme-light .tlspki-shell.tlspki-shell [class*="text-cyan-"]:not(.qg-force-dark):not(.qg-force-dark *),
+  .qg-theme-light .tlspki-shell.tlspki-shell [class*="text-sky-"]:not(.qg-force-dark):not(.qg-force-dark *) { color: #7a4129 !important; }
+  .qg-theme-light .tlspki-shell.tlspki-shell [class*="text-violet-"]:not(.qg-force-dark):not(.qg-force-dark *),
+  .qg-theme-light .tlspki-shell.tlspki-shell [class*="text-purple-"]:not(.qg-force-dark):not(.qg-force-dark *) { color: #5b2d5e !important; }
+  .qg-theme-light .tlspki-shell.tlspki-shell [class*="text-orange-"]:not(.qg-force-dark):not(.qg-force-dark *) { color: #8a3509 !important; }
+  /* Inline-coloured chips (provider, tone) keep their tint and dot; their TEXT takes the theme ink. */
+  .qg-theme-light .tlspki-shell .tlspki-ink { color: var(--qg-dashboard-text) !important; }
   .tlspki-shell table { border-collapse: separate; border-spacing: 0; }
   @media (prefers-reduced-motion: reduce) {
     .tlspki-shell *, .tlspki-shell *::before, .tlspki-shell *::after {
@@ -555,7 +577,8 @@ export function Kpi({
     <>
       <div className="flex items-center gap-1.5 text-[9.5px] font-black uppercase tracking-[0.12em] text-white/45">
         {label}
-        {hint ? <Term hint={hint} label={label} /> : null}
+        {/* Above the stretched link so the explanation stays independently focusable. */}
+        {hint ? <span className="pointer-events-auto relative z-10"><Term hint={hint} label={label} /></span> : null}
       </div>
       <div className={cn('mt-2 text-[26px] font-black leading-none', unmeasured ? 'text-white/35' : t.text)}>
         {unmeasured ? 'Not measured' : value}
@@ -565,15 +588,17 @@ export function Kpi({
   );
 
   if (href) {
+    // Stretched link (sibling of the body): wrapping the body in <Link> nested
+    // the hint's <button> inside an <a>, which is invalid interactive content.
     return (
-      <Link
-        to={href}
-        className={cn(
-          'qg-executive-panel group relative block overflow-hidden rounded-xl p-4 text-white no-underline transition hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70',
-        )}
-      >
-        {body}
-      </Link>
+      <div className="qg-executive-panel group relative overflow-hidden rounded-xl p-4 text-white transition focus-within:ring-2 focus-within:ring-cyan-300/70 hover:-translate-y-0.5 motion-reduce:hover:translate-y-0">
+        <Link
+          to={href}
+          aria-label={`${label}: ${unmeasured ? 'not measured' : value}${detail ? ` — ${detail}` : ''}`}
+          className="absolute inset-0 z-0 rounded-xl no-underline focus-visible:outline-none"
+        />
+        <div className="pointer-events-none relative">{body}</div>
+      </div>
     );
   }
   return <div className="qg-executive-panel relative overflow-hidden rounded-xl p-4 text-white">{body}</div>;
@@ -988,6 +1013,60 @@ export function PanelEmpty({ children }: { children: ReactNode }) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Evidence sources                                                    */
+/* ------------------------------------------------------------------ */
+
+const READ_COPY: Record<SourceRead['state'], { glyph: string; word: string; tone: string }> = {
+  ok: { glyph: '✓', word: 'read', tone: 'text-emerald-300' },
+  empty: { glyph: '○', word: 'no records', tone: 'text-white/45' },
+  truncated: { glyph: '◐', word: 'capped', tone: 'text-amber-300' },
+  unavailable: { glyph: '✕', word: 'could not be read', tone: 'text-red-300' },
+};
+
+/**
+ * Which sources this page actually read, and how each read went.
+ *
+ * A failed query degrades to an empty list so one broken table never blanks
+ * the page — which is exactly why it must be SAID: without this strip a failed
+ * read rendered as "0 certificates" / "no findings", indistinguishable from a
+ * clean estate (common-issues #64).
+ */
+export function EvidenceReads({ reads }: { reads: SourceRead[] | undefined }) {
+  if (!reads?.length) return null;
+  const failed = reads.filter((read) => read.state === 'unavailable');
+  const ordered = [...reads].sort((a, b) => Number(b.state === 'unavailable') - Number(a.state === 'unavailable'));
+  return (
+    <section
+      aria-label="Evidence sources"
+      className={cn(
+        'rounded-xl border px-3.5 py-2.5',
+        failed.length ? 'border-red-400/35 bg-red-500/[0.06]' : 'border-white/10 bg-white/[0.02]',
+      )}
+    >
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+        <span className="text-[8.5px] font-black uppercase tracking-[0.18em] text-white/45">Evidence sources</span>
+        {ordered.map((read) => {
+          const copy = READ_COPY[read.state];
+          return (
+            <span key={read.key} className="inline-flex items-center gap-1.5 text-[10.5px] text-white/60" title={`${read.key}: ${read.detail}`}>
+              <span className={cn('font-black', copy.tone)} aria-hidden="true">{copy.glyph}</span>
+              {read.label}
+              {read.state !== 'ok' ? <span className={cn('text-[9.5px]', copy.tone)}>· {copy.word}</span> : null}
+            </span>
+          );
+        })}
+      </div>
+      {failed.length ? (
+        <p role="alert" className="mt-1.5 text-[10.5px] leading-relaxed text-red-300">
+          {failed.length} source{failed.length === 1 ? '' : 's'} could not be read ({failed.map((read) => read.label).join(', ')}). Figures that depend on{' '}
+          {failed.length === 1 ? 'it' : 'them'} are incomplete — they are not measurements of zero.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Table shell                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -1113,7 +1192,7 @@ export function Drawer({ open, title, subtitle, onClose, children }: { open: boo
 /* Provenance footer - every page states where its numbers came from   */
 /* ------------------------------------------------------------------ */
 
-export function ProvenanceFooter({ telemetry }: { telemetry: TelemetryLike | null }) {
+export function ProvenanceFooter({ telemetry, reads }: { telemetry: TelemetryLike | null; reads?: SourceRead[] }) {
   if (!telemetry) return null;
   const entries = Object.entries(telemetry.sourceCounts).filter(([, count]) => count > 0);
   return (
@@ -1124,6 +1203,8 @@ export function ProvenanceFooter({ telemetry }: { telemetry: TelemetryLike | nul
       >
         Evidence provenance
       </SectionLabel>
+      {/* Read outcome first: a FAILED read is not the same as an empty table. */}
+      {reads?.length ? <div className="mb-3"><EvidenceReads reads={reads} /></div> : null}
       {entries.length === 0 ? (
         <PanelEmpty>No tenant rows were available to this page.</PanelEmpty>
       ) : (

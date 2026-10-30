@@ -275,7 +275,9 @@ assert(/const riskLevel = assetMap\.has\(job\.asset_id\) \? evidenceRiskLevel\(i
 assert(/riskLevel: evidenceRiskLevel\(invItems, expItems, sourceAlgorithm\)/.test(sandboxSrc), 'the Simulation Builder uses the same function (one rule)')
 assert(!/riskScore: Number\(summary\.riskScore/.test(sandboxSrc), 'snapshots no longer read the removed summary.riskScore (recorded 0 = perfect)')
 assert(/quantumRiskScore: typeof summary\.quantumRiskScore === 'number' \? summary\.quantumRiskScore : null/.test(sandboxSrc), 'snapshots record the canonical score or null')
-assert(/select\('id, status, approval:metadata->approval'\)/.test(sandboxSrc), 'plan approvals are projected, not the whole plan metadata blob')
+const fleetSrc = readFileSync('src/api-server/operational-fleet.ts', 'utf8')
+assert(/select\('id, status, approval:metadata->approval, plan_name:metadata->>name, plan_title:metadata->>planName'\)/.test(fleetSrc) && /loadPlanApprovalsShared\(client, userId, jobs, '\[sandbox\]'\)/.test(sandboxSrc),
+  'plan approvals are projected (shared loader, also used by the orchestration snapshot), not the whole plan metadata blob')
 assert(/\['failed', 'error', 'errored', 'rollback_failed', 'validation_failed'\]\.includes\(v\)\) return 'failed'/.test(sandboxSrc),
   'rollback_failed / validation_failed read as failed (as in Live Migration), not as queued')
 

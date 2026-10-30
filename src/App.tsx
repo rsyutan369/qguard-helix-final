@@ -41,6 +41,7 @@ import CompliancePage from './app/dashboard/compliance/page';
 import LiveMigrationOps from './app/dashboard/live_migration_ops/page';
 import DriftDetection from './app/dashboard/drift_detection/page';
 import ScannerDashboard from './app/dashboard/scanner_dashboard/page';
+import AgentsCollectorPage from './app/dashboard/agents_collector/page';
 import ProfileSettingsPage from './app/dashboard/settings/page';
 import AdminDashboardPage from './app/dashboard/admin/page';
 
@@ -229,6 +230,7 @@ export default function App() {
 
           <Route path="scanner" element={<ScannerDashboard />} />
           <Route path="scanner_dashboard" element={<ScannerDashboard />} />
+          <Route path="agents" element={<AgentsCollectorPage />} />
           
           {/* Quantum Tools */}
           <Route path="keys" element={<EncryptionKeysPage />} />

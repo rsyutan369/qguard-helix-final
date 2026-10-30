@@ -223,6 +223,24 @@ function DrawerBody({ selection, onClose, onAsk, onSimulate }: {
           </Block>
         )}
 
+        {a.scoreFactors.length > 0 && (
+          <Block title="Score, point by point">
+            <ul className="space-y-1">
+              {a.scoreFactors.map((factor, index) => (
+                <li key={index} className="flex items-baseline justify-between gap-3 rounded-lg border border-white/8 bg-black/25 px-2.5 py-1.5" title={factor.basis}>
+                  <span className="text-[10.5px] text-white/65">{factor.label}</span>
+                  <span className={cn('shrink-0 font-mono text-[11px] font-black', factor.points > 0 ? 'text-emerald-300' : factor.points < 0 ? 'text-amber-300' : 'text-white/45')}>
+                    {index === 0 ? factor.points : `${factor.points > 0 ? '+' : ''}${factor.points}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-1 text-[9.5px] text-white/35">
+              Latest operational job: {a.operationalJob ? `${a.operationalJob.status} · ${relativeTime(a.operationalJob.updatedAt)}` : 'none recorded'} · validation {a.validated ? 'passed' : 'not passed'}.
+            </p>
+          </Block>
+        )}
+
         <Block title="Derivation">
           <p className="rounded-lg border border-white/8 bg-black/25 p-2.5 text-[10px] leading-relaxed text-white/45">{a.basis}</p>
         </Block>
@@ -258,6 +276,24 @@ function DrawerBody({ selection, onClose, onAsk, onSimulate }: {
           <Field label="Blockers" value={numberFmt(d.blockers)} mono />
           <Field label="Affected assets" value={numberFmt(d.affectedAssets)} mono />
         </div>
+
+        {d.factors.length > 0 && (
+          <Block title="How the score is built">
+            <ul className="space-y-1">
+              {d.factors.map((factor) => (
+                <li key={factor.key} className="rounded-lg border border-white/8 bg-black/25 px-2.5 py-1.5">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-[10.5px] text-white/70">{factor.label}</span>
+                    <span className="shrink-0 font-mono text-[11px] font-black text-white/85">{factor.measured ? `${factor.value}/100` : 'not measured'}</span>
+                  </div>
+                  <div className="mt-0.5 text-[9.5px] text-white/40">
+                    {factor.measured ? `weight ${Math.round(factor.effectiveWeight * 100)}%` : `nominal weight ${Math.round(factor.weight * 100)}% redistributed`} · {factor.basis}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </Block>
+        )}
 
         {d.score !== null && (
           <Block title="Improvement opportunity">

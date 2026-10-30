@@ -1,5 +1,6 @@
 'use client';
 
+import type { SourceRead } from '@/lib/source-read';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
@@ -53,6 +54,8 @@ interface CommonPayload {
   generatedAt: string;
   latestEvidenceAt: string | null;
   hasData: boolean;
+  /** Outcome of every source read. `unavailable` = the query FAILED, so dependent figures are incomplete, not zero. */
+  reads: SourceRead[];
   stale: boolean;
   staleSinceHours: number | null;
   scores: TrustScore[];
@@ -223,6 +226,9 @@ const REALTIME_TABLES = [
   'compliance_evidence',
 ] as const;
 
+/** Distinguishes realtime channel topics between hook instances. */
+let nextRealtimeInstance = 0;
+
 /** Reconnect backoff bounds for the SSE stream, in milliseconds. */
 const RETRY_MIN_MS = 3_000;
 const RETRY_MAX_MS = 30_000;
@@ -360,6 +366,10 @@ export function useTrustFabricView<T extends TrustFabricPayload>(view: TrustView
         } catch {
           /* malformed frame - ignore rather than blank the page */
         }
+      } else if (eventName === 'trust-fabric-unchanged') {
+        // Re-verified by the server with no content change: freshness advances.
+        setLastSyncedAt(new Date().toISOString());
+        setLive(true);
       } else if (eventName === 'trust-fabric-error') {
         try {
           setError(String(JSON.parse(body)?.message || 'Trust telemetry stream error'));
@@ -412,12 +422,21 @@ export function useTrustFabricView<T extends TrustFabricPayload>(view: TrustView
     };
   }, [token, view, apply]);
 
+  /* ---- Tenant change: nothing from the previous tenant may remain ---- */
+  useEffect(() => {
+    lastGeneratedRef.current = 0;
+    setData(null);
+    setLastSyncedAt(null);
+  }, [user?.id]);
+
   /* ---- Supabase realtime: nudge on the tenant's own writes -------- */
   useEffect(() => {
     if (!user) return;
+    // Unique per user AND hook instance (common-issues #63).
+    const instance = nextRealtimeInstance++;
     const channels = REALTIME_TABLES.map((table) =>
       supabase
-        .channel(`trust-fabric-${view}-${table}`)
+        .channel(`trust-fabric-${view}-${table}-${user.id}-${instance}`)
         .on('postgres_changes', { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` }, queueRefresh)
         .subscribe(),
     );

@@ -44,10 +44,23 @@ export interface IdentityProbeReport extends IdentityDiscoveryResult {
   host: string
 }
 
-interface FetchedDocument {
+export interface FetchedDocument {
   status: number | null
   body: unknown
   error: string | null
+}
+
+/**
+ * A probe that never got an HTTP response (timeout, DNS, TLS, refused) is an
+ * `error`: it proves nothing about the host. Only a probe that DID answer with
+ * a body we could not use is `unparseable`. Folding timeouts into
+ * `unparseable` let a dead host read as "answered, but not identity metadata",
+ * which the Discovery page would then present as proof of absence.
+ */
+export function probeOutcome(fetched: FetchedDocument): ProbeOutcome['outcome'] {
+  if (fetched.body) return 'found'
+  if (fetched.status === null) return 'error'
+  return fetched.error ? 'unparseable' : 'not-found'
 }
 
 /**
@@ -73,6 +86,11 @@ async function fetchDocument(url: string, expect: 'json' | 'xml'): Promise<Fetch
       redirect: 'follow',
     })
 
+    // 401/403 answered, but refused: the document may exist behind an access
+    // policy or WAF. Recording it as "not found" would claim absence unproven.
+    if (response.status === 401 || response.status === 403) {
+      return { status: response.status, body: null, error: `${ACCESS_DENIED_PREFIX} (HTTP ${response.status}) — presence not determined` }
+    }
     if (!response.ok) return { status: response.status, body: null, error: null }
 
     const contentType = String(response.headers.get('content-type') ?? '').toLowerCase()
@@ -96,11 +114,36 @@ async function fetchDocument(url: string, expect: 'json' | 'xml'): Promise<Fetch
     }
     return { status: response.status, body: text, error: null }
   } catch (error) {
-    const message = (error as Error)?.name === 'AbortError' ? 'Probe timed out' : (error as Error)?.message || 'Probe failed'
-    return { status: null, body: null, error: message }
+    return { status: null, body: null, error: describeFetchError(error) }
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** Prefix the Discovery verdict logic keys on for refused probes. */
+export const ACCESS_DENIED_PREFIX = 'Access denied'
+
+const NETWORK_CAUSES: Array<[RegExp, string]> = [
+  [/CERT_HAS_EXPIRED/, 'TLS certificate has expired'],
+  [/ERR_TLS_CERT_ALTNAME_INVALID|HOSTNAME_MISMATCH/, 'TLS certificate does not match the hostname'],
+  [/SELF_SIGNED|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER|CERT_UNTRUSTED|CERT_REVOKED/, 'TLS certificate is not trusted'],
+  [/ENOTFOUND|EAI_AGAIN/, 'DNS lookup failed'],
+  [/ECONNREFUSED/, 'connection refused'],
+  [/ECONNRESET|UND_ERR_SOCKET/, 'connection reset by the host'],
+  [/ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT/, 'connection timed out'],
+]
+
+/**
+ * undici reports every network failure as the bare message "fetch failed"; the
+ * reason lives on `error.cause`. Surfacing it is what makes a failed probe
+ * actionable — "TLS certificate has expired" tells the operator what to fix.
+ */
+export function describeFetchError(error: unknown): string {
+  const err = error as { name?: string; message?: string; cause?: { code?: string; message?: string } } | null
+  if (err?.name === 'AbortError') return 'Probe timed out'
+  const code = `${err?.cause?.code ?? ''} ${err?.cause?.message ?? ''}`
+  for (const [pattern, label] of NETWORK_CAUSES) if (pattern.test(code)) return label
+  return err?.cause?.code ? `Network error (${err.cause.code})` : err?.message || 'Probe failed'
 }
 
 function originFor(hostname: string): string {
@@ -147,7 +190,7 @@ export async function probeIdentityInfrastructure(hostname: string): Promise<Ide
       url,
       method: plan.method,
       httpStatus: fetched.status,
-      outcome: fetched.body ? 'found' : fetched.error ? 'unparseable' : 'not-found',
+      outcome: probeOutcome(fetched),
       detail: fetched.error,
       observedAt,
     })
@@ -173,7 +216,7 @@ export async function probeIdentityInfrastructure(hostname: string): Promise<Ide
       url,
       method: 'jwks',
       httpStatus: fetched.status,
-      outcome: fetched.body ? 'found' : fetched.error ? 'unparseable' : 'not-found',
+      outcome: probeOutcome(fetched),
       detail: fetched.error,
       observedAt,
     })

@@ -33,16 +33,40 @@ import {
 import { useAuth } from '@/contexts/auth-context'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
-import { Link, useSearchParams } from 'react-router-dom'
-import { WorkflowRail } from '@/components/workflow/WorkflowRail'
-import { useMigrationWorkflow } from '@/hooks/use-migration-workflow'
-import LiveMigrationEnhancements, { type LiveMigrationEnhancementsProps } from './_enhancements'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import CryptoUpgradePanel, { targetStandard, type CryptoTransition } from './_crypto-upgrade'
 import { SnapshotManager } from './_snapshots'
 import { ReportExportMenu } from '../_components/InventoryExportMenu'
 import { buildMigrationReport } from '@/services/reporting/MigrationReport'
-import OrchestrationPanel from './_orchestration'
-import { Archive } from 'lucide-react'
+import { Archive, FileJson, History as HistoryIcon } from 'lucide-react'
 import type { ApprovalVerdict } from '@/lib/migration/job-safety'
+import {
+  AGENT_META,
+  SCAN_STAGE_LABEL,
+  deriveRisks,
+  safetyChecklist,
+  type AgentWorkflowModel,
+  type EventSeverity,
+  type WorkflowAgentId,
+  type WorkflowEvent,
+} from '@/lib/migration/agent-workflow'
+import WorkflowCanvas from './_workflow-canvas'
+import ScanRunPanel from './_scan-run-panel'
+import {
+  AgentInsightsPanel,
+  AgentMetricsPanel,
+  CONNECTION_META,
+  ExecutionLogs,
+  ExecutionTimeline,
+  NotificationStack,
+  RisksPanel,
+  SafetyChecklistPanel,
+  VulnerabilitySummaryPanel,
+  WorkflowHeader,
+  type ConnectionState,
+  type WorkflowNotification,
+} from './_workflow-panels'
+import { PANEL, type AgentLiveActivity } from './_workflow-ui'
 
 type LiveMigrationStatus =
   | 'running'
@@ -79,6 +103,8 @@ type LiveMigrationJob = {
   migrationType: string
   /** Raw job_type; the operation class is decided from this server-side. */
   jobType: string
+  /** Which agent role may execute it (server: `jobExecutionClass`). */
+  executionClass?: 'migration' | 'remediation'
   status: LiveMigrationStatus
   rawStatus: string
   progress: number
@@ -189,6 +215,55 @@ type LiveMigrationSnapshot = {
       complianceLogs: number
     }
   }
+  /** Four-agent workflow derived server-side (src/lib/migration/agent-workflow.ts). */
+  agentWorkflow?: AgentWorkflowModel
+  /** Optional enrichment reads that failed — shown as Unknown, never as zero. */
+  workflowDegraded?: { heartbeats: boolean; exposures: boolean; inventory: boolean }
+  /** Execution runs (migration plans) for the run selector. */
+  runs?: Array<{ id: string; status: string; createdAt: string | null; updatedAt: string | null }>
+}
+
+/** A frame pushed on the live stream by the agent event bus (server-sequenced id). */
+type AgentStreamFrame = { id: number; name: string; agentId: string | null; at: string; payload: Record<string, unknown> }
+
+const TERMINAL_JOB = new Set(['completed', 'failed', 'cancelled', 'rolled_back'])
+/** Agent-bus frames that only an agent checking in can produce — each proves it is alive. */
+const LIVENESS_FRAMES = new Set(['agent.heartbeat', 'agent.connected', 'agent.scan_progress', 'agent.scan_completed', 'agent.error'])
+/** Frames that describe what the agent is doing right now. */
+const ACTIVITY_FRAMES = new Set(['agent.scan_progress', 'agent.scan_completed', 'agent.error'])
+
+function storedJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = window.localStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as T) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function storeJson(key: string, value: unknown) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // Preferences are a convenience; private mode simply forgets them.
+  }
+}
+
+const NOTIFICATION_TITLE: Array<[RegExp, string]> = [
+  [/^scan\.failed$/, 'Scan failed'],
+  [/^agent\.error$/, 'Agent error'],
+  [/^agent\.degraded$/, 'Evidence publish errors'],
+  [/^agent\.disabled$/, 'Agent disabled'],
+  [/snapshot-gate/, 'Recovery snapshot missing'],
+  [/rollback/, 'Rollback update'],
+  [/validation/, 'Validation failed'],
+  [/^scan\.completed$/, 'Observations outside authorised scope'],
+  [/dispatch|block/, 'Dispatch blocked'],
+]
+
+function notificationTitle(event: WorkflowEvent) {
+  const match = NOTIFICATION_TITLE.find(([pattern]) => pattern.test(event.type))
+  return match ? match[1] : event.type.replace(/[._-]+/g, ' ').replace(/^\w/, (c) => c.toUpperCase())
 }
 
 const EMPTY_SNAPSHOT: LiveMigrationSnapshot = {
@@ -245,10 +320,10 @@ const GLASS =
   'rounded-2xl border border-white/10 bg-white/[0.035] backdrop-blur-xl text-white shadow-[0_18px_60px_rgba(0,0,0,0.35)]'
 const INNER =
   'rounded-xl border border-white/10 bg-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
-const GOLD = '#22d3ee'
-const GREEN = '#34d399'
-const RED = '#f87171'
-const CYAN = '#22d3ee'
+// Theme tokens (live-workflow.css): neon on dark, the hue's dark end on parchment.
+const GOLD = 'var(--lw-cyan)'
+const GREEN = 'var(--lw-green)'
+const RED = 'var(--lw-red)'
 
 function numberFmt(value: number) {
   return new Intl.NumberFormat('en-US').format(value || 0)
@@ -381,8 +456,8 @@ function Sparkline({ values, color = GOLD }: { values: number[]; color?: string 
 
   return (
     <svg viewBox="0 0 100 44" className="h-11 w-24 shrink-0 overflow-visible" aria-hidden="true">
-      <polyline points={points} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      <polyline points={`0,42 ${points} 100,42`} fill={`${color}18`} stroke="none" />
+      <polyline points={points} fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ stroke: color }} />
+      <polyline points={`0,42 ${points} 100,42`} stroke="none" style={{ fill: `color-mix(in srgb, ${color} 9%, transparent)` }} />
     </svg>
   )
 }
@@ -464,8 +539,11 @@ function SeverityDots({ criticality }: { criticality: string }) {
 }
 
 export default function LiveMigrationOperations() {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const planId = searchParams.get('planId')
+  const requestedAgentId = searchParams.get('agentId')
+  const requestedCommandId = searchParams.get('commandId')
   const { session, user } = useAuth()
   const token = session?.access_token
   const [snapshot, setSnapshot] = useState<LiveMigrationSnapshot>(EMPTY_SNAPSHOT)
@@ -484,12 +562,16 @@ export default function LiveMigrationOperations() {
   const [now, setNow] = useState(new Date())
   const [snapshotsOpen, setSnapshotsOpen] = useState(false)
   const [snapshotFocusAsset, setSnapshotFocusAsset] = useState<string | null>(null)
-
-  // Cross-module lifecycle state (same engine that powers the Workflow rail,
-  // Quantum Readiness and Certification pages) — surfaces, in real time,
-  // whether migrated assets are now quantum-secure and eligible for the
-  // Quantum Trust Certification.
-  const { workflow } = useMigrationWorkflow()
+  // Workflow command center (presentation state only — truth is the snapshot).
+  const [selectedAgent, setSelectedAgent] = useState<WorkflowAgentId>('collector')
+  const agentChosenRef = useRef(false)
+  const [highlightedAgent, setHighlightedAgent] = useState<WorkflowAgentId | null>(null)
+  const [latency, setLatency] = useState<{ latest: number | null; series: number[] }>({ latest: null, series: [] })
+  const [liveFrames, setLiveFrames] = useState<AgentStreamFrame[]>([])
+  const [dismissed, setDismissed] = useState<string[]>(() => storedJson('qg.liveMigration.dismissed', [] as string[]))
+  const [minSeverity, setMinSeverity] = useState<'warning' | 'error'>(() => storedJson('qg.liveMigration.minSeverity', 'warning' as 'warning' | 'error'))
+  const insightsRef = useRef<HTMLDivElement>(null)
+  const jobsRef = useRef<HTMLElement>(null)
 
   const authHeaders = useMemo(() => ({
     'Content-Type': 'application/json',
@@ -512,9 +594,13 @@ export default function LiveMigrationOperations() {
   const fetchSnapshot = useCallback(async () => {
     if (!token) return
     try {
+      const started = performance.now()
       const res = await fetch(`/api/v1/migration/live${planQuery ? `?${planQuery}` : ''}`, { headers: authHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const json = await res.json()
+      // Control-plane latency as this browser measured it — a real round trip.
+      const elapsed = Math.round(performance.now() - started)
+      setLatency((current) => ({ latest: elapsed, series: [...current.series, elapsed].slice(-30) }))
       // A 200 with a missing/truncated body must not wipe the dashboard to the
       // empty state — keep last-known-good data and surface the error instead.
       if (!json?.data) throw new Error('Snapshot response was empty or malformed')
@@ -550,6 +636,17 @@ export default function LiveMigrationOperations() {
         setLoading(false)
       } catch (error) {
         console.error('Invalid live migration stream payload:', error)
+      }
+    })
+    // Agent bus frames: server-sequenced, so a reconnect (EventSource resends
+    // Last-Event-ID) replays what was missed; duplicates are dropped by id.
+    source.addEventListener('agent-event', (event) => {
+      try {
+        const frame = JSON.parse((event as MessageEvent).data) as AgentStreamFrame
+        if (!frame || typeof frame.id !== 'number') return
+        setLiveFrames((current) => (current.some((item) => item.id === frame.id) ? current : [frame, ...current].slice(0, 100)))
+      } catch (error) {
+        console.error('Invalid agent stream frame:', error)
       }
     })
     return () => {
@@ -820,181 +917,325 @@ export default function LiveMigrationOperations() {
     },
   ] as const
 
-  // Real-time certification posture, derived from the shared workflow engine
-  // (in-sync with Assets, CBOM, Quantum Readiness and the Certification page).
-  const certReadiness = workflow?.certificationReadinessPct ?? 0
-  const certEligible = workflow?.certificationEligible ?? false
-  const certColor = certEligible ? GREEN : certReadiness >= 60 ? '#f59e0b' : certReadiness >= 30 ? '#fb923c' : RED
-
-  // ---- Enterprise enhancement band props (all derived from REAL data) -------
-  const enhancements = useMemo<LiveMigrationEnhancementsProps>(() => {
-    const s = snapshot.summary
-    const t = snapshot.telemetry
-    const migrated = s.completed
-    const remaining = Math.max(0, s.total - s.completed)
-    const pct = s.completionRate || (s.total ? Math.round((s.completed / s.total) * 100) : 0)
-    const runningEta = snapshot.jobs.find((j) => j.status === 'running' && j.eta && j.eta !== 'Pending')?.eta
-    const etaLabel = pct >= 100 ? 'Complete' : runningEta || (s.running > 0 ? 'Calculating…' : remaining > 0 ? 'Awaiting start' : '—')
-
-    // Before → After: aggregate real job transitions, else the canonical PQC upgrade paths.
-    const pairMap = new Map<string, { from: string; to: string; count: number }>()
+  // Before → After: algorithm transitions recorded on real (non-sandbox) jobs.
+  const transitions = useMemo<CryptoTransition[]>(() => {
+    const pairs = new Map<string, CryptoTransition>()
     for (const job of snapshot.jobs) {
+      if (job.isSandbox) continue
       const from = (job.fromAlgo || '').trim()
       const to = (job.toAlgo || '').trim()
       if (!from || !to) continue
       const key = `${from}->${to}`
-      const cur = pairMap.get(key) || { from, to, count: 0 }
-      cur.count += 1
-      pairMap.set(key, cur)
+      const pair = pairs.get(key) || { from, to, standard: targetStandard(to), jobs: 0, completed: 0 }
+      pair.jobs += 1
+      if (job.status === 'completed') pair.completed += 1
+      pairs.set(key, pair)
     }
-    const CANONICAL: LiveMigrationEnhancementsProps['transitions'] = [
-      { from: 'RSA-2048', to: 'ML-KEM-768', standard: 'FIPS 203 · key establishment', count: 0, detected: false },
-      { from: 'TLS 1.2', to: 'TLS 1.3 Hybrid', standard: 'RFC 8446 + FIPS 203', count: 0, detected: false },
-      { from: 'ECC / ECDSA', to: 'ML-DSA-65', standard: 'FIPS 204 · signatures', count: 0, detected: false },
-      { from: 'SHA-1', to: 'SHA3-512', standard: 'FIPS 202 · hashing', count: 0, detected: false },
-      { from: 'AES-128', to: 'AES-256-GCM', standard: 'FIPS 197 · symmetric', count: 0, detected: false },
-    ]
-    const transitions = pairMap.size
-      ? Array.from(pairMap.values()).slice(0, 6).map((p) => ({ from: p.from, to: p.to, standard: 'NIST post-quantum upgrade', count: p.count, detected: true }))
-      : CANONICAL
+    return Array.from(pairs.values()).sort((a, b) => b.jobs - a.jobs).slice(0, 6)
+  }, [snapshot.jobs])
 
-    // AI Migration Advisor — deterministic, evidence-grounded.
-    const residualRisk = certEligible || certReadiness >= 90 ? 'LOW' : certReadiness >= 50 ? 'MODERATE' : remaining > 0 || s.findings > 0 ? 'ELEVATED' : 'LOW'
-    const residualTone = residualRisk === 'LOW' ? GREEN : residualRisk === 'MODERATE' ? '#f59e0b' : RED
-    const nextSat = new Date(now)
-    nextSat.setDate(nextSat.getDate() + ((6 - nextSat.getDay() + 7) % 7 || 7))
-    const maintenanceWindow = `${nextSat.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} · 02:00`
-    const estEffortHours = Math.max(0, Math.round(((remaining + s.running) * 0.4 + s.findings * 0.05) * 10) / 10)
-    const advisor: LiveMigrationEnhancementsProps['advisor'] = {
-      headline: certEligible
-        ? 'Estate is quantum-safe — ready to certify.'
-        : remaining > 0 || s.running > 0
-          ? `${numberFmt(remaining + s.running)} asset(s) still to reach quantum-safe.`
-          : s.findings > 0
-            ? `${numberFmt(s.findings)} quantum-vulnerable finding(s) to remediate.`
-            : 'Run a scan and build a plan to begin migration.',
-      recommendation: certEligible
-        ? 'All required criteria are met — issue the Quantum Trust Certificate from the Certification page.'
-        : s.waitingForAgent > 0
-          ? `${numberFmt(s.waitingForAgent)} job(s) are waiting for a collector — deploy an agent to execute the upgrades.`
-          : 'Sequence the highest-risk assets first via the Remediation roadmap, then execute in a low-traffic window.',
-      lines: [
-        `${numberFmt(s.verified)} asset(s) validated quantum-secure · ${numberFmt(s.agentBacked)} agent-backed`,
-        s.criticalExposures > 0 ? `${numberFmt(s.criticalExposures)} critical exposure(s) prioritized first` : 'No critical exposures outstanding',
-        `Certification readiness ${certReadiness}% (${workflow?.stages.find((x) => x.id === 'certification')?.detail || 'evidence-driven'})`,
-      ],
-      residualRisk,
-      residualTone,
-      maintenanceWindow,
-      estEffort: estEffortHours > 0 ? `≈${estEffortHours}h` : '—',
-      route: '/dashboard/quantum-readiness/remediation',
+  /* ---------------- Four-agent workflow command center ---------------- */
+
+  const model = snapshot.agentWorkflow ?? null
+
+  // Open on the stage that is actually doing something, until the operator picks one.
+  useEffect(() => {
+    if (!agentChosenRef.current && model?.currentStage) setSelectedAgent(model.currentStage)
+  }, [model?.currentStage])
+
+  const selectAgent = useCallback((id: WorkflowAgentId) => {
+    agentChosenRef.current = true
+    setSelectedAgent(id)
+  }, [])
+
+  useEffect(() => {
+    if (!requestedAgentId || !requestedCommandId) return
+    document.getElementById('agent-workflow')?.scrollIntoView({ block: 'start', behavior: 'auto' })
+  }, [requestedAgentId, requestedCommandId])
+
+  const selectedNode = model ? model.nodes.find((node) => node.id === selectedAgent) || model.nodes[0] : null
+
+  // Frames pushed after the snapshot was built are not in it yet; older ones
+  // are already persisted in `model.events`, so they are dropped, not doubled.
+  const liveEvents = useMemo<WorkflowEvent[]>(() => {
+    if (!model) return []
+    const roleOf = new Map<string, WorkflowAgentId>()
+    for (const node of model.nodes) for (const agent of node.fleet.agents) roleOf.set(agent.id, node.id)
+    const cutoff = Date.parse(model.generatedAt)
+    return liveFrames
+      .filter((frame) => Date.parse(frame.at) > cutoff && frame.name !== 'agent.heartbeat' && frame.agentId && roleOf.has(frame.agentId))
+      .map((frame) => {
+        const stage = typeof frame.payload.stage === 'string' ? frame.payload.stage : ''
+        const message = typeof frame.payload.message === 'string' && frame.payload.message
+          ? frame.payload.message
+          : stage ? SCAN_STAGE_LABEL[stage] || stage : frame.name.replace('agent.', '').replace(/_/g, ' ')
+        const severity: EventSeverity = /error|failed/.test(frame.name) || stage === 'scan_failed' ? 'error' : /completed/.test(frame.name) ? 'success' : 'info'
+        return {
+          id: `live-${frame.id}`,
+          at: frame.at,
+          agent: roleOf.get(frame.agentId!)!,
+          type: frame.name,
+          severity,
+          message,
+          status: severity === 'error' ? 'failed' : /completed/.test(frame.name) ? 'completed' : /started|progress/.test(frame.name) ? 'running' : null,
+          jobId: null,
+          agentId: frame.agentId!,
+          asset: typeof frame.payload.target === 'string' ? frame.payload.target : null,
+          correlationId: `${frame.agentId}:${frame.id}`,
+          source: 'heartbeat',
+          progress: typeof frame.payload.progress === 'number' ? frame.payload.progress : null,
+          detail: frame.payload,
+        } satisfies WorkflowEvent
+      })
+  }, [liveFrames, model])
+
+  const allEvents = useMemo(() => [...liveEvents, ...(model?.events || [])], [liveEvents, model])
+
+  // Per-agent view of the bus frames that arrived after the snapshot: they
+  // advance each deployed agent's presence and activity line on the workflow
+  // tree immediately; the agent's state follows with the next snapshot.
+  const liveByAgent = useMemo<Record<string, AgentLiveActivity>>(() => {
+    const out: Record<string, AgentLiveActivity> = {}
+    if (!model) return out
+    const cutoff = Date.parse(model.generatedAt)
+    for (const frame of liveFrames) { // newest first
+      if (!frame.agentId || !(Date.parse(frame.at) > cutoff)) continue
+      const entry = (out[frame.agentId] ??= { seenAt: null, message: null, messageAt: null, progress: null, severity: null, disconnected: false })
+      if (frame.name === 'agent.disconnected') {
+        entry.disconnected = true
+        continue
+      }
+      if (LIVENESS_FRAMES.has(frame.name) && !entry.seenAt) entry.seenAt = frame.at
+      if (!ACTIVITY_FRAMES.has(frame.name) || entry.messageAt) continue
+      const stage = typeof frame.payload.stage === 'string' ? frame.payload.stage : ''
+      const error = typeof frame.payload.error === 'string' ? frame.payload.error : ''
+      entry.messageAt = frame.at
+      entry.message = frame.name === 'agent.error'
+        ? error ? `Agent reported: ${error}` : 'Agent reported an error'
+        : typeof frame.payload.message === 'string' && frame.payload.message ? frame.payload.message : SCAN_STAGE_LABEL[stage] || stage || 'Scan frame received'
+      entry.progress = typeof frame.payload.progress === 'number' && Number.isFinite(frame.payload.progress) ? Math.max(0, Math.min(100, Math.round(frame.payload.progress))) : null
+      entry.severity = frame.name === 'agent.error' || stage === 'scan_failed' ? 'error' : frame.name === 'agent.scan_completed' ? 'success' : 'info'
     }
+    return out
+  }, [liveFrames, model])
 
-    // Certification domains from REAL migration telemetry categories.
-    const domainStatus = (value: number): 'done' | 'running' | 'pending' => (value > 0 && s.completed > 0 ? 'done' : value > 0 ? 'running' : 'pending')
-    const certification: LiveMigrationEnhancementsProps['certification'] = {
-      pct: certReadiness,
-      eligible: certEligible,
-      domains: [
-        { label: 'TLS / Transport', status: domainStatus(t.tlsHandshakeEvents) },
-        { label: 'Certificates / PKI', status: domainStatus(t.certificateReplacements) },
-        { label: 'Keys / KMS', status: domainStatus(t.keyRotations) },
-        { label: 'PQC Validation', status: domainStatus(t.pqcValidationEvents) },
-        { label: 'Compatibility', status: domainStatus(t.compatibilityChecks) },
-        { label: 'Overall Readiness', status: certEligible ? 'done' : certReadiness > 0 ? 'running' : 'pending' },
-      ],
+  const historical = Boolean(planId) && snapshot.jobs.length > 0 && snapshot.jobs.every((job) => TERMINAL_JOB.has(job.status))
+  const connection: ConnectionState = historical
+    ? 'historical'
+    : streamConnected ? 'live' : snapshotAgeSeconds > 120 ? 'stale' : 'reconnecting'
+
+  const risks = useMemo(() => (model ? deriveRisks(model, snapshot.jobs) : []), [model, snapshot.jobs])
+  const checklist = useMemo(() => (model && selectedJob ? safetyChecklist(selectedJob, model) : []), [model, selectedJob])
+
+  const notifications = useMemo<WorkflowNotification[]>(() => {
+    if (!model) return []
+    const dayAgo = Date.parse(model.generatedAt) - 24 * 60 * 60 * 1000
+    const severe = (severity: EventSeverity) => (minSeverity === 'error' ? ['error', 'critical'] : ['warning', 'error', 'critical']).includes(severity)
+    const fromEvents: WorkflowNotification[] = allEvents
+      .filter((event) => severe(event.severity) && Date.parse(event.at) >= dayAgo)
+      .map((event) => ({
+        id: event.id,
+        title: notificationTitle(event),
+        message: event.asset ? `${event.message} · ${event.asset}` : event.message,
+        severity: event.severity,
+        at: event.at,
+        agent: event.agent,
+        live: event.id.startsWith('live-'),
+        action: { label: event.jobId ? 'Review' : 'Investigate', href: event.jobId ? `#job:${event.jobId}` : `#agent:${event.agent}` },
+      }))
+    const approvals: WorkflowNotification[] = minSeverity === 'warning'
+      ? snapshot.jobs
+          .filter((job) => !job.isSandbox && job.approval.required && !job.approval.approved && job.approval.state !== 'rejected' && ['queued', 'paused'].includes(job.status))
+          .slice(0, 3)
+          .map((job) => ({
+            id: `approval-${job.id}`,
+            title: 'Migration approval required',
+            message: `${job.asset}: ${job.fromAlgo} → ${job.toAlgo}. No agent will change this asset until it is approved.`,
+            severity: 'warning' as EventSeverity,
+            at: job.updatedAt,
+            agent: (job.executionClass === 'remediation' ? 'patcher' : 'operator') as WorkflowAgentId,
+            live: false,
+            action: { label: 'Review', href: `#job:${job.id}` },
+          }))
+      : []
+    const hidden = new Set(dismissed)
+    return [...approvals, ...fromEvents]
+      .filter((item) => !hidden.has(item.id))
+      .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
+      .slice(0, 6)
+  }, [allEvents, dismissed, minSeverity, model, snapshot.jobs])
+
+  const dismissNotification = useCallback((id: string) => {
+    setDismissed((current) => {
+      const next = [id, ...current].slice(0, 300)
+      storeJson('qg.liveMigration.dismissed', next)
+      return next
+    })
+  }, [])
+
+  const changeMinSeverity = useCallback((value: 'warning' | 'error') => {
+    setMinSeverity(value)
+    storeJson('qg.liveMigration.minSeverity', value)
+  }, [])
+
+  const scrollTo = (element: HTMLElement | null) => element?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' })
+
+  const handleNavigate = useCallback((href: string, agent?: WorkflowAgentId | null) => {
+    if (href === '#jobs') return scrollTo(jobsRef.current)
+    if (href === '#snapshots') {
+      setSnapshotFocusAsset(selectedJob?.asset || null)
+      setSnapshotsOpen(true)
+      return
     }
-
-    /*
-     * Every tile counts one measured thing, and says which.
-     *
-     * Corrected here:
-     *  • Success rate read 100% with nothing completed or failed — a success
-     *    claim made from no data at all. It is now "—" until an outcome exists.
-     *  • "Assets Protected — Validated" fell back to `completed`, so unvalidated
-     *    completions were reported as validated.
-     *  • "Critical Systems Protected" was `completed − failed`, which has nothing
-     *    to do with criticality. It now counts validated completions on assets
-     *    whose recorded criticality is critical or high.
-     *  • Quantum Readiness, Audit Readiness and Compliance were the SAME number
-     *    presented as three independent measurements. The duplicates are replaced
-     *    by two counters this page genuinely owns.
-     */
-    const validatedCompleted = snapshot.jobs.filter((job) => !job.isSandbox && job.status === 'completed' && /^(passed|pass|success|successful|validated|valid|verified)$/.test(String(job.validationStatus || '').toLowerCase()))
-    const outcomes = s.completed + s.failed
-    const kpis: LiveMigrationEnhancementsProps['kpis'] = [
-      { label: 'Assets Protected', value: numberFmt(s.verified), hint: 'Migrations with a passing validation', tone: GREEN },
-      { label: 'Validated Migrations', value: numberFmt(validatedCompleted.length), hint: 'Completed and re-scan validated', tone: CYAN },
-      {
-        label: 'Migration Success Rate',
-        value: outcomes > 0 ? `${Math.round((s.completed / outcomes) * 100)}%` : '—',
-        hint: outcomes > 0 ? `${numberFmt(s.completed)} completed · ${numberFmt(s.failed)} failed` : 'No completed or failed migrations yet',
-        tone: outcomes > 0 ? GREEN : '#94a3b8',
-      },
-      { label: 'Quantum Readiness', value: `${certReadiness}%`, hint: 'Toward certification', tone: certColor },
-      {
-        label: 'Critical Systems Protected',
-        value: numberFmt(validatedCompleted.filter((job) => ['critical', 'high'].includes(String(job.criticality || '').toLowerCase())).length),
-        hint: 'Validated on critical / high assets',
-        tone: '#a78bfa',
-      },
-      { label: 'Certificates Upgraded', value: numberFmt(t.certificateReplacements), hint: 'Validated certificate migrations', tone: '#38bdf8' },
-      { label: 'Key Rotations', value: numberFmt(t.keyRotations), hint: 'Validated key rotations', tone: '#f59e0b' },
-      {
-        label: 'Awaiting Approval',
-        value: numberFmt(s.awaitingApproval),
-        hint: 'No agent takes these until approved',
-        tone: s.awaitingApproval > 0 ? '#fbbf24' : '#94a3b8',
-      },
-      { label: 'Rolled Back', value: numberFmt(s.rolledBack), hint: 'Executor-confirmed restores', tone: '#a78bfa' },
-      { label: 'Active Migrations', value: numberFmt(s.running), hint: 'In progress now', tone: CYAN },
-    ]
-
-    const success: LiveMigrationEnhancementsProps['success'] = {
-      show: pct >= 100 && s.total > 0 && certEligible,
-      assetsProtected: s.verified,
-      highlights: ['TLS Updated', 'Certificates Migrated', 'Keys Rotated', 'PKI Modernized', 'Validation Passed'],
+    if (href.startsWith('#job:')) {
+      setSelectedJobId(href.slice(5))
+      return scrollTo(jobsRef.current)
     }
-
-    return {
-      progress: { pct, migrated, remaining, verified: s.verified, total: s.total, inProgress: s.running, failed: s.failed, etaLabel, speedLabel: null },
-      readinessPct: certReadiness,
-      kpis,
-      transitions,
-      advisor,
-      certification,
-      success,
+    if (href.startsWith('#agent:')) {
+      selectAgent(href.slice(7) as WorkflowAgentId)
+      return scrollTo(insightsRef.current)
     }
-  }, [snapshot, workflow, certReadiness, certEligible, certColor, now])
+    if (agent && href === '#') selectAgent(agent)
+    if (href.startsWith('/')) navigate(href)
+  }, [navigate, selectAgent, selectedJob?.asset])
+
+  const showAgentOutput = useCallback((id: WorkflowAgentId) => {
+    selectAgent(id)
+    scrollTo(insightsRef.current)
+  }, [selectAgent])
+
+  const unfinishedJobIds = snapshot.jobs.filter((job) => !TERMINAL_JOB.has(job.status) && job.status !== 'rolling_back').map((job) => job.id)
+  const workflowControls = {
+    canPause: snapshot.summary.running + snapshot.summary.queued > 0,
+    canResume: snapshot.summary.paused > 0,
+    canCancel: unfinishedJobIds.length > 0,
+    pending: actionPending,
+    pauseReason: 'Nothing is running or queued in this scope. Collector and Scanner schedules are controlled per agent in the Agent Center.',
+    onPause: () => void runBulkAction('pause'),
+    onResume: () => void runBulkAction('resume'),
+    onCancel: () => setConfirm({ mode: 'cancel', ids: unfinishedJobIds, includeCompleted: false }),
+  }
+
+  const moreActions = [
+    { label: 'Export logs (CSV)', icon: ArrowDownToLine, onClick: () => void downloadExport('csv'), disabled: actionPending.startsWith('export:') },
+    { label: 'Export record (JSON)', icon: FileJson, onClick: () => void downloadExport('json'), disabled: actionPending.startsWith('export:') },
+    { label: 'Snapshots', icon: Archive, onClick: () => { setSnapshotFocusAsset(null); setSnapshotsOpen(true) } },
+    { label: 'Rollback selected job', icon: RotateCcw, tone: 'var(--lw-amber)', onClick: () => { setSnapshotFocusAsset(selectedJob?.asset || null); setSnapshotsOpen(true) }, disabled: !selectedJob },
+    { label: 'Retry failed jobs', icon: RefreshCcw, onClick: () => void runBulkAction('retry'), disabled: snapshot.summary.failed === 0 },
+    { label: 'Audit trail', icon: ShieldCheck, onClick: () => navigate('/dashboard/audit-vault') },
+    { label: 'Agent Center', icon: Server, onClick: () => navigate('/downloads') },
+  ]
 
   return (
-    <div className="min-h-[calc(100vh-64px)] space-y-3 p-3 text-white sm:p-4 lg:p-5">
-      <WorkflowRail activeStage="execution" />
+    <div id="agent-workflow" className="qg-lw grid min-h-[calc(100vh-64px)] scroll-mt-20 grid-cols-[minmax(0,1fr)] gap-3 overflow-x-hidden p-3 text-white sm:p-4 lg:scroll-mt-5 lg:p-5">
+      {requestedAgentId && requestedCommandId ? <ScanRunPanel key={`${requestedAgentId}:${requestedCommandId}`} agentId={requestedAgentId} commandId={requestedCommandId} onRole={selectAgent} /> : null}
+      {model ? (
+        <>
+          <WorkflowHeader
+            model={model}
+            connection={connection}
+            ageLabel={snapshotAgeLabel}
+            now={now.getTime()}
+            runs={snapshot.runs || []}
+            planId={planId}
+            onSelectRun={(id) => setSearchParams(id ? { planId: id } : {})}
+            controls={workflowControls}
+            moreActions={moreActions}
+          />
 
-      {/* Enterprise enhancement band — business-outcome hero, exec KPIs,
-          Before → After, AI Migration Advisor, story & certification progress
-          (all derived from the real live snapshot + workflow). */}
-      <LiveMigrationEnhancements {...enhancements} />
+          {snapshot.workflowDegraded && (snapshot.workflowDegraded.heartbeats || snapshot.workflowDegraded.exposures || snapshot.workflowDegraded.inventory) && (
+            <div className="flex items-center gap-2 rounded-xl border border-[#fbbf24]/30 bg-[#fbbf24]/[0.07] px-4 py-2 text-[12px] text-white/75" role="status">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-[#fbbf24]" />
+              Some evidence could not be read this cycle
+              ({[snapshot.workflowDegraded.heartbeats && 'agent heartbeats', snapshot.workflowDegraded.exposures && 'exposures', snapshot.workflowDegraded.inventory && 'inventory'].filter(Boolean).join(', ')}).
+              Affected values show as Unknown — not zero — until the next snapshot.
+            </div>
+          )}
 
-      {/* Massive-scale orchestration — real distributed scheduling metrics,
-          fault tolerance, worker fleet health & throughput (SSE). */}
-      <OrchestrationPanel enabled={Boolean(token)} />
+          <section className="grid grid-cols-[minmax(0,1fr)] gap-3 2xl:grid-cols-[minmax(0,1fr)_340px]" aria-label="Agent workflow">
+            <div className={cn(PANEL, 'p-3 sm:p-4')}>
+              <div className="mb-3 flex flex-wrap items-center gap-2 px-1">
+                <span className="text-[11px] font-bold uppercase tracking-[0.18em] text-white/45">Collector → Scanner → Patcher → Migration Operator</span>
+                <span className="ml-auto text-[10px] text-white/40">
+                  {model.simulationsExcluded > 0 ? `${model.simulationsExcluded} sandbox simulation(s) excluded — they never run on an agent · ` : ''}
+                  {CONNECTION_META[connection].detail}
+                </span>
+              </div>
+              <p className="mb-3 px-1 text-xs text-white/50">Live fleet · latest collection cycle per agent. Scheduled cycles continue according to each agent’s policy.{requestedCommandId ? ' Your requested scan outcome stays in the receipt above.' : ''}</p>
+              <WorkflowCanvas
+                model={model}
+                now={now.getTime()}
+                selectedAgent={selectedNode?.id || 'collector'}
+                highlightedAgent={highlightedAgent}
+                onSelect={selectAgent}
+                onOutput={showAgentOutput}
+                liveByAgent={liveByAgent}
+                events={allEvents}
+              />
+            </div>
+            <NotificationStack
+              items={notifications}
+              now={now.getTime()}
+              minSeverity={minSeverity}
+              onMinSeverity={changeMinSeverity}
+              onDismiss={dismissNotification}
+              onNavigate={(href, agent) => handleNavigate(href, agent)}
+            />
+          </section>
 
-      <header className="grid gap-3 xl:grid-cols-[1fr_300px_240px] xl:items-center">
-        <div className="flex min-w-0 items-start gap-3">
-          <div className="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-cyan-400/30 bg-cyan-400/10 text-cyan-300">
-            <Diamond className="h-5 w-5" />
-          </div>
-          <div className="min-w-0">
-            <h1 className="truncate text-2xl font-black tracking-tight text-white">
-              Live Migration <span className="text-cyan-300">Operations</span>
-            </h1>
-            <p className="mt-1 text-sm text-white/55">
-              Real-time post-quantum migration — upgrading vulnerable assets to quantum-secure algorithms, with live validation and rollback.
+          <section className="grid grid-cols-[minmax(0,1fr)] gap-3 xl:grid-cols-2 2xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1fr)]">
+            <ExecutionTimeline events={allEvents} truncated={model.eventsTruncated} now={now.getTime()} onOpenJob={(id) => handleNavigate(`#job:${id}`)} />
+            <div className="grid content-start gap-3">
+              {selectedNode && <AgentMetricsPanel node={selectedNode} model={model} latency={latency} />}
+              <VulnerabilitySummaryPanel model={model} degraded={Boolean(snapshot.workflowDegraded?.exposures)} />
+            </div>
+            <div ref={insightsRef} className="xl:col-span-2 2xl:col-span-1">
+              {selectedNode && (
+                <AgentInsightsPanel node={selectedNode} model={model} now={now.getTime()} onNavigate={(href) => handleNavigate(href)} onSelect={selectAgent} />
+              )}
+            </div>
+          </section>
+
+          <section className="grid grid-cols-[minmax(0,1fr)] gap-3 xl:grid-cols-2 2xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1fr)]">
+            <div className="xl:col-span-2 2xl:col-span-1">
+              <ExecutionLogs
+                events={allEvents}
+                streamLabel={CONNECTION_META[connection].label}
+                streamColor={CONNECTION_META[connection].color}
+                onServerExport={(format) => void downloadExport(format)}
+                exportPending={actionPending.startsWith('export:')}
+              />
+            </div>
+            <RisksPanel risks={risks} onHover={setHighlightedAgent} onNavigate={(href, agent) => handleNavigate(href, agent)} />
+            <SafetyChecklistPanel
+              items={checklist}
+              jobs={snapshot.jobs.map((job) => ({ id: job.id, asset: job.asset, status: job.status }))}
+              selectedJobId={selectedJob?.id || ''}
+              onSelectJob={setSelectedJobId}
+            />
+          </section>
+        </>
+      ) : (
+        <section className={cn(PANEL, 'grid min-h-[320px] place-items-center p-8 text-center')} aria-busy={loading}>
+          <div>
+            <HistoryIcon className={cn('mx-auto mb-3 h-9 w-9 text-cyan-300/70', loading && 'animate-pulse')} />
+            <h1 className="text-xl font-black text-white">PQC Migration Workflow</h1>
+            <p className="mt-1 max-w-md text-sm text-white/55">
+              {loading
+                ? 'Loading the agent workflow from recorded execution evidence…'
+                : 'The workflow could not be loaded. The job board below keeps its last confirmed data; the view retries automatically.'}
             </p>
           </div>
-        </div>
+        </section>
+      )}
 
+      <div className="mt-2 flex items-center gap-3 px-1">
+        <Diamond className="h-4 w-4 text-cyan-300" />
+        <h2 className="text-sm font-bold uppercase tracking-[0.18em] text-white/70">Migration Jobs &amp; Cutover Control</h2>
+        <span className="h-px flex-1 bg-gradient-to-r from-white/15 to-transparent" />
+      </div>
+
+      <header className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_300px] xl:items-center">
         <div className={cn(GLASS, 'px-4 py-3')}>
           <div className="relative z-10">
             <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.16em] text-white">
@@ -1010,36 +1251,8 @@ export default function LiveMigrationOperations() {
         </div>
 
         <div className="flex items-center justify-end gap-3">
-          {/*
-            The dot used to be hard-coded green, so a dropped stream rendered a
-            healthy green light beside the word "Syncing". A disconnected feed
-            reads amber, and the age of the data on screen is stated rather than
-            implied — a page that stopped updating at 09:14 must not look live at
-            11:00.
-          */}
-          <div
-            className={cn(
-              INNER,
-              'flex items-center gap-2 px-4 py-2 text-[10px] font-black uppercase tracking-wider',
-              streamConnected ? 'text-[#34d399]' : snapshotAgeSeconds > 120 ? 'text-[#f87171]' : 'text-[#fbbf24]',
-            )}
-            title={
-              streamConnected
-                ? `Live stream connected. Data generated ${snapshotAgeLabel}.`
-                : `The live stream is not connected, so this view is not updating on its own. Data on screen was generated ${snapshotAgeLabel}.`
-            }
-          >
-            <span
-              className={cn(
-                'h-2 w-2 rounded-full',
-                streamConnected
-                  ? 'animate-pulse bg-[#34d399] shadow-[0_0_10px_rgba(48,209,88,0.85)]'
-                  : snapshotAgeSeconds > 120 ? 'bg-[#f87171]' : 'bg-[#fbbf24]',
-              )}
-            />
-            {streamConnected ? 'Live' : snapshotAgeSeconds > 120 ? 'Stale' : 'Reconnecting'}
-            <span className="font-mono normal-case tracking-normal opacity-70">{snapshotAgeLabel}</span>
-          </div>
+          {/* The live/stale indicator lives in the workflow header above, bound
+              to the same stream state, so it is not repeated here. */}
           <div className="text-right font-mono">
             <div className="flex items-center justify-end gap-2 text-xs font-black text-white">
               <Clock3 className="h-4 w-4 text-[#22d3ee]" />
@@ -1137,7 +1350,21 @@ export default function LiveMigrationOperations() {
         <div className={cn(GLASS, 'flex min-h-[236px] flex-col p-4')}>
           <div className="relative z-10 mb-3 flex items-center justify-between gap-3">
             <h3 className="text-[11px] font-black uppercase tracking-[0.18em] text-[#22d3ee]">Real-Time Telemetry</h3>
-            <span className="rounded-full border border-[#34d399]/25 bg-[#34d399]/10 px-3 py-1 text-[9px] font-black uppercase tracking-wider text-[#34d399]">{snapshot.telemetry.systemHealth}</span>
+            {/* Tone follows the server's health verdict; "Degraded" means failed jobs exist. */}
+            <span
+              className={cn(
+                'rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-wider',
+                snapshot.telemetry.systemHealth === 'Degraded'
+                  ? 'border-[#f87171]/25 bg-[#f87171]/10 text-[#f87171]'
+                  : snapshot.telemetry.systemHealth === 'Awaiting Agent'
+                    ? 'border-[#fbbf24]/25 bg-[#fbbf24]/10 text-[#fbbf24]'
+                    : snapshot.telemetry.systemHealth === 'No active migrations'
+                      ? 'border-white/15 bg-white/[0.04] text-white/50'
+                      : 'border-[#34d399]/25 bg-[#34d399]/10 text-[#34d399]',
+              )}
+            >
+              {snapshot.telemetry.systemHealth}
+            </span>
           </div>
           <div className="relative z-10 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
             {[
@@ -1157,7 +1384,7 @@ export default function LiveMigrationOperations() {
           </div>
           <div className="relative z-10 mt-auto flex justify-end pt-12">
             <Link
-              to="/dashboard/scanner?tab=agents"
+              to="/dashboard/agents"
               className="inline-flex h-9 items-center gap-2 rounded-md border border-[#22d3ee]/45 bg-[#22d3ee]/10 px-3 text-[10px] font-black uppercase tracking-[0.12em] text-[#22d3ee] transition hover:border-[#22d3ee]/75 hover:bg-[#22d3ee]/15 hover:text-[#ffe7a3]"
             >
               <Server className="h-3.5 w-3.5" />
@@ -1185,7 +1412,9 @@ export default function LiveMigrationOperations() {
         </div>
       </section>
 
-      <section className="grid gap-3 xl:grid-cols-[440px_minmax(0,1fr)]">
+      <CryptoUpgradePanel transitions={transitions} loading={loading} />
+
+      <section ref={jobsRef} id="jobs" className="grid scroll-mt-4 grid-cols-[minmax(0,1fr)] gap-3 xl:grid-cols-[440px_minmax(0,1fr)]">
         <div className={cn(GLASS, 'overflow-hidden')}>
           <div className="relative z-10 border-b border-[#22d3ee]/10 px-4 py-3">
             <div className="flex items-center justify-between">
@@ -1618,7 +1847,7 @@ export default function LiveMigrationOperations() {
                         <span className="text-white/75">Enroll the collector on the host, add allowedPaths, then enable remediation/config patching after approval.</span>
                       </div>
                     </div>
-                    <Link to="/dashboard/scanner?tab=agents" className="mt-3 inline-flex items-center gap-2 rounded-md border border-[#22d3ee]/25 bg-[#22d3ee]/8 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-[#22d3ee] transition hover:border-[#22d3ee]/55">
+                    <Link to="/dashboard/agents" className="mt-3 inline-flex items-center gap-2 rounded-md border border-[#22d3ee]/25 bg-[#22d3ee]/8 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-[#22d3ee] transition hover:border-[#22d3ee]/55">
                       <Server className="h-3.5 w-3.5" />
                       Open Agent Setup
                     </Link>
@@ -1648,7 +1877,7 @@ export default function LiveMigrationOperations() {
                         <span className="text-white/75">Create the operator patch action, approve it, apply with the owning platform, then resume validation here.</span>
                       </div>
                     </div>
-                    <Link to="/dashboard/scanner?tab=agents" className="mt-3 inline-flex items-center gap-2 rounded-md border border-[#22d3ee]/25 bg-[#22d3ee]/8 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-[#22d3ee] transition hover:border-[#22d3ee]/55">
+                    <Link to="/dashboard/agents" className="mt-3 inline-flex items-center gap-2 rounded-md border border-[#22d3ee]/25 bg-[#22d3ee]/8 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-[#22d3ee] transition hover:border-[#22d3ee]/55">
                       <ListChecks className="h-3.5 w-3.5" />
                       Open Connector Patchers
                     </Link>
@@ -1675,7 +1904,12 @@ export default function LiveMigrationOperations() {
                 </h3>
               </div>
               <div className="ml-auto flex items-center gap-3">
-                <span className="flex items-center gap-2 text-[10px] text-white/65"><span className="h-2 w-2 rounded-full bg-[#34d399]" />Live</span>
+                {/* Bound to the stream, like the header indicator — a dropped
+                    stream must not keep a green "Live" dot on the log. */}
+                <span className="flex items-center gap-2 text-[10px] text-white/65">
+                  <span className={cn('h-2 w-2 rounded-full', streamConnected ? 'bg-[#34d399]' : snapshotAgeSeconds > 120 ? 'bg-[#f87171]' : 'bg-[#fbbf24]')} />
+                  {streamConnected ? 'Live' : snapshotAgeSeconds > 120 ? 'Stale' : 'Reconnecting'}
+                </span>
                 <button type="button" title="Filter logs" className="text-white/35 transition hover:text-[#22d3ee]"><Filter className="h-4 w-4" /></button>
                 <button type="button" title="Export logs" onClick={() => downloadExport('csv')} className="text-white/35 transition hover:text-[#22d3ee]"><Download className="h-4 w-4" /></button>
                 <button type="button" title="Expand log panel" className="text-white/35 transition hover:text-[#22d3ee]"><Maximize2 className="h-4 w-4" /></button>

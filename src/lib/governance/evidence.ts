@@ -404,7 +404,7 @@ export function buildEvidence(inputs: EvidenceInputs): EvidenceRecord[] {
       occurredAt: isoOrNull(row.updated_at || row.created_at),
       recordedAt: isoOrNull(row.created_at),
       controlIds: ['CTL-MON-03', 'CTL-VUL-01'],
-      href: '/dashboard/scanner?tab=agents',
+      href: '/dashboard/agents',
       digestPayload: {
         title: str(row.title),
         severity: str(row.severity),

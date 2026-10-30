@@ -84,6 +84,7 @@ import type {
   TlsVersionLabel,
   TrustChainNode,
 } from './types'
+import { observationBasisFor } from './types'
 
 type Row = Record<string, unknown>
 
@@ -309,6 +310,11 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
       row.downgrade = row.downgrade || Boolean(input.downgrade)
       const nextSeverity = input.severity ? normalizeSeverity(input.severity) : null
       if (nextSeverity && severityRank(nextSeverity) > severityRank(row.severity)) row.severity = nextSeverity
+      // Live traffic is the strongest basis: a fact also seen in real connections is "negotiated".
+      if (observationBasisFor(input.evidence.source) === 'live-traffic') {
+        row.basis = 'live-traffic'
+        row.evidence = input.evidence
+      }
       return
     }
 
@@ -324,6 +330,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
       severity: input.severity ? normalizeSeverity(input.severity) : classified.weaknesses.length ? 'medium' : null,
       observedAt: input.observedAt,
       evidence: input.evidence,
+      basis: observationBasisFor(input.evidence.source),
       handshakes: typeof input.handshakes === 'number' ? input.handshakes : null,
       failed: Boolean(input.failed),
       downgrade: Boolean(input.downgrade),
@@ -433,7 +440,9 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
       evidence,
     })
 
-    // `protocol` on an inventory row is the negotiated version the scanner saw.
+    // `protocol` on an inventory row is a version the scanner's probe completed
+    // a handshake on. The scanner enumerates versions one at a time, so this is
+    // what the server ACCEPTS when offered — not what clients negotiate.
     const version = str(item.protocol)
     if (version) {
       addObservation({
@@ -442,7 +451,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
         algorithm: version,
         componentName: `Protocol: ${version}`,
         observedAt,
-        evidence: { ...evidence, detail: `Negotiated ${version} on ${endpoint.host}` },
+        evidence: { ...evidence, detail: `${version} accepted by ${endpoint.host} when the scanner offered it` },
       })
     }
   }
@@ -979,6 +988,13 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
   }
   for (const row of inputs.scannerAlerts) {
     const metadata = recordOf(row.metadata)
+    // Collector-health alerts ("Scanner agent offline") and findings an agent
+    // made from a config file, library or process are not transport findings.
+    // The first was admitted because its recommendation mentions "outbound
+    // HTTPS", the second because its remediation names ML-KEM; both then sat in
+    // the TLS finding totals and spiked the telemetry timeline on the day the
+    // heartbeat job touched them.
+    if (!isTransportAlert(row, metadata)) continue
     scannerFindingRows.push({
       table: 'scanner_alerts',
       source: 'agent-scan',
@@ -995,8 +1011,11 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
   }
 
   for (const row of scannerFindingRows) {
+    // Relevance is judged on what the finding SAYS it is, not on remediation
+    // prose: advice that mentions HTTPS or ML-KEM does not make a finding a
+    // transport finding.
     const haystack = `${row.title} ${row.description} ${row.algorithm} ${row.remediation}`
-    if (!isTransportRelevant(haystack)) continue
+    if (!isTransportRelevant(`${row.title} ${row.description} ${row.algorithm}`)) continue
 
     const asset = row.assetId ? assetById.get(row.assetId) : undefined
     const endpoint = row.assetId ? endpoints.get(`asset:${row.assetId}`) : undefined
@@ -1113,9 +1132,16 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
      * including it in "TLS 1.3 adoption" would compute a share against a
      * denominator that never had a protocol version to begin with.
      */
-    const hasTransportEvidence = observationsForEndpoint.some(
+    const transportRows = observationsForEndpoint.filter(
       (row) => row.kind === 'protocol' || row.kind === 'cipher-suite' || row.kind === 'key-exchange',
     )
+    const hasTransportEvidence = transportRows.length > 0
+    const transportBases = new Set(transportRows.map((row) => row.basis))
+    const transportBasis: TlsEndpoint['transportBasis'] = !hasTransportEvidence
+      ? null
+      : transportBases.has('live-traffic')
+        ? transportBases.size > 1 ? 'mixed' : 'live-traffic'
+        : 'scanner-probe'
 
     const endpointFindings = [...draft.findingIds].map((id) => findingById.get(id)).filter(Boolean) as TlsFinding[]
     const criticalFindings = endpointFindings.filter((row) => row.severity === 'critical').length
@@ -1184,6 +1210,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
       observationCount: observationsForEndpoint.length,
       handshakeCount,
       hasTransportEvidence,
+      transportBasis,
     })
   }
 
@@ -1241,7 +1268,12 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
     hybridEndpoints,
     pqcEndpoints,
     classicalOnlyEndpoints: classicalOnly,
-    quantumVulnerableEndpoints: measured.filter((endpoint) => endpoint.posture === 'quantum-vulnerable').length,
+    // Every measured endpoint whose key agreement is classical-only. `posture`
+    // is exclusive (a legacy endpoint is "legacy", not "quantum-vulnerable"),
+    // so counting only that one posture printed "0 quantum vulnerable" beside
+    // "2 classical-only" for the same endpoints — a legacy endpoint negotiates
+    // classical key agreement too.
+    quantumVulnerableEndpoints: classicalOnly,
     x25519Observations: kexObservations.filter((row) => /X25519|CURVE25519/i.test(row.observed) && !/ML-?KEM/i.test(row.observed)).length,
     hybridMlKemObservations: kexObservations.filter((row) => row.posture === 'hybrid-ready').length,
     mlKemObservations: kexObservations.filter((row) => /ML-?KEM|KYBER/i.test(row.observed)).length,
@@ -1612,10 +1644,33 @@ function categoryForFinding(text: string, algorithm?: string): TlsFinding['categ
  * dependency CVE belongs on Vulnerabilities. Being explicit here is what stops
  * the certificate inventory filling with library rows.
  */
-function isTransportRelevant(text: string): boolean {
-  return /tls|ssl|https|certificate|cert\b|x509|x\.509|cipher|handshake|issuer|chain|pki|hsts|ocsp|sni|ja3|key exchange|ecdhe|dhe|kem|forward secrecy|downgrade|ldaps|smtps|imaps/i.test(
+/**
+ * Word-bounded on purpose: `dhe`, `kem`, `sni` and `ja3` as bare substrings
+ * matched "adhere", "kemp", "snippet" and asset ids.
+ */
+export function isTransportRelevant(text: string): boolean {
+  return /\b(tls|ssl|https|certificates?|cert|x\.?509|cipher(?:[- ]suites?)?|handshake|issuer|chain|pki|hsts|ocsp|sni|ja3|ecdhe|dhe|forward secrecy|downgrade|ldaps|smtps|imaps)\b|key[- ]exchange|key agreement|\b(ml-?kem|x25519mlkem768)\b/i.test(
     text,
   )
+}
+
+const NON_TRANSPORT_ALERT_CATEGORY = /heartbeat|agent[- ]?health|collector|enrol|install|update|license|quota/i
+const NON_TRANSPORT_EVIDENCE = /config[- ]?reference|crypto[- ]?librar|librar|package|dependenc|file|process|registry|source[- ]?code/i
+
+/**
+ * Does a scanner alert describe a transport / PKI observation?
+ *
+ * Agent-health alerts are excluded by category; agent findings are excluded
+ * when their own evidence says it came from a config file, a library, a
+ * package, a process or source code — the same classes `isTransportEvidence`
+ * already refuses to turn into endpoints.
+ */
+export function isTransportAlert(row: Row, metadata: Record<string, unknown>): boolean {
+  if (NON_TRANSPORT_ALERT_CATEGORY.test(str(row.category))) return false
+  const evidence = recordOf(metadata.evidence)
+  const evidenceSource = `${str(evidence.source)} ${str(metadata.evidenceType)} ${str(metadata.evidence_type)}`
+  if (NON_TRANSPORT_EVIDENCE.test(evidenceSource)) return false
+  return true
 }
 
 function remediationActionsFor(
@@ -1765,7 +1820,16 @@ function buildTrustChains(certificates: PkiCertificate[]): TrustChainNode[] {
     const caKey = commonNameOf(caLabel) || normalize(caLabel)
     let ca = roots.get(caKey)
     if (!ca) {
-      ca = nodeFor(caLabel, issuerCert && normalize(issuerCert.issuer) !== normalize(issuerCert.subject) ? 'intermediate' : 'root', issuerCert || (cert.selfSigned ? cert : null))
+      // Root only when the CA certificate is held and self-issued (or the leaf
+      // itself is self-signed). An issuer known by NAME only is an issuing CA:
+      // public roots may not sign subscriber certificates directly (CA/B Forum
+      // BR §6.1.7). Defaulting it to "root" labelled every intermediate a root.
+      const kind: TrustChainNode['kind'] = cert.selfSigned
+        ? 'root'
+        : issuerCert
+          ? normalize(issuerCert.issuer) !== normalize(issuerCert.subject) ? 'intermediate' : 'root'
+          : 'intermediate'
+      ca = nodeFor(caLabel, kind, issuerCert || (cert.selfSigned ? cert : null))
       roots.set(caKey, ca)
     }
 

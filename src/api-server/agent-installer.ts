@@ -42,6 +42,7 @@ import {
   type ConnectionState,
 } from '@/lib/agent-installer/agent-release'
 import { commandHistory, commandQueue, enqueueAgentCommand } from './agent-command-queue'
+import { trackRequestedScan } from '@/lib/agent-installer/scan-tracking'
 import { generateInstaller, installQuickCommand } from '@/lib/agent-installer/installer-templates'
 import { clampAgentScanTypes, resolveWriteAuthority } from '@/lib/agent-installer/agent-scope'
 import {
@@ -579,6 +580,9 @@ router.post('/package', requireUserAuth, async (req: AuthedRequest, res) => {
       agentName: String(agent.name || 'Qguard Helix Agent'),
       role,
       environment: String(agent.metadata?.environment || 'production'),
+      // The environment `apiUrl` was just validated against (assertControlPlane):
+      // the agent re-applies the same rules at boot.
+      controlPlaneEnvironment: AGENT_ENVIRONMENT,
       version: release.version,
       runtimeSha256: release.sha256,
       policy: {
@@ -788,6 +792,9 @@ async function enqueueCommand(
   if (agent.revoked_at || agent.status === 'revoked') {
     return jsonError(res, 409, 'AGENT_REVOKED', 'Revoked agents cannot accept commands')
   }
+  if ((type === 'scan' || type === 'rescan_validation') && agent.policy?.enabled === false) {
+    return jsonError(res, 409, 'AGENT_DISABLED', 'Scanning is disabled by policy. Enable the collector before requesting a scan.')
+  }
 
   const outcome = await enqueueAgentCommand(client, agent, type, { payload, requestedBy: user.id })
   if (!outcome.ok) return jsonError(res, outcome.status, outcome.code, outcome.message)
@@ -849,6 +856,34 @@ router.get('/agents/:id/jobs', requireUserAuth, async (req: AuthedRequest, res) 
   }
   if (!agent) return jsonError(res, 404, 'AGENT_NOT_FOUND', 'Agent not found for this tenant')
   res.json({ data: { queued: commandQueue(agent), history: commandHistory(agent) } })
+})
+
+/** Command-specific progress: a later scheduled scan cannot replace this result. */
+router.get('/agents/:id/scan-status', requireUserAuth, async (req: AuthedRequest, res) => {
+  const client = req.client || null
+  const user = req.user!
+  if (!client) return jsonError(res, 503, 'DATABASE_UNAVAILABLE', 'Scan tracking is unavailable')
+  try {
+    const agent = await loadTenantAgent(client, user.id, req.params.id)
+    if (!agent) return jsonError(res, 404, 'AGENT_NOT_FOUND', 'Agent not found for this tenant')
+    const commandId = cleanString(req.query.commandId, 120)
+    if (!commandId) return jsonError(res, 400, 'COMMAND_REQUIRED', 'commandId is required')
+    const command = [...commandQueue(agent), ...commandHistory(agent)].find((item) => item.id === commandId && (item.type === 'scan' || item.type === 'rescan_validation'))
+    if (!command) return jsonError(res, 404, 'SCAN_COMMAND_NOT_FOUND', 'This scan receipt is not available in this agent’s retained history.')
+    let frames = client.from('agent_heartbeats').select('status, telemetry, observed_at')
+      .eq('user_id', user.id).eq('agent_id', agent.id).gte('observed_at', command.startedAt || command.queuedAt)
+      .order('observed_at', { ascending: false }).limit(1000)
+    if (command.completedAt) frames = frames.lte('observed_at', command.completedAt)
+    const { data, error } = await frames
+    if (error) return jsonError(res, 503, 'SCAN_PROGRESS_UNAVAILABLE', 'Recorded scan progress could not be read. Retry shortly.')
+    res.json({ data: {
+      ...trackRequestedScan(command, data || []),
+      agent: { id: agent.id, name: agent.name, hostname: agent.hostname, role: agent.metadata?.role || 'collector', platform: agent.platform },
+      schedule: { enabled: agent.policy?.enabled !== false, intervalSeconds: Math.max(30, Math.min(60, Number(agent.policy?.intervalSeconds || 60))) },
+    } })
+  } catch (error) {
+    return jsonError(res, 500, 'SCAN_TRACKING_FAILED', 'Unable to read the requested scan.')
+  }
 })
 
 /* ------------------------------------------------------------------ */
@@ -1177,7 +1212,8 @@ router.get('/assets', requireUserAuth, async (req: AuthedRequest, res) => {
   const search = cleanString(req.query.search, 120)
   let query = client
     .from('assets')
-    .select('id, name, type, environment, criticality, status, ip_address, service_owner, updated_at')
+    // Binding kind and path are read as scalars so the picker never pulls whole metadata blobs.
+    .select('id, name, type, environment, criticality, status, ip_address, service_owner, updated_at, binding_kind:metadata->>bindingKind, binding_path:metadata->>bindingPath')
     .eq('user_id', user.id)
     .order('name', { ascending: true })
     .limit(500)

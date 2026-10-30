@@ -1,0 +1,140 @@
+{
+  "report": [
+    {
+      "geometry": "node",
+      "index": 0,
+      "screen": {
+        "x": 941.2349558834364,
+        "y": 302.7318027035114
+      },
+      "selected": "Key management"
+    },
+    {
+      "geometry": "node",
+      "index": 1,
+      "screen": {
+        "x": 1171.9246594645213,
+        "y": 324.97351343596654
+      },
+      "selected": "Crypto policy"
+    },
+    {
+      "geometry": "node",
+      "index": 2,
+      "screen": {
+        "x": 1148.0286922281578,
+        "y": 462.76215570903423
+      },
+      "selected": "Continuous trust"
+    },
+    {
+      "geometry": "node",
+      "index": 3,
+      "screen": {
+        "x": 851.269897182905,
+        "y": 424.97597530457546
+      },
+      "selected": "Audit evidence"
+    },
+    {
+      "geometry": "path",
+      "index": 2,
+      "screen": {
+        "x": 1107.4832395892076,
+        "y": 419.9868809860813
+      },
+      "selected": "Continuous trust"
+    },
+    {
+      "geometry": "path",
+      "index": 3,
+      "screen": {
+        "x": 908.308810662183,
+        "y": 396.29422470914506
+      },
+      "selected": "Audit evidence"
+    },
+    {
+      "movingLightStreams": true,
+      "pauseStable": true,
+      "resumeWorks": true,
+      "fallbackInteractive": true,
+      "keyboardActivation": true
+    },
+    {
+      "viewport": {
+        "name": "desktop",
+        "width": 1440,
+        "height": 1000
+      },
+      "overflow": false,
+      "background": "rgb(255, 255, 255)",
+      "headline": "rgb(17, 24, 39)",
+      "primaryBottom": 554.859375,
+      "fourFeaturePopovers": true,
+      "escapeAndClose": true,
+      "focusRestored": true,
+      "reducedStable": true
+    },
+    {
+      "viewport": {
+        "name": "tablet",
+        "width": 1024,
+        "height": 768
+      },
+      "overflow": false,
+      "background": "rgb(255, 255, 255)",
+      "headline": "rgb(17, 24, 39)",
+      "primaryBottom": 456.78125,
+      "fourFeaturePopovers": true,
+      "escapeAndClose": true,
+      "focusRestored": true,
+      "reducedStable": true
+    },
+    {
+      "viewport": {
+        "name": "mobile",
+        "width": 390,
+        "height": 844,
+        "mobile": true
+      },
+      "overflow": false,
+      "background": "rgb(255, 255, 255)",
+      "headline": "rgb(17, 24, 39)",
+      "primaryBottom": 388.28125,
+      "fourFeaturePopovers": true,
+      "escapeAndClose": true,
+      "focusRestored": true,
+      "reducedStable": true
+    },
+    {
+      "viewport": {
+        "name": "mobile-small",
+        "width": 320,
+        "height": 740,
+        "mobile": true
+      },
+      "overflow": false,
+      "background": "rgb(255, 255, 255)",
+      "headline": "rgb(17, 24, 39)",
+      "primaryBottom": 401.375,
+      "fourFeaturePopovers": true,
+      "escapeAndClose": true,
+      "focusRestored": true,
+      "reducedStable": true
+    }
+  ],
+  "errors": [
+    {
+      "type": "console",
+      "text": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+      "location": {
+        "url": "http://localhost:3000/favicon.ico",
+        "line": 0,
+        "column": 0,
+        "lineNumber": 0,
+        "columnNumber": 0
+      }
+    }
+  ]
+}

@@ -3325,6 +3325,198 @@ recorded scan, read-only). Every panel was right about its own input; they disag
 
 ---
 
+## 63. Orchestration pages always empty; opening them re-queued running cutovers; Pro APIs readable by any plan via `?token=`
+
+**Problem**
+
+Audit of the seven Intelligence & Operations pages (2026-10-27): Migration Timeline
+and PQC Orchestration never showed a single orchestration job for any tenant. Reading
+the code suggested the opposite danger: their snapshot endpoint ran a "reconciliation
+loop" that re-queued work. Separately, a Starter account could read Crypto Agility,
+Drift, Runtime, Correlation and Quantum Risk Scoring data by putting its token in the
+query string.
+
+**Root Cause**
+
+1. `migration-orchestrator.ts` selected `migration_jobs.criticality` — a column that
+   does not exist. PostgREST rejects the whole select (42703), its `safeRows` swallowed
+   the error WITHOUT logging, and the snapshot read zero jobs forever (#16's shape).
+2. The same GET handler and its 15 s SSE tick WROTE: any job claimed > 300 s earlier
+   (`claimedAt + leaseSeconds`, and agents keep their FIRST `claimedAt`) had
+   `assignedAgentId` deleted and was set `queued`; every failed job was re-queued with
+   back-off. The agent event endpoint then refuses the original executor
+   (`REMEDIATION_JOB_NOT_CLAIMED`) while a second agent can claim the same change.
+   Only defect 1 kept defect 2 from ever running — fixing the column alone would have
+   armed it.
+3. `subscriptionGateway` reads ONLY the Authorization header and passes a header-less
+   request through so the router can answer 401. Six routers accepted `?token=` as a
+   fallback, so a header-less request skipped the tier check and the router served it.
+4. Five page hooks hand-copied SSE readers (double download on mount, every frame
+   applied, global realtime topics); Crypto Agility used `EventSource` with the token
+   in the URL. Streams re-sent the full model every tick.
+
+**Solution**
+
+- `src/lib/migration/orchestration-model.ts` (pure): one phase per job (partition),
+  approval/dispatch/executor/execution gates from `describeOperationalWorkflow`,
+  verification per job via `isPassingValidation` (moved to `job-safety.ts`), completion
+  ≠ verified ≠ migrated asset, silent executor SURFACED not re-queued, failed work
+  retry-eligible for an operator, simulations excluded, path role check (ML-KEM for
+  key establishment only). Router read-only, header-only, real columns, `/jobs/:id`
+  history. Plan/fleet loaders shared with the sandbox in `operational-fleet.ts`.
+- `?token=` removed from all six routers; all streams use `streamLiveSnapshot`; all
+  page hooks wrap `useLiveResource` / new `useLiveModel` (transport, `lastVerifiedAt`,
+  `lastGoodAt`, `refreshing`); realtime topics unique per user AND hook instance.
+- Live result (QA Pro tenant): orchestration 0 → 1 real job and plan; Starter
+  `?token=` 200 → 401 on all six APIs; idle ticks `-unchanged`.
+
+**Prevention Checklist**
+
+- [ ] A `safeRows` that swallows errors silently is how a 42703 hides for months.
+      Report a source as `unavailable`, never as an empty table.
+- [ ] Probe every select list against the live schema with `limit(0)` (validates
+      columns, returns no rows) before trusting an empty page.
+- [ ] A dashboard GET or SSE tick never writes. `tools/orchestrator-check.ts` regexes
+      the router for Supabase writes; recovery is an operator action, never a side
+      effect of viewing.
+- [ ] A lease derived from a timestamp the executor never renews is not a lease.
+- [ ] Any `?token=` fallback behind a header-only gateway is a gate bypass. Grep
+      `req.query.token` in every router whose prefix is tier-gated.
+- [ ] Fixing one defect can ARM another it was masking — read what the now-working
+      path does next.
+- [ ] Run `npx tsx tools/intel-ops-contract-check.ts`, `npx tsx tools/orchestrator-check.ts`,
+      `npx tsx tools/intel-ops-live-probe.ts` (dev server) and
+      `node tools/intel-ops-render/run.mjs`.
+
+---
+
+## 64. A failed read shown as "none": empty Intelligence panels, simulations as real changes, Pro tenants shown "Subscription required"
+
+**Problem**
+
+Finishing the Intelligence & Operations audit (2026-10-28): (a) Runtime, Correlation,
+Drift and Crypto Agility rendered "0 events / no drift / no jobs" whenever one of their
+tables failed to read; (b) Drift labelled a regression "planned" when a SANDBOX run had
+targeted the same algorithm, Runtime listed completed simulations as cutovers awaiting
+runtime confirmation, and Crypto Agility scored simulations as migrations; (c) a Pro
+tenant intermittently saw the "Subscription required" screen under load.
+
+**Root Cause**
+
+1. Every router wrapped Supabase in a `safeRows` returning `[]` on error — the #16/#63
+   shape, but on four more routers. Nothing downstream could tell "failed" from "empty".
+2. `drift-intelligence.ts` indexed every `completed`/`running` job as a planned change;
+   `runtime-intelligence.ts` fed every job to `buildMigrationVerification`. Neither called
+   `isSimulationJob`, and the drift router did not even select the markers it would need.
+   Proven by negative control: removing the drift filter turns the fixture's X25519
+   regression into "planned" (3 regressions → 2).
+3. `useSubscription.load()` ignored the query `error`. A timed-out `billing_subscriptions`
+   read looked like "no row" → profile fallback → tier `none` → `resolvedFor` set → the
+   layout rendered `UpgradeRequired` until a later read corrected it. Reproduced with
+   `.report-smoke/entitlement-failure-probe.mjs` (CDP fails `billing_subscriptions` with
+   503): the old hook showed a Pro tenant "Subscription required" and stayed there. Note
+   postgrest-js ≥2.10x retries 503/520 three times PER CALL, so the trigger is a whole call
+   failing (four 503s, a statement timeout, a dropped connection) — two 503s never show it.
+
+**Solution**
+
+- `src/api-server/source-ledger.ts` (`createSourceLedger`) replaces every `safeRows`: a
+  failed read still degrades to `[]` but is RECORDED (`unavailable` / `truncated` /
+  `empty` / `ok`, type in `src/lib/source-read.ts`). Routers publish it as `reads`
+  (`sources` on Crypto Agility); pages render it in the kit's `SourceHealth` strip, and the
+  next-step derivations (`_components/intel/next-steps.ts`, `runtimeNextStep`, Crypto
+  Agility `deriveNextStep`) put "Refresh" first when a source is unreadable. Crypto Agility
+  additionally WITHHOLDS a domain whose source failed (`DOMAIN_SOURCES`).
+- `job-safety.ts`: `SIMULATION_MARKER_SELECT` (PostgREST `metadata->>` projection of the
+  five markers) + `isSimulationRow(row)`. Drift, Runtime and Crypto Agility filter with it.
+- `useSubscription`: a failed read is retried with the gate held on
+  its loading shell (1.5 / 4 s — on top of postgrest-js's own per-call retries); an
+  already-resolved plan is kept on a transient failure; out of
+  retries → `error`, and `DashboardLayout` shows "We couldn't verify your plan — Retry",
+  never an upgrade prompt.
+
+**Prevention Checklist**
+
+- [ ] `grep -rn "function safeRows" src/api-server` — any hit on a dashboard router is this bug.
+- [ ] Any reader of `migration_jobs` that decides what CHANGED must call `isSimulationRow`
+      and select `SIMULATION_MARKER_SELECT` (or `metadata`).
+- [ ] A Supabase call whose `{ error }` is not destructured is a failed read waiting to be
+      shown as "none" — including entitlement and other gate reads.
+- [ ] Run `npx tsx tools/intel-ops-contract-check.ts` (sections 5–7 cover all three),
+      `tools/drift-check.ts` and `tools/runtime-crypto-intel-check.ts` ([sim] sections),
+      `npx tsx tools/intel-ops-live-probe.ts` (every live read must be non-`unavailable`)
+      and `node tools/intel-ops-render/run.mjs` (41 renders incl. unreadable-source cases).
+- [ ] Render harness forbidden strings are matched case-sensitively on token boundaries —
+      a case-insensitive `NaN` matches every "tenant".
+
+---
+
+## 65. PQAuth shows "Microsoft Entra ID" and "F5" the tenant does not run, a hard-coded trust graph, phases that score `readiness − 8 × index`, and a Pro bypass via `?token=`
+
+**Problem**
+
+Deep audit of the seven PQAuth pages (2026-10-28, live QA tenants): both Pro tenants
+showed "Microsoft Entra ID" and "F5 load balancer × 306" as discovered infrastructure;
+the trust graph drew Entra → JWT Issuer → NGINX → APIs for everyone; migration phases
+read 70/62/54/46…; "Authentication Failures = 78" was the critical-finding count;
+Token Intelligence listed "NIST PQC Deadline → ML-DSA-65"; a BASIC tenant got the full
+657 KB snapshot with `?token=`; and session-token hashes, agent token hashes, IPs and
+user agents were in the payload and the JSON export.
+
+**Root Cause**
+
+1. The identity tables (`supabase/pqauth-identity-schema.sql`) and the parser/probe
+   (`src/lib/scanner/identity/`) existed, but NOTHING called `probeIdentityInfrastructure`
+   or wrote the tables. The dashboard fell back to regex over `JSON.stringify(row)`:
+   `entra` ⊂ "central", `f5` ⊂ every hex hash, `rsa` ⊂ "universal".
+2. `buildTrustGraph` added six fixed edges whenever the category nodes existed, and drew
+   every `asset_relationships` row from `nodes[0]` to `nodes[3]`.
+3. `buildPhaseRows` scored phases `readiness − index × 8 + …` and marked ≥ 82 "complete".
+4. The router accepted `?token=`; the subscription gateway reads only the header (#63).
+5. Every display row was `{ ...row, … }` — an allow-list was never applied.
+6. The SSE route emitted `pqauth-update` every 8 s unconditionally; the hook opened four
+   EventSources and refetched ~1 MB on any frame.
+7. `identity-probe.ts` recorded timeouts as `unparseable` and 401/403 as `not-found` — both
+   read as proof of absence. undici reports TLS/DNS failures only as "fetch failed".
+
+**Solution**
+
+- `POST /api/v1/dashboard/pqauth/discovery/run`: probes ONLY the tenant's own assets
+  (`assetProbeTarget` prefers `metadata.authorized_target`, SSRF-guarded), ≤ 25 hosts,
+  one run per tenant (409), audited (`audit_logs`), persisted through the user's RLS client
+  via the pure mapper `src/lib/pqauth/identity-persistence.ts`.
+- `src/lib/pqauth/identity-model.ts` (pure) builds every page from the identity tables:
+  graph edges only from FKs / recorded relationships with `observed | declared | inferred |
+  unresolved`; FIPS 204 signature-size projections from signing keys only; a 5-question
+  compatibility matrix; migration `validated` only when a discovery AFTER `completed_at`
+  observes safe/hybrid keys; sandbox jobs via `isSimulationRow`; ML-KEM-on-signature role
+  check; twin `partial` when a host could not be read; simulations labelled.
+- Router: header-only auth, `projectRow` allow-list, `structuredText` (descriptive fields
+  only) for estate pattern matching, `createSourceLedger`, 15 s single-flight cache,
+  `streamLiveSnapshot`. Hook: `useLiveModel`. Probe: 401/403 → `unparseable` "Access
+  denied — presence not determined"; `describeFetchError` surfaces `error.cause.code`.
+- Live result: BASIC `?token=` 200 → 401; payload 804 KB → 69 KB; leaked keys 5 → 0;
+  invented vendors 2 → 0; idle stream frames 1 MB → 175 B.
+
+**Prevention Checklist**
+
+- [ ] Never regex `JSON.stringify(row)`. Match descriptive fields, with word boundaries.
+      Two-letter tokens (`dh`, `f5`, `ca`) appear inside ids and hashes.
+- [ ] A schema with no writer is a fabrication waiting to happen: grep for the table's
+      writers before building a view on "inferred" data instead.
+- [ ] Graph edges and lifecycle status must each cite a row. A formula with a phase index
+      in it is not evidence.
+- [ ] 401/403/timeout are not absence. Only an answered 404 (or a non-metadata body) is.
+- [ ] Payload rows leave through an allow-list; grep the live payload for `token_hash`,
+      `ip_address`, `user_agent`.
+- [ ] Light theme: inline status hues are not reached by the shell's class overrides —
+      route text colour through `ink()` (`pqauth/_ui.tsx`) and run a contrast audit.
+- [ ] Run `npx tsx tools/pqauth-identity-check.ts` (79, with negative controls),
+      `npx tsx tools/pqauth-check.ts`, `npx tsx tools/identity-discovery-check.ts`, and
+      with the dev server `npx tsx tools/pqauth-live-check.ts` (39, read-only).
+
+---
+
 ## Adding an entry
 
 Use exactly this shape — Problem, Root Cause, Solution, Prevention Checklist.

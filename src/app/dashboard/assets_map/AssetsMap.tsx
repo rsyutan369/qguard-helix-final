@@ -20,7 +20,8 @@
  *  - the export's KPIs were estate-wide even for a two-asset selection.
  */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
+import { SCAN_SOURCE_LABELS, type ScanSourceKind } from '@/lib/assets/scan-provenance';
 import { AlertTriangle, ExternalLink, FileText, Loader2, Radio, RefreshCw, ScanLine, Shield } from 'lucide-react';
 import { useScannerIntelligence } from '@/lib/scanner/use-scanner-intelligence';
 import { useQuantumReadiness } from '@/app/dashboard/quantum-readiness/_shared';
@@ -51,6 +52,10 @@ const ReportStudio = lazy(() => import('./_report-studio'));
 const PAGE_SIZE = 25;
 
 export default function AssetsMap() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const sourceAgentId = searchParams.get('agentId');
+  const sourceKindParam = searchParams.get('source');
+  const sourceKind = sourceKindParam && Object.hasOwn(SCAN_SOURCE_LABELS, sourceKindParam) ? sourceKindParam as ScanSourceKind : null;
   const { user } = useAuth();
   const { data, error, refresh, loading, connected, source, resolved, transport, lastVerifiedAt } = useScannerIntelligence();
   const qr = useQuantumReadiness();
@@ -91,6 +96,8 @@ export default function AssetsMap() {
   const filtered = useMemo(
     () => sortRows(
       filterRows(register.rows, {
+        agentId: sourceAgentId,
+        sourceKind,
         query,
         statuses: statusFilter ? [statusFilter] : null,
         bands: bandFilter ? [bandFilter] : null,
@@ -98,10 +105,10 @@ export default function AssetsMap() {
       }),
       sort,
     ),
-    [register.rows, query, statusFilter, bandFilter, freshnessFilter, sort],
+    [register.rows, query, statusFilter, bandFilter, freshnessFilter, sort, sourceAgentId, sourceKind],
   );
 
-  useEffect(() => setPage(1), [query, statusFilter, bandFilter, freshnessFilter, sort]);
+  useEffect(() => setPage(1), [query, statusFilter, bandFilter, freshnessFilter, sort, sourceAgentId, sourceKind]);
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   useEffect(() => setPage((current) => Math.min(current, pageCount)), [pageCount]);
   const pageRows = useMemo(() => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE), [filtered, page]);
@@ -261,6 +268,15 @@ export default function AssetsMap() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-[11px] font-black uppercase tracking-[0.18em] text-[var(--qg-dashboard-text-soft)]">Asset register</h2>
               <span className="text-[10px] text-[var(--qg-text-muted)]">Components are cryptography only · configuration findings are listed per asset, never counted as components</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 text-xs">
+              <label className="flex items-center gap-2 font-bold text-[var(--qg-dashboard-text-soft)]">Discovery source
+                <select value={sourceKind || ''} onChange={(event) => setSearchParams((current) => { const next = new URLSearchParams(current); if (event.target.value) next.set('source', event.target.value); else next.delete('source'); return next; })} className="rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-card)] px-3 py-2 text-[var(--qg-dashboard-text)]">
+                  <option value="">All sources</option>
+                  {Object.entries(SCAN_SOURCE_LABELS).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
+                </select>
+              </label>
+              {sourceAgentId ? <span className="flex items-center gap-2 text-[var(--qg-text-muted)]">Showing assets attributed to this agent across its recorded scans.<button type="button" className="font-bold text-[var(--qg-amber)] underline" onClick={() => setSearchParams((current) => { const next = new URLSearchParams(current); next.delete('agentId'); return next; })}>Show all agents</button></span> : null}
             </div>
             <RegisterToolbar
               query={query}

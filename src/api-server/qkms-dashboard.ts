@@ -28,7 +28,7 @@
 
 import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
-import { buildQkmsIntelligence, toIndexEntry } from '@/lib/qkms/intelligence'
+import { buildQkmsIntelligence, normaliseJobStatus, toIndexEntry } from '@/lib/qkms/intelligence'
 import { ROTATION_TRANSITIONS, QKMS_MODES } from '@/lib/qkms/types'
 import type {
   KeyIndexEntry,
@@ -85,20 +85,36 @@ function isMissingColumn(error: unknown): boolean {
   return text.includes('42703') || text.includes('column') && text.includes('does not exist')
 }
 
+/**
+ * Tables the key estate is BUILT from. If one of these fails, every page's key
+ * list, posture and risk would be computed from a partial estate — so the
+ * model refuses to build and the client keeps its last good view with an error,
+ * instead of rendering "no keys" from a query that never returned.
+ */
+const CORE_TABLES = new Set([
+  'assets', 'qkms_keys', 'qkms_key_versions', 'qkms_policies', 'qkms_rotation_jobs', 'qkms_audit_events',
+  'generated_keys', 'crypto_inventory', 'certificates', 'scanner_evidence', 'runtime_crypto_events', 'migration_jobs',
+])
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function safeRows(client: any, table: string, build: (query: any) => any): Promise<Row[]> {
+async function safeRows(client: any, table: string, build: (query: any) => any, failures: string[]): Promise<Row[]> {
   try {
     const { data, error } = await build(client.from(table))
     if (error) {
-      // A missing optional table is expected before the schema is applied; a
-      // real query error is not, and must be visible rather than rendered as an
-      // empty dataset the dashboard would present as "no keys".
-      if (!isMissingTable(error)) console.warn(`[qkms] ${table} query degraded:`, error.message || error)
+      // A missing optional table is expected before the schema is applied, and
+      // is reported as an absent source. A real query error — an expired token,
+      // an RLS denial, a network fault — is NOT an empty table: it is recorded so
+      // it can be surfaced rather than rendered as "no keys".
+      if (!isMissingTable(error)) {
+        console.warn(`[qkms] ${table} query failed:`, error.message || error)
+        failures.push(table)
+      }
       return []
     }
     return (data as Row[]) || []
   } catch (error) {
     console.warn(`[qkms] ${table} query failed:`, (error as Error)?.message || error)
+    failures.push(table)
     return []
   }
 }
@@ -108,17 +124,24 @@ async function safeRows(client: any, table: string, build: (query: any) => any):
 /* ------------------------------------------------------------------ */
 
 /**
- * EventSource cannot set headers, which forced the previous stream to accept
- * `?token=` — writing a bearer token into access logs, proxies and browser
- * history. The new hook streams over fetch + ReadableStream with an
- * Authorization header. The query fallback survives only so an already-open
- * legacy tab does not hard-fail across a deploy.
+ * Header only. EventSource cannot set headers, which forced the original
+ * stream to accept `?token=` — writing a bearer token into access logs,
+ * proxies and browser history. The hook streams over fetch + ReadableStream
+ * with an Authorization header, and nothing in the app still sends the query
+ * form, so the fallback kept for one deploy has been removed.
  */
 function tokenFromRequest(req: Request): string | null {
-  const header = getToken(req)
-  if (header) return header
-  const query = req.query.token
-  return typeof query === 'string' && query.length > 0 ? query : null
+  return getToken(req)
+}
+
+/** Seconds-since-epoch expiry of a JWT, read without verifying it (verification happened at connect). */
+function tokenExpiryMs(token: string): number | null {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1] || '', 'base64url').toString('utf8'))
+    return typeof payload.exp === 'number' ? payload.exp * 1000 : null
+  } catch {
+    return null
+  }
 }
 
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -172,6 +195,7 @@ const modelCache = new Map<string, { at: number; promise: Promise<QkmsIntelligen
 async function computeModel(token: string, userId: string): Promise<QkmsIntelligence> {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
+  const failures: string[] = []
 
   /*
    * Every query is tenant-scoped in the query itself, on top of RLS. The
@@ -200,27 +224,33 @@ async function computeModel(token: string, userId: string): Promise<QkmsIntellig
     agentHeartbeats,
     scanSessions,
   ] = await Promise.all([
-    safeRows(client, 'assets', (q) => q.select('id, name, type, environment, region, service_owner, criticality, status, metadata, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.assets)),
-    safeRows(client, 'qkms_keys', (q) => q.select('*').eq('tenant_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsKeys)),
-    safeRows(client, 'qkms_key_versions', (q) => q.select('*').eq('tenant_id', userId).order('version', { ascending: true }).limit(CAP.qkmsKeyVersions)),
-    safeRows(client, 'qkms_policies', (q) => q.select('*').eq('tenant_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsPolicies)),
-    safeRows(client, 'qkms_rotation_jobs', (q) => q.select('*').eq('tenant_id', userId).order('created_at', { ascending: false }).limit(CAP.qkmsRotationJobs)),
-    safeRows(client, 'qkms_audit_events', (q) => q.select('*').eq('tenant_id', userId).order('created_at', { ascending: false }).limit(CAP.qkmsAuditEvents)),
-    safeRows(client, 'qkms_storage_backends', (q) => q.select('*').eq('tenant_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsStorageBackends)),
-    safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, bit_length, entropy_source, quality_score, fingerprint, status, expires_at, revoked_at, rotated_from, label, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.generatedKeys)),
-    safeRows(client, 'crypto_inventory', (q) => q.select('*').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(CAP.cryptoInventory)),
-    safeRows(client, 'certificates', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.certificates)),
-    safeRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, algorithm, key_exchange_algorithm, cipher_suite, operation_type, observed_at, created_at, is_pqc, is_legacy').eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.runtimeEvents)),
-    safeRows(client, 'scanner_evidence', (q) => q.select('*').eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.scannerEvidence)),
-    safeRows(client, 'migration_jobs', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.migrationJobs)),
-    safeRows(client, 'compliance_evidence', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.complianceEvidence)),
-    safeRows(client, 'vault_audit_logs', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.vaultAuditLogs)),
-    safeRows(client, 'qrng_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.qrngEvents)),
-    safeRows(client, 'scanner_agents', (q) => q.select('id, status, updated_at, last_seen_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.scannerAgents)),
-    safeRows(client, 'connector_accounts', (q) => q.select('id, status, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.connectorAccounts)),
-    safeRows(client, 'agent_heartbeats', (q) => q.select('id, observed_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.agentHeartbeats)),
-    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, completed_at, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.scanSessions)),
+    safeRows(client, 'assets', (q) => q.select('id, name, type, environment, region, service_owner, criticality, status, metadata, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.assets), failures),
+    safeRows(client, 'qkms_keys', (q) => q.select('*').eq('tenant_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsKeys), failures),
+    safeRows(client, 'qkms_key_versions', (q) => q.select('*').eq('tenant_id', userId).order('version', { ascending: true }).limit(CAP.qkmsKeyVersions), failures),
+    safeRows(client, 'qkms_policies', (q) => q.select('*').eq('tenant_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsPolicies), failures),
+    safeRows(client, 'qkms_rotation_jobs', (q) => q.select('*').eq('tenant_id', userId).order('created_at', { ascending: false }).limit(CAP.qkmsRotationJobs), failures),
+    safeRows(client, 'qkms_audit_events', (q) => q.select('*').eq('tenant_id', userId).order('created_at', { ascending: false }).limit(CAP.qkmsAuditEvents), failures),
+    safeRows(client, 'qkms_storage_backends', (q) => q.select('*').eq('tenant_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsStorageBackends), failures),
+    safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, bit_length, entropy_source, quality_score, fingerprint, status, expires_at, revoked_at, rotated_from, label, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.generatedKeys), failures),
+    safeRows(client, 'crypto_inventory', (q) => q.select('*').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(CAP.cryptoInventory), failures),
+    safeRows(client, 'certificates', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.certificates), failures),
+    safeRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, algorithm, key_exchange_algorithm, cipher_suite, operation_type, observed_at, created_at, is_pqc, is_legacy').eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.runtimeEvents), failures),
+    safeRows(client, 'scanner_evidence', (q) => q.select('*').eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.scannerEvidence), failures),
+    safeRows(client, 'migration_jobs', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.migrationJobs), failures),
+    safeRows(client, 'compliance_evidence', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.complianceEvidence), failures),
+    safeRows(client, 'vault_audit_logs', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.vaultAuditLogs), failures),
+    safeRows(client, 'qrng_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.qrngEvents), failures),
+    safeRows(client, 'scanner_agents', (q) => q.select('id, status, updated_at, last_seen_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.scannerAgents), failures),
+    safeRows(client, 'connector_accounts', (q) => q.select('id, status, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.connectorAccounts), failures),
+    safeRows(client, 'agent_heartbeats', (q) => q.select('id, observed_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.agentHeartbeats), failures),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, completed_at, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.scanSessions), failures),
   ])
+
+  const coreFailures = failures.filter((table) => CORE_TABLES.has(table))
+  if (coreFailures.length) {
+    // Thrown, so it is never cached and the client keeps its last good view.
+    throw new Error(`Key evidence could not be read from ${coreFailures.join(', ')}. Figures are withheld rather than computed from a partial estate.`)
+  }
 
   const truncated = qkmsKeys.length >= CAP.qkmsKeys
     || generatedKeys.length >= CAP.generatedKeys
@@ -250,6 +280,7 @@ async function computeModel(token: string, userId: string): Promise<QkmsIntellig
     agentHeartbeats,
     scanSessions,
     truncated,
+    degradedSources: failures,
   })
 }
 
@@ -698,6 +729,15 @@ async function materialiseRegistryRow(client: any, userId: string, key: ManagedK
   return str(data?.id)
 }
 
+/**
+ * A write that returned no error but changed no row (RLS filtered it, or the
+ * row no longer exists). Reported as a conflict so the client never shows a
+ * success the database did not record.
+ */
+function notChanged(res: Response, message: string) {
+  return res.status(409).json({ error: { code: 'NOT_CHANGED', message } })
+}
+
 /* ------------------------------------------------------------------ */
 /* Router                                                              */
 /* ------------------------------------------------------------------ */
@@ -745,8 +785,22 @@ router.get('/stream', async (req: AuthedRequest, res: Response) => {
 
   send('connected', { at: new Date().toISOString(), mode })
 
+  /*
+   * The stream authenticates once, at connect, but every push queries Supabase
+   * with that same access token. Past its expiry those queries would fail, so
+   * the stream ENDS at expiry with a reason; the client reconnects with the
+   * refreshed session it already holds. Pushing on a dead token would at best
+   * spam errors and, before failures were surfaced, render an empty estate.
+   */
+  const expiresAt = tokenExpiryMs(req.token!)
   let lastGeneratedAt = ''
   const push = async () => {
+    if (closed) return
+    if (expiresAt !== null && Date.now() >= expiresAt - 5_000) {
+      send('qkms-error', { code: 'TOKEN_EXPIRED', message: 'Session token expired; reconnecting with a fresh session.' })
+      end()
+      return
+    }
     try {
       const data = await model(req)
       if (data.generatedAt === lastGeneratedAt) return
@@ -757,11 +811,18 @@ router.get('/stream', async (req: AuthedRequest, res: Response) => {
     }
   }
 
-  void push()
   const interval = setInterval(() => void push(), 10_000)
   const heartbeat = setInterval(() => {
     if (!closed) res.write(': heartbeat\n\n')
   }, 25_000)
+  function end() {
+    if (closed) return
+    closed = true
+    clearInterval(interval)
+    clearInterval(heartbeat)
+    res.end()
+  }
+  void push()
 
   req.on('close', () => {
     closed = true
@@ -922,12 +983,16 @@ router.post('/keys/:id/assign-owner', async (req: AuthedRequest, res: Response) 
       })
     }
 
-    const { error } = await client
+    const { data: updated, error } = await client
       .from('qkms_keys')
       .update({ owner_id: owner, updated_at: new Date().toISOString() })
       .eq('id', registryId)
       .eq('tenant_id', req.user!.id)
-    if (error && !isMissingTable(error)) throw error
+      .select('id')
+    if (error) throw error
+    // An update RLS filters out returns no error and no row; that is a failure,
+    // not "Owner set".
+    if (!updated?.length) return notChanged(res, 'The owner was not recorded: the registry row could not be updated for this tenant.')
 
     await writeAudit(client, req.user!.id, key.id, 'owner_assigned', `Owner of "${key.label}" set to ${owner}`, { owner: key.owner }, { owner })
     invalidate(req.user!.id)
@@ -953,17 +1018,24 @@ router.post('/keys/:id/revoke', async (req: AuthedRequest, res: Response) => {
     if (!client) throw new Error('Database connection failed')
     const revokedAt = new Date().toISOString()
 
+    /* Every write is checked. These results used to be discarded, so a revoke
+       RLS refused still answered "Key marked revoked". */
+    let changed = 0
     for (const record of key.records.filter((row) => row.writable)) {
-      if (record.table === 'generated_keys') {
-        await client.from('generated_keys')
+      const result = record.table === 'generated_keys'
+        ? await client.from('generated_keys')
           .update({ status: 'revoked', revoked_at: revokedAt })
-          .eq('id', record.recordId).eq('user_id', req.user!.id)
-      } else if (record.table === 'qkms_keys') {
-        await client.from('qkms_keys')
-          .update({ status: 'revoked', updated_at: revokedAt })
-          .eq('id', record.recordId).eq('tenant_id', req.user!.id)
-      }
+          .eq('id', record.recordId).eq('user_id', req.user!.id).select('id')
+        : record.table === 'qkms_keys'
+          ? await client.from('qkms_keys')
+            .update({ status: 'revoked', updated_at: revokedAt })
+            .eq('id', record.recordId).eq('tenant_id', req.user!.id).select('id')
+          : null
+      if (!result) continue
+      if (result.error) throw result.error
+      changed += result.data?.length || 0
     }
+    if (!changed) return notChanged(res, 'The key was not revoked: none of its records could be updated for this tenant.')
 
     await writeAudit(client, req.user!.id, key.id, 'key_revoked', `${key.label} revoked: ${reason}`, { status: key.lifecycle }, { status: 'revoked', revokedAt })
     invalidate(req.user!.id)
@@ -988,16 +1060,25 @@ router.post('/keys/:id/decommission', async (req: AuthedRequest, res: Response) 
     const client = createAuthClient(req.token!)
     if (!client) throw new Error('Database connection failed')
     const at = new Date().toISOString()
-    const registryId = key.records.find((row) => row.table === 'qkms_keys')?.recordId
-
-    if (registryId) {
-      const { error } = await client.from('qkms_keys')
-        .update({ status: 'decommissioned', decommissioned_at: at, updated_at: at })
-        .eq('id', registryId).eq('tenant_id', req.user!.id)
-      if (error && isMissingColumn(error)) {
-        await client.from('qkms_keys').update({ status: 'decommissioned', updated_at: at }).eq('id', registryId).eq('tenant_id', req.user!.id)
-      }
+    /* Decommission is recorded on the registry row. A key whose only writable
+       record is a platform-generated key had none, so this route used to write
+       nothing and still answer "decommissioned"; it now creates the row first,
+       exactly as owner assignment does. */
+    const registryId = await materialiseRegistryRow(client, req.user!.id, key)
+    if (!registryId) {
+      return res.status(503).json({
+        error: { code: 'REGISTRY_UNAVAILABLE', message: 'The QKMS registry table is not available, so the decommission could not be recorded.' },
+      })
     }
+
+    let result = await client.from('qkms_keys')
+      .update({ status: 'decommissioned', decommissioned_at: at, updated_at: at })
+      .eq('id', registryId).eq('tenant_id', req.user!.id).select('id')
+    if (result.error && isMissingColumn(result.error)) {
+      result = await client.from('qkms_keys').update({ status: 'decommissioned', updated_at: at }).eq('id', registryId).eq('tenant_id', req.user!.id).select('id')
+    }
+    if (result.error) throw result.error
+    if (!result.data?.length) return notChanged(res, 'The key was not decommissioned: its registry row could not be updated for this tenant.')
 
     await writeAudit(client, req.user!.id, key.id, 'key_decommissioned', `${key.label} decommissioned: ${reason}`, { status: key.lifecycle }, { status: 'decommissioned', at })
     invalidate(req.user!.id)
@@ -1033,6 +1114,23 @@ router.post('/keys/:id/rotation', async (req: AuthedRequest, res: Response) => {
 
     const client = createAuthClient(req.token!)
     if (!client) throw new Error('Database connection failed')
+
+    /* The capability above reads the cached model; a second click, or a second
+       tab, inside its window would raise a duplicate order. The open-order
+       check is repeated against the database itself. */
+    const { data: existingJobs, error: existingError } = await client
+      .from('qkms_rotation_jobs')
+      .select('id, status')
+      .eq('tenant_id', req.user!.id)
+      .eq('key_ref', key.id)
+      .limit(50)
+    if (existingError && !isMissingTable(existingError) && !isMissingColumn(existingError)) throw existingError
+    const open = (existingJobs || []).find((row: Row) => !/complete|done|success|closed|fail|error|cancel/i.test(str(row.status)))
+    if (open) {
+      return res.status(409).json({
+        error: { code: 'ROTATION_ALREADY_OPEN', message: 'A rotation work order is already open for this key. Advance or close it before raising another.', detail: { jobId: `job:${str(open.id)}` } },
+      })
+    }
 
     const reason = str(req.body?.reason) || `Rotation required — ${key.risk.recommendedAction}`
     const priority = ['critical', 'high', 'medium', 'low'].includes(str(req.body?.priority))

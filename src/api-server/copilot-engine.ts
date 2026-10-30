@@ -960,7 +960,7 @@ function detectProactiveFindings(intel: TenantIntelligence): CopilotProactiveFin
     else if (intel.certs.expiringSoon > 0) out.push({ severity: 'medium', text: `${intel.certs.expiringSoon} certificate(s) expire soon — rotate them to ML-DSA or hybrid chains on renewal so you migrate once, not twice.`, module: 'PKI Visibility', deepLink: modulePath('pki') })
   }
   if (intel.collectors && intel.collectors.fleet > 0 && intel.collectors.online < intel.collectors.fleet) {
-    out.push({ severity: 'medium', text: `${intel.collectors.fleet - intel.collectors.online} collector agent(s) are offline — assets they cover may be missing from this analysis, creating migration blind spots.`, module: 'Agent Collectors', deepLink: modulePath('collectors') })
+    out.push({ severity: 'medium', text: `${intel.collectors.fleet - intel.collectors.online} collector agent(s) are offline — assets they cover may be missing from this analysis, creating migration blind spots.`, module: 'Agents Collector', deepLink: modulePath('collectors') })
   }
   if (intel.jobs && intel.jobs.failed > 0) {
     out.push({ severity: 'high', text: `${intel.jobs.failed} migration job(s) have failed — resolve or roll these back before starting new work to avoid mixed-crypto state.`, module: 'Live Migration Ops', deepLink: modulePath('live_migration') })

@@ -42,7 +42,7 @@ type MegaColumn = {
 type MegaMenu = {
   columns: MegaColumn[];
   footerLinks?: { label: string; href: string }[];
-  preview: { src: string; alt: string; caption: string; cta: string; href: string };
+  preview: { src: string; alt: string; eyebrow: string; caption: string; cta: string; href: string };
 };
 
 type MenuKey = 'Platform' | 'Solutions' | 'Resources';
@@ -109,8 +109,9 @@ const MEGA_MENUS: Record<MenuKey, MegaMenu> = {
       { label: 'Pricing', href: '#pricing' }
     ],
     preview: {
-      src: '/Migration_Planner.png',
-      alt: 'Qguard Helix Migration Planner roadmap view',
+      src: '/nav/platform.webp',
+      alt: 'Illuminated migration path crossing a cryptographic data field',
+      eyebrow: 'Qguard Helix Platform',
       caption: 'Plan, execute and validate every stage from DISCOVER to GOVERN.',
       cta: 'Explore the process',
       href: '#migration-process'
@@ -177,8 +178,9 @@ const MEGA_MENUS: Record<MenuKey, MegaMenu> = {
       { label: 'Talk to the team', href: '/contact' }
     ],
     preview: {
-      src: '/PQC_Scanner.png',
-      alt: 'Qguard Helix PQC Scanner view',
+      src: '/nav/solutions.webp',
+      alt: 'Global network of connected endpoints across a digital globe',
+      eyebrow: 'Enterprise Solutions',
       caption: 'Find quantum-vulnerable TLS and certificates on your public estate.',
       cta: 'Run a free scan',
       href: '/public-scan'
@@ -226,8 +228,9 @@ const MEGA_MENUS: Record<MenuKey, MegaMenu> = {
       { label: 'Terms of Service', href: '/terms' }
     ],
     preview: {
-      src: '/CPM_PQC.png',
-      alt: 'Qguard Helix cryptographic posture management overview',
+      src: '/nav/resources.webp',
+      alt: 'Layered library of guides, videos, documentation and downloads',
+      eyebrow: 'Resource Library',
       caption: 'Start with a readiness checklist for your cryptographic estate.',
       cta: 'Get the checklist',
       href: '/resources/pqc-checklist'
@@ -317,6 +320,14 @@ export default function Navbar2({ onRequestDemo }: Navbar2Props) {
       window.removeEventListener('hashchange', closeAll);
       window.removeEventListener('popstate', closeAll);
     };
+  }, []);
+
+  useEffect(() => {
+    // Warm the preview artwork so a mega panel never opens on an empty card.
+    Object.values(MEGA_MENUS).forEach(({ preview }) => {
+      const image = new Image();
+      image.src = preview.src;
+    });
   }, []);
 
   const activeMenu = openMenu ? MEGA_MENUS[openMenu] : null;
@@ -479,8 +490,13 @@ export default function Navbar2({ onRequestDemo }: Navbar2Props) {
                   <img
                     src={activeMenu.preview.src}
                     alt={activeMenu.preview.alt}
-                    className="absolute inset-0 h-full w-full object-cover object-left-top transition-transform duration-700 group-hover:scale-[1.04]"
+                    decoding="async"
+                    className="absolute inset-0 h-full w-full object-cover object-center transition-transform duration-700 group-hover:scale-[1.05]"
                   />
+                  <span className="qh-nav__preview-eyebrow">
+                    <i />
+                    {activeMenu.preview.eyebrow}
+                  </span>
                   <span className="qh-nav__preview-copy">
                     <span className="qh-nav__preview-caption">{activeMenu.preview.caption}</span>
                     <span className="qh-nav__preview-cta">

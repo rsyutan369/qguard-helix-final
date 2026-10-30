@@ -1,0 +1,24 @@
+{
+  "verifiedAt": "2026-10-30T07:22:19.451Z",
+  "results": [
+    "isolated collector enrolled with a scoped local test lab",
+    "Downloads Scan redirects to the selected command and workflow panel",
+    "queued command renders honestly before the agent runs",
+    "scan receipt rejects unauthenticated reads",
+    "another tenant cannot read this agent’s scan receipt",
+    "repeated clicks reuse the pending command",
+    "real local agent scan exits successfully",
+    "completed receipt records actual accepted evidence",
+    "real scan materializes tenant assets with Windows agent provenance",
+    "completed command survives a browser reload",
+    "real local agent scan exits successfully",
+    "a later real scan cannot reset an earlier requested scan outcome",
+    "result link opens live Assets & CBOM filtered to the actual agent",
+    "source filter excludes assets of another discovery kind",
+    "collector drawer queues a real command and redirects to its progress panel",
+    "Downloads detail drawer also redirects to the exact queued scan",
+    "mobile scan heading remains visible below the fixed navigation bar",
+    "requested scan view fits a mobile viewport without horizontal page overflow",
+    "browser has no unhandled JavaScript errors"
+  ]
+}

@@ -317,6 +317,43 @@ export interface CopilotAnswer {
   figures?: CopilotFigure[]
   /** What moved since Sophia last reported the same figures to this tenant. */
   changes?: CopilotFigureChange[]
+
+  /* ---- Bring-your-own-model narrative ---- */
+  /** Analysis written by the tenant's own connected model from THIS answer's evidence. */
+  narrative?: CopilotNarrative
+}
+
+/**
+ * Result of checking a model-written narrative against the evidence it was
+ * given: every figure in the prose is looked up in the evidence pack. A figure
+ * the pack does not contain is surfaced — never silently trusted.
+ */
+export interface CopilotNarrativeGrounding {
+  /** Figures found in the narrative. */
+  checked: number
+  /** Figures that trace to the evidence pack. */
+  verified: number
+  /** Figures that do NOT appear in the evidence pack (bounded list). */
+  unverified: string[]
+}
+
+export interface CopilotNarrative {
+  provider: string
+  providerLabel: string
+  model: string
+  /**
+   *  - `complete` — the model finished
+   *  - `partial`  — the stream was cut short (timeout, client stop, token cap)
+   *  - `refused`  — the provider declined the request
+   *  - `error`    — the call failed; `error` explains, the platform answer stands alone
+   */
+  status: 'complete' | 'partial' | 'refused' | 'error'
+  content: string
+  error?: string
+  usage?: { inputTokens?: number; outputTokens?: number }
+  latencyMs: number
+  grounding: CopilotNarrativeGrounding
+  generatedAt: string
 }
 
 /** Reasoning stages streamed while the coordinator works. */
@@ -339,6 +376,10 @@ export type CopilotStreamEvent =
   | { type: 'answer'; answer: CopilotAnswer }
   | { type: 'error'; message: string }
   | { type: 'done' }
+  /** The tenant's own model has started writing the narrative for the answer just sent. */
+  | { type: 'narrative_start'; answerId: string; provider: string; providerLabel: string; model: string }
+  | { type: 'narrative'; answerId: string; delta: string }
+  | { type: 'narrative_done'; answerId: string; narrative: CopilotNarrative }
 
 export interface CopilotMessage {
   id: string
@@ -370,6 +411,8 @@ export interface CopilotContext {
   capabilities: RoleCapabilities
   /** Whether conversation persistence (copilot_* tables) is available. */
   persistence: 'database' | 'memory'
+  /** The tenant's connected model composing narratives, or null for the platform engine only. */
+  engine?: { provider: string; label: string; model: string } | null
 }
 
 export interface CopilotInsight {

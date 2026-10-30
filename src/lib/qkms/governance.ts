@@ -139,7 +139,8 @@ export function baselinePolicies(): QkmsPolicy[] {
     enabled: true,
     keysInScope: 0,
     violations: 0,
-    compliance: 100,
+    compliance: null as number | null,
+    evaluation: 'no-keys-in-scope' as const,
     updatedAt: null,
   }
 
@@ -236,6 +237,11 @@ export function baselinePolicies(): QkmsPolicy[] {
 /* Evaluation                                                          */
 /* ------------------------------------------------------------------ */
 
+/** Whether a policy's scope covers a key — the same rule evaluation uses. */
+export function policyCoversKey(policy: Pick<QkmsPolicy, 'environmentScope'>, key: Pick<ManagedKey, 'environment'>): boolean {
+  return inScope(policy as QkmsPolicy, key as ManagedKey)
+}
+
 function inScope(policy: QkmsPolicy, key: ManagedKey): boolean {
   const scope = String(policy.environmentScope || 'all').toLowerCase()
   if (!scope || scope === 'all') return true
@@ -298,7 +304,9 @@ export function evaluateGovernance(
 
   for (const policy of policies) {
     if (!policy.enabled) {
-      annotated.push({ ...policy, keysInScope: 0, violations: 0, compliance: 100 })
+      // A disabled policy evaluated nothing; reporting it 100% compliant read as
+      // a clean bill of health for a control that was not running.
+      annotated.push({ ...policy, keysInScope: 0, violations: 0, compliance: null, evaluation: 'disabled' })
       continue
     }
 
@@ -425,7 +433,9 @@ export function evaluateGovernance(
       ...policy,
       keysInScope: scoped.length,
       violations: violationsForPolicy,
-      compliance: scoped.length ? Math.round(((scoped.length - offenders.size) / scoped.length) * 100) : 100,
+      // No key in scope means nothing was evaluated — not 100% compliance.
+      compliance: scoped.length ? Math.round(((scoped.length - offenders.size) / scoped.length) * 100) : null,
+      evaluation: scoped.length ? 'evaluated' : 'no-keys-in-scope',
     })
   }
 

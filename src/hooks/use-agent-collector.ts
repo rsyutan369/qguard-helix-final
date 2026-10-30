@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
+import { useAgentScan } from './use-agent-scan';
+import type { AgentBindingRequest } from '@/lib/agent-installer/agent-binding';
 
 /**
  * useAgentCollector — self-contained data layer for the redesigned Agent
  * Collector Console.
  *
- * Wraps the EXISTING /api/v1/agent-scanner/* REST + SSE contract with ZERO
- * backend changes — every endpoint, RBAC gate, telemetry stream, audit write,
+ * Wraps the /api/v1/agent-scanner/* REST + SSE contract (plus the shared
+ * tenant asset picker for agent bindings) — every endpoint, RBAC gate, telemetry stream, audit write,
  * connector integration, cryptographic enforcement, snapshot/rollback and
  * approval workflow the previous inline UI drove is preserved. This hook only
  * reshapes how the frontend consumes them so the console can present a clean,
@@ -38,6 +40,7 @@ export type ScannerEvidenceRow = {
   observed_algorithm?: string | null;
   host?: string | null;
   file_path?: string | null;
+  raw_evidence?: Record<string, unknown> | null;
   observed_at?: string | null;
   created_at?: string | null;
 };
@@ -49,6 +52,7 @@ export type ScannerAlertRow = {
   category?: string | null;
   title?: string | null;
   message?: string | null;
+  metadata?: Record<string, unknown> | null;
   status?: string | null;
   created_at?: string | null;
 };
@@ -123,7 +127,28 @@ export type CreateCollectorInput = {
   description?: string;
   tags?: string[];
   policy: AgentPolicyInput;
+  /** Where this agent's findings are filed. Omitted means open discovery. */
+  binding?: AgentBindingRequest;
 };
+
+/** A tenant asset an agent can be bound to, with the agents already bound to it. */
+export type BindingTarget = {
+  id: string;
+  name: string;
+  type?: string | null;
+  environment?: string | null;
+  criticality?: string | null;
+  status?: string | null;
+  ip_address?: string | null;
+  service_owner?: string | null;
+  updated_at?: string | null;
+  binding_kind?: string | null;
+  binding_path?: string | null;
+  agents: Array<{ id: string; name: string }>;
+};
+
+/** Returned when a "create new" binding names an asset that already exists. */
+export type BindingConflict = { id: string; name: string; type?: string | null };
 
 export type LoadState = 'loading' | 'success' | 'error';
 
@@ -133,9 +158,22 @@ type ActionResult = {
   token?: OneTimeAgentToken;
   /** True when the server stored less than was requested (e.g. modules clamped to the plan). */
   adjusted?: boolean;
+  /** Set when a new binding target's name is already taken by this asset. */
+  conflict?: BindingConflict;
+  /** Modules the server removed from a policy, and why. */
+  denied?: PolicyDenied;
 };
 
+export type PolicyDenied = { plan: string[]; role: string[]; unknown: string[] };
+
 const API = '/api/v1/agent-scanner';
+// The tenant asset picker is served by the Agent Center API; one source for both consoles.
+const BINDING_TARGETS_API = '/api/v1/agent-installer/assets';
+
+function bindingConflictFrom(json: unknown): BindingConflict | undefined {
+  const error = (json as { error?: { code?: string; detail?: { asset?: BindingConflict } } } | null)?.error;
+  return error?.code === 'BINDING_NAME_EXISTS' && error.detail?.asset?.id ? error.detail.asset : undefined;
+}
 
 export function isAgentOnline(agent: CollectorAgent): boolean {
   if (agent.revoked_at || agent.status === 'revoked') return false;
@@ -174,6 +212,7 @@ export function connectionQuality(agent: CollectorAgent): 'Excellent' | 'Good' |
 }
 
 export function useAgentCollector(enabled: boolean) {
+  const { requestScan, scanning } = useAgentScan();
   const { session } = useAuth();
   const token = session?.access_token;
 
@@ -189,6 +228,8 @@ export function useAgentCollector(enabled: boolean) {
   const [sseConnected, setSseConnected] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
   const [oneTimeToken, setOneTimeToken] = useState<OneTimeAgentToken>(null);
+  const [bindingTargets, setBindingTargets] = useState<BindingTarget[]>([]);
+  const [bindingTargetsState, setBindingTargetsState] = useState<LoadState>('loading');
   const didInitialLoad = useRef(false);
 
   const authHeaders = useCallback((): Record<string, string> | null => {
@@ -256,6 +297,29 @@ export function useAgentCollector(enabled: boolean) {
     return () => { source.close(); setSseConnected(false); };
   }, [enabled, token]);
 
+  /* Binding targets load independently: an unreachable inventory must not
+     block collector creation, it only empties the "existing asset" picker. */
+  const loadBindingTargets = useCallback(async () => {
+    const headers = authHeaders();
+    if (!headers) return;
+    setBindingTargetsState('loading');
+    try {
+      const res = await fetch(BINDING_TARGETS_API, { headers });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error?.message || 'Unable to load assets');
+      setBindingTargets(Array.isArray(json?.data?.assets) ? json.data.assets : []);
+      setBindingTargetsState('success');
+    } catch {
+      setBindingTargets([]);
+      setBindingTargetsState('error');
+    }
+  }, [authHeaders]);
+
+  useEffect(() => {
+    if (!enabled || !token) return;
+    void loadBindingTargets();
+  }, [enabled, token, loadBindingTargets]);
+
   const request = useCallback(
     async (path: string, init: RequestInit, okMessage?: string): Promise<ActionResult> => {
       const headers = authHeaders();
@@ -306,15 +370,21 @@ export function useAgentCollector(enabled: boolean) {
               tags: input.tags || [],
               source: 'agent-collector-console',
             },
+            binding: input.binding || { mode: 'none' },
           }),
         });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json?.error?.message || 'Unable to create collector');
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          // A taken name is a choice for the operator, not a page-level error.
+          const conflict = bindingConflictFrom(json);
+          if (conflict) return { ok: false, message: json?.error?.message, conflict };
+          throw new Error(json?.error?.message || 'Unable to create collector');
+        }
         const agentId = json?.data?.enrollment?.agentId;
         const tok = json?.data?.enrollment?.agentToken;
         const oneTime: OneTimeAgentToken = agentId && tok ? { agentId, token: tok, createdAt: new Date().toISOString(), mode: 'created' } : null;
         if (oneTime) setOneTimeToken(oneTime);
-        await fetchAll();
+        await Promise.all([fetchAll(), loadBindingTargets()]);
         return { ok: true, token: oneTime };
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Collector creation failed';
@@ -324,7 +394,37 @@ export function useAgentCollector(enabled: boolean) {
         setBusy(false);
       }
     },
-    [authHeaders, fetchAll],
+    [authHeaders, fetchAll, loadBindingTargets],
+  );
+
+  /* Rebinding applies to evidence uploaded from now on; findings already
+     filed keep the binding they were recorded under. */
+  const updateBinding = useCallback(
+    async (id: string, binding: AgentBindingRequest): Promise<ActionResult> => {
+      const headers = authHeaders();
+      if (!headers) return { ok: false, message: 'Sign in first.' };
+      setBusy(true);
+      try {
+        const res = await fetch(`${API}/agents/${id}/binding`, {
+          method: 'PUT',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ binding }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const conflict = bindingConflictFrom(json);
+          return { ok: false, message: json?.error?.message || `Request failed (${res.status})`, conflict };
+        }
+        await Promise.all([fetchAll(), loadBindingTargets()]);
+        const next = json?.data?.binding as { assetName?: string } | null;
+        return { ok: true, message: next?.assetName ? `New findings will be filed under ${next.assetName}.` : 'Binding removed — new findings use open discovery.' };
+      } catch (err) {
+        return { ok: false, message: err instanceof Error ? err.message : 'Binding update failed' };
+      } finally {
+        setBusy(false);
+      }
+    },
+    [authHeaders, fetchAll, loadBindingTargets],
   );
 
   const rotateToken = useCallback(
@@ -373,13 +473,17 @@ export function useAgentCollector(enabled: boolean) {
         const json = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(json?.error?.message || `Request failed (${res.status})`);
         await fetchAll();
-        const deniedPlan: string[] = json?.data?.denied?.plan || [];
-        const deniedRole: string[] = json?.data?.denied?.role || [];
+        const denied: PolicyDenied = {
+          plan: json?.data?.denied?.plan || [],
+          role: json?.data?.denied?.role || [],
+          unknown: json?.data?.denied?.unknown || [],
+        };
         const removed = [
-          deniedPlan.length ? `not in your plan: ${deniedPlan.join(', ')}` : '',
-          deniedRole.length ? `not part of this agent's role: ${deniedRole.join(', ')}` : '',
+          denied.plan.length ? `not in your plan: ${denied.plan.join(', ')}` : '',
+          denied.role.length ? `not part of this agent's role: ${denied.role.join(', ')}` : '',
+          denied.unknown.length ? `not an agent module: ${denied.unknown.join(', ')}` : '',
         ].filter(Boolean).join('; ');
-        return { ok: true, message: removed ? `Policy updated. Removed — ${removed}.` : 'Policy updated.', token: undefined, adjusted: Boolean(removed) };
+        return { ok: true, message: removed ? `Policy updated. Removed — ${removed}.` : 'Policy updated.', token: undefined, adjusted: Boolean(removed), denied };
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Request failed';
         setError(message);
@@ -441,9 +545,10 @@ export function useAgentCollector(enabled: boolean) {
 
   return {
     agents, evidence, alerts, connectors, patchOptions, operatorActions,
-    state, error, busy, sseConnected, lastSyncAt, oneTimeToken, summary,
+    state, error, busy: busy || scanning, sseConnected, lastSyncAt, oneTimeToken, summary,
+    bindingTargets, bindingTargetsState, loadBindingTargets,
     refresh: fetchAll,
-    createCollector, rotateToken, revokeCollector, deleteCollector, updatePolicy,
+    createCollector, rotateToken, revokeCollector, deleteCollector, updatePolicy, updateBinding, requestScan,
     createConnector, syncMessagingPosture, createOperatorAction, setOperatorStatus, acknowledgeAlert, resolveAlert,
     clearOneTimeToken, setError,
   };

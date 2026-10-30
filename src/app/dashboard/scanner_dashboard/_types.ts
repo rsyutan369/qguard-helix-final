@@ -20,7 +20,7 @@ export type { EdgeIntelligence };
 
 export type ScanStatus = 'idle' | 'queued' | 'running' | 'analyzing' | 'completed' | 'failed' | 'cancelled';
 
-export type TabId = 'setup' | 'overview' | 'findings' | 'logs' | 'history' | 'agents' | 'settings';
+export type TabId = 'setup' | 'overview' | 'findings' | 'logs' | 'history';
 
 export type ThreatLevel = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'SAFE';
 

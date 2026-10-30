@@ -61,6 +61,8 @@ import {
   type AssetMigrationRecord,
   type Row,
 } from '@/lib/migration/asset-intelligence'
+import type { SourceRead } from '@/lib/source-read'
+import { isSimulationRow } from '@/lib/migration/job-safety'
 
 /* ================================================================== */
 /* Vocabulary                                                          */
@@ -384,6 +386,8 @@ export interface DiscoveryFallback {
 }
 
 export interface RuntimeCryptoIntelligence {
+  /** Read outcome of every evidence source (published by the router; absent in pure fixtures). */
+  reads?: SourceRead[]
   generatedAt: string
   window: { key: TimeWindowKey; label: string; ms: number }
   telemetry: RuntimeTelemetryState
@@ -899,7 +903,10 @@ export function buildRuntimeCryptoIntelligence(inputs: RuntimeIntelInputs): Runt
   const issues = buildIssues(inWindow, decompositions, resolveAsset, frequency)
 
   /* ---- Configuration (expected vs actual) -------------------------- */
-  const configurations = buildConfigurations(inWindow, decompositions, resolveAsset, inputs.migrationJobs, now)
+  // Sandbox simulations never reach a production asset: they neither set the
+  // expected algorithm nor await runtime confirmation.
+  const operationalJobs = inputs.migrationJobs.filter((job) => !isSimulationRow(job))
+  const configurations = buildConfigurations(inWindow, decompositions, resolveAsset, operationalJobs, now)
   for (const configuration of configurations) {
     if (configuration.status !== 'matching') {
       const asset = configuration.assetId ? assetById.get(configuration.assetId) : null
@@ -988,7 +995,7 @@ export function buildRuntimeCryptoIntelligence(inputs: RuntimeIntelInputs): Runt
   const pqcAdoption = buildPqcAdoption(mix, total, inputs.snapshot, sortedAll, telemetry.truncated, now)
 
   /* ---- Migration verification -------------------------------------- */
-  const migrationVerification = buildMigrationVerification(inputs.migrationJobs, sortedAll, assetById, now)
+  const migrationVerification = buildMigrationVerification(operationalJobs, sortedAll, assetById, now)
 
   /* ---- Quantum risk ------------------------------------------------- */
   const worstByAsset = new Map<string, RiskLevel>()
@@ -1667,7 +1674,7 @@ function buildSophiaInsight(
       question: silent
         ? 'My QGuard collector agent is enrolled but has never reported. How do I diagnose it?'
         : 'How do I enrol a runtime cryptographic collector agent in QGuard Helix?',
-      actionHref: '/dashboard/scanner?tab=agents',
+      actionHref: '/dashboard/agents',
       hasFinding: false,
     }
   }
@@ -1679,7 +1686,7 @@ function buildSophiaInsight(
       recommendation: 'Widen the time window, or check that the collector is still reporting.',
       evidence: [`Latest runtime observation: ${telemetry.latestEventAt ?? 'unknown'}.`],
       question: 'Why has my runtime crypto collector stopped reporting?',
-      actionHref: '/dashboard/scanner?tab=agents',
+      actionHref: '/dashboard/agents',
       hasFinding: false,
     }
   }

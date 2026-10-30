@@ -87,7 +87,8 @@ export type ScannerIntelligenceSnapshot = {
   };
 };
 
-const EMPTY_SNAPSHOT: ScannerIntelligenceSnapshot = {
+/** Exported for render fixtures (tools/intel-ops-render); the hook's own initial state. */
+export const EMPTY_SNAPSHOT: ScannerIntelligenceSnapshot = {
   generatedAt: '',
   mode: 'none',
   summary: {

@@ -8,7 +8,7 @@ import {
   ChevronRight, Menu, X, ScanSearch, ChevronDown,
   Cpu, Lock, Fingerprint, Award, Coins, MessageSquareLock, Cloud, Sparkles, Database, UserCog,
   Activity, EyeOff, Zap, Network, Box, Microscope, LineChart, Target, Shield, CheckCircle, PieChart, ShieldCheck, Scale, FileText, Key, FileWarning, Ghost, Workflow, Crown,
-  BadgeDollarSign, BarChart3, CreditCard, TrendingUp, Users, Wrench
+  BadgeDollarSign, BarChart3, CreditCard, TrendingUp, Users, Wrench, Server
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/auth-context';
@@ -41,6 +41,8 @@ const NAV_SECTIONS = [
     collapsible: true,
     items: [
       { name: 'PQC Scanner', path: '/dashboard/scanner', icon: ScanSearch },
+      // Nested under PQC Scanner: agents are the scanner's on-host collection arm.
+      { name: 'Agents Collector', path: '/dashboard/agents', icon: Server, child: true },
       { name: 'Assets & CBOM', path: '/dashboard/assets', icon: MapIcon },
       { name: 'CBOM Explorer', path: '/dashboard/cbom', icon: Layers },
       { name: 'Shadow Crypto', path: '/dashboard/shadow-crypto', icon: Ghost },
@@ -283,6 +285,13 @@ export default function DashboardLayout() {
     'Revenue Intelligence': false,
   });
 
+  // Open the section holding the current page, so its active entry is visible
+  // on arrival (e.g. Discovery › Agents Collector). Never collapses anything.
+  useEffect(() => {
+    const owner = NAV_SECTIONS.find((section) => section.items.some((item) => item.path === location.pathname));
+    if (owner) setOpenSections((prev) => (prev[owner.label] ? prev : { ...prev, [owner.label]: true }));
+  }, [location.pathname]);
+
   const toggleSection = (label: string) => {
     setOpenSections(prev => ({
       ...prev,
@@ -317,6 +326,29 @@ export default function DashboardLayout() {
 
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
+
+  // The plan could not be READ (after retries). That is not "no subscription":
+  // say so and offer a retry rather than an upgrade prompt.
+  if (!isOwner && !subscription.isActive && subscription.error) {
+    return (
+      <div className="qg-dashboard-shell min-h-screen bg-[var(--qg-dashboard-bg)] text-slate-100">
+        <NoAccessHeader />
+        <div role="alert" className="mx-auto mt-16 max-w-lg rounded-xl border border-amber-400/30 bg-amber-500/10 p-6 text-center">
+          <h1 className="text-[18px] font-black text-white">We couldn't verify your plan</h1>
+          <p className="mt-2 text-[12px] leading-relaxed text-white/60">
+            Your subscription could not be read just now, so access is paused rather than guessed. This is usually temporary.
+          </p>
+          <button
+            type="button"
+            onClick={() => void subscription.refresh()}
+            className="mt-4 rounded-lg border border-cyan-400/50 bg-cyan-500/15 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-cyan-200 hover:bg-cyan-500/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
   }
 
   // No active subscription (and not the owner) — block the whole dashboard.
@@ -425,6 +457,7 @@ export default function DashboardLayout() {
                       {section.items.map(item => {
                         const isActive = location.pathname === item.path;
                         const Icon = item.icon;
+                        const nested = 'child' in item && item.child && !collapsed;
 
                         return (
                           <Link
@@ -433,7 +466,7 @@ export default function DashboardLayout() {
                             onClick={() => setMobileOpen(false)}
                             title={collapsed ? item.name : undefined}
                             className={`qg-sidebar-link relative flex items-center gap-2.5 rounded-lg transition-all duration-200 no-underline ${
-                              collapsed ? 'justify-center px-2 py-2.5' : 'px-3 py-2.5'
+                              collapsed ? 'justify-center px-2 py-2.5' : nested ? 'ml-7 px-3 py-2' : 'px-3 py-2.5'
                             } ${
                               isActive
                                 ? 'qg-sidebar-link--active bg-gradient-to-r from-blue-600/20 to-violet-600/14 text-cyan-100 border border-blue-400/30 shadow-[0_12px_30px_rgba(37,99,235,0.12)]'
@@ -447,7 +480,11 @@ export default function DashboardLayout() {
                                 transition={{ type: 'spring', stiffness: 500, damping: 35 }}
                               />
                             )}
-                            <Icon className={`shrink-0 ${collapsed ? 'h-5 w-5' : 'h-4 w-4'}`} />
+                            {nested && (
+                              // Tree elbow tying the child back to its parent row.
+                              <span aria-hidden="true" className="pointer-events-none absolute -left-2 -top-1 h-[calc(50%+4px)] w-2 rounded-bl-md border-b border-l border-slate-600/60" />
+                            )}
+                            <Icon className={`shrink-0 ${collapsed ? 'h-5 w-5' : nested ? 'h-3.5 w-3.5' : 'h-4 w-4'}`} />
                             {!collapsed && (
                               <span className="min-w-0 break-words text-[11px] font-bold leading-snug tracking-wide">{item.name}</span>
                             )}

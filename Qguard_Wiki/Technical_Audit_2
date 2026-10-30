@@ -1,0 +1,434 @@
+# Qguard Helix PQAuth — Deep Technical Audit, Workflow Visualization, and Enterprise UI/UX Enhancement
+
+## Objective
+
+Perform a comprehensive technical audit, functional review, and UI/UX improvement of the following seven PQAuth modules in Qguard Helix.
+
+The goal is to ensure that every module is correctly implemented, properly connected to the backend, accurately displaying actual system data, and providing clear, intuitive visual representations of its purpose, workflows, processes, dependencies, and operational status.
+
+Transform the PQAuth experience into a **premium, professional, user-friendly, and enterprise-grade post-quantum authentication platform** with intuitive workflows, interactive diagrams, clear status indicators, and subtle, purposeful animations.
+
+Do not limit the work to visual redesign. Review the actual implementation, identify root causes of functional issues, fix verified defects, and test the results.
+
+## 1. Pages to Audit
+
+Review all seven pages and their shared components, routes, APIs, hooks, services, database dependencies, and integrations.
+
+1. **PQAuth Main Dashboard**
+   `http://localhost:3001/dashboard/pqauth`
+
+2. **PQAuth Discovery**
+   `http://localhost:3001/dashboard/pqauth/discovery`
+
+3. **PQAuth Trust Graph**
+   `http://localhost:3001/dashboard/pqauth/trust-graph`
+
+4. **PQAuth Token Intelligence**
+   `http://localhost:3001/dashboard/pqauth/token-intelligence`
+
+5. **PQAuth Compatibility**
+   `http://localhost:3001/dashboard/pqauth/compatibility`
+
+6. **PQAuth Migration Center**
+   `http://localhost:3001/dashboard/pqauth/migration-center`
+
+7. **PQAuth Digital Twin**
+   `http://localhost:3001/dashboard/pqauth/digital-twin`
+
+Inspect the existing codebase before making changes. Identify the actual purpose and responsibilities of each module instead of assuming that the page names fully describe their implementation.
+
+## 2. Perform a Deep Technical and Functional Audit
+
+For each page, investigate the complete data flow from the source of truth to the final rendered interface.
+
+### Frontend and backend integration
+
+Verify:
+
+- React components, hooks, state management, and component lifecycle behavior.
+- API routes, request parameters, response schemas, and error handling.
+- Backend controllers, services, business logic, and database queries.
+- Supabase integration, authentication, authorization, and Row Level Security (RLS), where applicable.
+- Realtime subscriptions, Server-Sent Events (SSE), WebSockets, or polling mechanisms where implemented.
+- Data validation, transformation, aggregation, caching, and rendering.
+- Loading, empty, error, stale-data, and disconnected states.
+- Navigation between PQAuth modules and related Qguard Helix features.
+
+Identify and fix broken integrations, incorrect state updates, duplicated requests, stale data, missing cleanup, race conditions, incorrect calculations, and misleading status indicators.
+
+Do not assume a module is functional simply because the page loads or its charts display information.
+
+### Data accuracy and integrity
+
+Verify that all displayed information comes from the appropriate actual data sources.
+
+Audit:
+
+- Discovered authentication services, applications, endpoints, and assets.
+- Trust relationships and their supporting evidence.
+- Token metadata, lifecycle states, and security findings.
+- Algorithm support and cryptographic compatibility results.
+- Migration plans, execution states, dependencies, and validation outcomes.
+- Digital Twin representations and synchronization with the actual system.
+- Metrics, totals, percentages, timestamps, and status distributions.
+
+Do not introduce mock assets, fabricated trust relationships, hardcoded operational metrics, simulated migration results, or fake live events.
+
+Clearly distinguish verified information from inferred results, test fixtures, stale observations, and unavailable data.
+
+If a required integration is missing, identify the gap and implement it where feasible. Otherwise, present an explicit and truthful limitation.
+
+## 3. Module-Specific Audit and Visualization Improvements
+
+### A. PQAuth Main Dashboard
+
+Review the main dashboard as the central overview of the PQAuth environment.
+
+Improve its ability to communicate:
+
+- Current authentication and PQC readiness status.
+- Actual discovered assets and authentication services.
+- Trust relationships and relevant security findings.
+- Token intelligence and lifecycle status.
+- Compatibility issues and migration progress.
+- Digital Twin synchronization and health, where supported.
+- Critical issues, recommended actions, and operational blockers.
+
+Use clear summary cards, meaningful charts, status indicators, and drill-down links to the relevant modules.
+
+Ensure that every summary metric matches the underlying records and that clicking an indicator leads to the appropriate details.
+
+### B. PQAuth Discovery
+
+Make the discovery process visually clear and easy to follow.
+
+Where supported by the actual implementation, represent the workflow from discovery initiation through asset identification, metadata collection, authentication analysis, validation, and result presentation.
+
+Provide:
+
+- Discovery scope and execution status.
+- Actual discovered assets and services.
+- Discovery timestamps and freshness indicators.
+- Findings grouped by relevant categories.
+- Clear distinctions between successful, failed, incomplete, and unsupported discovery operations.
+- Actionable explanations for failed or incomplete discovery.
+
+Show the relationship between discovered entities and the other PQAuth modules.
+
+Do not display an asset as discovered or verified without supporting evidence.
+
+### C. PQAuth Trust Graph
+
+Improve the trust graph into an intuitive, interactive visualization of actual trust relationships.
+
+Where the underlying data supports it, visualize:
+
+- Applications, services, identities, issuers, relying parties, and other relevant entities.
+- Trust relationships and their direction.
+- Authentication and token-validation dependencies.
+- Cryptographic mechanisms used to establish trust.
+- Verified trust failures, weak configurations, and unresolved relationships.
+- The evidence and source records supporting each relationship.
+
+Provide interactive node selection, contextual details, relationship highlighting, filtering, zooming, panning, and a useful legend.
+
+Use distinct visual styles for verified, suspected, unresolved, and failed relationships where these classifications are supported by the data model.
+
+Prevent misleading connections between unrelated entities. If relationship data is unavailable, show a clear empty or incomplete state instead of inventing a graph.
+
+### D. PQAuth Token Intelligence
+
+Make token security information understandable without sacrificing technical depth.
+
+Audit the actual token metadata, parsing, validation, lifecycle processing, and supported security checks.
+
+Where applicable, present:
+
+- Token type and issuer.
+- Audience and subject information, subject to access controls and data minimization.
+- Issuance and expiration timestamps.
+- Signature algorithm and validation status.
+- Key or certificate references.
+- Relevant claims and validation findings.
+- Expiration, revocation, rotation, and lifecycle information where actually supported.
+- Compatibility or migration considerations.
+
+Clearly distinguish token metadata inspection from cryptographic signature verification and successful authentication.
+
+Never expose raw access tokens, refresh tokens, private keys, secrets, or other sensitive credentials in the UI, logs, exports, or diagrams.
+
+Use masked identifiers and sanitized metadata where appropriate.
+
+### E. PQAuth Compatibility
+
+Improve the presentation of authentication and cryptographic compatibility assessments.
+
+Where supported, show the compatibility of relevant components across:
+
+- Authentication protocols.
+- Token formats and validation mechanisms.
+- Cryptographic algorithms and key types.
+- Libraries, runtimes, identity providers, and dependent services.
+- Classical, hybrid, and post-quantum configurations.
+
+Use compatibility matrices, dependency diagrams, and clear status indicators to explain what is supported, unsupported, conditionally compatible, or not yet verified.
+
+For each issue, explain:
+
+1. What component is affected.
+2. What the compatibility issue is.
+3. Why it matters.
+4. What dependency or limitation causes it.
+5. What supported remediation or migration option is available.
+
+Base all compatibility conclusions on actual configuration evidence, validated capabilities, or documented rules. Do not mark an integration compatible merely because it appears in an inventory.
+
+### F. PQAuth Migration Center
+
+Present the migration process as a clear, traceable operational workflow.
+
+Where applicable, visualize the progression through assessment, planning, dependency analysis, approval, execution, validation, and monitoring.
+
+Display actual:
+
+- Migration plans and affected components.
+- Current and target configurations.
+- Dependencies and prerequisites.
+- Migration job statuses and execution history.
+- Blockers, errors, and remediation steps.
+- Validation results and rollback status where implemented.
+- Evidence supporting completed migration steps.
+
+Use dependency-aware workflows and timelines to make execution order and prerequisites understandable.
+
+Distinguish proposed migration plans from approved, executing, completed, failed, and validated operations.
+
+Never mark a migration complete simply because a task was submitted or a configuration change was requested.
+
+Ensure that cryptographic roles are correctly represented. For example, ML-KEM is a key-encapsulation mechanism, while ML-DSA and SLH-DSA are digital-signature schemes. Recommendations must preserve the intended security properties and interoperability requirements of the affected authentication system.
+
+### G. PQAuth Digital Twin
+
+Review the Digital Twin's purpose, underlying model, synchronization logic, and relationship to the actual environment.
+
+Improve the visual representation of the modeled authentication environment, including relevant assets, dependencies, trust relationships, configurations, and migration states where supported.
+
+Verify:
+
+- How the Twin is created and updated.
+- Which actual records and observations it represents.
+- How synchronization status is determined.
+- How stale, missing, or conflicting information is handled.
+- Whether simulated scenarios are separated from actual operational state.
+- Whether predictions or recommendations have traceable inputs.
+- Whether model changes can be distinguished from real configuration changes.
+
+Clearly label simulated or hypothetical scenarios as simulations. Never present predicted behavior as an observed fact or imply that a simulated change was applied to a production system.
+
+Provide useful drill-downs from Twin entities to their corresponding real assets and evidence where available.
+
+## 4. Improve Visual Workflow and Process Representation
+
+Design each module around its actual function rather than applying the same generic dashboard layout everywhere.
+
+Use appropriate visualizations, such as:
+
+- Interactive workflow diagrams.
+- Trust and dependency graphs.
+- Discovery process flows.
+- Token lifecycle timelines.
+- Compatibility matrices.
+- Migration dependency graphs.
+- Digital Twin topology views.
+- Status distribution charts.
+- Expandable evidence panels.
+- Before-and-after configuration comparisons.
+
+Each visualization should communicate the relationship between its components, the current status, and the next actionable step.
+
+For complex workflows, use progressive disclosure: show the overall process first, then allow users to inspect individual steps, components, relationships, and technical evidence.
+
+Ensure that charts and diagrams use actual application data and remain synchronized with relevant state changes.
+
+Avoid unnecessary complexity, decorative visualizations, and diagrams that do not provide meaningful operational information.
+
+## 5. Premium Enterprise UI/UX Design
+
+Align all seven pages with a consistent Qguard Helix design system.
+
+### Visual style
+
+- Modern, elegant, enterprise-grade interface.
+- Consistent light-theme styling aligned with the existing application.
+- Professional light-blue and purple accents.
+- Clear typography, spacing, and visual hierarchy.
+- Restrained shadows, subtle borders, and polished surfaces.
+- Consistent cards, tables, badges, icons, charts, and navigation.
+- Responsive layouts for desktop, laptop, and tablet.
+- Accessible contrast, keyboard navigation, and readable labels.
+
+Maintain consistency without making every page visually identical.
+
+### Animation and motion
+
+Add subtle, purposeful animations where they improve understanding:
+
+- Smooth transitions between workflow stages.
+- Gentle node highlighting and relationship transitions.
+- Animated progress indicators for genuinely active operations.
+- Expandable panels and contextual detail views.
+- Responsive hover and focus effects.
+- Smooth chart and graph updates when the underlying data changes.
+
+Animations must reflect real application state. Do not simulate discovery, migration, trust validation, or synchronization activity to make a page appear active.
+
+Respect reduced-motion preferences and ensure that animation does not impair accessibility or performance.
+
+## 6. Usability and Customer Experience
+
+Every page should help customers quickly answer:
+
+- What does this module do?
+- What is the current status?
+- What assets or services are affected?
+- Why does the status matter?
+- What evidence supports the result?
+- What action should be taken next?
+
+Implement or improve the following where relevant:
+
+- Search, filtering, sorting, and pagination.
+- Clickable asset and finding details.
+- Contextual tooltips and concise explanations.
+- Clear status legends.
+- Evidence and history panels.
+- Links to related modules.
+- Actionable remediation recommendations.
+- Functional buttons, tabs, menus, and chart interactions.
+- Clear loading, empty, error, and disconnected states.
+
+Do not leave decorative controls that appear functional but perform no action. Remove them or clearly identify unavailable capabilities.
+
+Preserve existing authentication, authorization, confirmation, and audit requirements for sensitive actions.
+
+## 7. Cross-Module Integration
+
+Audit the relationships between all seven PQAuth pages.
+
+Verify consistency in:
+
+- Asset identity and ownership.
+- Discovery results.
+- Trust graph entities and relationships.
+- Token metadata and validation findings.
+- Compatibility assessments.
+- Migration plans and execution status.
+- Digital Twin representations.
+- Shared security findings and timestamps.
+
+When a source record changes, ensure dependent views update through the existing supported data flow.
+
+Reuse shared services, data models, status mappings, and UI components where appropriate to prevent duplicated business logic and inconsistent results.
+
+Ensure that tenant boundaries and access controls are enforced consistently across all modules.
+
+## 8. Testing and Verification
+
+After implementing the improvements, run appropriate tests against the existing application.
+
+### Functional tests
+
+- Confirm that all seven routes load successfully.
+- Verify API requests, responses, and error handling.
+- Test React hooks and component lifecycle behavior.
+- Validate Realtime or SSE connections where applicable.
+- Test graph interactions, filtering, navigation, and supported actions.
+- Verify authentication, authorization, and RLS behavior.
+- Confirm that sensitive token material is never exposed.
+
+### Data integrity tests
+
+- Compare dashboard metrics against source records.
+- Verify trust relationships against their supporting evidence.
+- Validate token metadata and cryptographic verification states.
+- Test compatibility classifications against defined rules.
+- Verify migration status transitions and validation requirements.
+- Confirm Digital Twin synchronization and simulation labeling.
+- Test empty, stale, malformed, and unavailable data conditions.
+
+### Regression and quality checks
+
+- Run the relevant existing automated tests.
+- Run TypeScript checks, linting, and production builds where available.
+- Check browser console errors and failed network requests.
+- Verify responsive layouts and accessibility.
+- Confirm that existing Qguard Helix features continue to work.
+
+Report the actual commands executed and the results obtained. Do not claim tests passed if they were not run.
+
+## 9. Implementation Requirements
+
+Follow these rules throughout the task:
+
+1. No fabricated operational data, trust relationships, token findings, or migration results.
+2. No hardcoded metrics that should be calculated from actual data.
+3. No cosmetic fixes that conceal underlying functional defects.
+4. No unsupported claims of successful authentication, verification, migration, or synchronization.
+5. No exposure of credentials, tokens, private keys, or sensitive identity data.
+6. No unnecessary rewrites or duplicate backend implementations.
+7. No weakening of authentication, authorization, tenant isolation, or audit logging.
+8. No destructive database changes without justification and migration review.
+9. No false claims about quantum safety or cryptographic compatibility.
+10. No breaking changes to working features or established API contracts without a documented reason.
+11. No unnecessary dependencies or excessive animations.
+12. No unverified completion claims.
+
+Implement improvements directly in the existing codebase where feasible. If a required capability is blocked by missing infrastructure, document the dependency and implement the appropriate safe fallback.
+
+## 10. Required Final Report
+
+When the work is complete, provide:
+
+### A. Executive summary
+Summarize the main defects discovered, fixes implemented, and remaining risks.
+
+### B. Seven-page audit matrix
+For each module, report:
+
+- Frontend and backend integration.
+- Data-source accuracy.
+- Hook and lifecycle correctness.
+- Realtime functionality where applicable.
+- Workflow and interaction functionality.
+- Security and data protection.
+- Visual improvements.
+- Test results.
+- Outstanding limitations.
+
+Use **PASS**, **FAIL**, **PARTIAL**, **NOT VERIFIED**, or **NOT APPLICABLE**, supported by evidence.
+
+### C. Defect and remediation log
+List each significant defect, its root cause, affected files, implemented fix, and verification method.
+
+### D. UI/UX improvements
+Describe the workflow diagrams, visualizations, interactions, accessibility improvements, and animations implemented for each page.
+
+### E. Test results
+List commands executed, tests passed or failed, build results, and any verification blocked by unavailable infrastructure.
+
+### F. Final status
+Clearly distinguish fully functional features from partially implemented features and capabilities that still require integration or verification.
+
+## Final Instruction
+
+Start by inspecting the repository, existing PQAuth architecture, all seven pages, shared components, backend routes, database schema, and related services.
+
+Follow this sequence:
+
+**Inspect → Audit → Identify Root Causes → Fix → Redesign → Test → Verify → Report**
+
+Prioritize security, data accuracy, functional reliability, and clear operational workflows before visual polish.
+
+The final result should be a cohesive, trustworthy, and intuitive PQAuth experience that enables customers to understand authentication discovery, trust relationships, token security, compatibility, migration, and Digital Twin operations without requiring them to interpret confusing or misleading dashboards.
+
+Do not stop after generating recommendations. Implement the verified improvements directly, preserve working functionality, and provide an evidence-based report of what was actually changed and tested.

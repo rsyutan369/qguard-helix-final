@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
+import { useAgentScan } from './use-agent-scan';
 import {
   CAPABILITY_LABELS,
   type AgentCommand,
@@ -665,6 +666,18 @@ export function useAgentInstaller(enabled: boolean) {
     [call, loadSummary],
   );
 
+  /** Clear the agent's bound request-signing keys; its next signed request binds afresh. */
+  const resetSigningKey = useCallback(
+    async (agentId: string): Promise<ActionResult<{ reset: boolean }>> => {
+      const result = await call<{ reset: boolean }>(`${SCANNER_API}/agents/${agentId}/signing-key/reset`, { method: 'POST' });
+      if (result.ok) await loadSummary();
+      return result.ok
+        ? { ok: true, message: 'Signing key reset. The next request from this agent binds its current key.', data: result.data }
+        : { ok: false, message: result.message };
+    },
+    [call, loadSummary],
+  );
+
   const generatePackage = useCallback(
     async (agentId: string, platform: AgentPlatform, enrollmentToken: string): Promise<ActionResult<GeneratedPackage>> => {
       const result = await call<GeneratedPackage>(`${INSTALLER_API}/package`, {
@@ -695,17 +708,12 @@ export function useAgentInstaller(enabled: boolean) {
     [call, loadSummary],
   );
 
-  const requestScan = useCallback(
-    async (agentId: string) => {
-      const result = await call<{ command: AgentCommand; delivery: string; connectionState: ConnectionState }>(
-        `${INSTALLER_API}/agents/${agentId}/scan`,
-        { method: 'POST' },
-      );
-      await loadSummary();
-      return result;
-    },
-    [call, loadSummary],
-  );
+  const { requestScan: queueScan, scanning } = useAgentScan();
+  const requestScan = useCallback(async (agentId: string) => {
+    const result = await queueScan(agentId);
+    if (!result.ok) setError(result.message || 'Unable to queue the scan.');
+    return result;
+  }, [queueScan]);
 
   const requestUpgrade = useCallback(
     async (agentId: string) => {
@@ -777,10 +785,12 @@ export function useAgentInstaller(enabled: boolean) {
     createAgent,
     setWriteAuthority,
     rotateToken,
+    resetSigningKey,
     generatePackage,
     revokeAgent,
     deleteAgent,
     requestScan,
+    scanning,
     requestUpgrade,
     setAgentEnabled,
     loadHealth,

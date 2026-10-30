@@ -1,0 +1,261 @@
+# Qguard Helix QKMS — Deep Technical Audit, End-to-End Integration Validation, and Enterprise-Grade Enhancement
+
+## Objective
+
+Kindly perform a comprehensive, end-to-end technical audit, code review, integration validation, and quality improvement of the following Qguard Helix Quantum Key Management System (QKMS) dashboard pages.
+
+**Pages to audit:**
+
+1. `http://localhost:3000/dashboard/qkms/overview`
+2. `http://localhost:3000/dashboard/qkms/inventory`
+3. `http://localhost:3000/dashboard/qkms/lifecycle`
+4. `http://localhost:3000/dashboard/qkms/governance`
+5. `http://localhost:3000/dashboard/qkms/rotation`
+6. `http://localhost:3000/dashboard/qkms/readiness`
+7. `http://localhost:3000/dashboard/qkms/risk-analysis`
+
+The primary goal is to ensure that every page is correctly connected to the actual application backend, retrieves and processes authoritative data, displays accurate information based on the user's real assets and their current status, and updates reliably when the underlying data changes.
+
+Do not limit this task to a visual review. Investigate the actual source code, application architecture, frontend components, hooks, API endpoints, database queries, authentication context, event streams, and backend processing logic.
+
+**Important:** Do not assume the implementation is correct simply because the pages load or display plausible information. Verify the complete data flow and fix any confirmed defects.
+
+## 1. Deep Frontend-to-Backend Integration Audit
+
+Trace the entire data flow for each page:
+
+**Frontend UI → React components and hooks → API services → Express backend/API routes → authenticated Supabase client → database queries → response transformation → frontend state → rendered UI.**
+
+Verify that:
+
+- Every component uses the correct data-fetching hooks, API services, and backend endpoints.
+- All referenced API endpoints actually exist, are reachable, and return the expected response schemas.
+- Frontend hooks correctly handle loading states, errors, retries, cancellation, stale data, and component unmounting.
+- React state, effects, dependency arrays, memoization, and subscriptions are implemented correctly.
+- API requests use the appropriate authenticated user context and respect Supabase Row Level Security (RLS).
+- Database queries retrieve the correct records and apply appropriate user, organization, tenant, asset, and permission filters.
+- Data transformations, calculations, aggregations, and status mappings are consistent between the frontend and backend.
+- UI components display values returned by authoritative backend sources rather than invented, hardcoded, randomly generated, or misleading demonstration data.
+- Empty datasets are handled correctly without fabricating assets, keys, events, risks, or successful operations.
+- Errors are surfaced clearly and are never silently replaced with fake values or misleading success indicators.
+
+Identify and eliminate broken integrations, incorrect endpoint references, unused hooks, duplicated data sources, inconsistent schemas, stale state, and components that display static values instead of actual application data.
+
+## 2. Real-Time Data and SSE/WebSocket Validation
+
+Inspect the application's existing real-time architecture and determine which mechanisms are actually implemented and appropriate for each QKMS data domain.
+
+Validate Server-Sent Events (SSE), WebSockets, Supabase Realtime, polling, or other existing event-driven mechanisms wherever applicable.
+
+For SSE and other streaming integrations, verify:
+
+- The frontend connects to the correct backend stream.
+- The backend publishes genuine application events derived from actual asset, key, lifecycle, governance, rotation, readiness, and risk data.
+- Events follow a consistent, documented schema and include appropriate identifiers, timestamps, event types, and updated values.
+- The frontend correctly parses events and updates the relevant components without requiring unnecessary full-page reloads.
+- Connections recover safely after network interruptions, authentication failures, server restarts, or temporary backend unavailability.
+- Reconnection logic does not create duplicate subscriptions, excessive connections, or repeated event processing.
+- Events are associated with the correct authenticated user and tenant.
+- Unauthorized users cannot receive another user's or organization's sensitive key-management metadata.
+- Streaming connections, listeners, and subscriptions are cleaned up when components unmount or users sign out.
+- Event ordering, duplicate delivery, reconnect recovery, stale events, and missed updates are handled appropriately.
+
+Do not introduce SSE or WebSockets indiscriminately if a suitable, reliable real-time mechanism already exists. Reuse and strengthen the existing architecture wherever practical.
+
+**Real-time accuracy requirement:** The UI must reflect confirmed backend state changes. Do not simulate activity, manufacture live events, or mark an operation successful merely because a frontend action was initiated.
+
+## 3. Page-by-Page Functional Audit
+
+### A. QKMS Overview
+Verify that executive metrics, summary cards, charts, key counts, status distributions, lifecycle summaries, governance indicators, and risk metrics are calculated from actual QKMS records.
+
+Ensure that dashboard totals reconcile with the corresponding inventory, lifecycle, governance, rotation, readiness, and risk-analysis modules. Clearly distinguish unavailable data from verified zero values.
+
+### B. QKMS Inventory
+Verify that the inventory represents actual persisted key-management records and their associated assets.
+
+Check key and cryptographic metadata, identifiers, algorithms, key types, ownership, locations, environments, creation and expiration dates, lifecycle states, usage restrictions, and compliance classifications wherever those fields are supported by the actual schema.
+
+Ensure that search, filtering, sorting, pagination, asset drill-downs, and record details operate on real backend data. Protect secret key material: never expose private keys, secret keys, or other sensitive cryptographic material merely to populate the UI.
+
+### C. QKMS Lifecycle
+Verify the accuracy of key lifecycle states and transitions, including provisioning, activation, use, suspension, deactivation, expiration, revocation, archival, and destruction where supported.
+
+Confirm that lifecycle histories and audit events originate from persisted records or verified backend events. Validate transition rules, authorization checks, timestamps, error handling, and consistency between displayed states and stored states.
+
+Do not display a lifecycle transition as completed until the backend confirms it.
+
+### D. QKMS Governance
+Validate governance policies, approval workflows, role-based access control, ownership, policy enforcement, compliance mappings, audit trails, and policy evaluation results.
+
+Verify that the UI reflects actual persisted policy configurations and evaluation results. Ensure that policy changes are authorized, validated by the backend, and recorded in an auditable manner.
+
+Distinguish configured policies from policies that have actually been evaluated or enforced. Never imply that an asset is compliant merely because a policy exists.
+
+### E. QKMS Rotation
+Audit key rotation scheduling, eligibility, due dates, rotation history, policy thresholds, expiration handling, execution status, and failure reporting.
+
+Verify the complete rotation workflow from the user's request through backend validation and execution to confirmation of the resulting state.
+
+Confirm that rotation actions use the intended key identifiers, enforce authorization and policy constraints, and preserve cryptographic key-handling requirements. Avoid duplicate execution, race conditions, and unsafe retries.
+
+Never report a successful rotation without an authoritative backend confirmation. Clearly distinguish scheduled, pending, running, completed, failed, and overdue operations where supported.
+
+### F. QKMS Readiness
+Verify that quantum-readiness metrics are derived from actual inventory, algorithm metadata, key lifecycle information, policy evaluations, migration status, and other available evidence.
+
+Validate the cryptographic classifications and readiness calculations. Clearly differentiate quantum-resistant algorithms, hybrid cryptographic configurations, classical algorithms, unsupported algorithms, and unknown or unverified configurations.
+
+Apply correct cryptographic classifications: ML-KEM (FIPS 203) is a key-encapsulation mechanism, while ML-DSA (FIPS 204) and SLH-DSA (FIPS 205) are digital-signature schemes.
+
+Do not infer quantum safety solely from an algorithm name or a declared configuration. Where evidence is insufficient, report the relevant asset as unverified or unknown rather than assigning an unsupported readiness or compliance status.
+
+### G. QKMS Risk Analysis
+Validate risk scores, risk categories, findings, affected assets, severity levels, remediation recommendations, and risk trends against actual evidence and documented calculation rules.
+
+Confirm that risk scores use consistent inputs, thresholds, and weighting logic, and that the frontend does not independently recalculate different results from the backend.
+
+Verify that identified risks can be traced to the affected assets and supporting findings. Ensure that resolved findings, stale data, duplicate findings, and missing telemetry are handled correctly.
+
+Clearly distinguish confirmed risks, potential exposures, unavailable evidence, and informational findings. Do not report zero risk simply because no findings were returned or a data source is unavailable.
+
+## 4. Data Integrity and Cross-Module Consistency
+
+Treat the authenticated backend and authoritative persisted records as the source of truth.
+
+Trace shared data across all seven pages and identify conflicting definitions, duplicated queries, inconsistent statuses, mismatched identifiers, stale caches, and incorrect aggregations.
+
+Verify that:
+
+- Asset counts reconcile across modules when they use the same scope and filtering criteria.
+- Key counts distinguish unique keys from assets, versions, and lifecycle events.
+- Rotation and lifecycle histories reference the correct inventory records.
+- Governance and readiness metrics reflect the correct assets and policies.
+- Risk findings map to the correct assets and evidence.
+- Timestamps and date calculations use consistent time-zone handling.
+- Missing data, unavailable integrations, and incomplete assessments are represented explicitly.
+- Changes made in one module propagate to all relevant modules through the application's actual synchronization mechanisms.
+
+Document the intended rules for calculations and cross-module reconciliation. Do not force unrelated metrics to match when they have different documented scopes; instead, make their definitions and filters clear.
+
+## 5. Authentication, Authorization, and Security
+
+Perform a focused security review of the QKMS data flows and operations.
+
+Verify:
+
+- Authentication is enforced on protected frontend and backend routes.
+- Backend authorization is checked for every sensitive read and write.
+- Supabase RLS policies are enabled and correctly enforced.
+- User and tenant boundaries cannot be bypassed by manipulating request parameters.
+- Sensitive key-management operations cannot be executed by unauthorized users.
+- API inputs are validated, errors avoid leaking secrets, and audit events are protected from unauthorized modification.
+- SSE, WebSocket, and subscription access respects authentication, authorization, and tenant isolation.
+- Secret key material is never placed in logs, browser-visible payloads, URLs, or unnecessarily exposed frontend state.
+- Destructive operations and security-sensitive changes use appropriate safeguards and audit logging.
+
+Do not weaken authentication, authorization, validation, RLS, or security controls to make a feature appear functional.
+
+## 6. Premium Enterprise-Grade UI/UX Improvements
+
+After validating the underlying functionality, improve the visual design and user experience without breaking existing working features.
+
+Maintain Qguard Helix's premium quantum-cybersecurity identity and consistent enterprise dashboard styling.
+
+Improve the following where needed:
+
+- Executive-quality metrics and data visualizations.
+- Clearly defined typography, spacing, alignment, and visual hierarchy.
+- Readable tables, asset details, lifecycle timelines, governance workflows, and risk breakdowns.
+- Clear and consistent key, asset, rotation, compliance, and risk status indicators.
+- Real-time activity indicators that reflect actual connection and data freshness status.
+- Skeleton loaders, empty states, actionable errors, retry controls, and graceful recovery.
+- Search, sorting, filtering, pagination, and accessible interaction patterns.
+- Responsive layouts for desktop, laptop, and tablet screens.
+- Tooltips and contextual explanations for technical and quantum-readiness metrics.
+- Clear separation between verified results, estimates, pending operations, and unavailable evidence.
+
+Charts and metrics must visualize actual data. Ensure labels, totals, percentages, severity distributions, and time ranges correspond to the displayed records. Do not add decorative charts or animated counters that imply activity or results that have not occurred.
+
+Prioritize clarity, performance, accessibility, auditability, and operational usefulness over unnecessary visual effects.
+
+## 7. Performance and Reliability
+
+Review database-query efficiency, API response times, frontend rendering, caching, real-time event volume, and unnecessary network requests.
+
+Identify and fix:
+
+- N+1 query patterns and redundant API calls.
+- Excessive component re-rendering.
+- Memory leaks and duplicate event subscriptions.
+- Incorrect cache invalidation and stale cached responses.
+- Large unpaginated inventory or event-history responses.
+- Race conditions between initial fetches and incoming real-time events.
+- Unhandled promise rejections and silent failures.
+- Retry loops, duplicate writes, and inefficient polling.
+
+Use pagination, batching, caching, or incremental updates where justified. Preserve data correctness and permission boundaries when optimizing performance.
+
+## 8. Testing and Verification Requirements
+
+After the audit and implementation, execute the appropriate available tests.
+
+Include:
+
+- TypeScript and build validation.
+- Linting and static analysis where configured.
+- Unit tests for calculations, mappings, validation, and state transitions.
+- API integration tests for success, empty results, authorization failures, and server errors.
+- Database/RLS tests for tenant and user isolation.
+- Real-time tests for event delivery, state updates, reconnection, duplicate events, and cleanup.
+- Cross-module reconciliation tests for shared metrics.
+- End-to-end tests for key user workflows where test infrastructure is available.
+- Regression testing to ensure existing working features remain functional.
+
+Test realistic scenarios, including zero assets, missing metadata, expired keys, failed rotations, policy violations, unauthorized access, disconnected event streams, incomplete telemetry, and backend failures.
+
+Never claim a test passed unless it was actually executed and its result was verified. Clearly identify tests that could not be performed because of missing infrastructure, credentials, services, or test data.
+
+## 9. Implementation Rules
+
+- Inspect the existing repository and follow its actual architecture before making changes.
+- Reuse established API services, hooks, database schemas, authentication mechanisms, and UI components where appropriate.
+- Avoid unnecessary rewrites, duplicate endpoints, redundant abstractions, or parallel data pipelines.
+- Do not introduce mock data, hardcoded operational metrics, fabricated assets, fake telemetry, simulated security findings, or placeholder success responses.
+- Do not alter database schemas or migrations without validating the need and assessing backward compatibility.
+- Preserve working functionality, route compatibility, authorization rules, and existing user workflows.
+- Implement fixes in the actual source files rather than merely documenting the problems.
+- Ensure all affected modules and dependent components remain consistent after changes.
+- If a required backend capability is missing, implement it only when the existing architecture and available infrastructure support it. Otherwise, document the precise limitation instead of creating a misleading frontend workaround.
+
+## 10. Required Deliverables
+
+At completion, provide a technical audit and implementation report containing:
+
+1. **Executive Summary:** Overall QKMS health, critical defects, major risks, and verified improvements.
+
+2. **Page-by-Page Audit Matrix:** For each of the seven pages, report frontend status, hooks, API integration, backend connectivity, database source, real-time mechanism, data accuracy, security, tests, and outstanding issues.
+
+3. **End-to-End Data-Flow Findings:** Identify the actual frontend-to-backend data path and authoritative data source for each key metric and operation.
+
+4. **Defects Identified and Fixed:** Document each confirmed issue, its root cause, the affected files, and the implemented correction.
+
+5. **Real-Time Validation Results:** Specify which streaming or subscription mechanisms were verified, what events were tested, and whether reconnection and state reconciliation worked.
+
+6. **Data Integrity Results:** Report the cross-module reconciliation checks performed and any remaining inconsistencies.
+
+7. **Security Findings:** Document relevant authentication, authorization, tenant-isolation, RLS, and sensitive-data handling findings.
+
+8. **Testing Evidence:** List the actual commands, tests, build checks, integration checks, and end-to-end scenarios executed, with their verified outcomes.
+
+9. **Outstanding Issues:** Separate unresolved defects, external infrastructure limitations, unverified behavior, and recommended follow-up work.
+
+10. **Final Readiness Assessment:** Provide a defensible assessment of operational readiness, with evidence-backed status for each module. Do not declare the entire QKMS production-ready merely because the build succeeds or the UI looks correct.
+
+## Final Acceptance Criteria
+
+The task is complete only when the seven QKMS pages have been audited, confirmed defects have been fixed wherever feasible, the relevant tests have been executed, and remaining limitations have been documented transparently.
+
+The final implementation should deliver a secure, consistent, responsive, and enterprise-grade QKMS experience in which displayed metrics, inventory records, lifecycle states, governance results, rotation operations, quantum-readiness classifications, and risk findings are traceable to authoritative application data.
+
+**Accuracy, verified functionality, security, and data integrity take priority over visual appearance. No fabricated data, false success messages, misleading compliance claims, or unsupported production-readiness assertions are acceptable.**

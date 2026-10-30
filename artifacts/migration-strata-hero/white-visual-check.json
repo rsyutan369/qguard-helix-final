@@ -1,0 +1,54 @@
+[
+  {
+    "spec": {
+      "name": "desktop",
+      "width": 1440,
+      "height": 900
+    },
+    "errors": [],
+    "background": "rgb(255, 255, 255)",
+    "overflow": false,
+    "height": 900,
+    "headline": "rgb(23, 32, 51)",
+    "filter": "invert(1) hue-rotate(180deg) saturate(0.78) brightness(1.025)"
+  },
+  {
+    "spec": {
+      "name": "tablet",
+      "width": 1024,
+      "height": 768
+    },
+    "errors": [],
+    "background": "rgb(255, 255, 255)",
+    "overflow": false,
+    "height": 768,
+    "headline": "rgb(23, 32, 51)",
+    "filter": "invert(1) hue-rotate(180deg) saturate(0.78) brightness(1.025)"
+  },
+  {
+    "spec": {
+      "name": "mobile",
+      "width": 390,
+      "height": 844
+    },
+    "errors": [],
+    "background": "rgb(255, 255, 255)",
+    "overflow": false,
+    "height": 1347.421875,
+    "headline": "rgb(23, 32, 51)",
+    "filter": "invert(1) hue-rotate(180deg) saturate(0.78) brightness(1.025)"
+  },
+  {
+    "spec": {
+      "name": "small",
+      "width": 320,
+      "height": 740
+    },
+    "errors": [],
+    "background": "rgb(255, 255, 255)",
+    "overflow": false,
+    "height": 1292.015625,
+    "headline": "rgb(23, 32, 51)",
+    "filter": "invert(1) hue-rotate(180deg) saturate(0.78) brightness(1.025)"
+  }
+]

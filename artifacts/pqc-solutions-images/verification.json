@@ -1,0 +1,65 @@
+[
+  {
+    "viewport": "desktop",
+    "name": "tls-trust-path-cost",
+    "src": "/pqc-solutions/tls-trust-path-cost.webp",
+    "complete": true,
+    "width": 1672,
+    "height": 941,
+    "renderedWidth": 617,
+    "renderedHeight": 340,
+    "alt": "Make the cost of trust a first-class metric"
+  },
+  {
+    "viewport": "desktop",
+    "name": "quantum-threat-model",
+    "src": "/pqc-solutions/quantum-threat-model.webp",
+    "complete": true,
+    "width": 1672,
+    "height": 941,
+    "renderedWidth": 660.171875,
+    "renderedHeight": 340,
+    "alt": "Cryptographic assets classified into Shor exposure, Grover key-size planning, legacy hashes and post-quantum protection"
+  },
+  {
+    "viewport": "desktop",
+    "status": 200,
+    "horizontalOverflow": false,
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 404 (Not Found)"
+    ],
+    "resourceErrorDetail": {
+      "url": "http://localhost:3000/favicon.ico",
+      "status": 404,
+      "scope": "Existing favicon request; both replacement images decoded successfully."
+    }
+  },
+  {
+    "viewport": "mobile",
+    "name": "tls-trust-path-cost",
+    "src": "/pqc-solutions/tls-trust-path-cost.webp",
+    "complete": true,
+    "width": 1672,
+    "height": 941,
+    "renderedWidth": 286,
+    "renderedHeight": 160.953125,
+    "alt": "Make the cost of trust a first-class metric"
+  },
+  {
+    "viewport": "mobile",
+    "name": "quantum-threat-model",
+    "src": "/pqc-solutions/quantum-threat-model.webp",
+    "complete": true,
+    "width": 1672,
+    "height": 941,
+    "renderedWidth": 286,
+    "renderedHeight": 160.953125,
+    "alt": "Cryptographic assets classified into Shor exposure, Grover key-size planning, legacy hashes and post-quantum protection"
+  },
+  {
+    "viewport": "mobile",
+    "status": 200,
+    "horizontalOverflow": false,
+    "consoleErrors": []
+  }
+]

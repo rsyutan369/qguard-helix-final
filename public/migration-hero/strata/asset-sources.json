@@ -1,0 +1,11 @@
+{
+  "purpose": "Conceptual marketing artwork from the user-provided Strata AI prompt, adapted to QGuard Helix migration features. No operational telemetry or customer endorsement is represented.",
+  "artwork": [
+    { "file": "glass-layers.mp4", "source": "https://d2ol7oe51mr4n9.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/435a4fe7-e43b-4e7c-af78-0be083e73569.mp4" },
+    { "file": "glass-layers.webp", "source": "https://d2ol7oe51mr4n9.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/782a4a52-4c1e-4471-bb0c-aa232927f4a6.webp" }
+  ],
+  "fonts": [
+    { "family": "DM Sans", "subset": "Latin", "file": "dm-sans-latin.woff2", "source": "https://fonts.gstatic.com/s/dmsans/v17/rP2Hp2ywxg089UriCZOIHQ.woff2", "license": "DM-Sans-OFL.txt" },
+    { "family": "Inter", "subset": "Latin", "file": "inter-latin.woff2", "source": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2", "license": "Inter-OFL.txt" }
+  ]
+}

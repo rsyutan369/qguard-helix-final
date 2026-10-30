@@ -338,7 +338,7 @@ export function buildAuditEvents(inputs: AuditInputs): AuditEvent[] {
       evidenceId: `finding:scanner_alerts:${str(row.id)}`,
       controlIds: CATEGORY_CONTROLS.finding,
       frameworkIds: [],
-      href: '/dashboard/scanner?tab=agents',
+      href: '/dashboard/agents',
       appendOnlySource: false,
     })
   }

@@ -294,7 +294,7 @@ export default function TrustDashboard() {
             <PanelEmpty>No certificate chains to validate.</PanelEmpty>
           ) : (
             <div className="space-y-1.5">
-              <BarRow label="Fully validated" count={data.certificateIntel.chainValidation.passed} percent={pct(data.certificateIntel.chainValidation.passed, data.totals.certificates)} tone="good" />
+              <BarRow label="Passed every evaluable check" count={data.certificateIntel.chainValidation.passed} percent={pct(data.certificateIntel.chainValidation.passed, data.totals.certificates)} tone="good" />
               <BarRow label="Failing a check" count={data.certificateIntel.chainValidation.failed} percent={pct(data.certificateIntel.chainValidation.failed, data.totals.certificates)} tone="critical" />
               <BarRow label="Warning" count={data.certificateIntel.chainValidation.warned} percent={pct(data.certificateIntel.chainValidation.warned, data.totals.certificates)} tone="warning" />
               <BarRow label="Not evaluable" count={data.certificateIntel.chainValidation.notEvaluated} percent={pct(data.certificateIntel.chainValidation.notEvaluated, data.totals.certificates)} tone="neutral" />
@@ -302,7 +302,9 @@ export default function TrustDashboard() {
           )}
           <Basis>
             {fmtNumber(data.totals.chainPaths)} chain path(s) assembled from collected certificates. A chain the platform could not walk
-            is reported as incomplete with the missing tier named, not scored as a failure.
+            is reported as incomplete with the missing tier named, not scored as a failure. Checks run against recorded certificate fields:
+            no path is built against a client trust store, and revocation is reported only when an OCSP/CRL result was collected — so
+            &quot;passed&quot; never means &quot;verified trusted by a browser&quot;.
           </Basis>
         </TrustPanel>
       </div>
@@ -571,7 +573,7 @@ export default function TrustDashboard() {
         <ReconciliationPanel report={data.reconciliation} />
       </TrustPanel>
 
-      <ProvenanceFooter telemetry={data.telemetry} />
+      <ProvenanceFooter telemetry={data.telemetry} reads={data.reads} />
     </div>
   );
 }

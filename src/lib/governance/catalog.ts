@@ -322,7 +322,7 @@ export const CONTROL_CATALOG: ControlDefinition[] = [
     domain: 'monitoring',
     evaluator: 'collectorHealth',
     criterion: 'A collector or connector passes when it reported inside the heartbeat window.',
-    remediationRoute: '/dashboard/scanner?tab=agents',
+    remediationRoute: '/dashboard/agents',
     evidenceSources: ['scanner_agents', 'connector_accounts', 'agent_heartbeats'],
     weight: 3,
   },

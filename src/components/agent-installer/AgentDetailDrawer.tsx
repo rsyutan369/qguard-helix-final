@@ -15,7 +15,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { CAPABILITY_LABELS, agentRole, type AgentPlatform } from '@/lib/agent-installer/agent-release';
+import { AGENT_SIGNING_MIN_VERSION, CAPABILITY_LABELS, agentRole, type AgentPlatform } from '@/lib/agent-installer/agent-release';
 import { clampAgentScanTypes, planAgentScope, resolveWriteAuthority } from '@/lib/agent-installer/agent-scope';
 import { ModuleScopeGrid, ScopeContractPanel, WriteAuthorityBadges } from './ScopeContract';
 import {
@@ -243,7 +243,15 @@ export function AgentDetailDrawer({
           {scan ? <ScanProgressCard scan={scan} hasScope={allowedTargets.length > 0 || allowedPaths.length > 0} /> : null}
 
           {tab === 'overview' ? (
-            <OverviewTab agent={agent} health={health} scans={scans} allowedTargets={allowedTargets} allowedPaths={allowedPaths} />
+            <div className="space-y-4">
+              <OverviewTab agent={agent} health={health} scans={scans} allowedTargets={allowedTargets} allowedPaths={allowedPaths} />
+              <TransportSecurityCard
+                transport={metadata.transportSecurity as TransportSecurity | null | undefined}
+                working={working}
+                revoked={revoked}
+                onReset={() => void act('Signing-key reset', () => installer.resetSigningKey(agent.id))}
+              />
+            </div>
           ) : null}
 
           {tab === 'capabilities' ? (
@@ -406,7 +414,7 @@ export function AgentDetailDrawer({
         <footer className="flex flex-wrap items-center gap-2 border-t border-white/10 bg-black/30 px-5 py-3">
           <button
             type="button"
-            disabled={working || revoked}
+            disabled={working || revoked || installer.scanning || policy.enabled === false}
             onClick={() => void act('Scan', () => installer.requestScan(agent.id))}
             className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/35 bg-cyan-400/10 px-3 py-1.5 text-[11px] font-bold text-cyan-100 transition hover:bg-cyan-400/20 disabled:opacity-40"
           >
@@ -637,6 +645,138 @@ function ScopeList({ title, items, empty }: { title: string; items: string[]; em
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/** What the control plane proved about this agent's latest heartbeat (agent-scanner `transportIntegrity`). */
+interface TransportSecurity {
+  signed: boolean;
+  algorithms: string[];
+  keyFingerprints: Record<string, string>;
+  bound: boolean;
+  https: boolean;
+  verifiedAt: string;
+}
+
+const ALGORITHM_LABEL: Record<string, string> = { ed25519: 'Ed25519', 'ml-dsa-65': 'ML-DSA-65 (FIPS 204)' };
+
+/**
+ * Transport security, stated from evidence: HTTPS and request signing as the
+ * control plane observed them on the agent's latest heartbeat — "not yet
+ * reported" when no heartbeat has carried the record, never an assumed pass.
+ */
+function TransportSecurityCard({
+  transport,
+  working,
+  revoked,
+  onReset,
+}: {
+  transport: TransportSecurity | null | undefined;
+  working: boolean;
+  revoked: boolean;
+  onReset: () => void;
+}) {
+  const [confirm, setConfirm] = useState(false);
+  const rows: Array<{ label: string; ok: boolean | null; value: string; detail?: string }> = transport
+    ? [
+        {
+          label: 'Encrypted transport',
+          ok: transport.https,
+          value: transport.https ? 'HTTPS (TLS 1.2+)' : 'Plaintext — development control plane only',
+        },
+        {
+          label: 'Request signing',
+          ok: transport.signed,
+          value: transport.signed
+            ? transport.algorithms.map((algorithm) => ALGORITHM_LABEL[algorithm] || algorithm).join(' + ')
+            : `Unsigned — upgrade the agent to v${AGENT_SIGNING_MIN_VERSION} or later`,
+          detail: transport.signed ? 'Body digest SHA3-256 · timestamp + nonce (replay refused)' : undefined,
+        },
+        {
+          label: 'Key binding',
+          ok: transport.bound ? true : transport.signed ? false : null,
+          value: transport.bound
+            ? 'Pinned — only this host’s key is accepted'
+            : transport.signed
+              ? 'Not pinned — apply supabase/agent-request-signing.sql'
+              : 'Not applicable until the agent signs',
+          detail: Object.entries(transport.keyFingerprints || {})
+            .map(([algorithm, fingerprint]) => `${ALGORITHM_LABEL[algorithm] || algorithm} ${fingerprint}…`)
+            .join(' · ') || undefined,
+        },
+      ]
+    : [];
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[11px] font-bold uppercase tracking-wide text-white/45">Transport security</div>
+        {transport ? <span className="text-[10px] text-white/40">Verified {relTime(transport.verifiedAt)}</span> : null}
+      </div>
+      {!transport ? (
+        <p className="mt-2 text-[11px] leading-relaxed text-white/50">
+          Not yet reported. The control plane records HTTPS and signature verification on the agent&apos;s next heartbeat.
+        </p>
+      ) : (
+        <ul className="mt-3 space-y-2">
+          {rows.map((row) => (
+            <li key={row.label} className="flex items-start gap-2 text-[11.5px]">
+              {row.ok === true ? (
+                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-300" aria-hidden="true" />
+              ) : row.ok === false ? (
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" aria-hidden="true" />
+              ) : (
+                <Activity className="mt-0.5 h-3.5 w-3.5 shrink-0 text-white/35" aria-hidden="true" />
+              )}
+              <div className="min-w-0">
+                <div className="text-white/50">{row.label}</div>
+                <div className="font-semibold text-white/85">{row.value}</div>
+                {row.detail ? <div className="mt-0.5 break-all font-mono text-[10.5px] text-white/40">{row.detail}</div> : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {confirm ? (
+        <div className="mt-3 rounded-lg border border-amber-400/35 bg-amber-400/[0.08] p-3">
+          <p className="text-[11.5px] leading-relaxed text-amber-50">
+            Reset only if this host lost its signing-key file (rebuilt, or a container without its state volume). Until the
+            agent&apos;s next request binds a key, anyone holding its token could bind theirs — rotate the token as well if it may
+            have leaked.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={working}
+              onClick={() => {
+                onReset();
+                setConfirm(false);
+              }}
+              className="rounded-lg border border-amber-400/45 bg-amber-400/15 px-3 py-1.5 text-[11px] font-black text-amber-50 transition hover:bg-amber-400/25 disabled:opacity-40"
+            >
+              Reset signing key
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirm(false)}
+              className="rounded-lg border border-white/12 bg-white/[0.04] px-3 py-1.5 text-[11px] font-bold text-white/65 transition hover:text-white"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : transport?.bound ? (
+        <button
+          type="button"
+          disabled={working || revoked}
+          onClick={() => setConfirm(true)}
+          className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-white/12 bg-white/[0.04] px-3 py-1.5 text-[11px] font-bold text-white/70 transition hover:border-amber-400/40 hover:text-amber-100 disabled:opacity-40"
+        >
+          <RefreshCw className="h-3.5 w-3.5" /> Reset signing key…
+        </button>
+      ) : null}
     </div>
   );
 }

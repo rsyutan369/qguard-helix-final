@@ -42,7 +42,7 @@ export function SophiaCopilot() {
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   const copilot = useCopilot(location.pathname);
-  const { context, suggestions, messages, streaming, error, sendMessage, stopStreaming, sendFeedback } = copilot;
+  const { context, suggestions, messages, streaming, narratingAnswerId, error, sendMessage, stopStreaming, sendFeedback } = copilot;
 
   const speechSupported = useMemo(() => Boolean(getSpeechRecognition()), []);
 
@@ -155,7 +155,7 @@ export function SophiaCopilot() {
                 </div>
                 <div className="flex items-center gap-1 text-[10px] text-slate-500">
                   <ShieldCheck className="h-3 w-3 text-emerald-400/70" />
-                  {context ? `${context.roleLabel} · ${context.tenantLabel}` : 'Securing session…'}
+                  {context ? `${context.roleLabel} · ${context.tenantLabel}${context.engine ? ` · ${context.engine.model}` : ''}` : 'Securing session…'}
                 </div>
               </div>
               <div className="ml-auto flex items-center gap-1">
@@ -211,13 +211,13 @@ export function SophiaCopilot() {
                 ) : (
                   <div key={message.id} className="min-w-0">
                     {message.answer
-                      ? <SophiaMessage answer={message.answer} onFeedback={(rating) => { void sendFeedback(message.answer!, rating); }} />
+                      ? <SophiaMessage answer={message.answer} narrating={narratingAnswerId === message.answer.id} onFeedback={(rating) => { void sendFeedback(message.answer!, rating); }} />
                       : <p className="text-[13px] text-slate-200">{message.content}</p>}
                   </div>
                 )
               ))}
 
-              {streaming.active && (
+              {streaming.active && !narratingAnswerId && (
                 <div className="space-y-2 rounded-xl border border-slate-700/50 bg-slate-900/40 p-3">
                   <div className="flex items-center gap-2 text-[12px] text-cyan-200">
                     <Loader2 className="h-4 w-4 animate-spin" />

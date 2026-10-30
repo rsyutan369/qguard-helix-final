@@ -156,49 +156,243 @@ export function IntelShell({ name, children }: { name: string; children: ReactNo
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Live status                                                         */
+/* ------------------------------------------------------------------ */
+
+/** Mirrors `LiveTransport` in hooks/use-live-resource.ts (kept structural so the kit stays presentational). */
+export type LiveTransportState = 'connecting' | 'stream' | 'polling' | 'offline';
+
+export type FreshnessState = 'live' | 'polling' | 'connecting' | 'stale' | 'offline';
+
+/**
+ * One reading of "how current is what I am looking at", shared by every page.
+ *
+ *  live        the server stream is open and re-verified the data recently
+ *  polling     the stream is down; REST keeps the page current (honest, amber)
+ *  connecting  nothing has answered yet
+ *  stale       the last server confirmation is older than `staleAfterMs`
+ *  offline     no session / no transport
+ *
+ * Only `live` may animate: a pulsing dot over data nobody re-verified is the
+ * exact "simulated live connection" the platform forbids.
+ */
+export function freshnessOf(
+  transport: LiveTransportState,
+  lastVerifiedAt: string | null | undefined,
+  staleAfterMs = 90_000,
+  now: number = Date.now(),
+): FreshnessState {
+  if (transport === 'offline') return 'offline';
+  if (transport === 'connecting' && !lastVerifiedAt) return 'connecting';
+  const verified = lastVerifiedAt ? Date.parse(lastVerifiedAt) : NaN;
+  if (Number.isFinite(verified) && now - verified > staleAfterMs) return 'stale';
+  if (transport === 'stream') return 'live';
+  if (transport === 'polling') return 'polling';
+  return 'connecting';
+}
+
+const FRESHNESS_COPY: Record<FreshnessState, { label: string; hint: string; tone: string; dot: string }> = {
+  live: { label: 'Live', hint: 'Server stream open', tone: 'border-emerald-400/40 bg-emerald-500/10 text-emerald-300', dot: 'bg-emerald-400' },
+  polling: { label: 'Polling', hint: 'Live stream reconnecting — refreshed over REST', tone: 'border-amber-400/40 bg-amber-500/10 text-amber-300', dot: 'bg-amber-300' },
+  connecting: { label: 'Connecting', hint: 'Waiting for the first server response', tone: 'border-white/15 bg-white/[0.04] text-white/60', dot: 'bg-white/40' },
+  stale: { label: 'Stale', hint: 'Not re-verified recently — values may be out of date', tone: 'border-amber-400/40 bg-amber-500/10 text-amber-300', dot: 'bg-amber-300' },
+  offline: { label: 'Offline', hint: 'No live connection', tone: 'border-red-400/40 bg-red-500/10 text-red-300', dot: 'bg-red-400' },
+};
+
+/**
+ * Connection-health chip with the two timestamps that matter: when the data on
+ * screen was computed, and when the server last confirmed it is still current.
+ */
+export function LiveStatus({
+  transport, lastVerifiedAt, generatedAt, staleAfterMs, align = 'end',
+}: {
+  transport: LiveTransportState;
+  lastVerifiedAt: string | null;
+  generatedAt?: string | null;
+  staleAfterMs?: number;
+  align?: 'start' | 'end';
+}) {
+  const state = freshnessOf(transport, lastVerifiedAt, staleAfterMs);
+  const copy = FRESHNESS_COPY[state];
+  return (
+    <div className={cn('flex flex-col', align === 'end' ? 'items-end' : 'items-start')}>
+      <span
+        role="status"
+        aria-live="polite"
+        title={copy.hint}
+        className={cn('inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[9px] font-black uppercase tracking-widest', copy.tone)}
+      >
+        <span className={cn('h-1.5 w-1.5 rounded-full', copy.dot, state === 'live' && 'animate-pulse motion-reduce:animate-none')} aria-hidden="true" />
+        {copy.label}
+        <span className="sr-only">— {copy.hint}</span>
+      </span>
+      <span className="mt-1 font-mono text-[9.5px] text-white/35">
+        {generatedAt ? <>Computed {relativeTime(generatedAt)}</> : null}
+        {generatedAt && lastVerifiedAt ? ' · ' : null}
+        {lastVerifiedAt ? <>verified {relativeTime(lastVerifiedAt)}</> : generatedAt ? null : 'Not yet verified'}
+      </span>
+    </div>
+  );
+}
+
 export function IntelHeader({
-  title, accent, subtitle, icon: Icon, live, lastUpdated, connecting, children,
+  title, accent, subtitle, icon: Icon, live, lastUpdated, connecting, transport, lastVerifiedAt, children,
 }: {
   title: string;
   accent: string;
   subtitle: string;
   icon: LucideIcon;
-  live: boolean;
+  /** Legacy boolean status — prefer `transport` + `lastVerifiedAt`. */
+  live?: boolean;
   lastUpdated: string | null;
   connecting?: boolean;
+  /** When supplied, the header renders the shared `LiveStatus` chip. */
+  transport?: LiveTransportState;
+  lastVerifiedAt?: string | null;
   children?: ReactNode;
 }) {
   return (
     <header className="flex flex-col gap-3 border-b border-white/10 pb-3.5 xl:flex-row xl:items-end xl:justify-between">
       <div className="flex items-center gap-3">
-        <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-cyan-400/30 bg-cyan-500/10 text-cyan-300 shadow-[0_0_28px_rgba(34,211,238,0.2)]">
+        <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-cyan-400/30 bg-gradient-to-br from-cyan-500/15 to-violet-500/10 text-cyan-300 shadow-[0_0_28px_rgba(34,211,238,0.16)]">
           <Icon className="h-5 w-5" aria-hidden="true" />
         </div>
         <div className="min-w-0">
           <h1 className="text-2xl font-black uppercase leading-none tracking-tight text-white lg:text-[26px]">
             {title} <span className="text-cyan-300">{accent}</span>
           </h1>
-          <p className="mt-1.5 max-w-3xl text-[12px] font-medium leading-relaxed text-white/45">{subtitle}</p>
+          <p className="mt-1.5 max-w-3xl text-[12px] font-medium leading-relaxed text-white/50">{subtitle}</p>
         </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex flex-col items-end">
-          <span
-            role="status"
-            className={cn(
-              'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[9px] font-black uppercase tracking-widest',
-              live ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-300' : 'border-amber-400/40 bg-amber-500/10 text-amber-300',
-            )}
-          >
-            <span className={cn('h-1.5 w-1.5 rounded-full', live ? 'animate-pulse bg-emerald-400' : 'bg-amber-300')} aria-hidden="true" />
-            {connecting ? 'Connecting' : live ? 'Live' : 'Connection lost'}
-          </span>
-          <span className="mt-1 font-mono text-[9.5px] text-white/30">Last updated: {relativeTime(lastUpdated)}</span>
-        </div>
+        {transport ? (
+          <LiveStatus transport={transport} lastVerifiedAt={lastVerifiedAt ?? null} generatedAt={lastUpdated} />
+        ) : (
+          <div className="flex flex-col items-end">
+            <span
+              role="status"
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[9px] font-black uppercase tracking-widest',
+                live ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-300' : 'border-amber-400/40 bg-amber-500/10 text-amber-300',
+              )}
+            >
+              <span className={cn('h-1.5 w-1.5 rounded-full', live ? 'animate-pulse bg-emerald-400 motion-reduce:animate-none' : 'bg-amber-300')} aria-hidden="true" />
+              {connecting ? 'Connecting' : live ? 'Live' : 'Connection lost'}
+            </span>
+            <span className="mt-1 font-mono text-[9.5px] text-white/30">Last updated: {relativeTime(lastUpdated)}</span>
+          </div>
+        )}
         {children}
       </div>
     </header>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Module brief — what / why / what next                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The three questions a first-time reader asks before any number means
+ * anything: what is this page, why does it matter, and what should I do now.
+ * `next` is the single most valuable action the evidence supports right now —
+ * computed by the page from its model, never a static marketing line.
+ */
+export function ModuleBrief({
+  what, why, next, scope,
+}: {
+  what: ReactNode;
+  why: ReactNode;
+  next: { label: string; detail?: ReactNode; href?: string; onClick?: () => void; tone?: 'action' | 'calm' | 'warning' };
+  /** Population the page describes ("across the tenant estate", "last 24h of runtime telemetry"). */
+  scope?: ReactNode;
+}) {
+  const tone = next.tone ?? 'action';
+  const nextTone = tone === 'warning'
+    ? 'border-amber-400/35 bg-amber-500/[0.07]'
+    : tone === 'calm'
+      ? 'border-emerald-400/30 bg-emerald-500/[0.06]'
+      : 'border-cyan-400/35 bg-cyan-500/[0.07]';
+  const cta = next.href ? (
+    <a href={next.href} className="mt-2 inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider text-cyan-200 no-underline hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70">
+      {next.label}<ChevronRight className="h-3 w-3" aria-hidden="true" />
+    </a>
+  ) : next.onClick ? (
+    <button type="button" onClick={next.onClick} className="mt-2 inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider text-cyan-200 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70">
+      {next.label}<ChevronRight className="h-3 w-3" aria-hidden="true" />
+    </button>
+  ) : (
+    <span className="mt-2 inline-block text-[10px] font-black uppercase tracking-wider text-white/60">{next.label}</span>
+  );
+  return (
+    <section aria-label="About this module" className="grid gap-2.5 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.1fr)]">
+      <div className="rounded-xl border border-white/10 bg-white/[0.025] p-3.5">
+        <div className="text-[8.5px] font-black uppercase tracking-[0.18em] text-cyan-300/80">What you are looking at</div>
+        <p className="mt-1.5 text-[11.5px] leading-relaxed text-white/65">{what}</p>
+        {scope ? <p className="mt-1.5 text-[10px] leading-relaxed text-white/40">Scope: {scope}</p> : null}
+      </div>
+      <div className="rounded-xl border border-white/10 bg-white/[0.025] p-3.5">
+        <div className="text-[8.5px] font-black uppercase tracking-[0.18em] text-violet-300/80">Why it matters</div>
+        <p className="mt-1.5 text-[11.5px] leading-relaxed text-white/65">{why}</p>
+      </div>
+      <div className={cn('rounded-xl border p-3.5', nextTone)}>
+        <div className="text-[8.5px] font-black uppercase tracking-[0.18em] text-white/55">Recommended next step</div>
+        {next.detail ? <p className="mt-1.5 text-[11.5px] leading-relaxed text-white/75">{next.detail}</p> : null}
+        {cta}
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Evidence sources                                                    */
+/* ------------------------------------------------------------------ */
+
+export type SourceHealthState = 'ok' | 'empty' | 'unavailable' | 'not-instrumented' | 'truncated';
+
+const SOURCE_COPY: Record<SourceHealthState, { glyph: string; tone: string; word: string }> = {
+  ok: { glyph: '✓', tone: 'text-emerald-300', word: 'read' },
+  empty: { glyph: '○', tone: 'text-white/45', word: 'no records' },
+  truncated: { glyph: '◐', tone: 'text-amber-300', word: 'capped' },
+  unavailable: { glyph: '✕', tone: 'text-red-300', word: 'could not be read' },
+  'not-instrumented': { glyph: '–', tone: 'text-white/40', word: 'not instrumented' },
+};
+
+/**
+ * Which evidence the page actually read. A failed query is not an empty table:
+ * when a source is `unavailable` its zeros are not measurements, and the strip
+ * says so in words, not only in colour.
+ */
+export function SourceHealth({ sources, note }: { sources: Array<{ label: string; state: SourceHealthState; detail?: string }>; note?: ReactNode }) {
+  const degraded = sources.some((s) => s.state === 'unavailable');
+  return (
+    <div
+      className={cn(
+        'flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-xl border px-3.5 py-2.5',
+        degraded ? 'border-red-400/30 bg-red-500/[0.06]' : 'border-white/10 bg-white/[0.02]',
+      )}
+      aria-label="Evidence sources"
+    >
+      <span className="text-[8.5px] font-black uppercase tracking-[0.18em] text-white/40">Evidence sources</span>
+      {sources.map((source) => {
+        const copy = SOURCE_COPY[source.state];
+        return (
+          <span key={source.label} className="inline-flex items-center gap-1.5 text-[10.5px] text-white/60" title={source.detail || `${source.label}: ${copy.word}`}>
+            <span className={cn('font-black', copy.tone)} aria-hidden="true">{copy.glyph}</span>
+            {source.label}
+            {source.state !== 'ok' ? <span className={cn('text-[9.5px]', copy.tone)}>· {copy.word}</span> : null}
+          </span>
+        );
+      })}
+      {degraded ? (
+        <span className="w-full text-[10px] leading-relaxed text-red-200/90">
+          Some evidence could not be read. Figures that depend on it are incomplete — they are not measurements of zero.
+        </span>
+      ) : null}
+      {note ? <span className="w-full text-[10px] leading-relaxed text-white/40">{note}</span> : null}
+    </div>
   );
 }
 
@@ -458,13 +652,31 @@ export function EmptyRow({ children }: { children: ReactNode }) {
 /* Page states                                                         */
 /* ------------------------------------------------------------------ */
 
-export function ConnectionLostBanner({ lastGoodAt, error, onReconnect }: { lastGoodAt: string | null; error: string | null; onReconnect: () => void }) {
+export function ConnectionLostBanner({
+  lastGoodAt, error, onReconnect, transport, lastVerifiedAt,
+}: {
+  lastGoodAt: string | null;
+  error: string | null;
+  onReconnect: () => void;
+  /** With `polling`, the page is still being refreshed over REST — say so instead of "connection lost". */
+  transport?: LiveTransportState;
+  lastVerifiedAt?: string | null;
+}) {
+  const polling = transport === 'polling';
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+    <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
       <WifiOff className="h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
       <div className="min-w-0 flex-1">
-        <div className="text-[11.5px] font-black text-amber-200">Connection lost — this is the last successful sync, not live data</div>
-        <div className="truncate text-[10px] text-white/45">Last update {relativeTime(lastGoodAt)}{error ? ` · ${error}` : ''}</div>
+        <div className="text-[11.5px] font-black text-amber-200">
+          {polling
+            ? 'Live stream interrupted — the page is refreshed over REST while it reconnects'
+            : 'Connection lost — this is the last successful sync, not live data'}
+        </div>
+        <div className="truncate text-[10px] text-white/45">
+          Computed {relativeTime(lastGoodAt)}
+          {lastVerifiedAt ? ` · last verified ${relativeTime(lastVerifiedAt)}` : ''}
+          {error ? ` · ${error}` : ''}
+        </div>
       </div>
       <button
         type="button"

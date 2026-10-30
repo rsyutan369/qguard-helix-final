@@ -1,5 +1,6 @@
 'use client';
 
+import { cn } from '@/lib/utils';
 import { useCallback, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
@@ -69,6 +70,14 @@ import {
  */
 
 const PAGE_SIZE = 25;
+
+/** How an endpoint's transport facts were obtained (see TlsEndpoint.transportBasis). */
+const TRANSPORT_BASIS_LABEL = { 'live-traffic': 'Live traffic', 'scanner-probe': 'Scanner probe', mixed: 'Live + probe' } as const;
+const TRANSPORT_BASIS_HINT = {
+  'live-traffic': 'Observed by a runtime agent in real connections — what clients actually negotiate.',
+  'scanner-probe': 'Accepted by the server when an active scan offered it. This is what the server PERMITS, not what clients negotiate.',
+  mixed: 'Some facts were seen in live traffic, others only accepted during a scanner probe.',
+} as const;
 
 export default function TlsTelemetry() {
   const { data, state, error, live, lastSyncedAt, refresh, reconnect } = useTlsTelemetry();
@@ -396,6 +405,8 @@ export default function TlsTelemetry() {
               {fmtNumber(data.totals.measuredEndpoints)} of {fmtNumber(data.totals.endpoints)} records). The remaining{' '}
               {fmtNumber(data.totals.endpoints - data.totals.measuredEndpoints)} are known only through a certificate or signature — real records,
               but never observed negotiating, so they are excluded from every TLS percentage. Switch <strong>Evidence</strong> to see them.
+              Under each version, <strong>Scanner probe</strong> means the server <em>accepted</em> these settings when an active scan offered
+              them one at a time — what the server permits, not what clients negotiate. Only <strong>Live traffic</strong> comes from real connections.
             </p>
 
             {endpoints.length === 0 ? (
@@ -440,6 +451,14 @@ export default function TlsTelemetry() {
                         ) : (
                           <span className="text-[10.5px] text-white/35">Not observed</span>
                         )}
+                        {endpoint.transportBasis ? (
+                          <span
+                            className={cn('mt-0.5 block text-[9px] font-black uppercase tracking-wider', endpoint.transportBasis === 'scanner-probe' ? 'text-white/45' : 'text-emerald-300')}
+                            title={TRANSPORT_BASIS_HINT[endpoint.transportBasis]}
+                          >
+                            {TRANSPORT_BASIS_LABEL[endpoint.transportBasis]}
+                          </span>
+                        ) : null}
                       </Td>
                       <Td>
                         <span className="block max-w-[190px] truncate font-mono text-[10.5px]" title={endpoint.cipherSuites.join(', ')}>
@@ -510,7 +529,7 @@ export default function TlsTelemetry() {
             )}
           </Panel>
 
-          <ProvenanceFooter telemetry={data.telemetry} />
+          <ProvenanceFooter telemetry={data.telemetry} reads={data.reads} />
         </>
       ) : null}
 

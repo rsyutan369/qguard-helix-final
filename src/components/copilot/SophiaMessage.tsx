@@ -8,6 +8,7 @@ import {
   Table2, History, ThumbsUp, ThumbsDown, ArrowUpRight, ArrowDownRight, Minus, BadgeCheck,
 } from 'lucide-react';
 import { SophiaAvatar } from './SophiaAvatar';
+import { SophiaNarrative } from './SophiaNarrative';
 import type {
   CopilotAnswer, CopilotEntityTable, CopilotFigureChange, CopilotRiskLevel, CopilotTone, CopilotToolRun,
 } from '@/types/copilot';
@@ -206,7 +207,7 @@ function ChangesStrip({ changes }: { changes: CopilotFigureChange[] }) {
   );
 }
 
-export function SophiaMessage({ answer, onFeedback }: { answer: CopilotAnswer; onFeedback?: (rating: 'up' | 'down') => void }) {
+export function SophiaMessage({ answer, onFeedback, narrating = false }: { answer: CopilotAnswer; onFeedback?: (rating: 'up' | 'down') => void; narrating?: boolean }) {
   const [showReasoning, setShowReasoning] = useState(false);
   const [rated, setRated] = useState<'up' | 'down' | null>(null);
   const risk = RISK_STYLE[answer.risk.level] || RISK_STYLE.info;
@@ -218,6 +219,9 @@ export function SophiaMessage({ answer, onFeedback }: { answer: CopilotAnswer; o
 
   return (
     <div className="min-w-0 space-y-3.5">
+      {/* Connected-model analysis, written from the evidence rendered below */}
+      {answer.narrative && <SophiaNarrative narrative={answer.narrative} streaming={narrating} />}
+
       {/* Summary */}
       <div className="rounded-xl border border-blue-400/20 bg-gradient-to-br from-blue-500/[0.07] to-violet-500/[0.04] p-4">
         <div className="mb-2 flex items-center gap-2">

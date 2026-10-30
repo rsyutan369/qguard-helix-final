@@ -119,7 +119,8 @@ const LOCAL_PROGRESS_KEY = 'qguard-docs-progress-v1'
 const MODULE_LINKS = [
   { label: 'Dashboard', href: '/dashboard', icon: Gauge, desc: 'Operational overview, KPIs, and readiness posture.' },
   { label: 'PQC Onboarding', href: '/dashboard/pqc-onboarding', icon: Route, desc: 'Six-phase migration process and onboarding progress.' },
-  { label: 'PQC Scanner', href: '/dashboard/scanner', icon: ScanSearch, desc: 'Asset discovery, findings, evidence, and agent collectors.' },
+  { label: 'PQC Scanner', href: '/dashboard/scanner', icon: ScanSearch, desc: 'Asset discovery, findings and evidence.' },
+  { label: 'Agents Collector', href: '/dashboard/agents', icon: Server, desc: 'Deploy collectors, bind them to assets, and track fleet health.' },
   { label: 'Harvest Now', href: '/dashboard/harvest-now', icon: EyeOff, desc: 'HNDL threat detection and critical defense actions.' },
   { label: 'Runtime Crypto Intel', href: '/dashboard/runtime-crypto-intel', icon: Activity, desc: 'Runtime cryptographic events, process signals, and risk telemetry.' },
   { label: 'Crypto Agility', href: '/dashboard/crypto-agility', icon: Workflow, desc: 'Hybrid crypto policies, key rotation, and algorithm switching.' },

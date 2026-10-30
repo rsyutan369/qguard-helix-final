@@ -31,8 +31,8 @@ import type { TrustNode, TrustRelationship, TrustState } from '@/lib/trust-fabri
 import { TRUST_STATE_TONE } from './primitives';
 
 const TIER_LABEL: Record<number, string> = {
-  0: 'Root authorities',
-  1: 'Intermediate authorities',
+  0: 'Root authorities (certificate collected)',
+  1: 'Issuing / intermediate authorities',
   2: 'Certificates',
   3: 'Transport endpoints',
   4: 'Services & platform',

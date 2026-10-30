@@ -72,9 +72,9 @@ const ASSETS = {
   roadmap: roadmapImage
 };
 
-const HERO_ACCESSIBLE_TITLE = 'The Quantum Clock is Ticking';
+const HERO_ACCESSIBLE_TITLE = "The Quantum Clock Is Ticking. Your Security Can't Stand Still.";
 const HERO_LINE_ONE = 'The Quantum';
-const HERO_LINE_TWO_PREFIX = 'Clock is ';
+const HERO_LINE_TWO_PREFIX = 'Clock Is ';
 const HERO_TICKING_WORD = 'TICKING';
 const HERO_CHARACTER_COUNT = HERO_LINE_ONE.length + HERO_LINE_TWO_PREFIX.length + HERO_TICKING_WORD.length;
 const HERO_TYPE_INTERVAL_MS = 72;
@@ -2682,7 +2682,7 @@ export default function App() {
         {/* Hero Section */}
         <section id="hero" className="hero-shell relative pt-32 pb-20 px-6 min-h-screen flex flex-col justify-center">
           <div className="hero-shell__network" aria-hidden="true" />
-          <div className="max-w-7xl mx-auto grid lg:grid-cols-2 gap-12 items-center">
+          <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
             {/* Left Column: Text & Atmosphere */}
             <motion.div
               initial={{ opacity: 0, x: -50 }}
@@ -2693,14 +2693,15 @@ export default function App() {
               <Badge className="hero-alert-badge bg-quantum-blue/10 text-quantum-blue border-quantum-blue/20 px-3 py-1 mb-6 uppercase tracking-[0.3em] font-mono animate-pulse">
                 Post-Quantum Threat Advisory: Prepare Before Q-Day
               </Badge>
-              <h1 className="hero-title text-6xl md:text-8xl font-bold leading-[0.9] tracking-normal mb-8 uppercase" aria-label={HERO_ACCESSIBLE_TITLE}>
+              <h1 className="hero-title font-bold tracking-normal mb-8 uppercase" aria-label={HERO_ACCESSIBLE_TITLE}>
                 <span className="hero-title__ghost" aria-hidden="true">
                   <span className="hero-title__line">
                     <span className="hero-title__gradient">The Quantum</span>
                   </span>
                   <span className="hero-title__line">
-                    <span className="hero-title__gradient">Clock is </span>
+                    <span className="hero-title__gradient">Clock Is </span>
                     <span className="hero-title__gradient hero-title__ticking">TICKING</span>
+                    <span className="hero-title__gradient">.</span>
                   </span>
                 </span>
                 <span className="hero-title__typed" aria-hidden="true">
@@ -2715,19 +2716,42 @@ export default function App() {
                     <span className={`hero-title__gradient hero-title__ticking ${isHeroTypewriterComplete ? 'hero-title__ticking--armed' : ''}`}>
                       {typedTicking}
                     </span>
+                    {isHeroTypewriterComplete && <span className="hero-title__gradient">.</span>}
                     {isTypingSecondLine && !isHeroTypewriterComplete && (
                       <span className="hero-title__cursor" />
                     )}
                   </span>
                 </span>
+                <span className="hero-title__continuation" aria-hidden="true">
+                  Your Security Can&apos;t Stand Still.
+                </span>
               </h1>
-              <p className="text-lg md:text-xl text-muted-foreground mb-10 max-w-xl leading-relaxed">
-                A future quantum computer breaks the public-key cryptography behind TLS, VPNs, SSH and code signing.
-                NIST has published the replacements, and migration takes years, so the time to start is <span className="text-quantum-blue font-bold">NOW</span>.
-              </p>
+              <div className="hero-message">
+                <p className="hero-message__lead">
+                  <strong>What protects your enterprise today could become tomorrow&apos;s greatest vulnerability.</strong>
+                </p>
+                <p>The quantum threat is approaching, and the time to prepare is now.</p>
+                <p>
+                  Qguard Helix helps you uncover hidden cryptographic risks, identify vulnerable encryption,
+                  and accelerate your transition to quantum-resistant security.
+                </p>
+                <p className="hero-message__lifecycle">
+                  Discover. Assess. Strategize. Migrate. Validate. Govern.
+                </p>
+                <p>
+                  From TLS and VPNs to SSH, certificates, and code signing, gain complete visibility and control
+                  over your cryptographic infrastructure through one intelligent, unified Post-Quantum Cyber Defense platform.
+                </p>
+                <p className="hero-message__pledge">
+                  <strong>Stay ahead of the quantum threat. Protect what matters. Prepare for what&apos;s next.</strong>
+                </p>
+                <p className="hero-message__signature">
+                  <em>Qguard Helix — Your Bridge to the Quantum-Safe Future.</em>
+                </p>
+              </div>
 
               <div className="flex flex-wrap gap-4">
-                <a href="/auth" className="no-underline">
+                <a href="/auth" className="no-underline max-w-full min-w-0">
                   <Button size="lg" className="hero-primary-cta bg-gold hover:bg-gold/80 text-cyber-black px-8 rounded-none uppercase font-bold tracking-widest shadow-[0_0_20px_rgba(212,175,55,0.4)] transition-all hover:scale-105 group h-14">
                     Start Migration Strategy
                     <MoveRight className="ml-2 group-hover:translate-x-1 transition-transform" />

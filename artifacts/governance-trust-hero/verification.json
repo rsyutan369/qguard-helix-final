@@ -1,0 +1,152 @@
+[
+  {
+    "viewport": {
+      "name": "desktop",
+      "width": 1440,
+      "height": 1000
+    },
+    "renderer": "webgl",
+    "reducedMotionStable": true,
+    "horizontalOverflow": false,
+    "heroHeight": 980,
+    "primaryBottom": 554.859375,
+    "description": "rgb(168, 188, 185)",
+    "background": "rgb(8, 18, 23)",
+    "headerBackground": "rgba(8, 18, 23, 0.93)",
+    "focus": "oklab(0.556 0 0 / 0.5)",
+    "titleFont": "\"Geist Variable\", ui-sans-serif, system-ui, sans-serif"
+  },
+  {
+    "viewport": {
+      "name": "desktop-short",
+      "width": 1440,
+      "height": 900
+    },
+    "renderer": "webgl",
+    "reducedMotionStable": true,
+    "horizontalOverflow": false,
+    "heroHeight": 900,
+    "primaryBottom": 554.859375,
+    "description": "rgb(168, 188, 185)",
+    "background": "rgb(8, 18, 23)",
+    "headerBackground": "rgba(8, 18, 23, 0.93)",
+    "focus": "oklab(0.556 0 0 / 0.5)",
+    "titleFont": "\"Geist Variable\", ui-sans-serif, system-ui, sans-serif"
+  },
+  {
+    "viewport": {
+      "name": "tablet",
+      "width": 1024,
+      "height": 768
+    },
+    "renderer": "webgl",
+    "reducedMotionStable": true,
+    "horizontalOverflow": false,
+    "heroHeight": 768,
+    "primaryBottom": 456.78125,
+    "description": "rgb(168, 188, 185)",
+    "background": "rgb(8, 18, 23)",
+    "headerBackground": "rgba(8, 18, 23, 0.93)",
+    "focus": "oklab(0.556 0 0 / 0.5)",
+    "titleFont": "\"Geist Variable\", ui-sans-serif, system-ui, sans-serif"
+  },
+  {
+    "viewport": {
+      "name": "mobile",
+      "width": 390,
+      "height": 844
+    },
+    "renderer": "webgl",
+    "reducedMotionStable": true,
+    "horizontalOverflow": false,
+    "heroHeight": 1180.28125,
+    "primaryBottom": 388.28125,
+    "description": "rgb(168, 188, 185)",
+    "background": "rgb(8, 18, 23)",
+    "headerBackground": "rgba(8, 18, 23, 0.93)",
+    "focus": "oklab(0.556 0 0 / 0.5)",
+    "titleFont": "\"Geist Variable\", ui-sans-serif, system-ui, sans-serif"
+  },
+  {
+    "viewport": {
+      "name": "mobile-375",
+      "width": 375,
+      "height": 812
+    },
+    "renderer": "webgl",
+    "reducedMotionStable": true,
+    "horizontalOverflow": false,
+    "heroHeight": 1188.3125,
+    "primaryBottom": 409.0625,
+    "description": "rgb(168, 188, 185)",
+    "background": "rgb(8, 18, 23)",
+    "headerBackground": "rgba(8, 18, 23, 0.93)",
+    "focus": "oklab(0.556 0 0 / 0.5)",
+    "titleFont": "\"Geist Variable\", ui-sans-serif, system-ui, sans-serif"
+  },
+  {
+    "viewport": {
+      "name": "mobile-320",
+      "width": 320,
+      "height": 740
+    },
+    "renderer": "webgl",
+    "reducedMotionStable": true,
+    "horizontalOverflow": false,
+    "heroHeight": 1156.875,
+    "primaryBottom": 401.375,
+    "description": "rgb(168, 188, 185)",
+    "background": "rgb(8, 18, 23)",
+    "headerBackground": "rgba(8, 18, 23, 0.93)",
+    "focus": "oklab(0.556 0 0 / 0.5)",
+    "titleFont": "\"Geist Variable\", ui-sans-serif, system-ui, sans-serif"
+  },
+  {
+    "interactions": "four selections, keyboard, anchors, pause/resume, context loss, route cleanup",
+    "scrollStates": [
+      {
+        "y": 0,
+        "state": "1:-0.0916:0.0000:-0.177"
+      },
+      {
+        "y": 140,
+        "state": "1:-0.0901:0.0371:-0.167"
+      },
+      {
+        "y": 280,
+        "state": "1:-0.0863:0.1182:-0.386"
+      },
+      {
+        "y": 420,
+        "state": "1:-0.0828:0.1806:-0.362"
+      },
+      {
+        "y": 560,
+        "state": "1:-0.0798:0.2405:-0.340"
+      },
+      {
+        "y": 700,
+        "state": "1:-0.0767:0.2965:-0.314"
+      }
+    ],
+    "ambientAdvances": true,
+    "pausedStable": true,
+    "offscreenStopped": true
+  },
+  {
+    "consoleErrors": [
+      {
+        "type": "console",
+        "text": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+        "location": {
+          "url": "http://localhost:3000/favicon.ico",
+          "line": 0,
+          "column": 0,
+          "lineNumber": 0,
+          "columnNumber": 0
+        }
+      }
+    ],
+    "relevantErrors": []
+  }
+]

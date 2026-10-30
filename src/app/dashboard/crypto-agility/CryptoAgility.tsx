@@ -23,6 +23,8 @@ import {
   ResponsibilityMatrix, RuntimeAgility, SophiaRecommendations,
 } from './_agility-sections';
 import { DependencyGraph } from './_agility-graph';
+import { AlgorithmTransitions, ChangeTrackingPanel } from './_agility-transitions';
+import { ConnectionLostBanner, LiveStatus, ModuleBrief, SourceHealth } from '../_components/intel/kit';
 import { AgilityDrawer, ChangeTestPanel, CommandPalette, ScoreExplainer, type AgilitySelection, type Command } from './_agility-drawer';
 import {
   EMPTY_FILTERS, activeFilterCount, assetsToCsv, downloadTextFile, filterAssets,
@@ -50,7 +52,7 @@ import {
 export default function CryptoAgility() {
   const { session } = useAuth();
   const token = session?.access_token;
-  const { data, state, error, live, lastGoodAt, refresh } = useCryptoAgility(true);
+  const { data, state, error, live, transport, lastVerifiedAt, lastGoodAt, refreshing, refresh, reconnect } = useCryptoAgility();
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -221,7 +223,7 @@ export default function CryptoAgility() {
       <header className="flex flex-col gap-3 border-b border-white/10 pb-3.5 xl:flex-row xl:items-end xl:justify-between">
         <div className="flex items-center gap-3">
           <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-cyan-400/30 bg-cyan-500/10 text-cyan-300 shadow-[0_0_28px_rgba(34,211,238,0.2)]">
-            <Shuffle className="h-5 w-5" />
+            <Shuffle className="h-5 w-5" aria-hidden="true" />
           </div>
           <div className="min-w-0">
             <h1 className="text-2xl font-black uppercase leading-none tracking-tight text-white lg:text-[26px]">
@@ -234,13 +236,7 @@ export default function CryptoAgility() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-[10px] uppercase tracking-widest text-white/30">
-            Synced {relativeTime(data?.generatedAt ?? lastGoodAt)}
-          </span>
-          <span className={cn('flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[9px] font-black uppercase tracking-widest', live ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-300' : 'border-amber-400/40 bg-amber-500/10 text-amber-300')}>
-            <span className={cn('h-1.5 w-1.5 rounded-full', live ? 'animate-pulse bg-emerald-400' : 'bg-amber-300')} />
-            {state === 'loading' && !data ? 'Syncing' : live ? 'Live' : 'Snapshot'}
-          </span>
+          <LiveStatus transport={transport} lastVerifiedAt={lastVerifiedAt} generatedAt={data?.generatedAt ?? null} />
           <HeaderButton onClick={() => setPaletteOpen(true)} icon={CommandIcon} title="Command palette (Ctrl/Cmd+K)">⌘K</HeaderButton>
           <HeaderButton onClick={() => scrollTo('history')} icon={History} title="View assessment history">History</HeaderButton>
           <HeaderButton onClick={exportSnapshot} icon={Download} title="Export the full agility snapshot as JSON">Export</HeaderButton>
@@ -257,21 +253,14 @@ export default function CryptoAgility() {
             onClick={() => void refresh(true)}
             className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/50 bg-cyan-500/15 px-3 py-2 text-[9px] font-black uppercase tracking-wider text-cyan-200 transition hover:bg-cyan-500/25"
           >
-            <RefreshCw className={cn('h-3.5 w-3.5', state === 'loading' && 'animate-spin')} /> Run Assessment
+            <RefreshCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin')} aria-hidden="true" /> Run Assessment
           </button>
         </div>
       </header>
 
-      {/* ---- Non-fatal error banner (data still shown) ------------------ */}
-      {error && data && (
-        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
-          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-300" />
-          <div className="min-w-0 flex-1">
-            <div className="text-[11.5px] font-black text-amber-200">Live refresh failed — showing the last successful assessment</div>
-            <div className="truncate text-[10px] text-white/45">{error} · captured {relativeTime(lastGoodAt)}</div>
-          </div>
-          <button type="button" onClick={() => void refresh(true)} className="rounded border border-amber-400/40 bg-amber-500/10 px-3 py-1.5 text-[9px] font-black uppercase tracking-wider text-amber-200">Retry</button>
-        </div>
+      {/* ---- Connection banner (data still shown) ----------------------- */}
+      {data && (transport !== 'stream' || error) && (
+        <ConnectionLostBanner lastGoodAt={lastGoodAt} error={error} onReconnect={reconnect} transport={transport} lastVerifiedAt={lastVerifiedAt} />
       )}
 
       {/* ---- Hard error -------------------------------------------------- */}
@@ -341,6 +330,13 @@ export default function CryptoAgility() {
       {/* ---- Main content ------------------------------------------------ */}
       {data && data.hasData && (
         <>
+          <ModuleBrief
+            what={<>How quickly each cryptographic dependency can be swapped: per-asset replaceability, eleven scored domains, every algorithm's status and its approved target, and what blocks the change.</>}
+            why={<>Quantum migration is a sequence of algorithm swaps. An estate whose cryptography is hard-coded, vendor-locked or anchored to static roots cannot move when a standard or a deadline changes — knowing which part is rigid decides the order of work.</>}
+            next={{ label: data.nextStep.label, href: data.nextStep.route, detail: data.nextStep.detail, tone: data.nextStep.tone }}
+            scope={<>{data.score.assetsEvaluated} of {data.assets.length} discovered asset(s) carry cryptographic evidence; {data.score.couplingAssessed} have source, library or runtime visibility so their coupling could be assessed.</>}
+          />
+
           <AgilityHero
             intel={data}
             onExplain={() => setExplainerOpen(true)}
@@ -399,6 +395,12 @@ export default function CryptoAgility() {
 
           <CouplingAnalysis findings={couplingRows} onSelect={(finding: CouplingFinding) => setSelection({ kind: 'coupling', finding })} />
 
+          <AlgorithmTransitions
+            lanes={data.transitions}
+            statuses={data.algorithmStatus}
+            excludedFindingTitles={data.excludedFindingTitles}
+          />
+
           <ReplaceabilityMatrix
             rows={data.replaceability}
             onSelect={(row: ReplaceabilityRow) => setSelection({ kind: 'replaceability', row })}
@@ -453,12 +455,19 @@ export default function CryptoAgility() {
             <PolicyPanel policy={data.policy} />
           </div>
 
+          <ChangeTrackingPanel tracking={data.changeTracking} />
+
           <AssessmentHistory history={data.history} />
 
           <SophiaRecommendations
             recommendations={data.recommendations}
             onAsk={ask}
             onAct={(rec) => navigate(rec.route)}
+          />
+
+          <SourceHealth
+            sources={data.sources.map((s) => ({ label: s.label, state: s.state, detail: s.detail }))}
+            note={<>A source marked “could not be read” withholds every figure computed from it; a capped source read only its most recent rows.</>}
           />
 
           <footer className="flex flex-col gap-1.5 border-t border-white/8 pt-3 text-[10px] font-mono uppercase tracking-wider text-white/25 md:flex-row md:items-center md:justify-between">

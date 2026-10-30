@@ -50,6 +50,7 @@ import {
   str,
   type AssetMigrationRecord,
 } from '@/lib/migration/asset-intelligence'
+import type { SourceRead } from '@/lib/source-read'
 
 /* ================================================================== */
 /* Vocabulary                                                          */
@@ -161,6 +162,8 @@ export interface RiskTrendPoint {
 }
 
 export interface QuantumRiskIntelligence {
+  /** Read outcome of every evidence source (published by the router; absent in pure fixtures). */
+  reads?: SourceRead[]
   generatedAt: string
   hasData: boolean
   lastAssessmentAt: string | null

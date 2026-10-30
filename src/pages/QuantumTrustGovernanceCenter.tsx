@@ -10,6 +10,7 @@
  * Console/score figures are an illustrative product preview — never live posture.
  */
 import { motion } from 'motion/react';
+import { GovernanceTrustHero } from './_governance-trust-hero';
 import {
   Award,
   Boxes,
@@ -33,21 +34,15 @@ import {
   SolutionLayout,
   Reveal,
   Highlight,
-  Kicker,
   SectionHeading,
   GlassCard,
   FeatureCard,
-  TrustStrip,
   DarkButton,
   GoldButton,
   GhostButton,
   CTASection,
-  CountUp,
-  ReadinessRing,
   ScoreCard,
   ModuleSpotlight,
-  ConsoleTile,
-  ConsoleMeter,
   type Feature,
   type Score,
 } from './_solution-shared';
@@ -65,8 +60,6 @@ const NAV_LINKS = [
   { label: 'Capabilities', href: '#capabilities' },
   { label: 'Frameworks', href: '#frameworks' },
 ];
-
-const TRUST = ['Up to 5,000 Assets', 'Full QKMS', 'SOC 2', 'PCI-DSS 4.0', 'NIST', 'Custom Mapping'];
 
 const SCORES: Score[] = [
   { label: 'SOC 2 Type II', value: 98, suffix: '%', detail: 'Controls mapped & evidenced', color: GREEN, ring: 98, icon: ShieldCheck },
@@ -110,7 +103,7 @@ const SPOTLIGHTS: Array<{
       'Audit vault with tamper-evident history',
       'Regulatory alignment built in',
     ],
-    image: '/governance.png',
+    image: '/governance/policy-enforcement.webp',
     reverse: true,
   },
   {
@@ -124,7 +117,7 @@ const SPOTLIGHTS: Array<{
       'Every status traces to supporting evidence',
       'Continuous, not point-in-time, assurance',
     ],
-    image: '/compliance.png',
+    image: '/governance/audit-evidence.webp',
   },
   {
     icon: Fingerprint,
@@ -210,73 +203,7 @@ export default function QuantumTrustGovernanceCenter() {
     >
       <span id="top" />
 
-      {/* ------------------------------------------------------------------ Hero -- */}
-      <section className="relative px-6 pb-16 pt-28 sm:pt-32">
-        <div className="mx-auto grid max-w-[88rem] items-center gap-12 lg:grid-cols-[1.05fr_0.95fr]">
-          <Reveal>
-            <Kicker>Quantum Trust &amp; Governance Center</Kicker>
-            <h1 className="mt-5 text-4xl font-black leading-[1.05] tracking-tight text-slate-900 sm:text-6xl">
-              Govern your estate.<br />
-              <Highlight>Prove</Highlight> compliance.
-            </h1>
-            <p className="mt-5 max-w-xl text-base leading-relaxed text-slate-600 sm:text-lg">
-              The enterprise trust anchor for your cryptographic estate. Govern thousands of assets, run a
-              full quantum key management system, and prove compliance across SOC 2, PCI-DSS 4.0, NIST and
-              your own frameworks — all from one command center.
-            </p>
-            <div className="mt-8 flex flex-wrap items-center gap-3">
-              <GoldButton to="/checkout?plan=Elite&cycle=yearly">Choose Elite</GoldButton>
-              <DarkButton href="/#pricing">Compare Plans</DarkButton>
-            </div>
-            <div className="mt-8">
-              <TrustStrip items={TRUST} />
-            </div>
-          </Reveal>
-
-          {/* Signature: dark "Governance Command" console (gold-accented). Explicit
-              slate/amber colours keep it intact under the light-theme override. */}
-          <Reveal delay={0.15}>
-            <div className="relative overflow-hidden rounded-2xl border-2 border-slate-900 bg-[#040810] p-6 text-slate-200 shadow-[0_30px_90px_rgba(2,6,23,0.35)]">
-              <div className="absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-amber-300 via-yellow-400 to-cyan-400" />
-              <div className="flex items-center justify-between">
-                <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-slate-400">GOVERNANCE // LIVE PREVIEW</span>
-                <span className="inline-flex items-center gap-1.5 font-mono text-[10px] font-bold text-emerald-400">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" /> GOVERNING
-                </span>
-              </div>
-
-              <div className="mt-6 flex items-center gap-6">
-                <ReadinessRing value={96} color={GOLD} size={140} stroke={12}>
-                  <div>
-                    <div className="text-3xl font-black text-slate-50">
-                      <CountUp value={96} suffix="%" />
-                    </div>
-                    <div className="font-mono text-[9px] font-bold uppercase tracking-widest text-slate-400">Compliant</div>
-                  </div>
-                </ReadinessRing>
-                <div className="min-w-0 flex-1 space-y-2.5">
-                  <ConsoleMeter label="SOC 2" value={98} color={GREEN} />
-                  <ConsoleMeter label="PCI-DSS 4.0" value={94} color={CYAN} />
-                  <ConsoleMeter label="NIST PQC" value={100} color={BLUE} />
-                  <ConsoleMeter label="Custom" value={89} color={VIOLET} />
-                </div>
-              </div>
-
-              <div className="mt-6 grid grid-cols-2 gap-3">
-                <ConsoleTile icon={Boxes} label="Assets Governed" value="5,000" tone="#fbbf24" />
-                <ConsoleTile icon={KeyRound} label="QKMS Keys" value="3,204" tone="#a78bfa" />
-                <ConsoleTile icon={ClipboardCheck} label="Policies" value="42" tone="#34d399" />
-                <ConsoleTile icon={FileCheck} label="Evidence" value="Audit-Ready" tone="#60a5fa" />
-              </div>
-
-              <div className="mt-5 flex items-center justify-between rounded-xl border border-amber-400/25 bg-amber-400/10 px-4 py-3">
-                <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-amber-200">Traceable Audit Evidence</span>
-                <ShieldCheck className="h-4 w-4 text-amber-300" />
-              </div>
-            </div>
-          </Reveal>
-        </div>
-      </section>
+      <GovernanceTrustHero />
 
       {/* ---------------------------------------------------- Governance at scale -- */}
       <section className="mx-auto max-w-[88rem] px-6 py-12">
@@ -313,7 +240,7 @@ export default function QuantumTrustGovernanceCenter() {
               className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-950 shadow-[0_24px_70px_rgba(2,6,23,0.25)]"
             >
               <div className="absolute inset-x-0 top-0 z-10 h-[3px] bg-gradient-to-r from-amber-400 via-gold to-cyan-400" />
-              <img src="/Governance_Compliance.png" alt="Cryptographic governance and compliance at enterprise scale" className="h-full max-h-[320px] w-full object-cover opacity-95" />
+              <img src="/governance/estate-governance.webp" alt="Conceptual view of a central cryptographic trust core governing interconnected key and certificate assets" width={1440} height={960} loading="lazy" decoding="async" className="aspect-[3/2] max-h-[320px] w-full object-cover opacity-95" />
             </motion.div>
           </GlassCard>
         </Reveal>

@@ -49,7 +49,7 @@ export const MODULE_REGISTRY: CopilotModule[] = [
   { id: 'live_migration', label: 'Live Migration Ops', path: '/dashboard/live-migration', description: 'Live migration execution, orchestration, snapshots and rollback' },
   { id: 'migration_timeline', label: 'Migration Timeline', path: '/dashboard/migration-timeline', description: 'Migration timeline and phases' },
   { id: 'telemetry', label: 'Runtime Telemetry', path: '/dashboard/runtime-crypto-intel', description: 'Runtime cryptographic intelligence' },
-  { id: 'collectors', label: 'Agent Collectors', path: '/dashboard/scanner?tab=agents', description: 'Agent collector console (heartbeats, health, patchers)' },
+  { id: 'collectors', label: 'Agents Collector', path: '/dashboard/agents', description: 'Deploy and operate agent collectors (asset bindings, heartbeats, health, patchers)' },
   { id: 'pki', label: 'PKI Visibility', path: '/dashboard/pki-visibility', description: 'Certificates, CAs and trust stores' },
   { id: 'tls', label: 'TLS Telemetry', path: '/dashboard/tls-telemetry', description: 'TLS protocol posture and telemetry' },
   { id: 'compliance', label: 'Compliance Center', path: '/dashboard/compliance', description: 'Compliance posture and evidence' },

@@ -10,6 +10,9 @@ import {
   type CryptoAgilityIntelligence,
 } from '@/lib/crypto-agility/agility-intelligence'
 import type { Row } from '@/lib/migration/asset-intelligence'
+import { streamLiveSnapshot } from './live-snapshot-stream'
+import { createSourceLedger } from './source-ledger'
+import { SIMULATION_MARKER_SELECT } from '@/lib/migration/job-safety'
 
 /**
  * QGuard Helix — Crypto Agility Command Center™ aggregation router.
@@ -36,17 +39,15 @@ const router = Router()
 
 type AuthedRequest = Request & { user?: { id: string; email?: string | null }; token?: string }
 
-function tokenFromRequest(req: Request): string | null {
-  const headerToken = getToken(req)
-  if (headerToken) return headerToken
-  // EventSource cannot set an Authorization header, so /stream passes the token
-  // via query string. Accepted for this router only.
-  const queryToken = req.query.token
-  return typeof queryToken === 'string' && queryToken.length > 0 ? queryToken : null
-}
-
+/*
+ * Authorization header only. /stream used to take `?token=` for an
+ * EventSource client — which wrote the bearer token into access logs and
+ * browser history, and, because the subscription gateway reads only the
+ * header, served this Pro module to any authenticated plan. The page now
+ * streams over fetch() with the header.
+ */
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const token = tokenFromRequest(req)
+  const token = getToken(req)
   if (!token) return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
   const user = await getServerUser(token)
   if (!user) return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } })
@@ -62,20 +63,6 @@ const num = (v: unknown) => {
   return Number.isFinite(n) ? n : 0
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function safeRows(client: any, table: string, build: (query: any) => any): Promise<Row[]> {
-  try {
-    const { data, error } = await build(client.from(table))
-    if (error) {
-      console.warn(`Crypto agility ${table} query skipped:`, error.message || error)
-      return []
-    }
-    return (data as Row[]) || []
-  } catch (error) {
-    console.warn(`Crypto agility ${table} query failed:`, (error as Error)?.message || error)
-    return []
-  }
-}
 
 /* ------------------------------------------------------------------ */
 /* Shared single-flight cache                                          */
@@ -97,6 +84,46 @@ async function loadInputs(token: string, userId: string): Promise<AgilityInputs>
 
   const [portfolio, snapshot] = await Promise.all([buildPortfolio(token, userId), buildSnapshot(token, userId)])
 
+  const ledger = createSourceLedger('Crypto agility')
+  const reads = await Promise.all([
+    // metadata is required here (and not in the planner) because code-location
+    // evidence is what distinguishes embedded cryptography from configuration.
+    ledger.read(client, 'crypto_inventory', 'CBOM components', 2500, (q) =>
+      q
+        .select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, metadata, discovered_at, created_at')
+        .eq('user_id', userId)
+        .order('discovered_at', { ascending: false })
+        .limit(2500),
+    ),
+    ledger.read(client, 'crypto_exposures', 'Crypto exposures', 2000, (q) =>
+      q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(2000),
+    ),
+    ledger.read(client, 'certificates', 'Certificates', 1500, (q) =>
+      q.select('id, asset_id, name, subject, algorithm, key_size, issuer, not_after, is_quantum_safe, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1500),
+    ),
+    ledger.read(client, 'runtime_crypto_events', 'Runtime telemetry', 3000, (q) =>
+      q.select('id, asset_id, asset_name, algorithm, protocol, cipher_suite, severity, risk_score, is_pqc, is_legacy, hndl_risk, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(3000),
+    ),
+    ledger.read(client, 'generated_keys', 'Key inventory', 1000, (q) => q.select('id, algorithm, bit_length, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1000)),
+    // Only the three metadata keys `isSimulationJob` reads are projected — a
+    // sandbox simulation must never count as an operational change here.
+    ledger.read(client, 'migration_jobs', 'Migration jobs', 600, (q) =>
+      q
+        .select(`id, asset_id, name, job_type, status, target_algorithm, progress, created_at, updated_at, ${SIMULATION_MARKER_SELECT}`)
+        .eq('user_id', userId)
+        .order('updated_at', { ascending: false })
+        .limit(600),
+    ),
+    ledger.read(client, 'pqc_scan_sessions', 'Scan sessions', 120, (q) => q.select('id, status, findings_count, completed_at, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(120)),
+    ledger.read(client, 'security_events', 'Security events', 200, (q) =>
+      q.select('id, event_type, severity, message, resource_name, resource_type, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(200),
+    ),
+    ledger.read(client, 'connector_accounts', 'Connectors', 400, (q) => q.select('id, provider, status').eq('user_id', userId).limit(400)),
+    ledger.read(client, 'asset_relationships', 'Trust fabric', 3000, (q) => q.select('*').eq('user_id', userId).limit(3000)),
+    ledger.read(client, 'quantum_governance_exceptions', 'Policy exceptions', 100, (q) =>
+      q.select('id, policy_violated, justification, expiration_date, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(100),
+    ),
+  ])
   const [
     cryptoInventory,
     cryptoExposures,
@@ -109,40 +136,8 @@ async function loadInputs(token: string, userId: string): Promise<AgilityInputs>
     connectorAccounts,
     relationships,
     policyExceptions,
-  ] = await Promise.all([
-    // metadata is required here (and not in the planner) because code-location
-    // evidence is what distinguishes embedded cryptography from configuration.
-    safeRows(client, 'crypto_inventory', (q) =>
-      q
-        .select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, metadata, discovered_at, created_at')
-        .eq('user_id', userId)
-        .order('discovered_at', { ascending: false })
-        .limit(2500),
-    ),
-    safeRows(client, 'crypto_exposures', (q) =>
-      q.select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(2000),
-    ),
-    safeRows(client, 'certificates', (q) =>
-      q.select('id, asset_id, name, subject, algorithm, key_size, issuer, not_after, is_quantum_safe, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1500),
-    ),
-    safeRows(client, 'runtime_crypto_events', (q) =>
-      q.select('id, asset_id, asset_name, algorithm, protocol, cipher_suite, severity, risk_score, is_pqc, is_legacy, hndl_risk, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(3000),
-    ),
-    safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, bit_length, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1000)),
-    safeRows(client, 'migration_jobs', (q) =>
-      q.select('id, asset_id, name, job_type, status, target_algorithm, progress, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(600),
-    ),
-    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, findings_count, completed_at, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(120)),
-    safeRows(client, 'security_events', (q) =>
-      q.select('id, event_type, severity, message, resource_name, resource_type, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(200),
-    ),
-    safeRows(client, 'connector_accounts', (q) => q.select('id, provider, status').eq('user_id', userId).limit(400)),
-    safeRows(client, 'asset_relationships', (q) => q.select('*').eq('user_id', userId).limit(3000)),
-    // Optional governance table — absent tenants degrade to no exceptions.
-    safeRows(client, 'quantum_governance_exceptions', (q) =>
-      q.select('id, policy_violated, justification, expiration_date, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(100),
-    ),
-  ])
+  ] = reads
+  const sourceHealth = ledger.reads
 
   return {
     assets: portfolio.assets,
@@ -180,6 +175,7 @@ async function loadInputs(token: string, userId: string): Promise<AgilityInputs>
     connectorAccounts,
     relationships,
     policyExceptions,
+    sourceHealth,
   }
 }
 
@@ -238,43 +234,9 @@ router.get('/', async (req: Request, res: Response) => {
  * every connected client of a tenant collapses onto the one cached computation,
  * so N open dashboards cost the same as one.
  */
-router.get('/stream', async (req: Request, res: Response) => {
+router.get('/stream', (req: Request, res: Response) => {
   const { token, user } = req as AuthedRequest
-  res.status(200)
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
-  res.flushHeaders?.()
-
-  let closed = false
-  const send = (event: string, data: unknown) => {
-    if (closed) return
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-  }
-
-  send('connected', { at: new Date().toISOString() })
-
-  const push = async () => {
-    try {
-      const intelligence = await buildAgility(token!, user!.id)
-      send('agility-update', intelligence)
-    } catch (error) {
-      send('agility-error', { message: error instanceof Error ? error.message : 'Snapshot unavailable' })
-    }
-  }
-
-  void push()
-  const interval = setInterval(() => void push(), 20_000)
-  const heartbeat = setInterval(() => {
-    if (!closed) res.write(': heartbeat\n\n')
-  }, 25_000)
-
-  req.on('close', () => {
-    closed = true
-    clearInterval(interval)
-    clearInterval(heartbeat)
-  })
+  streamLiveSnapshot(req, res, { event: 'agility-update', build: () => buildAgility(token!, user!.id), intervalMs: 20_000 })
 })
 
 /**

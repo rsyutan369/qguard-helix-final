@@ -17,9 +17,14 @@ import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server
 import { buildSnapshot } from './quantum-readiness'
 import { buildPortfolio } from './migration-planner'
 import { buildEncryptionIntelligence } from '@/lib/encryption/intelligence'
+import { streamLiveSnapshot } from './live-snapshot-stream'
+import { createSourceLedger, type SourceRead } from './source-ledger'
 import type { AlgorithmRow, EncryptionFinding, EncryptionIntelligence, KeyRecord } from '@/lib/encryption/types'
 
 type Row = Record<string, unknown>
+
+/** The model as published: the intelligence plus the outcome of every source read. */
+type EncryptionModel = EncryptionIntelligence & { reads: SourceRead[] }
 
 type AuthedRequest = Request & {
   user?: { id: string; email?: string | null }
@@ -39,26 +44,12 @@ function num(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function safeRows(client: any, table: string, build: (query: any) => any): Promise<Row[]> {
-  try {
-    const { data, error } = await build(client.from(table))
-    if (error) {
-      console.warn(`[encryption-monitoring] ${table} query skipped:`, error.message || error)
-      return []
-    }
-    return (data as Row[]) || []
-  } catch (error) {
-    console.warn(`[encryption-monitoring] ${table} query failed:`, (error as Error)?.message || error)
-    return []
-  }
-}
-
+/**
+ * Authorization header ONLY — a `?token=` fallback here served this Pro page
+ * to BASIC tenants, because the subscription gateway reads only the header.
+ */
 function tokenFromRequest(req: Request): string | null {
-  const header = getToken(req)
-  if (header) return header
-  const query = req.query.token
-  return typeof query === 'string' && query.length > 0 ? query : null
+  return getToken(req)
 }
 
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -91,11 +82,15 @@ const CAP = {
 } as const
 
 const MODEL_TTL_MS = 15_000
-const modelCache = new Map<string, { at: number; promise: Promise<EncryptionIntelligence> }>()
+const modelCache = new Map<string, { at: number; promise: Promise<EncryptionModel> }>()
 
-async function computeModel(token: string, userId: string): Promise<EncryptionIntelligence> {
+async function computeModel(token: string, userId: string): Promise<EncryptionModel> {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
+  // Failed reads degrade to [] but are recorded and published (common-issues #64).
+  const ledger = createSourceLedger('encryption-monitoring')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const safeRows = (c: any, table: string, build: (query: any) => any): Promise<Row[]> => ledger.read(c, table, table.replace(/_/g, ' '), null, build)
 
   // Canonical estate truth first — both are per-tenant cached, so this is
   // nearly free and guarantees the page agrees with Quantum Readiness.
@@ -199,7 +194,7 @@ async function computeModel(token: string, userId: string): Promise<EncryptionIn
     runtimeEvents.length >= CAP.runtimeEvents ||
     scannerEvidence.length >= CAP.scannerEvidence
 
-  return buildEncryptionIntelligence({
+  const intelligence = buildEncryptionIntelligence({
     assets: portfolio.assets,
     snapshot: {
       quantumReadiness: snapshot.scores.quantumReadiness,
@@ -223,9 +218,10 @@ async function computeModel(token: string, userId: string): Promise<EncryptionIn
     connectorAccounts,
     truncated,
   })
+  return Object.assign(intelligence, { reads: ledger.reads })
 }
 
-export async function buildEncryptionModel(token: string, userId: string, force = false): Promise<EncryptionIntelligence> {
+export async function buildEncryptionModel(token: string, userId: string, force = false): Promise<EncryptionModel> {
   const cached = modelCache.get(userId)
   if (!force && cached && Date.now() - cached.at < MODEL_TTL_MS) return cached.promise
   const promise = computeModel(token, userId)
@@ -244,11 +240,13 @@ export async function buildEncryptionModel(token: string, userId: string, force 
 
 const PAGE = { findings: 40, keys: 40, atRest: 40 } as const
 
-function projectView(model: EncryptionIntelligence) {
+function projectView(model: EncryptionModel) {
   return {
     generatedAt: model.generatedAt,
     latestEvidenceAt: model.latestEvidenceAt,
     hasData: model.hasData,
+    /** Outcome of every source read: `unavailable` means the query FAILED, not "none". */
+    reads: model.reads,
     posture: model.posture,
     telemetry: model.telemetry,
     timeline: model.timeline,
@@ -366,45 +364,23 @@ router.get('/', async (req: AuthedRequest, res: Response) => {
 /**
  * GET /stream — SSE carrying the whole view payload, so the client swaps state
  * atomically and the KPI strip can never disagree with the tables mid-update.
+ * Fingerprinted: a full `encryption-intel` frame only when content changes,
+ * otherwise `encryption-intel-unchanged`; failures are `encryption-intel-error`.
  */
-router.get('/stream', async (req: AuthedRequest, res: Response) => {
-  res.status(200)
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
-  res.flushHeaders?.()
-
-  let closed = false
-  const send = (event: string, data: unknown) => {
-    if (closed) return
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-  }
-
-  send('connected', { at: new Date().toISOString() })
-
-  let lastGeneratedAt = ''
-  const push = async () => {
-    try {
+const projectionMemo = new WeakMap<EncryptionModel, ReturnType<typeof projectView>>()
+router.get('/stream', (req: AuthedRequest, res: Response) => {
+  streamLiveSnapshot(req, res, {
+    event: 'encryption-intel',
+    build: async () => {
       const data = await model(req)
-      if (data.generatedAt === lastGeneratedAt) return
-      lastGeneratedAt = data.generatedAt
-      send('encryption-intel', projectView(data))
-    } catch (error) {
-      send('encryption-error', { message: error instanceof Error ? error.message : 'Encryption telemetry unavailable' })
-    }
-  }
-
-  void push()
-  const interval = setInterval(() => void push(), 10_000)
-  const heartbeat = setInterval(() => {
-    if (!closed) res.write(': heartbeat\n\n')
-  }, 25_000)
-
-  req.on('close', () => {
-    closed = true
-    clearInterval(interval)
-    clearInterval(heartbeat)
+      let projected = projectionMemo.get(data)
+      if (!projected) {
+        projected = projectView(data)
+        projectionMemo.set(data, projected)
+      }
+      return projected
+    },
+    intervalMs: 10_000,
   })
 })
 

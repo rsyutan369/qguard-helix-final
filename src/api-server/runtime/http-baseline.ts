@@ -39,8 +39,35 @@ export function shouldEnforceHttps(req: Request): boolean {
   return strictMode && !isLocalRequest(req) && !isHttpsRequest(req)
 }
 
-/** Plain HTTP in production: redirect reads, refuse writes. */
+/** The request presents an agent credential (deployed agents, generated installers). */
+export function carriesAgentCredential(req: Request): boolean {
+  return typeof req.headers['x-qguard-agent-token'] === 'string' ||
+    (typeof req.headers['x-qguard-agent-id'] === 'string' && typeof req.headers.authorization === 'string')
+}
+
+function peerIsLoopback(req: Request): boolean {
+  const peer = (req.socket?.remoteAddress || '').replace(/^::ffff:/, '')
+  return peer === '127.0.0.1' || peer === '::1'
+}
+
+/**
+ * Plain HTTP in production: redirect reads, refuse writes — and refuse agent
+ * credentials outright. Redirecting an agent would only teach it to retry
+ * after its token already crossed the network in the clear. The local
+ * exemption for agents needs a loopback PEER as well as a local Host header,
+ * because the Host header is whatever the client chose to send.
+ */
 export function enforceHttps(req: Request, res: Response, next: NextFunction): void {
+  const strictMode = process.env.NODE_ENV === 'production' || process.env.FORCE_HTTPS === 'true' || process.env.ENFORCE_HTTPS === 'true'
+  if (strictMode && carriesAgentCredential(req) && !isHttpsRequest(req) && !(isLocalRequest(req) && peerIsLoopback(req))) {
+    res.status(426).json({
+      error: {
+        code: 'AGENT_HTTPS_REQUIRED',
+        message: 'Agent credentials are accepted over HTTPS only. This request crossed the network in plaintext: rotate the agent token in the Agent Center and point the agent at the HTTPS control-plane URL.',
+      },
+    })
+    return
+  }
   if (!shouldEnforceHttps(req)) {
     next()
     return

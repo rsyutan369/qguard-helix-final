@@ -3,12 +3,13 @@ import { useLocation } from 'react-router-dom';
 import {
   Sparkles, Send, Square, Loader2, Plus, Search, Pin, PinOff, Trash2,
   Download, ShieldCheck, Lightbulb, AlertTriangle, RefreshCw, MessageSquare,
-  Mic, MicOff, Cpu, ExternalLink,
+  Mic, MicOff, Cpu, ExternalLink, KeyRound, ChevronRight,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useCopilot } from '@/hooks/use-copilot';
 import { SophiaMessage } from '@/components/copilot/SophiaMessage';
 import { SophiaAvatar } from '@/components/copilot/SophiaAvatar';
+import { SophiaModelSettings } from '@/components/copilot/SophiaModelSettings';
 import type { CopilotRiskLevel } from '@/types/copilot';
 
 /**
@@ -72,11 +73,12 @@ export default function SophiaConsolePage() {
   const copilot = useCopilot(location.pathname);
   const {
     context, suggestions, insights, insightsState, conversations, activeConversationId,
-    messages, streaming, error,
+    messages, streaming, narratingAnswerId, error,
     sendMessage, stopStreaming, sendFeedback, loadInsights, openConversation, newConversation,
-    pinConversation, deleteConversation, exportConversation, searchConversations,
+    pinConversation, deleteConversation, exportConversation, searchConversations, refreshContext,
   } = copilot;
 
+  const [modelsOpen, setModelsOpen] = useState(false);
   const [input, setInput] = useState('');
   const [search, setSearch] = useState('');
   const [searchResults, setSearchResults] = useState<Array<{ conversation: { id: string; title: string }; match: string }>>([]);
@@ -204,8 +206,19 @@ export default function SophiaConsolePage() {
           </div>
           <p className="text-[11px] text-slate-500">Enterprise post-quantum security intelligence — tenant-isolated, evidence-based, RBAC-aware.</p>
         </div>
+        <button
+          onClick={() => setModelsOpen(true)}
+          className={`ml-auto flex min-h-[36px] items-center gap-2 rounded-lg border px-3 py-1.5 text-left transition-colors ${context?.engine ? 'border-violet-400/40 bg-violet-500/10 hover:bg-violet-500/20' : 'border-cyan-400/30 bg-cyan-500/[0.07] hover:bg-cyan-500/15'}`}
+          title="Connect your own AI model to Sophia"
+        >
+          {context?.engine ? <Cpu className="h-4 w-4 text-violet-300" /> : <KeyRound className="h-4 w-4 text-cyan-300" />}
+          <span className="min-w-0">
+            <span className="block text-[11px] font-bold text-slate-100">{context?.engine ? context.engine.label : 'AI Models'}</span>
+            <span className="block max-w-[160px] truncate text-[9px] text-slate-400">{context?.engine ? context.engine.model : 'Connect your own key'}</span>
+          </span>
+        </button>
         {context && (
-          <div className="ml-auto hidden items-center gap-2 rounded-lg border border-slate-700/50 bg-slate-900/50 px-3 py-1.5 md:flex">
+          <div className="hidden items-center gap-2 rounded-lg border border-slate-700/50 bg-slate-900/50 px-3 py-1.5 md:flex">
             <ShieldCheck className="h-4 w-4 text-emerald-400/80" />
             <div className="text-right">
               <div className="text-[11px] font-bold text-slate-200">{context.roleLabel}</div>
@@ -283,13 +296,13 @@ export default function SophiaConsolePage() {
               ) : (
                 <div key={message.id} className="min-w-0 max-w-3xl">
                   {message.answer
-                    ? <SophiaMessage answer={message.answer} onFeedback={(rating) => { void sendFeedback(message.answer!, rating); }} />
+                    ? <SophiaMessage answer={message.answer} narrating={narratingAnswerId === message.answer.id} onFeedback={(rating) => { void sendFeedback(message.answer!, rating); }} />
                     : <p className="text-[14px] text-slate-200">{message.content}</p>}
                 </div>
               )
             ))}
 
-            {streaming.active && (
+            {streaming.active && !narratingAnswerId && (
               <div className="max-w-3xl space-y-2 rounded-xl border border-slate-700/50 bg-slate-900/40 p-4">
                 <div className="flex items-center gap-2 text-[13px] text-cyan-200">
                   <Loader2 className="h-4 w-4 animate-spin" /><span>{streaming.stageLabel || 'Sophia is thinking…'}</span>
@@ -337,6 +350,25 @@ export default function SophiaConsolePage() {
 
         {/* Right — context + insights */}
         <aside style={{ width: rightWidth }} className="hidden min-h-0 shrink-0 flex-col gap-4 overflow-y-auto border-l border-slate-700/50 p-4 scrollbar-thin lg:flex">
+          <button onClick={() => setModelsOpen(true)} className="group block w-full rounded-xl border border-violet-400/25 bg-gradient-to-br from-violet-500/[0.09] to-cyan-500/[0.05] p-3 text-left transition-colors hover:border-violet-400/50">
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-violet-200/90"><Cpu className="h-3 w-3" /> AI engine</span>
+              <ChevronRight className="h-3.5 w-3.5 text-slate-500 transition-transform group-hover:translate-x-0.5 group-hover:text-violet-200" />
+            </div>
+            {context?.engine ? (
+              <>
+                <div className="mt-1.5 text-[12px] font-bold text-slate-100">{context.engine.label}</div>
+                <div className="truncate font-mono text-[10px] text-slate-400">{context.engine.model}</div>
+                <p className="mt-1 text-[10px] leading-relaxed text-slate-500">Writes each analysis from Sophia’s tenant evidence. Every figure is checked against that evidence.</p>
+              </>
+            ) : (
+              <>
+                <div className="mt-1.5 text-[12px] font-bold text-slate-100">Sophia platform engine</div>
+                <p className="mt-0.5 text-[10px] leading-relaxed text-slate-500">Connect Anthropic, OpenAI, Hermes, Kimi, GLM or DeepSeek with your own key to add a written analysis to every answer.</p>
+              </>
+            )}
+          </button>
+
           <div>
             <div className="mb-2 flex items-center justify-between">
               <span className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400"><AlertTriangle className="h-3 w-3 text-amber-400/80" /> Proactive insights</span>
@@ -371,6 +403,8 @@ export default function SophiaConsolePage() {
           )}
         </aside>
       </div>
+
+      <SophiaModelSettings open={modelsOpen} onClose={() => setModelsOpen(false)} onChanged={() => { void refreshContext(); }} />
     </div>
   );
 }

@@ -44,6 +44,8 @@ import {
   type Row,
 } from '@/lib/migration/asset-intelligence'
 import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
+import type { SourceRead } from '@/lib/source-read'
+import { isSimulationRow } from '@/lib/migration/job-safety'
 
 /* ================================================================== */
 /* Vocabulary                                                          */
@@ -147,6 +149,8 @@ export interface StabilityScore {
 }
 
 export interface DriftIntelligence {
+  /** Read outcome of every evidence source (published by the router; absent in pure fixtures). */
+  reads?: SourceRead[]
   generatedAt: string
   hasBaseline: boolean
   baseline: BaselineWindow
@@ -279,6 +283,9 @@ export function buildDriftIntelligence(inputs: DriftInputs): DriftIntelligence {
   interface PlannedChange { jobId: string; name: string; target: string; at: number; status: string }
   const plannedByAsset = new Map<string, PlannedChange[]>()
   for (const job of inputs.migrationJobs) {
+    // A sandbox simulation changes a digital twin, never a production asset —
+    // it cannot explain drift observed on the real estate.
+    if (isSimulationRow(job)) continue
     const assetId = str(job.asset_id)
     if (!assetId) continue
     const status = str(job.status).toLowerCase()

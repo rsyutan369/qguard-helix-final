@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="640" viewBox="0 0 800 640" fill="none">
+  <defs>
+    <linearGradient id="base" x1="270" y1="220" x2="540" y2="530" gradientUnits="userSpaceOnUse"><stop stop-color="#edf2fa"/><stop offset="1" stop-color="#bac8de"/></linearGradient>
+    <linearGradient id="glass" x1="280" y1="180" x2="490" y2="350" gradientUnits="userSpaceOnUse"><stop stop-color="#7c3aed" stop-opacity=".45"/><stop offset="1" stop-color="#b8d8ff" stop-opacity=".08"/></linearGradient>
+  </defs>
+  <g transform="translate(0 -10)">
+    <path d="m400 186 262 151-262 152-262-152Z" fill="#eef2f8" stroke="#9cacc9"/>
+    <path d="m138 337 262 152 262-152v26L400 515 138 363Z" fill="#c1ccde" stroke="#889bbc"/>
+    <path d="m400 210 220 127-220 127-220-127Z" fill="url(#base)" stroke="#91a4c5" stroke-opacity=".5"/>
+    <g stroke="#7c3aed" stroke-width="2"><path d="m220 337 180-1 140-80"/><path d="m400 230 0 106 181 0"/><path d="m400 443 0-107"/></g>
+    <g fill="#f1f5fc" stroke="#9cadd1"><path d="m210 295 65 38-65 37-65-37Z"/><path d="m400 186 65 38-65 37-65-37Z"/><path d="m590 295 65 38-65 37-65-37Z"/><path d="m400 405 65 38-65 37-65-37Z"/></g>
+    <path d="m400 234 104 60-104 61-104-61Z" fill="#e1e9f7" stroke="#9eabc9"/>
+    <path d="m296 294 104 61 104-61v62l-104 61-104-61Z" fill="url(#glass)" stroke="#a9bbdc"/>
+    <path d="m400 186 104 60-104 61-104-61Z" fill="url(#glass)" stroke="#7c3aed"/>
+    <path d="m296 246 104 61 104-61v24l-104 61-104-61Z" fill="url(#glass)" stroke="#a9bbdc"/>
+    <path d="m400 145 104 60-104 61-104-61Z" fill="#e7edf8" stroke="#7c6ca9" stroke-width="2"/>
+    <path d="m296 205 104 61 104-61v15l-104 61-104-61Z" fill="#d6e0ef" stroke="#a0b3d4"/>
+    <path d="m400 177 35 12-8 28-27 16-27-16-8-28Z" fill="#8877b5"/><path d="m384 203 12 10 20-19" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+    <g stroke="#7c6ca9" stroke-width="4" stroke-linecap="round"><path d="m206 327 15 10-13 9"/><path d="m392 220 15 8m-15-16 15 8m-15 8 15 8"/><path d="m582 327 15 10-13 9m5-18 15 10-13 9"/><path d="m386 440 14 8 14-8m-28 8 14 8 14-8"/></g>
+    <g fill="#0ea5e9"><circle cx="280" cy="337" r="4"/><circle cx="400" cy="270" r="4"/><circle cx="538" cy="336" r="4"/><circle cx="400" cy="405" r="4"/></g>
+  </g>
+</svg>

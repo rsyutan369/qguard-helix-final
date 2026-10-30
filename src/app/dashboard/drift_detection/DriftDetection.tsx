@@ -20,6 +20,8 @@ import {
   ScoreDial, SectionHeading, SkeletonGrid, SourceNote, StatusPill,
   fmtInt, fullTimestamp, relativeTime,
 } from '../_components/intel/kit';
+import { ModuleBrief, SourceHealth as EvidenceSources } from '../_components/intel/kit';
+import { driftNextStep } from '../_components/intel/next-steps';
 
 type TabKey = 'changes' | 'assets' | 'baseline';
 
@@ -45,7 +47,8 @@ const CLASS_HEX: Record<DriftClass, string> = {
  * ignore the alert that matters.
  */
 export default function DriftDetection() {
-  const { data, state, error, live, lastGoodAt, refresh, reconnect } = useDriftDetection();
+  const { data, state, error, transport, lastVerifiedAt, lastGoodAt, refreshing, refresh, reconnect } = useDriftDetection();
+  const nextStep = useMemo(() => (data ? driftNextStep(data) : null), [data]);
 
   const [tab, setTab] = useState<TabKey>('changes');
   const [filters, setFilters] = useState<DriftFilters>(EMPTY_DRIFT_FILTERS);
@@ -69,9 +72,9 @@ export default function DriftDetection() {
         accent="Drift Detection"
         subtitle="See what changed in your cryptography since the last scan, whether the change was planned, and what needs attention."
         icon={GitCompare}
-        live={live}
-        lastUpdated={data?.generatedAt ?? lastGoodAt}
-        connecting={state === 'loading' && !data}
+        transport={transport}
+        lastVerifiedAt={lastVerifiedAt}
+        lastUpdated={data?.generatedAt ?? null}
       >
         <HeaderButton onClick={() => setShowFilters((v) => !v)} icon={Filter} active={showFilters}>Filters</HeaderButton>
         <button
@@ -81,11 +84,11 @@ export default function DriftDetection() {
         >
           <Sparkles className="h-3.5 w-3.5" aria-hidden="true" /> Ask Sophia
         </button>
-        <PrimaryButton onClick={() => void refresh(true)} icon={RefreshCw} spin={state === 'loading'}>Refresh</PrimaryButton>
+        <PrimaryButton onClick={() => void refresh(true)} icon={RefreshCw} spin={refreshing}>Refresh</PrimaryButton>
       </IntelHeader>
 
-      {data && !live && state !== 'loading' ? (
-        <ConnectionLostBanner lastGoodAt={lastGoodAt} error={error} onReconnect={reconnect} />
+      {data && transport !== 'stream' ? (
+        <ConnectionLostBanner lastGoodAt={lastGoodAt} error={error} onReconnect={reconnect} transport={transport} lastVerifiedAt={lastVerifiedAt} />
       ) : null}
 
       {showHardError ? (
@@ -118,6 +121,15 @@ export default function DriftDetection() {
 
       {data && data.hasBaseline ? (
         <>
+          {nextStep ? (
+            <ModuleBrief
+              what={<>What changed in your cryptography between the two most recent completed scans — and, at runtime, sessions that negotiated weaker cryptography than the endpoint supports.</>}
+              why={<>Migration is not one-way. A redeploy, a library rollback or a new service can re-introduce quantum-vulnerable cryptography after it was removed. A change no migration job explains is the one to look at first.</>}
+              next={{ label: nextStep.label, href: nextStep.href, detail: nextStep.detail, tone: nextStep.tone }}
+              scope={<>{data.baseline.note}</>}
+            />
+          ) : null}
+
           <section aria-label="Drift metrics" className="grid grid-cols-2 gap-2.5 lg:grid-cols-3 xl:grid-cols-6">
             <KpiCard label="Regressions" value={fmtInt(data.kpis.regressions)} detail="unplanned, posture worsened" color={data.kpis.regressions > 0 ? RED : GREEN} />
             <KpiCard label="Improvements" value={fmtInt(data.kpis.improvements)} detail="unplanned, posture improved" color={GREEN} />
@@ -266,6 +278,7 @@ export default function DriftDetection() {
             </div>
           ) : null}
 
+          {data.reads?.length ? <EvidenceSources sources={data.reads} /> : null}
           <SourceNote>{data.evidence.note}</SourceNote>
         </>
       ) : null}
