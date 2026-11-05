@@ -1,0 +1,53 @@
+{
+  "screens": [
+    {
+      "platform": "android",
+      "theme": "light",
+      "logos": [
+        {
+          "src": "/brand/qguard-messaging-badge.webp",
+          "width": 384,
+          "borderRadius": "0px"
+        }
+      ],
+      "pageErrors": []
+    },
+    {
+      "platform": "android",
+      "theme": "dark",
+      "logos": [
+        {
+          "src": "/brand/qguard-messaging-badge.webp",
+          "width": 384,
+          "borderRadius": "0px"
+        }
+      ],
+      "pageErrors": []
+    },
+    {
+      "platform": "desktop",
+      "theme": "light",
+      "logos": [
+        {
+          "src": "/brand/qguard-messaging-badge.webp",
+          "width": 384,
+          "borderRadius": "0px"
+        }
+      ],
+      "pageErrors": []
+    },
+    {
+      "platform": "desktop",
+      "theme": "dark",
+      "logos": [
+        {
+          "src": "/brand/qguard-messaging-badge.webp",
+          "width": 384,
+          "borderRadius": "0px"
+        }
+      ],
+      "pageErrors": []
+    }
+  ],
+  "compiledBrandAssetsMatch": true
+}

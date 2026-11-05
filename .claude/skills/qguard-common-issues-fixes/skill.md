@@ -3517,6 +3517,231 @@ user agents were in the payload and the JSON export.
 
 ---
 
+## 66. Patcher / Migration Operator never execute an approved job; Live Migration shows it "Queued" (or "awaiting approval") with no reason
+
+**Problem**
+
+Deep agent audit (2026-11-04, `tools/agent-roles-live-check.ts` against the Elite QA
+tenant): Collector and Scanner passed every assertion, but an approved, in-scope
+Harvest Now remediation and an approved Migration Planner cutover were never claimed.
+The agents logged "Processed 0 remediation job(s)"; the poll heartbeat said
+`refusedByRole: 2`. Live Migration showed the jobs as plain "Queued", and the cutover
+kept reading "awaiting approval" after its plan was approved.
+
+**Root Cause**
+
+1. `remediationJobScope` (`src/api-server/agent-scanner.ts`) requires a writer to be
+   ASSIGNED to the job's asset — deliberately: a matching file path cannot prove which
+   machine a job is for (docs/AGENT_COEXISTENCE.md). But device profiles are keyed per
+   AGENT (`profileId` = hash of user + agent id), so an unassigned Patcher gets its OWN
+   profile on first upload and can never match the Scanner's profile, where the
+   findings (and so `migration_jobs.asset_id`) live. The Deploy Wizard offered
+   "Not linked" for write roles with no warning.
+2. The refusal was written to the job only when the job was already assigned to the
+   refusing agent ("a refusal must not block another executor"), so the common case —
+   unassigned job, wrong-asset executor — recorded nothing anywhere.
+3. A `not-approved` dispatchBlock was cleared only by a successful claim, so once scope
+   blocked the claim, the stale approval note outlived the approval.
+4. Device profiles all carry the hostname as their name: the first fixed message read
+   `targets "Ruel-Omni", but this agent is assigned to "Ruel-Omni"`.
+
+**Solution**
+
+- Per-agent refusals: `metadata.executorRefusals[agentId]` = `{agentName, role, kind,
+  requires, reason, at}`, written only by an agent holding the role the job needs,
+  only when the reason changes, removed when that agent stops refusing, cleared on
+  claim. Agents never overwrite each other, so no per-poll write churn.
+- `dispatchBlockFor(metadata, status, liveAgentIds)` (`src/lib/migration/operational-
+  workflow.ts`) derives the block from those refusals when there is no global block,
+  ignoring revoked agents → Live Migration's existing "Not dispatched — outside agent
+  scope" banner and readiness gate light up with "Patcher X declined this job: …".
+- Approved jobs drop a stale `not-approved` note on the next poll (`approvedJobIds`).
+- Scope message names both assets, adding a short asset id when names coincide.
+- Deploy Wizard: write role + no Assigned asset → "No assigned asset" notice.
+
+**Prevention Checklist**
+
+- [ ] A refusal that is "not global" still has to be recorded SOMEWHERE the operator
+      can see. Per-actor keys avoid both silence and last-writer-wins churn.
+- [ ] Any note that gates a UI state ("awaiting approval") needs a path that clears
+      it when the condition clears — not only the happy-path transition.
+- [ ] Assets named after a hostname are not unique; never build a message that
+      distinguishes two assets by name alone.
+- [ ] Run `npx tsx tools/agent-roles-live-check.ts` (dev server + OpenSSL 3.5) after
+      any change to job claim, scope or binding. It is not idempotent across runs in
+      one tenant unless findings are matched by the exact lab path (fixed), and a run
+      that crashes leaves its jobs queued — clean them up.
+
+---
+
+## 67. Agent SSE goes quiet after an API restart while the badge still says "Live"
+
+**Problem**
+
+After the API process restarted, browsers reconnected (EventSource retries) and showed
+"connected", but no agent frames arrived on `/dashboard/agents` or
+`/dashboard/live-migration` until long after.
+
+**Root Cause**
+
+`agent-event-bus.ts` sequences events in memory; a process restart resets it to 0. The
+browser resends its old `Last-Event-ID` (e.g. 840). Both `/api/v1/migration/live/stream`
+and `/api/v1/agent-installer/events/stream` used that as the cursor, so `eventsSince`
+skipped every new event until the counter passed 840. Client side, `use-agent-installer`
+dedupes by id (`seenEventIds`) and Live Migration deduped frames by id alone, so recycled
+ids were dropped even once delivered.
+
+**Solution**
+
+Server: a resume id greater than `busStats().sequence` is treated as a restart (Live
+Migration resumes at the head, the Agent Center replays the fresh buffer). Client: the
+Agent Center clears its dedupe set when `stream.ready.replayFrom` is behind its cursor;
+Live Migration keys frames by `id + at`.
+
+**Prevention Checklist**
+
+- [ ] Any in-memory sequence used as an SSE id must handle `Last-Event-ID > head`.
+- [ ] Client-side dedupe by server id must be reset when the server's sequence resets.
+
+---
+
+## 68. Live Migration: a rolled-back cutover reads "Cancelled — every job was withdrawn by an operator"
+
+**Problem**
+
+After a verified operator rollback, the Migration Operator stage showed "Cancelled"
+while its own tally read "Rolled back 1, Cancelled 0". A blocked stage also always
+advised "Grant authority…", even when the block was an asset/scope refusal.
+
+**Root Cause**
+
+`buildNode` in `src/lib/migration/agent-workflow.ts` reached "completed" only with
+`tally.completed > 0`; an all-rolled-back stage fell through to the catch-all
+`cancelled` branch. `nextAction` for `blocked` ignored `dispatchBlock.kind`.
+
+**Solution**
+
+New stage status `rolled_back` ("Rolled back", amber; terminal in `DONE`, overall
+progress, start/complete times, canvas branch state, `STATUS_META`, `URGENCY`). Mixed
+completed + rolled back stays `completed` but names the rollback. `blockedNextAction`
+picks the advice from the blocking job's `dispatchBlock.kind`. Fixtures in
+`tools/live-agent-workflow-check.ts` §7.
+
+**Prevention Checklist**
+
+- [ ] A catch-all `else` in a status ladder must not carry a specific claim
+      ("withdrawn by an operator"); enumerate every terminal job status first.
+- [ ] "Completed" must never be shown for work that was reverted.
+
+---
+
+## 69. Agent scan receipts show "publish error(s)" although the evidence landed
+
+**Problem**
+
+Live runs from this workstation: Collector/Scanner report "Scan complete with 1 publish
+error(s)" — `Control plane did not answer POST /api/v1/agent-scanner/agent/evidence
+within 30s` — yet every row is in `scanner_evidence`/`crypto_inventory`.
+
+**Root Cause**
+
+The evidence handler (device-profile materialisation, inventory, exposures, findings)
+makes many sequential Supabase round trips; from this machine each costs ~600 ms, so a
+~60-row batch exceeds the agent's 30 s request timeout. The agent does not retry, so
+nothing is double-counted, but that batch's receipt reads 0 accepted.
+
+**Status / Prevention**
+
+Not fixed (2026-11-04) — environmental at this RTT, but the handler should batch its
+reads/writes (`.in()` reads, bulk upserts) so it stays well under the agent timeout.
+- [ ] When an agent reports an upload timeout, check `scanner_evidence` before
+      assuming loss; measure Supabase RTT (`select id limit 1`) before blaming code.
+
+---
+
+## 70. Quantum Readiness flips 27 ↔ 62 on unchanged data; a populated estate briefly reads "Not started / 0"
+
+**Problem**
+
+Re-audit of the nine Quantum Readiness pages (2026-11-04), on a 2-asset tenant whose
+data did not change:
+
+- Within one minute the Overview read readiness **27** / risk 65 / HNDL 46 / PQC 22%
+  while Harvest Now, Remediation and Certification read **62** / 47 / 28 / 67%.
+  `quantum_readiness_history` had recorded 27 → 62 → 27 flips (crypto_components
+  32 ↔ 75), so the trend chart showed noise as movement.
+- Once, every endpoint served an all-zero "not_started" snapshot for the populated
+  estate (2–16 ms cache hits).
+- History held readiness **36** for an estate with 0 assets / 0 components, and every
+  report for an empty tenant printed its own Report Validation as **FAIL** (Σ readiness
+  contributions 36 vs overall 0).
+- Certification: a transient read could fail a criterion and the monitor
+  **auto-suspends** an active certificate; the public verify route answered "No
+  certificate with this ID exists" (404) on a failed read.
+- AI Migration Advisor handoff in `localStorage` under one key → the next account on
+  the browser opened Planner/Sandbox on the previous account's roadmap.
+- UI: pages rendered "0 assets … No assets yet — run a discovery scan" under their own
+  "Loading…" banner; "Assessment In Progress" meant partial evidence coverage;
+  "of 24 critical findings" beside 9 critical (list = critical + high); HNDL
+  "TLS Endpoints 115" for 2 hosts and "Cryptographic Keys 17" beside Keys 0; a
+  one-point TrendChart drew bare axes.
+
+**Root Cause**
+
+A failed read was indistinguishable from "no data":
+
+- `safeRows` (QR, HNDL, Exposure Graph, Remediation) and certification `rows()`
+  returned `[]` for ANY error — timeout 57014, JWT PGRST301, network.
+- `loadScannerTables` never throws: it degrades to `mode: 'memory'`, and
+  `buildScannerIntelligence` CACHED that degraded view 15 s. The snapshot then saw no
+  intel data and fell back to raw `crypto_inventory` rows — every rescan's copy of a
+  component (75 rows / 50 quantum-safe vs the view's 32 / 7). The vulnerable count
+  (25) matched either way, which hid the swap.
+- Streams build forever under the token captured at connect.
+- `blendQuantumReadiness` scored `100 − quantumRisk` when no risk had been measured;
+  `buildReadinessMethodology` marked Risk Posture `measured: true` unconditionally.
+
+**Solution**
+
+- `isDeterministicReadGap()` + `SnapshotReadError` (`quantum-readiness.ts`): only
+  missing table/column/permission reads as empty; anything else fails the build
+  (not cached; REST 500; stream `-error`; client keeps last good payload). Applied to
+  QR, HNDL, Exposure Graph, Remediation, Certification `rows()`.
+- Scanner intel: a `memory`-mode result is never cached. QR snapshot: estate found in
+  the DB + memory-mode view ⇒ retry once, then fail — never switch populations.
+- `streamLiveSnapshot`: ends with `SESSION_EXPIRED` once the bearer `exp` passes
+  (`bearerExpiryMs`); `use-live-resource` clears `error` on `-unchanged`.
+- `readinessPostureMeasured()` (asset-intelligence) — no component and no graded
+  finding ⇒ readiness 0; snapshot, ReportScope, per-asset dossiers and the report
+  methodology all call it.
+- Public verification + company lookup → 503 "not a verification result";
+  `VerifyCertificate.tsx` shows it as an error, never "not found"/"0 found".
+- Handoff keyed `qg-migration-handoff:<userId>`; legacy key discarded on read.
+- UI: `PendingBody` replaces page bodies until `state === 'success'` (shell,
+  Remediation, Certification); badge "Partial Coverage · n of 7 sources"; HNDL tiers
+  = distinct non-finding transport components and the QKMS key inventory; break
+  timeline labelled a no-migration projection; shelf-life rows marked reference-only.
+
+**Prevention Checklist**
+
+- [ ] A read helper that swallows errors must split *deterministic gap* (schema /
+      permission → empty) from *transient failure* (→ fail the build). `[]` from a
+      timeout is a fabricated measurement that then gets cached.
+- [ ] A "degraded" result (memory mode, partial reads) is never cached and never
+      silently swaps the population a score is computed over.
+- [ ] Cross-page check: `npx tsx .report-smoke/qr-consistency-probe.ts <email> 6 17`
+      — all five endpoints must agree within and across rounds.
+- [ ] Look at `quantum_readiness_history` for a tenant: alternating values with
+      the same asset count = an unstable build, not a changing estate.
+- [ ] Anything that mutates on evaluation (certificate suspension) must only run on
+      a build that read everything successfully.
+- [ ] Loading is not empty: a page shows no figures before its first payload
+      (render harness `LOADING_FORBIDDEN`).
+- [ ] `npx tsx tools/quantum-readiness-pages-check.ts` (57 checks, §8–§11 are this
+      entry) and `node tools/qr-pages-render/run.mjs` (27 renders).
+
+---
+
 ## Adding an entry
 
 Use exactly this shape — Problem, Root Cause, Solution, Prevention Checklist.

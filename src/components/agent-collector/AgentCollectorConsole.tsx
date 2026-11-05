@@ -205,8 +205,8 @@ const isOpenAlert = (a: ScannerAlertRow) => !['resolved', 'closed', 'suppressed'
 function BindingChip({ binding, compact = false }: { binding: AgentBinding | null; compact?: boolean }) {
   if (!binding) {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] font-bold text-white/45" title="Findings are filed under each discovered host, file or package.">
-        <Radar className="h-3 w-3" /> Open discovery
+      <span className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px] font-bold text-white/45" title="Observations will be filed inside this machine’s device profile.">
+        <Radar className="h-3 w-3" /> Device profile
       </span>
     );
   }
@@ -1517,9 +1517,9 @@ function BindingSection({ agent, collector, isRevoked, onToast }: {
           </div>
         ) : (
           <div className="rounded-xl border border-white/8 bg-white/[0.02] px-4 py-3 text-[12px] leading-relaxed text-white/55">
-            <span className="mb-1 flex items-center gap-1.5 font-bold text-white/75"><Radar className="h-3.5 w-3.5" /> Open discovery</span>
-            Findings are filed under each host, file or package this collector observes. Bind it to an asset to file them under a
-            name of your choosing.
+            <span className="mb-1 flex items-center gap-1.5 font-bold text-white/75"><Radar className="h-3.5 w-3.5" /> Device profile</span>
+            Certificates, components and findings are kept together under this machine’s profile. You can select an existing
+            application profile to file them under another target you own.
           </div>
         )
       ) : (

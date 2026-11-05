@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod call_log;
 pub mod commands;
 pub mod crypto;
 pub mod device_trust;
@@ -35,13 +36,20 @@ use commands::privacy::*;
 use commands::recovery::*;
 use commands::security::*;
 use commands::assistant::*;
+use commands::call_log::*;
 use commands::calls::*;
 use commands::account_key::*;
 use commands::channels::*;
 use commands::conversation_names::*;
 use commands::contact_verification::*;
+use commands::crypto_module::*;
 use commands::vault::*;
 use commands::vault_identity::*;
+use commands::vault_store::*;
+use commands::vault_cloud::*;
+use commands::vault_hidden::*;
+use commands::vault_library::*;
+use commands::vault_share::*;
 use commands::workspace::*;
 use state::AppState;
 use tauri::Manager;
@@ -144,6 +152,13 @@ pub fn run() {
                 .map_err(|e| format!("resolve android app data dir: {e}"))?
                 .join("qguard-messaging");
             let state = AppState::new(data_dir)?;
+            // The device's FIPS approved-mode choice, before any credential is
+            // sealed; and the module's known-answer self-tests, off the main
+            // thread, so the first keyed operation rarely waits for them.
+            crate::crypto::provider::set_approved_mode(state.fips_approved_mode_setting());
+            std::thread::spawn(|| {
+                let _ = crate::crypto::provider::self_test_report();
+            });
             app.manage(state);
 
             // Hash the running image now, on a background thread. It cannot
@@ -282,9 +297,97 @@ pub fn run() {
             vault_inspect_sealed,
             vault_open_sealed_path,
             vault_open_sealed_folder_path,
+            // Quantum Vault Storage - the managed on-device encrypted library.
+            vault_store_status,
+            vault_store_list,
+            vault_store_activity,
+            vault_store_import,
+            vault_store_import_folder,
+            vault_store_path_kind,
+            vault_store_disk_usage,
+            vault_store_create_folder,
+            vault_store_rename,
+            vault_store_move,
+            vault_store_set_favorite,
+            vault_store_trash,
+            vault_store_restore,
+            vault_store_purge,
+            vault_store_empty_trash,
+            vault_store_verify,
+            vault_store_verify_all,
+            vault_store_preview,
+            vault_store_export,
+            vault_store_export_folder,
+            vault_store_set_thumbnail,
+            vault_store_thumbnail,
+            vault_store_start_fresh,
+            // Quantum Vault cloud backup (phase 2) - ciphertext only.
+            vault_cloud_state,
+            vault_cloud_set_enabled,
+            vault_cloud_delete_backup,
+            vault_cloud_plan,
+            vault_cloud_record_sync,
+            vault_cloud_prepare_file,
+            vault_cloud_prepare_share_copy,
+            vault_cloud_release_share_copy,
+            vault_cloud_prepare_index,
+            vault_cloud_read_part,
+            vault_cloud_complete_upload,
+            vault_cloud_discard_upload,
+            vault_cloud_complete_delete,
+            vault_cloud_download_begin,
+            vault_cloud_download_part,
+            vault_cloud_restore_open_index,
+            vault_cloud_restore_file,
+            vault_cloud_restore_end,
+            // Quantum Vault phase 3 - one library across the account's devices.
+            vault_library_status,
+            vault_library_create,
+            vault_library_rotate,
+            vault_library_make_wrap,
+            vault_library_accept_wrap,
+            vault_library_recovery_envelope,
+            vault_library_mark_recovery_stored,
+            vault_library_accept_recovery,
+            vault_library_merge,
+            vault_library_prepare_publish,
+            vault_library_published,
+            // Quantum Vault phase 4 - secure sharing.
+            vault_share_seal,
+            vault_share_open,
+            vault_share_preview,
+            vault_share_save,
+            // Hidden vaults - opened only by their pattern (vault::hidden).
+            vault_hidden_status,
+            vault_hidden_list,
+            vault_hidden_import,
+            vault_hidden_create_folder,
+            vault_hidden_rename,
+            vault_hidden_move,
+            vault_hidden_delete,
+            vault_hidden_preview,
+            vault_hidden_export,
+            vault_hidden_lock,
+            vault_hidden_destroy,
+            vault_hidden_erase_all,
+            vault_hidden_set_duress,
+            vault_hidden_recovery_setup,
+            vault_hidden_recovery_remove,
+            call_log_record,
+            call_log_list,
+            call_log_missed_count,
+            call_log_mark_seen,
+            call_log_delete,
+            call_log_clear,
             workspace_status,
             workspace_setup_credential,
             workspace_unlock,
+            vault_pattern_unlock,
+            vault_hidden_create,
+            vault_hidden_open,
+            vault_hidden_recovery_check,
+            vault_hidden_recover,
+            workspace_remove_credential,
             workspace_lock,
             workspace_lock_all,
             workspace_reset_chat_lock,
@@ -311,6 +414,14 @@ pub fn run() {
             privacy_panic_wipe,
             privacy_screen_seal,
             privacy_screen_verify,
+            privacy_screen_verify_legacy,
+            privacy_screen_kdf,
+            crypto_module_status,
+            crypto_set_approved_mode,
+            crypto_digest,
+            crypto_hmac_sha3_256,
+            crypto_attachment_seal,
+            crypto_attachment_open,
             history_backup_export,
             history_backup_import,
             social_recovery_setup,

@@ -5,6 +5,7 @@ import {
   levelFromReadiness,
   levelFromRisk,
   quantumRiskFrom,
+  readinessPostureMeasured,
   severityPressureFrom,
   severityWeight,
 } from '@/lib/migration/asset-intelligence';
@@ -264,7 +265,8 @@ export function scopeSnapshotToAssets(snapshot: QuantumReadinessSnapshot, assetK
 
   const pqcAdoption = totalCrypto > 0 ? ((pqcReadyComponents + hybridComponents * 0.5) / totalCrypto) * 100 : 0;
   const runtimeMeasured = snapshot.telemetry.runtimeEvents > 0;
-  const quantumReadiness = blendQuantumReadiness({ pqcAdoption, quantumRisk, runtimeMeasured });
+  const postureMeasured = readinessPostureMeasured({ cryptoComponents: totalCrypto, findings: { critical, high, medium, low } });
+  const quantumReadiness = blendQuantumReadiness({ pqcAdoption, quantumRisk, runtimeMeasured, postureMeasured });
 
   // HNDL: the runtime/vault terms are tenant-level and not in the snapshot, so
   // recover them as the residual of the published tenant score, then re-blend

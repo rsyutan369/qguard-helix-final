@@ -1,0 +1,20 @@
+[package]
+name = "qguard-native-pqc-validation"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+pqcrypto-mlkem = { version = "=0.1.1", default-features = false, features = ["std"] }
+pqcrypto-mldsa = { version = "=0.1.2", default-features = false, features = ["std"] }
+pqcrypto-traits = "=0.3.5"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true
+overflow-checks = true
+panic = "unwind"

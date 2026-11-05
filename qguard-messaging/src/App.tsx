@@ -30,6 +30,13 @@ import { APP_VERSION } from "@/lib/app-update";
 import { useTheme } from "@/lib/use-theme";
 import LoginPage from "@/pages/LoginPage";
 import type { Page } from "@/lib/types";
+import type { CallMedia } from "@/lib/call-types";
+import { useMissedCallCount } from "@/lib/use-missed-calls";
+import { useIncomingShares } from "@/lib/use-incoming-shares";
+import { requestVaultSection } from "@/lib/vault-nav";
+import NotificationStack from "@/components/NotificationStack";
+import { ChatPreferencesProvider } from "@/lib/chat-preferences-context";
+import { requestOpenConversation } from "@/lib/chat-focus";
 
 // Importer thunks are reused for both lazy() and idle-time prefetch (so the
 // first switch to a module is instant). Prefetch only downloads/parses chunks;
@@ -41,8 +48,11 @@ const pageImporters = {
   keys: () => import("@/pages/KeyManagementPage"),
   quantum: () => import("@/pages/QuantumSecurityDashboardPage"),
   vault: () => import("@/pages/QuantumVaultPage"),
+  // Prefetched for every account like the rest, so loading it says nothing.
+  hidden: () => import("@/components/vault/hidden/HiddenVaultPage"),
   verification: () => import("@/pages/SecurityVerificationPage"),
   chat: () => import("@/pages/SecureChatPage"),
+  calls: () => import("@/pages/CallsPage"),
   subscription: () => import("@/pages/SubscriptionPage"),
   settings: () => import("@/pages/SettingsPage"),
 };
@@ -53,14 +63,17 @@ const DeviceTrustCenterPage = lazy(pageImporters.devices);
 const KeyManagementPage = lazy(pageImporters.keys);
 const QuantumSecurityDashboardPage = lazy(pageImporters.quantum);
 const QuantumVaultPage = lazy(pageImporters.vault);
+const HiddenVaultPage = lazy(pageImporters.hidden);
 const SecurityVerificationPage = lazy(pageImporters.verification);
 const SecureChatPage = lazy(pageImporters.chat);
+const CallsPage = lazy(pageImporters.calls);
 const SubscriptionPage = lazy(pageImporters.subscription);
 const SettingsPage = lazy(pageImporters.settings);
 
 const titles: Record<Page, [string, string]> = {
   dashboard: ["Dashboard", "Overview of secure communication and quantum security status."],
   chat: ["Secure Chat", "Hybrid encrypted messaging, voice notes, and file references."],
+  calls: ["Calls", "Quantum-encrypted voice and video calls, with recent and missed calls."],
   vault: ["Quantum Vault", "Local-first encrypted files with signed metadata and hybrid grants."],
   keys: ["Key Management", "Identity keys, signed prekeys, one-time prekeys, and rotations."],
   devices: ["Device Trust Center", "QR approval, revocation, and trust posture per device."],
@@ -106,7 +119,59 @@ function ProtectedMessagingApp() {
   // premium app shell mounts at all. Purchases on ANY platform unlock here live.
   const subscriptionState = useSubscription(auth.user?.id ?? null);
   const [vaultRecoveryEnabled, setVaultRecoveryEnabled] = useState(false);
-  const navigate = useCallback((next: Page) => setPage(next), []);
+  // Secure Chat opens on its Contacts tab only when the dashboard's Contacts
+  // card asked for it; any other way in starts on the chat list.
+  const [chatOpensContacts, setChatOpensContacts] = useState(false);
+  // A chat (and optionally a call) the Calls page asked Secure Chat to open.
+  const [chatIntent, setChatIntent] = useState<{ key: string; peerUserId: string; media: CallMedia | null } | null>(null);
+  const navigate = useCallback((next: Page) => {
+    setChatOpensContacts(false);
+    setChatIntent(null);
+    setPage(next);
+  }, []);
+  // Ordinary dashboard links (Recent chats, My devices…). "contacts" is a tab
+  // of Secure Chat rather than a page of its own.
+  const navigateFromDashboard = useCallback(
+    (next: string) => {
+      if (next === "contacts") {
+        navigate("chat");
+        setChatOpensContacts(true);
+      } else {
+        navigate(next as Page);
+      }
+    },
+    [navigate],
+  );
+  // The dashboard's Secure Chat / Calls / Quantum Vault / Contacts cards ALWAYS
+  // ask for the PIN, password or pattern: the area is locked first, so its lock
+  // gate shows even if it was unlocked a moment ago. Calls and Contacts sit
+  // behind the Secure Chat lock (who you talk to is conversation metadata).
+  const openProtectedArea = useCallback(
+    (area: "chat" | "calls" | "vault" | "contacts") => {
+      void (async () => {
+        await lockState.lock(area === "vault" ? "vault" : "chat").catch(() => undefined);
+        navigateFromDashboard(area);
+      })();
+    },
+    // `lock` is stable (useCallback with no dependencies).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [navigateFromDashboard, lockState.lock],
+  );
+  const missedCalls = useMissedCallCount();
+  // Files other people shared with this account, waiting for Accept / Decline:
+  // the app-wide notice and the Quantum Vault badges (live via realtime).
+  const incomingShares = useIncomingShares(auth.user?.id ?? null);
+  const sharedFilesWaiting = incomingShares.pending.length;
+  // "View" opens Quantum Vault on Shared → Shared with me (behind the vault lock).
+  const openSharedFiles = useCallback(() => {
+    requestVaultSection("shared");
+    navigate("vault");
+  }, [navigate]);
+  // A new-message alert's "Open": Secure Chat opens that conversation (behind its lock).
+  const openConversationFromAlert = useCallback((conversationId: string) => {
+    requestOpenConversation(conversationId);
+    navigate("chat");
+  }, [navigate]);
   // Total unread encrypted messages across visible conversations, surfaced as
   // notification bubbles on the sidebar chat entry and the top-bar bell.
   const unreadMessages = useMemo(
@@ -134,7 +199,10 @@ function ProtectedMessagingApp() {
   const navModules = useMemo(() => {
     if (data.modules.length === 0) return data.modules;
     return [
-      ...data.modules,
+      // Calls sits right after Secure Chat, behind the same lock.
+      ...data.modules.flatMap((module) => (module.route === "chat"
+        ? [module, { module_id: "calls" as Page, label: "Calls", icon: "calls", route: "calls" as Page, enabled: true, sort_order: module.sort_order }]
+        : [module])),
       { module_id: "subscription" as Page, label: "Subscription", icon: "subscription", route: "subscription" as Page, enabled: true, sort_order: 98 },
     ];
   }, [data.modules]);
@@ -484,6 +552,8 @@ function ProtectedMessagingApp() {
               accountProof={accountProof}
               onUnlock={(method, secret) => lockState.unlock(scope, method, secret)}
               onSetup={(method, secret) => lockState.setup(scope, method, secret)}
+              onPatternUnlock={scope === "vault" ? (pattern) => lockState.patternUnlock(pattern) : undefined}
+              onHiddenRecovered={scope === "vault" ? () => void lockState.hiddenOpened() : undefined}
               onCancel={() => setPage("dashboard")}
               onRecoverChat={
                 scope === "chat"
@@ -515,16 +585,53 @@ function ProtectedMessagingApp() {
 
       switch (page) {
         case "dashboard":
-          content = <DashboardPage data={data} liveEvents={liveEvents} liveStatus={liveStatus} onNavigate={(next) => navigate(next as Page)} />;
+          content = <DashboardPage data={data} liveEvents={liveEvents} liveStatus={liveStatus} onNavigate={navigateFromDashboard} onOpenArea={openProtectedArea} missedCalls={missedCalls} sharedFilesWaiting={sharedFilesWaiting} />;
           break;
         case "chat":
           content = renderProtected(
             "chat",
-            <SecureChatPage userId={auth.user.id} conversations={data.conversations} devices={data.devices} contacts={data.contacts} onSent={refresh} />,
+            <SecureChatPage userId={auth.user.id} conversations={data.conversations} devices={data.devices} contacts={data.contacts} onSent={refresh} openContacts={chatOpensContacts} callIntent={chatIntent} onOpenCalls={() => navigate("calls")} missedCalls={missedCalls} />,
+          );
+          break;
+        case "calls":
+          // Behind the Secure Chat lock: the core also refuses to list calls while it is closed.
+          content = renderProtected(
+            "chat",
+            <CallsPage
+              conversations={data.conversations}
+              contacts={data.contacts}
+              onCall={(peerUserId, media) => {
+                navigate("chat");
+                setChatIntent({ key: crypto.randomUUID(), peerUserId, media });
+              }}
+              onMessage={(peerUserId) => {
+                navigate("chat");
+                setChatIntent({ key: crypto.randomUUID(), peerUserId, media: null });
+              }}
+            />,
           );
           break;
         case "vault":
-          content = renderProtected("vault", <QuantumVaultPage userId={auth.user.id} telemetry={data.telemetry} />);
+          // A hidden vault opened by its pattern takes the place of the vault
+          // (which stays locked); locking it returns to the lock screen.
+          content = lockState.hiddenOpen ? (
+            <HiddenVaultPage onLock={() => void lockState.lockHidden()} />
+          ) : (
+            renderProtected(
+              "vault",
+              <QuantumVaultPage
+                userId={auth.user.id}
+                telemetry={data.telemetry}
+                sharedFilesWaiting={sharedFilesWaiting}
+                vaultLock={{
+                  status: lockState.status?.vault ?? null,
+                  setPattern: (pattern: string) => lockState.setup("vault", "pattern", pattern),
+                  removePattern: () => lockState.removeCredential("vault", "pattern"),
+                  onHiddenOpened: () => void lockState.hiddenOpened(),
+                }}
+              />,
+            )
+          );
           break;
         case "keys":
           content = <KeyManagementPage userId={auth.user.id} devices={data.devices} keyInventory={data.keyInventory} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} />;
@@ -548,7 +655,7 @@ function ProtectedMessagingApp() {
           content = <SettingsPage theme={theme} onToggleTheme={toggleTheme} profile={data.profile} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} inactivityMinutes={lockState.inactivityMinutes} onSetInactivityMinutes={lockState.setInactivityMinutes} workspaceStatus={lockState.status} onLockWorkspaces={lockState.lockAll} appLock={appLock} verifyAccountPassword={verifyAccountPassword} />;
           break;
         default:
-          content = <DashboardPage data={data} liveEvents={liveEvents} liveStatus={liveStatus} onNavigate={(next) => navigate(next as Page)} />;
+          content = <DashboardPage data={data} liveEvents={liveEvents} liveStatus={liveStatus} onNavigate={navigateFromDashboard} onOpenArea={openProtectedArea} missedCalls={missedCalls} sharedFilesWaiting={sharedFilesWaiting} />;
           break;
       }
     }
@@ -567,11 +674,23 @@ function ProtectedMessagingApp() {
           <UpdateBanner />
           <RelayHealthBanner />
           <OutboxCourier />
+          <NotificationStack
+            userId={auth.user.id}
+            conversations={data.conversations}
+            chatUnlocked={lockState.status ? !lockState.status.chat.configured || lockState.status.chat.unlocked : false}
+            showShares={page !== "vault"}
+            showMessages
+            pendingShares={incomingShares.pending}
+            onRespondShare={incomingShares.respond}
+            onViewShares={openSharedFiles}
+            onOpenConversation={(alert) => openConversationFromAlert(alert.conversationId)}
+          />
           <MobileShell
             activePage={page}
             title={title}
             modules={navModules}
             unreadMessages={unreadMessages}
+            sharedFilesWaiting={sharedFilesWaiting}
             liveStatus={liveStatus}
             theme={theme}
             onToggleTheme={toggleTheme}
@@ -592,8 +711,19 @@ function ProtectedMessagingApp() {
         <UpdateBanner />
         <RelayHealthBanner />
         <OutboxCourier />
+        <NotificationStack
+          userId={auth.user.id}
+          conversations={data.conversations}
+          chatUnlocked={lockState.status ? !lockState.status.chat.configured || lockState.status.chat.unlocked : false}
+          showShares={page !== "vault"}
+          showMessages
+          pendingShares={incomingShares.pending}
+          onRespondShare={incomingShares.respond}
+          onViewShares={openSharedFiles}
+          onOpenConversation={(alert) => openConversationFromAlert(alert.conversationId)}
+        />
         <div className="flex h-screen w-screen overflow-hidden bg-canvas">
-          <Sidebar activePage={page} modules={navModules} snapshot={data.snapshot} unreadMessages={unreadMessages} onNavigate={navigate} />
+          <Sidebar activePage={page} modules={navModules} snapshot={data.snapshot} unreadMessages={unreadMessages} missedCalls={missedCalls} sharedFilesWaiting={sharedFilesWaiting} onNavigate={navigate} />
           <div className="flex min-w-0 flex-1 flex-col">
             <TopBar
               title={title}
@@ -626,9 +756,13 @@ function ProtectedMessagingApp() {
   };
 
   return (
-    <CallProvider userId={auth.user?.id ?? ""}>
-      {renderShell()}
-    </CallProvider>
+    // Mute / Notifications & Sounds are read by Secure Chat, Settings, the
+    // message alerts and the incoming-call ring (inside CallProvider).
+    <ChatPreferencesProvider userId={auth.user?.id ?? null}>
+      <CallProvider userId={auth.user?.id ?? ""}>
+        {renderShell()}
+      </CallProvider>
+    </ChatPreferencesProvider>
   );
 }
 

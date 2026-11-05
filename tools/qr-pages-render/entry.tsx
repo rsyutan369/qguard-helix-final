@@ -27,6 +27,11 @@ const PAGES: Array<{ path: string; Page: ComponentType; expect: string[] }> = [
 // Strings that must never render: the defects this audit removed.
 const FORBIDDEN = ['Next Escalation Cycle', 'schedule saved for this template', 'Live telemetry, metrics stream', 'Latest AI Recommendation']
 
+// A page that has not received its payload must not claim the estate is empty
+// (2026-11-04: the Exposure Graph read "0 assets … No assets in the exposure
+// graph yet — run a discovery scan" under its own "Loading…" banner).
+const LOADING_FORBIDDEN = ['No assets in the exposure graph yet', 'No assets yet', 'No certificates issued yet', 'No migration sequencing available yet', 'Run a PQC discovery scan']
+
 ;(globalThis as any).__LIVE_FIXTURES__ = JSON.parse(readFileSync(process.argv[2], 'utf8'))
 
 let failures = 0
@@ -47,7 +52,7 @@ for (const mode of ['populated', 'empty', 'loading'] as const) {
     }
     const text = html.replace(/<[^>]+>/g, ' ').replace(/&#x27;|&#39;/g, "'").replace(/&amp;/g, '&').replace(/\s+/g, ' ')
     const missing = mode === 'populated' ? expect.filter((e) => !text.includes(e)) : []
-    const forbidden = FORBIDDEN.filter((f) => text.includes(f))
+    const forbidden = [...FORBIDDEN, ...(mode === 'loading' ? LOADING_FORBIDDEN : [])].filter((f) => text.includes(f))
     const ok = !crash && !missing.length && !forbidden.length && consoleErrors.length === 0
     if (!ok) failures += 1
     process.stdout.write(`  ${ok ? 'PASS' : 'FAIL'}  [${mode}] ${path}  (${html.length} bytes)\n`)

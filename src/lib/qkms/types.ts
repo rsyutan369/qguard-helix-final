@@ -725,6 +725,8 @@ export interface DistributionRow {
   /** The model's posture for the keys behind this row (most common), so the
    *  UI colours by classification instead of re-deriving it from a label. */
   posture?: KeyPqcPosture
+  /** Every key behind the row is post-quantum or hybrid by declaration only. */
+  unverified?: boolean
 }
 
 /**

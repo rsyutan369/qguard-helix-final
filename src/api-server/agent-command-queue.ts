@@ -19,6 +19,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { updateTenantRow } from './tenant-row-update'
 import {
   MAX_COMMAND_HISTORY,
   MAX_QUEUED_COMMANDS,
@@ -58,17 +59,13 @@ export async function persistCommandState(
   queue: AgentCommand[],
   history: AgentCommand[],
 ): Promise<void> {
-  if (!client) return
-  const metadata = {
-    ...(agent.metadata || {}),
-    commandQueue: queue.slice(0, MAX_QUEUED_COMMANDS),
-    commandHistory: history.slice(0, MAX_COMMAND_HISTORY),
+  if (!client) {
+    agent.metadata = { ...agent.metadata, commandQueue: queue.slice(0, MAX_QUEUED_COMMANDS), commandHistory: history.slice(0, MAX_COMMAND_HISTORY) }
+    return
   }
-  const { error } = await client
-    .from('scanner_agents')
-    .update({ metadata, updated_at: new Date().toISOString() })
-    .eq('id', agentId)
-  if (error && !isMissingAgentTable(error)) throw new Error(error.message)
+  await updateTenantRow(client, 'scanner_agents', agent.user_id, agentId, (fresh) => ({
+    metadata: { ...fresh.metadata, commandQueue: queue.slice(0, MAX_QUEUED_COMMANDS), commandHistory: history.slice(0, MAX_COMMAND_HISTORY) },
+  }))
 }
 
 /*
@@ -120,6 +117,26 @@ export async function enqueueAgentCommand(
   type: AgentCommandType,
   options: EnqueueOptions,
 ): Promise<EnqueueOutcome> {
+  // Re-evaluate deduplication and queue capacity against the version we commit,
+  // so simultaneous requests cannot enqueue twice or overwrite another command.
+  if (client && agent) {
+    let outcome: EnqueueOutcome = refused(500, 'COMMAND_QUEUE_FAILED', 'Command could not be queued')
+    try {
+      await updateTenantRow(client, 'scanner_agents', agent.user_id, agent.id, (fresh) => {
+        if (fresh.revoked_at || fresh.status === 'revoked') { outcome = refused(409, 'AGENT_REVOKED', 'Revoked agents cannot accept commands'); return null }
+        const queue = commandQueue(fresh)
+        const keyOf = options.dedupeKey || ((item: AgentCommand) => item.type)
+        const wanted = keyOf({ type, payload: options.payload } as AgentCommand)
+        const duplicate = queue.find((item) => isPendingCommand(item) && item.type === type && keyOf(item) === wanted)
+        if (duplicate) { outcome = { ok: true, command: duplicate, deduplicated: true, status: 200, code: 'OK', message: '' }; return null }
+        if (queue.filter(isPendingCommand).length >= MAX_QUEUED_COMMANDS) { outcome = refused(429, 'COMMAND_QUEUE_FULL', 'This agent already has the maximum number of pending commands'); return null }
+        const command: AgentCommand = { id: randomUUID(), type, queuedAt: new Date().toISOString(), requestedBy: options.requestedBy, payload: options.payload || {}, status: 'queued', deliveredAt: null, completedAt: null, result: null, error: null }
+        outcome = { ok: true, command, deduplicated: false, status: 200, code: 'OK', message: '' }
+        return { metadata: { ...fresh.metadata, commandQueue: [command, ...queue], commandHistory: commandHistory(fresh) } }
+      })
+      return outcome
+    } catch (error) { return refused(503, 'COMMAND_QUEUE_FAILED', (error as Error).message) }
+  }
   if (!agent) {
     return refused(404, 'AGENT_NOT_FOUND', 'Agent not found for this tenant')
   }

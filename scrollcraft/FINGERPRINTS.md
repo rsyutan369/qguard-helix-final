@@ -30,6 +30,7 @@ changes only grammar and world will fail it.
 |---|---|---|---|---|---|---|---|---|
 | governance-trust-hero | Chaptered editorial, hero-scoped | Existing navigation with local graphite treatment | Original interactive native 3D trust anchor | Reveal, assemble, select/trace, scroll separation, stable handoff | Existing capability anchor and Elite action | Domain selection lifts a satellite and traces into an opening shared trust anchor | Machined graphite, mint light, champagne detail | 3000 |
 | migration-strata-hero | Chaptered editorial, hero-scoped | Floating white glass band and mobile dropdown | Supplied masked glass-layer film | Masked text, loop, forward/recovery selection, lifecycle row | Six-stage lifecycle links and stable path explanation | Planning beam switches to a drawn recovery loop around the same layers | Metallic white, silver glass, teal/violet | 3000 |
+| quantum-readiness-assessment | Chaptered assessment walkthrough | Sticky section index with mobile disclosure | Original assessment instrument with scroll-linked perspective | Parallax, exposure reveal, source selection, lifecycle, module directory, standards | Workspace entry and free endpoint scan | Evidence selection redraws its path through the lens and explains the decision it supports | Graphite, icy blue, optical glass | 3000 |
 
 ---
 

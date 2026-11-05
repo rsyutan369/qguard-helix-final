@@ -628,9 +628,7 @@ fn wrap_fek_for_recipient(
         &recipient.mlkem_public,
         &crate::security::obf::portable_identity_kem_info(),
     )?;
-    let mut salt = [0u8; 16];
-    use rand::RngCore;
-    rand::rngs::OsRng.fill_bytes(&mut salt);
+    let salt: [u8; 16] = crate::crypto::provider::random_array();
     let wrap_key = crate::crypto::kdf::derive_32_with_salt(
         &salt,
         &shared,
@@ -1767,13 +1765,130 @@ pub fn rewrap_stream_with_progress<R: Read, W: Write>(
         0,
         "info",
     ));
+    reseal_with_file_key(reader, writer, &header, file_key, owner, false, progress)
+}
 
+/// Re-protect a container under THIS device's vault using the personal
+/// recovery key — how a backup made by another device (or by this device
+/// before a vault reset) becomes a container of the vault unlocked here.
+///
+/// The per-file key comes from the container's recovery wrap, so only a holder
+/// of the recovery key can do this; the result is exactly what
+/// [`rewrap_stream`] produces (v5, PIN-bound, ML-DSA-87 header, chunks copied
+/// verbatim). The chunks are NOT authenticated here — the caller must open the
+/// result (as every Vault Storage restore does) before trusting it.
+pub fn rewrap_stream_with_recovery<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    recovery_wrap_key: &[u8; KEY_SIZE],
+    owner: &OwnerSeal,
+    progress: &mut dyn FnMut(VaultProgress),
+) -> Result<StreamSummary> {
+    let header = read_and_verify_header(reader)?;
+    if header.owner_user_id != owner.user_id {
+        return Err(QGuardError::Trust(
+            "this vault container belongs to a different account".to_string(),
+        ));
+    }
+    let file_key = recovery_file_key(&header, recovery_wrap_key)?;
+    progress(phase_event(
+        "rewrap",
+        "unwrap_fek",
+        "Per-file key recovered with the recovery key",
+        &header,
+        0,
+        "info",
+    ));
+    reseal_with_file_key(reader, writer, &header, file_key, owner, false, progress)
+}
+
+/// The per-file key of a container this vault owns, authenticated exactly as
+/// for a decrypt (signer + vault-key unwrap). Used by multi-device sync to put
+/// the key into the account's library index, and by sharing to seal it to a
+/// recipient. Returns the container's file id with it.
+pub fn owner_file_key_from_stream<R: Read>(
+    reader: &mut R,
+    access: &OwnerAccess,
+) -> Result<(String, Zeroizing<[u8; KEY_SIZE]>)> {
+    let header = read_and_verify_header(reader)?;
+    let key = owner_file_key(&header, access)?;
+    Ok((header.file_id, key))
+}
+
+/// Decrypt a container with its per-file key handed over by an authenticated
+/// channel (a share envelope, the account library index) instead of an owner
+/// envelope.
+///
+/// What this proves: the header is intact, the container is the expected file
+/// (`expected_file_id`), and every chunk authenticates under `file_key` in
+/// order and in full. Who made it is proven by the channel the key came from;
+/// callers also compare the plaintext hash that channel carried.
+pub fn decrypt_stream_with_file_key<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    file_key: &[u8; KEY_SIZE],
+    expected_file_id: &str,
+    progress: &mut dyn FnMut(VaultProgress),
+) -> Result<StreamSummary> {
+    let header = read_and_verify_header(reader)?;
+    if header.file_id != expected_file_id {
+        return Err(QGuardError::Crypto("this container is not the file the key was issued for".to_string()));
+    }
+    let key = Zeroizing::new(*file_key);
+    decrypt_chunks(reader, writer, &header, &key, progress)
+}
+
+/// Re-seal a container whose per-file key arrived through an authenticated
+/// channel as a container of THIS vault (v5, PIN-bound, recovery wraps as
+/// configured, signed by this vault). With `take_ownership` the container
+/// becomes this account's (a shared file saved into the vault); without it the
+/// owner ids stay (a file synchronized from another device of this account).
+/// Chunks are copied verbatim and NOT authenticated here: callers open the
+/// result in full before trusting it.
+pub fn reseal_stream_with_file_key<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    file_key: &[u8; KEY_SIZE],
+    expected_file_id: &str,
+    owner: &OwnerSeal,
+    take_ownership: bool,
+    progress: &mut dyn FnMut(VaultProgress),
+) -> Result<StreamSummary> {
+    let header = read_and_verify_header(reader)?;
+    if header.file_id != expected_file_id {
+        return Err(QGuardError::Crypto("this container is not the file the key was issued for".to_string()));
+    }
+    if !take_ownership && header.owner_user_id != owner.user_id {
+        return Err(QGuardError::Trust("this vault container belongs to a different account".to_string()));
+    }
+    reseal_with_file_key(reader, writer, &header, Zeroizing::new(*file_key), owner, take_ownership, progress)
+}
+
+/// Shared tail of the re-protect paths: new v5 header around `file_key`, then
+/// the chunk frames copied verbatim.
+fn reseal_with_file_key<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    header: &StreamHeader,
+    file_key: Zeroizing<[u8; KEY_SIZE]>,
+    owner: &OwnerSeal,
+    take_ownership: bool,
+    progress: &mut dyn FnMut(VaultProgress),
+) -> Result<StreamSummary> {
+    // Ownership moves only when a file shared by someone else is saved into this
+    // vault: the wraps below are then bound to the new owner, and the old owner's
+    // recipient wraps and sender attestation (bound to the old owner) are dropped.
+    let (owner_user_id, owner_device_id) = if take_ownership {
+        (owner.user_id.to_string(), owner.device_id.to_string())
+    } else {
+        (header.owner_user_id.clone(), header.owner_device_id.clone())
+    };
     // Re-seal around the SAME FEK + file_id + owner ids, so the verbatim chunk
     // frames and every carried recipient wrap still authenticate.
     let fek_wrapped_by_vmk = Some(symmetric::encrypt(
         owner.vault_key,
         file_key.as_slice(),
-        &fek_vault_key_wrap_aad(&header.file_id, &header.owner_user_id),
+        &fek_vault_key_wrap_aad(&header.file_id, &owner_user_id),
     )?);
     progress(phase_event(
         "rewrap",
@@ -1788,7 +1903,7 @@ pub fn rewrap_stream_with_progress<R: Read, W: Write>(
             key,
             &file_key,
             &header.file_id,
-            &header.owner_user_id,
+            &owner_user_id,
         )?),
         None => None,
     };
@@ -1799,7 +1914,7 @@ pub fn rewrap_stream_with_progress<R: Read, W: Write>(
             ent.recovery_secret,
             &file_key,
             &header.file_id,
-            &header.owner_user_id,
+            &owner_user_id,
         )?),
         None => None,
     };
@@ -1831,8 +1946,8 @@ pub fn rewrap_stream_with_progress<R: Read, W: Write>(
         original_size: header.original_size,
         chunk_size: header.chunk_size,
         total_chunks: header.total_chunks,
-        owner_user_id: header.owner_user_id.clone(),
-        owner_device_id: header.owner_device_id.clone(),
+        owner_user_id: owner_user_id.clone(),
+        owner_device_id,
         hybrid_ciphertext,
         wrapped_key,
         recovery_wrapped_key,
@@ -1847,8 +1962,8 @@ pub fn rewrap_stream_with_progress<R: Read, W: Write>(
             ml_dsa_65: Vec::new(),
         },
         header_signature_v3: None,
-        recipient_wraps: header.recipient_wraps.clone(),
-        sender_identity: header.sender_identity.clone(),
+        recipient_wraps: if take_ownership { Vec::new() } else { header.recipient_wraps.clone() },
+        sender_identity: if take_ownership { None } else { header.sender_identity.clone() },
     };
     let signable = header_signable(&new_header);
     new_header.header_signature_v3 = Some(dual_sign_87(
@@ -3798,5 +3913,78 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&restore);
+    }
+
+    #[test]
+    fn a_file_key_from_an_authenticated_channel_opens_and_reseals_a_container() {
+        let sender = TestVault::new();
+        let plaintext = vec![4u8; CHUNK_SIZE + 3];
+        let sealed = encrypt_with(&plaintext, &sender.seal(), None);
+
+        // Only the owning vault can hand the key out.
+        let (file_id, fek) = owner_file_key_from_stream(&mut Cursor::new(sealed.clone()), &sender.access()).unwrap();
+        let stranger = TestVault::new();
+        assert!(owner_file_key_from_stream(&mut Cursor::new(sealed.clone()), &stranger.access()).is_err());
+
+        // With the key, the exact file opens; another id or key does not.
+        let mut out = Vec::new();
+        decrypt_stream_with_file_key(&mut Cursor::new(sealed.clone()), &mut out, &fek, &file_id, &mut |_| {}).unwrap();
+        assert_eq!(out, plaintext);
+        assert!(decrypt_stream_with_file_key(&mut Cursor::new(sealed.clone()), &mut Vec::new(), &fek, "other-file", &mut |_| {}).is_err());
+        let wrong = symmetric::random_key();
+        assert!(decrypt_stream_with_file_key(&mut Cursor::new(sealed.clone()), &mut Vec::new(), &wrong, &file_id, &mut |_| {}).is_err());
+
+        // A recipient (another account) saves it into their own vault.
+        let recipient = TestVault::new();
+        let recipient_seal = OwnerSeal { user_id: "user-2", device_id: "device-2", ..recipient.seal() };
+        let recipient_access = recipient.access();
+        // Without taking ownership another account's container is refused.
+        assert!(reseal_stream_with_file_key(&mut Cursor::new(sealed.clone()), &mut Vec::new(), &fek, &file_id, &recipient_seal, false, &mut |_| {}).is_err());
+        let mut saved = Vec::new();
+        let summary = reseal_stream_with_file_key(&mut Cursor::new(sealed.clone()), &mut saved, &fek, &file_id, &recipient_seal, true, &mut |_| {}).unwrap();
+        assert!(summary.pin_bound);
+        assert_eq!(header_of(&saved).owner_user_id, "user-2");
+        let mut opened = Vec::new();
+        decrypt_stream_owner(&mut Cursor::new(saved), &mut opened, &recipient_access).unwrap();
+        assert_eq!(opened, plaintext);
+        // The sender's vault no longer owns that copy, and the original is untouched.
+        let mut again = Vec::new();
+        decrypt_stream_owner(&mut Cursor::new(sealed), &mut again, &sender.access()).unwrap();
+        assert_eq!(again, plaintext);
+    }
+
+    #[test]
+    fn a_recovery_rewrap_moves_a_container_into_another_vault_of_the_same_account() {
+        let root = vault_recovery::generate_recovery_root();
+        let recovery_wrap_key = vault_recovery::derive_wrap_key(&root).unwrap();
+        let old_vault = TestVault::new();
+        let new_vault = TestVault::new();
+        let plaintext = vec![3u8; CHUNK_SIZE + 99];
+        let sealed = encrypt_with(&plaintext, &OwnerSeal { recovery_wrap_key: Some(&recovery_wrap_key), ..old_vault.seal() }, None);
+
+        // The new vault cannot open it as its own...
+        let mut out = Vec::new();
+        assert!(decrypt_stream_owner(&mut Cursor::new(sealed.clone()), &mut out, &new_vault.access()).is_err());
+
+        // ...until the recovery key moves it across.
+        let new_seal = OwnerSeal { recovery_wrap_key: Some(&recovery_wrap_key), ..new_vault.seal() };
+        let mut moved = Vec::new();
+        let summary =
+            rewrap_stream_with_recovery(&mut Cursor::new(sealed.clone()), &mut moved, &recovery_wrap_key, &new_seal, &mut |_| {})
+                .unwrap();
+        assert!(summary.pin_bound);
+        let mut opened = Vec::new();
+        decrypt_stream_owner(&mut Cursor::new(moved.clone()), &mut opened, &new_vault.access()).unwrap();
+        assert_eq!(opened, plaintext);
+        // It keeps its recovery wrap, and the old vault no longer owns it.
+        let mut recovered = Vec::new();
+        decrypt_stream_with_recovery(&mut Cursor::new(moved), &mut recovered, &recovery_wrap_key).unwrap();
+        assert_eq!(recovered, plaintext);
+
+        // A wrong recovery key, or another account, gets nothing.
+        let wrong = vault_recovery::derive_wrap_key(&vault_recovery::generate_recovery_root()).unwrap();
+        assert!(rewrap_stream_with_recovery(&mut Cursor::new(sealed.clone()), &mut Vec::new(), &wrong, &new_seal, &mut |_| {}).is_err());
+        let other_account = OwnerSeal { user_id: "user-2", ..new_seal };
+        assert!(rewrap_stream_with_recovery(&mut Cursor::new(sealed), &mut Vec::new(), &recovery_wrap_key, &other_account, &mut |_| {}).is_err());
     }
 }

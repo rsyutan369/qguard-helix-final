@@ -26,7 +26,7 @@ import type { GroupInvite } from "@/lib/group-call";
 import { fetchCallPeerIdentity } from "@/lib/call-peer-identity";
 import { applyDecline, callPeerIdentityPayload, parseCallEphemeralKey } from "@/lib/call-targets";
 import type { CallEphemeralKey, CallPeer, CallPeerDevice } from "@/lib/call-targets";
-import type { CallSignalRow } from "@/lib/call-types";
+import { callMediaOf, type CallEndReason, type CallMedia, type CallSignalRow } from "@/lib/call-types";
 import { safeInvoke } from "@/lib/tauri";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import {
@@ -224,6 +224,8 @@ export function useSecureCall(args: { userId: string; deviceId: string; hub?: Ca
   isBusyRef.current = args.isBusy;
   // The group invite an outgoing group link carries on its ring and offer.
   const groupInviteRef = useRef<GroupInvite | null>(null);
+  // Voice or video for the call in progress (set by startCall / an incoming ring).
+  const mediaRef = useRef<CallMedia>("video");
   const [state, dispatch] = useReducer(callReducer, INITIAL_CALL_STATE);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -677,7 +679,7 @@ export function useSecureCall(args: { userId: string; deviceId: string; hub?: Ca
         });
       } catch {
         renegotiatingRef.current = false;
-        endCall(false);
+        endCall(false, "connection-lost");
       }
     })();
     return true;
@@ -785,10 +787,10 @@ export function useSecureCall(args: { userId: string; deviceId: string; hub?: Ca
       // waits for the restart offer. `closed` is final.
       if (cs === "failed") {
         if (tryIceRestart()) return;
-        endCall(false);
+        endCall(false, "connection-lost");
         return;
       }
-      if (cs === "closed") { endCall(false); return; }
+      if (cs === "closed") { endCall(false, "connection-lost"); return; }
       // A transient blip: surface "Reconnecting…" and let ICE try to recover for
       // a grace window instead of dropping the call outright.
       if (cs === "disconnected") {
@@ -799,7 +801,7 @@ export function useSecureCall(args: { userId: string; deviceId: string; hub?: Ca
             if (!pcRef.current || pcRef.current.connectionState === "connected") return;
             // Grace expired without recovery: try one ICE restart before ending.
             if (tryIceRestart()) return;
-            endCall(false);
+            endCall(false, "connection-lost");
           }, RECONNECT_GRACE_MS);
         }
       }
@@ -825,8 +827,14 @@ export function useSecureCall(args: { userId: string; deviceId: string; hub?: Ca
     await safeInvoke("call_watchdog_begin", undefined, null);
     const constraints = mediaConstraints(qualityRef.current);
     let stream: MediaStream;
-    try {
+    if (mediaRef.current === "voice") {
+      // A voice call never opens the camera. The microphone track rides the
+      // same per-frame AES-256-GCM transform as in a video call.
+      stream = await navigator.mediaDevices.getUserMedia({ audio: constraints.audio ?? true });
+      setCameraEnabled(false);
+    } else try {
       stream = await navigator.mediaDevices.getUserMedia(constraints);
+      setCameraEnabled(stream.getVideoTracks().length > 0);
     } catch {
       // Camera missing/blocked or constraints rejected → fall back to audio-only
       // so a bad webcam can never hang the call (a key freeze guard).
@@ -939,6 +947,7 @@ export function useSecureCall(args: { userId: string; deviceId: string; hub?: Ca
           hybridCiphertext: setup.hybridCiphertext,
           ...(setup.ephemeralCiphertext ? { ephemeralCiphertext: setup.ephemeralCiphertext, callerProof: setup.callerProof } : {}),
           ...(groupInviteRef.current ? { group: groupInviteRef.current } : {}),
+          ...(mediaRef.current === "voice" ? { media: "voice" } : {}),
         },
       });
       // Answered and negotiating: the wall clock hands over to the
@@ -951,10 +960,11 @@ export function useSecureCall(args: { userId: string; deviceId: string; hub?: Ca
     }
   }, [args.deviceId, args.userId, attachMediaTransforms, beginConnectPhase, buildPeerConnection, cleanup, signalRoutes]);
 
-  const startCall = useCallback(async (peer: CallPeer, conversationId: string, options?: { group?: GroupInvite }) => {
+  const startCall = useCallback(async (peer: CallPeer, conversationId: string, options?: { group?: GroupInvite; media?: CallMedia }) => {
     if (!supported || !args.deviceId || !conversationId) return;
     if (peer.devices.length === 0) return;
     groupInviteRef.current = options?.group ?? null;
+    mediaRef.current = options?.media ?? "video";
     // FORK THE RING. A peer is a person, not a device: addressing the call to
     // one device meant that if they were sitting at any other one it never rang,
     // the caller sat on "Connecting…" until the give-up, and no safety number
@@ -973,7 +983,7 @@ export function useSecureCall(args: { userId: string; deviceId: string; hub?: Ca
     // Replies carry no group invite, so they must be routed by call id.
     hubRef.current?.claim(callId, slot);
     beginCallTimeline(callId, "caller");
-    dispatch({ type: "start-outgoing", callId, peerUserId: peer.userId, peerDeviceId: peer.devices[0].deviceId });
+    dispatch({ type: "start-outgoing", callId, peerUserId: peer.userId, peerDeviceId: peer.devices[0].deviceId, media: mediaRef.current, conversationId });
     // Ring phase: a pure wall clock, bounding how long the peer's devices ring.
     armTimeout(RING_TIMEOUT_MS);
     // Fast catch-up polling for the whole setup window: the `accept`, `answer`
@@ -988,7 +998,10 @@ export function useSecureCall(args: { userId: string; deviceId: string; hub?: Ca
         call_id: callId, conversation_id: route.conversationId,
         from_user_id: args.userId, from_device_id: args.deviceId,
         to_user_id: route.toUserId, to_device_id: route.toDeviceId,
-        signal_type: "ring" as const, payload: groupInviteRef.current ? { group: groupInviteRef.current } : {},
+        signal_type: "ring" as const, payload: {
+          ...(groupInviteRef.current ? { group: groupInviteRef.current } : {}),
+          ...(mediaRef.current === "voice" ? { media: "voice" } : {}),
+        },
       })));
       markCallStage(CALL_STAGES.signalingStarted);
       describeCallTimeline({ rang: routes.length });
@@ -1122,14 +1135,14 @@ export function useSecureCall(args: { userId: string; deviceId: string; hub?: Ca
     }
   }, [args.deviceId, args.userId, armTimeout, attachMediaTransforms, beginConnectPhase, buildPeerConnection, cleanup, flushPendingCandidates, getMedia, waitForOffer]);
 
-  const endCall = useCallback((notify: boolean) => {
+  const endCall = useCallback((notify: boolean, reason?: CallEndReason) => {
     const callId = callIdRef.current;
     // Stable identity (reads the call id from a ref, not state) so it is NOT a
     // dependency that would re-subscribe the signal channel mid-call.
     // Hanging up reaches EVERY device still ringing from the outgoing fan-out --
     // addressing only the bound route left the peer's other devices ringing.
     if (notify && callId) signalRoutes(callId, teardownRoutes(), "hangup");
-    dispatch({ type: "ended" });
+    dispatch({ type: "ended", reason: reason ?? (notify ? "local-hangup" : undefined) });
     cleanup();
   }, [cleanup, signalRoutes, teardownRoutes]);
 
@@ -1138,12 +1151,17 @@ export function useSecureCall(args: { userId: string; deviceId: string; hub?: Ca
     if (incoming) {
       void sendCallSignal({ call_id: incoming.call_id, conversation_id: incoming.conversation_id, from_user_id: args.userId, from_device_id: args.deviceId, to_user_id: incoming.from_user_id, to_device_id: incoming.from_device_id, signal_type: "reject", payload: {} });
     }
-    endCall(false);
+    endCall(false, "local-reject");
   }, [args.deviceId, args.userId, endCall]);
 
   const hangup = useCallback(() => endCall(true), [endCall]);
   const toggleMic = useCallback(() => { localStream?.getAudioTracks().forEach((t) => (t.enabled = !t.enabled)); setMicEnabled((v) => !v); }, [localStream]);
-  const toggleCamera = useCallback(() => { localStream?.getVideoTracks().forEach((t) => (t.enabled = !t.enabled)); setCameraEnabled((v) => !v); }, [localStream]);
+  const toggleCamera = useCallback(() => {
+    const tracks = localStream?.getVideoTracks() ?? [];
+    if (tracks.length === 0) return; // a voice call (or no camera): nothing to turn on
+    tracks.forEach((t) => (t.enabled = !t.enabled));
+    setCameraEnabled((v) => !v);
+  }, [localStream]);
 
   const stopScreenShare = useCallback(async () => {
     const screen = screenTrackRef.current;
@@ -1219,7 +1237,8 @@ export function useSecureCall(args: { userId: string; deviceId: string; hub?: Ca
         toUserId: row.from_user_id,
         toDeviceId: row.from_device_id,
       };
-      dispatch({ type: "incoming", callId: row.call_id, peerUserId: row.from_user_id, peerDeviceId: row.from_device_id });
+      mediaRef.current = callMediaOf(row.payload);
+      dispatch({ type: "incoming", callId: row.call_id, peerUserId: row.from_user_id, peerDeviceId: row.from_device_id, media: mediaRef.current, conversationId: row.conversation_id });
       // A caller whose app dies mid-dial sends no hangup. Without a ceiling the
       // modal would ring forever; 60s is comfortably past the caller's own 45s
       // give-up (whose hangup normally dismisses this first).
@@ -1311,7 +1330,7 @@ export function useSecureCall(args: { userId: string; deviceId: string; hub?: Ca
                   });
                   beginConnectPhase();
                 } catch {
-                  endCall(false);
+                  endCall(false, "connection-lost");
                 }
               })();
               return;
@@ -1385,7 +1404,7 @@ export function useSecureCall(args: { userId: string; deviceId: string; hub?: Ca
               );
               if (!verdict.endCall) break;
             }
-            endCall(false);
+            endCall(false, row.signal_type === "reject" ? "remote-declined" : row.signal_type === "busy" ? "remote-busy" : "remote-hangup");
             break;
           }
           default: break;

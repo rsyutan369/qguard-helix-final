@@ -414,9 +414,21 @@ export function useAgentInstaller(enabled: boolean) {
       const source = new EventSource(url.toString());
       sourceRef.current = source;
 
-      source.addEventListener('stream.ready', () => {
+      source.addEventListener('stream.ready', (message) => {
         if (disposed) return;
         backoff.current = 1000;
+        /* The server resumes BEHIND our cursor only when its sequence restarted
+           (API process restart). The ids it sends next reuse ones we already
+           saw, so the de-duplication set would silently drop them. */
+        try {
+          const replayFrom = Number(JSON.parse((message as MessageEvent).data || '{}').replayFrom);
+          if (lastEventId.current && Number.isFinite(replayFrom) && replayFrom < Number(lastEventId.current)) {
+            seenEventIds.current = new Set();
+            lastEventId.current = '';
+          }
+        } catch {
+          // A malformed ready frame changes nothing about delivery.
+        }
         setStreamState('connected');
       });
 

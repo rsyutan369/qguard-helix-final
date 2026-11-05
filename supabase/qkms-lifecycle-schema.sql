@@ -103,30 +103,39 @@ ALTER TABLE public.qkms_rotation_jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.qkms_audit_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.qkms_storage_backends ENABLE ROW LEVEL SECURITY;
 
+-- Tenant isolation. The predicate is the TENANT, not "tenant OR user": the
+-- disjunction let a signed-in user insert a row carrying another tenant's
+-- tenant_id under their own user_id, planting it in that tenant's view.
+-- Writes must name the caller as both tenant and user.
 DROP POLICY IF EXISTS qkms_keys_tenant_isolation ON public.qkms_keys;
 CREATE POLICY qkms_keys_tenant_isolation ON public.qkms_keys
-  FOR ALL USING (auth.uid() = tenant_id OR auth.uid() = user_id)
-  WITH CHECK (auth.uid() = tenant_id OR auth.uid() = user_id);
+  FOR ALL TO authenticated USING (auth.uid() = tenant_id)
+  WITH CHECK (auth.uid() = tenant_id AND auth.uid() = user_id);
 
 DROP POLICY IF EXISTS qkms_policies_tenant_isolation ON public.qkms_policies;
 CREATE POLICY qkms_policies_tenant_isolation ON public.qkms_policies
-  FOR ALL USING (auth.uid() = tenant_id OR auth.uid() = user_id)
-  WITH CHECK (auth.uid() = tenant_id OR auth.uid() = user_id);
+  FOR ALL TO authenticated USING (auth.uid() = tenant_id)
+  WITH CHECK (auth.uid() = tenant_id AND auth.uid() = user_id);
 
 DROP POLICY IF EXISTS qkms_rotation_jobs_tenant_isolation ON public.qkms_rotation_jobs;
 CREATE POLICY qkms_rotation_jobs_tenant_isolation ON public.qkms_rotation_jobs
-  FOR ALL USING (auth.uid() = tenant_id OR auth.uid() = user_id)
-  WITH CHECK (auth.uid() = tenant_id OR auth.uid() = user_id);
+  FOR ALL TO authenticated USING (auth.uid() = tenant_id)
+  WITH CHECK (auth.uid() = tenant_id AND auth.uid() = user_id);
 
+-- The audit trail is append-only for clients: tenants read and insert their own
+-- records but can neither edit nor delete them. Retention runs as service role.
 DROP POLICY IF EXISTS qkms_audit_events_tenant_isolation ON public.qkms_audit_events;
-CREATE POLICY qkms_audit_events_tenant_isolation ON public.qkms_audit_events
-  FOR ALL USING (auth.uid() = tenant_id OR auth.uid() = user_id)
-  WITH CHECK (auth.uid() = tenant_id OR auth.uid() = user_id);
+DROP POLICY IF EXISTS qkms_audit_events_tenant_read ON public.qkms_audit_events;
+CREATE POLICY qkms_audit_events_tenant_read ON public.qkms_audit_events
+  FOR SELECT TO authenticated USING (auth.uid() = tenant_id);
+DROP POLICY IF EXISTS qkms_audit_events_tenant_append ON public.qkms_audit_events;
+CREATE POLICY qkms_audit_events_tenant_append ON public.qkms_audit_events
+  FOR INSERT TO authenticated WITH CHECK (auth.uid() = tenant_id AND auth.uid() = user_id);
 
 DROP POLICY IF EXISTS qkms_storage_backends_tenant_isolation ON public.qkms_storage_backends;
 CREATE POLICY qkms_storage_backends_tenant_isolation ON public.qkms_storage_backends
-  FOR ALL USING (auth.uid() = tenant_id OR auth.uid() = user_id)
-  WITH CHECK (auth.uid() = tenant_id OR auth.uid() = user_id);
+  FOR ALL TO authenticated USING (auth.uid() = tenant_id)
+  WITH CHECK (auth.uid() = tenant_id AND auth.uid() = user_id);
 
 CREATE INDEX IF NOT EXISTS idx_qkms_keys_tenant ON public.qkms_keys(tenant_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_qkms_keys_asset ON public.qkms_keys(asset_id);

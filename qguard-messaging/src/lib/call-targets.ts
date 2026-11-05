@@ -210,3 +210,21 @@ export function peerIdentityOfDevice(device: CallCandidateDevice): CallPeerIdent
   const peer = buildCallPeer([device], "");
   return peer ? callPeerIdentityPayload(peer.userId, peer.devices[0]) : null;
 }
+
+/**
+ * People in a group call, the caller included. A group call is a mesh of
+ * separately encrypted one-to-one links, so it is kept to groups of this size.
+ */
+export const GROUP_CALL_SIZE = 3;
+
+/**
+ * Why a group video call cannot start right now, or null when it can. Shown
+ * as the group-call button's tooltip on desktop and phone alike.
+ */
+export function groupCallBlockedReason(opts: { supported: boolean; memberCount: number; peersReady: boolean; busy: boolean }): string | null {
+  if (!opts.supported) return "Video calling requires the desktop app";
+  if (opts.memberCount !== GROUP_CALL_SIZE) return `Group video calls work in groups of ${GROUP_CALL_SIZE} people for now`;
+  if (!opts.peersReady) return "Someone in this group has no device that can take calls yet";
+  if (opts.busy) return "Finish the current call first";
+  return null;
+}

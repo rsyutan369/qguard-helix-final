@@ -1,46 +1,32 @@
-import { useEffect, useRef, useState } from "react";
-import { ArrowRight, FileLock2, LockKeyhole, ShieldCheck, Video } from "lucide-react";
-import HelixReactor from "@/components/mobile/HelixReactor";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
+import "@/styles/mobile-onboarding.css";
 
 const DONE_KEY = "qguard_mobile_onboarding_done";
-
-/**
- * Each slide re-tints the reactor by overriding the accent tokens on a wrapper —
- * the same brand object turns a different colour rather than three unrelated
- * illustrations competing for attention.
- *
- * Slides 2 and 3 read their hue through `--qg-onb-*` with the Cold Fusion
- * literal as the fallback, so the Android Modernist skin — which has exactly
- * one hue — can collapse all three slides onto the accent without this file
- * needing a second render path.
- */
 const SLIDES = [
   {
-    icon: LockKeyhole,
-    eyebrow: "Messaging",
-    title: "Private now, private later",
-    body: "Messages are encrypted on this device with a hybrid of X25519 and ML-KEM (FIPS 203). Traffic captured today still cannot be read once quantum computers arrive.",
-    chips: ["ML-KEM-1024", "AES-256-GCM"],
-    accent: "var(--qg-helix)",
-    accentBright: "var(--qg-helix-bright)",
+    id: "messaging",
+    title: <>Talk.<br />Share.<br />Stay <span>Private.</span></>,
+    label: "Talk. Share. Stay Private.",
+    body: "End-to-end encrypted messaging for a safer tomorrow.",
   },
   {
-    icon: Video,
-    eyebrow: "Calls",
-    title: "Know who picked up",
-    body: "Voice and video negotiate quantum-safe media keys, then verify the other device with Ed25519 and ML-DSA signatures — before the first frame is sent.",
-    chips: ["ML-DSA-65", "SRTP E2EE"],
-    accent: "var(--qg-onb-calls, #8b5cf6)",
-    accentBright: "var(--qg-onb-calls-bright, #c4b5fd)",
+    id: "vault",
+    title: <>Your<br />Digital Vault</>,
+    label: "Your Digital Vault",
+    body: "Store photos, videos and documents with quantum-ready encryption.",
   },
   {
-    icon: FileLock2,
-    eyebrow: "Vault",
-    title: "Files that stay on your device",
-    body: "The Quantum Vault encrypts photos, videos and documents locally. Nothing leaves unencrypted, and you hold the only recovery key.",
-    chips: ["Zero-knowledge", "Local-first"],
-    accent: "var(--qg-onb-vault, #0e9f86)",
-    accentBright: "var(--qg-onb-vault-bright, #2de1c2)",
+    id: "calls",
+    title: <><span>Secure Calls<br />& Group Chats</span></>,
+    label: "Secure Calls & Group Chats",
+    body: "Connect with anyone. Private and encrypted voice and video calls.",
+  },
+  {
+    id: "devices",
+    title: <>Sync Across<br />All Your Devices</>,
+    label: "Sync Across All Your Devices",
+    body: "One account. All platforms. Your data stays encrypted everywhere.",
   },
 ];
 
@@ -53,22 +39,22 @@ export function isMobileOnboardingPending(): boolean {
   }
 }
 
-interface MobileOnboardingProps {
-  onDone: () => void;
-}
+interface MobileOnboardingProps { onDone: () => void; }
 
-/**
- * First-run experience for the Android build: a branded reactor splash followed
- * by a three-slide tour, swipeable or tappable. Both themes are supported; all
- * motion collapses under prefers-reduced-motion.
- */
+/** Android's first-run splash and four-page introduction. Completion retains
+ * the original device flag and the existing login handoff. */
 export default function MobileOnboarding({ onDone }: MobileOnboardingProps) {
   const [phase, setPhase] = useState<"splash" | "slides">("splash");
   const [index, setIndex] = useState(0);
-  const touchStartX = useRef<number | null>(null);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
-    const t = window.setTimeout(() => setPhase("slides"), 1600);
+    // Begin decoding the bundled art during the splash, avoiding an empty hero.
+    SLIDES.forEach((slide) => {
+      const image = new Image();
+      image.src = `/onboarding/${slide.id}.webp`;
+    });
+    const t = window.setTimeout(() => setPhase("slides"), 3000);
     return () => window.clearTimeout(t);
   }, []);
 
@@ -88,130 +74,80 @@ export default function MobileOnboarding({ onDone }: MobileOnboardingProps) {
 
   if (phase === "splash") {
     return (
-      <div className="qg-stage mobile-safe-top mobile-safe-bottom fixed inset-0 z-50 flex flex-col items-center justify-center overflow-hidden px-6">
-        <HelixReactor variant="mark" live size={250}>
-          <div
-            className="flex h-[92px] w-[92px] items-center justify-center rounded-full"
-            style={{ boxShadow: "var(--qg-glow)" }}
-          >
-            <img src="/brand/qguard-messaging-badge.webp" alt="" className="h-full w-full object-contain" />
+      <div className="onb-root onb-splash" role="status" aria-label="Qguard Messaging. Secure. Private. Quantum Ready.">
+        <img className="onb-splash-world" src="/onboarding/splash.webp" alt="" fetchPriority="high" />
+        <div className="onb-splash-brand">
+          <div className="onb-splash-emblem">
+            <img className="onb-splash-logo" src="/onboarding/splash-logo.png" alt="" width={1280} height={1280} fetchPriority="high" />
           </div>
-        </HelixReactor>
-
-        <div className="qg-rise mt-9 text-center" style={{ ["--qg-i" as string]: 3 }}>
-          <div className="qg-display text-[27px] leading-none">QGuard</div>
-          <div className="qg-eyebrow mt-2.5">Messaging &amp; Vault</div>
+          <div className="onb-wordmark">Qguard<strong>Messaging</strong></div>
+          <p className="onb-splash-tagline">Secure. Private.<br />Quantum Ready.</p>
         </div>
-
-        <div className="qg-rise mt-7" style={{ ["--qg-i" as string]: 5 }}>
-          <span className="qg-pill qg-tone-ok">
-            <ShieldCheck size={12} />
-            Post-quantum secure
-          </span>
-        </div>
+        <div className="onb-splash-light" aria-hidden="true" />
       </div>
     );
   }
 
-  const slide = SLIDES[index];
-  const Icon = slide.icon;
   const last = index === SLIDES.length - 1;
-
   return (
-    <div
-      className="qg-stage mobile-safe-top mobile-safe-bottom fixed inset-0 z-50 flex flex-col overflow-hidden px-6 pb-7 pt-4"
-      onTouchStart={(event) => {
-        touchStartX.current = event.touches[0]?.clientX ?? null;
+    <section className="onb-root onb-tour" aria-label="Welcome to Qguard Messaging" aria-roledescription="carousel"
+      onKeyDown={(event) => {
+        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+          event.preventDefault();
+          go(index + (event.key === "ArrowRight" ? 1 : -1));
+        }
       }}
+      onTouchStart={(event) => {
+        if ((event.target as HTMLElement).closest("button")) return;
+        const touch = event.touches[0];
+        touchStart.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
+      }}
+      onTouchCancel={() => { touchStart.current = null; }}
       onTouchEnd={(event) => {
-        const start = touchStartX.current;
-        touchStartX.current = null;
-        if (start === null) return;
-        const delta = (event.changedTouches[0]?.clientX ?? start) - start;
-        if (Math.abs(delta) < 48) return;
-        go(delta < 0 ? index + 1 : index - 1);
+        const start = touchStart.current;
+        touchStart.current = null;
+        const end = event.changedTouches[0];
+        if (!start || !end) return;
+        const dx = end.clientX - start.x;
+        const dy = end.clientY - start.y;
+        if (Math.abs(dx) < 48 || Math.abs(dx) <= Math.abs(dy)) return;
+        go(index + (dx < 0 ? 1 : -1));
       }}
     >
-      {/* Progress + skip. Segments show how much of the tour is left, which the
-          usual dot row does not. */}
-      <div className="flex items-center gap-3">
-        <div className="flex flex-1 gap-1.5">
-          {SLIDES.map((item, i) => (
-            <span
-              key={item.eyebrow}
-              className="h-[3px] flex-1 overflow-hidden rounded-full"
-              style={{ background: "var(--qg-hairline)" }}
-            >
-              <span
-                className="block h-full rounded-full transition-all duration-500"
-                style={{
-                  width: i <= index ? "100%" : "0%",
-                  background: "linear-gradient(90deg, var(--qg-flux), var(--qg-helix))",
-                }}
-              />
-            </span>
-          ))}
-        </div>
-        <button
-          type="button"
-          onClick={finish}
-          className="qg-focusable qg-mono text-[11.5px] font-semibold"
-          style={{ color: "var(--qg-text-3)" }}
-        >
-          Skip
-        </button>
-      </div>
-
-      {/* pb biases the centred group upward so the space above the CTA reads as
-          breathing room rather than a hole. */}
-      <div className="flex flex-1 flex-col items-center justify-center pb-12 text-center">
-        {/* key={index} restarts the entrance animation on every slide change. */}
-        <div
-          key={index}
-          className="flex flex-col items-center"
-          style={{
-            ["--qg-helix" as string]: slide.accent,
-            ["--qg-helix-bright" as string]: slide.accentBright,
-          }}
-        >
-          <HelixReactor variant="mark" live size={252}>
-            <span
-              className="flex h-[92px] w-[92px] items-center justify-center rounded-[26px]"
-              style={{
-                background: "var(--qg-panel)",
-                border: "1px solid var(--qg-hairline)",
-                color: slide.accent,
-                boxShadow: "var(--qg-glow)",
-              }}
-            >
-              <Icon size={38} strokeWidth={1.6} />
-            </span>
-          </HelixReactor>
-
-          <div className="qg-rise mt-8" style={{ ["--qg-i" as string]: 1 }}>
-            <div className="qg-eyebrow" style={{ color: slide.accent }}>{slide.eyebrow}</div>
-            <h2 className="qg-display mt-2.5 text-[25px] leading-[1.12]">{slide.title}</h2>
-          </div>
-
-          <p
-            className="qg-rise mt-3.5 max-w-[19rem] text-[13.5px] leading-6"
-            style={{ ["--qg-i" as string]: 2, color: "var(--qg-text-2)" }}
+      <div className="onb-pages">
+        {SLIDES.map((slide, i) => (
+          <article key={slide.id} id={`onb-page-${slide.id}`}
+            className={`onb-page${i === index ? " is-active" : ""}`}
+            style={{ "--onb-offset": `${(i - index) * 100}%` } as CSSProperties}
+            aria-roledescription="slide" aria-label={`${i + 1} of ${SLIDES.length}: ${slide.label}`}
+            aria-hidden={i !== index} inert={i !== index}
           >
-            {slide.body}
-          </p>
-
-          <div className="qg-rise mt-5 flex flex-wrap justify-center gap-1.5" style={{ ["--qg-i" as string]: 3 }}>
-            {slide.chips.map((chip) => (
-              <span key={chip} className="qg-pill qg-tone-mute">{chip}</span>
-            ))}
-          </div>
-        </div>
+            <div className={`onb-visual onb-visual-${slide.id}`} aria-hidden="true">
+              <img src={`/onboarding/${slide.id}.webp`} alt="" draggable={false} decoding="async" />
+            </div>
+            <div className="onb-copy"><h1>{slide.title}</h1><p>{slide.body}</p></div>
+          </article>
+        ))}
       </div>
-
-      <button type="button" onClick={() => (last ? finish() : go(index + 1))} className="qg-btn qg-focusable">
-        {last ? "Get started" : "Continue"}
-        <ArrowRight size={16} />
-      </button>
-    </div>
+      <header className="onb-topbar">
+        {index > 0 && <button className="onb-back" type="button" onClick={() => go(index - 1)} aria-label="Previous introduction page"><ArrowLeft size={20} aria-hidden="true" /></button>}
+        {!last && <button className="onb-skip" type="button" onClick={finish}>Skip</button>}
+      </header>
+      <p className="onb-sr-only" aria-live="polite" aria-atomic="true">{index + 1} of {SLIDES.length}: {SLIDES[index].label}</p>
+      <footer className={`onb-footer${last ? " onb-footer-last" : ""}`}>
+        <nav className="onb-progress" aria-label="Introduction pages">
+          {SLIDES.map((slide, i) => (
+            <button key={slide.id} type="button" className="onb-dot"
+              aria-label={`Go to page ${i + 1}: ${slide.label}`} aria-current={i === index ? "step" : undefined}
+              aria-controls={`onb-page-${slide.id}`} onClick={() => go(i)}><span /></button>
+          ))}
+        </nav>
+        <button type="button" onClick={() => (last ? finish() : go(index + 1))}
+          className={last ? "onb-start" : "onb-next"} aria-label={last ? "Get Started" : "Next introduction page"}>
+          {last ? "Get Started" : <ArrowRight size={26} strokeWidth={2.2} aria-hidden="true" />}
+        </button>
+      </footer>
+    </section>
   );
 }

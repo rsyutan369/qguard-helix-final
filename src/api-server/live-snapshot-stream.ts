@@ -49,6 +49,23 @@ export interface LiveSnapshotStreamOptions<T> {
   heartbeatMs?: number
 }
 
+/**
+ * `exp` (ms) of the bearer token this stream was opened with, or null.
+ * The signature was verified by the auth middleware; this only reads the claim.
+ */
+export function bearerExpiryMs(req: Request): number | null {
+  const header = String(req.headers?.authorization || '')
+  const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : ''
+  const payload = token.split('.')[1]
+  if (!payload) return null
+  try {
+    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { exp?: unknown }
+    return typeof claims.exp === 'number' ? claims.exp * 1000 : null
+  } catch {
+    return null
+  }
+}
+
 export function streamLiveSnapshot<T extends object>(req: Request, res: Response, options: LiveSnapshotStreamOptions<T>): void {
   res.status(200)
   res.setHeader('Content-Type', 'text/event-stream')
@@ -60,13 +77,28 @@ export function streamLiveSnapshot<T extends object>(req: Request, res: Response
   let closed = false
   let emitting = false
   let lastFingerprint = ''
+  const expiresAt = bearerExpiryMs(req)
   const write = (event: string, data: unknown) => {
     if (!closed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+  }
+  const stop = () => {
+    closed = true
+    clearInterval(tick)
+    clearInterval(heartbeat)
   }
 
   const emit = async () => {
     // A build slower than the tick must not stack a second one behind it.
     if (closed || emitting) return
+    // Every build runs under the token the stream was opened with. Once it has
+    // expired, each read fails authentication. End the stream so the client
+    // reconnects with its rotated token instead of erroring here every tick.
+    if (expiresAt !== null && Date.now() >= expiresAt) {
+      write(`${options.event}-error`, { message: 'Session token expired — reconnecting', code: 'SESSION_EXPIRED' })
+      stop()
+      res.end()
+      return
+    }
     emitting = true
     try {
       const data = await options.build()
@@ -86,14 +118,11 @@ export function streamLiveSnapshot<T extends object>(req: Request, res: Response
     }
   }
 
-  void emit()
+  // Timers exist before the first emit, which may call stop() synchronously.
   const tick = setInterval(() => void emit(), options.intervalMs)
   const heartbeat = setInterval(() => {
     if (!closed) res.write(': heartbeat\n\n')
   }, options.heartbeatMs ?? 20_000)
-  req.on('close', () => {
-    closed = true
-    clearInterval(tick)
-    clearInterval(heartbeat)
-  })
+  req.on('close', stop)
+  void emit()
 }

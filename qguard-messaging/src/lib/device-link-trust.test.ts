@@ -62,7 +62,7 @@ describe("trustLinkedDevice", () => {
   it("trusts and pins the device when the proof matches the fingerprint the core computed", async () => {
     pins.assessDevicePins.mockResolvedValue(verdict("new"));
     const { client, updates, inserts } = fakeClient([deviceRow("approver"), deviceRow(NEW_DEVICE)]);
-    const outcome = await trustLinkedDevice({ client, userId: USER, linkId: LINK, bindingSecret: secret, linkedDeviceId: NEW_DEVICE, linkProof: proofFor(CORE_FINGERPRINT), approverDeviceId: "approver" });
+    const outcome = await trustLinkedDevice({ client, userId: USER, linkId: LINK, bindingSecret: secret, linkedDeviceId: NEW_DEVICE, linkProof: await proofFor(CORE_FINGERPRINT), approverDeviceId: "approver" });
     expect(outcome).toEqual({ trusted: true, label: "Windows Desktop" });
     expect(pins.assessDevicePins.mock.calls[0][0]).toHaveLength(2); // the whole account, not only the new device
     expect(pins.approveDevicePins).toHaveBeenCalledTimes(1);
@@ -74,7 +74,7 @@ describe("trustLinkedDevice", () => {
     // The relay row could claim any fingerprint; the core's own computation decides.
     pins.assessDevicePins.mockResolvedValue(verdict("new", "QG-SWAPPED-KEYS"));
     const { client, updates } = fakeClient([deviceRow(NEW_DEVICE, { fingerprint: CORE_FINGERPRINT })]);
-    const outcome = await trustLinkedDevice({ client, userId: USER, linkId: LINK, bindingSecret: secret, linkedDeviceId: NEW_DEVICE, linkProof: proofFor(CORE_FINGERPRINT), approverDeviceId: null });
+    const outcome = await trustLinkedDevice({ client, userId: USER, linkId: LINK, bindingSecret: secret, linkedDeviceId: NEW_DEVICE, linkProof: await proofFor(CORE_FINGERPRINT), approverDeviceId: null });
     expect(outcome.trusted).toBe(false);
     expect(pins.approveDevicePins).not.toHaveBeenCalled();
     expect(updates).toHaveLength(0);
@@ -83,14 +83,14 @@ describe("trustLinkedDevice", () => {
   it("refuses a proof made for another device id", async () => {
     pins.assessDevicePins.mockResolvedValue(verdict("new"));
     const { client } = fakeClient([deviceRow(NEW_DEVICE)]);
-    const outcome = await trustLinkedDevice({ client, userId: USER, linkId: LINK, bindingSecret: secret, linkedDeviceId: NEW_DEVICE, linkProof: proofFor(CORE_FINGERPRINT, "00000000-0000-4000-8000-000000000000"), approverDeviceId: null });
+    const outcome = await trustLinkedDevice({ client, userId: USER, linkId: LINK, bindingSecret: secret, linkedDeviceId: NEW_DEVICE, linkProof: await proofFor(CORE_FINGERPRINT, "00000000-0000-4000-8000-000000000000"), approverDeviceId: null });
     expect(outcome.trusted).toBe(false);
   });
 
   it.each(["key_changed", "invalid_identity", "unknown"])("never trusts a device whose pin standing is %s", async (standing) => {
     pins.assessDevicePins.mockResolvedValue(verdict(standing));
     const { client } = fakeClient([deviceRow(NEW_DEVICE)]);
-    const outcome = await trustLinkedDevice({ client, userId: USER, linkId: LINK, bindingSecret: secret, linkedDeviceId: NEW_DEVICE, linkProof: proofFor(CORE_FINGERPRINT), approverDeviceId: null });
+    const outcome = await trustLinkedDevice({ client, userId: USER, linkId: LINK, bindingSecret: secret, linkedDeviceId: NEW_DEVICE, linkProof: await proofFor(CORE_FINGERPRINT), approverDeviceId: null });
     expect(outcome.trusted).toBe(false);
     expect(pins.approveDevicePins).not.toHaveBeenCalled();
   });
@@ -98,8 +98,8 @@ describe("trustLinkedDevice", () => {
   it("refuses when the core is unavailable or the device is not on the account", async () => {
     pins.assessDevicePins.mockResolvedValue(null);
     const { client } = fakeClient([deviceRow(NEW_DEVICE)]);
-    expect((await trustLinkedDevice({ client, userId: USER, linkId: LINK, bindingSecret: secret, linkedDeviceId: NEW_DEVICE, linkProof: proofFor(CORE_FINGERPRINT), approverDeviceId: null })).trusted).toBe(false);
+    expect((await trustLinkedDevice({ client, userId: USER, linkId: LINK, bindingSecret: secret, linkedDeviceId: NEW_DEVICE, linkProof: await proofFor(CORE_FINGERPRINT), approverDeviceId: null })).trusted).toBe(false);
     const empty = fakeClient([]);
-    expect((await trustLinkedDevice({ client: empty.client, userId: USER, linkId: LINK, bindingSecret: secret, linkedDeviceId: NEW_DEVICE, linkProof: proofFor(CORE_FINGERPRINT), approverDeviceId: null })).trusted).toBe(false);
+    expect((await trustLinkedDevice({ client: empty.client, userId: USER, linkId: LINK, bindingSecret: secret, linkedDeviceId: NEW_DEVICE, linkProof: await proofFor(CORE_FINGERPRINT), approverDeviceId: null })).trusted).toBe(false);
   });
 });

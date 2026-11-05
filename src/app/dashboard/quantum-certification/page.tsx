@@ -41,6 +41,7 @@ import {
   HeaderButton,
   MetricCard,
   Panel,
+  PendingBody,
   PrimaryButton,
   QuantumReadinessSubnav,
   Ring,
@@ -236,6 +237,8 @@ export default function QuantumCertificationPage() {
           </div>
         ) : null}
 
+        {/* No figures before the engine answers (see PendingBody). */}
+        {state !== 'success' ? <PendingBody state={state} /> : (<>
         {/* Not eligible → Intelligent Quantum Remediation Engine CTA */}
         {eligibility.hasData && !eligibility.eligible ? (
           <div className="flex flex-col gap-3 rounded-md border border-cyan-400/30 bg-cyan-400/[0.06] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -547,12 +550,12 @@ export default function QuantumCertificationPage() {
             {data.trend.length ? (
               <TrendChart
                 points={data.trend.map((t) => ({ label: t.label, readiness: t.readiness, risk: Math.round(t.trustScore / 10) }))}
-                labels={{ readiness: 'Readiness', risk: 'Trust Score ÷ 10' }}
+                labels={{ readiness: 'Readiness', risk: 'Trust Score / 10' }}
               />
             ) : (
               <EmptyState label="No validation history yet." hint="Trust-score history builds as monitoring re-validates your certificate." />
             )}
-            <p className="mt-2 text-[10px] text-white/35">Series: readiness and the Quantum Trust Score™ (÷10 to share the 0–100 axis) from each validation run.</p>
+            <p className="mt-2 text-[10px] text-white/35">Series: readiness and the Quantum Trust Score™ (0–1000, divided by 10 to share the 0–100 axis) from each validation run.</p>
           </Panel>
 
           <Panel className="p-4">
@@ -780,6 +783,7 @@ export default function QuantumCertificationPage() {
             </div>
           </Panel>
         </div>
+        </>)}
 
         {/* Issuer + connection footer */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-1 text-[11px] text-white/35">

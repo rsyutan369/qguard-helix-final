@@ -14,19 +14,27 @@ import {
   Building2,
   ChevronDown,
   Check,
+  Cloud,
+  EyeOff,
   Fingerprint,
   FolderLock,
+  Ghost,
+  Grid3x3,
+  HardDrive,
   History,
   KeyRound,
   Layers,
   LifeBuoy,
   Lock,
   Minus,
+  MonitorSmartphone,
   Phone,
   Radio,
   RefreshCcw,
   Search,
+  Share2,
   ShieldCheck,
+  Trash2,
   Users,
   WifiOff,
   type LucideIcon,
@@ -60,6 +68,22 @@ export const CATEGORY_LABEL: Record<Category | 'all', string> = {
   enterprise: 'Enterprise',
   vault: 'Vault',
 };
+
+/**
+ * The Quantum Vault Storage line (design in
+ * qguard-messaging/docs/QUANTUM_VAULT_STORAGE.md), released 2026-11-04.
+ * Feeds both the atlas and the "New in the Quantum Vault" sections.
+ */
+export const VAULT_NEW: Array<Pick<AtlasItem, 'icon' | 'title' | 'body' | 'category' | 'tags'> & { short: string }> = [
+  { icon: HardDrive, title: 'Quantum Vault Storage', short: 'An encrypted file library: folders, Photos & Videos, Documents, Audio, Favorites and Trash, with search, previews and integrity checks.', body: 'The vault now keeps your files for you: folders, Photos & Videos, Documents, Audio, Favorites and Trash, search, grid and list views, drag-and-drop on desktop, previews in memory and an activity log. Every file is still an ordinary signed v5 container.', category: 'vault', tags: ['ready'] },
+  { icon: EyeOff, title: 'Names and types sealed too', short: 'File names, folders and types live in a sealed index — the containers on disk carry none of them.', body: 'Containers on disk carry no file name or type. Names, folders, hashes and activity live in one AES-256-GCM index under a key derived from the vault key, with a second copy under your recovery key. Thumbnails are made on your device and sealed under their own key.', category: 'protect', tags: ['ready'] },
+  { icon: Trash2, title: 'Delete means crypto-shredded', short: 'Permanent delete overwrites the header that holds the only wrapped copies of the file key.', body: 'Deleting from Trash overwrites the container header — the only place the file key is stored, wrapped — before the file is removed, so the content cannot be decrypted even if flash keeps old blocks. File types come from the content, never the extension.', category: 'protect', tags: ['ready'] },
+  { icon: Cloud, title: 'Encrypted cloud backup', short: 'Opt-in. Containers go up in 8 MiB parts; restore on a new device with only your recovery key.', body: 'Off by default. When on, each encrypted container and the folder list sealed with your recovery key go up in 8 MiB parts. Restore on a new device needs only the recovery key — signing in never decrypts anything. Quotas: Basic 2 GB, Pro 10 GB, Elite 100 GB; Starter stays local-only.', category: 'recover', tags: ['ready', 'optin'] },
+  { icon: MonitorSmartphone, title: 'One vault across your devices', short: 'With backup on, every device you approved shares one library — renames, Trash and deletes included.', body: 'With backup on, every device you approved in the Device Trust Center shares one library. A library key only your devices hold, and only while the vault is unlocked, seals the folder list and each file key. Removing a device starts a new key that device never receives.', category: 'vault', tags: ['ready', 'setup'] },
+  { icon: Share2, title: 'Share files with QGuard users', short: 'View only or view and save, optional expiry, revoke per person — each recipient device gets its own hybrid envelope.', body: 'Pick people, view only or view and save, and an optional expiry. Each recipient device gets its own X25519 + ML-KEM-1024 key envelope, signed by your device with Ed25519 + ML-DSA-65. Recipients accept or decline; you see who accepted and can revoke per person. Cloud backup does not need to be on.', category: 'vault', tags: ['ready'] },
+  { icon: Grid3x3, title: 'Unlock with a drawn pattern', short: 'Connect at least 6 dots on a 4 × 4 grid, sealed exactly like the PIN with Argon2id.', body: 'A third unlock method beside the password and PIN: at least 6 dots on a 4 × 4 grid (≈1.3 million patterns of 6 dots, ≈79 million of 8). Stretched with Argon2id (64 MiB), then HKDF-SHA3-256 and an AES-256-GCM wrap of the Vault Master Key, with the same attempt limits. You can hide the trail while drawing.', category: 'protect', tags: ['ready', 'optin'] },
+  { icon: Ghost, title: 'Hidden vaults', short: 'A separate vault that opens only when its own pattern is drawn on the normal lock screen. The app never lists it.', body: 'A separate vault that opens only when its own pattern is drawn on the ordinary lock screen. The app never lists one, a pattern that opens nothing is just a wrong attempt, and on disk every file is header-less ciphertext or random padding in a folder every account has. No recovery, backup or sharing — by design.', category: 'protect', tags: ['ready', 'optin'] },
+];
 
 export const ATLAS: AtlasItem[] = [
   { icon: ShieldCheck, title: 'Conversation protection badge', body: 'Says Quantum-safe, Needs attention or Not measured yet — and lists the evidence: which devices the next message is sealed to, the hybrid form, pinned keys and forward-secrecy state.', category: 'protect', tags: ['ready'], since: '1.4.0', product: 'chat' },
@@ -99,7 +123,7 @@ export const ATLAS: AtlasItem[] = [
   { icon: Search, title: 'Hardened contact search', body: 'The directory no longer reveals other people’s emails; searches need three characters and are limited to 60 per five minutes, so it cannot be listed.', category: 'enterprise', tags: ['ready'], since: '1.4.0', product: 'chat' },
 
   { icon: Lock, title: 'Post-quantum encryption', body: 'Files are sealed with AES-256-GCM under a unique key, wrapped under your PIN-bound vault key and signed with ML-DSA-87 (FIPS 204 Level 5). Shared files and enterprise recovery add NIST ML-KEM-1024.', category: 'protect', tags: ['ready'], since: '', product: 'vault' },
-  { icon: FolderLock, title: 'Strictly on-device', body: 'Everything is encrypted and decrypted locally. Your files never touch QGuard’s servers — there is nothing to upload, intercept or leak.', category: 'protect', tags: ['ready'], since: '', product: 'vault' },
+  { icon: FolderLock, title: 'On your device by default', body: 'Everything is encrypted and decrypted locally. Nothing leaves the device unless you turn on encrypted backup or share a file — and then only ciphertext the server cannot open.', category: 'protect', tags: ['ready'], since: '', product: 'vault' },
   { icon: ShieldCheck, title: 'Tamper-evident, to the last byte', body: 'Every chunk is authenticated and bound to its position, so any change, reorder or truncation is detected and refused before a byte is written.', category: 'protect', tags: ['ready'], since: '', product: 'vault' },
   { icon: LifeBuoy, title: 'Quantum-safe recovery', body: 'Lose your device? An offline recovery key restores your .qvault files on a brand-new machine — no access to the old one required.', category: 'recover', tags: ['setup'], since: '', product: 'vault' },
   { icon: Building2, title: 'Enterprise dual-control', body: 'Hybrid recovery requires both a personal key and an enterprise key — two-person integrity for regulated teams.', category: 'recover', tags: ['setup'], since: '', product: 'vault' },
@@ -108,6 +132,8 @@ export const ATLAS: AtlasItem[] = [
   { icon: KeyRound, title: 'PIN-bound vault containers', body: '.qvault v5 wraps each file key under the PIN-bound vault key, so the lock is enforced by the cryptography — not just the interface.', category: 'vault', tags: ['ready'], since: '1.3.11', product: 'vault' },
   { icon: FolderLock, title: 'Portable Hybrid Identity', body: 'A .qgkey lets a vault object be sealed to a person instead of a device, so you can share quantum-encrypted files with someone who must never hold your keys.', category: 'vault', tags: ['ready'], since: '', product: 'vault' },
   { icon: LifeBuoy, title: 'Locks that fail safe', body: 'A workspace lock record that no longer opens goes to a re-authenticated reset — it is never treated as “no lock set”, which would let anyone set their own.', category: 'vault', tags: ['ready'], since: '1.4.2', product: 'both' },
+
+  ...VAULT_NEW.map(({ icon, title, body, category, tags }) => ({ icon, title, body, category, tags, since: '', product: 'vault' as const })),
 ];
 
 export function FeatureAtlas({ product }: { product?: 'chat' | 'vault' }) {
@@ -170,6 +196,22 @@ export function AtlasCard({ item }: { item: AtlasItem }) {
   );
 }
 
+/**
+ * The new Quantum Vault capabilities as one grid. `compact` uses the one-line
+ * summaries (overview page); the vault page shows the full text.
+ */
+export function VaultNewGrid({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+      {VAULT_NEW.map((f, i) => (
+        <Rise key={f.title} index={i}>
+          <AtlasCard item={{ ...f, body: compact ? f.short : f.body, since: '', product: 'vault' }} />
+        </Rise>
+      ))}
+    </div>
+  );
+}
+
 /* --------------------------------------------------------- numbers ---------- */
 
 const NUMBERS: Array<{ n: number; suffix?: string; label: string; sub: string }> = [
@@ -204,12 +246,16 @@ export function NumbersStrip() {
 
 /* ---------------------------------------------------------- release rail ---- */
 
+/** Rail entry for the Vault Storage line, released into the current version. */
+const VAULT_RELEASE = 'vault';
+
 const RELEASES: Array<{ v: string; date: string; title: string; points: string[] }> = [
   { v: '1.3.8', date: '16 Sep 2026', title: 'Messages are really authenticated', points: ['Sender identity anchored to the device’s published keys', 'Call signals bound to the call’s device', 'Fail-closed end-to-end call media'] },
   { v: '1.3.11', date: '13 Oct 2026', title: 'Device pins, forward secrecy, call v2', points: ['Relay can no longer add a device to your account', 'Prekey rotation + encrypted message-key ledger', 'PIN-bound .qvault v5'] },
   { v: '1.4.0', date: '20 Oct 2026', title: 'Protection you can see and prove', points: ['Protection badge · verify contacts · call phrase', 'Groups · channels · group calls · screen share', 'Recovery · duress PIN · AI assistant · offline delivery'] },
   { v: '1.4.3', date: '20 Oct 2026', title: 'Built for phones', points: ['Signal/Telegram-style list and sheets at phone width', 'Lock resets that explain themselves', 'Prekey and forward-secrecy status fixes'] },
   { v: '1.5.0', date: '22 Oct 2026', title: 'Bigger groups, easier sign-in', points: ['Large groups and channels up to 1,000', 'Mobile-number sign-in · QR device linking', 'Server-enforced Block & Restrict · sealed audit details'] },
+  { v: VAULT_RELEASE, date: '4 Nov 2026', title: 'A vault that keeps your files', points: ['Quantum Vault Storage with sealed names', 'Opt-in cloud backup · one library on all your devices · sharing', 'Draw-pattern unlock · hidden vaults'] },
 ];
 
 function versionLt(a: string, b: string) {
@@ -236,7 +282,7 @@ export function ReleaseRail() {
           viewport={{ once: true, margin: '-100px' }}
           transition={{ duration: 1.6, ease: [0.22, 1, 0.36, 1] }}
         />
-        <div className="relative grid gap-5 lg:grid-cols-5">
+        <div className="relative grid gap-5 sm:grid-cols-2 lg:grid-cols-6">
           {RELEASES.map((r, i) => (
             <Rise key={r.v} index={i}>
               <div>
@@ -245,7 +291,7 @@ export function ReleaseRail() {
                     {i + 1}
                   </span>
                   <div>
-                    <div className="font-mono text-xs font-black text-cyan-700">v{r.v}</div>
+                    <div className="font-mono text-xs font-black text-cyan-700">{r.v === VAULT_RELEASE ? 'Now available' : `v${r.v}`}</div>
                     <div className="font-mono text-[10px] uppercase tracking-wider text-slate-400">{r.date}</div>
                   </div>
                 </div>
@@ -282,6 +328,9 @@ const PLATFORM_ROWS: Array<{ label: string; windows: Cell; android: Cell; note?:
   { label: 'Screen sharing in calls', windows: 'yes', android: 'no', note: 'Android needs MediaProjection' },
   { label: 'Quantum Vault — files', windows: 'yes', android: 'yes' },
   { label: 'Quantum Vault — whole folders', windows: 'yes', android: 'no', note: 'Android cannot walk a folder tree' },
+  { label: 'Quantum Vault Storage library', windows: 'yes', android: 'yes', note: 'Folder import and drag-and-drop on desktop only' },
+  { label: 'Pattern unlock and hidden vaults', windows: 'yes', android: 'yes', note: 'Not offered in FIPS approved mode' },
+  { label: 'Vault cloud backup, multi-device library, sharing', windows: 'yes', android: 'yes', note: 'Opt-in · needs a plan with cloud storage (Basic or higher)' },
   { label: 'Biometric unlock, duress PIN, Recents masking', windows: 'no', android: 'yes' },
   { label: 'Nearby delivery', windows: 'no', android: 'yes', note: 'Google Play services' },
 ];

@@ -8,6 +8,18 @@
 | Signatures | Ed25519 | ML-DSA-65 | Both signatures must verify |
 | Symmetric encryption | AES-256-GCM | N/A | Unique key/nonce per operation |
 | Hash/KDF | N/A | SHA3-256 | HKDF-SHA3-256 |
+| Password / PIN stretch | Argon2id (64 MiB, t=3); PBKDF2-HMAC-SHA-512 ×600,000 in FIPS approved mode | N/A | then HKDF-SHA3-256 |
+
+## Cryptographic Module Boundary
+
+Every primitive above is performed by `src-tauri/src/crypto/provider/`, the
+single cryptographic boundary: the default backend is RustCrypto / dalek /
+PQClean, `--features wolfcrypt` swaps in wolfCrypt. Known-answer self-tests
+gate every keyed operation, and AES-GCM nonces are chosen inside the module.
+The WebView hands its attachment encryption, digests and MACs to the module;
+call media frames are the exception (WebCrypto in WebRTC transforms). The
+FIPS 140-3 certificate check, approved mode and what remains are in
+[FIPS_140_3.md](FIPS_140_3.md).
 
 ## Session Establishment
 
@@ -239,6 +251,30 @@ has left.
 A group call (up to 3 people) is a mesh of one-to-one calls: each pair runs the
 unchanged call setup (hybrid KEM to the other device, its own media key and
 per-frame AES-256-GCM transform). Nothing is shared between links.
+
+## Quantum Vault Storage
+
+The on-device vault library (`src-tauri/src/vault/store.rs`,
+`commands/vault_store.rs`; full design in `docs/QUANTUM_VAULT_STORAGE.md`) stores
+every file as an unchanged v5 `vault_stream` container — AES-256-GCM per 1 MiB
+chunk under a random per-file key, that key sealed under the PIN-bound vault
+key (plus recovery / enterprise wraps when configured), Ed25519 + ML-DSA-87
+signed header — written with an opaque name and type. Names, folders, content
+hashes and activity live in one index sealed with AES-256-GCM under
+HKDF-SHA3-256(vault key, "QGuard-VaultStore-Index-v1"), bound to the account
+and a vault id; a second copy is sealed under HKDF-SHA3-256(recovery wrap key,
+"QGuard-VaultStore-RecoveryIndex-v1"). Thumbnails use their own derived key.
+Opening a file re-checks the signature, the vault-key unwrap, every chunk tag
+and the recorded SHA3-256 of the plaintext. Permanent delete overwrites the
+header (the only wrapped copies of the file key) before unlinking.
+
+Opt-in cloud backup uploads those containers unchanged (each carrying its
+recovery wrap) plus the recovery-key-sealed index, in 8 MiB parts with
+SHA3-256 per part and per object, checked on download. On a new device the
+recovery key opens the index and `rewrap_stream_with_recovery` re-seals each
+file key under the new device's vault key (same FEK and chunks, new
+ML-DSA-87-signed v5 header); the result is fully decrypted and checked before
+it is stored. The server receives ciphertext and random identifiers only.
 
 ## File Encryption
 

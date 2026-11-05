@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { sha3_256Hex } from "@/lib/sha3";
+import { coreDigest, coreSha3Hex } from "@/lib/core-crypto";
 
 /**
  * How an MFA recovery code is stored: a salted hash that Postgres recomputes
@@ -29,7 +29,7 @@ export async function recoveryHashScheme(client: Pick<SupabaseClient, "rpc">): P
 
 export async function hashRecoveryCode(salt: string, code: string, scheme: RecoveryHashScheme): Promise<string> {
   const input = salt + normalizedRecoveryCode(code);
-  if (scheme === "sha3-256") return `sha3:${sha3_256Hex(input)}`;
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
-  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  if (scheme === "sha3-256") return `sha3:${await coreSha3Hex(input)}`;
+  const digest = await coreDigest("sha256", input);
+  return Array.from(digest).map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

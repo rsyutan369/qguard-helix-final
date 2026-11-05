@@ -13,6 +13,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { pathToFileURL } from 'node:url'
+import { cleanupQaTenant } from './qa-tenant-cleanup'
+import { consolidateAgentDeviceProfile } from '../src/api-server/agent-device-profiles'
 
 const BASE = process.env.QGUARD_TEST_BASE || 'http://localhost:3000'
 const OUT = path.resolve('artifacts/scan-flow-qa')
@@ -93,9 +95,11 @@ async function main() {
   const duplicate = await request(`/api/v1/agent-installer/agents/${agentId}/scan`, { method: 'POST' })
   check(duplicate.body.data?.command?.id === firstCommand, 'repeated clicks reuse the pending command')
 
+  let runtimeLaunchId = ''
   const runAgent = async () => {
+    runtimeLaunchId = randomUUID().replace(/-/g, '')
     const child = spawn(process.execPath, [path.resolve('tools/qguard-agent/dist/qguard-agent.cjs'), 'scan'], {
-      env: { ...process.env, QGUARD_API_URL: BASE, QGUARD_ENVIRONMENT: 'development', QGUARD_AGENT_ROLE: 'collector', QGUARD_AGENT_ID: agentId, QGUARD_AGENT_TOKEN: agentToken, QGUARD_TENANT_ID: owner.id, QGUARD_STATE_DIR: path.join(lab!, 'agent-state'), QGUARD_NATIVE_RUNTIME_ENABLED: 'false', QGUARD_ENABLE_REMEDIATION: 'false', QGUARD_ENABLE_CONFIG_PATCHES: 'false', QGUARD_ENABLE_MIGRATION: 'false' },
+      env: { ...process.env, QGUARD_API_URL: BASE, QGUARD_ENVIRONMENT: 'development', QGUARD_AGENT_ROLE: 'collector', QGUARD_AGENT_ID: agentId, QGUARD_AGENT_TOKEN: agentToken, QGUARD_TENANT_ID: owner.id, QGUARD_STATE_DIR: path.join(lab!, 'agent-state'), QGUARD_LAUNCH_ID: runtimeLaunchId, QGUARD_NATIVE_RUNTIME_ENABLED: 'false', QGUARD_ENABLE_REMEDIATION: 'false', QGUARD_ENABLE_CONFIG_PATCHES: 'false', QGUARD_ENABLE_MIGRATION: 'false' },
       windowsHide: true, timeout: 240_000,
     })
     activeChild = child
@@ -107,11 +111,14 @@ async function main() {
     check(code === 0, `real local agent scan exits successfully${code === 0 ? '' : `: ${err.slice(-500)} ${out.slice(-500)}`}`)
   }
   await runAgent()
+  const self = await fetch(`${BASE}/api/v1/agent-installer/self`, { headers: { 'x-qguard-agent-id': agentId, 'x-qguard-agent-token': agentToken } }).then((response) => response.json())
+  check(self.data?.connected === true && self.data?.runtimeLaunchId === runtimeLaunchId, 'installer verifies the current real signed runtime launch through the live API')
   await panel.getByRole('heading', { name: 'Completed', exact: true }).waitFor({ timeout: 60_000 })
   const tracked = await request(`/api/v1/agent-installer/agents/${agentId}/scan-status?commandId=${firstCommand}`)
   check(tracked.body.data?.state === 'completed' && tracked.body.data.acceptedCount > 0, 'completed receipt records actual accepted evidence')
   const { data: assets, error: assetError } = await admin.from('assets').select('id, metadata').eq('user_id', owner.id)
   check(!assetError && assets?.some((asset) => asset.metadata?.scanSources?.some((source: any) => source.agentId === agentId && source.kind === 'windows-device')), 'real scan materializes tenant assets with Windows agent provenance')
+  check(assets?.length === 1 && assets[0].metadata?.deviceProfile?.agentId === agentId, 'all agent observations are stored in one device profile')
   await page.screenshot({ path: path.join(OUT, 'completed.png'), fullPage: false })
   await page.reload({ waitUntil: 'domcontentloaded' })
   await page.getByRole('region', { name: 'Requested scan progress' }).getByRole('heading', { name: 'Completed', exact: true }).waitFor({ timeout: 60_000 })
@@ -119,12 +126,36 @@ async function main() {
 
   // A real new cycle must never reset the first command’s receipt.
   await runAgent()
+  const repeatAssets = await admin.from('assets').select('id,metadata').eq('user_id', owner.id)
+  check(repeatAssets.data?.length === 1 && repeatAssets.data[0].id === assets![0].id, 'rescanning preserves one stable device asset without growing the asset quantity')
+
+  // Reconstruct a legacy split without fabricating scanner observations: move
+  // an actually scanned inventory row to an old-style asset, then consolidate it.
+  const firstInventory = await admin.from('crypto_inventory').select('id').eq('user_id', owner.id).eq('asset_id', assets![0].id).limit(1).single()
+  const oldAsset = await admin.from('assets').insert({ user_id: owner.id, name: 'QA legacy certificate subject', type: 'certificate', status: 'active', metadata: { source: 'agent:QA Windows collector', scanSources: assets![0].metadata.scanSources } }).select('id').single()
+  if (firstInventory.error || oldAsset.error) throw new Error('Unable to prepare legacy-attribution regression fixture')
+  const movedFixture = await admin.from('crypto_inventory').update({ asset_id: oldAsset.data.id }).eq('user_id', owner.id).eq('id', firstInventory.data.id)
+  if (movedFixture.error) throw movedFixture.error
+  const freshAgent = await admin.from('scanner_agents').select('*').eq('user_id', owner.id).eq('id', agentId).single()
+  const consolidated = await consolidateAgentDeviceProfile(admin, freshAgent.data!)
+  const restored = await admin.from('crypto_inventory').select('asset_id').eq('user_id', owner.id).eq('id', firstInventory.data.id).single()
+  const alias = await admin.from('assets').select('status,metadata').eq('user_id', owner.id).eq('id', oldAsset.data.id).single()
+  check(restored.data?.asset_id === consolidated.assetId && alias.data?.status === 'archived', 'legacy component is reattributed without losing its record ID, and its old asset becomes an audit alias')
+  const replay = await consolidateAgentDeviceProfile(admin, freshAgent.data!)
+  check(replay.assetId === consolidated.assetId && Object.values(replay.moved).every((count) => count === 0), 'device consolidation is idempotent')
   const stable = await request(`/api/v1/agent-installer/agents/${agentId}/scan-status?commandId=${firstCommand}`)
   check(stable.body.data?.completedAt === tracked.body.data?.completedAt && stable.body.data?.state === 'completed', 'a later real scan cannot reset an earlier requested scan outcome')
   await page.getByRole('link', { name: /View collected assets/ }).click()
   await page.waitForURL(/dashboard\/assets\?agentId=/)
   await page.getByLabel('Discovery source').waitFor({ timeout: 60_000 })
   await page.getByRole('table').getByText('Windows device', { exact: true }).first().waitFor({ timeout: 60_000 })
+  const machineRows = page.getByRole('row').filter({ hasText: /Device profile · certificates/ })
+  check(await machineRows.count() === 1, 'asset register displays one operational device row, excluding retained audit aliases')
+  await machineRows.getByRole('button', { name: 'Details', exact: true }).click()
+  await page.getByRole('tab', { name: /All components/ }).click()
+  await page.getByRole('tab', { name: /Configuration findings/ }).click()
+  await page.getByRole('tab', { name: /Needs action/ }).click()
+  check(true, 'Needs Action, All Components and Configuration Findings are available within the single device profile')
   check(new URL(page.url()).searchParams.get('agentId') === agentId, 'result link opens live Assets & CBOM filtered to the actual agent')
   await page.screenshot({ path: path.join(OUT, 'assets.png'), fullPage: false })
   await page.getByLabel('Discovery source').selectOption('cloud')
@@ -168,8 +199,7 @@ finally {
   activeChild?.kill()
   if (browser) await browser.close()
   for (const id of users) {
-    const removed = await admin.auth.admin.deleteUser(id)
-    if (removed.error) { console.error(`QA tenant cleanup failed: ${removed.error.message}`); process.exitCode = 1 }
+    try { await cleanupQaTenant(admin, id) } catch (error) { console.error((error as Error).message); process.exitCode = 1 }
   }
   // Resolve and check the generated lab path before recursive deletion.
   if (lab && path.dirname(path.resolve(lab)) === path.resolve(os.tmpdir()) && path.basename(lab).startsWith('qguard-scan-observability-')) fs.rmSync(lab, { recursive: true, force: true })

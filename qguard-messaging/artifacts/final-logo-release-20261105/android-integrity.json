@@ -1,0 +1,65 @@
+{
+  "apk": "C:\\Users\\ruel3\\Music\\qguard-helix-final\\qguard-messaging\\src-tauri\\gen\\android\\app\\build\\outputs\\apk\\arm64\\release\\app-arm64-release.apk",
+  "apkBytes": 22671891,
+  "apkSha256": "3811abe04066b18b0364c8d63276048bcf86d0f7119b3b9ec61ff9a5594c22a2",
+  "nativeBytes": 17949864,
+  "nativeSha256": "fe0742e8ca6cdeca87393f2dd3e16fd90bd60acba8f880bd4f5feb2266d7630d",
+  "currentUiAssets": [
+    "index-76y8ckj_.js",
+    "index-CVV5Rigl.css"
+  ],
+  "zipIntegrityPassed": true,
+  "exactNativeMatch": true,
+  "finalLauncherIconsVerified": [
+    {
+      "source": "src-tauri\\gen\\android\\app\\src\\main\\res\\mipmap-hdpi\\ic_launcher_foreground.png",
+      "apkEntries": [
+        "res/zr.png"
+      ],
+      "size": [
+        162,
+        162
+      ]
+    },
+    {
+      "source": "src-tauri\\gen\\android\\app\\src\\main\\res\\mipmap-mdpi\\ic_launcher_foreground.png",
+      "apkEntries": [
+        "res/QZ.png"
+      ],
+      "size": [
+        108,
+        108
+      ]
+    },
+    {
+      "source": "src-tauri\\gen\\android\\app\\src\\main\\res\\mipmap-xhdpi\\ic_launcher_foreground.png",
+      "apkEntries": [
+        "res/Em.png"
+      ],
+      "size": [
+        216,
+        216
+      ]
+    },
+    {
+      "source": "src-tauri\\gen\\android\\app\\src\\main\\res\\mipmap-xxhdpi\\ic_launcher_foreground.png",
+      "apkEntries": [
+        "res/Lf.png"
+      ],
+      "size": [
+        324,
+        324
+      ]
+    },
+    {
+      "source": "src-tauri\\gen\\android\\app\\src\\main\\res\\mipmap-xxxhdpi\\ic_launcher_foreground.png",
+      "apkEntries": [
+        "res/as.png"
+      ],
+      "size": [
+        432,
+        432
+      ]
+    }
+  ]
+}

@@ -17,7 +17,17 @@
  *       nested build stamps do not defeat the fingerprint.
  *   §6  Score history: records on change, not on repeat; a missing table is
  *       reported as unavailable, never drawn as a trend.
- *   §7  Report methodology states governance as Not Measured.
+ *   §7  Report methodology states governance as Not Measured, and its
+ *       contributions sum to the overall readiness.
+ *
+ * Audit of 2026-11-04 (issue #70 in qguard-common-issues-fixes):
+ *   §8  An evidence-free estate scores 0, not 36 (100 − unmeasured risk), and
+ *       the report methodology agrees, so the report self-check passes.
+ *   §9  Only a deterministic schema/permission gap reads as "no rows"; a
+ *       timeout, JWT or network failure fails the build.
+ *   §10 A stream whose token has expired ends with SESSION_EXPIRED instead
+ *       of building under it.
+ *   §11 The AI Migration Advisor handoff is keyed by user.
  *
  * No server or Supabase required.
  *
@@ -29,11 +39,14 @@ import {
   deriveAssetPostureModel,
   estimateMigrationSchedule,
   quantumRiskFrom,
+  readinessPostureMeasured,
   severityPressureFrom,
 } from '../src/lib/migration/asset-intelligence'
 import { migrationCostUsd, DEFAULT_COST_ASSUMPTIONS } from '../src/lib/migration/cost-model'
 import { assembleExposureIntelligence, type ExposureRawRows } from '../src/api-server/exposure-graph'
-import { payloadFingerprint, streamLiveSnapshot } from '../src/api-server/live-snapshot-stream'
+import { bearerExpiryMs, payloadFingerprint, streamLiveSnapshot } from '../src/api-server/live-snapshot-stream'
+import { isDeterministicReadGap } from '../src/api-server/quantum-readiness'
+import { MIGRATION_HANDOFF_KEY, readMigrationHandoff, writeMigrationHandoff, type MigrationHandoff } from '../src/app/dashboard/quantum-readiness/_advisor'
 import { syncScoreHistory, scoreHistoryFingerprint, type ScoreHistoryEntry } from '../src/api-server/quantum-readiness-history'
 import { scopeSnapshotToAssets } from '../src/services/reporting/ReportScope'
 import { buildReadinessMethodology } from '../src/services/reporting/ReportEvidence'
@@ -240,6 +253,99 @@ async function main() {
   check('governance is Not Measured with 0 weight', gov?.measured === false && gov.weightPct === 0, JSON.stringify(gov))
   const weightSum = methodology.factors.reduce((sum, f) => sum + f.weightPct, 0)
   check('measured weights renormalise to 100%', Math.abs(weightSum - 100) <= 0.2, `${weightSum}%`)
+  // The fixture's readiness (30) is hand-written; re-derive it with the engine
+  // so the sum is compared against what a real snapshot would publish.
+  const runtimeOn = methodology.factors.find((f) => /runtime/i.test(f.factor))?.measured === true
+  const engineReadiness = blendQuantumReadiness({ pqcAdoption: snapshot.scores.pqcAdoption, quantumRisk: snapshot.scores.quantumRisk, runtimeMeasured: runtimeOn })
+  const engineMethodology = buildReadinessMethodology({ ...snapshot, scores: { ...snapshot.scores, quantumReadiness: engineReadiness } } as QuantumReadinessSnapshot)
+  const populatedSum = engineMethodology.factors.reduce((sum, f) => sum + f.contribution, 0)
+  check('populated estate: Σ contributions ≈ engine readiness', Math.abs(populatedSum - engineMethodology.overall) <= 2, `${populatedSum.toFixed(1)} vs ${engineMethodology.overall}`)
+
+  /* ---------------------------------------------------------------- §8 */
+  // 2026-11-04 audit: "100 − risk" was scored when no risk had been measured.
+  console.log('\n§8 Evidence-free readiness')
+  const noFindings = { critical: 0, high: 0, medium: 0, low: 0 }
+  const oldEmptyBlend = blendQuantumReadiness({ pqcAdoption: 0, quantumRisk: 0, runtimeMeasured: false })
+  check('negative control: the unguarded blend scores an empty estate', oldEmptyBlend === 36, `${oldEmptyBlend}`)
+  check('nothing measured ⇒ readiness 0', blendQuantumReadiness({ pqcAdoption: 0, quantumRisk: 0, runtimeMeasured: true, postureMeasured: false }) === 0)
+  check('no component + no finding ⇒ posture unmeasured', !readinessPostureMeasured({ cryptoComponents: 0, findings: noFindings }))
+  check('a component alone measures posture', readinessPostureMeasured({ cryptoComponents: 1, findings: noFindings }))
+  check('a graded finding alone measures posture', readinessPostureMeasured({ cryptoComponents: 0, findings: { ...noFindings, low: 1 } }))
+  // Built from the populated fixture with every measurement removed (importing
+  // the page module would pull in the browser Supabase client).
+  const zeroed = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === 'number' ? 0 : v]))
+  const emptySnapshot = {
+    ...snapshot,
+    hasData: false,
+    scores: { ...zeroed(snapshot.scores as never), quantumReadinessLevel: 'Not Started' },
+    inventory: zeroed(snapshot.inventory as never),
+    riskDistribution: { critical: 0, high: 0, medium: 0, low: 0 },
+    criticalFindings: [],
+    telemetry: { ...snapshot.telemetry, runtimeEvents: 0 },
+    readinessFactors: snapshot.readinessFactors.map((f) => ({ ...f, score: 0, measured: false })),
+  } as unknown as QuantumReadinessSnapshot
+  for (const [label, s] of [
+    ['no data at all', emptySnapshot],
+    ['scans recorded, nothing found', { ...emptySnapshot, hasData: true }],
+  ] as Array<[string, QuantumReadinessSnapshot]>) {
+    const m = buildReadinessMethodology(s)
+    const sum = m.factors.reduce((acc, f) => acc + f.contribution, 0)
+    check(`${label}: Σ contributions == overall (report self-check passes)`, Math.abs(sum - m.overall) <= 2 && m.factors.every((f) => !f.measured), `Σ ${sum} vs ${m.overall}`)
+  }
+
+  /* ---------------------------------------------------------------- §9 */
+  // A failed read must fail the build, not publish "no rows".
+  console.log('\n§9 Read failures are not empty estates')
+  for (const [error, expected] of [
+    [{ code: '42P01', message: 'relation "x" does not exist' }, true],
+    [{ code: 'PGRST205', message: 'Could not find the table' }, true],
+    [{ code: '42703', message: 'column x does not exist' }, true],
+    [{ code: '42501', message: 'permission denied for table x' }, true],
+    [{ code: '57014', message: 'canceling statement due to statement timeout' }, false],
+    [{ code: 'PGRST301', message: 'JWT expired' }, false],
+    [{ message: 'TypeError: fetch failed' }, false],
+  ] as Array<[Record<string, string>, boolean]>) {
+    check(`${error.code || error.message} ⇒ ${expected ? 'deterministic gap (empty)' : 'fails the build'}`, isDeterministicReadGap(error) === expected)
+  }
+
+  /* --------------------------------------------------------------- §10 */
+  console.log('\n§10 Stream token expiry')
+  const jwt = (expSeconds: number) => `h.${Buffer.from(JSON.stringify({ exp: expSeconds })).toString('base64url')}.s`
+  const fakeReq = (token: string) => Object.assign(new EventEmitter(), { headers: { authorization: `Bearer ${token}` } })
+  const liveExp = Math.floor(Date.now() / 1000) + 3600
+  check('reads the bearer exp claim', bearerExpiryMs(fakeReq(jwt(liveExp)) as never) === liveExp * 1000)
+  const runStream = async (token: string) => {
+    const out: string[] = []
+    let ended = false
+    let built = 0
+    const r = fakeReq(token)
+    const s = { status() { return this }, setHeader() {}, flushHeaders() {}, write(c: string) { out.push(c) }, end() { ended = true } }
+    streamLiveSnapshot(r as never, s as never, { event: 'qr', build: async () => { built += 1; return a }, intervalMs: 20, heartbeatMs: 10_000 })
+    await new Promise((resolve) => setTimeout(resolve, 70))
+    r.emit('close')
+    return { out, ended, built }
+  }
+  const expired = await runStream(jwt(Math.floor(Date.now() / 1000) - 5))
+  check('expired token: no build runs under it', expired.built === 0, `${expired.built} build(s)`)
+  check('expired token: SESSION_EXPIRED sent and the stream ends', expired.ended && expired.out.length === 1 && /SESSION_EXPIRED/.test(expired.out[0]), expired.out.join(' ').slice(0, 120))
+  const live = await runStream(jwt(liveExp))
+  check('negative control: a live token streams normally', live.built > 0 && !live.ended && /event: qr\n/.test(live.out[0] || ''))
+
+  /* --------------------------------------------------------------- §11 */
+  console.log('\n§11 Advisor → Planner handoff is per account')
+  const memory = new Map<string, string>()
+  ;(globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: (k: string) => memory.get(k) ?? null,
+    setItem: (k: string, v: string) => void memory.set(k, v),
+    removeItem: (k: string) => void memory.delete(k),
+  }
+  const handoff = { source: 'ai-migration-advisor', generatedAt: new Date().toISOString(), waves: [] } as unknown as MigrationHandoff
+  memory.set(MIGRATION_HANDOFF_KEY, JSON.stringify(handoff))
+  check('written for its author', writeMigrationHandoff(handoff, 'user-a'))
+  check('another account on the same browser reads nothing', readMigrationHandoff('user-b') === null)
+  check('the legacy unkeyed entry is discarded', !memory.has(MIGRATION_HANDOFF_KEY))
+  check('the author reads it back', readMigrationHandoff('user-a')?.source === 'ai-migration-advisor')
+  check('no user ⇒ nothing written or read', !writeMigrationHandoff(handoff, undefined) && readMigrationHandoff(undefined) === null)
 
   console.log(`\n${passed + failed} checks — ${passed} passed, ${failed} failed`)
   process.exit(failed === 0 ? 0 : 1)

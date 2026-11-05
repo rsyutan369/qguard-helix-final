@@ -54,6 +54,12 @@ import {
   riskColorFor,
   type ScannerAssessment,
 } from './_intel';
+import {
+  PanelFocusToggle,
+  scoreGaugeSize,
+  useElementWidth,
+  usePanelFocus,
+} from '@/components/quantum-scan/resizable-panels';
 import type { ModuleState } from './_types';
 
 /* ================================================================ executive = */
@@ -211,7 +217,11 @@ export function ScannerExecutiveSummary({ assessment }: { assessment: ScannerAss
 
 export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAssessment }) {
   const { executive, scoreComponents } = assessment;
-  const [open, setOpen] = React.useState(false);
+  const { focused } = usePanelFocus();
+  // The focus view exists to show detail, so it opens with the decomposition visible.
+  const [open, setOpen] = React.useState(focused);
+  const [panelRef, panelWidth] = useElementWidth<HTMLDivElement>();
+  const gaugeSize = scoreGaugeSize(panelWidth, focused);
 
   const measured = scoreComponents.filter((component) => component.score !== null);
   /* BOTH FLANKS AND BOTH CAPTIONS COME FROM ONE COMPUTATION.
@@ -231,13 +241,17 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
   const classicalRating = executive.classicalScore === null ? null : scoreToGrade(executive.classicalScore);
 
   return (
-    <Panel className="flex h-full flex-col overflow-hidden">
-      <div className="border-b border-white/[0.06] px-5 py-3">
+    /* `@container`: the score block lays out against the PANEL's width, not the
+       viewport's, because the panel can now be dragged wider or narrower than
+       its column. Three columns at 27rem and up; stacked below that. */
+    <Panel ref={panelRef} className="@container flex h-full flex-col overflow-hidden">
+      <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel>Encryption Score</SectionLabel>
+        <PanelFocusToggle />
       </div>
 
-      <div className="grid grid-cols-[minmax(0,1fr)] items-center gap-x-4 gap-y-6 px-5 pt-6 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
-        <div className="text-center sm:text-left">
+      <div className="grid grid-cols-[minmax(0,1fr)] items-center gap-x-4 gap-y-6 px-5 pt-6 @[27rem]:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
+        <div className="text-center @[27rem]:text-left">
           <p className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
             Classical Encryption
           </p>
@@ -248,7 +262,7 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
           <Meter
             value={executive.classicalScore}
             color={classicalRating?.color}
-            className="mx-auto mt-3 max-w-[9rem] sm:mx-0"
+            className="mx-auto mt-3 max-w-[9rem] @[27rem]:mx-0"
           />
           {executive.classicalScore !== null && (
             <p className="mt-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-600">
@@ -261,13 +275,13 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
             are two views of one number, never two heuristics. */}
         <Gauge
           value={executive.encryptionScore}
-          size={268}
+          size={gaugeSize}
           band={executive.gradeable ? executive.gradeLabel : 'Ungraded'}
           bandColor={executive.gradeColor}
           bands={GAUGE_ARC_BANDS}
         />
 
-        <div className="text-center sm:text-right">
+        <div className="text-center @[27rem]:text-right">
           {/* POSTURE, not READINESS.
               This flank is the post-quantum HALF OF THE MODEL — Cryptographic
               Algorithms plus Post-Quantum Readiness — because that is the only
@@ -281,7 +295,7 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
           {postQuantum.score === null ? (
             <>
               <span className="mt-2 block text-3xl font-black tracking-tight text-slate-500">Not scored</span>
-              <p className="mt-1 max-w-[13rem] text-[11px] leading-relaxed text-slate-500 sm:ml-auto">
+              <p className="mt-1 max-w-[13rem] text-[11px] leading-relaxed text-slate-500 @[27rem]:ml-auto">
                 {executive.postQuantumReadinessReason ??
                   'Neither post-quantum category was measured on this run, so no post-quantum posture is published.'}
               </p>
@@ -292,7 +306,7 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
               <p className="mt-1 text-xs font-semibold" style={{ color: scoreColor(postQuantum.score) }}>
                 {postQuantumPostureCaption(postQuantum.score).headline}
               </p>
-              <Meter value={postQuantum.score} className="mx-auto mt-3 max-w-[9rem] sm:mx-0 sm:ml-auto" />
+              <Meter value={postQuantum.score} className="mx-auto mt-3 max-w-[9rem] @[27rem]:mx-0 @[27rem]:ml-auto" />
               <p className="mt-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-600">
                 {postQuantum.weightShare}% of the measured model
               </p>
@@ -301,7 +315,7 @@ export function ScannerEncryptionScore({ assessment }: { assessment: ScannerAsse
                   that contains it, so each number now names the other and says
                   why they differ. Without that, 81% and 51 read as one broken
                   measurement rather than two correct ones. */}
-              <p className="mt-1 text-[10.5px] leading-snug text-slate-600 sm:ml-auto sm:max-w-[13rem]">
+              <p className="mt-1 text-[10.5px] leading-snug text-slate-600 @[27rem]:ml-auto @[27rem]:max-w-[13rem]">
                 {postQuantum.categories.join(' + ')}
                 {executive.postQuantumReadiness !== null && (
                   <>
@@ -509,7 +523,9 @@ const SURFACE_COLOR: Record<string, string> = {
  * rhythm instead of sprouting affordances that lead nowhere.
  */
 function SurfaceRow({ item }: { item: ScannerAssessment['attackSurface'][number] }) {
-  const [open, setOpen] = React.useState(false);
+  // In the focus view every row opens on its evidence: that is what the room is for.
+  const { focused } = usePanelFocus();
+  const [open, setOpen] = React.useState(focused);
   const evidence = item.evidence ?? [];
   const expandable = evidence.length > 0;
 
@@ -590,9 +606,12 @@ export function ScannerAttackSurface({ assessment }: { assessment: ScannerAssess
         {/* Coverage, stated up front. A panel of verdicts is only as good as the
             share of controls that were actually measured, so that share is not
             left for the reader to count. */}
-        <span className="shrink-0 font-mono text-[10px] text-slate-600">
-          {measured}/{assessment.attackSurface.length} measured
-        </span>
+        <div className="flex shrink-0 items-center gap-3">
+          <span className="font-mono text-[10px] text-slate-600">
+            {measured}/{assessment.attackSurface.length} measured
+          </span>
+          <PanelFocusToggle />
+        </div>
       </div>
       <SurfaceScopeNote assessment={assessment} />
       <ul className="divide-y divide-white/[0.05]">
@@ -665,8 +684,9 @@ export function ScannerCryptoIntelligence({ assessment }: { assessment: ScannerA
   const { intelligence } = assessment;
   return (
     <Panel className="h-full overflow-hidden" glow>
-      <div className="border-b border-white/[0.06] px-5 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel accent={ACCENT.violet}>Cryptographic Intelligence</SectionLabel>
+        <PanelFocusToggle />
       </div>
       <SurfaceScopeNote assessment={assessment} />
 
@@ -1092,7 +1112,9 @@ export function ScannerFindingsTable({
   }>;
   total: number;
 }) {
-  const [expanded, setExpanded] = React.useState(false);
+  // The focus view lists every finding rather than the first eight.
+  const { focused } = usePanelFocus();
+  const [expanded, setExpanded] = React.useState(focused);
   /* Worst first. The panel shows eight rows before "View all", and in arrival
      order those eight were whatever the first modules emitted — a CRITICAL
      static-RSA suite could sit below the fold under a list of SAFE rows. */
@@ -1110,10 +1132,13 @@ export function ScannerFindingsTable({
             come from the recorded history in the selected window while the
             headline total is the tenant snapshot — two populations, so both are
             named instead of one number captioning the other's rows. */}
-        <span className="font-mono text-[10px] text-slate-500">
-          {findings.length} recorded observation{findings.length === 1 ? '' : 's'}
-          {total !== findings.length && ` · ${total} across the tenant snapshot`}
-        </span>
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="min-w-0 text-right font-mono text-[10px] text-slate-500">
+            {findings.length} recorded observation{findings.length === 1 ? '' : 's'}
+            {total !== findings.length && ` · ${total} across the tenant snapshot`}
+          </span>
+          <PanelFocusToggle />
+        </div>
       </div>
 
       {findings.length === 0 ? (
@@ -1182,8 +1207,9 @@ const TIMELINE_ICONS = [Clock, Database, Cpu, AlertTriangle, TrendingUp, Layers,
 export function ScannerQuantumTimeline({ assessment }: { assessment: ScannerAssessment }) {
   return (
     <Panel className="h-full overflow-hidden">
-      <div className="border-b border-white/[0.06] px-5 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel accent={ACCENT.amber}>Quantum Exposure Timeline</SectionLabel>
+        <PanelFocusToggle />
       </div>
       <ol className="relative space-y-4 px-5 py-4">
         <span className="absolute left-[2.05rem] top-6 bottom-6 w-px bg-gradient-to-b from-cyan-400/40 via-violet-400/25 to-emerald-400/30" />

@@ -1,0 +1,6 @@
+{
+  "previousApk": "src-tauri/release/QguardMessaging-release.apk",
+  "sha256": "BBE3834A76158A3BC8D6B7E55E86EA4A2780601F35C7073380A19A98C280AC5A",
+  "signerSha256": "595301f1c0dcccd8aae35ff99beac5583f57e2e7931f31fc54cad6dd95fc65a3",
+  "version": "1.5.0"
+}

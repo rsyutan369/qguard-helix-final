@@ -1,0 +1,41 @@
+{
+  "operationalAssetCount": 5,
+  "assets": [
+    "TestVM",
+    "21st.dev",
+    "www.cloudflare.com",
+    "expired.badssl.com",
+    "www.google.com"
+  ],
+  "device": {
+    "id": "b81e473f-b5d9-5242-ae95-db460336a20d",
+    "name": "TestVM",
+    "status": "needs-review",
+    "risk": null,
+    "allComponents": 33,
+    "configurationFindings": 0,
+    "subjectsRetained": 61
+  },
+  "componentSubjects": [
+    {
+      "name": "Certificate: CN=ISRG Root X1, O=Internet Security Research Group, C=US",
+      "subject": "CN=ISRG Root X1, O=Internet Security Research Group, C=US",
+      "posture": "unclassified"
+    },
+    {
+      "name": "Certificate: CN=DigiCert Global Root G3, OU=www.digicert.com, O=DigiCert Inc, C=US",
+      "subject": "CN=DigiCert Global Root G3, OU=www.digicert.com, O=DigiCert Inc, C=US",
+      "posture": "unclassified"
+    },
+    {
+      "name": "Certificate: CN=Microsoft Identity Verification Root Certificate Authority 2020, O=Microsoft Corporation, C=US",
+      "subject": "CN=Microsoft Identity Verification Root Certificate Authority 2020, O=Microsoft Corporation, C=US",
+      "posture": "unclassified"
+    },
+    {
+      "name": "Certificate: CN=Microsoft ECC TS Root Certificate Authority 2018, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+      "subject": "CN=Microsoft ECC TS Root Certificate Authority 2018, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+      "posture": "unclassified"
+    }
+  ]
+}

@@ -49,6 +49,7 @@ import {
   StatusPill,
   scoreColor,
 } from '@/components/quantum-scan/ui';
+import { ResizablePanelRow } from '@/components/quantum-scan/resizable-panels';
 import { ScannerHero } from './_hero';
 import { ExposureModeTabs, ExposureViewTabs, type ExposureView } from '@/components/exposure/ExposureModeTabs';
 import { ExposureHistoryPanel } from '@/components/exposure/ExposureHistoryPanel';
@@ -2796,17 +2797,48 @@ export default function ScannerDashboard() {
                   <ScannerExecutiveSummary assessment={assessment} />
                 </Reveal>
 
-                <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)_minmax(0,1fr)]">
-                  <Reveal>
-                    <ScannerEncryptionScore assessment={assessment} />
-                  </Reveal>
-                  <Reveal delay={0.05}>
-                    <ScannerAttackSurface assessment={assessment} />
-                  </Reveal>
-                  <Reveal delay={0.1}>
-                    <ScannerCryptoIntelligence assessment={assessment} />
-                  </Reveal>
-                </div>
+                {/* Drag the handles between panels to widen one; each panel's
+                    header button opens it in a full-screen focus view. The
+                    default weights are the 1.35 / 0.85 / 1 columns this row
+                    has always used. */}
+                <ResizablePanelRow
+                  storageKey="scanner.posture-row"
+                  panes={[
+                    {
+                      id: 'encryption-score',
+                      title: 'Encryption Score',
+                      defaultSize: 1.35,
+                      minSize: 24,
+                      render: () => (
+                        <Reveal className="h-full">
+                          <ScannerEncryptionScore assessment={assessment} />
+                        </Reveal>
+                      ),
+                    },
+                    {
+                      id: 'attack-surface',
+                      title: 'Observed Attack Surface',
+                      defaultSize: 0.85,
+                      minSize: 20,
+                      render: () => (
+                        <Reveal delay={0.05} className="h-full">
+                          <ScannerAttackSurface assessment={assessment} />
+                        </Reveal>
+                      ),
+                    },
+                    {
+                      id: 'crypto-intelligence',
+                      title: 'Cryptographic Intelligence',
+                      defaultSize: 1,
+                      minSize: 18,
+                      render: () => (
+                        <Reveal delay={0.1} className="h-full">
+                          <ScannerCryptoIntelligence assessment={assessment} />
+                        </Reveal>
+                      ),
+                    },
+                  ]}
+                />
 
                 <Reveal>
                   <ScannerModuleFlow
@@ -2816,14 +2848,33 @@ export default function ScannerDashboard() {
                   />
                 </Reveal>
 
-                <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)]">
-                  <Reveal>
-                    <ScannerFindingsTable findings={dashboardFindings} total={assessment.counters.findings} />
-                  </Reveal>
-                  <Reveal delay={0.05}>
-                    <ScannerQuantumTimeline assessment={assessment} />
-                  </Reveal>
-                </div>
+                <ResizablePanelRow
+                  storageKey="scanner.findings-row"
+                  panes={[
+                    {
+                      id: 'findings',
+                      title: 'Cryptographic Findings',
+                      defaultSize: 1.75,
+                      minSize: 35,
+                      render: () => (
+                        <Reveal className="h-full">
+                          <ScannerFindingsTable findings={dashboardFindings} total={assessment.counters.findings} />
+                        </Reveal>
+                      ),
+                    },
+                    {
+                      id: 'exposure-timeline',
+                      title: 'Quantum Exposure Timeline',
+                      defaultSize: 1,
+                      minSize: 20,
+                      render: () => (
+                        <Reveal delay={0.05} className="h-full">
+                          <ScannerQuantumTimeline assessment={assessment} />
+                        </Reveal>
+                      ),
+                    },
+                  ]}
+                />
 
                 <Reveal>
                   <ScannerRecommendations assessment={assessment} />

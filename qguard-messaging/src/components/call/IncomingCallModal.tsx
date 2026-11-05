@@ -1,15 +1,19 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, BadgeCheck, PhoneIncoming, PhoneOff, ShieldAlert, Video } from "lucide-react";
+import { AlertTriangle, BadgeCheck, Phone, PhoneIncoming, PhoneOff, ShieldAlert, Video } from "lucide-react";
 import { UserAvatar } from "@/components/UserAvatar";
 import { describeIncomingAssurance, type ContactAssurance } from "@/lib/contact-verification";
+import { useOptionalChatPreferences } from "@/lib/chat-preferences-context";
 
 /**
  * Gentle two-tone ring while the modal is visible. Synthesised with WebAudio
  * (no audio asset, nothing to load) and stopped on unmount — accept, reject,
  * remote hangup, or timeout all silence it by tearing the modal down.
+ * `enabled` false (Notifications & Sounds: "Ring for calls" off) keeps it silent;
+ * the call itself still shows.
  */
-function useRingtone() {
+function useRingtone(enabled: boolean) {
   useEffect(() => {
+    if (!enabled) return undefined;
     const AudioCtxCtor = window.AudioContext
       ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioCtxCtor) return undefined;
@@ -52,18 +56,23 @@ function useRingtone() {
       }
       void ctx.close().catch(() => undefined);
     };
-  }, []);
+  }, [enabled]);
 }
 
-export function IncomingCallModal({ callerName, callerUserId, assurance, onAccept, onReject }: {
+export function IncomingCallModal({ callerName, callerUserId, media = "video", assurance, onAccept, onReject }: {
   callerName: string;
   callerUserId: string | null;
+  /** What the caller asked for: answering a voice call never opens the camera. */
+  media?: "voice" | "video";
   /** This device's own record for the calling device id; null while unknown. */
   assurance: ContactAssurance | null;
   onAccept: () => void;
   onReject: () => void;
 }) {
-  useRingtone();
+  // "Ring for calls" for this person (their chat's setting, else the app-wide one).
+  const prefs = useOptionalChatPreferences();
+  const ring = prefs ? prefs.ringFor(callerUserId) : true;
+  useRingtone(ring);
   const notice = describeIncomingAssurance(assurance, callerName);
   // A device never approved for this person needs a second, deliberate tap:
   // scam calls rely on an instant answer (design §7.1).
@@ -82,11 +91,11 @@ export function IncomingCallModal({ callerName, callerUserId, assurance, onAccep
           <span className="absolute inset-0 animate-ping rounded-full bg-cyan-400/40" />
           <UserAvatar userId={callerUserId} name={callerName} size={80} className="relative ring-4 ring-cyan-100" />
           <span className="absolute -bottom-1 -right-1 flex h-8 w-8 items-center justify-center rounded-full bg-cyan-500 text-white ring-2 ring-white">
-            <Video size={15} />
+            {media === "voice" ? <Phone size={15} /> : <Video size={15} />}
           </span>
         </div>
         <div className="mt-4 text-lg font-bold text-ink-950">{callerName}</div>
-        <div className="text-sm text-ink-600">Incoming quantum-encrypted video call</div>
+        <div className="text-sm text-ink-600">Incoming quantum-encrypted {media === "voice" ? "voice" : "video"} call</div>
         {notice && (
           <div
             className={`mt-4 flex items-start gap-2 rounded-lg border p-3 text-left text-xs leading-relaxed ${

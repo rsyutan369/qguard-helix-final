@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { CallFailureNotice } from "@/components/call/CallFailureNotice";
 import { IncomingCallModal } from "@/components/call/IncomingCallModal";
 import { InCallOverlay } from "@/components/call/InCallOverlay";
@@ -10,11 +10,15 @@ import { supabase } from "@/lib/supabase";
 import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import { useSecureCall, type CallPeer } from "@/lib/use-secure-call";
 import { displayableEmail } from "@/lib/account-identity";
+import { callHistory } from "@/lib/call-history";
+import { advanceCallTrack, advanceGroupTrack, type CallTrack, type GroupTrack } from "@/lib/call-history-recorder";
+import type { CallMedia } from "@/lib/call-types";
 
 type CallEngine = ReturnType<typeof useSecureCall>;
 
 interface CallContextValue extends Omit<CallEngine, "startCall"> {
-  startCall: (peer: CallPeer, conversationId: string) => Promise<void>;
+  /** Voice (microphone only) or video; both quantum-encrypted end to end. */
+  startCall: (peer: CallPeer, conversationId: string, options?: { media?: CallMedia }) => Promise<void>;
   peerName: string;
   /** Group calls (roadmap 7.2): a mesh of one-to-one links, up to 3 people. */
   startGroupCall: (conversationId: string, peers: CallPeer[]) => Promise<void>;
@@ -83,6 +87,9 @@ export function CallProvider({ userId, children }: { userId: string; children: R
     return () => { cancelled = true; };
   }, [groupMembersKey, groupCall.joined]);
   const [peerName, setPeerName] = useState("Secure contact");
+  // Whose name `peerName` currently is: a new ring keeps showing the previous
+  // caller's name until the lookup returns, and the history must not record it.
+  const peerNameOwnerRef = useRef<string | null>(null);
   // What this device's own record holds for the ringing device id: shown
   // before answering. Null until the core answers (or outside the app).
   const [incomingAssurance, setIncomingAssurance] = useState<ContactAssurance | null>(null);
@@ -117,16 +124,48 @@ export function CallProvider({ userId, children }: { userId: string; children: R
       .maybeSingle()
       .then(({ data }) => {
         if (cancelled || !data) return;
+        peerNameOwnerRef.current = call.state.peerUserId;
         setPeerName(String(data.name || data.username || displayableEmail(data.email) || "Secure contact"));
       });
     void requestWindowAttention();
     return () => { cancelled = true; };
   }, [call.state.phase, call.state.role, call.state.peerUserId]);
 
-  const startCall = useCallback(async (peer: CallPeer, conversationId: string) => {
+  const startCall = useCallback(async (peer: CallPeer, conversationId: string, options?: { media?: CallMedia }) => {
+    peerNameOwnerRef.current = peer.userId;
     setPeerName(peer.displayName || "Secure contact");
-    await call.startCall(peer, conversationId);
+    await call.startCall(peer, conversationId, { media: options?.media ?? "video" });
   }, [call.startCall]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ---- Call history (sealed on this device by the core) ----
+  // One entry per call, written when it ends. This runs above every gate, so a
+  // call that rings and ends while Secure Chat is locked is recorded too.
+  const callTrackRef = useRef<CallTrack | null>(null);
+  const peerNameRef = useRef(peerName);
+  peerNameRef.current = peerName;
+  useEffect(() => {
+    const owner = peerNameOwnerRef.current;
+    const name = owner && owner === call.state.peerUserId ? peerNameRef.current : "Secure contact";
+    const { track, record } = advanceCallTrack(callTrackRef.current, call.state, Date.now(), name);
+    callTrackRef.current = track;
+    if (record) void callHistory.record(record).catch(() => undefined);
+  }, [call.state]);
+
+  const groupTrackRef = useRef<GroupTrack | null>(null);
+  const groupDeclinedRef = useRef(false);
+  const groupNamesRef = useRef(groupNames);
+  groupNamesRef.current = groupNames;
+  const groupConnected = groupCall.links.some((link) => link.phase === "connected");
+  useEffect(() => {
+    const { track, records } = advanceGroupTrack(
+      groupTrackRef.current,
+      { invite: groupCall.invite, connected: groupConnected },
+      { userId, now: Date.now(), declined: groupDeclinedRef.current, names: groupNamesRef.current },
+    );
+    if (track?.id !== groupTrackRef.current?.id) groupDeclinedRef.current = false;
+    groupTrackRef.current = track;
+    for (const record of records) void callHistory.record(record).catch(() => undefined);
+  }, [groupCall.invite, groupConnected, userId]);
 
   // A call that fails leaves `phase: "ended"` with a reason attached, but the
   // in-call overlay is already gone by then -- so the reason needs its own
@@ -156,6 +195,7 @@ export function CallProvider({ userId, children }: { userId: string; children: R
         <IncomingCallModal
           callerName={peerName}
           callerUserId={call.state.peerUserId ?? null}
+          media={call.state.media}
           assurance={incomingAssurance}
           onAccept={() => void call.accept()}
           onReject={() => call.reject()}
@@ -177,7 +217,7 @@ export function CallProvider({ userId, children }: { userId: string; children: R
           onHangup={() => call.hangup()}
           onToggleMic={() => call.toggleMic()}
           onToggleCamera={() => call.toggleCamera()}
-          screenShare={call.screenShareSupported
+          screenShare={call.screenShareSupported && call.state.media === "video"
             ? { active: call.screenSharing, start: call.startScreenShare, stop: call.stopScreenShare }
             : undefined}
         />
@@ -189,7 +229,7 @@ export function CallProvider({ userId, children }: { userId: string; children: R
             .filter((member) => member !== userId && member !== groupCall.invite!.inviterUserId)
             .map((member) => groupNames[member] ?? "a group member")}
           onJoin={() => void groupCall.joinGroupCall(groupNames)}
-          onDecline={() => groupCall.leaveGroupCall()}
+          onDecline={() => { groupDeclinedRef.current = true; groupCall.leaveGroupCall(); }}
         />
       )}
       {groupCall.invite && groupCall.joined && (

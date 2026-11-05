@@ -37,6 +37,12 @@ import {
   Zap,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import {
+  PanelFocusToggle,
+  scoreGaugeSize,
+  useElementWidth,
+  usePanelFocus,
+} from '@/components/quantum-scan/resizable-panels';
 import type { PublicScanReport } from '@/lib/scanner/public-scan/types';
 import { GAUGE_ARC_BANDS, RATING_TIERS, RISK_COLOR, scoreToGrade } from '@/lib/scanner/public-scan/grading-model';
 import {
@@ -218,7 +224,11 @@ function GradingReferenceModal({ open, onClose }: { open: boolean; onClose: () =
 
 export function EncryptionScore({ report }: { report: PublicScanReport }) {
   const { executive, scoreComponents } = report;
-  const [open, setOpen] = React.useState(false);
+  const { focused } = usePanelFocus();
+  // The focus view exists to show detail, so it opens with the decomposition visible.
+  const [open, setOpen] = React.useState(focused);
+  const [panelRef, panelWidth] = useElementWidth<HTMLDivElement>();
+  const gaugeSize = scoreGaugeSize(panelWidth, focused);
 
   // Real weight totals from the published model — not a hand-typed "60/40"
   // caption. Classical = the 10 non-PQ categories; PQ = the dedicated
@@ -236,15 +246,19 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
   const pqMeasured = executive.postQuantumReadiness !== null;
 
   return (
-    <Panel className="flex h-full flex-col overflow-hidden">
-      <div className="border-b border-white/[0.06] px-5 py-3">
+    /* `@container`: the score block lays out against the PANEL's width, not the
+       viewport's, because the panel can be dragged wider or narrower than its
+       column. Three columns at 27rem and up; stacked below that. */
+    <Panel ref={panelRef} className="@container flex h-full flex-col overflow-hidden">
+      <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel>Encryption Score</SectionLabel>
+        <PanelFocusToggle />
       </div>
 
       {/* The gauge owns its own readout, so the two flanking scores sit in
           their own columns and nothing is layered over the pointer sweep. */}
-      <div className="grid grid-cols-[minmax(0,1fr)] items-center gap-x-4 gap-y-6 px-5 pt-6 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
-        <div className="text-center sm:text-left">
+      <div className="grid grid-cols-[minmax(0,1fr)] items-center gap-x-4 gap-y-6 px-5 pt-6 @[27rem]:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
+        <div className="text-center @[27rem]:text-left">
           <p className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
             Classical Encryption
           </p>
@@ -261,7 +275,7 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
           <Meter
             value={executive.classicalScore}
             color={classicalRating?.color}
-            className="mx-auto mt-3 max-w-[9rem] sm:mx-0"
+            className="mx-auto mt-3 max-w-[9rem] @[27rem]:mx-0"
           />
           <p className="mt-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-600">
             {classicalWeight}% of the weighted model
@@ -275,13 +289,13 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
             color scoreToGrade() assigned that exact score. */}
         <Gauge
           value={executive.encryptionScore}
-          size={268}
+          size={gaugeSize}
           band={executive.gradeable ? executive.gradeLabel : executive.encryptionBand}
           bandColor={executive.gradeColor}
           bands={GAUGE_ARC_BANDS}
         />
 
-        <div className="text-center sm:text-right">
+        <div className="text-center @[27rem]:text-right">
           <p className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
             Post-Quantum Readiness
           </p>
@@ -297,7 +311,7 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
           </p>
           <Meter
             value={executive.postQuantumReadiness}
-            className="mx-auto mt-3 max-w-[9rem] sm:mx-0 sm:ml-auto"
+            className="mx-auto mt-3 max-w-[9rem] @[27rem]:mx-0 @[27rem]:ml-auto"
           />
           <p className="mt-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-600">
             {pqWeight}% of the weighted model
@@ -361,6 +375,7 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
         className="flex w-full items-center justify-center gap-1.5 border-t border-white/[0.06] py-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 transition-colors hover:text-cyan-300"
       >
         {open ? 'Hide' : 'Show'} score decomposition
@@ -408,14 +423,20 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
 /* ======================================================== attack surface ==== */
 
 export function AttackSurface({ report }: { report: PublicScanReport }) {
+  /* Each row's explanation is a hover tooltip in the column. The focus view has
+     the room to print it under the row, so it does — a reason that only lives
+     in a tooltip is invisible on touch and to anyone who does not hover. */
+  const { focused } = usePanelFocus();
   return (
     <Panel className="h-full overflow-hidden">
-      <div className="border-b border-white/[0.06] px-5 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel accent={ACCENT.blue}>Public Attack Surface</SectionLabel>
+        <PanelFocusToggle />
       </div>
       <ul className="divide-y divide-white/[0.05]">
         {report.attackSurface.map((item) => (
-          <li key={item.key} className="flex items-center justify-between gap-3 px-5 py-2.5" title={item.detail}>
+          <li key={item.key} className="px-5 py-2.5" title={focused ? undefined : item.detail}>
+            <div className="flex items-center justify-between gap-3">
             <span className="flex min-w-0 items-center gap-2.5">
               <span
                 className="h-1.5 w-1.5 shrink-0 rounded-full"
@@ -449,6 +470,10 @@ export function AttackSurface({ report }: { report: PublicScanReport }) {
             >
               {item.value}
             </span>
+            </div>
+            {focused && item.detail && (
+              <p className="mt-1 pl-4 text-[11.5px] leading-relaxed text-slate-400">{item.detail}</p>
+            )}
           </li>
         ))}
       </ul>
@@ -462,8 +487,9 @@ export function CryptoIntelligencePanel({ report }: { report: PublicScanReport }
   const { intelligence } = report;
   return (
     <Panel className="h-full overflow-hidden" glow>
-      <div className="border-b border-white/[0.06] px-5 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel accent={ACCENT.violet}>Cryptographic Intelligence</SectionLabel>
+        <PanelFocusToggle />
       </div>
 
       <div className="space-y-4 px-5 py-4">
@@ -586,16 +612,21 @@ export function CryptoIntelligencePanel({ report }: { report: PublicScanReport }
 /* ============================================================= findings ==== */
 
 export function PublicFindings({ report }: { report: PublicScanReport }) {
-  const [expanded, setExpanded] = React.useState(false);
+  // The focus view lists every finding rather than the first eight.
+  const { focused } = usePanelFocus();
+  const [expanded, setExpanded] = React.useState(focused);
   const rows = expanded ? report.findings : report.findings.slice(0, 8);
 
   return (
     <Panel className="overflow-hidden">
       <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel>Public Findings</SectionLabel>
-        <span className="font-mono text-[10px] text-slate-500">
-          {report.findings.length} observable control{report.findings.length === 1 ? '' : 's'}
-        </span>
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="font-mono text-[10px] text-slate-500">
+            {report.findings.length} observable control{report.findings.length === 1 ? '' : 's'}
+          </span>
+          <PanelFocusToggle />
+        </div>
       </div>
 
       <div className="overflow-x-auto">
@@ -654,8 +685,9 @@ const TIMELINE_ICONS = [Clock, Database, Cpu, AlertTriangle, TrendingUp, Layers,
 export function QuantumTimeline({ report }: { report: PublicScanReport }) {
   return (
     <Panel className="h-full overflow-hidden">
-      <div className="border-b border-white/[0.06] px-5 py-3">
+      <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
         <SectionLabel accent={ACCENT.amber}>Quantum Exposure Timeline</SectionLabel>
+        <PanelFocusToggle />
       </div>
       <ol className="relative space-y-4 px-5 py-4">
         <span className="absolute left-[2.05rem] top-6 bottom-6 w-px bg-gradient-to-b from-cyan-400/40 via-violet-400/25 to-emerald-400/30" />

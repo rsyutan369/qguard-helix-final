@@ -30,11 +30,13 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Channel } from "@tauri-apps/api/core";
 import { ask as askDialog, open as openDialog } from "@/lib/tauri-dialog";
-import { withNativeDialog } from "@/lib/native-dialog-guard";
+import { chooseDestinationFolder, prepareDestination } from "@/lib/vault-destination";
 import { isAndroidRuntime, isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import { loadAccountRecovery, publishAccountRecovery, type AccountRecoveryRecord } from "@/lib/account-recovery";
 import { describeSavedFile, saveFileToDevice } from "@/lib/save-file";
 import PortableIdentityPanel from "@/components/vault/PortableIdentityPanel";
+import VaultStorage from "@/components/vault/storage/VaultStorage";
+import type { VaultLockControls } from "@/components/vault/storage/VaultLockCards";
 import { supabase } from "@/lib/supabase";
 import type { QuantumSecurityReport, TelemetryEvent } from "@/lib/types";
 import { type VaultProgress, phaseLabel, opLabel, formatThroughput, formatEta, overallPercent } from "@/lib/vault-progress";
@@ -81,6 +83,10 @@ type LocalVaultAction = "encrypt-file" | "encrypt-folder" | "decrypt-file" | "de
 interface QuantumVaultPageProps {
   userId: string;
   telemetry: TelemetryEvent[];
+  /** Pattern unlock and hidden vaults (owned by the app-level lock state). */
+  vaultLock?: VaultLockControls;
+  /** Files shared with this account waiting for Accept / Decline. */
+  sharedFilesWaiting?: number;
 }
 
 /** Device-local, metadata-only record of a sealed `.qvault` container. Never
@@ -306,54 +312,15 @@ async function resolveSourceName(sourcePath: string): Promise<string> {
   return safeInvoke<string>("vault_resolve_name", { sourcePath }, pathBasename(sourcePath));
 }
 
-interface VaultFolderChoice {
-  /** SAF tree URI (Android) or a filesystem directory path (desktop). */
-  path: string;
-  /** Human-readable location for the activity log. */
-  label: string;
-}
 
-/**
- * Ask the user where the output should go.
- *
- * Desktop uses the native directory dialog. Android has no folder picker in the
- * Tauri dialog plugin, so `vault_pick_folder` drives the Storage Access
- * Framework tree picker natively and persists the grant — which is what lets a
- * user-chosen Android folder hold registry-tracked containers that stay
- * decryptable after a restart.
- */
-async function chooseDestinationFolder(title: string): Promise<VaultFolderChoice | null> {
-  if (IS_ANDROID) {
-    // MUST be guarded like any other app-opened native dialog. The SAF picker is
-    // a separate Activity, so launching it fires the WebView's `visibilitychange`
-    // AND MainActivity.onStop — both of which mean "the user left the app" to the
-    // Zero-Trust auto-lock. Unguarded, choosing a folder would drop the user onto
-    // the PIN screen and tear the vault operation down mid-flight.
-    //
-    // No `fallback` on this safeInvoke call: a real Rust/JNI failure must throw,
-    // not collapse into the same `null` as a genuine user cancel — a swallowed
-    // native error here previously surfaced as a misleading "no destination
-    // folder chosen" with no way to tell it apart from an actual cancel.
-    const choice = await withNativeDialog(() =>
-      safeInvoke<VaultFolderChoice | null>("vault_pick_folder"),
-    );
-    return choice ?? null;
-  }
-  const directory = await openDialog({ multiple: false, directory: true, title });
-  if (typeof directory !== "string") return null;
-  return { path: directory, label: directory };
-}
-
-/** Resolve a chosen folder + file name into the concrete output target. */
-async function prepareDestination(folder: string, fileName: string): Promise<string> {
-  return safeInvoke<string>("vault_prepare_dest", { folder, fileName });
-}
-
-export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPageProps) {
+export default function QuantumVaultPage({ userId, telemetry, vaultLock, sharedFilesWaiting = 0 }: QuantumVaultPageProps) {
   const registryStorageKey = useMemo(() => `qguard.vault.registry.${REGISTRY_VERSION}:${userId}`, [userId]);
   const activityStorageKey = useMemo(() => `qguard.vault.activity.${REGISTRY_VERSION}:${userId}`, [userId]);
   const explorerStorageKey = useMemo(() => `qguard-vault-explorer:${userId}`, [userId]);
 
+  // "storage": the managed encrypted library (default). "tools": encrypt /
+  // decrypt .qvault containers anywhere on disk, recovery and sharing.
+  const [vaultView, setVaultView] = useState<"storage" | "tools">("storage");
   const [status, setStatus] = useState("No active vault operation");
   const [terminalLogs, setTerminalLogs] = useState<VaultTerminalLog[]>([]);
   const [registry, setRegistry] = useState<VaultRegistryEntry[]>([]);
@@ -1508,10 +1475,57 @@ export default function QuantumVaultPage({ userId, telemetry }: QuantumVaultPage
     return <AlertTriangle className="mt-0.5 shrink-0 text-amber-500" size={18} />;
   }
 
+  const viewSwitch = (
+    <div className="shell-card flex flex-wrap items-center justify-between gap-3 p-4">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-500 to-violet-600 text-white shadow-tight">
+          <ShieldCheck size={20} />
+        </span>
+        {/* The page title is already in the app header; this card only states what protects the vault. */}
+        <p className="min-w-0 text-xs text-ink-600">Post-quantum encrypted storage on this device · AES-256-GCM · ML-DSA-87 · ML-KEM-1024</p>
+      </div>
+      <div className="inline-flex rounded-lg border border-line bg-canvas p-1" role="tablist" aria-label="Quantum Vault view">
+        {([
+          ["storage", "Vault Storage"],
+          ["tools", "Encrypt & Decrypt Tools"],
+        ] as const).map(([view, label]) => (
+          <button
+            key={view}
+            type="button"
+            role="tab"
+            aria-selected={vaultView === view}
+            onClick={() => setVaultView(view)}
+            className={`rounded-md px-4 py-1.5 text-sm font-bold transition ${vaultView === view ? "bg-cyan-600 text-white shadow-tight" : "text-ink-600 hover:text-cyan-600"}`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  if (vaultView === "storage") {
+    return (
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
+        {viewSwitch}
+        <VaultStorage
+          userId={userId}
+          vaultLock={vaultLock}
+          sharedFilesWaiting={sharedFilesWaiting}
+          onOpenRecovery={() => {
+            setVaultView("tools");
+            setRecoveryModalOpen(true);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     // grid-cols-[minmax(0,1fr)] keeps the wide Explorer table scrolling inside
     // its card instead of inflating the page past a phone viewport.
     <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
+      {viewSwitch}
       {/* Panel 1 — Quantum Vault Workspace */}
       <section className="shell-card p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">

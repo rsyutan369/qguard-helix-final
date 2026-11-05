@@ -1,7 +1,7 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import {createHash} from 'node:crypto';
-import {mkdirSync, writeFileSync} from 'node:fs';
+import {mkdirSync, statSync, writeFileSync} from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 import {tsImport} from 'tsx/esm/api';
@@ -124,6 +124,53 @@ const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const apiServerEntry = path.join(rootDir, 'src/api-server/index.ts');
 const viteConfigUrl = pathToFileURL(path.join(rootDir, 'vite.config.ts')).href;
 const tsconfigPath = path.join(rootDir, 'tsconfig.json');
+
+/**
+ * Dev-server watch scope: an ALLOW-list, not a deny-list.
+ *
+ * The repository root is also a workspace. Agents, audits and tools keep
+ * writing whole trees into it — cloned third-party repositories under
+ * output/, git worktrees under .claude/worktrees, Playwright and Codex scratch
+ * folders, the Tauri/Android build output under qguard-messaging/. Vite
+ * watches everything under its root and forces a FULL page reload of every
+ * open tab whenever it sees
+ *   - any tsconfig.json added, changed or deleted anywhere in the tree
+ *     (Vite's reloadOnTsconfigChange — unconditional, path "*"), or
+ *   - an .html file change, for the tab showing that page.
+ * So a `git clone` into output/ reloaded the app dozens of times with nobody
+ * touching it (reproduced 2026-11-04: one tsconfig.json written under output/
+ * → `{"type":"full-reload","path":"*"}` → the page reloaded). The previous
+ * deny-list had to be extended after every new incident and was always one
+ * folder behind.
+ *
+ * The browser app is built only from src/ (the '@' alias), public/ and the
+ * root-level files (index.html, .env*, tsconfig.json, package.json), so those
+ * stay watched and every other top-level directory is ignored. Chokidar then
+ * never even walks the ignored trees, which also removes their CPU cost.
+ * Files outside these paths are still SERVED on request — they just no longer
+ * hot-update. If the app ever imports from a new top-level directory, add it
+ * here.
+ */
+const WATCHED_TOP_LEVEL_DIRS = new Set(['src', 'public']);
+const normalizedRootDir = rootDir.replace(/\\/g, '/').toLowerCase();
+
+function isOutsideAppSources(file: string): boolean {
+  const normalized = file.replace(/\\/g, '/');
+  // Case-insensitive prefix match: Windows paths may differ in drive-letter case.
+  if (!normalized.toLowerCase().startsWith(`${normalizedRootDir}/`)) return false;
+  const relative = normalized.slice(normalizedRootDir.length + 1);
+  const slash = relative.indexOf('/');
+  const topLevel = slash === -1 ? relative : relative.slice(0, slash);
+  if (WATCHED_TOP_LEVEL_DIRS.has(topLevel)) return false;
+  if (slash !== -1) return true; // inside some other top-level directory
+  // A top-level entry: keep root files (index.html, .env, tsconfig.json …),
+  // drop every other top-level directory.
+  try {
+    return statSync(file).isDirectory();
+  } catch {
+    return false; // already deleted — let the unlink event through
+  }
+}
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, rootDir, '');
@@ -383,21 +430,11 @@ export default defineConfig(({mode}) => {
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: {
-        // The Tauri/Android build trees are GENERATED output, not source, and
-        // together hold ~29k files (target/ alone is ~26k). Chokidar was walking
-        // and watching every one of them, which burned CPU in the dev server and
-        // — because they are inside the Vite root — made every incremental cargo
-        // or gradle build trigger a full browser page reload, e.g.
-        //   [vite] (client) page reload
-        //     qguard-messaging/src-tauri/gen/android/build/reports/problems/problems-report.html
-        // Nothing here is ever imported by the web app, so ignoring it costs no
-        // reactivity. Keep this list to generated artefacts only.
-        ignored: [
-          '**/qguard-messaging/src-tauri/target/**',
-          '**/qguard-messaging/src-tauri/gen/**',
-          '**/dist/**',
-          '**/.next/**',
-        ],
+        // Only src/, public/ and root-level files are watched — see
+        // isOutsideAppSources. This supersedes the old per-folder deny-list
+        // (qguard-messaging/src-tauri/target|gen, whose cargo/gradle builds
+        // wrote .html files that reloaded the page), which it covers.
+        ignored: [isOutsideAppSources, '**/dist/**', '**/.next/**'],
       },
     },
     preview: {

@@ -270,12 +270,12 @@ export default function MigrationPlanner() {
   const [notice, setNotice] = useState<string | null>(null);
   // Roadmap handed off from the AI Migration Advisor™ (localStorage payload —
   // the exact waves/prioritization/rollback plan the advisor displayed).
-  const [handoff, setHandoff] = useState<MigrationHandoff | null>(() => readMigrationHandoff());
+  const [handoff, setHandoff] = useState<MigrationHandoff | null>(() => readMigrationHandoff(session?.user?.id));
 
   const dismissHandoff = useCallback(() => {
-    clearMigrationHandoff();
+    clearMigrationHandoff(session?.user?.id);
     setHandoff(null);
-  }, []);
+  }, [session?.user?.id]);
 
   /* ---- Asset-centric migration workspace ---- */
   const assetWorkspace = useMigrationAssets();

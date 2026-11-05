@@ -586,13 +586,21 @@ export default function HarvestNow() {
               {/* SECTION 5 — Data Shelf-Life Analyzer */}
               <section className={PANEL}>
                 <div className="relative z-10 p-3">
-                  <SectionHeader icon={CalendarClock} tone="cyan" action="vs CRQC 2030">Data Shelf-Life Analyzer™</SectionHeader>
+                  <SectionHeader icon={CalendarClock} tone="cyan" action={`vs CRQC ${data.breakTimeline.crqcYear}`}>Data Shelf-Life Analyzer™</SectionHeader>
+                  {/* Rows are reference retention periods; only `inScope` rows were found in this estate. */}
+                  <p className="mb-1.5 text-[9px] font-semibold leading-3 text-white/40">
+                    {data.shelfLife.some((s) => s.inScope)
+                      ? `${data.shelfLife.filter((s) => s.inScope).length} data class(es) found in this estate; the rest are reference retention periods.`
+                      : 'Reference retention periods. No data class has been identified in this estate yet — tag asset data classification to bring a row into scope.'}
+                  </p>
                   <div className="space-y-1">
                     {data.shelfLife.map((s) => (
-                      <div key={s.dataType} className={`flex items-center justify-between gap-2 rounded-md border bg-black/25 px-2.5 py-1.5 ${s.exceedsCrqc ? 'border-red-500/30' : 'border-white/8'}`}>
+                      <div key={s.dataType} className={`flex items-center justify-between gap-2 rounded-md border bg-black/25 px-2.5 py-1.5 ${s.inScope && s.exceedsCrqc ? 'border-red-500/30' : 'border-white/8'} ${s.inScope ? '' : 'opacity-75'}`}>
                         <div className="min-w-0">
                           <p className="truncate text-[11px] font-black uppercase tracking-[0.06em] text-white/85">{s.dataType}</p>
-                          <p className="text-[9px] font-semibold text-white/40">{s.retentionRequirement} · expires {s.dataExpiresYear}</p>
+                          <p className="text-[9px] font-semibold text-white/40">
+                            {s.retentionRequirement} · expires {s.dataExpiresYear} · {s.inScope ? `${s.assetCount} asset(s) in scope` : 'reference only'}
+                          </p>
                         </div>
                         <div className="text-right">
                           <p className="text-sm font-black text-cyan-300">{s.confidentialityYears}y</p>
@@ -607,7 +615,7 @@ export default function HarvestNow() {
               {/* SECTION 6 — Quantum Break Timeline */}
               <section className={PANEL}>
                 <div className="relative z-10 p-3">
-                  <SectionHeader icon={Clock} tone="red">Quantum Break Timeline™</SectionHeader>
+                  <SectionHeader icon={Clock} tone="red" action="Projection · no migration">Quantum Break Timeline™</SectionHeader>
                   <div className="mb-2 grid grid-cols-3 gap-2">
                     <Stat label="Now" value={data.breakTimeline.currentYear} tone="cyan" />
                     <Stat label="CRQC" value={data.breakTimeline.crqcYear} tone="red" />
@@ -617,15 +625,22 @@ export default function HarvestNow() {
                     {data.breakTimeline.years.map((y) => {
                       const tone: Tone = y.projectedRisk >= 75 ? 'red' : y.projectedRisk >= 50 ? 'amber' : 'cyan';
                       return (
-                        <div key={y.year} className="flex items-center gap-2">
-                          <span className={`w-9 shrink-0 text-[10px] font-black ${y.critical ? 'text-red-300' : 'text-white/55'}`}>{y.year}</span>
-                          <div className="flex-1"><Bar value={y.projectedRisk} tone={tone} /></div>
-                          <span className={`w-8 shrink-0 text-right text-[10px] font-black ${TONE_TEXT[tone]}`}>{y.projectedRisk}</span>
+                        <div key={y.year} title={y.milestone || undefined}>
+                          <div className="flex items-center gap-2">
+                            <span className={`w-9 shrink-0 text-[10px] font-black ${y.critical ? 'text-red-300' : 'text-white/55'}`}>{y.year}</span>
+                            <div className="flex-1"><Bar value={y.projectedRisk} tone={tone} /></div>
+                            <span className={`w-8 shrink-0 text-right text-[10px] font-black ${TONE_TEXT[tone]}`}>{y.projectedRisk}</span>
+                          </div>
+                          {y.milestone ? <p className="ml-11 text-[9px] font-semibold text-white/40">{y.milestone}</p> : null}
                         </div>
                       );
                     })}
                   </div>
-                  <p className="mt-2 text-[9px] font-semibold leading-3 text-white/40">{data.breakTimeline.years.find((y) => y.critical)?.milestone || 'Projected quantum risk growth toward CRQC.'}</p>
+                  {/* Only the first year is measured; the rest is a model. Without this
+                      line the bars read as forecast measurements. */}
+                  <p className="mt-2 text-[9px] font-semibold leading-3 text-white/40">
+                    {data.breakTimeline.currentYear} is today's measured quantum risk ({data.breakTimeline.currentRisk}/100). Later years are a planning projection: the risk rises toward 100 at the assumed CRQC year ({data.breakTimeline.crqcYear}) if nothing is migrated.
+                  </p>
                 </div>
               </section>
             </div>

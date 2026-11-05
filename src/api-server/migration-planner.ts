@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { createSingleFlightCache } from '@/lib/single-flight-cache'
+import { streamLiveSnapshot } from './live-snapshot-stream'
 import { buildSnapshot } from './quantum-readiness'
 import { buildReportModel } from '@/services/reporting/ReportEvidence'
 import { DEFAULT_COST_ASSUMPTIONS, normalizeToWholeHours } from '@/lib/migration/cost-model'
@@ -440,29 +441,12 @@ router.get('/', async (req: Request, res: Response) => {
 
 router.get('/stream', async (req: Request, res: Response) => {
   const { token, user } = req as AuthedRequest
-  res.status(200)
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
-  res.flushHeaders?.()
-
-  let closed = false
-  const send = (event: string, data: unknown) => { if (!closed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`) }
-
-  const emit = async () => {
-    try {
-      const data = await buildPlan(token!, user!.id)
-      send('migration-plan', data)
-    } catch (err) {
-      send('migration-plan-error', { message: err instanceof Error ? err.message : 'stream failed' })
-    }
-  }
-
-  await emit()
-  const refresh = setInterval(emit, 30000)
-  const heartbeat = setInterval(() => { if (!closed) res.write(': heartbeat\n\n') }, 25000)
-  req.on('close', () => { closed = true; clearInterval(refresh); clearInterval(heartbeat) })
+  streamLiveSnapshot(req, res, {
+    event: 'migration-plan',
+    build: () => buildPlan(token!, user!.id),
+    intervalMs: 30000,
+    heartbeatMs: 25000,
+  })
 })
 
 /* ================================================================== */

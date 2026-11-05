@@ -65,11 +65,11 @@ const EXPIRY_OPTIONS = [
 ];
 
 export default function QkmsInventory() {
-  const { data, state, error, live, refresh, reconnect } = useKeyInventory();
+  const { data, state, error, live, verifiedAt, refresh, reconnect } = useKeyInventory();
   const { notice, show, dismiss } = useNotice();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
-  const query = useKeyQuery({ limit: 25, sort: 'risk', dir: 'desc' });
+  const query = useKeyQuery({ limit: 25, sort: 'risk', dir: 'desc' }, data?.generatedAt ?? null);
   const actions = useQkmsActions(() => {
     void refresh(true);
     query.reload();
@@ -116,6 +116,7 @@ export default function QkmsInventory() {
       error={error}
       hasData={data?.hasData ?? false}
       generatedAt={data?.generatedAt ?? null}
+      verifiedAt={verifiedAt}
       latestEvidenceAt={data?.latestEvidenceAt ?? null}
       telemetry={data?.telemetry ?? null}
       nav={data?.nav ?? null}
@@ -319,6 +320,7 @@ export default function QkmsInventory() {
       </div>
 
       <KeyDrawer
+        syncTo={data?.generatedAt ?? null}
         keyId={selectedKey}
         onClose={() => setSelectedKey(null)}
         onChanged={() => { void refresh(true); query.reload(); }}

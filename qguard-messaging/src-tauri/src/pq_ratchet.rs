@@ -41,18 +41,11 @@
 
 use std::collections::HashMap;
 
-use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
-use pqcrypto_mlkem::mlkem1024;
-use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
-use rand::rngs::OsRng;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use sha3::Sha3_256;
-use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::crypto::kdf::sha3_256;
+use crate::crypto::provider::{self, MLKEM1024_CIPHERTEXT_BYTES, MLKEM1024_PUBLIC_KEY_BYTES};
 use crate::error::{QGuardError, Result};
 
 /// The capability label a device publishes in its suite, and the label stamped
@@ -214,7 +207,7 @@ impl RatchetHeader {
             return bad("ratchet key must be 32 bytes");
         }
         if let Some(offer) = &self.pq_offer {
-            if offer.ek.len() != mlkem1024::public_key_bytes() {
+            if offer.ek.len() != MLKEM1024_PUBLIC_KEY_BYTES {
                 return bad("ML-KEM-1024 offer has the wrong length");
             }
             if offer.id != offer_id(&offer.ek) {
@@ -222,7 +215,7 @@ impl RatchetHeader {
             }
         }
         if let Some(answer) = &self.pq_answer {
-            if answer.ct.len() != mlkem1024::ciphertext_bytes() {
+            if answer.ct.len() != MLKEM1024_CIPHERTEXT_BYTES {
                 return bad("ML-KEM-1024 answer has the wrong length");
             }
             if !is_hex_id(&answer.for_id, OFFER_ID_LEN) || answer.for_id.len() != OFFER_ID_LEN {
@@ -279,8 +272,6 @@ impl RatchetHeader {
 // Key schedule
 // ---------------------------------------------------------------------------
 
-type HmacSha3 = Hmac<Sha3_256>;
-
 /// What binds a session's root to the exchange that created it.
 pub struct InitContext<'a> {
     pub session_id: &'a str,
@@ -307,9 +298,8 @@ fn init_transcript(ctx: &InitContext<'_>, initiator_dh: &[u8; 32]) -> [u8; 32] {
 }
 
 fn hkdf_expand_32(salt: &[u8], ikm: &[u8], info: &[u8]) -> Result<[u8; 32]> {
-    let hk = Hkdf::<Sha3_256>::new(Some(salt), ikm);
     let mut out = [0u8; 32];
-    hk.expand(info, &mut out)
+    provider::hkdf_sha3_256(Some(salt), ikm, info, &mut out)
         .map_err(|e| QGuardError::Crypto(format!("ratchet HKDF failed: {e}")))?;
     Ok(out)
 }
@@ -333,9 +323,8 @@ fn kdf_rk(root: &[u8; 32], dh_out: &[u8; 32], pq_secret: Option<&[u8]>) -> Resul
     // The flag closes the encoding: "no ML-KEM" can never collide with a step
     // whose ML-KEM secret happened to be empty.
     ikm.push(u8::from(pq_secret.is_some()));
-    let hk = Hkdf::<Sha3_256>::new(Some(root), &ikm);
     let mut out = Zeroizing::new([0u8; 64]);
-    hk.expand(LABEL_RK, out.as_mut())
+    provider::hkdf_sha3_256(Some(root), &ikm, LABEL_RK, out.as_mut())
         .map_err(|e| QGuardError::Crypto(format!("ratchet root step failed: {e}")))?;
     let mut next_root = [0u8; 32];
     let mut chain = [0u8; 32];
@@ -347,18 +336,14 @@ fn kdf_rk(root: &[u8; 32], dh_out: &[u8; 32], pq_secret: Option<&[u8]>) -> Resul
 /// Chain step: `(chain', message key)`.
 fn kdf_ck(chain: &[u8; 32]) -> Result<([u8; 32], [u8; 32])> {
     let derive = |byte: u8| -> Result<[u8; 32]> {
-        let mut mac = HmacSha3::new_from_slice(chain)
-            .map_err(|_| QGuardError::Crypto("ratchet chain key rejected".to_string()))?;
-        mac.update(&[byte]);
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&mac.finalize().into_bytes());
-        Ok(out)
+        provider::hmac_sha3_256(chain, &[byte])
+            .map_err(|_| QGuardError::Crypto("ratchet chain key rejected".to_string()))
     };
     Ok((derive(0x02)?, derive(0x01)?))
 }
 
 fn x25519(secret: &[u8; 32], peer: &[u8; 32]) -> Result<[u8; 32]> {
-    let shared = StaticSecret::from(*secret).diffie_hellman(&X25519Public::from(*peer));
+    let shared = provider::x25519_shared(secret, peer)?;
     if !shared.was_contributory() {
         return Err(QGuardError::Crypto(
             "ratchet X25519 step was non-contributory (low-order key); refusing it".to_string(),
@@ -396,10 +381,9 @@ struct DhKeypair {
 }
 
 impl DhKeypair {
-    fn generate() -> Self {
-        let secret = StaticSecret::random_from_rng(OsRng);
-        let public = X25519Public::from(&secret);
-        Self { secret: secret.to_bytes(), public: *public.as_bytes() }
+    fn generate() -> Result<Self> {
+        let (secret, public) = provider::x25519_generate()?;
+        Ok(Self { secret: *secret, public })
     }
 }
 
@@ -417,10 +401,9 @@ struct PqKeypair {
 }
 
 impl PqKeypair {
-    fn generate() -> Self {
-        let (ek, dk) = mlkem1024::keypair();
-        let ek = mlkem1024::PublicKey::as_bytes(&ek).to_vec();
-        Self { id: offer_id(&ek), ek, dk: mlkem1024::SecretKey::as_bytes(&dk).to_vec() }
+    fn generate() -> Result<Self> {
+        let (ek, dk) = provider::mlkem1024_generate()?;
+        Ok(Self { id: offer_id(&ek), ek, dk: dk.to_vec() })
     }
 }
 
@@ -491,9 +474,7 @@ impl Drop for Session {
 }
 
 pub fn new_session_id() -> String {
-    let mut bytes = [0u8; 16];
-    OsRng.fill_bytes(&mut bytes);
-    hex::encode(bytes)
+    hex::encode(provider::random_array::<16>())
 }
 
 /// The key of init message `header.n`, straight from the seeding secret.
@@ -533,7 +514,7 @@ impl Session {
         init: InitMaterial,
         now: i64,
     ) -> Result<Self> {
-        let dh = DhKeypair::generate();
+        let dh = DhKeypair::generate()?;
         let (root, chain) = derive_init(shared, ctx, &dh.public)?;
         Ok(Self {
             id: ctx.session_id.to_string(),
@@ -703,12 +684,14 @@ impl Session {
                     .as_ref()
                     .filter(|mine| mine.id == answer.for_id)
                     .ok_or_else(|| QGuardError::Crypto("ML-KEM answer to an offer this session never made".to_string()))?;
-                let dk = mlkem1024::SecretKey::from_bytes(&mine.dk)
-                    .map_err(|_| QGuardError::Crypto("stored ML-KEM offer key is malformed".to_string()))?;
-                let ct = mlkem1024::Ciphertext::from_bytes(&answer.ct)
-                    .map_err(|_| QGuardError::Crypto("ML-KEM answer is malformed".to_string()))?;
-                let secret = mlkem1024::decapsulate(&ct, &dk);
-                Some(Zeroizing::new(mlkem1024::SharedSecret::as_bytes(&secret).to_vec()))
+                if mine.dk.len() != provider::MLKEM1024_SECRET_KEY_BYTES {
+                    return Err(QGuardError::Crypto("stored ML-KEM offer key is malformed".to_string()));
+                }
+                if answer.ct.len() != MLKEM1024_CIPHERTEXT_BYTES {
+                    return Err(QGuardError::Crypto("ML-KEM answer is malformed".to_string()));
+                }
+                let secret = provider::mlkem1024_decapsulate(&mine.dk, &answer.ct)?;
+                Some(Zeroizing::new(secret.to_vec()))
             }
             None => None,
         };
@@ -733,16 +716,17 @@ impl Session {
         let peer = self
             .dh_peer
             .ok_or_else(|| QGuardError::Crypto("ratchet session has no peer key".to_string()))?;
-        let fresh = DhKeypair::generate();
+        let fresh = DhKeypair::generate()?;
         let dh_out = Zeroizing::new(x25519(&fresh.secret, &peer)?);
         let mut answer = None;
         let mut pq_secret = None;
         if let Some(offer) = peer_offer.filter(|offer| self.last_answered_offer.as_deref() != Some(offer.id.as_str())) {
-            let ek = mlkem1024::PublicKey::from_bytes(&offer.ek)
-                .map_err(|_| QGuardError::Crypto("ML-KEM offer is malformed".to_string()))?;
-            let (secret, ct) = mlkem1024::encapsulate(&ek);
-            pq_secret = Some(Zeroizing::new(mlkem1024::SharedSecret::as_bytes(&secret).to_vec()));
-            answer = Some(PqAnswer { for_id: offer.id.clone(), ct: mlkem1024::Ciphertext::as_bytes(&ct).to_vec() });
+            if offer.ek.len() != MLKEM1024_PUBLIC_KEY_BYTES {
+                return Err(QGuardError::Crypto("ML-KEM offer is malformed".to_string()));
+            }
+            let (ct, secret) = provider::mlkem1024_encapsulate(&offer.ek)?;
+            pq_secret = Some(Zeroizing::new(secret.to_vec()));
+            answer = Some(PqAnswer { for_id: offer.id.clone(), ct });
         }
         let (root, chain) = kdf_rk(&self.root, &dh_out, pq_secret.as_ref().map(|secret| secret.as_slice()))?;
         self.root = root;
@@ -756,7 +740,7 @@ impl Session {
         }
         self.pq_answer = answer;
         if self.pq_mine.is_none() && self.pq_due(now) {
-            self.pq_mine = Some(PqKeypair::generate());
+            self.pq_mine = Some(PqKeypair::generate()?);
         }
         Ok(())
     }
@@ -1298,7 +1282,7 @@ mod tests {
         bad.session = "not hex!".to_string();
         assert!(bad.validate().is_err());
         let mut bad = header.clone();
-        let ek = PqKeypair::generate().ek.clone();
+        let ek = PqKeypair::generate().unwrap().ek.clone();
         bad.pq_offer = Some(PqOffer { id: "00".repeat(16), ek });
         assert!(bad.validate().is_err(), "an offer id must be the digest of its key");
     }

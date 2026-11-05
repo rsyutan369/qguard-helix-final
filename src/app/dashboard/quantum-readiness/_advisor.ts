@@ -105,18 +105,36 @@ export function buildMigrationHandoff(snapshot: QuantumReadinessSnapshot, model:
   };
 }
 
-export function writeMigrationHandoff(handoff: MigrationHandoff): boolean {
+/**
+ * The handoff carries a tenant's asset names and migration waves, so it is
+ * keyed by USER. Under one shared key, the next account signed in on the same
+ * browser opened Migration Planner or Sandbox on the previous account's
+ * roadmap for up to 7 days.
+ */
+function handoffKey(userId: string): string {
+  return `${MIGRATION_HANDOFF_KEY}:${userId}`;
+}
+
+export function writeMigrationHandoff(handoff: MigrationHandoff, userId: string | null | undefined): boolean {
+  if (!userId) return false;
   try {
-    localStorage.setItem(MIGRATION_HANDOFF_KEY, JSON.stringify(handoff));
+    localStorage.setItem(handoffKey(userId), JSON.stringify(handoff));
     return true;
   } catch {
     return false;
   }
 }
 
-export function readMigrationHandoff(): MigrationHandoff | null {
+export function readMigrationHandoff(userId: string | null | undefined): MigrationHandoff | null {
   try {
-    const raw = localStorage.getItem(MIGRATION_HANDOFF_KEY);
+    // The pre-keyed entry cannot be attributed to an account: discard it.
+    localStorage.removeItem(MIGRATION_HANDOFF_KEY);
+  } catch {
+    /* ignore */
+  }
+  if (!userId) return null;
+  try {
+    const raw = localStorage.getItem(handoffKey(userId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as MigrationHandoff;
     if (parsed?.source !== 'ai-migration-advisor' || !Array.isArray(parsed.waves)) return null;
@@ -129,9 +147,10 @@ export function readMigrationHandoff(): MigrationHandoff | null {
   }
 }
 
-export function clearMigrationHandoff(): void {
+export function clearMigrationHandoff(userId: string | null | undefined): void {
+  if (!userId) return;
   try {
-    localStorage.removeItem(MIGRATION_HANDOFF_KEY);
+    localStorage.removeItem(handoffKey(userId));
   } catch {
     /* ignore */
   }

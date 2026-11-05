@@ -1,0 +1,5 @@
+{
+  "checkedFiles": 320,
+  "changedFiles": [],
+  "scope": "TypeScript/TSX application files except the CSS-import entrypoint, and all Rust source files; compared with the starting workspace, including its existing changes."
+}

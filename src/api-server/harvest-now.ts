@@ -1,8 +1,9 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
-import { buildSnapshot } from './quantum-readiness'
+import { buildSnapshot, isDeterministicReadGap, SnapshotReadError } from './quantum-readiness'
 import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
-import { namesCryptography } from '@/lib/scanner/finding-identity'
+import { isCryptographicComponent, namesCryptography } from '@/lib/scanner/finding-identity'
+import { algorithmFamily } from '@/lib/governance/subjects'
 import { isInternetFacing, levelFromRisk } from '@/lib/migration/asset-intelligence'
 import { createSingleFlightCache } from '@/lib/single-flight-cache'
 import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
@@ -66,15 +67,22 @@ async function safeRows(
   userId: string,
   limit = 2000,
 ): Promise<Row[]> {
+  // Only a deterministic gap (table/column not provisioned, no permission)
+  // reads as "no rows"; a transient failure fails the build so one blip
+  // cannot publish — and cache — an HNDL picture missing a whole table.
+  let result: { data: unknown; error: unknown }
   try {
     const q = client.from(table).select(columns).eq('user_id', userId)
     const built = (q as unknown as { order: (c: string, o: { ascending: boolean }) => { limit: (n: number) => Promise<{ data: unknown; error: unknown }> } }).order('created_at', { ascending: false }).limit(limit)
-    const { data, error } = await built
-    if (error) return []
-    return (data as Row[]) || []
-  } catch {
+    result = await built
+  } catch (error) {
+    throw new SnapshotReadError(table, error)
+  }
+  if (result.error) {
+    if (!isDeterministicReadGap(result.error)) throw new SnapshotReadError(table, result.error)
     return []
   }
+  return (result.data as Row[]) || []
 }
 
 type Snapshot = Awaited<ReturnType<typeof buildSnapshot>>
@@ -134,11 +142,6 @@ function assetLabel(snapshot: Snapshot, assetId: string): string {
   if (node?.label) return node.label
   const asset = snapshot.topRiskAssets.find((a) => str((a as unknown as Row).id) === assetId)
   return asset?.asset || ''
-}
-
-function isTransportComponent(algorithm: string, protocol: string, itemType: string): boolean {
-  const text = `${algorithm} ${protocol} ${itemType}`.toLowerCase()
-  return /tls|ssl|ssh|vpn|ipsec|protocol|handshake|cipher|key.?exchange|kem|dh/.test(text)
 }
 
 function migrationPriority(cryptoClass: CryptoClass, assetCount: number, internetFacing: boolean): { label: string; rank: number } {
@@ -204,7 +207,19 @@ function buildBanner(snapshot: Snapshot, futureDecryptableTb: number, criticalFi
 /* SECTION 2 — Quantum Exposure Graph™                                */
 /* Layered: Internet → TLS → Certificates → Keys → Data Stores.       */
 /* ================================================================== */
-function buildExposureGraph(snapshot: Snapshot, cryptoInventory: Row[], certificates: Row[]) {
+/**
+ * Transport-layer crypto: a protocol / key-exchange / cipher-suite component,
+ * or a component observed on a TLS/SSH/IPsec channel. The tier used to test
+ * `/…|kem|dh/` against the algorithm, protocol AND item type of every
+ * inventory row, so libraries, finding rows and every rescan's duplicate all
+ * counted. One tenant's 2 hosts read "TLS Endpoints 115".
+ */
+function isTransportTierComponent(row: Row): boolean {
+  if (/^(protocol|key[-_ ]?exchange|cipher[-_ ]?suite|tls|handshake)$/i.test(str(row.item_type))) return true
+  return /\b(tls|ssl|ssh|ipsec|vpn|quic|dtls)\b/i.test(str(row.protocol))
+}
+
+function buildExposureGraph(snapshot: Snapshot, cryptoInventory: Row[], certificates: Row[], keys: Row[]) {
   const inv = snapshot.inventory
   const tierClass = (vulnerable: number, total: number): CryptoClass => {
     if (total === 0) return 'unknown'
@@ -212,17 +227,27 @@ function buildExposureGraph(snapshot: Snapshot, cryptoInventory: Row[], certific
     if (vulnerable >= total * 0.6) return 'vulnerable'
     return 'hybrid'
   }
-  const tlsItems = cryptoInventory.filter((c) => isTransportComponent(str(c.algorithm), str(c.protocol), str(c.item_type)))
-  const tlsVuln = tlsItems.filter((c) => c.is_vulnerable === true || classifyAlgorithm(str(c.algorithm)) === 'vulnerable').length
+  // Same population as the snapshot's CBOM (finding rows excluded), one entry
+  // per distinct component per asset rather than per scan that saw it.
+  const distinctComponents = new Map<string, Row>()
+  for (const row of cryptoInventory) {
+    if (!isCryptographicComponent(row as never, algorithmFamily)) continue
+    const key = `${str(row.asset_id)}|${str(row.item_type).toLowerCase()}|${str(row.algorithm).toLowerCase()}|${str(row.protocol).toLowerCase()}`
+    if (!distinctComponents.has(key)) distinctComponents.set(key, row)
+  }
+  const tlsItems = [...distinctComponents.values()].filter(isTransportTierComponent)
+  const tlsVuln = tlsItems.filter((c) => c.is_quantum_safe !== true && (c.is_vulnerable === true || classifyAlgorithm(str(c.algorithm)) === 'vulnerable')).length
   const certVuln = certificates.filter((c) => c.is_quantum_safe !== true && classifyAlgorithm(str(c.algorithm)) === 'vulnerable').length
-  const keyItems = cryptoInventory.filter((c) => /key|cert|secret/i.test(str(c.item_type)))
-  const keyVuln = keyItems.filter((c) => c.is_vulnerable === true).length
+  // Keys = the key inventory (QKMS), the same population as "Keys Discovered"
+  // on the overview. Scanned certificates were counted here as keys (17 "keys"
+  // beside an overview reading 0).
+  const keyVuln = keys.filter((k) => classifyAlgorithm(str(k.algorithm)) === 'vulnerable').length
 
   const tiers = [
     { id: 'internet', label: 'Internet Edge', kind: 'edge', total: inv.domainsScanned, vulnerable: 0, cryptoClass: 'unknown' as CryptoClass, detail: `${inv.domainsScanned} scanned host(s) / domain(s)` },
-    { id: 'tls', label: 'TLS Endpoints', kind: 'protocol', total: tlsItems.length || inv.domainsScanned, vulnerable: tlsVuln, cryptoClass: tierClass(tlsVuln, tlsItems.length || inv.domainsScanned), detail: `${tlsVuln} non-quantum-safe handshake(s)` },
+    { id: 'tls', label: 'TLS / Transport Crypto', kind: 'protocol', total: tlsItems.length, vulnerable: tlsVuln, cryptoClass: tierClass(tlsVuln, tlsItems.length), detail: tlsItems.length ? `${tlsVuln} of ${tlsItems.length} distinct protocol / key-exchange component(s) not quantum-safe` : 'No transport-layer component observed yet' },
     { id: 'certs', label: 'Certificates', kind: 'pki', total: inv.certificatesAnalyzed, vulnerable: certVuln, cryptoClass: tierClass(certVuln, inv.certificatesAnalyzed), detail: `${certVuln} classical certificate signature(s)` },
-    { id: 'keys', label: 'Cryptographic Keys', kind: 'key', total: inv.keysDiscovered || keyItems.length, vulnerable: keyVuln, cryptoClass: tierClass(keyVuln, inv.keysDiscovered || keyItems.length), detail: `${keyVuln} quantum-vulnerable key(s)` },
+    { id: 'keys', label: 'Cryptographic Keys', kind: 'key', total: inv.keysDiscovered, vulnerable: keyVuln, cryptoClass: tierClass(keyVuln, inv.keysDiscovered), detail: `${keyVuln} quantum-vulnerable key(s) in the key inventory` },
     { id: 'databases', label: 'Databases', kind: 'store', total: snapshot.exposureGraph.nodes.filter((n) => /db|database|sql|store/i.test(n.type)).length, vulnerable: 0, cryptoClass: 'unknown' as CryptoClass, detail: 'Encrypted-at-rest data stores' },
     // One tier for the vault: "Backups" and "Long-Term Storage" used to be two
     // tiers printing the SAME vault-file count, which read as twice the data.
@@ -1100,7 +1125,7 @@ function assembleHndlIntelligence(snapshot: Snapshot, rows: HndlRawRows) {
     hasData: snapshot.hasData,
     connected: true,
     banner: buildBanner(snapshot, futureDecryptable.projectedDecryptableTb, criticalFindings),
-    exposureGraph: buildExposureGraph(snapshot, cryptoInventory, certificates),
+    exposureGraph: buildExposureGraph(snapshot, cryptoInventory, certificates, rows.keys || []),
     theater: buildTheater(snapshot, assets, certificates),
     harvestValue: buildHarvestValue(snapshot, assets),
     shelfLife: buildShelfLife(snapshot, assets),

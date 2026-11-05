@@ -5,8 +5,9 @@
  * desktop master, the Android adaptive launcher layers and legacy icons, the
  * Windows NSIS installer artwork and the Play Store listing icon.
  *
- * The master is a circular badge on a transparent canvas, so every target is a
- * square crop of that disk. Desktop .ico/.icns and the platform PNG ladders are
+ * The master is the supplied transparent Q/helix/shield artwork. Its complete
+ * square canvas is preserved; no circular crop is applied. Desktop .ico/.icns
+ * and the platform PNG ladders are
  * produced afterwards by the Tauri CLI from src-tauri/app-icon.png:
  *
  *   node tools/brand-assets.mjs
@@ -25,12 +26,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MASTER = path.join(root, "brand", "qguard-messaging-logo.png");
 const ANDROID_RES = path.join(root, "src-tauri", "gen", "android", "app", "src", "main", "res");
 
-// The badge disk in the 1254px master: centre (622, 624), opaque diameter
-// ~1180px. A 1196px square keeps the full rim with a 1-2% clear margin.
-const BADGE = { left: 24, top: 26, side: 1196 };
+// Preserve the full master canvas, including the Q tail, helix and glow.
 
-// Deep navy that matches the badge's outer field; used behind it wherever a
-// platform needs an opaque or full-bleed surface.
+// Deep navy provides contrast behind the transparent mark wherever a
+// platform requires an opaque or full-bleed surface.
 const NAVY_CORE = "#0B1E5B";
 const NAVY_EDGE = "#030817";
 
@@ -38,10 +37,8 @@ const DENSITIES = { mdpi: 1, hdpi: 1.5, xhdpi: 2, xxhdpi: 3, xxxhdpi: 4 };
 
 async function badge(size) {
   const img = sharp(MASTER)
-    .extract({ left: BADGE.left, top: BADGE.top, width: BADGE.side, height: BADGE.side })
-    .resize(size, size, { kernel: "lanczos3" });
-  // Small launcher sizes lose the wordmark edges to resampling blur; a light
-  // unsharp mask restores the rim and lettering without haloing.
+    .resize(size, size, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 }, kernel: "lanczos3" });
+  // A light unsharp mask retains the shield and helix detail at small sizes.
   if (size <= 128) img.sharpen({ sigma: 0.6 });
   return img.png().toBuffer();
 }
@@ -64,6 +61,15 @@ function navyPlateSvg(width, height, glowCy = height / 2, glowR = Math.max(width
   </defs>
   <rect width="100%" height="100%" fill="url(#field)"/>
 </svg>`);
+}
+
+// Replacing an asset atomically also works when a Windows image preview has
+// mapped the previous file. Never truncate a live icon in place.
+function writeAtomic(file, bytes) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temporary = file + '.qg-asset-tmp';
+  fs.writeFileSync(temporary, bytes);
+  fs.renameSync(temporary, file);
 }
 
 /** Minimal 24-bit bottom-up BMP encoder; NSIS/MUI2 only accepts BMP artwork. */
@@ -93,12 +99,12 @@ async function writeBmp(pipeline, file) {
       out[row + x * 3 + 2] = data[src];
     }
   }
-  fs.writeFileSync(file, out);
+  writeAtomic(file, out);
 }
 
 async function writePng(pipeline, file) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  await pipeline.toFile(file);
+  writeAtomic(file, await pipeline.toBuffer());
   console.log("wrote", path.relative(root, file));
 }
 
@@ -138,7 +144,7 @@ async function desktopAndApp() {
 async function android() {
   // `tauri icon` resets both of these to a flat white background; the navy
   // gradient lives in drawable/ic_launcher_background.xml.
-  fs.writeFileSync(
+  writeAtomic(
     path.join(ANDROID_RES, "mipmap-anydpi-v26", "ic_launcher.xml"),
     `<?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
@@ -147,7 +153,7 @@ async function android() {
 </adaptive-icon>
 `,
   );
-  fs.writeFileSync(
+  writeAtomic(
     path.join(ANDROID_RES, "values", "ic_launcher_background.xml"),
     `<?xml version="1.0" encoding="utf-8"?>
 <resources>
@@ -158,11 +164,11 @@ async function android() {
   );
   for (const [bucket, scale] of Object.entries(DENSITIES)) {
     const dir = path.join(ANDROID_RES, `mipmap-${bucket}`);
-    // Adaptive foreground: 108dp canvas, badge at 68dp so the whole rim sits
-    // inside the 72dp visible mask on circle, squircle and rounded-square
-    // launchers, and inside the Android 12+ splash-screen icon circle.
-    await writePng(await badgeOnCanvas(Math.round(108 * scale), Math.round(68 * scale)), path.join(dir, "ic_launcher_foreground.png"));
-    // Legacy and round icons are the bare badge on 48dp.
+    // Adaptive foreground: the full master at 60dp on a 108dp canvas keeps
+    // the visible Q tail inside a centred 66dp safe circle, including the
+    // Android 12+ splash mask. Keep all five density buckets consistent.
+    await writePng(await badgeOnCanvas(Math.round(108 * scale), Math.round(60 * scale)), path.join(dir, "ic_launcher_foreground.png"));
+    // Legacy and round icons retain the transparent full mark on 48dp.
     const legacy = await badgeOnCanvas(Math.round(48 * scale), Math.round(46 * scale));
     const legacyBuf = await legacy.toBuffer();
     await writePng(sharp(legacyBuf), path.join(dir, "ic_launcher.png"));

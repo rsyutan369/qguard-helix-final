@@ -27,7 +27,7 @@ import type { SecurityEvent, TelemetryEvent, TrustedDevice } from "@/lib/types";
 import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import { describeRatchetSession, fetchRatchetStatus, resetRatchetSession, type RatchetStatus } from "@/lib/ratchet-status";
 import { CURRENT_PQ_KEM, CURRENT_PQ_KEM_STANDARD, kemInteroperates } from "@/lib/kem-suite";
-import { sha3_256Hex } from "@/lib/sha3";
+import { coreSha3Hex } from "@/lib/core-crypto";
 
 interface DeviceTrustCenterPageProps {
   userId: string;
@@ -472,7 +472,7 @@ export default function DeviceTrustCenterPage({ userId, devices, telemetry, secu
   ) {
     try {
       const createdAt = new Date().toISOString();
-      const eventHash = sha3_256Hex(JSON.stringify({ eventType, severity, deviceId, metadata, createdAt }));
+      const eventHash = await coreSha3Hex(JSON.stringify({ eventType, severity, deviceId, metadata, createdAt }));
       await supabase.from("messaging_security_events").insert({
         user_id: userId,
         device_id: deviceId,

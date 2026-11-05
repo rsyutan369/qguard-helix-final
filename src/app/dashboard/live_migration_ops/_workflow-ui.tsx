@@ -40,8 +40,8 @@ import type { AgentWorkflowStatus, EventSeverity, WorkflowAgentId, WorkflowAgent
 
 /*
  * Colours are theme tokens (live-workflow.css): `var(--lw-*)` resolves to the
- * neon value on dark grounds and to the dark end of the hue on parchment, and
- * back to neon inside a `qg-force-dark` screen. Translucent variants go
+ * neon value on dark grounds and to the dark end of the hue on parchment, with
+ * opaque text and legible accents in both themes. Translucent variants go
  * through `mix()` because a hex+alpha suffix cannot be appended to a var().
  */
 export function mix(color: string, percent: number) {
@@ -67,6 +67,7 @@ export const STATUS_META: Record<AgentWorkflowStatus, { label: string; icon: Luc
   paused: { label: 'Paused', icon: PauseCircle, color: tone('slate-soft') },
   retrying: { label: 'Rolling back', icon: RefreshCcw, color: tone('amber') },
   completed: { label: 'Completed', icon: CheckCircle2, color: tone('green') },
+  rolled_back: { label: 'Rolled back', icon: RefreshCcw, color: tone('amber') },
   failed: { label: 'Failed', icon: XCircle, color: tone('red') },
   cancelled: { label: 'Cancelled', icon: Ban, color: tone('slate') },
 }
@@ -95,10 +96,10 @@ export const TONE = {
 }
 
 export const PANEL =
-  'relative rounded-2xl border border-white/10 bg-[var(--lw-panel)] backdrop-blur-xl text-white shadow-[0_18px_60px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.04)]'
+  'relative rounded-2xl border border-white/10 bg-[var(--lw-panel)] backdrop-blur-xl text-[color:var(--lw-ink)] shadow-[0_18px_60px_rgba(0,0,0,0.18),inset_0_1px_0_rgba(255,255,255,0.04)]'
 export const SUBPANEL = 'rounded-xl border border-white/[0.08] bg-white/[0.025]'
 /** Native form fields — themed surface, so text and options stay legible. */
-export const FIELD = 'border border-white/12 bg-[var(--lw-field)] text-white/75 outline-none focus:border-[color:var(--lw-cyan)]'
+export const FIELD = 'border border-white/12 bg-[var(--lw-field)] text-[color:var(--lw-ink-soft)] outline-none focus:border-[color:var(--lw-cyan)]'
 
 export function prefersReducedMotion() {
   return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
@@ -232,7 +233,7 @@ export function ProgressRing({ value, color, status, size = 58 }: { value: numbe
       </svg>
       <div className="absolute inset-0 grid place-items-center">
         {value !== null ? (
-          <span className="font-mono text-[13px] font-black text-white">{value}%</span>
+          <span className="font-mono text-[13px] font-black text-[color:var(--lw-ink)]">{value}%</span>
         ) : (
           <Icon className={cn('h-5 w-5', (status === 'running' || status === 'retrying') && 'qg-lw-spin')} style={{ color: meta.color }} aria-hidden="true" />
         )}
@@ -259,7 +260,7 @@ export function SectionTitle({ icon: Icon, title, right, color = TONE.cyan }: { 
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Icon className="h-4 w-4 shrink-0" style={{ color }} aria-hidden="true" />
-      <h2 className="text-sm font-bold tracking-tight text-white">{title}</h2>
+      <h2 className="text-sm font-bold tracking-tight text-[color:var(--lw-ink)]">{title}</h2>
       {right ? <div className="ml-auto flex flex-wrap items-center gap-2">{right}</div> : null}
     </div>
   )
@@ -320,14 +321,14 @@ export function AgentCard({
       ref={card}
       onClick={onSelect}
       className={cn(
-        'qg-force-dark group relative flex h-full w-full flex-col overflow-hidden rounded-2xl border bg-[var(--lw-card)] p-4 text-left text-white backdrop-blur-xl transition-[border-color,opacity] duration-300',
-        node.status === 'idle' && !selected && 'opacity-80',
+        'group relative flex h-full w-full flex-col overflow-hidden rounded-2xl border bg-[var(--lw-card)] p-4 text-left text-[color:var(--lw-ink)] backdrop-blur-xl transition-[border-color,opacity] duration-300',
+        node.status === 'idle' && !selected && 'qg-lw-card--idle',
       )}
       style={{
         borderColor: selected || highlighted ? visual.color : `${mix(visual.color, 33)}`,
         boxShadow: selected || highlighted
           ? `0 0 0 1px ${visual.color}, 0 0 46px ${visual.glow}`
-          : active ? `0 0 0 1px ${mix(visual.color, 33)}, 0 0 34px ${visual.glow}` : `0 0 0 1px ${mix(visual.color, 13)}, 0 12px 40px rgba(0,0,0,0.45)`,
+          : active ? `0 0 0 1px ${mix(visual.color, 33)}, 0 0 34px ${visual.glow}` : `0 0 0 1px ${mix(visual.color, 13)}, var(--lw-card-shadow)`,
       }}
     >
       <div className="pointer-events-none absolute inset-x-0 top-0 h-24" style={{ background: `radial-gradient(240px 90px at 20% 0%, ${visual.soft}, transparent 70%)` }} />
@@ -349,7 +350,7 @@ export function AgentCard({
               </span>
             )}
           </div>
-          <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-white/55">{node.purpose}</p>
+          <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-[color:var(--lw-ink-muted)]">{node.purpose}</p>
         </div>
       </div>
 
@@ -357,7 +358,7 @@ export function AgentCard({
         <ProgressRing value={node.status === 'completed' ? 100 : node.progress} color={visual.color} status={node.status} />
         <div className="min-w-0 flex-1 space-y-2">
           <StatusPill status={node.status} />
-          <div className="truncate text-[11px] font-semibold text-white/80" title={node.currentTask}>{node.currentTask}</div>
+          <div className="truncate text-[11px] font-semibold text-[color:var(--lw-ink)]" title={node.currentTask}>{node.currentTask}</div>
           <ProgressBar value={node.status === 'completed' ? 100 : node.progress} color={visual.color} active={active} />
         </div>
       </div>
@@ -370,14 +371,14 @@ export function AgentCard({
             ) : bullet.ok === false ? (
               <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0 text-[color:var(--lw-amber)]" aria-hidden="true" />
             ) : (
-              <ShieldQuestion className="mt-px h-3.5 w-3.5 shrink-0 text-white/35" aria-hidden="true" />
+              <ShieldQuestion className="mt-px h-3.5 w-3.5 shrink-0 text-[color:var(--lw-ink-muted)]" aria-hidden="true" />
             )}
-            <span className="line-clamp-1 text-white/70" title={bullet.text}>{bullet.text}</span>
+            <span className="line-clamp-1 text-[color:var(--lw-ink-soft)]" title={bullet.text}>{bullet.text}</span>
           </li>
         ))}
       </ul>
 
-      <div className="relative mt-auto flex items-center gap-2 border-t border-white/[0.07] pt-3 text-[11px] text-white/50">
+      <div className="relative mt-auto flex items-center gap-2 border-t border-white/[0.07] pt-3 text-[11px] text-[color:var(--lw-ink-muted)]">
         <Clock3 className="h-3.5 w-3.5" aria-hidden="true" />
         <span className="font-mono">{node.startedAt ? formatDuration(duration) : node.updatedAt ? timeAgo(node.updatedAt, now) : 'Not started'}</span>
         <div className="ml-auto flex items-center gap-1.5">
@@ -385,7 +386,7 @@ export function AgentCard({
             <button
               type="button"
               onClick={(event) => { event.stopPropagation(); onOutput() }}
-              className="nodrag rounded-md border border-white/10 px-2 py-1 text-[10px] font-bold text-white/60 transition hover:border-white/30 hover:text-white"
+              className="nodrag rounded-md border border-white/10 px-2 py-1 text-[10px] font-bold text-[color:var(--lw-ink-soft)] transition hover:border-white/30 hover:text-[color:var(--lw-ink)]"
             >
               Output
             </button>
@@ -441,9 +442,9 @@ function percent(value: number | null) {
 function MetricChip({ icon: Icon, label, value, title, tone: chipTone }: { icon: LucideIcon; label: string; value: string; title?: string; tone?: string }) {
   return (
     <span className="inline-flex min-w-0 items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.03] px-1.5 py-0.5" title={title ? `${label}: ${value} — ${title}` : `${label}: ${value}`}>
-      <Icon className="h-3 w-3 shrink-0 text-white/40" aria-hidden="true" />
+      <Icon className="h-3 w-3 shrink-0 text-[color:var(--lw-ink-muted)]" aria-hidden="true" />
       <span className="sr-only">{label}</span>
-      <span className="whitespace-nowrap font-mono font-bold" style={{ color: chipTone || 'rgba(255,255,255,0.85)' }}>{value}</span>
+      <span className="whitespace-nowrap font-mono font-bold" style={{ color: chipTone || 'var(--lw-ink)' }}>{value}</span>
     </span>
   )
 }
@@ -504,7 +505,7 @@ export function AgentInstanceCard({
     const tween = gsap.fromTo(
       card.current,
       { boxShadow: `0 0 0 1px ${stateTone}, 0 0 40px ${mix(stateTone, 45)}` },
-      { boxShadow: `0 0 0 1px ${mix(visual.color, 20)}, 0 10px 30px rgba(0,0,0,0.4)`, duration: 1, ease: 'power2.out' },
+      { boxShadow: `0 0 0 1px ${mix(visual.color, 20)}, var(--lw-card-shadow)`, duration: 1, ease: 'power2.out' },
     )
     return () => { tween.kill() }
   }, [instance.state, visual.color])
@@ -517,14 +518,14 @@ export function AgentInstanceCard({
       aria-pressed={selected}
       aria-label={`${instance.name}: ${STATUS_META[instance.state].label}, ${online ? 'online' : 'offline'}. ${instance.currentTask}`}
       className={cn(
-        'qg-force-dark nodrag relative flex h-full w-full flex-col overflow-hidden rounded-xl border bg-[var(--lw-card)] py-2.5 pl-3.5 pr-3 text-left text-white backdrop-blur-xl transition-[border-color,opacity] duration-300',
-        !online && !selected && 'opacity-75',
+        'nodrag relative flex h-full w-full flex-col overflow-hidden rounded-xl border bg-[var(--lw-card)] py-2.5 pl-3.5 pr-3 text-left text-[color:var(--lw-ink)] backdrop-blur-xl transition-[border-color,opacity] duration-300',
+        !online && !selected && 'qg-lw-card--offline',
       )}
       style={{
         borderColor: selected ? visual.color : mix(visual.color, 24),
         boxShadow: selected
           ? `0 0 0 1px ${visual.color}, 0 0 32px ${visual.glow}`
-          : active ? `0 0 0 1px ${mix(visual.color, 28)}, 0 0 24px ${visual.glow}` : `0 0 0 1px ${mix(visual.color, 10)}, 0 10px 30px rgba(0,0,0,0.4)`,
+          : active ? `0 0 0 1px ${mix(visual.color, 28)}, 0 0 24px ${visual.glow}` : `0 0 0 1px ${mix(visual.color, 10)}, var(--lw-card-shadow)`,
       }}
     >
       <span className="absolute inset-y-2 left-0 w-[3px] rounded-r-full" style={{ background: visual.color, boxShadow: `0 0 10px ${visual.glow}` }} aria-hidden="true" />
@@ -543,7 +544,7 @@ export function AgentInstanceCard({
           {online ? 'Online' : lastSeenAt ? `Offline · ${timeAgo(lastSeenAt, now).replace(' ago', '')}` : 'Never seen'}
         </span>
       </div>
-      <div className="mt-0.5 flex min-w-0 items-center gap-1.5 pl-[22px] text-[10px] text-white/45">
+      <div className="mt-0.5 flex min-w-0 items-center gap-1.5 pl-[22px] text-[10px] text-[color:var(--lw-ink-muted)]">
         <span className="truncate font-mono">{[instance.hostname, instance.version ? `v${instance.version}` : null, instance.platform].filter(Boolean).join(' · ') || 'No host details reported'}</span>
         {instance.authorised !== null && (
           <span
@@ -569,7 +570,7 @@ export function AgentInstanceCard({
             Live
           </span>
         )}
-        <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-white/75" title={task}>{task}</span>
+        <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-[color:var(--lw-ink-soft)]" title={task}>{task}</span>
       </div>
       <div className="mt-2">
         <ProgressBar value={progress} color={visual.color} active={active} />
@@ -602,14 +603,14 @@ export function AgentInstanceCard({
 function InspectorRow({ label, value, title }: { label: string; value: ReactNode; title?: string }) {
   return (
     <div className="flex min-w-0 items-baseline justify-between gap-3 py-1 text-[11px]" title={title}>
-      <span className="shrink-0 text-white/45">{label}</span>
-      <span className="min-w-0 truncate text-right font-mono text-white/85">{value}</span>
+      <span className="shrink-0 text-[color:var(--lw-ink-muted)]">{label}</span>
+      <span className="min-w-0 truncate text-right font-mono text-[color:var(--lw-ink)]">{value}</span>
     </div>
   )
 }
 
 function InspectorHeading({ children }: { children: ReactNode }) {
-  return <div className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white/45">{children}</div>
+  return <div className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-[color:var(--lw-ink-muted)]">{children}</div>
 }
 
 /**
@@ -660,8 +661,8 @@ export function AgentInspector({
         event.nativeEvent.stopImmediatePropagation()
         onClose()
       }}
-      className={cn('qg-force-dark nodrag nopan nowheel flex flex-col overflow-hidden rounded-2xl border bg-[var(--lw-screen)] text-white shadow-2xl backdrop-blur-xl', className)}
-      style={{ borderColor: mix(visual.color, 35), boxShadow: `0 0 0 1px ${mix(visual.color, 15)}, 0 24px 60px rgba(0,0,0,0.55)` }}
+      className={cn('nodrag nopan nowheel flex flex-col overflow-hidden rounded-2xl border bg-[var(--lw-screen)] text-[color:var(--lw-ink)] shadow-2xl backdrop-blur-xl', className)}
+      style={{ borderColor: mix(visual.color, 35), boxShadow: `0 0 0 1px ${mix(visual.color, 15)}, var(--lw-card-shadow)` }}
     >
       <div className="flex items-start gap-2.5 border-b border-white/[0.07] p-3" style={{ background: `radial-gradient(260px 80px at 10% 0%, ${visual.soft}, transparent 70%)` }}>
         <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border" style={{ borderColor: mix(visual.color, 40), background: visual.soft }}>
@@ -673,7 +674,7 @@ export function AgentInspector({
             {instance.role === 'operator' ? 'Migration Operator' : instance.role[0].toUpperCase() + instance.role.slice(1)} agent
           </div>
         </div>
-        <button type="button" onClick={onClose} aria-label="Close agent details" className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-white/50 transition hover:bg-white/10 hover:text-white">
+        <button type="button" onClick={onClose} aria-label="Close agent details" className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-[color:var(--lw-ink-muted)] transition hover:bg-white/10 hover:text-[color:var(--lw-ink)]">
           <X className="h-4 w-4" />
         </button>
       </div>
@@ -684,8 +685,8 @@ export function AgentInspector({
             <StatusPill status={instance.state} />
             <span className="text-[10px] font-semibold" style={{ color: online ? TONE.green : 'var(--lw-slate)' }}>{online ? '● Online' : '○ Offline'}</span>
           </div>
-          <div className="text-[12px] font-semibold text-white/85">{liveMessage?.message || instance.currentTask}</div>
-          <p className="text-[11px] leading-snug text-white/55">{instance.reason}</p>
+          <div className="text-[12px] font-semibold text-[color:var(--lw-ink)]">{liveMessage?.message || instance.currentTask}</div>
+          <p className="text-[11px] leading-snug text-[color:var(--lw-ink-muted)]">{instance.reason}</p>
           <ProgressBar
             value={instance.state === 'completed' ? 100 : liveMessage?.progress ?? instance.progress}
             color={visual.color}
@@ -710,7 +711,7 @@ export function AgentInspector({
         <div className={cn(SUBPANEL, 'p-2.5')}>
           <InspectorHeading>Host health</InspectorHeading>
           {metrics.reporting === 0 ? (
-            <p className="text-[11px] text-white/50">This agent has not reported host telemetry yet.</p>
+            <p className="text-[11px] text-[color:var(--lw-ink-muted)]">This agent has not reported host telemetry yet.</p>
           ) : (
             <>
               <div className="grid grid-cols-2 gap-2">
@@ -757,14 +758,14 @@ export function AgentInspector({
         <div>
           <InspectorHeading>Recent events from this agent</InspectorHeading>
           {own.length === 0 ? (
-            <p className="text-[11px] text-white/50">No events from this agent in the current window.</p>
+            <p className="text-[11px] text-[color:var(--lw-ink-muted)]">No events from this agent in the current window.</p>
           ) : (
             <ul className="space-y-1.5">
               {own.map((event) => (
                 <li key={event.id} className="flex min-w-0 items-start gap-2 text-[11px]">
                   <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: SEVERITY_TONE[event.severity] || TONE.cyan }} aria-hidden="true" />
-                  <span className="line-clamp-2 min-w-0 flex-1 text-white/75" title={event.message}>{event.message}</span>
-                  <span className="shrink-0 font-mono text-[10px] text-white/40">{timeAgo(event.at, now)}</span>
+                  <span className="line-clamp-2 min-w-0 flex-1 text-[color:var(--lw-ink-soft)]" title={event.message}>{event.message}</span>
+                  <span className="shrink-0 font-mono text-[10px] text-[color:var(--lw-ink-muted)]">{timeAgo(event.at, now)}</span>
                 </li>
               ))}
             </ul>
@@ -781,7 +782,7 @@ export function AgentInspector({
         >
           Stage details
         </button>
-        <a href="/downloads" className="ml-auto inline-flex items-center gap-1 rounded-md border border-white/10 px-2.5 py-1.5 text-[10px] font-bold text-white/65 transition hover:border-white/30 hover:text-white">
+        <a href="/downloads" className="ml-auto inline-flex items-center gap-1 rounded-md border border-white/10 px-2.5 py-1.5 text-[10px] font-bold text-[color:var(--lw-ink-soft)] transition hover:border-white/30 hover:text-[color:var(--lw-ink)]">
           Agent Center <ExternalLink className="h-3 w-3" aria-hidden="true" />
         </a>
       </div>

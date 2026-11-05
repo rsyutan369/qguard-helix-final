@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { Archive, ArrowLeft, EyeOff, Info, Loader2, Lock, MoreVertical, Pencil, X } from "lucide-react";
+import { BellOff, Archive, ArrowLeft, EyeOff, Info, Loader2, Lock, MoreVertical, Pencil, X } from "lucide-react";
 
 /*
  * Phone chrome for Secure Chat, in the shape people know from Signal and
@@ -82,6 +82,8 @@ export function MobileConversationRow(props: {
   unread: number;
   archived: boolean;
   hidden: boolean;
+  /** Muted (Notifications & Sounds): no sound or alert for new messages. */
+  muted?: boolean;
   busy: boolean;
   onOpen: () => void;
   onActions: () => void;
@@ -146,6 +148,7 @@ export function MobileConversationRow(props: {
           <span className="mt-0.5 flex items-center gap-1.5">
             {props.archived && <Archive size={12} className="shrink-0 text-ink-400" aria-label="Archived" />}
             {props.hidden && <EyeOff size={12} className="shrink-0 text-ink-400" aria-label="Hidden" />}
+            {props.muted && <BellOff size={12} className="shrink-0 text-ink-400" aria-label="Muted" />}
             <span className="min-w-0 flex-1 truncate text-[13px] text-ink-600">{props.preview}</span>
             {props.busy ? (
               <Loader2 size={14} className="shrink-0 animate-spin text-ink-500" />

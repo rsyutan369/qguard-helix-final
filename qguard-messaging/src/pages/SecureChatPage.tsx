@@ -1,5 +1,16 @@
-import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, BadgeCheck, Ban, ChevronDown, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, Users, UsersRound, X, Sparkles, Megaphone, LogIn, ShieldOff, ShieldMinus } from "lucide-react";
+import { Bell, BellOff, Flag, Share2, Volume2, Plus, ChevronRight, FileText, Image as ImageIcon } from "lucide-react";
+import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, BadgeCheck, Ban, ChevronDown, Clock, Download, Eye, EyeOff, Loader2, LockKeyhole, MessageSquarePlus, Mic, MoreVertical, Paperclip, Pencil, Phone, QrCode, Reply, Search, Send, ShieldCheck, Smile, Square, Terminal, TimerReset, Trash2, UnlockKeyhole, UserPlus, Users, UsersRound, X, Sparkles, Megaphone, LogIn, ShieldOff, ShieldMinus } from "lucide-react";
 import { MobileComposeButton, MobileContactRow, MobileConversationRow, MobileFilterTabs, MobileSheet, MobileThreadHeader, SheetAction } from "@/components/chat/MobileChat";
+import ChatActionMenu, { type ChatActionItem } from "@/components/chat/ChatActionMenu";
+import ReportDialog from "@/components/chat/ReportDialog";
+import NotificationSettingsPanel from "@/components/chat/NotificationSettingsPanel";
+import ChatDialog from "@/components/chat/ChatDialog";
+import ShareContactDialog, { type ShareTarget } from "@/components/chat/ShareContactDialog";
+import ContactCardView from "@/components/chat/ContactCardView";
+import { useOptionalChatPreferences } from "@/lib/chat-preferences-context";
+import { describeMute } from "@/lib/chat-preferences";
+import { setFocusedConversation, takeRequestedConversation, onOpenConversationRequest } from "@/lib/chat-focus";
+import { formatContactCard, parseContactCard, type ContactCard } from "@/lib/contact-card";
 import { formatThreadTime } from "@/lib/thread-time";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { openTelemetryDetails } from "@/lib/account-key";
@@ -66,6 +77,7 @@ import { supabase } from "@/lib/supabase";
 import { isTauriRuntime, safeInvoke, invokeWithTimeout } from "@/lib/tauri";
 import { fetchPrekeyStatus } from "@/lib/prekey-hygiene";
 import { attachmentDigestMatches, attachmentDigests } from "@/lib/attachment-digest";
+import { coreOpenAttachment, coreSealAttachment } from "@/lib/core-crypto";
 import {
   createChatProtectionConfig,
   readChatProtectionConfig,
@@ -107,7 +119,9 @@ import { peerIdentityOfDevice } from "@/lib/call-targets";
 import { createPairingOffer, receivePairingOffer, type PairingOffer } from "@/lib/contact-verification";
 import type { ContactSummary, ConversationSummary, DualSignature, SignedPrekeySummary, TrustedDevice, UserSearchResult } from "@/lib/types";
 import { useCall } from "@/components/call/CallProvider";
-import { buildCallPeer } from "@/lib/call-targets";
+import { buildCallPeer, GROUP_CALL_SIZE, groupCallBlockedReason } from "@/lib/call-targets";
+import { directConversationWith } from "@/lib/call-history";
+import type { CallMedia } from "@/lib/call-types";
 import {
   CALL_RING_POLICY,
   MESSAGE_DELIVERY_POLICY,
@@ -127,6 +141,17 @@ interface SecureChatPageProps {
   devices: TrustedDevice[];
   contacts: ContactSummary[];
   onSent: () => void;
+  /** Open on the phone's Contacts tab (the dashboard's Contacts card). */
+  openContacts?: boolean;
+  /**
+   * Asked for elsewhere (the Calls page): open the direct chat with this person
+   * and, when `media` is set, start that call. `key` makes each request one-shot.
+   */
+  callIntent?: { key: string; peerUserId: string; media: CallMedia | null } | null;
+  /** Go to the Calls page (the Calls button beside Contacts). */
+  onOpenCalls?: () => void;
+  /** Missed calls not yet looked at, shown on that button. */
+  missedCalls?: number;
 }
 
 interface EncryptedMessageEnvelope {
@@ -1293,7 +1318,7 @@ function recipientKeyBundle(device: TrustedDevice, oneTimePrekey: SignedPrekeySu
   };
 }
 
-export default function SecureChatPage({ userId, conversations, devices, contacts, onSent }: SecureChatPageProps) {
+export default function SecureChatPage({ userId, conversations, devices, contacts, onSent, openContacts = false, callIntent = null, onOpenCalls, missedCalls = 0 }: SecureChatPageProps) {
   const [activeConversationId, setActiveConversationId] = useState(conversations[0]?.id ?? "");
   // Optimistic overlay for conversations we just created locally. The parent
   // `conversations` prop only updates after an async refresh + realtime round
@@ -1427,7 +1452,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   // Conversations whose name was looked for in the background this session.
   const nameLookupsRef = useRef(new Set<string>());
   // Phone layout: the Contacts tab and the contact whose actions are open.
-  const [mobileContactsOpen, setMobileContactsOpen] = useState(false);
+  const [mobileContactsOpen, setMobileContactsOpen] = useState(openContacts);
   const [mobileContactMenuId, setMobileContactMenuId] = useState<string | null>(null);
   const [mobileContactFilter, setMobileContactFilter] = useState("");
   const [mobileAddContactOpen, setMobileAddContactOpen] = useState(false);
@@ -1992,7 +2017,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   // Group call (roadmap 7.2): a group of exactly three, each other person
   // callable on at least one device — the same list messages fan out to.
   const groupCallPeers = useMemo(() => {
-    if (activeConversation?.conversation_type !== "group" || activeConversation.member_user_ids.length !== 3) return null;
+    if (activeConversation?.conversation_type !== "group" || activeConversation.member_user_ids.length !== GROUP_CALL_SIZE) return null;
     const others = activeConversation.member_user_ids.filter((memberId) => memberId !== userId);
     const peers = others.map((memberId) => buildCallPeer(callableRecipientDevices.filter((device) => device.user_id === memberId), memberName(memberId)));
     return peers.every((peer): peer is NonNullable<typeof peer> => peer !== null) ? peers : null;
@@ -2012,6 +2037,49 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   // App-level call engine (CallProvider): incoming calls ring on every page;
   // this page only supplies the outgoing-call target.
   const call = useCall();
+
+  // A call requested from the Calls page. It goes through this page's own
+  // paths — openConversation / startPrivateChat (which refuse a blocked
+  // contact) and the same ring-target selection as the call buttons — so the
+  // Calls page never picks devices itself.
+  const [pendingCall, setPendingCall] = useState<{ peerUserId: string; media: CallMedia } | null>(null);
+  const handledCallIntentRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!callIntent || handledCallIntentRef.current === callIntent.key) return;
+    handledCallIntentRef.current = callIntent.key;
+    const request = callIntent.media ? { peerUserId: callIntent.peerUserId, media: callIntent.media } : null;
+    const existing = directConversationWith(effectiveConversations, callIntent.peerUserId);
+    if (existing) {
+      openConversation(existing);
+      if (request) setPendingCall(request);
+      return;
+    }
+    const contact = contacts.find((item) => item.contact_user_id === callIntent.peerUserId);
+    if (!contact) {
+      setStatus("This person is not in your contacts — add them to call.");
+      return;
+    }
+    void startPrivateChat(contact).then((opened) => { if (opened && request) setPendingCall(request); });
+    // openConversation/startPrivateChat are plain functions of this render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [callIntent]);
+  useEffect(() => {
+    if (!pendingCall || !activeConversation || !callPeer) return;
+    if (activeConversation.conversation_type !== "direct" || !activeConversation.member_user_ids.includes(pendingCall.peerUserId)) return;
+    if (call.state.phase !== "idle" && call.state.phase !== "ended") return;
+    setPendingCall(null);
+    void call.startCall(callPeer, activeConversation.id, { media: pendingCall.media });
+  }, [pendingCall, activeConversation, callPeer, call]);
+  useEffect(() => {
+    if (!pendingCall) return undefined;
+    // The peer's devices are looked up once the chat opens; if none can take a
+    // call, say so rather than waiting forever.
+    const timer = window.setTimeout(() => {
+      setPendingCall(null);
+      setStatus("Couldn't start the call — none of their devices can take a call right now.");
+    }, 15_000);
+    return () => window.clearTimeout(timer);
+  }, [pendingCall]);
 
   useEffect(() => {
     setProtectionConfig(readChatProtectionConfig(userId));
@@ -4712,8 +4780,6 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     }
 
     const plaintext = new Uint8Array(await source.arrayBuffer());
-    const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
-    const iv = crypto.getRandomValues(new Uint8Array(12));
     const storagePath = `${userId}/chat-attachments/${activeConversation.id}/${clientMessageId}/${kind}-${Date.now()}.bin`;
     // Bind the ciphertext to the exact object it is stored as. Without AAD the
     // blob authenticates on its own merits and nothing ties it to the message
@@ -4721,12 +4787,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     // ciphertext between paths. As AAD the path, conversation and message id are
     // inside the GCM tag: a relocated blob no longer opens.
     const aad = attachmentAad(storagePath, activeConversation.id, clientMessageId);
-    const encrypted = new Uint8Array(await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv: toArrayBuffer(iv), additionalData: toArrayBuffer(aad) },
-      key,
-      toArrayBuffer(plaintext),
-    ));
-    const rawKey = new Uint8Array(await crypto.subtle.exportKey("raw", key));
+    // AES-256-GCM in the app's cryptographic module: it chooses the key and the
+    // nonce (lib/core-crypto.ts). Same key/iv/ciphertext layout as before.
+    const { key: rawKey, iv, sealed: encrypted } = await coreSealAttachment(plaintext, aad);
+    wipeBytes(plaintext);
 
     await uploadChatAttachmentWithRetry(storagePath, new Blob([encrypted], { type: "application/qguard-chat-attachment" }));
 
@@ -4763,20 +4827,19 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     }
     emitProgress("integrity_verification", "Attachment digest verified", 64, "verified");
     const attachmentKey = base64ToBytes(attachment.key_b64);
-    const key = await crypto.subtle.importKey("raw", toArrayBuffer(attachmentKey), "AES-GCM", false, ["decrypt"]);
-    wipeBytes(attachmentKey);
     emitProgress("aes_gcm_decrypt", "Decrypting attachment locally with AES-256-GCM", 82, "progress");
     const iv = base64ToBytes(attachment.iv_b64);
     // Attachments sealed before the AAD binding carry no `aad_version`, and must
     // still open — their ciphertext was produced without associated data, so
     // supplying any would break every one of them.
-    const aadParams = attachment.aad_version === ATTACHMENT_AAD_VERSION
-      ? { additionalData: toArrayBuffer(attachmentAad(attachment.storage_path, conversationIdForAttachment, messageIdForAttachment)) }
-      : {};
-    const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv: toArrayBuffer(iv), ...aadParams }, key, toArrayBuffer(encrypted));
-    wipeBytes(iv);
-    wipeBytes(encrypted);
-    const plaintextBytes = new Uint8Array(plaintext);
+    const aad = attachment.aad_version === ATTACHMENT_AAD_VERSION
+      ? attachmentAad(attachment.storage_path, conversationIdForAttachment, messageIdForAttachment)
+      : null;
+    const plaintextBytes = await coreOpenAttachment(encrypted, attachmentKey, iv, aad).finally(() => {
+      wipeBytes(attachmentKey);
+      wipeBytes(iv);
+      wipeBytes(encrypted);
+    });
     const blob = new Blob([plaintextBytes.slice()], { type: attachment.content_type || "application/octet-stream" });
     wipeBytes(plaintextBytes);
     return blob;
@@ -5470,12 +5533,16 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   ];
   // Phone folders: Chats, then Contacts (people right after chats, as in Signal
   // and Telegram), then the protected folders.
-  const mobileFolderTabs: Array<{ id: ConversationView | "contacts"; label: string; count: number; locked: boolean }> = [];
+  const mobileFolderTabs: Array<{ id: ConversationView | "contacts" | "calls"; label: string; count: number; locked: boolean }> = [];
   for (const view of conversationViews) {
     const locked = view.id !== "active" && !protectedViewUnlocked(view.id as ProtectedConversationView);
     // A locked folder does not reveal how many conversations it holds.
     mobileFolderTabs.push({ id: view.id, label: view.id === "active" ? "Chats" : view.label, count: locked ? 0 : view.count, locked });
-    if (view.id === "active") mobileFolderTabs.push({ id: "contacts", label: "Contacts", count: displayedContacts.length, locked: false });
+    if (view.id === "active") {
+      mobileFolderTabs.push({ id: "contacts", label: "Contacts", count: displayedContacts.length, locked: false });
+      // Not a folder: opens the Calls page (behind the same Secure Chat lock).
+      if (onOpenCalls) mobileFolderTabs.push({ id: "calls", label: "Calls", count: missedCalls, locked: false });
+    }
   }
   const mobileContactNeedle = mobileContactFilter.trim().toLowerCase();
   const mobileContacts = displayedContacts
@@ -5483,6 +5550,219 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       || visibleContactName(contact).toLowerCase().includes(mobileContactNeedle)
       || contact.username.toLowerCase().includes(mobileContactNeedle))
     .sort((a, b) => visibleContactName(a).localeCompare(visibleContactName(b)));
+  // ---- Mute, Notifications & Sounds, Share contact, Report ------------------
+  // (owner request 2026-11-05). Block, Restrict and Delete are the existing
+  // updateContact / updateConversationPrivacyState paths; these menus only make
+  // them reachable from every chat and contact, on desktop and phone alike.
+  const chatPrefs = useOptionalChatPreferences();
+  const [reportTarget, setReportTarget] = useState<{ name: string; userId: string | null; conversationId: string | null; contact: ContactSummary | null } | null>(null);
+  const [shareContactTarget, setShareContactTarget] = useState<{ userId: string; name: string; username: string | null } | null>(null);
+  const [notificationsTarget, setNotificationsTarget] = useState<ConversationSummary | null>(null);
+
+  // Tell the app which chat is on screen, so a new message in it makes no alert.
+  useEffect(() => {
+    setFocusedConversation(isMobile && mobilePane !== "thread" ? null : activeConversationId || null);
+    return () => setFocusedConversation(null);
+  }, [activeConversationId, isMobile, mobilePane]);
+
+  // "Open" on a new-message alert: open that conversation (once it is loaded;
+  // a hidden or archived one asks for its folder's protection first).
+  const [pendingOpenConversationId, setPendingOpenConversationId] = useState<string | null>(() => takeRequestedConversation());
+  useEffect(() => onOpenConversationRequest((id) => setPendingOpenConversationId(id)), []);
+  useEffect(() => {
+    if (!pendingOpenConversationId) return;
+    const thread = effectiveConversations.find((item) => item.id === pendingOpenConversationId);
+    if (!thread) return;
+    setPendingOpenConversationId(null);
+    if (thread.hidden_at || thread.archived_at) {
+      requestProtectedView(thread.hidden_at ? "hidden" : "archived", thread.id);
+      return;
+    }
+    setConversationView("active");
+    setActiveConversationId(thread.id);
+    setMobilePane("thread");
+    // requestProtectedView is a plain function of this component.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingOpenConversationId, effectiveConversations]);
+
+  const contactForUser = (otherUserId: string) => displayedContacts.find((contact) => contact.contact_user_id === otherUserId) ?? null;
+  const directChatWith = (otherUserId: string) =>
+    effectiveConversations.find((thread) => thread.conversation_type === "direct" && thread.member_user_ids.includes(otherUserId)) ?? null;
+
+  function unmuteConversation(thread: ConversationSummary) {
+    if (!chatPrefs) return;
+    chatPrefs
+      .updateChat(thread.id, conversationPeerUserId(thread), { mutedUntil: null })
+      .then(() => setStatus(`${conversationTitle(thread)} unmuted`))
+      .catch((error) => setStatus(describeMessageError(error)));
+  }
+
+  /** Mute + Notifications & sounds for a conversation (empty without the preferences store). */
+  function notificationActionItems(thread: ConversationSummary): ChatActionItem[] {
+    if (!chatPrefs) return [];
+    const muted = chatPrefs.effectiveFor(thread.id).muted;
+    return [
+      muted
+        ? { id: "unmute", label: "Unmute", detail: describeMute(chatPrefs.preferenceFor(thread.id), Date.now()) ?? "Sounds and alerts come back", icon: <Bell size={16} />, onSelect: () => unmuteConversation(thread) }
+        : { id: "mute", label: "Mute", detail: "No sound or alert for new messages, for as long as you choose", icon: <BellOff size={16} />, onSelect: () => setNotificationsTarget(thread) },
+      { id: "notifications", label: "Notifications & sounds", detail: "Alerts, message sound and call ringing for this chat", icon: <Volume2 size={16} />, onSelect: () => setNotificationsTarget(thread) },
+    ];
+  }
+
+  function shareContactItem(otherUserId: string, name: string, username: string | null): ChatActionItem {
+    return {
+      id: "share-contact",
+      label: "Share contact",
+      detail: `Send ${name}'s contact card to another chat`,
+      icon: <Share2 size={16} />,
+      onSelect: () => setShareContactTarget({ userId: otherUserId, name, username }),
+    };
+  }
+
+  /** Everything for an open chat: the header's menu (desktop) and options sheet (phone). */
+  function conversationActionItems(thread: ConversationSummary): ChatActionItem[] {
+    const direct = thread.conversation_type === "direct";
+    const peerId = conversationPeerUserId(thread);
+    const contact = direct && peerId ? contactForUser(peerId) : null;
+    const state = contact?.trust_state ?? null;
+    const name = conversationTitle(thread);
+    const items: ChatActionItem[] = [...notificationActionItems(thread)];
+    if (direct && peerId) items.push(shareContactItem(peerId, name, contact?.username ?? null));
+    items.push({
+      id: "report",
+      label: "Report",
+      detail: direct ? `Tell the QGuard team about a problem with ${name}` : "Tell the QGuard team about a problem in this conversation",
+      icon: <Flag size={16} />,
+      danger: true,
+      onSelect: () => setReportTarget({ name, userId: direct ? peerId : null, conversationId: thread.id, contact }),
+    });
+    if (contact) {
+      items.push(
+        state === "restricted"
+          ? { id: "unrestrict", label: "Lift restriction", detail: "They can call you and add you to groups again", icon: <ShieldOff size={16} />, onSelect: () => void updateContact(contact, "added") }
+          : { id: "restrict", label: "Restrict", detail: "They can still message you, but cannot call you or add you to groups", icon: <ShieldMinus size={16} />, disabled: state === "blocked", onSelect: () => void updateContact(contact, "restricted") },
+        state === "blocked"
+          ? { id: "unblock", label: "Unblock", detail: "Their messages and calls reach you again", icon: <ShieldCheck size={16} />, onSelect: () => void updateContact(contact, "added") }
+          : { id: "block", label: "Block", detail: "Their messages and calls stop reaching you. They are not told.", icon: <Ban size={16} />, danger: true, onSelect: () => void updateContact(contact, "blocked") },
+      );
+    }
+    items.push({
+      id: "delete-chat",
+      label: "Delete chat",
+      detail: "Removes it from your view; others keep their copy",
+      icon: <Trash2 size={16} />,
+      danger: true,
+      onSelect: () => void updateConversationPrivacyState(thread, "delete"),
+    });
+    return items;
+  }
+
+  /** What a contact's menu adds to Chat / Restrict / Block / Delete: Share, Mute, Notifications, Report. */
+  function contactExtraActionItems(contact: ContactSummary): ChatActionItem[] {
+    const name = visibleContactName(contact);
+    const thread = directChatWith(contact.contact_user_id);
+    return [
+      shareContactItem(contact.contact_user_id, name, contact.username ?? null),
+      ...(thread ? notificationActionItems(thread) : []),
+      {
+        id: "report",
+        label: "Report",
+        detail: `Tell the QGuard team about a problem with ${name}`,
+        icon: <Flag size={16} />,
+        danger: true,
+        onSelect: () => setReportTarget({ name, userId: contact.contact_user_id, conversationId: thread?.id ?? null, contact }),
+      },
+    ];
+  }
+
+  /** Put a contact card in the chosen chat's message box; the user sends it. */
+  function shareContactInto(conversationId: string) {
+    if (!shareContactTarget) return;
+    const card = formatContactCard(shareContactTarget);
+    setShareContactTarget(null);
+    setConversationView("active");
+    setActiveConversationId(conversationId);
+    setMobilePane("thread");
+    setEditingMessage(null);
+    setMessage((current) => (current.trim() ? `${current}\n\n${card}` : card));
+    setStatus("Contact card added to your message — press Send to share it");
+  }
+
+  const shareTargets: ShareTarget[] = shareContactTarget
+    ? effectiveConversations
+      .filter((thread) => !thread.hidden_at && !thread.archived_at && !(thread.conversation_type === "direct" && thread.member_user_ids.includes(shareContactTarget.userId)))
+      .map((thread) => {
+        const peerId = conversationPeerUserId(thread);
+        return {
+          id: thread.id,
+          title: conversationTitle(thread),
+          subtitle: thread.conversation_type === "direct" ? "Private chat" : "Group",
+          avatar: peerId ? (
+            <UserAvatar userId={peerId} name={conversationTitle(thread)} size={34} />
+          ) : (
+            <span className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full bg-violet-500 text-white">{conversationIcon(thread, 15)}</span>
+          ),
+        };
+      })
+    : [];
+
+  // ---- Composer (Messenger-style) ------------------------------------------
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const attachMenuRef = useRef<HTMLDivElement | null>(null);
+  const [composerFocused, setComposerFocused] = useState(false);
+  const [showComposerTools, setShowComposerTools] = useState(false);
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  /** Typing (or text waiting): the box takes the mic's room until "›" brings it back. */
+  const composerExpanded = (composerFocused || message.length > 0) && !showComposerTools && recordingState === "idle";
+  const attachDisabled = !activeConversation || !recipientDevicesReady || Boolean(editingMessage) || Boolean(attachmentBusy) || recordingState !== "idle";
+
+  // Grow with the text up to about seven lines, then scroll; shrink after send.
+  useLayoutEffect(() => {
+    const box = composerRef.current;
+    if (!box) return;
+    box.style.height = "auto";
+    box.style.height = `${Math.min(box.scrollHeight, 176)}px`;
+  }, [message]);
+
+  useEffect(() => {
+    if (!attachMenuOpen) return undefined;
+    const onPointer = (event: PointerEvent) => {
+      if (attachMenuRef.current && !attachMenuRef.current.contains(event.target as Node)) setAttachMenuOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAttachMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [attachMenuOpen]);
+
+  /** Open the file picker for one kind of attachment ("" = any file). */
+  function pickAttachment(accept: string) {
+    setAttachMenuOpen(false);
+    const input = fileInputRef.current;
+    if (!input) return;
+    // Set directly: a state update would land after the click opened the picker.
+    input.accept = accept;
+    input.click();
+  }
+
+  /** A contact card inside a message: add them, or open your chat with them. */
+  function contactCardActions(card: ContactCard) {
+    const existing = contactForUser(card.userId);
+    return {
+      isSelf: card.userId === userId,
+      isContact: Boolean(existing && existing.trust_state !== "removed"),
+      onAdd: () => void addContact({ user_id: card.userId, display_name: card.name, username: card.username ?? "" }),
+      onMessage: () => {
+        if (existing) void startPrivateChat(existing);
+      },
+    };
+  }
+
   const mobileMenuContact = isMobile && mobileContactMenuId
     ? displayedContacts.find((contact) => contact.id === mobileContactMenuId) ?? null
     : null;
@@ -5490,6 +5770,44 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     ? visibleConversations.find((thread) => thread.id === openConversationMenuId) ?? null
     : null;
   const mobileMenuBusy = mobileMenuThread ? conversationBusyId?.startsWith(`${mobileMenuThread.id}:`) ?? false : false;
+  // The call buttons in the chat header — one definition for the desktop and
+  // phone headers, so both offer the same calls: voice and video in a direct
+  // chat, a group video call in a group (a separately encrypted link to each
+  // person; groups of 3 for now), none in a channel.
+  const callIdle = call.state.phase === "idle" || call.state.phase === "ended";
+  const groupCallBlocked = activeConversation?.conversation_type !== "group"
+    ? null
+    : groupCallBlockedReason({
+        supported: call.supported,
+        memberCount: activeConversation.member_user_ids.length,
+        peersReady: groupCallPeers !== null,
+        busy: call.groupCallActive || !callIdle,
+      });
+  const callControls = !activeConversation || activeConversation.conversation_type === "channel" ? null : activeConversation.conversation_type === "group" ? (
+    <CallButton
+      media="group"
+      disabled={groupCallBlocked !== null}
+      title={groupCallBlocked ?? "Start a group video call: a separately encrypted link to each person"}
+      onClick={() => {
+        if (groupCallPeers) void call.startGroupCall(activeConversation.id, groupCallPeers).catch((error) => setStatus(describeMessageError(error)));
+      }}
+    />
+  ) : (
+    <span className="flex items-center gap-1.5">
+      <CallButton
+        media="voice"
+        disabled={!call.supported || !callPeer || !callIdle}
+        title={call.supported ? "Start quantum-encrypted voice call" : "Calling requires the desktop app"}
+        onClick={() => { if (callPeer) void call.startCall(callPeer, activeConversation.id, { media: "voice" }); }}
+      />
+      <CallButton
+        disabled={!call.supported || !callPeer || !callIdle}
+        title={call.supported ? "Start quantum-encrypted video call" : "Video calling requires the desktop app"}
+        onClick={() => { if (callPeer) void call.startCall(callPeer, activeConversation.id, { media: "video" }); }}
+      />
+    </span>
+  );
+
   const emptyConversationText = conversationView === "active"
     ? "Add a trusted contact to start a private encrypted chat."
     : conversationView === "archived"
@@ -5505,10 +5823,14 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     >
       {isMobile ? (
       <section className={`-mx-3.5 flex min-h-0 flex-col pb-24 ${mobilePane !== "list" ? "hidden" : ""}`}>
-        <MobileFilterTabs<ConversationView | "contacts">
+        <MobileFilterTabs<ConversationView | "contacts" | "calls">
           tabs={mobileFolderTabs}
           active={mobileContactsOpen ? "contacts" : conversationView}
           onSelect={(id) => {
+            if (id === "calls") {
+              onOpenCalls?.();
+              return;
+            }
             if (id === "contacts") {
               setMobileContactsOpen(true);
               return;
@@ -5626,6 +5948,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                 unread={thread.unread_count}
                 archived={Boolean(thread.archived_at)}
                 hidden={Boolean(thread.hidden_at)}
+                muted={chatPrefs?.effectiveFor(thread.id).muted ?? false}
                 busy={conversationBusyId?.startsWith(`${thread.id}:`) ?? false}
                 onOpen={() => openConversation(thread)}
                 onActions={() => setOpenConversationMenuId(thread.id)}
@@ -5750,6 +6073,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                     <div className="mt-1 flex items-center gap-1">
                       {thread.archived_at && <span className="status-pill bg-violet-50 text-violet-600"><Archive size={12} />Archived</span>}
                       {thread.hidden_at && <span className="status-pill bg-cyan-50 text-cyan-700"><EyeOff size={12} />Hidden</span>}
+                      {chatPrefs?.effectiveFor(thread.id).muted && <span className="status-pill bg-amber-50 text-amber-700" title={describeMute(chatPrefs.preferenceFor(thread.id), Date.now()) ?? "Muted"}><BellOff size={12} />Muted</span>}
                       {thread.unread_count > 0 && <span className="status-pill bg-emerald-50 text-emerald-600">{thread.unread_count} new</span>}
                     </div>
                   </div>
@@ -5856,13 +6180,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
           )}
           title={activeConversation ? conversationTitle(activeConversation) : "Select a conversation"}
           badge={pqStatus ? <PqStatusBadge status={pqStatus} /> : undefined}
-          call={activeConversation?.conversation_type !== "channel" ? (
-            <CallButton
-              disabled={!call.supported || !callPeer || !activeConversation || call.state.phase !== "idle" && call.state.phase !== "ended"}
-              title={call.supported ? "Start quantum-encrypted video call" : "Video calling requires the desktop app"}
-              onClick={() => { if (callPeer && activeConversation) void call.startCall(callPeer, activeConversation.id); }}
-            />
-          ) : undefined}
+          call={callControls ?? undefined}
           onOptions={activeConversation ? () => setThreadMenuOpen(true) : undefined}
           notice={status !== "Ready" ? status : null}
         />
@@ -5927,25 +6245,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                 <BadgeCheck size={16} />
               </button>
             )}
-            {activeConversation?.conversation_type === "group" && groupCallPeers && (
-              <button
-                type="button"
-                disabled={!call.supported || call.groupCallActive || (call.state.phase !== "idle" && call.state.phase !== "ended")}
-                onClick={() => {
-                  void call.startGroupCall(activeConversation.id, groupCallPeers).catch((error) => setStatus(describeMessageError(error)));
-                }}
-                title={call.supported ? "Group video call: a separately encrypted link to each person" : "Video calling requires the desktop app"}
-                className="icon-button disabled:opacity-50"
-              >
-                <Users size={16} />
-              </button>
-            )}
-            <CallButton
-              disabled={!call.supported || !callPeer || !activeConversation || call.state.phase !== "idle" && call.state.phase !== "ended"}
-              title={call.supported ? "Start quantum-encrypted video call" : "Video calling requires the desktop app"}
-              onClick={() => { if (callPeer && activeConversation) void call.startCall(callPeer, activeConversation.id); }}
-            />
+            {callControls}
             <span className="status-pill bg-emerald-50 text-emerald-600">{status}</span>
+            {activeConversation && <ChatActionMenu items={conversationActionItems(activeConversation)} label="Chat options" />}
           </div>
         </div>
         )}
@@ -6298,7 +6600,12 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                           )}
                         </div>
                       )}
-                      {chatMessage.plaintext && <div className="whitespace-pre-wrap break-words text-sm leading-6">{chatMessage.plaintext}</div>}
+                      {chatMessage.plaintext && (() => {
+                        const card = parseContactCard(chatMessage.plaintext);
+                        return card
+                          ? <ContactCardView card={card} mine={mine} {...contactCardActions(card)} />
+                          : <div className="whitespace-pre-wrap break-words text-sm leading-6">{chatMessage.plaintext}</div>;
+                      })()}
                       {chatMessage.status !== "decrypted" && (
                         <div className={`mt-2 text-xs ${mine ? "text-violet-100" : "text-ink-500"}`}>
                           {chatMessage.status === "failed" ? "Decryption failed" : chatMessage.status === "retired" ? "Sealed to a retired device key" : "Sealed envelope"}{chatMessage.error ? ` - ${chatMessage.error}` : ""}
@@ -6495,7 +6802,11 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             </div>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          {/* Messenger-style composer: "+" attaches (photo/video, document, voice
+              note); while typing the box widens and the mic folds behind "›".
+              Enter always makes a new line — only the Send button sends, so a
+              message is never sent by accident. */}
+          <div className="qg-chat-compose-row flex items-end gap-2" data-expanded={composerExpanded || undefined}>
             <input
               ref={fileInputRef}
               type="file"
@@ -6507,51 +6818,92 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                 event.currentTarget.value = "";
               }}
             />
-            <button
-              type="button"
-              disabled={!activeConversation || !recipientDevicesReady || Boolean(editingMessage) || Boolean(attachmentBusy) || recordingState !== "idle"}
-              onClick={() => fileInputRef.current?.click()}
-              className="icon-button disabled:cursor-not-allowed disabled:opacity-50"
-              title={attachmentBusy === "file" ? "Encrypting attachment" : "Attach encrypted file"}
-              aria-label="Attach encrypted file"
-            >
-              <Paperclip size={18} />
-            </button>
-            <button
-              type="button"
-              disabled={!activeConversation || !recipientDevicesReady || Boolean(editingMessage) || Boolean(attachmentBusy) || recordingState === "processing"}
-              onClick={toggleVoiceRecording}
-              className={`icon-button disabled:cursor-not-allowed disabled:opacity-50 ${recordingState === "recording" ? "border-rose-200 bg-rose-50 text-rose-600" : ""}`}
-              title={recordingState === "recording" ? "Stop and send encrypted voice note" : "Record encrypted voice note"}
-              aria-label={recordingState === "recording" ? "Stop and send encrypted voice note" : "Record encrypted voice note"}
-            >
-              {recordingState === "recording" ? <Square size={16} /> : <Mic size={18} />}
-            </button>
+            <div ref={attachMenuRef} className="relative shrink-0">
+              <button
+                type="button"
+                disabled={attachDisabled}
+                onClick={() => setAttachMenuOpen((open) => !open)}
+                aria-haspopup="menu"
+                aria-expanded={attachMenuOpen}
+                className={`icon-button disabled:cursor-not-allowed disabled:opacity-50 ${attachMenuOpen ? "border-violet-300 text-violet-700" : ""}`}
+                title={attachmentBusy === "file" ? "Encrypting attachment" : "Attach a photo, video, document or voice note"}
+                aria-label="Attach"
+              >
+                {attachmentBusy === "file" ? <Loader2 className="animate-spin" size={18} /> : <Plus size={19} className={`transition-transform ${attachMenuOpen ? "rotate-45" : ""}`} />}
+              </button>
+              {attachMenuOpen && (
+                <div role="menu" className="absolute bottom-full left-0 z-30 mb-2 w-60 overflow-hidden rounded-xl border border-line bg-white py-1 shadow-soft">
+                  {[
+                    { id: "media", label: "Photo or video", detail: "From your gallery or files", icon: <ImageIcon size={17} />, onSelect: () => pickAttachment("image/*,video/*") },
+                    { id: "file", label: "Document or file", detail: "PDF, Office, ZIP or any file", icon: <FileText size={17} />, onSelect: () => pickAttachment("") },
+                    { id: "voice", label: "Voice note", detail: "Record an encrypted voice message", icon: <Mic size={17} />, onSelect: () => { setAttachMenuOpen(false); void toggleVoiceRecording(); } },
+                  ].map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      role="menuitem"
+                      onClick={option.onSelect}
+                      className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-canvas"
+                    >
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-50 text-violet-700">{option.icon}</span>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-semibold text-ink-900">{option.label}</span>
+                        <span className="block text-[11px] text-ink-500">{option.detail}</span>
+                      </span>
+                    </button>
+                  ))}
+                  <p className="border-t border-line px-3 py-1.5 text-[10px] text-ink-400">Encrypted on this device before it is sent</p>
+                </div>
+              )}
+            </div>
+            {composerExpanded ? (
+              <button
+                type="button"
+                onClick={() => setShowComposerTools(true)}
+                className="flex h-10 w-6 shrink-0 items-center justify-center rounded-md text-violet-600 hover:bg-canvas"
+                title="Show the microphone"
+                aria-label="Show more tools"
+              >
+                <ChevronRight size={18} />
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={!activeConversation || !recipientDevicesReady || Boolean(editingMessage) || Boolean(attachmentBusy) || recordingState === "processing"}
+                onClick={toggleVoiceRecording}
+                className={`icon-button disabled:cursor-not-allowed disabled:opacity-50 ${recordingState === "recording" ? "border-rose-200 bg-rose-50 text-rose-600" : ""}`}
+                title={recordingState === "recording" ? "Stop and send encrypted voice note" : "Record encrypted voice note"}
+                aria-label={recordingState === "recording" ? "Stop and send encrypted voice note" : "Record encrypted voice note"}
+              >
+                {recordingState === "recording" ? <Square size={16} /> : <Mic size={18} />}
+              </button>
+            )}
             <textarea
+              ref={composerRef}
+              rows={1}
               value={message}
+              enterKeyHint="enter"
+              placeholder={activeConversation ? "Message" : "Select a conversation"}
+              onFocus={() => setComposerFocused(true)}
+              onBlur={() => setComposerFocused(false)}
               onChange={(event) => {
                 setMessage(event.target.value);
+                setShowComposerTools(false);
                 pulseTyping().catch(() => undefined);
               }}
-              onKeyDown={(event) => {
-                // Enter sends, Shift+Enter inserts a newline.
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  if (!sending && message.trim() && !attachmentBusy && recordingState === "idle") {
-                    void sendMessage();
-                  }
-                }
-              }}
-              className="min-h-10 flex-1 resize-none rounded-lg border border-line px-3 py-2 text-sm outline-none focus:border-violet-300"
-              aria-label={activeConversation ? "Message composer" : "No conversation selected"}
+              className="min-h-10 min-w-0 flex-1 resize-none overflow-y-auto rounded-2xl border border-line px-3.5 py-2 text-sm leading-6 outline-none transition-[border-color] focus:border-violet-300"
+              aria-label={activeConversation ? "Message composer. Enter adds a new line; use the Send button to send." : "No conversation selected"}
             />
             <button
+              type="button"
               disabled={!activeConversation || !message.trim() || sending || Boolean(attachmentBusy) || recordingState !== "idle"}
               onClick={sendMessage}
-              className="flex h-10 items-center gap-2 rounded-lg bg-violet-600 px-4 text-sm font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex h-10 shrink-0 items-center gap-2 rounded-full bg-violet-600 px-3 text-sm font-bold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50 sm:rounded-lg sm:px-4"
+              aria-label={sending ? "Sending" : editingMessage ? "Update message" : "Send message"}
+              title={editingMessage ? "Update message" : "Send"}
             >
               {sending ? <Loader2 className="animate-spin" size={17} /> : <Send size={17} />}
-              {sending ? "Sending" : editingMessage ? "Update" : "Send"}
+              <span className="hidden sm:inline">{sending ? "Sending" : editingMessage ? "Update" : "Send"}</span>
             </button>
           </div>
         </div>
@@ -6577,7 +6929,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
 
       <section className={`shell-card flex min-h-0 flex-col overflow-hidden ${isMobile ? "hidden" : ""}`}>
         <div className="border-b border-line p-2">
-          <div className="grid grid-cols-3 gap-1 rounded-lg border border-line bg-canvas p-1">
+          {/* With Calls there are four: two rows of two (Contacts | Calls, Files | Terminal)
+              so no label is cut down to its first letter in the narrow panel. */}
+          <div className={`grid ${onOpenCalls ? "grid-cols-2" : "grid-cols-3"} gap-1 rounded-lg border border-line bg-canvas p-1`}>
             <button
               type="button"
               onClick={() => setRightTab("contacts")}
@@ -6588,6 +6942,19 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               <span className="truncate">Contacts</span>
               <span className="rounded-full bg-ink-100 px-1.5 py-0.5 text-[10px] text-ink-600">{displayedContacts.length}</span>
             </button>
+            {onOpenCalls && (
+              <button
+                type="button"
+                onClick={onOpenCalls}
+                className="flex min-w-0 items-center justify-center gap-1 rounded-md px-2 py-1.5 text-xs font-bold text-ink-600 transition hover:bg-white/70"
+                title={missedCalls > 0 ? `Calls · ${missedCalls} missed` : "Calls: recent and missed calls"}
+                aria-label={missedCalls > 0 ? `Open Calls, ${missedCalls} missed` : "Open Calls"}
+              >
+                <Phone size={13} />
+                <span className="truncate">Calls</span>
+                {missedCalls > 0 && <span className="rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-700">{missedCalls > 99 ? "99+" : missedCalls}</span>}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setRightTab("files")}
@@ -6721,6 +7088,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                     >
                       {contact.trust_state}
                     </span>
+                    <ChatActionMenu items={contactExtraActionItems(contact)} label={`More for ${visibleContactName(contact)}`} />
                   </div>
                   <div className="mt-3 grid grid-cols-2 gap-2 xl:grid-cols-4">
                     <button
@@ -7009,6 +7377,20 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             });
           }}
         />
+        {contactExtraActionItems(mobileMenuContact).map((item) => (
+          <SheetAction
+            key={item.id}
+            icon={item.icon}
+            label={item.label}
+            detail={item.detail}
+            danger={item.danger}
+            disabled={item.disabled}
+            onClick={() => {
+              setMobileContactMenuId(null);
+              item.onSelect();
+            }}
+          />
+        ))}
         {mobileMenuContact.trust_state === "restricted" ? (
           <SheetAction icon={<ShieldOff size={18} />} label="Lift restriction" detail="They can call you and add you to groups again" onClick={() => void updateContact(mobileMenuContact, "added")} />
         ) : (
@@ -7083,10 +7465,63 @@ export default function SecureChatPage({ userId, conversations, devices, contact
             onClick={() => { setThreadMenuOpen(false); setAssistantOpen((open) => !open); }}
           />
         )}
-        {!isTauriRuntime() && !isMultiParty(activeConversation) && (
-          <p className="px-3 py-4 text-sm text-ink-500">No options for this conversation here.</p>
-        )}
+        {conversationActionItems(activeConversation).map((item) => (
+          <SheetAction
+            key={item.id}
+            icon={item.icon}
+            label={item.label}
+            detail={item.detail}
+            danger={item.danger}
+            disabled={item.disabled}
+            onClick={() => {
+              setThreadMenuOpen(false);
+              item.onSelect();
+            }}
+          />
+        ))}
       </MobileSheet>
+    )}
+    {reportTarget && (
+      <ReportDialog
+        targetName={reportTarget.name}
+        reportedUserId={reportTarget.userId}
+        conversationId={reportTarget.conversationId}
+        canBlock={Boolean(reportTarget.contact && (contactForUser(reportTarget.contact.contact_user_id)?.trust_state ?? reportTarget.contact.trust_state) !== "blocked")}
+        onBlock={async () => {
+          if (reportTarget.contact) await updateContact(reportTarget.contact, "blocked");
+        }}
+        onClose={() => setReportTarget(null)}
+        onDone={(text) => {
+          setStatus(text);
+          setContactAction(text);
+        }}
+      />
+    )}
+    {shareContactTarget && (
+      <ShareContactDialog
+        contactName={shareContactTarget.name}
+        targets={shareTargets}
+        onPick={shareContactInto}
+        onClose={() => setShareContactTarget(null)}
+      />
+    )}
+    {notificationsTarget && (
+      <ChatDialog
+        title={`Notifications & sounds`}
+        subtitle={conversationTitle(notificationsTarget)}
+        icon={<Bell size={18} />}
+        onClose={() => setNotificationsTarget(null)}
+      >
+        <NotificationSettingsPanel
+          scope={{
+            kind: "chat",
+            conversationId: notificationsTarget.id,
+            peerUserId: conversationPeerUserId(notificationsTarget),
+            isDirect: notificationsTarget.conversation_type === "direct",
+          }}
+          onError={(text) => setStatus(text)}
+        />
+      </ChatDialog>
     )}
     {showNewGroup && (
       <NewGroupDialog

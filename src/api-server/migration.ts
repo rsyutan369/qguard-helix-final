@@ -918,6 +918,12 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
   for (const agent of agentRows) {
     if (typeof agent?.id === 'string') agentsById.set(agent.id, agent)
   }
+  // A refusal recorded by an agent that has since been revoked no longer explains anything.
+  const liveAgentIds = new Set(
+    agentRows
+      .filter((agent: any) => typeof agent?.id === 'string' && !agent.revoked_at && String(agent.status || '').toLowerCase() !== 'revoked')
+      .map((agent: any) => String(agent.id)),
+  )
 
   const inventoryByAsset = new Map<string, any[]>()
   for (const item of inventoryRows) {
@@ -1030,7 +1036,7 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
       approval: approvalFor(row, approvalPlans),
       // Shared with the Migration Sandbox's operational details, so both pages
       // show the same refusal for the same job.
-      dispatchBlock: dispatchBlockFor(metadata, status),
+      dispatchBlock: dispatchBlockFor(metadata, status, liveAgentIds),
       isSandbox,
       runMode: isSandbox ? (metadata.dryRun === true ? 'dry_run' : 'sandbox_simulation') : 'migration_workflow',
       agentId: agentId || null,
@@ -3772,7 +3778,13 @@ router.get('/live/stream', requireAuth, async (req: AuthenticatedRequest, res) =
    */
   // First connect starts at "now" — history arrives in the snapshot, which
   // reads the persisted rows. Only a reconnect replays from its last id.
-  let cursor = Number(req.headers['last-event-id'] || req.query.lastEventId || 0) || busStats().sequence
+  /* A Last-Event-ID AHEAD of the bus means the API process restarted and its
+     sequence began again at 0. Trusting it would skip every new frame until the
+     counter caught up — a stream that reads "connected" and delivers nothing.
+     Resume from the current head instead; the snapshot covers the gap. */
+  const busHead = busStats().sequence
+  const resumeFrom = Number(req.headers['last-event-id'] || req.query.lastEventId || 0)
+  let cursor = resumeFrom > 0 && resumeFrom <= busHead ? resumeFrom : busHead
   let snapshotTimer: ReturnType<typeof setTimeout> | null = null
   const flushAgentEvents = () => {
     if (closed) return

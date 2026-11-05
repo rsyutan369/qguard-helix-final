@@ -170,11 +170,15 @@ pub struct SocialRecoveryRecord {
     pub threshold: u8,
     pub share_count: u8,
     pub salt_b64: String,
-    /// The recovery root, under HKDF(S ‖ Argon2id(PIN)). Nobody can open it
+    /// The recovery root, under HKDF(S ‖ stretch(PIN)). Nobody can open it
     /// without k shares AND the PIN.
     pub wrapped_root: EncryptedEnvelope,
     pub guardians: Vec<GuardianRef>,
     pub created_at: i64,
+    /// The PIN stretch (`passcode` KDF version). Records from before this
+    /// field are Argon2id; FIPS approved mode writes PBKDF2.
+    #[serde(default = "crate::crypto::passcode::legacy_stored_kdf")]
+    pub kdf: u8,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -363,8 +367,13 @@ pub fn request_code(request: &RecoveryRequest) -> Vec<String> {
     (0..4).map(|index| words[((bits >> (30 - 10 * index)) & 0x3ff) as usize].to_string()).collect()
 }
 
-fn wrap_key(salt: &[u8], secret: &[u8; SECRET_LEN], pin: &str) -> Result<Zeroizing<[u8; 32]>> {
-    let mut stretched = passcode::argon2id_prehash(salt, pin.as_bytes())?;
+/// HKDF(S ‖ stretch(PIN)), the stretch being the record's `kdf`: Argon2id, or
+/// PBKDF2-HMAC-SHA-512 for a setup made in FIPS approved mode.
+fn wrap_key(salt: &[u8], secret: &[u8; SECRET_LEN], pin: &str, kdf: u8) -> Result<Zeroizing<[u8; 32]>> {
+    if kdf != passcode::KDF_ARGON2ID_V1 && kdf != passcode::KDF_PBKDF2_SHA512_V2 {
+        return Err(QGuardError::InvalidInput("unsupported recovery PIN derivation".to_string()));
+    }
+    let mut stretched = passcode::secret_ikm(kdf, salt, pin.as_bytes())?;
     let mut ikm = Zeroizing::new(Vec::with_capacity(64));
     ikm.extend_from_slice(secret);
     ikm.extend_from_slice(&stretched);
@@ -448,15 +457,12 @@ fn setup_social_recovery(
         }
     }
     let mut secret = Zeroizing::new([0u8; SECRET_LEN]);
-    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, secret.as_mut());
+    crate::crypto::provider::fill_random(secret.as_mut());
     let shares = shamir::split(&secret, threshold, share_count)?;
     let salt = passcode::random_salt();
-    let setup_id = {
-        let mut id = [0u8; 16];
-        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut id);
-        hex::encode(id)
-    };
-    let key = wrap_key(&salt, &secret, pin)?;
+    let setup_id = hex::encode(crate::crypto::provider::random_array::<16>());
+    let kdf = passcode::preferred_kdf();
+    let key = wrap_key(&salt, &secret, pin, kdf)?;
     let wrapped_root = symmetric::encrypt(&key, root.as_slice(), &root_aad(&identity.user_id, &setup_id))?;
     let now = Utc::now().timestamp();
 
@@ -504,6 +510,7 @@ fn setup_social_recovery(
             wrapped_root,
             guardians: refs,
             created_at: now,
+            kdf,
         },
         offers,
     })
@@ -603,9 +610,8 @@ fn create_request(state: &AppState) -> Result<RecoveryRequestView> {
             }
         }
     }
-    let keypair = LocalKemKeypair::generate();
-    let mut id = [0u8; 16];
-    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut id);
+    let keypair = LocalKemKeypair::try_generate()?;
+    let id: [u8; 16] = crate::crypto::provider::random_array();
     let mut request = RecoveryRequest {
         v: SOCIAL_VERSION,
         request_id: hex::encode(id),
@@ -726,7 +732,7 @@ fn finish_recovery(
     let salt = base64::engine::general_purpose::STANDARD
         .decode(&record.salt_b64)
         .map_err(|_| QGuardError::InvalidInput("recovery record salt is malformed".to_string()))?;
-    let key = wrap_key(&salt, &secret, pin)?;
+    let key = wrap_key(&salt, &secret, pin, record.kdf)?;
     let mut root_bytes = symmetric::decrypt(&key, &record.wrapped_root, &root_aad(&identity.user_id, &record.setup_id))
         .map_err(|_| QGuardError::Trust("the recovery PIN is wrong (or a share was not genuine)".to_string()))?;
     let root: [u8; 32] = root_bytes

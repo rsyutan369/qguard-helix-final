@@ -20,6 +20,7 @@
 import { createClient } from '@supabase/supabase-js'
 import fs from 'node:fs'
 import { randomUUID } from 'node:crypto'
+import { AGENT_VERSION } from '../src/lib/agent-installer/agent-release'
 
 const BASE = process.env.QGUARD_TEST_BASE || 'http://localhost:3000'
 const OWNER_EMAIL = process.env.QGUARD_TEST_EMAIL || 'zachmatthew369@gmail.com'
@@ -80,7 +81,9 @@ async function session(): Promise<string> {
 const created: string[] = []
 
 async function enrol(token: string, body: Record<string, unknown>) {
-  const res = await call('/api/v1/agent-scanner/agents/enroll', { method: 'POST', token, body })
+  // Enrol as the CURRENT release: older versions are refused writes by the coordination gate
+  // before authority is even read, which would mask what this check is about.
+  const res = await call('/api/v1/agent-scanner/agents/enroll', { method: 'POST', token, body: { version: AGENT_VERSION, ...body } })
   const id = res.body?.data?.agent?.id as string | undefined
   if (id) created.push(id)
   return { ...res, id, agentToken: res.body?.data?.enrollment?.agentToken as string | undefined, agent: res.body?.data?.agent }

@@ -1,0 +1,28 @@
+{
+  "apk": "C:\\Users\\ruel3\\Music\\qguard-helix-final\\qguard-messaging\\src-tauri\\release\\QguardMessaging-1.5.0-responsive-ui-arm64.apk",
+  "apkBytes": 22920671,
+  "apkSha256": "19ff583ce8ff8ad5bf8faf9dc60488bbc7f68c25c3a3182fe7e84fcb363f6450",
+  "nativeBytes": 17961768,
+  "nativeSha256": "9c1854634885aeeea16850b17c7d1cc461fa041dfe092194268a747525255166",
+  "currentUiAssets": [
+    "index-PeqaNcap.js",
+    "index-OllFGzaM.css"
+  ],
+  "zipCrcsPass": true,
+  "exactFreshNativeMatch": true,
+  "allOnboardingAssetsPresent": true,
+  "certificateSha256": "595301f1c0dcccd8aae35ff99beac5583f57e2e7931f31fc54cad6dd95fc65a3",
+  "signatureVerified": true,
+  "matchesPreviousPremiumBuild": true,
+  "versionName": "1.5.0",
+  "versionCode": 1005000,
+  "abi": "arm64-v8a",
+  "splashDurationMs": 3000,
+  "testsPassed": 599,
+  "testFilesPassed": 68,
+  "responsiveLayoutsPassed": 130,
+  "themeAndOnboardingRegressionPassed": true,
+  "rustSourceUnchanged": true,
+  "physicalDeviceTested": false,
+  "allReleaseChecksPassed": true
+}

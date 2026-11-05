@@ -136,63 +136,34 @@ export function WorkflowHeader({
   }, [menuOpen])
 
   return (
-    <header className={cn(PANEL, 'overflow-visible p-4 sm:p-5')}>
+    <header className={cn(PANEL, 'overflow-visible p-4 sm:p-5', menuOpen && 'z-30')}>
       <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
         <div className="absolute -left-20 -top-24 h-56 w-[520px] rounded-full bg-cyan-500/10 blur-3xl" />
         <div className="absolute -right-10 -top-20 h-48 w-[360px] rounded-full bg-violet-500/10 blur-3xl" />
       </div>
       <div className="relative grid gap-4">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-[color:var(--lw-cyan)]/80">Qguard Helix</span>
-            <span className="h-3 w-px bg-white/20" />
-            <h1 className="text-2xl font-black tracking-tight text-white sm:text-[28px]">PQC Migration Workflow</h1>
-            <span
-              className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-black uppercase tracking-wider"
-              style={{ color: conn.color, borderColor: `${mix(conn.color, 40)}`, background: `${mix(conn.color, 8)}` }}
-              title={`${conn.detail} Last confirmed update ${ageLabel}.`}
-            >
-              <span className={cn('h-2 w-2 rounded-full', connection === 'live' && 'animate-pulse')} style={{ background: conn.color, boxShadow: `0 0 10px ${conn.color}` }} />
-              {conn.label}
-              <span className="font-mono text-[10px] font-semibold normal-case tracking-normal opacity-70">{ageLabel}</span>
-            </span>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 flex-1 basis-[420px]">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-[color:var(--lw-cyan)]/80">Qguard Helix</span>
+              <span className="h-3 w-px bg-white/20" />
+              <h1 className="text-2xl font-black tracking-tight text-white sm:text-[28px]">PQC Migration Workflow</h1>
+              <span
+                className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-black uppercase tracking-wider"
+                style={{ color: conn.color, borderColor: `${mix(conn.color, 40)}`, background: `${mix(conn.color, 8)}` }}
+                title={`${conn.detail} Last confirmed update ${ageLabel}.`}
+              >
+                <span className={cn('h-2 w-2 rounded-full', connection === 'live' && 'animate-pulse')} style={{ background: conn.color, boxShadow: `0 0 10px ${conn.color}` }} />
+                {conn.label}
+                <span className="font-mono text-[10px] font-semibold normal-case tracking-normal opacity-70">{ageLabel}</span>
+              </span>
+            </div>
+            <p className="mt-1.5 text-sm text-white/55">
+              Real-time execution of the post-quantum migration workflow — <span className="text-white/75">{model.statusReason}</span>
+            </p>
           </div>
-          <p className="mt-1.5 text-sm text-white/55">
-            Real-time execution of the post-quantum migration workflow — <span className="text-white/75">{model.statusReason}</span>
-          </p>
-        </div>
 
-        <div className="flex flex-wrap items-stretch gap-2">
-          <Chip title={`${model.activeAgents} of 4 stages executing. ${model.onlineAgents} of ${model.enrolledAgents} enrolled agents sent a heartbeat in the last 10 minutes.`}>
-            <Radar className="h-5 w-5 shrink-0 text-[color:var(--lw-cyan)]" aria-hidden="true" />
-            <div>
-              <div className="font-mono text-lg font-black leading-none text-white">{model.onlineAgents}/{model.enrolledAgents}</div>
-              <div className="mt-0.5 text-[10px] text-white/50">Agents online · {model.activeAgents}/4 active</div>
-            </div>
-          </Chip>
-          <Chip title={model.progressBasis}>
-            <ProgressRing value={model.overallProgress} color={TONE.cyan} status={model.status} size={40} />
-            <div>
-              <div className="font-mono text-lg font-black leading-none text-white">{model.overallProgress === null ? '—' : `${model.overallProgress}%`}</div>
-              <div className="mt-0.5 text-[10px] text-white/50">Overall progress</div>
-            </div>
-          </Chip>
-          <Chip title={model.startedAt ? `Earliest recorded start of the active stages: ${new Date(model.startedAt).toLocaleString()}` : 'No stage is executing.'}>
-            <Timer className="h-5 w-5 shrink-0 text-[color:var(--lw-cyan)]" aria-hidden="true" />
-            <div>
-              <div className="font-mono text-lg font-black leading-none text-white">{elapsed === null ? '—' : formatDuration(elapsed)}</div>
-              <div className="mt-0.5 text-[10px] text-white/50">Elapsed · stage {stage}</div>
-            </div>
-          </Chip>
-          <Chip title="Warnings and errors recorded in the last 24 hours.">
-            <AlertTriangle className={cn('h-5 w-5 shrink-0', model.errors ? 'text-[color:var(--lw-red)]' : model.warnings ? 'text-[color:var(--lw-amber)]' : 'text-white/35')} aria-hidden="true" />
-            <div>
-              <div className="font-mono text-lg font-black leading-none text-white">{model.errors}<span className="text-white/40"> / </span>{model.warnings}</div>
-              <div className="mt-0.5 text-[10px] text-white/50">Errors / warnings (24h)</div>
-            </div>
-          </Chip>
-
-          <div className="flex flex-wrap items-center gap-2">
+          <div role="group" aria-label="Workflow actions" className="flex max-w-full flex-wrap items-center gap-2">
             {controls.canResume && (
               <button
                 type="button"
@@ -250,7 +221,7 @@ export function WorkflowHeader({
                 More Actions <ChevronDown className="h-4 w-4" />
               </button>
               {menuOpen && (
-                <div role="menu" className="absolute right-0 top-12 z-40 w-56 overflow-hidden rounded-xl border border-white/12 bg-[var(--lw-panel-solid)] p-1 shadow-2xl backdrop-blur-xl">
+                <div role="menu" className="absolute left-0 top-12 z-40 w-56 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-white/12 bg-[var(--lw-panel-solid)] p-1 shadow-2xl backdrop-blur-xl sm:left-auto sm:right-0">
                   {moreActions.map((action) => (
                     <button
                       key={action.label}
@@ -268,6 +239,37 @@ export function WorkflowHeader({
               )}
             </div>
           </div>
+        </div>
+
+        <div className="flex flex-wrap items-stretch gap-2">
+          <Chip title={`${model.activeAgents} of 4 stages executing. ${model.onlineAgents} of ${model.enrolledAgents} enrolled agents sent a heartbeat in the last 10 minutes.`}>
+            <Radar className="h-5 w-5 shrink-0 text-[color:var(--lw-cyan)]" aria-hidden="true" />
+            <div>
+              <div className="font-mono text-lg font-black leading-none text-white">{model.onlineAgents}/{model.enrolledAgents}</div>
+              <div className="mt-0.5 text-[10px] text-white/50">Agents online · {model.activeAgents}/4 active</div>
+            </div>
+          </Chip>
+          <Chip title={model.progressBasis}>
+            <ProgressRing value={model.overallProgress} color={TONE.cyan} status={model.status} size={40} />
+            <div>
+              <div className="font-mono text-lg font-black leading-none text-white">{model.overallProgress === null ? '—' : `${model.overallProgress}%`}</div>
+              <div className="mt-0.5 text-[10px] text-white/50">Overall progress</div>
+            </div>
+          </Chip>
+          <Chip title={model.startedAt ? `Earliest recorded start of the active stages: ${new Date(model.startedAt).toLocaleString()}` : 'No stage is executing.'}>
+            <Timer className="h-5 w-5 shrink-0 text-[color:var(--lw-cyan)]" aria-hidden="true" />
+            <div>
+              <div className="font-mono text-lg font-black leading-none text-white">{elapsed === null ? '—' : formatDuration(elapsed)}</div>
+              <div className="mt-0.5 text-[10px] text-white/50">Elapsed · stage {stage}</div>
+            </div>
+          </Chip>
+          <Chip title="Warnings and errors recorded in the last 24 hours.">
+            <AlertTriangle className={cn('h-5 w-5 shrink-0', model.errors ? 'text-[color:var(--lw-red)]' : model.warnings ? 'text-[color:var(--lw-amber)]' : 'text-white/35')} aria-hidden="true" />
+            <div>
+              <div className="font-mono text-lg font-black leading-none text-white">{model.errors}<span className="text-white/40"> / </span>{model.warnings}</div>
+              <div className="mt-0.5 text-[10px] text-white/50">Errors / warnings (24h)</div>
+            </div>
+          </Chip>
         </div>
       </div>
     </header>

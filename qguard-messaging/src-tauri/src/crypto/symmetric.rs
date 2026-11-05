@@ -1,51 +1,23 @@
-use aes_gcm::{
-    aead::{Aead, KeyInit, Payload},
-    Aes256Gcm, Key, Nonce,
-};
-use rand::RngCore;
-
 use crate::error::{QGuardError, Result};
 
+use super::provider;
 use super::EncryptedEnvelope;
 
 pub const KEY_SIZE: usize = 32;
-pub const NONCE_SIZE: usize = 12;
-pub const TAG_SIZE: usize = 16;
+pub const NONCE_SIZE: usize = provider::AES_GCM_NONCE_BYTES;
+pub const TAG_SIZE: usize = provider::AES_GCM_TAG_BYTES;
 
 pub fn random_key() -> [u8; KEY_SIZE] {
-    let mut key = [0u8; KEY_SIZE];
-    rand::rngs::OsRng.fill_bytes(&mut key);
-    key
+    provider::random_array()
 }
 
-pub fn random_nonce() -> [u8; NONCE_SIZE] {
-    let mut nonce = [0u8; NONCE_SIZE];
-    rand::rngs::OsRng.fill_bytes(&mut nonce);
-    nonce
-}
-
+/// AES-256-GCM. The nonce is chosen inside the cryptographic module.
 pub fn encrypt(key: &[u8; KEY_SIZE], plaintext: &[u8], aad: &[u8]) -> Result<EncryptedEnvelope> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce_bytes = random_nonce();
-    let ciphertext_with_tag = cipher
-        .encrypt(
-            Nonce::from_slice(&nonce_bytes),
-            Payload {
-                msg: plaintext,
-                aad,
-            },
-        )
-        .map_err(|e| QGuardError::Crypto(format!("AES-256-GCM encrypt failed: {e}")))?;
-
-    if ciphertext_with_tag.len() < TAG_SIZE {
-        return Err(QGuardError::Crypto("ciphertext tag missing".to_string()));
-    }
-
-    let tag_start = ciphertext_with_tag.len() - TAG_SIZE;
+    let sealed = provider::aes256gcm_seal(key, aad, plaintext)?;
     Ok(EncryptedEnvelope {
-        nonce: nonce_bytes.to_vec(),
-        ciphertext: ciphertext_with_tag[..tag_start].to_vec(),
-        tag: ciphertext_with_tag[tag_start..].to_vec(),
+        nonce: sealed.nonce.to_vec(),
+        ciphertext: sealed.ciphertext,
+        tag: sealed.tag.to_vec(),
     })
 }
 
@@ -53,22 +25,7 @@ pub fn decrypt(key: &[u8; KEY_SIZE], envelope: &EncryptedEnvelope, aad: &[u8]) -
     if envelope.nonce.len() != NONCE_SIZE || envelope.tag.len() != TAG_SIZE {
         return Err(QGuardError::Crypto("invalid AES-GCM envelope".to_string()));
     }
-
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let mut ciphertext_with_tag =
-        Vec::with_capacity(envelope.ciphertext.len() + envelope.tag.len());
-    ciphertext_with_tag.extend_from_slice(&envelope.ciphertext);
-    ciphertext_with_tag.extend_from_slice(&envelope.tag);
-
-    cipher
-        .decrypt(
-            Nonce::from_slice(&envelope.nonce),
-            Payload {
-                msg: ciphertext_with_tag.as_ref(),
-                aad,
-            },
-        )
-        .map_err(|_| QGuardError::Crypto("AEAD authentication failed".to_string()))
+    provider::aes256gcm_open(key, &envelope.nonce, aad, &envelope.ciphertext, &envelope.tag)
 }
 
 #[cfg(test)]

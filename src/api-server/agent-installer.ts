@@ -50,7 +50,7 @@ import {
   readAgentEnvironment,
   validateControlPlane,
 } from '@/lib/agent-installer/agent-environment'
-import { eventsSince, publishAgentEvent, subscribe } from './agent-event-bus'
+import { busStats, eventsSince, publishAgentEvent, subscribe } from './agent-event-bus'
 import {
   decideAgentRole,
   decideScanTypes,
@@ -659,7 +659,7 @@ router.post('/package', requireUserAuth, async (req: AuthedRequest, res) => {
         prerequisites: installer.prerequisites,
         service: installer.service,
         architectures: installer.architectures,
-        quickCommand: installQuickCommand(platformId),
+        quickCommand: installer.runCommand,
         label: platform.label,
       },
     },
@@ -760,6 +760,7 @@ router.get('/self', requireAgentAuth, async (req: AgentRequest, res) => {
       connectionState: state,
       status: agent.status,
       lastSeenAt: agent.last_seen_at || null,
+      runtimeLaunchId: cleanString(agent.metadata?.lastTelemetry?.process?.launchId, 64) || null,
       installedVersion: agent.version || null,
       latestVersion: release.available ? release.version : null,
       upgradeAvailable: Boolean(release.available && agent.version && agent.version !== release.version),
@@ -1215,6 +1216,7 @@ router.get('/assets', requireUserAuth, async (req: AuthedRequest, res) => {
     // Binding kind and path are read as scalars so the picker never pulls whole metadata blobs.
     .select('id, name, type, environment, criticality, status, ip_address, service_owner, updated_at, binding_kind:metadata->>bindingKind, binding_path:metadata->>bindingPath')
     .eq('user_id', user.id)
+    .is('metadata->>consolidatedIntoAssetId', null)
     .order('name', { ascending: true })
     .limit(500)
   if (search) query = query.ilike('name', `%${search}%`)
@@ -1277,7 +1279,11 @@ router.get('/events/stream', async (req, res) => {
   // ?lastEventId for clients that cannot set headers on an EventSource.
   const lastEventHeader = req.headers['last-event-id']
   const headerValue = Array.isArray(lastEventHeader) ? lastEventHeader[0] : lastEventHeader
-  let cursor = Number(headerValue || req.query.lastEventId || 0) || 0
+  const resumeFrom = Number(headerValue || req.query.lastEventId || 0) || 0
+  /* An id AHEAD of the bus means the API process restarted and the sequence
+     began again at 0; trusting it would silently skip every new event until the
+     counter caught up. Replay what the fresh buffer holds instead. */
+  let cursor = resumeFrom > busStats().sequence ? 0 : resumeFrom
   let closed = false
 
   const flush = () => {

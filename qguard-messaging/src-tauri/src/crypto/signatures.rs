@@ -1,12 +1,9 @@
-use ed25519_dalek::{Signature as Ed25519Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use pqcrypto_mldsa::{mldsa65, mldsa87};
-use pqcrypto_traits::sign::{DetachedSignature, PublicKey, SecretKey};
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
 use crate::error::{QGuardError, Result};
 
+use super::provider::{self, MlDsa};
 use super::{DualSignature, DualSignature87};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -18,17 +15,22 @@ pub struct LocalSigningKeypair {
 }
 
 impl LocalSigningKeypair {
-    pub fn generate() -> Self {
-        let ed = SigningKey::generate(&mut OsRng);
-        let ed_public = ed.verifying_key().to_bytes().to_vec();
-        let (pq_public, pq_secret) = mldsa65::keypair();
+    pub fn try_generate() -> Result<Self> {
+        let (ed_seed, ed_public) = provider::ed25519_generate()?;
+        let (pq_public, pq_secret) = provider::mldsa_generate(MlDsa::Ml65)?;
 
-        Self {
-            ed25519_secret: ed.to_bytes(),
-            ed25519_public: ed_public,
-            mldsa_secret: mldsa65::SecretKey::as_bytes(&pq_secret).to_vec(),
-            mldsa_public: mldsa65::PublicKey::as_bytes(&pq_public).to_vec(),
-        }
+        Ok(Self {
+            ed25519_secret: *ed_seed,
+            ed25519_public: ed_public.to_vec(),
+            mldsa_secret: pq_secret.to_vec(),
+            mldsa_public: pq_public,
+        })
+    }
+
+    /// [`Self::try_generate`] for callers with no error path. Fails only when
+    /// the cryptographic self-test has disabled key generation.
+    pub fn generate() -> Self {
+        Self::try_generate().expect("device signing key generation")
     }
 }
 
@@ -40,51 +42,25 @@ impl Drop for LocalSigningKeypair {
 }
 
 pub fn dual_sign(ed_secret: &[u8; 32], mldsa_secret: &[u8], data: &[u8]) -> Result<DualSignature> {
-    let ed = SigningKey::from_bytes(ed_secret);
-    let ed_sig = ed.sign(data);
-
-    let pq_secret = mldsa65::SecretKey::from_bytes(mldsa_secret)
-        .map_err(|e| QGuardError::Crypto(format!("invalid ML-DSA secret key: {e:?}")))?;
-    let pq_sig = mldsa65::detached_sign(data, &pq_secret);
+    let ed_sig = provider::ed25519_sign(ed_secret, data)?;
+    let pq_sig = provider::mldsa_sign(MlDsa::Ml65, mldsa_secret, data)
+        .map_err(|e| QGuardError::Crypto(format!("invalid ML-DSA secret key: {e}")))?;
 
     Ok(DualSignature {
-        ed25519: ed_sig.to_bytes().to_vec(),
-        ml_dsa_65: mldsa65::DetachedSignature::as_bytes(&pq_sig).to_vec(),
+        ed25519: ed_sig.to_vec(),
+        ml_dsa_65: pq_sig,
     })
 }
 
+/// Both halves must verify; each is checked on its own.
 pub fn dual_verify(
     ed_public: &[u8],
     mldsa_public: &[u8],
     data: &[u8],
     sig: &DualSignature,
 ) -> Result<()> {
-    if ed_public.len() != 32 || sig.ed25519.len() != 64 {
-        return Err(QGuardError::Crypto(
-            "invalid Ed25519 key or signature length".to_string(),
-        ));
-    }
-
-    let mut ed_pub_arr = [0u8; 32];
-    ed_pub_arr.copy_from_slice(ed_public);
-    let verifying = VerifyingKey::from_bytes(&ed_pub_arr)
-        .map_err(|e| QGuardError::Crypto(format!("invalid Ed25519 public key: {e}")))?;
-
-    let mut ed_sig_arr = [0u8; 64];
-    ed_sig_arr.copy_from_slice(&sig.ed25519);
-    let ed_sig = Ed25519Signature::from_bytes(&ed_sig_arr);
-    verifying
-        .verify(data, &ed_sig)
-        .map_err(|_| QGuardError::Crypto("Ed25519 signature verification failed".to_string()))?;
-
-    let pq_public = mldsa65::PublicKey::from_bytes(mldsa_public)
-        .map_err(|e| QGuardError::Crypto(format!("invalid ML-DSA public key: {e:?}")))?;
-    let pq_sig = mldsa65::DetachedSignature::from_bytes(&sig.ml_dsa_65)
-        .map_err(|e| QGuardError::Crypto(format!("invalid ML-DSA signature: {e:?}")))?;
-    mldsa65::verify_detached_signature(&pq_sig, data, &pq_public)
-        .map_err(|_| QGuardError::Crypto("ML-DSA-65 signature verification failed".to_string()))?;
-
-    Ok(())
+    provider::ed25519_verify(ed_public, data, &sig.ed25519)?;
+    provider::mldsa_verify(MlDsa::Ml65, mldsa_public, data, &sig.ml_dsa_65)
 }
 
 /// High-security vault signing keypair (Ed25519 + ML-DSA-87 / FIPS 204 Level 5).
@@ -99,17 +75,22 @@ pub struct VaultSigningKeypair {
 }
 
 impl VaultSigningKeypair {
-    pub fn generate() -> Self {
-        let ed = SigningKey::generate(&mut OsRng);
-        let ed_public = ed.verifying_key().to_bytes().to_vec();
-        let (pq_public, pq_secret) = mldsa87::keypair();
+    pub fn try_generate() -> Result<Self> {
+        let (ed_seed, ed_public) = provider::ed25519_generate()?;
+        let (pq_public, pq_secret) = provider::mldsa_generate(MlDsa::Ml87)?;
 
-        Self {
-            ed25519_secret: ed.to_bytes(),
-            ed25519_public: ed_public,
-            mldsa87_secret: mldsa87::SecretKey::as_bytes(&pq_secret).to_vec(),
-            mldsa87_public: mldsa87::PublicKey::as_bytes(&pq_public).to_vec(),
-        }
+        Ok(Self {
+            ed25519_secret: *ed_seed,
+            ed25519_public: ed_public.to_vec(),
+            mldsa87_secret: pq_secret.to_vec(),
+            mldsa87_public: pq_public,
+        })
+    }
+
+    /// [`Self::try_generate`] for callers with no error path. Fails only when
+    /// the cryptographic self-test has disabled key generation.
+    pub fn generate() -> Self {
+        Self::try_generate().expect("vault signing key generation")
     }
 }
 
@@ -122,16 +103,13 @@ impl Drop for VaultSigningKeypair {
 
 /// Dual-sign `data` with Ed25519 + ML-DSA-87 (vault high-security profile).
 pub fn dual_sign_87(ed_secret: &[u8; 32], mldsa87_secret: &[u8], data: &[u8]) -> Result<DualSignature87> {
-    let ed = SigningKey::from_bytes(ed_secret);
-    let ed_sig = ed.sign(data);
-
-    let pq_secret = mldsa87::SecretKey::from_bytes(mldsa87_secret)
-        .map_err(|e| QGuardError::Crypto(format!("invalid ML-DSA-87 secret key: {e:?}")))?;
-    let pq_sig = mldsa87::detached_sign(data, &pq_secret);
+    let ed_sig = provider::ed25519_sign(ed_secret, data)?;
+    let pq_sig = provider::mldsa_sign(MlDsa::Ml87, mldsa87_secret, data)
+        .map_err(|e| QGuardError::Crypto(format!("invalid ML-DSA-87 secret key: {e}")))?;
 
     Ok(DualSignature87 {
-        ed25519: ed_sig.to_bytes().to_vec(),
-        ml_dsa_87: mldsa87::DetachedSignature::as_bytes(&pq_sig).to_vec(),
+        ed25519: ed_sig.to_vec(),
+        ml_dsa_87: pq_sig,
     })
 }
 
@@ -142,32 +120,8 @@ pub fn dual_verify_87(
     data: &[u8],
     sig: &DualSignature87,
 ) -> Result<()> {
-    if ed_public.len() != 32 || sig.ed25519.len() != 64 {
-        return Err(QGuardError::Crypto(
-            "invalid Ed25519 key or signature length".to_string(),
-        ));
-    }
-
-    let mut ed_pub_arr = [0u8; 32];
-    ed_pub_arr.copy_from_slice(ed_public);
-    let verifying = VerifyingKey::from_bytes(&ed_pub_arr)
-        .map_err(|e| QGuardError::Crypto(format!("invalid Ed25519 public key: {e}")))?;
-
-    let mut ed_sig_arr = [0u8; 64];
-    ed_sig_arr.copy_from_slice(&sig.ed25519);
-    let ed_sig = Ed25519Signature::from_bytes(&ed_sig_arr);
-    verifying
-        .verify(data, &ed_sig)
-        .map_err(|_| QGuardError::Crypto("Ed25519 signature verification failed".to_string()))?;
-
-    let pq_public = mldsa87::PublicKey::from_bytes(mldsa87_public)
-        .map_err(|e| QGuardError::Crypto(format!("invalid ML-DSA-87 public key: {e:?}")))?;
-    let pq_sig = mldsa87::DetachedSignature::from_bytes(&sig.ml_dsa_87)
-        .map_err(|e| QGuardError::Crypto(format!("invalid ML-DSA-87 signature: {e:?}")))?;
-    mldsa87::verify_detached_signature(&pq_sig, data, &pq_public)
-        .map_err(|_| QGuardError::Crypto("ML-DSA-87 signature verification failed".to_string()))?;
-
-    Ok(())
+    provider::ed25519_verify(ed_public, data, &sig.ed25519)?;
+    provider::mldsa_verify(MlDsa::Ml87, mldsa87_public, data, &sig.ml_dsa_87)
 }
 
 #[cfg(test)]

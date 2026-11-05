@@ -66,6 +66,8 @@ export default function VerifyCertificate() {
       const response = await fetch(`/api/v1/certificate-verification/${encodeURIComponent(clean)}${via ? `?via=${via}` : ''}`);
       const payload = await response.json().catch(() => ({}));
       if (response.status === 429) throw new Error('Too many verification requests — please retry in a minute.');
+      // A 404 carries a not-found RESULT; any other failure is not a verdict.
+      if (!response.ok && response.status !== 404) throw new Error(payload?.error?.message || 'The certificate registry could not be read — please retry.');
       setResult((payload.data as PublicCertificateVerification) || null);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Verification failed');
@@ -85,10 +87,11 @@ export default function VerifyCertificate() {
       const response = await fetch(`/api/v1/certificate-verification/lookup?company=${encodeURIComponent(clean)}`);
       const payload = await response.json().catch(() => ({}));
       if (response.status === 429) throw new Error('Too many verification requests — please retry in a minute.');
+      if (!response.ok) throw new Error(payload?.error?.message || 'The certificate registry could not be read — please retry.');
       setMatches((payload.data as CompanyMatch[]) || []);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Search failed');
-      setMatches([]);
+      setMatches(null);
     } finally {
       setLoading(false);
     }

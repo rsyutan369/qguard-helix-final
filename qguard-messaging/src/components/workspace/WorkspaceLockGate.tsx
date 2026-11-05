@@ -12,7 +12,11 @@ import {
   ShieldCheck,
   UnlockKeyhole,
 } from "lucide-react";
+import { PatternCapture } from "@/components/vault/PatternCapture";
+import { RecoverHiddenVault } from "@/components/vault/hidden/HiddenRecovery";
 import type { ScopeStatus, UnlockMethod, WorkspaceScope } from "@/lib/use-workspace-lock";
+
+const METHOD_LABELS: Record<UnlockMethod, string> = { password: "Password", pin: "PIN", pattern: "Pattern" };
 
 function describeError(error: unknown): string {
   if (!error) return "Something went wrong.";
@@ -55,12 +59,23 @@ export function WorkspaceLockGate(props: {
   inactivityMinutes: number;
   onUnlock: (method: UnlockMethod, secret: string) => Promise<unknown>;
   onSetup: (method: UnlockMethod, secret: string) => Promise<unknown>;
+  /**
+   * Vault only: a drawn pattern, which the core may match to the vault's own
+   * pattern or to a hidden vault. Offered whether or not a pattern is set, so
+   * the screen says nothing about hidden vaults.
+   */
+  onPatternUnlock?: (pattern: string) => Promise<unknown>;
   onCancel: () => void;
   // Recovery: reset the chat lock after account re-auth (lossless), or reset the
   // vault lock via the recovery key or an account-password "start fresh".
   onRecoverChat?: (accountPassword: string) => Promise<unknown>;
   onRecoverVaultWithKey?: (recoveryKey: string, method: UnlockMethod, secret: string) => Promise<unknown>;
   onRecoverVaultWithAccount?: (accountPassword: string, method: UnlockMethod, secret: string) => Promise<unknown>;
+  /**
+   * Vault only: a hidden vault was recovered with its 12-word phrase and is now
+   * open. Offered to everyone, like the pattern pad.
+   */
+  onHiddenRecovered?: () => void;
   /** How this account proves ownership: its password, or an SMS code for mobile-number accounts. */
   accountProof?: AccountProof;
 }) {
@@ -68,7 +83,9 @@ export function WorkspaceLockGate(props: {
   const copy = COPY[scope];
   const setupMode = !status.configured;
 
-  const initialMethod: UnlockMethod = status.hasPassword || setupMode ? "password" : "pin";
+  const patternOffered = scope === "vault" && (setupMode || Boolean(props.onPatternUnlock));
+  const initialMethod: UnlockMethod =
+    setupMode ? "password" : status.hasPattern && patternOffered ? "pattern" : status.hasPassword ? "password" : status.hasPin ? "pin" : patternOffered ? "pattern" : "password";
   const [method, setMethod] = useState<UnlockMethod>(initialMethod);
   const [secret, setSecret] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -97,8 +114,8 @@ export function WorkspaceLockGate(props: {
   const lockedOut = status.lockdown || lockoutRemaining > 0;
 
   const availableMethods: UnlockMethod[] = setupMode
-    ? ["password", "pin"]
-    : ([status.hasPassword ? "password" : null, status.hasPin ? "pin" : null].filter(Boolean) as UnlockMethod[]);
+    ? (["password", "pin", patternOffered ? "pattern" : null].filter(Boolean) as UnlockMethod[])
+    : ([status.hasPassword ? "password" : null, status.hasPin ? "pin" : null, patternOffered ? "pattern" : null].filter(Boolean) as UnlockMethod[]);
 
   const minOk =
     method === "password" ? secret.length >= 12 : /^\d{6,12}$/.test(secret);
@@ -155,23 +172,24 @@ export function WorkspaceLockGate(props: {
         onRecoverChat={props.onRecoverChat}
         onRecoverVaultWithKey={props.onRecoverVaultWithKey}
         onRecoverVaultWithAccount={props.onRecoverVaultWithAccount}
+        onHiddenRecovered={props.onHiddenRecovered}
         accountProof={props.accountProof ?? { kind: "password" }}
       />
     );
   }
 
   return (
-    <div className="flex min-h-full items-center justify-center p-4">
-      <div className="w-full max-w-md rounded-xl border border-line bg-white p-6 shadow-soft">
-        <div className="flex items-center gap-3">
+    <div className="workspace-lock-gate flex min-h-full items-center justify-center p-4">
+      <div className="workspace-lock-card w-full max-w-md rounded-xl border border-line bg-white p-6 shadow-soft">
+        <div className="workspace-lock-heading flex items-center gap-3">
           <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500 to-violet-600 text-white shadow-tight">
             <copy.Icon size={22} />
           </span>
-          <div className="min-w-0">
+          <div className="workspace-lock-copy min-w-0">
             <h2 className="text-lg font-bold text-ink-950">{setupMode ? `Protect ${copy.title}` : copy.locked}</h2>
             <p className="mt-0.5 text-sm text-ink-600">
               {setupMode
-                ? `Create a workspace ${method === "pin" ? "PIN" : "password"} to gate ${copy.title}. It is separate from your account and your other workspaces.`
+                ? `Create a workspace ${METHOD_LABELS[method].toLowerCase()} to gate ${copy.title}. It is separate from your account and your other workspaces.`
                 : copy.blurb}
             </p>
           </div>
@@ -205,7 +223,11 @@ export function WorkspaceLockGate(props: {
         ) : (
           <>
             {availableMethods.length > 1 && (
-              <div className="mt-5 grid grid-cols-2 gap-1 rounded-lg border border-line bg-canvas p-1" role="radiogroup" aria-label="Unlock method">
+              <div
+                className={`workspace-unlock-methods mt-5 grid ${availableMethods.length === 3 ? "grid-cols-3" : "grid-cols-2"} gap-1 rounded-lg border border-line bg-canvas p-1`}
+                role="radiogroup"
+                aria-label="Unlock method"
+              >
                 {availableMethods.map((option) => (
                   <button
                     key={option}
@@ -215,34 +237,73 @@ export function WorkspaceLockGate(props: {
                     onClick={() => { setMethod(option); setSecret(""); setConfirm(""); setError(null); }}
                     className={`rounded-md px-3 py-1.5 text-sm font-bold transition ${method === option ? "bg-cyan-600 text-white" : "text-ink-600 hover:bg-white/70"}`}
                   >
-                    {option === "password" ? "Password" : "PIN"}
+                    {METHOD_LABELS[option]}
                   </button>
                 ))}
               </div>
             )}
 
+            {method === "pattern" ? (
+              <div className="mt-4">
+                <PatternCapture
+                  mode={setupMode ? "set" : "unlock"}
+                  disabled={lockedOut}
+                  submitLabel="Setting your pattern…"
+                  onSubmit={(pattern) => (setupMode ? props.onSetup("pattern", pattern) : props.onPatternUnlock?.(pattern) ?? Promise.reject(new Error("Pattern unlock is not available here.")))}
+                />
+                {setupMode && (
+                  <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-[11px] font-semibold text-amber-800">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    <span>
+                      This pattern decrypts your Vault Master Key; if you forget it, the only way back in is your recovery key. A pattern is
+                      short: someone holding this device's data and its secure-store key could try every pattern offline, so choose a password
+                      if the files need to withstand that.
+                    </span>
+                  </div>
+                )}
+                {lockoutRemaining > 0 && (
+                  <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">
+                    Too many attempts. Try again in {lockoutRemaining}s.
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={props.onCancel}
+                  className="mt-4 w-full rounded-lg border border-line bg-white px-4 py-2.5 text-sm font-bold text-ink-700 hover:bg-canvas"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+            <>
             <div className="mt-4">
+              <label htmlFor={`workspace-${scope}-secret`} className="workspace-lock-label mb-1.5 block text-xs font-semibold text-ink-700">{copy.title} {METHOD_LABELS[method].toLowerCase()}</label>
               <input
+                id={`workspace-${scope}-secret`}
                 type="password"
                 inputMode={method === "pin" ? "numeric" : "text"}
                 autoFocus
                 value={secret}
                 onChange={(event) => setSecret(event.currentTarget.value)}
                 onKeyDown={(event) => { if (event.key === "Enter") void submit(); }}
-                placeholder={method === "pin" ? "Enter your PIN (6–12 digits)" : `Enter your ${copy.title} password`}
+                placeholder={method === "pin" ? "Enter your PIN" : "Enter password"}
                 disabled={lockedOut}
                 className="w-full rounded-lg border border-line bg-canvas px-3 py-2.5 text-sm outline-none focus:border-cyan-300 disabled:opacity-60"
               />
               {setupMode && (
+                <>
+                <label htmlFor={`workspace-${scope}-confirm`} className="workspace-lock-label mb-1.5 mt-3 block text-xs font-semibold text-ink-700">Confirm {method === "pin" ? "PIN" : "password"}</label>
                 <input
+                  id={`workspace-${scope}-confirm`}
                   type="password"
                   inputMode={method === "pin" ? "numeric" : "text"}
                   value={confirm}
                   onChange={(event) => setConfirm(event.currentTarget.value)}
                   onKeyDown={(event) => { if (event.key === "Enter") void submit(); }}
-                  placeholder={`Confirm ${method === "pin" ? "PIN" : "password"}`}
-                  className="mt-2 w-full rounded-lg border border-line bg-canvas px-3 py-2.5 text-sm outline-none focus:border-cyan-300"
+                  placeholder={method === "pin" ? "Repeat PIN" : "Repeat password"}
+                  className="w-full rounded-lg border border-line bg-canvas px-3 py-2.5 text-sm outline-none focus:border-cyan-300"
                 />
+                </>
               )}
               {setupMode && !minOk && secret.length > 0 && (
                 <div className="mt-1.5 text-[11px] font-semibold text-amber-600">
@@ -273,7 +334,7 @@ export function WorkspaceLockGate(props: {
               </div>
             )}
 
-            <div className="mt-5 flex gap-2">
+            <div className="workspace-lock-actions mt-5 flex gap-2">
               <button
                 type="button"
                 onClick={() => void submit()}
@@ -291,6 +352,8 @@ export function WorkspaceLockGate(props: {
                 Cancel
               </button>
             </div>
+            </>
+            )}
           </>
         )}
 
@@ -311,7 +374,7 @@ export function WorkspaceLockGate(props: {
             className="mt-4 flex w-full items-center justify-center gap-1.5 text-xs font-bold text-cyan-700 hover:text-cyan-800 hover:underline"
           >
             <LifeBuoy size={13} />
-            Forgot your {status.hasPin && !status.hasPassword ? "PIN" : "PIN or password"}?
+            Forgot your {status.hasPin && !status.hasPassword ? "PIN" : "PIN or password"}{status.hasPattern ? " or pattern" : ""}?
           </button>
         )}
       </div>
@@ -421,10 +484,11 @@ function WorkspaceRecoveryPanel(props: {
   onRecoverChat?: (accountPassword: string) => Promise<unknown>;
   onRecoverVaultWithKey?: (recoveryKey: string, method: UnlockMethod, secret: string) => Promise<unknown>;
   onRecoverVaultWithAccount?: (accountPassword: string, method: UnlockMethod, secret: string) => Promise<unknown>;
+  onHiddenRecovered?: () => void;
   accountProof: AccountProof;
 }) {
   const isChat = props.scope === "chat";
-  const [vaultTab, setVaultTab] = useState<"key" | "account">(props.recoveryEnabled === false ? "account" : "key");
+  const [vaultTab, setVaultTab] = useState<"key" | "account" | "hidden">(props.recoveryEnabled === false ? "account" : "key");
   const [accountPassword, setAccountPassword] = useState("");
   const [recoveryKey, setRecoveryKey] = useState("");
   const [method, setMethod] = useState<UnlockMethod>("pin");
@@ -552,6 +616,15 @@ function WorkspaceRecoveryPanel(props: {
               Verify &amp; reset lock
             </button>
           </div>
+        ) : vaultTab === "hidden" && props.onHiddenRecovered ? (
+          <div className="mt-5">
+            <h3 className="flex items-center gap-2 text-sm font-bold text-ink-950">
+              <KeyRound className="text-violet-600" size={15} /> Hidden vault recovery phrase
+            </h3>
+            <div className="mt-3">
+              <RecoverHiddenVault onRecovered={props.onHiddenRecovered} onBack={() => { setVaultTab("key"); setError(null); }} />
+            </div>
+          </div>
         ) : (
           <div className="mt-5">
             <div className="grid grid-cols-2 gap-1 rounded-lg border border-line bg-canvas p-1">
@@ -623,6 +696,15 @@ function WorkspaceRecoveryPanel(props: {
                   Reset vault (start fresh)
                 </button>
               </div>
+            )}
+            {props.onHiddenRecovered && (
+              <button
+                type="button"
+                onClick={() => { setVaultTab("hidden"); setError(null); }}
+                className="mt-4 flex w-full items-center justify-center gap-1.5 text-xs font-bold text-violet-700 hover:underline"
+              >
+                <KeyRound size={13} /> Forgot a hidden vault's pattern? Use its 12-word recovery phrase
+              </button>
             )}
           </div>
         )}

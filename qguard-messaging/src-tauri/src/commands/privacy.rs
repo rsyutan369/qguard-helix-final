@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use zeroize::Zeroize;
 
-use crate::crypto::passcode::{self, KDF_ARGON2ID_V1};
+use crate::crypto::passcode::{self, KDF_ARGON2ID_V1, KDF_PBKDF2_SHA512_V2};
+use crate::crypto::provider;
 use crate::error::{QGuardError, Result};
 use crate::security::device_privacy::{self, RecentsMasking};
 use crate::state::AppState;
@@ -15,6 +16,24 @@ use crate::state::AppState;
 const PRIVACY_SCREEN_INFO: &[u8] = b"QGuard-ChatPrivacyScreen-Verifier-v1";
 /// The KDF label stored with a privacy-screen verifier made here.
 pub const PRIVACY_SCREEN_KDF: &str = "argon2id-sha3-v1";
+/// ...and the label of one made in FIPS approved mode.
+pub const PRIVACY_SCREEN_KDF_APPROVED: &str = "pbkdf2-sha512-sha3-v2";
+
+fn screen_label(kdf: u8) -> &'static str {
+    if kdf == KDF_PBKDF2_SHA512_V2 {
+        PRIVACY_SCREEN_KDF_APPROVED
+    } else {
+        PRIVACY_SCREEN_KDF
+    }
+}
+
+fn screen_kdf(label: &str) -> Option<u8> {
+    match label {
+        PRIVACY_SCREEN_KDF => Some(KDF_ARGON2ID_V1),
+        PRIVACY_SCREEN_KDF_APPROVED => Some(KDF_PBKDF2_SHA512_V2),
+        _ => None,
+    }
+}
 
 #[tauri::command]
 pub fn privacy_recents_masking_status() -> Result<RecentsMasking> {
@@ -60,24 +79,33 @@ pub struct PrivacyScreenSeal {
     pub verifier_b64: String,
 }
 
-fn screen_verifier(salt: &[u8], secret: &[u8]) -> Result<String> {
-    let mut ikm = passcode::secret_ikm(KDF_ARGON2ID_V1, salt, secret)?;
+fn screen_verifier(kdf: u8, salt: &[u8], secret: &[u8]) -> Result<String> {
+    let mut ikm = passcode::secret_ikm(kdf, salt, secret)?;
     let verifier = passcode::derive_verifier(salt, &ikm, PRIVACY_SCREEN_INFO);
     ikm.zeroize();
     verifier
 }
 
-/// Make a verifier for the conversation privacy screen: Argon2id + HKDF-SHA3-
-/// 256, like the app PIN — replacing the WebView's PBKDF2-SHA-256 (4.4).
+/// The verifier label a NEW seal gets on this device (it follows FIPS approved
+/// mode). The screen compares it with what it stored to decide on a re-seal.
+#[tauri::command]
+pub fn privacy_screen_kdf() -> String {
+    screen_label(passcode::preferred_kdf()).to_string()
+}
+
+/// Make a verifier for the conversation privacy screen: Argon2id (PBKDF2-
+/// HMAC-SHA-512 in approved mode) + HKDF-SHA3-256, like the app PIN —
+/// replacing the WebView's PBKDF2-SHA-256 (4.4).
 #[tauri::command]
 pub async fn privacy_screen_seal(mut secret: String) -> Result<PrivacyScreenSeal> {
     let salt = passcode::random_salt();
+    let kdf = passcode::preferred_kdf();
     let bytes = secret.as_bytes().to_vec();
     secret.zeroize();
     let salt_for_worker = salt.clone();
     let verifier = tauri::async_runtime::spawn_blocking(move || {
         let mut bytes = bytes;
-        let verifier = screen_verifier(&salt_for_worker, &bytes);
+        let verifier = screen_verifier(kdf, &salt_for_worker, &bytes);
         bytes.zeroize();
         verifier
     })
@@ -85,7 +113,7 @@ pub async fn privacy_screen_seal(mut secret: String) -> Result<PrivacyScreenSeal
     .map_err(|e| QGuardError::Crypto(format!("privacy screen worker failed: {e}")))??;
     let b64 = base64::engine::general_purpose::STANDARD;
     Ok(PrivacyScreenSeal {
-        kdf: PRIVACY_SCREEN_KDF.to_string(),
+        kdf: screen_label(kdf).to_string(),
         salt_b64: b64.encode(&salt),
         verifier_b64: verifier,
     })
@@ -93,10 +121,10 @@ pub async fn privacy_screen_seal(mut secret: String) -> Result<PrivacyScreenSeal
 
 #[tauri::command]
 pub async fn privacy_screen_verify(mut secret: String, seal: PrivacyScreenSeal) -> Result<bool> {
-    if seal.kdf != PRIVACY_SCREEN_KDF {
+    let Some(kdf) = screen_kdf(&seal.kdf) else {
         secret.zeroize();
         return Err(QGuardError::InvalidInput("unsupported privacy screen verifier".to_string()));
-    }
+    };
     let salt = base64::engine::general_purpose::STANDARD
         .decode(&seal.salt_b64)
         .map_err(|_| QGuardError::InvalidInput("malformed privacy screen salt".to_string()))?;
@@ -105,9 +133,43 @@ pub async fn privacy_screen_verify(mut secret: String, seal: PrivacyScreenSeal) 
     let expected = seal.verifier_b64;
     tauri::async_runtime::spawn_blocking(move || {
         let mut bytes = bytes;
-        let verifier = screen_verifier(&salt, &bytes);
+        let verifier = screen_verifier(kdf, &salt, &bytes);
         bytes.zeroize();
-        verifier.map(|verifier| verifier == expected)
+        verifier.map(|verifier| provider::constant_time_eq(verifier.as_bytes(), expected.as_bytes()))
+    })
+    .await
+    .map_err(|e| QGuardError::Crypto(format!("privacy screen worker failed: {e}")))?
+}
+
+/// Check a privacy-screen verifier written by builds before 4.4 (PBKDF2-HMAC-
+/// SHA-256 in the WebView), here in the cryptographic module instead. Only
+/// used to open such a screen once; the caller then re-seals it.
+#[tauri::command]
+pub async fn privacy_screen_verify_legacy(
+    mut secret: String,
+    salt_b64: String,
+    verifier_b64: String,
+    iterations: u32,
+) -> Result<bool> {
+    // The floor every released build wrote at least (privacy-screen.ts).
+    if !(100_000..=5_000_000).contains(&iterations) {
+        secret.zeroize();
+        return Err(QGuardError::InvalidInput("unsupported privacy screen verifier".to_string()));
+    }
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let salt = b64
+        .decode(&salt_b64)
+        .map_err(|_| QGuardError::InvalidInput("malformed privacy screen salt".to_string()))?;
+    let bytes = secret.as_bytes().to_vec();
+    secret.zeroize();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut bytes = bytes;
+        let mut derived = [0u8; 32];
+        let outcome = provider::pbkdf2(provider::Hash::Sha256, &bytes, &salt, iterations, &mut derived);
+        bytes.zeroize();
+        let matches = outcome.map(|()| provider::constant_time_eq(b64.encode(derived).as_bytes(), verifier_b64.as_bytes()));
+        derived.zeroize();
+        matches
     })
     .await
     .map_err(|e| QGuardError::Crypto(format!("privacy screen worker failed: {e}")))?
@@ -131,6 +193,37 @@ mod tests {
         let again = privacy_screen_seal("open sesame".to_string()).await.unwrap();
         assert_ne!(again.verifier_b64, seal.verifier_b64);
         assert!(privacy_screen_verify("open sesame".to_string(), again).await.unwrap());
+    }
+
+    /// A seal made in FIPS approved mode (PBKDF2) opens in either mode.
+    #[tokio::test]
+    async fn an_approved_mode_seal_verifies() {
+        let salt = passcode::random_salt();
+        let verifier = screen_verifier(KDF_PBKDF2_SHA512_V2, &salt, b"open sesame").unwrap();
+        let seal = PrivacyScreenSeal {
+            kdf: PRIVACY_SCREEN_KDF_APPROVED.to_string(),
+            salt_b64: base64::engine::general_purpose::STANDARD.encode(&salt),
+            verifier_b64: verifier,
+        };
+        assert!(privacy_screen_verify("open sesame".to_string(), seal.clone()).await.unwrap());
+        assert!(!privacy_screen_verify("open sesame?".to_string(), seal).await.unwrap());
+        assert_eq!(screen_kdf(PRIVACY_SCREEN_KDF_APPROVED), Some(KDF_PBKDF2_SHA512_V2));
+        assert_eq!(screen_label(KDF_ARGON2ID_V1), PRIVACY_SCREEN_KDF);
+    }
+
+    /// The pre-4.4 WebView verifier (base64 of PBKDF2-HMAC-SHA-256) is now
+    /// checked by the module.
+    #[tokio::test]
+    async fn a_legacy_webview_verifier_is_checked_by_the_module() {
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let salt = [5u8; 16];
+        let mut derived = [0u8; 32];
+        provider::pbkdf2(provider::Hash::Sha256, b"1234", &salt, 100_000, &mut derived).unwrap();
+        let (salt_b64, verifier_b64) = (b64.encode(salt), b64.encode(derived));
+        assert!(privacy_screen_verify_legacy("1234".into(), salt_b64.clone(), verifier_b64.clone(), 100_000).await.unwrap());
+        assert!(!privacy_screen_verify_legacy("4321".into(), salt_b64.clone(), verifier_b64.clone(), 100_000).await.unwrap());
+        // An iteration count no released build wrote is refused outright.
+        assert!(privacy_screen_verify_legacy("1234".into(), salt_b64, verifier_b64, 1).await.is_err());
     }
 
     #[test]

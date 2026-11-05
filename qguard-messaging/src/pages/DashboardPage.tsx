@@ -12,6 +12,7 @@ import {
   Users,
 } from "lucide-react";
 import { useIsAdmin } from "@/lib/admin";
+import { dashboardHub, hubCardLabel, unreadMessageCount, type HubArea, type HubEntry } from "@/lib/dashboard-hub";
 import { ONE_TIME_PREKEY_MIN, SIGNED_PREKEY_MIN } from "@/lib/security-score";
 import type { CSSProperties } from "react";
 import MetricCard from "@/components/MetricCard";
@@ -25,6 +26,46 @@ interface DashboardPageProps {
   liveEvents: QGuardLiveEvent[];
   liveStatus: QGuardLiveStatus;
   onNavigate: (page: string) => void;
+  /** Open a protected area from the dashboard's cards (always asks to unlock). */
+  onOpenArea?: (area: HubArea) => void;
+  /** Missed calls not yet looked at. */
+  missedCalls?: number;
+  /** Files shared with this account waiting for Accept / Decline (badge on the Quantum Vault card). */
+  sharedFilesWaiting?: number;
+}
+
+/**
+ * One protected-area card on the desktop dashboard: the same areas, counts and
+ * lock rule as the phone dashboard's cards (lib/dashboard-hub.ts).
+ */
+function HubCard({ entry, onClick }: { entry: HubEntry; onClick: () => void }) {
+  const { icon: Icon, title, caption, unlocks, badge } = entry;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={hubCardLabel(entry)}
+      className="shell-card flex min-w-0 items-center gap-3 p-4 text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-400"
+    >
+      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-violet-50 text-violet-600">
+        <Icon size={21} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2">
+          <span className="truncate text-sm font-bold text-ink-950">{title}</span>
+          {badge > 0 && (
+            <span className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-violet-600 px-1.5 text-[10px] font-bold text-white">
+              {badge > 99 ? "99+" : badge}
+            </span>
+          )}
+        </span>
+        <span className="mt-0.5 block truncate text-xs text-ink-600">{caption}</span>
+        <span className="mt-1 flex items-center gap-1 text-[11px] text-ink-500">
+          <LockKeyhole size={11} aria-hidden /> Asks for your {unlocks} lock
+        </span>
+      </span>
+    </button>
+  );
 }
 
 function scoreColor(score: number): string {
@@ -110,14 +151,14 @@ function telemetryTone(event: TelemetryEvent): string {
   return "bg-emerald-50 text-emerald-600";
 }
 
-export default function DashboardPage({ data, liveEvents, liveStatus, onNavigate }: DashboardPageProps) {
+export default function DashboardPage({ data, liveEvents, liveStatus, onNavigate, onOpenArea, missedCalls = 0, sharedFilesWaiting = 0 }: DashboardPageProps) {
   const isMobile = useIsMobile();
   const isAdmin = useIsAdmin();
   // Phones get a purpose-built vertical-scroll home screen (gradient hero card,
   // gradient stat tiles, stacked sections) instead of the desktop multi-column
   // grid, which cannot stack into a natural top-to-bottom scroll.
   if (isMobile) {
-    return <MobileDashboard data={data} liveStatus={liveStatus} onNavigate={onNavigate} />;
+    return <MobileDashboard data={data} liveStatus={liveStatus} onNavigate={onNavigate} onOpenArea={onOpenArea} missedCalls={missedCalls} sharedFilesWaiting={sharedFilesWaiting} />;
   }
 
   const { snapshot, devices, conversations, modules, report, keyInventory, telemetry, securityEvents } = data;
@@ -178,8 +219,16 @@ export default function DashboardPage({ data, liveEvents, liveStatus, onNavigate
           caption={`${trustedDevices.length} trusted - ${recentDevices.length} recent heartbeat${recentDevices.length === 1 ? "" : "s"}`}
           tone="cyan"
         />
-        <MetricCard icon={LockKeyhole} label="Vault Usage" value={snapshot.vault_storage} caption={`${data.vaultFiles.length} encrypted vault objects`} tone="emerald" />
+        <MetricCard icon={LockKeyhole} label="Vault Usage" value={snapshot.vault_storage} caption={`${data.vaultFiles.length + data.vaultStore.objects} encrypted vault objects on this device`} tone="emerald" />
       </div>
+
+      {/* Protected areas — the same four cards as the phone dashboard. Each
+          locks its area first, so opening it always asks to unlock. */}
+      <nav aria-label="Protected areas" className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+        {dashboardHub(unreadMessageCount(conversations), missedCalls, sharedFilesWaiting).map((entry) => (
+          <HubCard key={entry.route} entry={entry} onClick={() => (onOpenArea ? onOpenArea(entry.route) : onNavigate(entry.route))} />
+        ))}
+      </nav>
 
       {isAdmin && (
       <section className="shell-card p-4">

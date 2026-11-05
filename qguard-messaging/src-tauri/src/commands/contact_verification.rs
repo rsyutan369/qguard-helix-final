@@ -31,11 +31,7 @@
 use std::sync::OnceLock;
 
 use chrono::Utc;
-use hmac::{Hmac, Mac};
-use rand::rngs::OsRng;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use sha3::Sha3_256;
 use tauri::State;
 use zeroize::Zeroizing;
 
@@ -68,8 +64,6 @@ const OFFER_VERSION: u8 = 1;
 const MAX_OFFER_AGE_MS: i64 = 30 * 24 * 3600 * 1000;
 /// Nor dated this far in the future (clock skew allowance).
 const MAX_OFFER_SKEW_MS: i64 = 10 * 60 * 1000;
-
-type HmacSha3 = Hmac<Sha3_256>;
 
 pub(crate) fn words() -> &'static [&'static str] {
     static WORDS: OnceLock<Vec<&'static str>> = OnceLock::new();
@@ -255,9 +249,7 @@ fn create_offer(state: &AppState, peer: &CallPeerIdentity) -> Result<PairingOffe
         ));
     }
     let identity = local_identity(state)?;
-    let mut id = [0u8; 16];
-    OsRng.fill_bytes(&mut id);
-    let offer_id = hex::encode(id);
+    let offer_id = hex::encode(crate::crypto::provider::random_array::<16>());
     // Milliseconds: offers are ordered by it, and two in one second must not
     // read as a replay of each other.
     let created_at = Utc::now().timestamp_millis();
@@ -396,13 +388,12 @@ fn pair_secret(state: &AppState, identity: &LocalIdentity, peer_user: &str, peer
 
 /// Four words for `(pair secret, call id, window)`.
 pub(crate) fn phrase_for(secret: &[u8; 32], call_id: &str, window: i64) -> Result<Vec<String>> {
-    let mut mac = HmacSha3::new_from_slice(secret).map_err(|_| QGuardError::Crypto("call phrase key rejected".to_string()))?;
     let mut message = Vec::new();
     push_field(&mut message, PHRASE_CONTEXT);
     push_field(&mut message, call_id.as_bytes());
     push_field(&mut message, &window.to_be_bytes());
-    mac.update(&message);
-    let digest = mac.finalize().into_bytes();
+    let digest = crate::crypto::provider::hmac_sha3_256(secret, &message)
+        .map_err(|_| QGuardError::Crypto("call phrase key rejected".to_string()))?;
     // 40 bits: four 10-bit indices into the 1024-word list.
     let mut bits: u64 = 0;
     for byte in digest.iter().take(5) {

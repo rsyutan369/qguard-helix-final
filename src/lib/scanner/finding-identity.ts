@@ -134,6 +134,8 @@ export const GENERIC_FINDING_TEXT = new Set([
  * safe direction, since a consumer then never mistakes it for cryptography.
  */
 export const CRYPTO_OBSERVATION_CLASSES = [
+  'crypto library',
+  'cryptographic key',
   'cipher suite',
   'symmetric encryption',
   'asymmetric encryption',

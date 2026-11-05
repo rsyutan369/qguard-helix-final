@@ -138,6 +138,23 @@ Five were in the new engine; three were only visible against real tenant data.
 Live estate at time of verification: **3 keys · 6 violations · gate BLOCKED · average risk 60**,
 every page reporting byte-identical metrics, gate state and nav badges.
 
+## 7. Deep audit (Technical_Audit_4) — 2026-11-02
+
+| # | Defect | Fix |
+|---|--------|-----|
+| A1 | Rotation transitions read the job from the 15s cached model: two clicks/tabs could both pass validation. | Fresh DB read + compare-and-set on the read status; loser gets 409 `TRANSITION_CONFLICT`. Live: 3 concurrent approvals → 1×200, 2×409. |
+| A2 | Completing an order minted a version and moved `last_rotated_at` even with no validation evidence; version came from the cached model; client `algorithm` stored unvalidated. | Only a validated completion (≥12 chars of evidence) mints; next version read from `qkms_key_versions`; older versions superseded; algorithm must look like an identifier. |
+| A3 | Key index ignored `evidence_json.key_ref` (legacy schema fallback), so a key never knew it had an open order. | Same resolution as the job list. Offline check 16. |
+| A4 | Failed first load rendered "no keys discovered" beside the error. No session rendered an empty estate. | Error stands alone; no session is an error. |
+| A5 | Paged tables and the key drawer never re-queried on a live push. Drawer had no stale-response guard. 409s left stale controls. | `syncTo` re-query, ticketed drawer loads, reload on 409. |
+| A6 | Prior-session model fields never reached the UI: `null%` policy compliance, declared-only PQC shown as verified (badge, posture chart), degraded sources invisible, label-regex colouring. | Wired through shell/pages/report: "Not evaluated", "unverified" badge + separate posture row, incomplete-evidence banner, posture-tagged tones. |
+| A7 | SSE "change detection" compared `generatedAt`, which moves every rebuild → full frame every ~15s; writes reached open pages only on the 10s tick. | Signature compare + `qkms-verified` heartbeat frame; writes wake the tenant's streams (live: 10.6s → 1.6s). |
+| A8 | **RLS `tenant OR user`** lets any signed-in user insert rows under another tenant's id (proved live); audit rows editable/deletable. | API reads/writes now require tenant AND user = caller (planted row proved invisible). Schema files hardened (tenant-only predicate, append-only audit). **Not yet applied to the live DB** — re-run both `supabase/qkms-*-schema.sql` files. |
+
+Verification: `tools/qkms-check.ts` (16 groups) pass · `.report-smoke/qkms-live-audit.mjs` (51 live API checks) pass ·
+`.report-smoke/qkms-page-shot.mjs` (7 pages in headless Chrome, live propagation 1.9s, tablet overflow 0) pass · `tsc` clean · build ok.
+ESLint is not configured in this repo.
+
 The live check proves the cross-page contract directly: seven concurrent
 projections share one `generatedAt`, no key disagrees on any of ten fields
 across the pages that show it, and `/keys`, `/violations` and `/rotation-jobs`

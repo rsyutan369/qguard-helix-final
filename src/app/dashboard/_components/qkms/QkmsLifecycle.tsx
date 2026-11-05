@@ -57,11 +57,11 @@ const ATTENTION_PANELS: Array<{
 ];
 
 export default function QkmsLifecycle() {
-  const { data, state, error, live, refresh, reconnect } = useKeyLifecycle();
+  const { data, state, error, live, verifiedAt, refresh, reconnect } = useKeyLifecycle();
   const { notice, show, dismiss } = useNotice();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
-  const query = useKeyQuery({ limit: 25, sort: 'expiry', dir: 'asc' });
+  const query = useKeyQuery({ limit: 25, sort: 'expiry', dir: 'asc' }, data?.generatedAt ?? null);
   const actions = useQkmsActions(() => { void refresh(true); query.reload(); });
   const exporter = useQkmsExport(actions.fetchExportModel);
 
@@ -94,6 +94,7 @@ export default function QkmsLifecycle() {
       error={error}
       hasData={data?.hasData ?? false}
       generatedAt={data?.generatedAt ?? null}
+      verifiedAt={verifiedAt}
       latestEvidenceAt={data?.latestEvidenceAt ?? null}
       telemetry={data?.telemetry ?? null}
       nav={data?.nav ?? null}
@@ -268,7 +269,7 @@ export default function QkmsLifecycle() {
         <Pager offset={query.query.offset ?? 0} limit={query.query.limit ?? 25} total={query.page?.total ?? 0} onChange={query.setOffset} />
       </Panel>
 
-      <KeyDrawer keyId={selectedKey} onClose={() => setSelectedKey(null)} onChanged={() => { void refresh(true); query.reload(); }} />
+      <KeyDrawer keyId={selectedKey} syncTo={data?.generatedAt ?? null} onClose={() => setSelectedKey(null)} onChanged={() => { void refresh(true); query.reload(); }} />
     </QkmsShell>
   );
 }

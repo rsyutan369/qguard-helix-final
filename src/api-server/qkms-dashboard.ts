@@ -75,6 +75,14 @@ function carriesSecretMaterial(body: Row): boolean {
   return Object.keys(body || {}).some((key) => BLOCKED_SECRET_FIELDS.includes(key))
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/** Work-order states that close an order; anything else is open. */
+const TERMINAL_JOB_STATUSES: RotationJobStatus[] = ['completed', 'failed', 'cancelled']
+/** "ok" is not validation evidence; a sentence describing the check is. */
+const MIN_VALIDATION_EVIDENCE = 12
+/** An algorithm name such as `ML-DSA-65`, `RSA-3072` or `X25519+ML-KEM-768`. */
+const ALGORITHM_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9 +_\-/.]{1,63}$/
+
 function isMissingTable(error: unknown): boolean {
   const text = `${(error as { code?: string })?.code || ''} ${(error as { message?: string })?.message || ''}`.toLowerCase()
   return text.includes('42p01') || text.includes('pgrst205') || text.includes('does not exist') || text.includes('could not find the table')
@@ -225,12 +233,17 @@ async function computeModel(token: string, userId: string): Promise<QkmsIntellig
     scanSessions,
   ] = await Promise.all([
     safeRows(client, 'assets', (q) => q.select('id, name, type, environment, region, service_owner, criticality, status, metadata, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.assets), failures),
-    safeRows(client, 'qkms_keys', (q) => q.select('*').eq('tenant_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsKeys), failures),
-    safeRows(client, 'qkms_key_versions', (q) => q.select('*').eq('tenant_id', userId).order('version', { ascending: true }).limit(CAP.qkmsKeyVersions), failures),
-    safeRows(client, 'qkms_policies', (q) => q.select('*').eq('tenant_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsPolicies), failures),
-    safeRows(client, 'qkms_rotation_jobs', (q) => q.select('*').eq('tenant_id', userId).order('created_at', { ascending: false }).limit(CAP.qkmsRotationJobs), failures),
-    safeRows(client, 'qkms_audit_events', (q) => q.select('*').eq('tenant_id', userId).order('created_at', { ascending: false }).limit(CAP.qkmsAuditEvents), failures),
-    safeRows(client, 'qkms_storage_backends', (q) => q.select('*').eq('tenant_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsStorageBackends), failures),
+    /* qkms_* rows are read, and written, only where the caller is BOTH tenant and
+       user. The deployed RLS predicate is "tenant OR user", which lets another
+       signed-in user insert a row carrying this tenant's id under their own
+       user_id; matching on user_id too keeps such a planted row out of this
+       tenant's model whatever the database policy says. */
+    safeRows(client, 'qkms_keys', (q) => q.select('*').eq('tenant_id', userId).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsKeys), failures),
+    safeRows(client, 'qkms_key_versions', (q) => q.select('*').eq('tenant_id', userId).eq('user_id', userId).order('version', { ascending: true }).limit(CAP.qkmsKeyVersions), failures),
+    safeRows(client, 'qkms_policies', (q) => q.select('*').eq('tenant_id', userId).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsPolicies), failures),
+    safeRows(client, 'qkms_rotation_jobs', (q) => q.select('*').eq('tenant_id', userId).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.qkmsRotationJobs), failures),
+    safeRows(client, 'qkms_audit_events', (q) => q.select('*').eq('tenant_id', userId).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.qkmsAuditEvents), failures),
+    safeRows(client, 'qkms_storage_backends', (q) => q.select('*').eq('tenant_id', userId).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsStorageBackends), failures),
     safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, bit_length, entropy_source, quality_score, fingerprint, status, expires_at, revoked_at, rotated_from, label, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.generatedKeys), failures),
     safeRows(client, 'crypto_inventory', (q) => q.select('*').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(CAP.cryptoInventory), failures),
     safeRows(client, 'certificates', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.certificates), failures),
@@ -301,9 +314,17 @@ function buildModel(token: string, userId: string, force = false): Promise<QkmsI
   return promise
 }
 
-/** Drops the tenant's cached model so the next read reflects a just-made write. */
+/** Open streams per tenant, woken when that tenant's model is invalidated. */
+const streamWakers = new Map<string, Set<() => void>>()
+
+/**
+ * Drops the tenant's cached model so the next read reflects a just-made write,
+ * and wakes that tenant's open streams — every tab and page sees a governed
+ * write at once instead of on the next 10s tick.
+ */
 function invalidate(userId: string) {
   modelCache.delete(userId)
+  for (const wake of streamWakers.get(userId) || []) wake()
 }
 
 /* ------------------------------------------------------------------ */
@@ -490,7 +511,14 @@ function projectView(model: QkmsIntelligence, mode: QkmsMode): Record<string, un
         ...base,
         lifecycleFunnel: model.lifecycle.funnel,
         rotationPosture: model.rotation.posture,
-        readiness: { overall: model.readiness.overall, bands: model.readiness.bands, postureCounts: model.readiness.postureCounts },
+        readiness: {
+          overall: model.readiness.overall,
+          verifiedReady: model.readiness.verifiedReady,
+          declaredOnly: model.readiness.declaredOnly,
+          decisionScope: model.readiness.decisionScope,
+          bands: model.readiness.bands,
+          postureCounts: model.readiness.postureCounts,
+        },
         riskDistribution: model.risk.distribution,
         distributions: model.distributions,
         topRisks: topKeys(model, model.risk.ranked, 10),
@@ -794,6 +822,7 @@ router.get('/stream', async (req: AuthedRequest, res: Response) => {
    */
   const expiresAt = tokenExpiryMs(req.token!)
   let lastGeneratedAt = ''
+  let lastSignature = ''
   const push = async () => {
     if (closed) return
     if (expiresAt !== null && Date.now() >= expiresAt - 5_000) {
@@ -805,7 +834,18 @@ router.get('/stream', async (req: AuthedRequest, res: Response) => {
       const data = await model(req)
       if (data.generatedAt === lastGeneratedAt) return
       lastGeneratedAt = data.generatedAt
-      send('qkms', projectView(data, mode))
+      /* `generatedAt` moves on every cache rebuild even when nothing changed.
+         The view is compared WITHOUT it: a changed view is pushed whole; an
+         unchanged one sends only the time it was re-verified, so an idle
+         tenant's tables and drawers are not re-queried every rebuild. */
+      const view = projectView(data, mode)
+      const signature = JSON.stringify({ ...view, generatedAt: null })
+      if (signature === lastSignature) {
+        send('qkms-verified', { mode, generatedAt: data.generatedAt })
+        return
+      }
+      lastSignature = signature
+      send('qkms', view)
     } catch (error) {
       send('qkms-error', { message: error instanceof Error ? error.message : 'QKMS telemetry unavailable' })
     }
@@ -815,20 +855,38 @@ router.get('/stream', async (req: AuthedRequest, res: Response) => {
   const heartbeat = setInterval(() => {
     if (!closed) res.write(': heartbeat\n\n')
   }, 25_000)
-  function end() {
-    if (closed) return
+
+  // A write invalidates the tenant's model; push shortly after (coalescing a
+  // burst of writes into one rebuild) rather than waiting for the next tick.
+  let wakeTimer: ReturnType<typeof setTimeout> | null = null
+  const wake = () => {
+    if (closed || wakeTimer) return
+    wakeTimer = setTimeout(() => {
+      wakeTimer = null
+      void push()
+    }, 250)
+  }
+  const userId = req.user!.id
+  if (!streamWakers.has(userId)) streamWakers.set(userId, new Set())
+  streamWakers.get(userId)!.add(wake)
+
+  const release = () => {
     closed = true
     clearInterval(interval)
     clearInterval(heartbeat)
+    if (wakeTimer) clearTimeout(wakeTimer)
+    const wakers = streamWakers.get(userId)
+    wakers?.delete(wake)
+    if (wakers && !wakers.size) streamWakers.delete(userId)
+  }
+  function end() {
+    if (closed) return
+    release()
     res.end()
   }
   void push()
 
-  req.on('close', () => {
-    closed = true
-    clearInterval(interval)
-    clearInterval(heartbeat)
-  })
+  req.on('close', release)
 })
 
 /* ---- Drill-down: keys ------------------------------------------- */
@@ -987,7 +1045,7 @@ router.post('/keys/:id/assign-owner', async (req: AuthedRequest, res: Response) 
       .from('qkms_keys')
       .update({ owner_id: owner, updated_at: new Date().toISOString() })
       .eq('id', registryId)
-      .eq('tenant_id', req.user!.id)
+      .eq('tenant_id', req.user!.id).eq('user_id', req.user!.id)
       .select('id')
     if (error) throw error
     // An update RLS filters out returns no error and no row; that is a failure,
@@ -1029,7 +1087,7 @@ router.post('/keys/:id/revoke', async (req: AuthedRequest, res: Response) => {
         : record.table === 'qkms_keys'
           ? await client.from('qkms_keys')
             .update({ status: 'revoked', updated_at: revokedAt })
-            .eq('id', record.recordId).eq('tenant_id', req.user!.id).select('id')
+            .eq('id', record.recordId).eq('tenant_id', req.user!.id).eq('user_id', req.user!.id).select('id')
           : null
       if (!result) continue
       if (result.error) throw result.error
@@ -1073,9 +1131,9 @@ router.post('/keys/:id/decommission', async (req: AuthedRequest, res: Response) 
 
     let result = await client.from('qkms_keys')
       .update({ status: 'decommissioned', decommissioned_at: at, updated_at: at })
-      .eq('id', registryId).eq('tenant_id', req.user!.id).select('id')
+      .eq('id', registryId).eq('tenant_id', req.user!.id).eq('user_id', req.user!.id).select('id')
     if (result.error && isMissingColumn(result.error)) {
-      result = await client.from('qkms_keys').update({ status: 'decommissioned', updated_at: at }).eq('id', registryId).eq('tenant_id', req.user!.id).select('id')
+      result = await client.from('qkms_keys').update({ status: 'decommissioned', updated_at: at }).eq('id', registryId).eq('tenant_id', req.user!.id).eq('user_id', req.user!.id).select('id')
     }
     if (result.error) throw result.error
     if (!result.data?.length) return notChanged(res, 'The key was not decommissioned: its registry row could not be updated for this tenant.')
@@ -1121,11 +1179,11 @@ router.post('/keys/:id/rotation', async (req: AuthedRequest, res: Response) => {
     const { data: existingJobs, error: existingError } = await client
       .from('qkms_rotation_jobs')
       .select('id, status')
-      .eq('tenant_id', req.user!.id)
+      .eq('tenant_id', req.user!.id).eq('user_id', req.user!.id)
       .eq('key_ref', key.id)
       .limit(50)
     if (existingError && !isMissingTable(existingError) && !isMissingColumn(existingError)) throw existingError
-    const open = (existingJobs || []).find((row: Row) => !/complete|done|success|closed|fail|error|cancel/i.test(str(row.status)))
+    const open = (existingJobs || []).find((row: Row) => !TERMINAL_JOB_STATUSES.includes(normaliseJobStatus(str(row.status))))
     if (open) {
       return res.status(409).json({
         error: { code: 'ROTATION_ALREADY_OPEN', message: 'A rotation work order is already open for this key. Advance or close it before raising another.', detail: { jobId: `job:${str(open.id)}` } },
@@ -1192,100 +1250,182 @@ router.post('/keys/:id/rotation', async (req: AuthedRequest, res: Response) => {
  * Transitions are validated against `ROTATION_TRANSITIONS`, so a job cannot
  * jump from `requested` to `completed` and manufacture a rotation that was
  * never executed or validated.
+ *
+ * The job is read from the database, not from the cached model, and the update
+ * is conditional on the status that was read. Two clicks, or two tabs, racing
+ * the same transition therefore produce one change and one 409 — never two
+ * audit records or two minted versions.
  */
 router.post('/rotation-jobs/:id/transition', async (req: AuthedRequest, res: Response) => {
   try {
+    if (carriesSecretMaterial(req.body || {})) {
+      return res.status(400).json({ error: { code: 'RAW_KEY_REJECTED', message: 'QKMS never accepts raw private keys or plaintext secret material.' } })
+    }
     const target = str(req.body?.status) as RotationJobStatus
-    const data = await model(req)
+    if (!Object.prototype.hasOwnProperty.call(ROTATION_TRANSITIONS, target)) {
+      return res.status(400).json({ error: { code: 'INVALID_STATUS', message: `Unknown work-order status "${target}".` } })
+    }
     const jobId = req.params.id.replace(/^job:/, '')
-    const job = data.rotation.jobs.find((row) => row.id === `job:${jobId}`)
-    if (!job) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Rotation work order not found in this tenant' } })
+    if (!UUID_PATTERN.test(jobId)) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Rotation work order not found in this tenant' } })
 
-    const allowed = ROTATION_TRANSITIONS[job.status] || []
-    if (!allowed.includes(target)) {
-      return res.status(409).json({
-        error: {
-          code: 'INVALID_TRANSITION',
-          message: allowed.length
-            ? `A work order in "${job.status}" can only move to: ${allowed.join(', ')}.`
-            : `A work order in "${job.status}" is terminal and cannot be advanced.`,
-        },
+    const validationDetail = str(req.body?.validationDetail).slice(0, 2000)
+    if (target === 'completed' && validationDetail && validationDetail.length < MIN_VALIDATION_EVIDENCE) {
+      return res.status(400).json({
+        error: { code: 'VALIDATION_EVIDENCE_TOO_SHORT', message: `Validation evidence must describe what was checked (at least ${MIN_VALIDATION_EVIDENCE} characters), or be left empty to close the order as unvalidated.` },
       })
     }
 
     const client = createAuthClient(req.token!)
     if (!client) throw new Error('Database connection failed')
+
+    const fresh = await client.from('qkms_rotation_jobs').select('*').eq('id', jobId).eq('tenant_id', req.user!.id).eq('user_id', req.user!.id).maybeSingle()
+    if (fresh.error) {
+      if (isMissingTable(fresh.error)) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Rotation work order not found in this tenant' } })
+      throw fresh.error
+    }
+    const row = fresh.data as Row | null
+    if (!row) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Rotation work order not found in this tenant' } })
+
+    const rawStatus = str(row.status)
+    const current = normaliseJobStatus(rawStatus)
+    const allowed = ROTATION_TRANSITIONS[current] || []
+    if (!allowed.includes(target)) {
+      return res.status(409).json({
+        error: {
+          code: 'INVALID_TRANSITION',
+          message: allowed.length
+            ? `A work order in "${current}" can only move to: ${allowed.join(', ')}.`
+            : `A work order in "${current}" is terminal and cannot be advanced.`,
+        },
+      })
+    }
+
+    const evidenceJson = (row.evidence_json && typeof row.evidence_json === 'object' ? row.evidence_json : {}) as Row
+    const keyRef = str(row.key_ref) || str(evidenceJson.key_ref) || null
+    const data = await model(req)
+    const key = keyRef ? data.keys.find((entry) => entry.id === keyRef) || null : null
+    const keyLabel = key?.label || str(evidenceJson.key_label) || keyRef || 'unresolved key'
+
+    // Re-opening a failed order must not sit beside another open order for the same key.
+    if (target === 'requested' && keyRef) {
+      const siblings = await client.from('qkms_rotation_jobs').select('id, status').eq('tenant_id', req.user!.id).eq('user_id', req.user!.id).eq('key_ref', keyRef).neq('id', jobId).limit(50)
+      if (siblings.error && !isMissingTable(siblings.error) && !isMissingColumn(siblings.error)) throw siblings.error
+      const open = (siblings.data || []).find((sibling: Row) => !TERMINAL_JOB_STATUSES.includes(normaliseJobStatus(str(sibling.status))))
+      if (open) {
+        return res.status(409).json({
+          error: { code: 'ROTATION_ALREADY_OPEN', message: 'Another rotation work order is already open for this key.', detail: { jobId: `job:${str(open.id)}` } },
+        })
+      }
+    }
+
     const at = new Date().toISOString()
+    // Only a VALIDATED completion is a rotation the platform can stand behind:
+    // it alone mints a version and moves the key's last-rotated date.
+    const validated = target === 'completed' && Boolean(validationDetail)
+
+    /* The next version comes from the version chain itself, not from a cached
+       model up to 15 seconds old. */
+    let nextVersion: number | null = null
+    if (validated && keyRef) {
+      const versions = await client.from('qkms_key_versions').select('version').eq('tenant_id', req.user!.id).eq('user_id', req.user!.id).eq('key_ref', keyRef)
+        .order('version', { ascending: false }).limit(1)
+      if (versions.error && !isMissingTable(versions.error)) throw versions.error
+      const chainMax = Number((versions.data || [])[0]?.version) || 0
+      nextVersion = Math.max(chainMax, key?.version ?? 0, Number(row.previous_version) || 0) + 1
+    }
 
     const updates: Row = { status: target }
+    if (target === 'requested') {
+      // A re-opened order starts over: approval and validation do not carry across.
+      Object.assign(updates, { approved_by: null, started_at: null, completed_at: null, failure_reason: null, validation_status: 'not-started', validation_detail: null })
+    }
     if (target === 'approved') updates.approved_by = req.user!.email || req.user!.id
     if (target === 'in-progress') updates.started_at = at
     if (target === 'awaiting-validation') updates.validation_status = 'pending'
     if (target === 'completed') {
       updates.completed_at = at
-      // Completion requires validation evidence; without it the job records the
-      // rotation as done but UNVALIDATED, and the migration gate reads
-      // VALIDATION_REQUIRED rather than MIGRATED.
-      const validationDetail = str(req.body?.validationDetail)
-      updates.validation_status = validationDetail ? 'passed' : 'pending'
+      // Without evidence the order closes as done but UNVALIDATED, and the
+      // migration gate reads VALIDATION_REQUIRED rather than MIGRATED.
+      updates.validation_status = validated ? 'passed' : 'pending'
       updates.validation_detail = validationDetail || 'Completed without post-rotation validation evidence.'
-      if (job.keyId) {
-        const key = data.keys.find((row) => row.id === job.keyId)
-        if (key) updates.new_version = key.version + 1
-      }
     }
     if (target === 'failed') {
-      updates.failure_reason = str(req.body?.failureReason) || 'Rotation failed'
+      updates.failure_reason = str(req.body?.failureReason).slice(0, 1000) || 'Rotation failed'
       updates.completed_at = at
       updates.validation_status = 'failed'
     }
     if (target === 'cancelled') updates.completed_at = at
 
-    let { error } = await client.from('qkms_rotation_jobs').update(updates).eq('id', jobId).eq('tenant_id', req.user!.id)
-    if (error && isMissingColumn(error)) {
+    const conditional = (patch: Row) => client.from('qkms_rotation_jobs').update(patch)
+      .eq('id', jobId).eq('tenant_id', req.user!.id).eq('user_id', req.user!.id).eq('status', rawStatus).select('id')
+    let result = await conditional(updates)
+    if (result.error && isMissingColumn(result.error)) {
       const minimal: Row = { status: target }
       if (target === 'completed' || target === 'failed' || target === 'cancelled') minimal.completed_at = at
       if (target === 'in-progress') minimal.started_at = at
-      ;({ error } = await client.from('qkms_rotation_jobs').update(minimal).eq('id', jobId).eq('tenant_id', req.user!.id))
+      result = await conditional(minimal)
     }
-    if (error && !isMissingTable(error)) throw error
+    if (result.error) throw result.error
+    if (!result.data?.length) {
+      return res.status(409).json({
+        error: { code: 'TRANSITION_CONFLICT', message: 'This work order changed while the request was in flight. The latest state has been reloaded; review it and try again.' },
+      })
+    }
 
     /*
-     * A completed, validated rotation mints a new version record — real state
-     * this platform owns. It is the only place `qkms_key_versions` grows, so a
-     * version chain always corresponds to a governed operation.
+     * A validated completion mints a new version record — real state this
+     * platform owns. It is the only place `qkms_key_versions` grows, so a
+     * version chain always corresponds to a governed, validated operation.
      */
-    if (target === 'completed' && job.keyId) {
-      const key = data.keys.find((row) => row.id === job.keyId)
-      if (key) {
-        const versionInsert = await client.from('qkms_key_versions').insert({
-          tenant_id: req.user!.id,
-          user_id: req.user!.id,
-          key_ref: key.id,
-          version: key.version + 1,
-          status: 'active',
-          algorithm: str(req.body?.algorithm) || key.algorithm,
-          created_at: at,
-          activated_at: at,
-          rotation_job_id: jobId,
-        })
-        if (versionInsert.error && !isMissingTable(versionInsert.error)) {
-          console.warn('[qkms] version record failed:', versionInsert.error.message || versionInsert.error)
-        }
-        const registryId = key.records.find((row) => row.table === 'qkms_keys')?.recordId
-        if (registryId) {
-          await client.from('qkms_keys')
-            .update({ last_rotated_at: at, version: key.version + 1, updated_at: at })
-            .eq('id', registryId).eq('tenant_id', req.user!.id)
-        }
+    let versionRecorded: boolean | null = null
+    if (validated && keyRef && nextVersion !== null) {
+      const algorithm = str(req.body?.algorithm)
+      const versionInsert = await client.from('qkms_key_versions').insert({
+        tenant_id: req.user!.id,
+        user_id: req.user!.id,
+        key_ref: keyRef,
+        version: nextVersion,
+        status: 'active',
+        // A free-text algorithm from the client is only recorded when it is a
+        // plausible algorithm identifier; otherwise the key's known algorithm stands.
+        algorithm: algorithm && ALGORITHM_IDENTIFIER.test(algorithm) ? algorithm : key?.algorithm || null,
+        created_at: at,
+        activated_at: at,
+        rotation_job_id: jobId,
+      })
+      versionRecorded = !versionInsert.error
+      if (versionInsert.error && !isMissingTable(versionInsert.error)) {
+        console.warn('[qkms] version record failed:', versionInsert.error.message || versionInsert.error)
+      }
+      if (versionRecorded) {
+        // The order names its version only once that version exists.
+        await client.from('qkms_rotation_jobs').update({ new_version: nextVersion }).eq('id', jobId).eq('tenant_id', req.user!.id).eq('user_id', req.user!.id)
+        await client.from('qkms_key_versions').update({ status: 'superseded', superseded_at: at })
+          .eq('tenant_id', req.user!.id).eq('user_id', req.user!.id).eq('key_ref', keyRef).lt('version', nextVersion).is('superseded_at', null)
+      }
+      const registryId = key?.records.find((record) => record.table === 'qkms_keys')?.recordId
+      if (registryId) {
+        const registry = await client.from('qkms_keys')
+          .update({ last_rotated_at: at, version: nextVersion, updated_at: at })
+          .eq('id', registryId).eq('tenant_id', req.user!.id).eq('user_id', req.user!.id)
+        if (registry.error) console.warn('[qkms] registry rotation stamp failed:', registry.error.message || registry.error)
       }
     }
 
-    await writeAudit(client, req.user!.id, job.keyId, `rotation_${target.replace(/-/g, '_')}`,
-      `Rotation work order for ${job.keyLabel} moved ${job.status} → ${target}`,
-      { status: job.status }, { status: target, at })
+    await writeAudit(client, req.user!.id, keyRef, `rotation_${target.replace(/-/g, '_')}`,
+      `Rotation work order for ${keyLabel} moved ${current} → ${target}${target === 'completed' ? (validated ? ' (validated)' : ' (unvalidated)') : ''}`,
+      { status: current }, { status: target, at, ...(nextVersion !== null ? { version: nextVersion, versionRecorded } : {}) })
     invalidate(req.user!.id)
-    res.json({ data: { jobId: `job:${jobId}`, status: target, at } })
+    res.json({
+      data: {
+        jobId: `job:${jobId}`,
+        status: target,
+        at,
+        validationStatus: target === 'completed' ? (validated ? 'passed' : 'pending') : undefined,
+        newVersion: versionRecorded ? nextVersion : null,
+        versionRecorded,
+      },
+    })
   } catch (error) {
     console.error('[qkms] rotation transition failed:', error)
     res.status(500).json({ error: { code: 'QKMS_ERROR', message: error instanceof Error ? error.message : 'Failed to advance work order' } })
@@ -1385,7 +1525,7 @@ router.patch('/policies/:id', async (req: AuthedRequest, res: Response) => {
     if ('maxKeyAgeDays' in body) updates.max_key_age_days = num(body.maxKeyAgeDays, 365)
     if ('environmentScope' in body) updates.environment_scope = str(body.environmentScope) || 'all'
 
-    const { error } = await client.from('qkms_policies').update(updates).eq('id', policyId).eq('tenant_id', req.user!.id)
+    const { error } = await client.from('qkms_policies').update(updates).eq('id', policyId).eq('tenant_id', req.user!.id).eq('user_id', req.user!.id)
     if (error && !isMissingTable(error)) throw error
 
     await writeAudit(client, req.user!.id, null, 'policy_updated', `Policy ${policyId} updated`, null, updates)

@@ -1,0 +1,19 @@
+{
+  "installed_skills": [
+    {
+      "skill": "remotion-best-practices",
+      "trusted_validator": "Skill is valid!",
+      "manifest_files_verified": 129,
+      "local_links_checked": 104,
+      "broken_local_links": []
+    },
+    {
+      "skill": "comfyui-workflows",
+      "trusted_validator": "Skill is valid!",
+      "manifest_files_verified": 3,
+      "local_links_checked": 1,
+      "broken_local_links": []
+    }
+  ],
+  "reanimate_withheld": true
+}

@@ -175,21 +175,34 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
  * Functions) can use it unchanged.
  */
 export const supabaseFetch: typeof fetch = async (input, init) => {
-  const method = (init?.method ?? 'GET').toUpperCase()
-  const body = init?.body
+  const request = input instanceof Request ? input : null
+  const method = (init?.method ?? request?.method ?? 'GET').toUpperCase()
+  const body = init?.body ?? request?.body
+  const callerSignal = init?.signal ?? request?.signal
 
   let lastError: unknown
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    callerSignal?.throwIfAborted()
     await acquire()
     const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     // Honour a caller-supplied signal without discarding our own ceiling.
-    const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout
+    const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout
     try {
-      return await fetch(input as RequestInfo, { ...init, signal })
+      callerSignal?.throwIfAborted()
+      const response = await fetch(input as RequestInfo, { ...init, signal })
+      // fetch resolves at HEADERS, before PostgREST consumes the JSON body.
+      // Keep finite JSON reads inside the retry/gate boundary: a socket closed
+      // mid-body otherwise escapes as "TypeError: terminated" with no retry.
+      // Clone preserves the original response (URL, headers, body) for callers.
+      // Storage downloads and event streams keep their streaming behavior.
+      if (response.body && /\bapplication\/(?:[\w.-]+\+)?json\b/i.test(response.headers.get('content-type') || '')) {
+        await response.clone().arrayBuffer()
+      }
+      return response
     } catch (error) {
       lastError = error
       // A caller-initiated abort is intent, not a transient fault.
-      if (init?.signal?.aborted) throw error
+      if (callerSignal?.aborted) throw error
       if (attempt >= MAX_ATTEMPTS || !shouldRetry(error, method, body)) throw error
     } finally {
       release()

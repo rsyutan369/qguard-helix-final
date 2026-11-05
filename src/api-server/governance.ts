@@ -281,7 +281,8 @@ async function computeModel(token: string, userId: string): Promise<GovernanceIn
       q.select('id, asset_id, name, job_type, status, target_algorithm, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.migrationJobs),
     ),
     fetchRows(client, 'migration_plans', CAP.migrationPlans, (q) =>
-      q.select('id, name, status, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.migrationPlans),
+      // Plan display names live in metadata.name, as written by Migration Planner.
+      q.select('id, status, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.migrationPlans),
     ),
     fetchRows(client, 'migration_events', CAP.migrationEvents, (q) =>
       q.select('id, migration_id, event_type, message, severity, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.migrationEvents),

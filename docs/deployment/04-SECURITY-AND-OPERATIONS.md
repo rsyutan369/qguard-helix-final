@@ -4,7 +4,7 @@
 
 | # | Finding | Severity | Status |
 |---|---|---|---|
-| S1 | A `service_role` key for the fallback Supabase project was committed in `.env.example` and pushed to GitHub. The API also accepts fallback-project tokens, and owner rights are granted by email | **Blocker** | **Partly fixed:** `.env.example` is names-only, the production preflight refuses any `*FALLBACK*` variable, and CI runs gitleaks. **You must rotate the key** (runbook §0) |
+| S1 | A `service_role` key for                                                                 the fallback Supabase project was committed in `.env.example` and pushed to GitHub. The API also accepts fallback-project tokens, and owner rights are granted by email | **Blocker** | **Partly fixed:** `.env.example` is names-only, the production preflight refuses any `*FALLBACK*` variable, and CI runs gitleaks. **You must rotate the key** (runbook §0) |
 | S2 | Production posture depended on `NODE_ENV`, which `npm start` never sets. Without it registration auto-confirms, and there is no HTTPS redirect, no HSTS, and stack traces leak | **Blocker** | **Fixed:** the image and ConfigMap set `NODE_ENV=production`, the preflight refuses dev-only toggles, and a JSON error handler returns no stack traces |
 | S3 | The paywalled Messaging installer would be served publicly by Vercel's CDN; the only block was Express middleware | High | **Fixed:** removed from the Vercel output (`tools/deploy/prune-static-output.mjs`), a redirect covers the path, and CI asserts it is absent |
 | S4 | Kubelet and LB health probes got a 308 to `https://<podIP>`, so pods would never become Ready | **Blocker** | **Fixed:** `/api/v1/healthz` and `/api/v1/readyz` are mounted ahead of HTTPS enforcement |

@@ -644,7 +644,9 @@ export default function LiveMigrationOperations() {
       try {
         const frame = JSON.parse((event as MessageEvent).data) as AgentStreamFrame
         if (!frame || typeof frame.id !== 'number') return
-        setLiveFrames((current) => (current.some((item) => item.id === frame.id) ? current : [frame, ...current].slice(0, 100)))
+        // Ids restart at 1 when the API process restarts, so id alone would
+        // drop a genuinely new frame that reuses an id still in this buffer.
+        setLiveFrames((current) => (current.some((item) => item.id === frame.id && item.at === frame.at) ? current : [frame, ...current].slice(0, 100)))
       } catch (error) {
         console.error('Invalid agent stream frame:', error)
       }
@@ -971,7 +973,7 @@ export default function LiveMigrationOperations() {
           : stage ? SCAN_STAGE_LABEL[stage] || stage : frame.name.replace('agent.', '').replace(/_/g, ' ')
         const severity: EventSeverity = /error|failed/.test(frame.name) || stage === 'scan_failed' ? 'error' : /completed/.test(frame.name) ? 'success' : 'info'
         return {
-          id: `live-${frame.id}`,
+          id: `live-${frame.id}-${frame.at}`,
           at: frame.at,
           agent: roleOf.get(frame.agentId!)!,
           type: frame.name,

@@ -5,6 +5,8 @@ import os from 'node:os'
 import path from 'node:path'
 import tls from 'node:tls'
 import { collectHostIdentity } from './host-identity.ts'
+import { configureAgentLog, loadAgentConfig } from './runtime-bootstrap.ts'
+import { acquireHostLock, acquireResourceLock, coordinationDirectory, replaceConfigFile, type HostLock } from './host-coordination.ts'
 import { collectNativeRuntimeEvents, nativeRuntimeCollectorsEnabled, type NativeRuntimeEvent } from './native-runtime-collectors.ts'
 import {
   MANDATORY_PQC_CONFIG_VALUES,
@@ -236,45 +238,8 @@ const SKIP_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', '.nex
  * environment variable always wins over the file so operators can override a
  * single setting without editing the installed config.
  */
-function configFileCandidates(): string[] {
-  const explicit = process.env.QGUARD_CONFIG
-  const candidates: string[] = []
-  if (explicit) candidates.push(explicit)
-  if (process.platform === 'win32') {
-    const programData = process.env.ProgramData || 'C:\\ProgramData'
-    candidates.push(path.join(programData, 'QGuardHelix', 'Agent', 'agent.env'))
-  } else {
-    candidates.push('/etc/qguard-agent/agent.env')
-    candidates.push('/opt/qguard-agent/agent.env')
-  }
-  candidates.push(path.join(process.cwd(), 'qguard-agent.env'))
-  return candidates
-}
-
-function loadConfigFile(): string | null {
-  for (const candidate of configFileCandidates()) {
-    let contents: string
-    try {
-      contents = readFileSync(candidate, 'utf8')
-    } catch {
-      continue
-    }
-    for (const rawLine of contents.split(/\r?\n/)) {
-      const line = rawLine.trim()
-      if (!line || line.startsWith('#')) continue
-      const separator = line.indexOf('=')
-      if (separator <= 0) continue
-      const key = line.slice(0, separator).trim()
-      const value = line.slice(separator + 1).trim().replace(/^["']|["']$/g, '')
-      if (!key.startsWith('QGUARD_')) continue
-      if (process.env[key] === undefined || process.env[key] === '') process.env[key] = value
-    }
-    return candidate
-  }
-  return null
-}
-
-const CONFIG_FILE_PATH = loadConfigFile()
+const CONFIG_FILE_PATH = loadAgentConfig()
+configureAgentLog()
 
 function csvEnv(name: string): string[] {
   return (process.env[name] || '')
@@ -287,7 +252,7 @@ const API_URL = (process.env.QGUARD_API_URL || DEFAULT_API_URL).replace(/\/+$/, 
 const AGENT_ID = process.env.QGUARD_AGENT_ID || ''
 const AGENT_TOKEN = process.env.QGUARD_AGENT_TOKEN || ''
 /** Injected at bundle time by tools/build-agent-release.mjs; falls back for `tsx` runs. */
-const AGENT_VERSION = process.env.QGUARD_AGENT_BUILD_VERSION || process.env.QGUARD_AGENT_VERSION || '1.6.1'
+const AGENT_VERSION = process.env.QGUARD_AGENT_BUILD_VERSION || process.env.QGUARD_AGENT_VERSION || '1.6.3'
 const AGENT_ROLE = (process.env.QGUARD_AGENT_ROLE || 'collector').toLowerCase()
 const REMEDIATION_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_REMEDIATION || '')
 const CONFIG_PATCHES_ENABLED = /^(1|true|yes)$/i.test(process.env.QGUARD_ENABLE_CONFIG_PATCHES || '')
@@ -370,6 +335,8 @@ function hostHealthTelemetry() {
     },
     process: {
       pid: process.pid,
+      launchId: process.env.QGUARD_LAUNCH_ID || null,
+      startedAt: new Date(AGENT_STARTED_AT).toISOString(),
       nodeVersion: process.versions.node,
       agentUptimeSeconds: Math.round((Date.now() - AGENT_STARTED_AT) / 1000),
     },
@@ -2101,6 +2068,19 @@ function fileAllowedByPolicy(filePath: string, policy: AgentPolicy) {
   })
 }
 
+async function scopedResourceLock(file: string, policy: AgentPolicy) {
+  if (!fileAllowedByPolicy(file, policy)) throw new Error('Write target is outside the authorized paths')
+  const canonical = await fs.realpath(file)
+  const compare = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value
+  let allowed = false
+  for (const entry of policy.allowedPaths) {
+    const root = await fs.realpath(entry).catch(() => null)
+    if (root && (compare(canonical) === compare(root) || compare(canonical).startsWith(compare(root + path.sep)))) { allowed = true; break }
+  }
+  if (!allowed) throw new Error('Resolved write target escapes the authorized paths')
+  return acquireResourceLock(canonical, { agentId: AGENT_ID, role: AGENT_ROLE })
+}
+
 function positiveConfigValidationEvidence(job: RemediationJob, filePath: string): ScannerEvidence {
   return {
     evidenceType: 'config-reference',
@@ -2250,12 +2230,22 @@ async function rollbackLocalConfigRemediation(execution: {
     return { rollbackPerformed: false, rollbackRequired: true, reason: 'No restorable configuration snapshot was available.' }
   }
 
-  await fs.copyFile(execution.backupPath, execution.targetPath)
+  const current = await fs.readFile(execution.targetPath, 'utf8')
+  if (execution.snapshot?.afterHash && sha256Text(current) !== execution.snapshot.afterHash) {
+    return { rollbackPerformed: false, rollbackRequired: true, reason: 'The file changed after this job; automatic rollback withheld to preserve newer work.' }
+  }
+  const backup = await fs.readFile(execution.backupPath, 'utf8')
+  const expectedBeforeHash = String(execution.snapshot?.beforeHash || '')
+  if (!expectedBeforeHash || sha256Text(backup) !== expectedBeforeHash) {
+    return { rollbackPerformed: false, rollbackRequired: true, reason: 'The backup does not match the recorded pre-change digest; automatic rollback was withheld.' }
+  }
+  await replaceConfigFile(execution.targetPath, backup, current)
   const restored = await fs.readFile(execution.targetPath, 'utf8').catch(() => '')
+  const verified = sha256Text(restored) === expectedBeforeHash
   return {
-    rollbackPerformed: true,
+    rollbackPerformed: verified,
     rollbackRequired: true,
-    reason: 'Validation failed; original configuration snapshot was restored automatically.',
+    reason: verified ? 'Validation failed; original configuration snapshot was restored and verified automatically.' : 'Rollback could not verify the original configuration; remediation remains open.',
     restoredAt: isoNow(),
     targetPath: execution.targetPath,
     backupPath: execution.backupPath,
@@ -2293,7 +2283,7 @@ async function executeRollbackCommand(
   const expectedBeforeHash = String(payload.beforeHash || '')
   const base = { snapshotId, targetPath, backupPath, at: isoNow() }
 
-  if (!REMEDIATION_ENABLED || !CONFIG_PATCHES_ENABLED) {
+  if (!['patcher', 'operator'].includes(AGENT_ROLE) || !REMEDIATION_ENABLED || !CONFIG_PATCHES_ENABLED) {
     return { ...base, verified: false, reason: `This agent runs in read-only mode (role ${AGENT_ROLE}); it will not write to the host. Roll back from the agent that applied the change, or re-deploy this host's agent with a Patcher/Migration Operator role.` }
   }
   if (!targetPath || !backupPath || !expectedBeforeHash) {
@@ -2316,13 +2306,19 @@ async function executeRollbackCommand(
   }
 
   const current = await fs.readFile(targetPath, 'utf8').catch(() => null)
+  if (current !== null && sha256Text(current) === expectedBeforeHash) {
+    return { ...base, verified: true, reason: 'The recorded configuration is already restored; no write was needed.', restoredHash: expectedBeforeHash, expectedBeforeHash, preRollbackPath: null }
+  }
+  if (payload.origin === 'auto' && (!payload.afterHash || current === null || sha256Text(current) !== String(payload.afterHash))) {
+    return { ...base, verified: false, reason: 'The configuration changed after the failed job. Automatic rollback was withheld to preserve newer work.' }
+  }
   let preRollbackPath: string | null = null
   if (current !== null) {
     preRollbackPath = `${targetPath}.qguard-prerollback-${Date.now()}`
     await fs.writeFile(preRollbackPath, current, 'utf8')
   }
 
-  await fs.copyFile(backupPath, targetPath)
+  await replaceConfigFile(targetPath, backup, current)
   const restored = await fs.readFile(targetPath, 'utf8').catch(() => '')
   const restoredHash = sha256Text(restored)
   const verified = restoredHash === expectedBeforeHash
@@ -2454,7 +2450,7 @@ async function applyLocalConfigRemediation(job: RemediationJob, policy: AgentPol
 
   const backupPath = `${filePath}.qguard-backup-${Date.now()}`
   await fs.copyFile(filePath, backupPath)
-  await fs.writeFile(filePath, after, 'utf8')
+  await replaceConfigFile(filePath, after, before)
   const snapshot = {
     type: 'configuration-snapshot',
     targetPath: filePath,
@@ -2505,6 +2501,17 @@ async function attemptRemediation(job: RemediationJob, policy: AgentPolicy): Pro
 }
 
 async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
+  const file = remediationFilePathFromJob(job)
+  if (file && !fileAllowedByPolicy(file, policy)) throw new Error('Write job is outside the authorized file scope')
+  const resource = file ? await scopedResourceLock(file, policy) : null
+  if (file && !resource) {
+    await postRemediationEvent(job.id, { eventType: 'agent-waiting-for-resource', status: 'running', progress: job.progress || 1, message: 'Waiting for another agent to finish changing this configuration; no write was attempted.' })
+    return
+  }
+  try { await executeRemediationJobWork(job, policy) } finally { await resource?.release() }
+}
+
+async function executeRemediationJobWork(job: RemediationJob, policy: AgentPolicy) {
   const adapter = adapterForJob(job)
   const stack = mandatoryPqcStackMetadata(job.targetAlgorithm, `${adapter} ${job.jobType || ''} ${job.name || ''}`)
   const plan = remediationPlan(job)
@@ -2655,6 +2662,15 @@ async function executeRemediationJob(job: RemediationJob, policy: AgentPolicy) {
 }
 
 async function executePendingRemediations(policy: AgentPolicy) {
+  // Collectors and Scanners can observe concurrently; they never claim a write
+  // queue, even if a local environment accidentally enables a write flag.
+  if (!['patcher', 'operator'].includes(AGENT_ROLE) || !REMEDIATION_ENABLED) return 0
+  const mutation = await acquireHostLock(coordinationDirectory(), 'host-mutation', { agentId: AGENT_ID, role: AGENT_ROLE })
+  if (!mutation) {
+    console.log('Host changes are in progress on another agent; write jobs remain queued until the next poll.')
+    await sendTelemetry('agent_write_waiting', 'Waiting for another agent to finish a host change; no write job was claimed.', { reason: 'host_mutation_busy', role: AGENT_ROLE }).catch(() => undefined)
+    return 0
+  }
   try {
     const jobs = (await pullRemediationJobs()).slice(0, MAX_REMEDIATION_JOBS)
     if (jobs.length === 0) return 0
@@ -2685,7 +2701,7 @@ async function executePendingRemediations(policy: AgentPolicy) {
     }).catch(() => undefined)
     console.warn(`Remediation polling failed: ${(error as Error).message}`)
     return 0
-  }
+  } finally { await mutation.release() }
 }
 
 /**
@@ -2958,6 +2974,27 @@ async function drainCommands(policy: AgentPolicy): Promise<{ scanned: boolean }>
   let scanned = false
 
   for (const command of commands) {
+    let mutation: HostLock | null = null
+    let resource: HostLock | null = null
+    if (command.type === 'rollback') {
+      if (!['patcher', 'operator'].includes(AGENT_ROLE) || !REMEDIATION_ENABLED || !CONFIG_PATCHES_ENABLED || !fileAllowedByPolicy(String(command.payload?.targetPath || ''), policy)) {
+        await acknowledgeCommand(command.id, 'failed', undefined, 'Rollback requires an authorized writer and an in-scope target file')
+        continue
+      }
+      mutation = await acquireHostLock(coordinationDirectory(), 'host-mutation', { agentId: AGENT_ID, role: AGENT_ROLE })
+      if (!mutation) {
+        console.log(`Rollback ${command.id} waits for another host change; its command remains pending.`)
+        continue
+      }
+      try {
+        resource = await scopedResourceLock(String(command.payload?.targetPath || ''), policy)
+      } catch (error) {
+        await mutation.release()
+        await acknowledgeCommand(command.id, 'failed', undefined, (error as Error).message)
+        continue
+      }
+      if (!resource) { await mutation.release(); console.log(`Rollback ${command.id} waits for another agent changing its target file.`); continue }
+    }
     agentHealth.currentJob = `${command.type}:${command.id}`
     await acknowledgeCommand(command.id, 'running')
     try {
@@ -3026,6 +3063,7 @@ async function drainCommands(policy: AgentPolicy): Promise<{ scanned: boolean }>
       console.warn(`Command ${command.type} (${command.id}) failed: ${(error as Error).message}`)
     } finally {
       agentHealth.currentJob = null
+      try { await resource?.release() } finally { await mutation?.release() }
     }
   }
 
@@ -3033,7 +3071,6 @@ async function drainCommands(policy: AgentPolicy): Promise<{ scanned: boolean }>
 }
 
 async function watch() {
-  requireEnrollment()
   for (;;) {
     let intervalSeconds = 60
     try {
@@ -3067,7 +3104,6 @@ async function watch() {
 }
 
 async function printStatus() {
-  requireEnrollment()
   const policy = await pullPolicy()
   console.log(`QGuard Helix Agent ${AGENT_VERSION} (${AGENT_ROLE})`)
   console.log(`  Agent ID       : ${AGENT_ID}`)
@@ -3085,19 +3121,26 @@ async function printStatus() {
 
 async function main() {
   const mode = process.argv[2] || 'scan'
-  if (mode === 'watch') {
-    await watch()
-    return
-  }
-  if (mode === 'scan') {
+  if (['watch', 'scan', 'status'].includes(mode)) {
     requireEnrollment()
-    const policy = await pullPolicy()
-    const { scanned } = await drainCommands(policy)
-    if (!scanned) await scanOnce(policy)
-    return
-  }
-  if (mode === 'status') {
-    await printStatus()
+    console.log(`[qguard-agent] ${AGENT_VERSION} ${AGENT_ROLE}; agent ${AGENT_ID}; config ${CONFIG_FILE_PATH || 'environment'}; control plane ${API_URL}`)
+    const instance = await acquireHostLock(path.join(signingStateDir(), 'instances'), `agent-${AGENT_ID}`, { agentId: AGENT_ID, role: AGENT_ROLE })
+    if (!instance) {
+      console.error('This agent identity is already running. Use a distinct identity for each deployment; the existing process continues unchanged.')
+      process.exit(75) // A duplicate must not publish an error on the live agent.
+    }
+    const stop = () => { void instance.release().finally(() => process.exit(0)) }
+    process.once('SIGTERM', stop)
+    process.once('SIGINT', stop)
+    try {
+      if (mode === 'watch') await watch()
+      else if (mode === 'status') await printStatus()
+      else {
+        const policy = await pullPolicy()
+        const { scanned } = await drainCommands(policy)
+        if (!scanned) await scanOnce(policy)
+      }
+    } finally { await instance.release() }
     return
   }
   if (mode === 'version' || mode === '--version' || mode === '-v') {
@@ -3105,7 +3148,7 @@ async function main() {
     return
   }
 
-  console.error('Usage: qguard-agent <scan|watch|status|version>')
+  console.error('Usage: qguard-agent <scan|watch|status|version> [--config <absolute-path>]')
   process.exit(1)
 }
 

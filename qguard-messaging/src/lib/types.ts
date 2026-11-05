@@ -1,6 +1,7 @@
 export type Page =
   | "dashboard"
   | "chat"
+  | "calls"
   | "vault"
   | "keys"
   | "devices"
@@ -230,6 +231,8 @@ export interface DashboardData {
   contacts: ContactSummary[];
   conversations: ConversationSummary[];
   vaultFiles: VaultFileSummary[];
+  /** Quantum Vault Storage on this device: encrypted objects and their size on disk. */
+  vaultStore: { objects: number; bytes: number };
   securityEvents: SecurityEvent[];
   orgMembers: OrgMemberSummary[];
   keyInventory: KeyInventory;

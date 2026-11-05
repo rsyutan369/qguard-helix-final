@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express'
+import { createHash, randomUUID } from 'node:crypto'
 import { sha3_256 } from '@noble/hashes/sha3.js'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { namesCryptography } from '@/lib/scanner/finding-identity'
@@ -15,6 +16,7 @@ import type {
 } from '@/types/migration-snapshot'
 import {
   AGENT_ROLLBACK_MIN_VERSION,
+  AGENT_COORDINATION_MIN_VERSION,
   HEARTBEAT_ONLINE_WINDOW_MS,
   agentVersionAtLeast,
   type AgentRole,
@@ -175,17 +177,6 @@ export function deriveCryptoState(
 /* ------------------------------------------------------------------ */
 /* Snapshot id + row mapping                                           */
 /* ------------------------------------------------------------------ */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function nextSnapshotId(client: any, userId: string): Promise<string> {
-  const year = new Date().getFullYear()
-  let count = 0
-  try {
-    const { count: c } = await client.from(SNAP_TABLE).select('id', { count: 'exact', head: true }).eq('user_id', userId)
-    count = typeof c === 'number' ? c : 0
-  } catch { /* fall through */ }
-  return `MSNAP-${year}-${String(count + 1).padStart(6, '0')}`
-}
-
 /** The executor record persisted on a snapshot, when one exists. */
 export function readExecution(meta: Record<string, unknown>): SnapshotExecutionRecord | null {
   const raw = rec(meta.execution)
@@ -347,7 +338,11 @@ async function createSnapshot(client: any, userId: string, args: {
 }): Promise<CreateSnapshotResult> {
   const cryptoState = await captureCryptoState(client, userId, args.assetId, args.jobMeta)
   const { hash, bytes } = hashState(cryptoState)
-  const snapshotId = await nextSnapshotId(client, userId)
+  // A read-count-next ID races every other agent creating a snapshot. A job's
+  // pre-change snapshot is idempotent; manual/scheduled captures are unique.
+  const snapshotId = args.trigger === 'pre_migration' && args.migrationJobId
+    ? `MSNAP-${createHash('sha3-256').update(`${userId}:${args.migrationJobId}`).digest('hex').slice(0, 32)}`
+    : `MSNAP-${randomUUID()}`
   const now = new Date()
   const retentionDays = args.retentionDays || DEFAULT_RETENTION_DAYS
   const configurationVersion = `cfg-${hash.slice(0, 8)}`
@@ -377,6 +372,10 @@ async function createSnapshot(client: any, userId: string, args: {
   }
   const { data, error } = await client.from(SNAP_TABLE).insert(row).select('*').single()
   if (error) {
+    if (error.code === '23505' && args.trigger === 'pre_migration' && args.migrationJobId) {
+      const { data: existing } = await client.from(SNAP_TABLE).select('*').eq('user_id', userId).eq('snapshot_id', snapshotId).eq('migration_job_id', args.migrationJobId).maybeSingle()
+      if (existing && mapSnapshot(existing).integrityVerified) return { ok: true, snapshot: mapSnapshot(existing) }
+    }
     if (isMissingTable(error)) return { ok: false, schemaMissing: true, message: 'Snapshot tables missing — run supabase/migration-snapshots-schema.sql.' }
     return { ok: false, schemaMissing: false, message: error.message || 'Snapshot creation failed' }
   }
@@ -415,7 +414,7 @@ export async function ensureSnapshotForJob(
   const existing = await rows(
     client,
     SNAP_TABLE,
-    (q) => q.select('snapshot_id, status').eq('user_id', userId).eq('migration_job_id', jobId).eq('trigger', 'pre_migration').limit(1),
+    (q) => q.select('*').eq('user_id', userId).eq('migration_job_id', jobId).eq('trigger', 'pre_migration').limit(1),
     () => { schemaMissing = true },
   )
   if (schemaMissing) {
@@ -426,7 +425,13 @@ export async function ensureSnapshotForJob(
       message: 'Snapshot tables are missing — run supabase/migration-snapshots-schema.sql. No change may be dispatched without a pre-change snapshot.',
     }
   }
-  if (existing.length) return { ok: true, snapshotId: str(existing[0].snapshot_id), schemaMissing: false, message: 'existing' }
+  if (existing.length) {
+    const row = existing[0]
+    if (!mapSnapshot(row).integrityVerified || row.status === 'deleted' || (row.expires_at && Date.parse(str(row.expires_at)) <= Date.now())) {
+      return { ok: false, snapshotId: null, schemaMissing: false, message: 'The pre-change snapshot is expired, deleted or fails its integrity check; execution was withheld.' }
+    }
+    return { ok: true, snapshotId: str(row.snapshot_id), schemaMissing: false, message: 'existing' }
+  }
 
   const assetId = job.asset_id ? str(job.asset_id) : null
   const asset = assetId
@@ -578,6 +583,7 @@ async function resolveRollbackExecutor(
     if (!agentVersionAtLeast(str(agent.version), AGENT_ROLLBACK_MIN_VERSION)) {
       return noExecutor(`Agent ${str(agent.name) || agentId} runs ${str(agent.version) || 'an unknown version'}, which cannot execute rollback. Upgrade it to ${AGENT_ROLLBACK_MIN_VERSION} or later from the Agent Center.`)
     }
+    if (!agentVersionAtLeast(str(agent.version), AGENT_COORDINATION_MIN_VERSION)) return noExecutor(`Upgrade this agent to ${AGENT_COORDINATION_MIN_VERSION}+ for coordinated rollback on shared hosts.`)
     return { kind: 'agent', id: str(agent.id), label: `agent ${str(agent.name) || str(agent.hostname) || agentId}`, reason: '', agent, connector: null }
   }
 
@@ -732,6 +738,8 @@ export async function dispatchSnapshotRollback(
       targetPath: execution?.targetPath || null,
       backupPath: execution?.backupPath || null,
       beforeHash: execution?.beforeHash || null,
+      afterHash: execution?.afterHash || null,
+      origin: args.origin,
       reason: args.reason,
       requestedAt: now,
     }

@@ -305,10 +305,16 @@ pub struct WorkspaceCredential {
     /// How the unlock secret is stretched before the HKDF subkey derivation.
     /// 0 (and records written before this field existed) = the secret feeds
     /// HKDF-SHA3-256 directly; 1 = Argon2id prehash first, which makes offline
-    /// brute force of a stolen credential file memory-hard and slow. Legacy
-    /// credentials are upgraded in place on their next successful unlock.
+    /// brute force of a stolen credential file memory-hard and slow; 2 =
+    /// PBKDF2-HMAC-SHA-512 (FIPS approved mode). A credential whose version is
+    /// not the device's current preference is re-sealed on its next unlock.
     #[serde(default)]
     pub kdf_version: u8,
+    /// Sealed with PBKDF2 from a password of at least
+    /// `provider::APPROVED_PASSWORD_MIN_CHARS` characters — what approved mode
+    /// requires of the vault (`commands::workspace`).
+    #[serde(default)]
+    pub approved_strength: bool,
 }
 
 /// Device-local, encrypted-at-rest workspace-lock state for one scope
@@ -323,12 +329,22 @@ pub struct PersistedWorkspaceScope {
     pub password: Option<WorkspaceCredential>,
     #[serde(default)]
     pub pin: Option<WorkspaceCredential>,
+    /// A drawn unlock pattern (vault only; `vault::pattern`). Sealed exactly
+    /// like a PIN: its secret is the pattern's canonical text.
+    #[serde(default)]
+    pub pattern: Option<WorkspaceCredential>,
     #[serde(default)]
     pub failed_attempts: u32,
     #[serde(default)]
     pub lockout_until: Option<chrono::DateTime<Utc>>,
     #[serde(default)]
     pub lockdown: bool,
+    /// When patterns that opened nothing were drawn (last 24 hours). Unlike
+    /// `failed_attempts`, no success ever clears it — a password must not buy
+    /// unlimited tries at hidden vault patterns, and a reset would itself say
+    /// that a hidden vault opened. Old entries age out instead.
+    #[serde(default)]
+    pub pattern_misses: Vec<chrono::DateTime<Utc>>,
 }
 
 impl PersistedWorkspaceScope {
@@ -338,14 +354,16 @@ impl PersistedWorkspaceScope {
             scope: scope.to_string(),
             password: None,
             pin: None,
+            pattern: None,
             failed_attempts: 0,
             lockout_until: None,
             lockdown: false,
+            pattern_misses: Vec::new(),
         }
     }
 
     pub fn configured(&self) -> bool {
-        self.password.is_some() || self.pin.is_some()
+        self.password.is_some() || self.pin.is_some() || self.pattern.is_some()
     }
 }
 
@@ -407,6 +425,9 @@ pub struct PersistedAppLock {
 pub struct DuressPin {
     pub salt: Vec<u8>,
     pub verifier: String,
+    /// `passcode` KDF version; records from before the field are Argon2id.
+    #[serde(default = "crate::crypto::passcode::legacy_stored_kdf")]
+    pub kdf_version: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -492,6 +513,11 @@ pub struct AppState {
     /// Unlocked Vault Master Key for this session (None = vault locked). Cleared
     /// and zeroized on lock / inactivity / sign-out.
     pub vault_session: Mutex<Option<PersistedVaultMaster>>,
+    /// The hidden vault open in this session, if any (`vault::hidden`). Never
+    /// open at the same time as the Quantum Vault, and cleared with it. The
+    /// outer lock is held only to hand out the vault, so locking the app never
+    /// waits for an import that is running.
+    pub hidden_vault: Mutex<Option<std::sync::Arc<Mutex<crate::vault::hidden::HiddenVault>>>>,
     /// Set of currently-unlocked workspace scopes ("chat" | "vault").
     pub workspace_unlocked: Mutex<HashSet<String>>,
     /// In-memory Session Encryption Key while the app is PIN-unlocked (None =
@@ -536,6 +562,7 @@ impl AppState {
             auth_sessions: Mutex::new(HashMap::new()),
             decrypt_attempts: Mutex::new(HashMap::new()),
             vault_session: Mutex::new(None),
+            hidden_vault: Mutex::new(None),
             workspace_unlocked: Mutex::new(HashSet::new()),
             applock_sek: Mutex::new(None),
             portable_identity: Mutex::new(None),
@@ -1333,6 +1360,44 @@ impl AppState {
         Ok(())
     }
 
+    // ---- FIPS approved mode (see crate::crypto::provider::policy) ----------
+
+    fn fips_mode_setting_path(&self) -> PathBuf {
+        self.data_dir.join("keys").join("fips-approved-mode")
+    }
+
+    /// `QGUARD_FIPS_APPROVED_MODE=1/0` (operator switch), if set.
+    pub fn fips_approved_mode_env() -> Option<bool> {
+        match std::env::var("QGUARD_FIPS_APPROVED_MODE").ok()?.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "on" => Some(true),
+            "0" | "false" | "off" => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Whether this device runs in FIPS approved mode: a `fips-approved-mode`
+    /// build always does; otherwise the operator switch, then the user's
+    /// Settings choice, off until they make it. Device-wide, not per account.
+    pub fn fips_approved_mode_setting(&self) -> bool {
+        if crate::crypto::provider::approved_mode_forced() {
+            return true;
+        }
+        if let Some(forced) = Self::fips_approved_mode_env() {
+            return forced;
+        }
+        std::fs::read_to_string(self.fips_mode_setting_path())
+            .map(|text| text.trim() == "1")
+            .unwrap_or(false)
+    }
+
+    /// Record the user's choice and apply it to the cryptographic boundary.
+    pub fn set_fips_approved_mode(&self, enabled: bool) -> Result<()> {
+        write_atomic(&self.fips_mode_setting_path(), if enabled { b"1" } else { b"0" })
+            .map_err(|e| QGuardError::Storage(format!("write FIPS mode setting: {e}")))?;
+        crate::crypto::provider::set_approved_mode(self.fips_approved_mode_setting());
+        Ok(())
+    }
+
     /// Same three outcomes as the ledger and the device record: no file is a
     /// fresh book; a file that will not open is UNAVAILABLE and never written.
     fn load_ratchet_sessions(&self, user_id: &str, local_device: &str) -> SessionBook {
@@ -2057,6 +2122,52 @@ impl AppState {
         Ok(Some(material))
     }
 
+    // ---- Call history (see `call_log`) --------------------------------------
+
+    fn call_log_path(&self, user_id: &str) -> PathBuf {
+        self.data_dir
+            .join("history")
+            .join(format!("{}.calls.enc", Self::safe_user_key(user_id)))
+    }
+
+    fn call_log_aad(user_id: &str) -> Vec<u8> {
+        format!("QGuard-CallLog-v1|{user_id}").into_bytes()
+    }
+
+    /// This account's call history, newest first. Missing file = no calls yet.
+    pub fn load_call_log(&self, user_id: &str) -> Result<Vec<crate::call_log::CallRecord>> {
+        let path = self.call_log_path(user_id);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let bytes = std::fs::read(&path).map_err(|e| QGuardError::Storage(format!("read call history: {e}")))?;
+        let file: EncryptedKeyMaterialFile =
+            serde_json::from_slice(&bytes).map_err(|e| QGuardError::Storage(format!("decode call history: {e}")))?;
+        let key = zeroize::Zeroizing::new(self.device_storage_key(user_id, false)?);
+        let plaintext = zeroize::Zeroizing::new(crate::crypto::symmetric::decrypt(&key, &file.envelope, &Self::call_log_aad(user_id))?);
+        let mut list: Vec<crate::call_log::CallRecord> = serde_json::from_slice(&plaintext)
+            .map_err(|e| QGuardError::Storage(format!("decode call history payload: {e}")))?;
+        crate::call_log::sort_newest_first(&mut list);
+        Ok(list)
+    }
+
+    /// Seal and write this account's call history (AES-256-GCM under the
+    /// device storage key, bound to the account by its AAD).
+    pub fn save_call_log(&self, user_id: &str, list: &[crate::call_log::CallRecord]) -> Result<()> {
+        let encoded = zeroize::Zeroizing::new(
+            serde_json::to_vec(list).map_err(|e| QGuardError::Storage(format!("encode call history: {e}")))?,
+        );
+        let key = zeroize::Zeroizing::new(self.device_storage_key(user_id, true)?);
+        let envelope = crate::crypto::symmetric::encrypt(&key, &encoded, &Self::call_log_aad(user_id))?;
+        let serialized = serde_json::to_vec(&EncryptedKeyMaterialFile { version: 1, envelope })
+            .map_err(|e| QGuardError::Storage(format!("encode sealed call history: {e}")))?;
+        let path = self.call_log_path(user_id);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| QGuardError::Storage(format!("create call history folder: {e}")))?;
+        }
+        write_atomic(&path, &serialized).map_err(|e| QGuardError::Storage(format!("write call history: {e}")))
+    }
+
     // ---- App-entry PIN (applock) ------------------------------------------
 
     fn applock_path(&self, user_id: &str) -> PathBuf {
@@ -2174,13 +2285,60 @@ impl AppState {
             .unwrap_or(false)
     }
 
-    /// Store the unlocked VMK for this session (vault unlocked).
+    /// Store the unlocked VMK for this session (vault unlocked). A hidden vault
+    /// that was open closes: only one vault is ever open.
     pub fn set_vault_session(&self, master: PersistedVaultMaster) -> Result<()> {
+        self.clear_hidden_vault();
         *self
             .vault_session
             .lock()
             .map_err(|_| QGuardError::Storage("vault session lock poisoned".to_string()))? = Some(master);
         Ok(())
+    }
+
+    /// Where this account's hidden vaults live (see `vault::hidden`).
+    pub fn hidden_pool(&self, user_id: &str) -> crate::vault::hidden::Pool {
+        crate::vault::hidden::Pool::new(&self.data_dir, &Self::safe_user_key(user_id))
+    }
+
+    /// The device half of every hidden vault key, from this account's device
+    /// storage key. The storage key itself never leaves this module.
+    pub fn hidden_pool_secrets(&self, user_id: &str) -> Result<crate::vault::hidden::PoolSecrets> {
+        let key = zeroize::Zeroizing::new(self.device_storage_key(user_id, true)?);
+        crate::vault::hidden::PoolSecrets::derive(&key)
+    }
+
+    /// Open a hidden vault for this session. The Quantum Vault locks first.
+    pub fn set_hidden_vault(&self, vault: crate::vault::hidden::HiddenVault) -> Result<()> {
+        self.clear_vault_session()?;
+        self.mark_workspace_locked("vault")?;
+        *self
+            .hidden_vault
+            .lock()
+            .map_err(|_| QGuardError::Storage("hidden vault lock poisoned".to_string()))? =
+            Some(std::sync::Arc::new(Mutex::new(vault)));
+        Ok(())
+    }
+
+    /// The open hidden vault, or an error when none is.
+    pub fn hidden_vault(&self) -> Result<std::sync::Arc<Mutex<crate::vault::hidden::HiddenVault>>> {
+        self.hidden_vault
+            .lock()
+            .map_err(|_| QGuardError::Storage("hidden vault lock poisoned".to_string()))?
+            .clone()
+            .ok_or_else(|| QGuardError::Trust("This vault is locked — draw its pattern to open it again".to_string()))
+    }
+
+    pub fn is_hidden_vault_open(&self) -> bool {
+        self.hidden_vault.lock().map(|guard| guard.is_some()).unwrap_or(false)
+    }
+
+    /// Close the hidden vault. Its keys are wiped once the last operation that
+    /// still holds it finishes.
+    pub fn clear_hidden_vault(&self) {
+        if let Ok(mut guard) = self.hidden_vault.lock() {
+            guard.take();
+        }
     }
 
     /// The unlocked VMK for this session, or an error if the vault is locked.
@@ -2231,13 +2389,15 @@ impl AppState {
         }
     }
 
-    /// Zeroize + drop the unlocked VMK (vault re-locks).
+    /// Zeroize + drop the unlocked VMK (vault re-locks). Every path that locks
+    /// the vault — lock, inactivity, sign-out — closes a hidden vault too.
     pub fn clear_vault_session(&self) -> Result<()> {
         if let Ok(mut guard) = self.vault_session.lock() {
             if let Some(mut master) = guard.take() {
                 master.vmk.zeroize(); // VaultSigningKeypair zeroizes its secrets on drop
             }
         }
+        self.clear_hidden_vault();
         Ok(())
     }
 

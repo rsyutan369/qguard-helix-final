@@ -9,6 +9,7 @@ import {
   formatUsd,
   projectedRiskReductionValueUsd,
 } from '@/lib/migration/cost-model';
+import { readinessPostureMeasured } from '@/lib/migration/asset-intelligence';
 // Runtime-only function import; the ReportScope↔ReportEvidence cycle is safe
 // because both modules only export hoisted functions consumed at call time.
 import { buildReportScope } from './ReportScope';
@@ -1612,10 +1613,17 @@ export function buildReadinessMethodology(snapshot: QuantumReadinessSnapshot): R
   const s = snapshot.scores;
   const inv = snapshot.inventory;
   const factorScore = (needle: string) => snapshot.readinessFactors.find((f) => f.label.toLowerCase().includes(needle))?.score ?? 0;
-  const measured = runtimeMeasured(snapshot);
+  // Mirrors blendQuantumReadiness exactly: with no component and no graded
+  // finding the engine scores 0, so no factor may contribute here either.
+  // "Risk Posture" used to be measured unconditionally and put 100 − 0 = 36
+  // points into an evidence-free report whose overall readiness was 0, which
+  // then failed the report's own consistency check.
+  const posture = snapshot.hasData && readinessPostureMeasured({ cryptoComponents: inv.cryptoComponents, findings: snapshot.riskDistribution });
+  const measured = posture && runtimeMeasured(snapshot);
+  const noPosture = 'No quantum-relevant component or graded finding recorded — nothing to blend';
   const defs = [
-    { factor: 'PQC Adoption', rawWeight: 0.45, score: s.pqcAdoption, measured: true, basis: `${inv.pqcReadyComponents} of ${inv.cryptoComponents} CBOM component(s) PQC-ready (${countPct(inv.pqcReadyComponents, inv.cryptoComponents)}); adoption score ${s.pqcAdoption}% incl. ½-weighted hybrid components` },
-    { factor: 'Risk Posture (100 − Quantum Risk)', rawWeight: 0.25, score: 100 - s.quantumRisk, measured: true, basis: `Quantum risk ${s.quantumRisk}/100 from ${snapshot.criticalFindings.length} scanner finding(s)` },
+    { factor: 'PQC Adoption', rawWeight: 0.45, score: s.pqcAdoption, measured: posture, basis: posture ? `${inv.pqcReadyComponents} of ${inv.cryptoComponents} CBOM component(s) PQC-ready (${countPct(inv.pqcReadyComponents, inv.cryptoComponents)}); adoption score ${s.pqcAdoption}% incl. ½-weighted hybrid components` : noPosture },
+    { factor: 'Risk Posture (100 − Quantum Risk)', rawWeight: 0.25, score: 100 - s.quantumRisk, measured: posture, basis: posture ? `Quantum risk ${s.quantumRisk}/100 from ${snapshot.criticalFindings.length} scanner finding(s)` : noPosture },
     { factor: 'Runtime Visibility', rawWeight: 0.15, score: factorScore('runtime'), measured, basis: measured ? `${snapshot.telemetry.runtimeEvents.toLocaleString()} runtime crypto event(s) observed` : 'No runtime telemetry recorded — factor excluded, remaining weights renormalised' },
     // Governance is NOT part of the engine's blend (blendQuantumReadiness): it
     // used to score a constant 60 whenever a scan existed. Listed so the
@@ -1638,7 +1646,9 @@ export function buildReadinessMethodology(snapshot: QuantumReadinessSnapshot): R
     formula: 'Quantum Readiness = Σ ( Factor Score × Factor Weight ) — unmeasured factors excluded, weights renormalised',
     overall: s.quantumReadiness,
     factors,
-    explanation: snapshot.hasData
+    explanation: snapshot.hasData && !posture
+      ? 'Scans are recorded, but none found a quantum-relevant component or a graded finding, so there is no cryptographic posture to score. Readiness stays at 0 until a scan measures one.'
+      : snapshot.hasData
       ? `The overall readiness of ${s.quantumReadiness}/100 is fully auditable: ${additionLine} = ${sum} (≈ ${s.quantumReadiness}, ±1 from score rounding). Governance Maturity has no evidence source and is excluded. ${measured ? 'Runtime Visibility is measured, so the remaining weights renormalise to 52.9% / 29.4% / 17.6%.' : 'Runtime Visibility is NOT measured (zero runtime telemetry) and is excluded too — the remaining weights renormalise to 64.3% / 35.7% rather than silently scoring an unmeasured factor.'}`
       : `${EVIDENCE_UNAVAILABLE}. Run a discovery scan to compute the readiness methodology.`,
   };

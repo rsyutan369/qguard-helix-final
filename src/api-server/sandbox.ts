@@ -1,5 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from 'express'
 import { createAuthClient, getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
+import { createSingleFlightCache } from '@/lib/single-flight-cache'
+import { streamLiveSnapshot } from './live-snapshot-stream'
 import { buildScannerIntelligence } from './scanner'
 import { buildSnapshot as buildQuantumReadinessSnapshot } from './quantum-readiness'
 import { dedupeGradedObservations, namesCryptography, observationClass } from '@/lib/scanner/finding-identity'
@@ -28,6 +30,7 @@ type AuthenticatedRequest = Request & {
 
 const router = Router()
 let sandboxSchedulerStarted = false
+const SANDBOX_SCHEDULER_KEY = Symbol.for('qguard.sandbox.scheduler')
 
 const ENGINE_NAME = 'qguard-sandbox-orchestrator'
 const ACTIVE_JOB_STATUSES = ['pending', 'queued', 'running', 'in_progress', 'executing', 'rollback_requested']
@@ -60,20 +63,6 @@ async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextF
 
 function clientFor(req: AuthenticatedRequest) {
   return req.token ? createAuthClient(req.token) : null
-}
-
-function sseHeaders(res: Response) {
-  res.status(200)
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
-  res.flushHeaders?.()
-}
-
-function writeSse(res: Response, event: string, data: unknown) {
-  if (res.writableEnded) return
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
 }
 
 function isMissingTable(error: any) {
@@ -407,20 +396,14 @@ async function advanceSandboxJobs(client: any, userId?: string) {
   if (Date.now() - lastRun < ADVANCE_MIN_INTERVAL_MS) return { advanced: 0, advancedUsers: [] as string[] }
   lastAdvanceAt.set(throttleKey, Date.now())
 
-  let query = client
-    .from('migration_jobs')
-    .select('id, user_id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at')
-    .in('status', ACTIVE_JOB_STATUSES)
-    .order('updated_at', { ascending: true })
-    .limit(300)
-
-  if (userId) query = query.eq('user_id', userId)
-
-  const { data: rows, error } = await query
-  if (error) {
-    if (!isMissingTable(error)) console.warn('[sandbox] advance jobs:', error.message)
-    return { advanced: 0, advancedUsers: [] as string[] }
-  }
+  const rows = await safeRows(client, 'migration_jobs', (q) => {
+    const query = q
+      .select('id, user_id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at')
+      .in('status', ACTIVE_JOB_STATUSES)
+      .order('updated_at', { ascending: true })
+      .limit(300)
+    return userId ? query.eq('user_id', userId) : query
+  })
 
   const now = new Date()
   const nowIso = now.toISOString()
@@ -985,7 +968,7 @@ const SANDBOX_SNAPSHOT_TTL_MS = 5_000
  * stalls the page.
  */
 const QR_SNAPSHOT_DEADLINE_MS = 1_500
-const sandboxSnapshotCache = new Map<string, { at: number; promise: Promise<Awaited<ReturnType<typeof buildSandboxPayload>>> }>()
+const sandboxSnapshotCache = createSingleFlightCache<Awaited<ReturnType<typeof buildSandboxPayload>>>(SANDBOX_SNAPSHOT_TTL_MS)
 
 function invalidateSandboxSnapshot(userId: string) {
   sandboxSnapshotCache.delete(userId)
@@ -997,29 +980,12 @@ function invalidateSandboxSnapshot(userId: string) {
  * they never hand back a pre-mutation payload.
  */
 async function getSandboxSnapshot(client: any, userId: string, token?: string | null) {
-  const cached = sandboxSnapshotCache.get(userId)
-  if (cached && Date.now() - cached.at < SANDBOX_SNAPSHOT_TTL_MS) return cached.promise
-
-  const promise = buildSandboxPayload(client, userId, token)
-  sandboxSnapshotCache.set(userId, { at: Date.now(), promise })
-  promise.catch(() => sandboxSnapshotCache.delete(userId))
-
-  if (sandboxSnapshotCache.size > 500) {
-    const now = Date.now()
-    for (const [key, value] of sandboxSnapshotCache) {
-      if (now - value.at > SANDBOX_SNAPSHOT_TTL_MS) sandboxSnapshotCache.delete(key)
-    }
-  }
-  return promise
+  return sandboxSnapshotCache.get(userId, () => buildSandboxPayload(client, userId, token))
 }
 
 async function buildSandboxPayload(client: any, userId: string, token?: string | null) {
-  // Kept INSIDE the cached computation on purpose. Simulation progress is
-  // derived from elapsed time (`(elapsed / duration) * 100`), not incremented
-  // per call, so running the engine less often changes when a row is written,
-  // never how fast a simulation completes. It also carries its own 2.5s
-  // per-tenant throttle, and the background scheduler is the 15s floor.
-  await advanceSandboxJobs(client, userId)
+  // Snapshot reads never advance jobs. The background scheduler owns those
+  // writes, so realtime -> snapshot -> engine-write cannot feed itself.
 
   // The platform's canonical, de-duplicated scanner view. Cached and
   // single-flight inside scanner.ts, and already the shared authority for the
@@ -1885,26 +1851,10 @@ router.get('/stream', requireAuth, async (req: AuthenticatedRequest, res) => {
   const client = clientFor(req)
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
 
-  sseHeaders(res)
-  writeSse(res, 'connected', { timestamp: new Date().toISOString(), userId: req.user!.id })
-
-  // Goes through the cache: N connected clients ticking within the same window
-  // share ONE computation instead of each rebuilding the full snapshot.
-  const emit = async () => {
-    try {
-      const payload = await getSandboxSnapshot(client, req.user!.id, req.token)
-      writeSse(res, 'sandbox-update', payload)
-    } catch { /* ignore */ }
-  }
-
-  await emit()
-  const heartbeat = setInterval(() => writeSse(res, 'heartbeat', { ts: Date.now() }), 20000)
-  const poll = setInterval(emit, 8000)
-
-  req.on('close', () => {
-    clearInterval(heartbeat)
-    clearInterval(poll)
-    res.end()
+  streamLiveSnapshot(req, res, {
+    event: 'sandbox-update',
+    build: () => getSandboxSnapshot(client, req.user!.id, req.token),
+    intervalMs: 8000,
   })
 })
 
@@ -2581,7 +2531,15 @@ export function startSandboxScheduler() {
     return
   }
 
+  // Vite reloads the API module tree in the same process. Retire the previous
+  // module's timer instead of accumulating another scheduler on every edit.
+  const registry = globalThis as typeof globalThis & { [SANDBOX_SCHEDULER_KEY]?: () => void }
+  registry[SANDBOX_SCHEDULER_KEY]?.()
+  let stopped = false
+  let ticking = false
   const tick = async () => {
+    if (stopped || ticking) return
+    ticking = true
     try {
       // The engine advances jobs behind the cache's back, so any tenant whose
       // jobs actually moved has its snapshot dropped — otherwise a progress
@@ -2590,12 +2548,15 @@ export function startSandboxScheduler() {
       for (const advancedUser of advancedUsers) invalidateSandboxSnapshot(advancedUser)
     } catch (err) {
       console.warn('[sandbox] background scheduler tick failed:', err instanceof Error ? err.message : err)
+    } finally {
+      ticking = false
     }
   }
 
   void tick()
   const timer = setInterval(tick, 15_000)
   if (typeof (timer as any).unref === 'function') (timer as any).unref()
+  registry[SANDBOX_SCHEDULER_KEY] = () => { stopped = true; clearInterval(timer) }
 }
 
 export default router

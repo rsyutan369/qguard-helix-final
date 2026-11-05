@@ -573,7 +573,7 @@ export default function LoginPage({
         .qg-halo { position: relative; display: grid; place-items: center; }
         .qg-halo-img {
           position: relative; z-index: 2; width: 86%; height: 86%; object-fit: contain;
-          border-radius: 50%;
+          border-radius: 0;
           box-shadow: 0 8px 30px -6px rgba(76,124,255,0.5);
         }
         .qg-halo-glow {

@@ -11,7 +11,9 @@
  */
 
 /** Runtime version of the lightweight agent bundle. Bump on any agent.ts change. */
-export const AGENT_VERSION = '1.6.1'
+export const AGENT_VERSION = '1.6.3'
+/** Every writer on a shared host must participate in the host mutation mutex. */
+export const AGENT_COORDINATION_MIN_VERSION = '1.6.3'
 
 /**
  * First runtime that signs its requests (agent-request-signing.ts) and refuses
@@ -276,7 +278,7 @@ export const AGENT_PLATFORMS: PlatformDefinition[] = [
     contentType: 'application/x-sh',
     language: 'bash',
     architectures: ['x86_64', 'aarch64 (ARM64)'],
-    service: 'systemd unit qguard-agent.service',
+    service: 'One unit per agent: qguard-agent-<agent-id>.service',
     runCommand: (f) => `chmod +x ${f} && sudo ./${f}`,
     privileges: 'root (sudo) — required to install the systemd unit',
     prerequisites: ['bash', 'curl or wget', 'sha256sum', `Node.js ${AGENT_MIN_NODE_MAJOR}+ (auto-installed via apt/dnf/yum/apk when missing)`],
@@ -288,7 +290,7 @@ export const AGENT_PLATFORMS: PlatformDefinition[] = [
     contentType: 'text/plain',
     language: 'powershell',
     architectures: ['x64', 'ARM64'],
-    service: 'Scheduled task QGuardHelixAgent (SYSTEM, at startup)',
+    service: 'One task per agent: QGuardHelixAgent-<agent-id> (SYSTEM, at startup)',
     runCommand: (f) => `powershell -ExecutionPolicy Bypass -File .\\${f}`,
     privileges: 'Administrator — required to register the startup task',
     prerequisites: ['Windows 10/11 or Server 2016+', 'PowerShell 5.1+', `Node.js ${AGENT_MIN_NODE_MAJOR}+ (auto-installed via winget when missing)`],
@@ -300,7 +302,7 @@ export const AGENT_PLATFORMS: PlatformDefinition[] = [
     contentType: 'text/yaml',
     language: 'yaml',
     architectures: ['linux/amd64', 'linux/arm64'],
-    service: 'Docker container qguard-agent (restart: unless-stopped)',
+    service: 'Agent-specific Docker Compose project (restart: unless-stopped)',
     runCommand: (f) => `docker compose -f ${f} up -d`,
     privileges: 'Docker daemon access',
     prerequisites: ['Docker Engine 20.10+', 'Docker Compose v2'],

@@ -135,7 +135,14 @@ const agentSrc = readFileSync('tools/qguard-agent/agent.ts', 'utf8')
 assert(/async function scanTlsKeyExchange/.test(agentSrc), 'the agent measures the TLS key-exchange group')
 assert(/if \(hybridUntestable\) return \[\]/.test(agentSrc), 'an untestable hybrid probe publishes nothing rather than "classical only"')
 assert(/async function scanCryptoMaterialFile/.test(agentSrc) && /function keyEvidenceFromPem/.test(agentSrc), 'the agent collects certificate files and key metadata')
-assert(/keyMaterialTransmitted: false/.test(agentSrc) && !/export\(\{ type: 'pkcs8'/.test(agentSrc), 'key collection never exports private key material')
+/* Scoped to the collector. The agent DOES export its own request-signing key
+   (loadSigningKeys → an owner-only local file); that key is the agent's
+   identity and never leaves the host. A whole-file test failed on it. */
+const keyCollector = agentSrc.slice(agentSrc.indexOf('function keyEvidenceFromPem'), agentSrc.indexOf('async function scanCryptoMaterialFile'))
+assert(keyCollector.length > 200, 'the key collector function was located for inspection')
+assert(/keyMaterialTransmitted: false/.test(keyCollector) && !/type: 'pkcs8'|type: 'pkcs1'|type: 'sec1'|format: 'jwk'/.test(keyCollector), 'key collection never exports private key material')
+const signingKeys = agentSrc.slice(agentSrc.indexOf('function loadSigningKeys'), agentSrc.indexOf('function requireEnrollment'))
+assert(/writeOwnerOnly\(filePath/.test(signingKeys) && !/requestJson|fetch\(/.test(signingKeys), "the agent's own signing key is written owner-only and never sent")
 assert(/async function scanIdentityFile/.test(agentSrc), 'the agent collects JWKS and SAML identity signing material')
 assert(/if \(remediationFilePathFromJob\(job\)\) return 'local_configuration'/.test(agentSrc), 'a job naming a local file patches locally, whatever words its path contains')
 

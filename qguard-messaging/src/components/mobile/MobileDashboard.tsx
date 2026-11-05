@@ -1,24 +1,27 @@
-import {
-  ChevronRight,
-  KeyRound,
-  LockKeyhole,
-  MessageSquarePlus,
-  MonitorSmartphone,
-  ShieldAlert,
-  ShieldCheck,
-} from "lucide-react";
+import { ChevronRight, LockKeyhole, MessageSquarePlus, MonitorSmartphone, ShieldCheck } from "lucide-react";
 import type { QGuardLiveStatus } from "@/lib/live-sse";
 import type { DashboardData, TrustedDevice } from "@/lib/types";
 import { UserAvatar } from "@/components/UserAvatar";
 import HelixReactor, { TONE_VAR } from "@/components/mobile/HelixReactor";
 import { buildCryptoPosture, completeLayerCount, scoreVerdict, toReactorRings } from "@/lib/mobile-posture";
 import { displayableEmail } from "@/lib/account-identity";
+import { dashboardHub, hubCardLabel, unreadMessageCount, type HubArea, type HubEntry } from "@/lib/dashboard-hub";
 
 interface MobileDashboardProps {
   data: DashboardData;
   liveStatus: QGuardLiveStatus;
   onNavigate: (page: string) => void;
+  /**
+   * Open a protected area from its card. The app locks the area first, so the
+   * PIN, password or pattern is asked every time. Falls back to `onNavigate`.
+   */
+  onOpenArea?: (area: HubArea) => void;
+  /** Missed calls not yet looked at (badge on the Calls card). */
+  missedCalls?: number;
+  /** Files shared with this account waiting for Accept / Decline (badge on the Quantum Vault card). */
+  sharedFilesWaiting?: number;
 }
+
 
 function greeting(): string {
   const hour = new Date().getHours();
@@ -95,35 +98,43 @@ function Section({
   );
 }
 
-/** Navigational tile: a real number and where it takes you. */
-function QuickTile({
-  icon: Icon,
-  value,
-  label,
-  index,
-  onClick,
-}: {
-  icon: typeof ShieldCheck;
-  value: string;
-  label: string;
-  index: number;
-  onClick: () => void;
-}) {
+/**
+ * Entry card for a protected area. Each one leads to a page behind a
+ * workspace lock (Secure Chat or Quantum Vault), so the lock mark is shown on
+ * every card: opening it asks for the PIN, password or pattern whenever that
+ * workspace is locked.
+ */
+function HubCard({ entry, index, onClick }: { entry: HubEntry; index: number; onClick: () => void }) {
+  const { icon: Icon, title, caption, unlocks, badge } = entry;
   return (
     <button
       type="button"
       onClick={onClick}
-      className="qg-card qg-card-press qg-focusable qg-rise flex flex-col items-start gap-2.5 p-3.5 text-left"
+      aria-label={hubCardLabel(entry)}
+      className="qg-card qg-card-press qg-focusable qg-rise flex min-h-[118px] flex-col items-start justify-between gap-3 p-3.5 text-left"
       style={{ ["--qg-i" as string]: index }}
     >
-      <span className="qg-tile-chip" style={{ color: "var(--qg-helix)" }}>
-        <Icon size={17} />
+      <span className="flex w-full items-start justify-between gap-2">
+        <span className="qg-tile-chip" style={{ color: "var(--qg-helix)" }}>
+          <Icon size={18} />
+        </span>
+        <span className="flex items-center gap-1.5">
+          {badge ? (
+            <span
+              className="qg-mono flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold text-white"
+              style={{ background: "var(--qg-helix)" }}
+            >
+              {badge > 99 ? "99+" : badge}
+            </span>
+          ) : null}
+          <LockKeyhole size={12} style={{ color: "var(--qg-text-3)" }} aria-hidden />
+        </span>
       </span>
       <span className="min-w-0 self-stretch">
-        <span className="qg-num block truncate text-[17px] leading-tight" style={{ color: "var(--qg-text)" }}>
-          {value}
+        <span className="qg-display block truncate text-[15px] leading-tight">{title}</span>
+        <span className="mt-1 block text-[11.5px] leading-snug" style={{ color: "var(--qg-text-3)" }}>
+          {caption}
         </span>
-        <span className="qg-eyebrow mt-1 block truncate">{label}</span>
       </span>
     </button>
   );
@@ -132,20 +143,22 @@ function QuickTile({
 /**
  * Phone home screen.
  *
- * The Helix Reactor answers "am I protected right now?" in one glance, and the
- * numbered pipeline below it answers "which layer, and how do you know?" — both
- * rendered from the same buildCryptoPosture() measurement, so an arc can never
- * contradict the row beside it.
+ * The Helix Reactor answers "am I protected right now?" in one glance: its
+ * headline, arcs and legend all read the same buildCryptoPosture()
+ * measurement, and the layer-by-layer detail is one tap away on the Security
+ * page. Below it, four cards lead to the protected areas (Secure Chat, Calls,
+ * Quantum Vault, Contacts), each behind its workspace lock.
  */
-export default function MobileDashboard({ data, liveStatus, onNavigate }: MobileDashboardProps) {
-  const { snapshot, devices, conversations, report, keyInventory } = data;
+export default function MobileDashboard({ data, liveStatus, onNavigate, onOpenArea, missedCalls = 0, sharedFilesWaiting = 0 }: MobileDashboardProps) {
+  const { snapshot, devices, conversations, report } = data;
   const myId = data.profile?.id;
   const activeDevices = devices.filter((device) => device.user_id === myId && device.trust_state !== "Revoked");
-  const trustedDevices = activeDevices.filter(isTrustedDevice);
   const visibleConversations = conversations.filter(
     (conversation) => !conversation.archived_at && !conversation.hidden_at && !conversation.deleted_at,
   );
   const recentConversations = visibleConversations.slice(0, 4);
+  // Same count as the Chats badge in the bottom navigation.
+  const unread = unreadMessageCount(conversations);
 
   const posture = buildCryptoPosture(data);
   const layers = posture.layers;
@@ -158,12 +171,10 @@ export default function MobileDashboard({ data, liveStatus, onNavigate }: Mobile
   const completeLayers = completeLayerCount(layers);
   const verdict = scoreVerdict(score, layers);
 
-  const tiles = [
-    { icon: MessageSquarePlus, value: `${visibleConversations.length}`, label: "Conversations", route: "chat" },
-    { icon: MonitorSmartphone, value: `${trustedDevices.length}/${activeDevices.length}`, label: "Trusted devices", route: "devices" },
-    { icon: LockKeyhole, value: snapshot.vault_storage, label: "Vault stored", route: "vault" },
-    { icon: KeyRound, value: `${keyInventory.available_one_time_prekeys}`, label: "Keys ready", route: "keys" },
-  ];
+  // Each card opens a protected area: Calls and Contacts sit behind the
+  // Secure Chat lock, the vault behind its own. The app locks the area before
+  // opening it, so every tap asks for the PIN, password or pattern.
+  const hub = dashboardHub(unread, missedCalls, sharedFilesWaiting);
 
   return (
     <div className="flex flex-col gap-3.5 pb-2">
@@ -258,105 +269,20 @@ export default function MobileDashboard({ data, liveStatus, onNavigate }: Mobile
         </div>
       </button>
 
-      {/* Quick access */}
+      {/* Protected areas */}
       <div className="grid grid-cols-2 gap-3">
-        {tiles.map((tile, index) => (
-          <QuickTile
-            key={tile.label}
-            icon={tile.icon}
-            value={tile.value}
-            label={tile.label}
+        {hub.map((card, index) => (
+          <HubCard
+            key={card.route}
+            entry={card}
             index={2 + index}
-            onClick={() => onNavigate(tile.route)}
+            onClick={() => (onOpenArea ? onOpenArea(card.route) : onNavigate(card.route))}
           />
         ))}
       </div>
 
-      {/* Cryptographic pipeline. Numbering is legitimate here: this IS the order
-          the stack is exercised in when a message is sent. */}
-      <Section index={6} title="Cryptographic pipeline" action={{ label: "Details", onClick: () => onNavigate("quantum") }}>
-        <div className="flex flex-col">
-          {layers.map((layer, index) => (
-            <div
-              key={layer.id}
-              className="qg-slide flex items-center gap-3 py-2.5"
-              style={{
-                ["--qg-i" as string]: index,
-                borderTop: index === 0 ? undefined : "1px solid var(--qg-hairline)",
-              }}
-            >
-              <span className="qg-mono text-[11px] tabular-nums" style={{ color: "var(--qg-text-3)", flex: "none" }}>
-                {String(layer.ordinal).padStart(2, "0")}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="qg-display text-[13px] leading-tight">{layer.label}</div>
-                <div className="mt-0.5 truncate text-[11px]" style={{ color: "var(--qg-text-3)" }}>
-                  {layer.caption}
-                </div>
-              </div>
-              {/* The reactor arc already carries the proportion; the pill carries
-                  the exact measurement. A third readout here would be noise. */}
-              <span className={`qg-pill qg-tone-${layer.tone} shrink-0`} style={{ padding: "3px 9px" }}>
-                {layer.detail}
-              </span>
-            </div>
-          ))}
-        </div>
-
-        {/* Stranded reinstall identities. These used to be divided into the
-            Identity and Handshake layers, which made a healthy account read as
-            failing. They are an inventory task, not a crypto weakness — so they
-            get their own row, their own count and their own action. */}
-        {posture.dormantIdentities > 0 && (
-          <button
-            type="button"
-            onClick={() => onNavigate("devices")}
-            className="qg-focusable mt-3 flex w-full items-center gap-3 rounded-xl p-3 text-left"
-            style={{ background: "var(--qg-warn-wash)", border: "1px solid var(--qg-hairline)" }}
-          >
-            <div className="min-w-0 flex-1">
-              <div className="qg-display text-[12.5px] leading-tight">
-                {posture.dormantIdentities} dormant device {posture.dormantIdentities === 1 ? "identity" : "identities"}
-              </div>
-              <div className="mt-0.5 text-[11px] leading-snug" style={{ color: "var(--qg-text-3)" }}>
-                Left behind by a reinstall. They hold no keys and receive nothing — retire them in Device Trust.
-              </div>
-            </div>
-            <ChevronRight className="h-4 w-4 shrink-0" style={{ color: "var(--qg-text-3)" }} aria-hidden />
-          </button>
-        )}
-
-        {report.warnings.length > 0 && (
-          <div
-            className="mt-3 flex flex-col gap-2 rounded-xl p-3"
-            style={{ background: "var(--qg-warn-wash)", border: "1px solid var(--qg-hairline)" }}
-          >
-            {report.warnings.slice(0, 2).map((warning) => (
-              <div key={warning} className="flex gap-2 text-[11.5px] leading-snug" style={{ color: "var(--qg-warn)" }}>
-                <ShieldAlert size={14} className="mt-px shrink-0" />
-                <span>{warning}</span>
-              </div>
-            ))}
-            {/* The list is capped at two so it cannot swamp the card, but a
-                silent cap is how a score ends up unexplainable: the user sees
-                two items and a number that those two cannot account for. Say
-                how many are being withheld, and where to read them. */}
-            {report.warnings.length > 2 && (
-              <button
-                type="button"
-                onClick={() => onNavigate("quantum")}
-                className="qg-focusable self-start text-[11px] underline underline-offset-2"
-                style={{ color: "var(--qg-text-3)" }}
-              >
-                +{report.warnings.length - 2} more affecting this score
-              </button>
-            )}
-          </div>
-        )}
-      </Section>
-
       {/* Recent chats */}
-      <Section index={7} title="Recent chats" action={{ label: "View all", onClick: () => onNavigate("chat") }}>
+      <Section index={6} title="Recent chats" action={{ label: "View all", onClick: () => onNavigate("chat") }}>
         {recentConversations.length === 0 ? (
           <div className="py-5 text-center">
             <p className="text-[13px]" style={{ color: "var(--qg-text-2)" }}>
@@ -414,7 +340,7 @@ export default function MobileDashboard({ data, liveStatus, onNavigate }: Mobile
       </Section>
 
       {/* Devices */}
-      <Section index={8} title="My devices" action={{ label: "Manage", onClick: () => onNavigate("devices") }}>
+      <Section index={7} title="My devices" action={{ label: "Manage", onClick: () => onNavigate("devices") }}>
         {activeDevices.length === 0 ? (
           <div className="py-5 text-center">
             <p className="text-[13px]" style={{ color: "var(--qg-text-2)" }}>
@@ -460,7 +386,7 @@ export default function MobileDashboard({ data, liveStatus, onNavigate }: Mobile
       {/* Quiet close to the scroll */}
       <div
         className="qg-rise flex items-center justify-center gap-1.5 py-2"
-        style={{ ["--qg-i" as string]: 9 }}
+        style={{ ["--qg-i" as string]: 8 }}
       >
         <ShieldCheck size={12} style={{ color: "var(--qg-plasma)" }} />
         <span className="qg-eyebrow" style={{ fontSize: 9.5 }}>

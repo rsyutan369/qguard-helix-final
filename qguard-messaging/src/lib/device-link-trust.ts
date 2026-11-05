@@ -3,7 +3,7 @@ import { securityEventDetails } from "@/lib/account-key";
 import { assessDevicePins, approveDevicePins, type PinnableDevice } from "@/lib/device-pins";
 import { verifyLinkProof } from "@/lib/device-link";
 import { byteaToBytes } from "@/lib/encoding";
-import { sha3_256Hex } from "@/lib/sha3";
+import { coreSha3Hex } from "@/lib/core-crypto";
 import { safeInvoke } from "@/lib/tauri";
 
 /**
@@ -73,7 +73,7 @@ export async function trustLinkedDevice(input: {
   if (!verdict || verdict.standing === "invalid_identity" || verdict.standing === "key_changed" || verdict.standing === "unknown") {
     return { trusted: false, reason: "The new device's identity keys could not be verified." };
   }
-  const proven = verifyLinkProof(
+  const proven = await verifyLinkProof(
     { bindingSecret: input.bindingSecret, linkId: input.linkId, userId, deviceId: linkedDeviceId, fingerprint: verdict.fingerprint },
     input.linkProof,
   );
@@ -96,7 +96,7 @@ export async function trustLinkedDevice(input: {
   try {
     const createdAt = new Date().toISOString();
     const metadata = { label: target.device_label, approved_by: input.approverDeviceId, method: "qr_link", proof: "verified" };
-    const eventHash = sha3_256Hex(JSON.stringify({ eventType: "device_linked", deviceId: linkedDeviceId, metadata, createdAt }));
+    const eventHash = await coreSha3Hex(JSON.stringify({ eventType: "device_linked", deviceId: linkedDeviceId, metadata, createdAt }));
     await client.from("messaging_security_events").insert({
       user_id: userId,
       device_id: linkedDeviceId,

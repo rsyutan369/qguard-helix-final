@@ -44,6 +44,7 @@ export type AgentWorkflowStatus =
   | 'paused'
   | 'retrying'
   | 'completed'
+  | 'rolled_back'
   | 'failed'
   | 'cancelled'
 
@@ -715,6 +716,16 @@ const INSTANCE_SERIES_POINTS = 24
 
 const pendingApproval = (job: WorkflowJob) => job.approval.required && !job.approval.approved && ['queued', 'paused'].includes(job.status)
 
+/** The fix for a blocked stage depends on WHAT blocks it — "grant authority" is wrong advice for a scope refusal. */
+function blockedNextAction(jobs: WorkflowJob[], liveAgents: number, executionClass: string, label: string): string {
+  if (!liveAgents) return `Install a ${label} agent from the Agent Center.`
+  const kind = jobs.find((job) => job.dispatchBlock && job.status === 'queued')?.dispatchBlock?.kind
+  if (kind === 'out-of-scope') return `Assign the ${label} to the job's asset, or add its target to the agent's allowed paths (Agent Center → Assigned asset / Policy).`
+  if (kind === 'not-approved') return 'Approve the job or its migration plan — approval is recorded with your identity.'
+  if (kind === 'no-snapshot') return 'Restore snapshot storage; nothing is dispatched without a pre-change snapshot.'
+  return `Grant ${executionClass} authority to a ${label} agent (Agent Center → Capabilities → Write authority).`
+}
+
 function isDisabled(agent: WorkflowAgentRow, latestBeat: WorkflowHeartbeatRow | null) {
   return latestBeat?.status === 'disabled' || String(agent.status).toLowerCase() === 'disabled'
 }
@@ -1176,10 +1187,20 @@ function jobStageNode(
     const job = jobs.find((item) => item.status === 'failed')!
     currentTask = `Failed · ${job.asset}`
     reason = str(job.metadata.failureReason) || str(job.metadata.error) || 'The executor reported a failure.'
+  } else if (tally.completed === 0 && tally.rollback > 0 && tally.rollback >= countable) {
+    /* Not "completed" (reads as migrated) and not "cancelled" (reads as never
+       run): the change was made, then reverted to its verified snapshot. */
+    status = 'rolled_back'
+    currentTask = `${plural(tally.rollback, 'job')} rolled back`
+    reason = 'Every job in scope was restored to its pre-change snapshot. The asset is back on its previous cryptography and is not migrated.'
   } else if (tally.completed > 0 && tally.completed + tally.rollback >= countable) {
     status = 'completed'
-    currentTask = `${plural(tally.completed, 'job')} completed`
-    reason = 'Every job in scope reached a terminal, recorded state.'
+    currentTask = tally.rollback > 0
+      ? `${plural(tally.completed, 'job')} completed · ${tally.rollback} rolled back`
+      : `${plural(tally.completed, 'job')} completed`
+    reason = tally.rollback > 0
+      ? 'Every job in scope reached a terminal, recorded state; rolled-back jobs are back on their previous cryptography.'
+      : 'Every job in scope reached a terminal, recorded state.'
   } else {
     status = 'cancelled'
     currentTask = 'Cancelled'
@@ -1196,7 +1217,7 @@ function jobStageNode(
   const nextAction = status === 'idle'
     ? id === 'patcher' ? 'Create remediation from Harvest Now or the Migration Planner, then approve it.' : 'Plan a cutover in the Migration Planner and send it to Live Migration.'
     : status === 'blocked'
-      ? live.length ? `Grant ${executionClass} authority to a ${meta.label} agent (Agent Center → Capabilities → Write authority).` : `Install a ${meta.label} agent from the Agent Center.`
+      ? blockedNextAction(jobs, live.length, executionClass, meta.label)
       : status === 'awaiting_approval'
         ? 'Review and approve the pending jobs below — approval is recorded with your identity.'
         : status === 'waiting'
@@ -1207,7 +1228,9 @@ function jobStageNode(
               ? 'Resume the paused jobs when ready.'
               : status === 'running' || status === 'queued' || status === 'retrying'
                 ? 'Monitor execution and validation in the job detail below.'
-                : 'Review validation evidence; completed changes are recorded in the Audit Vault.'
+                : status === 'rolled_back'
+                  ? 'Review why validation or the operator reverted the change, then re-plan the cutover in the Migration Planner.'
+                  : 'Review validation evidence; completed changes are recorded in the Audit Vault.'
 
   return {
     id,
@@ -1225,7 +1248,7 @@ function jobStageNode(
     units: countable > 0 ? { done: tally.completed + tally.rollback, total: countable, label: 'jobs finished' } : null,
     startedAt: starts[0] || null,
     updatedAt: own[0]?.at || jobs.map((job) => job.updatedAt).sort((a, b) => ms(b) - ms(a))[0] || null,
-    completedAt: status === 'completed' ? completions[0] || null : null,
+    completedAt: status === 'completed' || status === 'rolled_back' ? completions[0] || null : null,
     fleet: {
       enrolled: live.length,
       online: online.length,
@@ -1253,7 +1276,7 @@ function jobStageNode(
   }
 }
 
-const DONE: AgentWorkflowStatus[] = ['completed']
+const DONE: AgentWorkflowStatus[] = ['completed', 'rolled_back']
 const ACTIVE: AgentWorkflowStatus[] = ['running', 'retrying']
 
 function edgeBetween(source: WorkflowAgentNode, target: WorkflowAgentNode, label: string, lastHandoffAt: string | null, handoffDetail: string): WorkflowEdge {
@@ -1344,19 +1367,19 @@ export function buildAgentWorkflow(input: AgentWorkflowInput): AgentWorkflowMode
   let weighted = 0
   let measuredWeight = 0
   for (const node of nodes) {
-    const fraction = node.status === 'completed' ? 1 : node.progress !== null ? node.progress / 100 : null
+    const fraction = DONE.includes(node.status) ? 1 : node.progress !== null ? node.progress / 100 : null
     if (fraction === null) continue
     weighted += fraction * STAGE_WEIGHTS[node.id]
     measuredWeight += STAGE_WEIGHTS[node.id]
   }
-  const unmeasured = nodes.filter((node) => node.status !== 'completed' && node.progress === null).map((node) => node.label)
+  const unmeasured = nodes.filter((node) => !DONE.includes(node.status) && node.progress === null).map((node) => node.label)
   const overallProgress = measuredWeight > 0 ? Math.round(weighted * 100) : null
 
   const order: WorkflowAgentId[] = ['collector', 'scanner', 'patcher', 'operator']
   const activeNode = nodes.find((node) => ACTIVE.includes(node.status))
   const currentStage = activeNode?.id
     ?? nodes.find((node) => ['blocked', 'awaiting_approval', 'failed', 'waiting', 'queued', 'paused'].includes(node.status))?.id
-    ?? (nodes.every((node) => node.status === 'idle') ? null : order.find((id) => nodes.find((node) => node.id === id)!.status !== 'completed') ?? null)
+    ?? (nodes.every((node) => node.status === 'idle') ? null : order.find((id) => !DONE.includes(nodes.find((node) => node.id === id)!.status)) ?? null)
 
   let status: AgentWorkflowStatus
   let statusReason: string
@@ -1383,7 +1406,7 @@ export function buildAgentWorkflow(input: AgentWorkflowInput): AgentWorkflowMode
   } else if (nodes.every((node) => node.status === 'idle')) {
     status = 'idle'
     statusReason = 'No agent is enrolled and no migration work exists yet.'
-  } else if (nodes.every((node) => ['completed', 'idle', 'cancelled'].includes(node.status)) && nodes.some((node) => node.status === 'completed')) {
+  } else if (nodes.every((node) => ['completed', 'rolled_back', 'idle', 'cancelled'].includes(node.status)) && nodes.some((node) => DONE.includes(node.status))) {
     status = 'completed'
     statusReason = 'Every stage with work reached a recorded terminal state.'
   } else {
@@ -1392,7 +1415,7 @@ export function buildAgentWorkflow(input: AgentWorkflowInput): AgentWorkflowMode
     statusReason = node ? `${node.label}: ${node.reason}` : 'Waiting on upstream stages.'
   }
 
-  const startCandidates = nodes.filter((node) => !['idle', 'completed', 'cancelled'].includes(node.status)).map((node) => node.startedAt).filter((value): value is string => Boolean(value))
+  const startCandidates = nodes.filter((node) => !['idle', 'completed', 'rolled_back', 'cancelled'].includes(node.status)).map((node) => node.startedAt).filter((value): value is string => Boolean(value))
   const startedAt = startCandidates.sort((a, b) => ms(a) - ms(b))[0] || null
 
   const dayAgo = now - 24 * 60 * 60 * 1000

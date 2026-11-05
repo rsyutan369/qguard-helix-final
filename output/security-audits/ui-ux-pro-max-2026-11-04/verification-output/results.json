@@ -1,0 +1,36 @@
+{
+  "searches": [
+    {
+      "stack": "react",
+      "count": 1
+    },
+    {
+      "stack": "html-tailwind",
+      "count": 3
+    },
+    {
+      "stack": "jetpack-compose",
+      "count": 1
+    },
+    {
+      "stack": "flutter",
+      "count": 3
+    },
+    {
+      "stack": "react-native",
+      "count": 3
+    },
+    {
+      "stack": "swiftui",
+      "count": 3
+    },
+    {
+      "domain": "ux",
+      "count": 3
+    }
+  ],
+  "design_system_generated": true,
+  "persistence_does_not_overwrite": true,
+  "page_name_traversal_sanitized": true,
+  "network_and_subprocess_attempts": []
+}

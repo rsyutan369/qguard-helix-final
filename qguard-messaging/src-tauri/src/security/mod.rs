@@ -705,20 +705,10 @@ fn read_release_manifest() -> Option<ReleaseIntegrityManifest> {
 fn release_manifest_signature_valid(manifest: &ReleaseIntegrityManifest) -> Option<bool> {
     let pub_hex = option_env!("QGUARD_RELEASE_ED25519_PUB")?;
     let signature_hex = manifest.signature.as_ref()?;
-    let verifying = hex::decode(pub_hex)
-        .ok()
-        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-        .and_then(|bytes| ed25519_dalek::VerifyingKey::from_bytes(&bytes).ok());
-    let signature = hex::decode(signature_hex)
-        .ok()
-        .and_then(|bytes| ed25519_dalek::Signature::from_slice(&bytes).ok());
-    match (verifying, signature) {
-        (Some(verifying_key), Some(signature)) => {
-            use ed25519_dalek::Verifier;
-            Some(verifying_key.verify(manifest.binary_sha3.as_bytes(), &signature).is_ok())
-        }
-        _ => Some(false),
-    }
+    let (Ok(public_key), Ok(signature)) = (hex::decode(pub_hex), hex::decode(signature_hex)) else {
+        return Some(false);
+    };
+    Some(crate::crypto::provider::ed25519_verify(&public_key, manifest.binary_sha3.as_bytes(), &signature).is_ok())
 }
 
 #[cfg(test)]

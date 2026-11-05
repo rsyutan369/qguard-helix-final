@@ -5,6 +5,8 @@ import type { SupabaseClient, User } from '@supabase/supabase-js'
 import { createAuthClient, getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
 import { scanEvidenceWithModules } from '@/lib/scanner/scanner_2/modules'
 import { mergeScanSources, scanSourceFor, type AssetScanSource } from '@/lib/assets/scan-provenance'
+import { ensureAgentDeviceProfile, materializeDeviceObservations } from './agent-device-profiles'
+import { updateTenantRow } from './tenant-row-update'
 import { matchFingerprints } from '@/lib/scanner/scanner_2/engine/fingerprint-matcher'
 import { evaluateFindings } from '@/lib/scanner/scanner_2/rules/detection-rules'
 import { calculateQuantumRiskScore } from '@/lib/scanner/scanner_2/engine/risk-scoring'
@@ -36,7 +38,7 @@ import {
   type SignatureFailure,
   type SigningAlgorithm,
 } from '@/lib/agent-installer/agent-request-signing'
-import { AGENT_SIGNING_MIN_VERSION, agentRole } from '@/lib/agent-installer/agent-release'
+import { AGENT_SIGNING_MIN_VERSION, AGENT_COORDINATION_MIN_VERSION, agentVersionAtLeast, agentRole } from '@/lib/agent-installer/agent-release'
 import {
   AGENT_SCAN_MODULES,
   authorityFromRequest,
@@ -487,9 +489,13 @@ async function resolveBindingTarget(
  * the agent's tenant is dropped for the batch (findings fall back to open
  * discovery) and reported as stale rather than silently honoured.
  */
-async function verifiedAgentBinding(client: SupabaseClient | null, agent: any): Promise<{ binding: AgentBinding | null; stale: boolean }> {
+async function verifiedAgentBinding(client: SupabaseClient | null, agent: any): Promise<{ binding: AgentBinding | null; stale: boolean; unavailable?: boolean }> {
   const binding = agentBindingFromMetadata(agent?.metadata)
-  if (!binding || !client) return { binding: null, stale: false }
+  if (!client) return { binding: null, stale: false }
+  if (!binding) {
+    try { return { binding: await ensureAgentDeviceProfile(client, agent), stale: false } }
+    catch (error) { console.warn('[agent-scanner] device profile unavailable:', (error as Error).message); return { binding: null, stale: false, unavailable: true } }
+  }
   const { data, error } = await client
     .from('assets')
     .select('id, name')
@@ -499,9 +505,12 @@ async function verifiedAgentBinding(client: SupabaseClient | null, agent: any): 
     .maybeSingle()
   if (error && !isMissingRuntimeTable(error)) {
     console.warn('[agent-scanner] binding lookup failed:', error.message)
-    return { binding: null, stale: false }
+    return { binding: null, stale: false, unavailable: true }
   }
-  if (!data) return { binding: null, stale: true }
+  if (!data) {
+    try { return { binding: await ensureAgentDeviceProfile(client, agent), stale: true } }
+    catch { return { binding: null, stale: true, unavailable: true } }
+  }
   // The asset may have been renamed since binding; file under its current name.
   return { binding: { ...binding, assetName: data.name || binding.assetName }, stale: false }
 }
@@ -1384,7 +1393,7 @@ async function persistRuntimeCryptoEvents(client: SupabaseClient | null, userId:
 }
 
 function runtimeEventToEvidence(event: RuntimeCryptoEventRecord): ScannerEvidenceRecord {
-  const eventType = RUNTIME_EVIDENCE_TYPES.has(event.eventType) ? event.eventType : event.protocol?.toLowerCase().includes('ssh') ? 'ssh-metadata' : event.protocol?.toLowerCase().includes('tls') || event.tlsVersion ? 'tls-protocol' : event.packageName ? 'package-manifest' : event.metadata?.filePath ? 'config-reference' : 'crypto-library'
+  const eventType = RUNTIME_EVIDENCE_TYPES.has(event.eventType) ? event.eventType : event.eventType === 'certificate-store-discovery' ? 'certificate-file' : event.protocol?.toLowerCase().includes('ssh') ? 'ssh-metadata' : event.protocol?.toLowerCase().includes('tls') || event.tlsVersion ? 'tls-protocol' : event.packageName ? 'package-manifest' : event.metadata?.filePath ? 'config-reference' : 'crypto-library'
   return {
     userId: event.userId,
     agentId: event.agentId,
@@ -1580,11 +1589,13 @@ async function persistEvidenceFindings(
   const mediumCount = findings.filter((item) => item.severity === 'moderate' || item.severity === 'medium').length
   const lowCount = findings.filter((item) => item.severity === 'low').length
   const safeCount = findings.filter((item) => verdicts.get(item.id)?.quantumSafe).length + pqcReadyEvidence.length
-  const assetsCovered = new Set(evidence.map((item) => item.assetName)).size
+  const observedSubjectCount = new Set(evidence.map((item) => item.assetName)).size
+  const assetsCovered = bound ? (evidence.length ? 1 : 0) : observedSubjectCount
   const agentRiskScore = Math.min(100, criticalCount * 18 + highCount * 10 + mediumCount * 5 + lowCount * 2)
 
   const sessionSummary = {
     targetsScanned: assetsCovered,
+    observedSubjects: observedSubjectCount,
     totalFindings: findings.length,
     critical: criticalCount,
     high: highCount,
@@ -1608,8 +1619,8 @@ async function persistEvidenceFindings(
       status: 'completed',
       target_scope: binding ? `${binding.assetName} · ${sourceLabel} evidence batch` : `${sourceLabel} evidence batch`,
       progress: 100,
-      total_assets: new Set(evidence.map((item) => item.assetName)).size,
-      scanned_assets: new Set(evidence.map((item) => item.assetName)).size,
+      total_assets: assetsCovered,
+      scanned_assets: assetsCovered,
       findings_count: findings.length,
       metadata: {
         scannerMode: 'continuous-agent-evidence',
@@ -1888,10 +1899,10 @@ async function persistEvidenceFindings(
   }
 
   if (client && binding) {
-    /* Every target observed in this batch, at its worst risk; a target with
-       evidence but no risky finding is observed-clean (0), not absent. */
+    // Missing/unclassified evidence is not proof of zero risk. Only a measured
+    // finding or validated PQC-ready observation can replace a target's risk.
     const batchTargetRisk = new Map<string, number>()
-    for (const item of evidence) batchTargetRisk.set(item.assetName, worstRiskByAsset.get(item.assetName) ?? 0)
+    for (const item of pqcReadyEvidence) batchTargetRisk.set(item.assetName, 0)
     for (const [name, risk] of worstRiskByAsset) batchTargetRisk.set(name, risk)
     await refreshBoundAsset(client, userId, binding, {
       now,
@@ -1899,12 +1910,9 @@ async function persistEvidenceFindings(
       findingCount: findings.length,
       batchTargetRisk,
       childAssetIds: linkedAssetIds.filter((id) => id !== binding.assetId),
+      agentId: options.agent?.id || evidence[0]?.agentId || sourceLabel,
     })
-    const { data: asset } = await client.from('assets').select('metadata').eq('id', binding.assetId).eq('user_id', userId).maybeSingle()
-    if (asset) {
-      const { error } = await client.from('assets').update({ metadata: { ...asset.metadata, scanSources: mergeScanSources(asset.metadata?.scanSources, sourcesFor(evidence)) } }).eq('id', binding.assetId).eq('user_id', userId)
-      if (error) throw new Error('Unable to persist bound asset scan provenance')
-    }
+    await updateTenantRow(client, 'assets', userId, binding.assetId, (asset) => ({ metadata: { ...asset.metadata, scanSources: mergeScanSources(asset.metadata?.scanSources, sourcesFor(evidence)) } }))
   }
 
   if (client) {
@@ -1930,6 +1938,7 @@ async function persistEvidenceFindings(
 }
 
 type EvidenceBatchOptions = {
+  agent?: Record<string, any>
   alertThreshold?: string
   persistRuntimeEvents?: boolean
   /** The uploading agent's verified asset binding; absent for connectors and unbound agents. */
@@ -1966,25 +1975,28 @@ async function refreshBoundAsset(
   client: SupabaseClient,
   userId: string,
   binding: AgentBinding,
-  batch: { now: string; sourceLabel: string; findingCount: number; batchTargetRisk: Map<string, number>; childAssetIds: string[] },
+  batch: { now: string; sourceLabel: string; findingCount: number; batchTargetRisk: Map<string, number>; childAssetIds: string[]; agentId: string },
 ) {
-  const { data: asset, error } = await client
-    .from('assets')
-    .select('id, metadata')
-    .eq('id', binding.assetId)
-    .eq('user_id', userId)
-    .limit(1)
-    .maybeSingle()
-  if (error || !asset) {
-    if (error && !isMissingRuntimeTable(error)) console.warn('[agent-scanner] bound asset refresh failed:', error.message)
-    return
-  }
+  await updateTenantRow(client, 'assets', userId, binding.assetId, (asset) => {
   const metadata = asRecord(asset.metadata)
   const previous = asRecord(metadata.agentBinding)
-  const targetRisk: Record<string, number> = { ...asRecord(previous.targetRisk) }
+  const riskByAgent = { ...asRecord(previous.riskByAgent) }
+  const ownRisk = { ...asRecord(riskByAgent[batch.agentId]) }
   for (const [name, risk] of batch.batchTargetRisk) {
-    delete targetRisk[name]
-    targetRisk[name] = risk
+    ownRisk[name] = risk
+  }
+  for (const name of Object.keys(ownRisk).slice(0, Math.max(0, Object.keys(ownRisk).length - BOUND_ASSET_TARGET_LIMIT))) delete ownRisk[name]
+  riskByAgent[batch.agentId] = ownRisk
+  const targetRisk: Record<string, number> = {}
+  // Retain legacy aggregate observations until they are re-measured; new
+  // partial scans must never erase another reporter's measured exposure.
+  if (!previous.riskByAgent) riskByAgent['legacy-observations'] = asRecord(previous.targetRisk)
+  if (riskByAgent['legacy-observations']) {
+    riskByAgent['legacy-observations'] = { ...riskByAgent['legacy-observations'] }
+    for (const name of batch.batchTargetRisk.keys()) delete riskByAgent['legacy-observations'][name]
+  }
+  for (const report of Object.values(riskByAgent)) for (const [name, risk] of Object.entries(asRecord(report))) {
+    if (Number.isFinite(risk)) targetRisk[name] = Math.max(targetRisk[name] ?? 0, Number(risk))
   }
   // Keep the most recently observed targets when over the bound.
   const targetNames = Object.keys(targetRisk)
@@ -2002,6 +2014,7 @@ async function refreshBoundAsset(
     lastSource: batch.sourceLabel,
     lastBatchFindings: batch.findingCount,
     targetRisk,
+    riskByAgent,
     targetCount: Object.keys(targetRisk).length,
     worstTargetRisk: worstRisk,
     ...(binding.attribution === 'grouped' ? { childAssetIds, childAssetCount: childAssetIds.length } : {}),
@@ -2013,8 +2026,8 @@ async function refreshBoundAsset(
     nextMetadata.qScore = Math.max(0, 100 - worstRisk)
     update.criticality = worstRisk >= 80 ? 'critical' : worstRisk >= 60 ? 'high' : worstRisk >= 40 ? 'medium' : 'low'
   }
-  const { error: updateError } = await client.from('assets').update(update).eq('id', binding.assetId).eq('user_id', userId)
-  if (updateError && !isMissingRuntimeTable(updateError)) console.warn('[agent-scanner] bound asset refresh failed:', updateError.message)
+  return update
+  })
 }
 
 async function processEvidenceBatch(
@@ -2104,6 +2117,10 @@ async function processEvidenceBatch(
   }
 
   const links = await persistEvidenceFindings(client, userId, insertedEvidence, enrichedFindings, sourceLabel, options)
+  if (client && binding && options.agent) {
+    await materializeDeviceObservations(client, options.agent, binding, insertedEvidence)
+    if (insertedEvidence.length && !links.linkedAssetIds.includes(binding.assetId)) links.linkedAssetIds.push(binding.assetId)
+  }
   const certificates = await persistCertificateEvidence(client, userId, insertedEvidence, sourceLabel, binding)
 
   return {
@@ -2544,6 +2561,24 @@ async function plansForJobs(client: any, userId: string, jobs: any[]): Promise<{
  * that could not touch it.
  */
 function remediationJobScope(job: any, policy: ReturnType<typeof normalizePolicy>, agent: any): { allowed: boolean; reason: string } {
+  const binding = agentBindingFromMetadata(agent.metadata)
+  const assetId = cleanString(job.asset_id || remediationJobMetadata(job).assetId, 120)
+  const assigned = cleanString(remediationJobMetadata(job).assignedAgentId || remediationJobMetadata(job).assigned_agent_id, 120)
+  if (assetId && binding?.assetId !== assetId) {
+    const jobAsset = cleanString(remediationJobMetadata(job).assetName || remediationJobMetadata(job).asset_name, 200)
+    /* Device profiles are named for the hostname, so one machine can carry two
+       assets with the same name (one per agent). Name alone would then read
+       "targets X, assigned to X"; the short id tells them apart. */
+    const sameName = Boolean(jobAsset && binding?.assetName && jobAsset === binding.assetName)
+    const label = (name: string | null, id: string) => (name ? `"${name}"${sameName ? ` (asset ${id.slice(0, 8)})` : ''}` : `asset ${id.slice(0, 8)}`)
+    const target = label(jobAsset, assetId)
+    const current = binding ? label(binding.assetName, binding.assetId) : 'no asset'
+    return {
+      allowed: false,
+      reason: `This job targets ${target}, but this agent is assigned to ${current}. A file path alone cannot prove which machine a job is for, so assign the agent to ${target} in the Agent Center (Assigned asset) before it may change that host.`,
+    }
+  }
+  if (!assetId && assigned !== agent.id) return { allowed: false, reason: 'This job has no asset or explicit executor assignment; a matching file path alone cannot identify the intended host.' }
   const probe = remediationProbeEvidence(job, agent)
   if (!probe) {
     return { allowed: false, reason: 'This job names no configuration file or endpoint, so there is nothing an agent is authorised to change. Add the target to the job.' }
@@ -4875,7 +4910,7 @@ router.post('/agent/heartbeat', requireAgentAuth, async (req: AgentRequest, res)
   const transportIntegrity = req.agentIntegrity || null
 
   if (client) {
-    await client.from('agent_heartbeats').insert({
+    const { error: heartbeatError } = await client.from('agent_heartbeats').insert({
       user_id: agent.user_id,
       agent_id: agent.id,
       status: cleanString(req.body?.status, 50) || 'online',
@@ -4884,7 +4919,8 @@ router.post('/agent/heartbeat', requireAgentAuth, async (req: AgentRequest, res)
       user_agent: String(req.headers['user-agent'] || 'qguard-agent').slice(0, 500),
       observed_at: now,
     })
-    await client.from('scanner_agents').update({
+    if (heartbeatError) return jsonError(res, 503, 'HEARTBEAT_STORE_FAILED', 'Heartbeat could not be stored; the agent will retry')
+    try { await updateTenantRow(client, 'scanner_agents', agent.user_id, agent.id, (fresh) => ({
       status: cleanString(req.body?.status, 50) || 'active',
       hostname: cleanString(req.body?.hostname, 255) || agent.hostname,
       platform: cleanString(req.body?.platform, 100) || agent.platform,
@@ -4892,16 +4928,16 @@ router.post('/agent/heartbeat', requireAgentAuth, async (req: AgentRequest, res)
       last_seen_at: now,
       updated_at: now,
       metadata: {
-        ...(agent.metadata || {}),
+        ...(fresh.metadata || {}),
         lastIpAddress: req.ip?.replace('::ffff:', '') || null,
         lastUserAgent: String(req.headers['user-agent'] || 'qguard-agent').slice(0, 500),
         lastTelemetry: telemetry,
         transportSecurity: transportIntegrity,
       },
-    }).eq('id', agent.id).eq('user_id', agent.user_id)
+    })) } catch { return jsonError(res, 503, 'HEARTBEAT_STATE_FAILED', 'Agent connection state could not be stored; the agent will retry') }
   } else {
     memoryStore.heartbeats.unshift({ id: randomId('heartbeat'), user_id: agent.user_id, agent_id: agent.id, status: req.body?.status || 'online', telemetry, observed_at: now })
-    Object.assign(agent, { status: req.body?.status || 'active', last_seen_at: now, updated_at: now })
+    Object.assign(agent, { status: req.body?.status || 'active', last_seen_at: now, updated_at: now, metadata: { ...(agent.metadata || {}), lastTelemetry: telemetry } })
   }
 
   // A heartbeat after silence IS the connection event — the Agent Center shows
@@ -4943,8 +4979,8 @@ router.get('/agent/policy', requireAgentAuth, async (req: AgentRequest, res) => 
    * hangs off its own record. Handing them out marks them `delivered`; the agent
    * acknowledges completion through /agent/commands/:id/ack.
    */
-  const queue: any[] = Array.isArray(agent.metadata?.commandQueue) ? agent.metadata.commandQueue : []
-  const deliverable = queue.filter((item) => item?.status === 'queued' || item?.status === 'delivered')
+  let queue: any[] = Array.isArray(agent.metadata?.commandQueue) ? agent.metadata.commandQueue : []
+  let deliverable = queue.filter((item) => item?.status === 'queued' || item?.status === 'delivered')
   /* Policy delivery receipt: stamped once per policy change (not on every
      poll), the first time the agent pulls the changed policy. */
   const policyUpdatedAt = typeof agent.metadata?.policyUpdatedAt === 'string' ? agent.metadata.policyUpdatedAt : null
@@ -4953,24 +4989,15 @@ router.get('/agent/policy', requireAgentAuth, async (req: AgentRequest, res) => 
 
   if (client && (deliverable.length > 0 || stampDelivery)) {
     const now = new Date().toISOString()
-    const updatedQueue = queue.map((item) =>
-      item?.status === 'queued' ? { ...item, status: 'delivered', deliveredAt: now } : item,
-    )
-    const { error } = await client
-      .from('scanner_agents')
-      .update({
-        metadata: {
-          ...(agent.metadata || {}),
-          commandQueue: updatedQueue,
-          ...(stampDelivery ? { policyDeliveredAt: now } : {}),
-        },
-        updated_at: now,
-      })
-      .eq('id', agent.id)
-      .eq('user_id', agent.user_id)
-    if (error && !isMissingRuntimeTable(error)) {
-      console.warn('[agent-scanner] command delivery update failed:', error.message)
-    }
+    try {
+      const saved = await updateTenantRow(client, 'scanner_agents', agent.user_id, agent.id, (fresh) => ({ metadata: {
+        ...fresh.metadata,
+        commandQueue: (fresh.metadata?.commandQueue || []).map((item: any) => item?.status === 'queued' ? { ...item, status: 'delivered', deliveredAt: now } : item),
+        ...(stampDelivery ? { policyDeliveredAt: now } : {}),
+      } }))
+      queue = saved.metadata.commandQueue
+      deliverable = queue.filter((item) => item?.status === 'delivered')
+    } catch { return jsonError(res, 503, 'COMMAND_DELIVERY_FAILED', 'Command delivery could not be recorded; retry the policy poll') }
   }
 
   const commands = deliverable.map((item) => ({
@@ -5036,18 +5063,22 @@ router.post('/agent/commands/:id/ack', requireAgentAuth, async (req: AgentReques
   const nextHistory = settled ? [updated, ...history].slice(0, MAX_COMMAND_HISTORY) : history
 
   if (client) {
-    const { error } = await client
-      .from('scanner_agents')
-      .update({
-        metadata: { ...(agent.metadata || {}), commandQueue: nextQueue, commandHistory: nextHistory },
-        updated_at: now,
+    try {
+      await updateTenantRow(client, 'scanner_agents', agent.user_id, agent.id, (fresh) => {
+        const freshQueue: any[] = fresh.metadata?.commandQueue || []
+        const freshHistory: any[] = fresh.metadata?.commandHistory || []
+        const current = freshQueue.find((item) => item.id === commandId)
+        if (!current) {
+          if (freshHistory.some((item) => item.id === commandId)) return null
+          throw new Error('Command is no longer queued')
+        }
+        const receipt = { ...current, ...updated, startedAt: current.startedAt || updated.startedAt }
+        return { metadata: { ...fresh.metadata,
+          commandQueue: settled ? freshQueue.filter((item) => item.id !== commandId) : freshQueue.map((item) => item.id === commandId ? receipt : item),
+          commandHistory: settled ? [receipt, ...freshHistory.filter((item) => item.id !== commandId)].slice(0, MAX_COMMAND_HISTORY) : freshHistory,
+        } }
       })
-      .eq('id', agent.id)
-      .eq('user_id', agent.user_id)
-    if (error && !isMissingRuntimeTable(error)) {
-      jsonError(res, 500, 'COMMAND_ACK_FAILED', error.message)
-      return
-    }
+    } catch (error) { return jsonError(res, 503, 'COMMAND_ACK_FAILED', (error as Error).message) }
     await client.from('agent_heartbeats').insert({
       user_id: agent.user_id,
       agent_id: agent.id,
@@ -5055,6 +5086,8 @@ router.post('/agent/commands/:id/ack', requireAgentAuth, async (req: AgentReques
       telemetry: { commandId, type: command.type, status, result, error: errorMessage },
       observed_at: now,
     })
+  } else {
+    agent.metadata = { ...agent.metadata, commandQueue: nextQueue, commandHistory: nextHistory }
   }
 
   /*
@@ -5224,7 +5257,9 @@ router.post('/agent/runtime-events', requireAgentAuth, async (req: AgentRequest,
   const persistence = await persistRuntimeCryptoEvents(client, agent.user_id, policyAllowed)
   const evidence = policyAllowed.map(runtimeEventToEvidence)
   const runtimeBinding = await verifiedAgentBinding(client, agent)
+  if (runtimeBinding.unavailable) return jsonError(res, 503, 'DEVICE_PROFILE_UNAVAILABLE', 'The device profile is unavailable. No new standalone assets were created.')
   const evidenceResult = await processEvidenceBatch(client, agent.user_id, evidence, `agent-runtime:${agent.name || agent.id}`, {
+    agent,
     alertThreshold: policy.alertThreshold,
     persistRuntimeEvents: false,
     binding: runtimeBinding.binding,
@@ -5319,7 +5354,9 @@ router.post('/agent/evidence', requireAgentAuth, async (req: AgentRequest, res) 
       observed_at: new Date().toISOString(),
     })
   }
-  const { binding, stale: bindingStale } = await verifiedAgentBinding(client, agent)
+  const association = await verifiedAgentBinding(client, agent)
+  if (association.unavailable) return jsonError(res, 503, 'DEVICE_PROFILE_UNAVAILABLE', 'The device profile is unavailable. No new standalone assets were created.')
+  const { binding, stale: bindingStale } = association
   if (client && bindingStale) {
     // The bound asset was deleted. Findings fall back to open discovery; the
     // operator sees why on the agent's heartbeat trail instead of guessing.
@@ -5332,6 +5369,7 @@ router.post('/agent/evidence', requireAgentAuth, async (req: AgentRequest, res) 
     })
   }
   const result = await processEvidenceBatch(client, agent.user_id, evidence, `agent:${agent.name || agent.id}`, {
+    agent,
     alertThreshold: policy.alertThreshold,
     binding,
   }).catch((error) => {
@@ -5346,6 +5384,10 @@ router.post('/agent/evidence', requireAgentAuth, async (req: AgentRequest, res) 
 router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest, res) => {
   const client = req.client || null
   const agent = req.agent!
+  if (!agentVersionAtLeast(agent.version, AGENT_COORDINATION_MIN_VERSION)) {
+    res.json({ data: { jobs: [], reason: 'agent_coordination_upgrade_required', message: `Upgrade this writer to ${AGENT_COORDINATION_MIN_VERSION}+ before executing shared-host changes.` } })
+    return
+  }
   if (!client) {
     res.json({ data: { jobs: [], observedAt: new Date().toISOString(), reason: 'database_unavailable' } })
     return
@@ -5424,6 +5466,9 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
      than silently dropped: an operator watching an idle Patcher next to a queued
      cutover needs to be told it is a role boundary, not a stuck queue. */
   const refused: Array<{ jobId: string; name: string; requires: string; reason: string }> = []
+  /* Jobs whose approval holds right now — so a "not approved" note written
+     before the decision can be withdrawn instead of outliving it. */
+  const approvedJobIds = new Set<string>()
 
   const claimable = realJobs
     .filter((job: any) => migrationJobIsAgentExecutable(job))
@@ -5450,7 +5495,10 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
         return false
       }
       const verdict = jobApproval(job, planId ? loadedPlans.plans.get(planId) || null : null)
-      if (verdict.approved) return true
+      if (verdict.approved) {
+        approvedJobIds.add(String(job.id))
+        return true
+      }
       refused.push({
         jobId: String(job.id),
         name: String(job.name || job.id),
@@ -5461,6 +5509,10 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
     })
     .filter((job: any) => {
       const jobClass = jobExecutionClass(job)
+      if (jobClass === 'remediation' && agentRole(agent.metadata?.role).id !== 'patcher') {
+        refused.push({ jobId: String(job.id), name: String(job.name || job.id), requires: 'patcher', reason: 'Configuration remediation is assigned to Patcher agents. Migration Operators execute migration jobs.' })
+        return false
+      }
       const access = jobClass === 'migration' ? migrationAccess : remediationAccess
       if (access.allowed) return true
       refused.push({
@@ -5479,7 +5531,7 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
       refused.push({ jobId: String(job.id), name: String(job.name || job.id), requires: 'scope', reason: scope.reason })
       return false
     })
-    .slice(0, 5)
+    .slice(0, 1)
 
   /*
    * A job nobody may execute must SAY so.
@@ -5490,25 +5542,77 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
    * next to the job it belongs to, and only when it CHANGES, so the 30-60s poll
    * of every agent in the fleet does not rewrite the same row continuously.
    */
-  for (const entry of refused) {
-    const blockedJob = (jobs || []).find((item: any) => String(item.id) === entry.jobId)
-    if (!blockedJob) continue
-    const blockedMetadata = remediationJobMetadata(blockedJob)
-    if (asRecord(blockedMetadata.dispatchBlock).reason === entry.reason) continue
+  const refusalByJob = new Map(refused.map((entry) => [entry.jobId, entry]))
+  const ownRole = agentRole(agent.metadata?.role).id
+  const blockKind = (requires: string) => (requires === 'approval' ? 'not-approved' : requires === 'scope' ? 'out-of-scope' : 'agent-role')
+  for (const waitingJob of realJobs) {
+    if (!['queued', 'awaiting_agent'].includes(String(waitingJob.status))) continue
+    const jobId = String(waitingJob.id)
+    const entry = refusalByJob.get(jobId)
+    const currentMetadata = remediationJobMetadata(waitingJob)
+    const currentBlock = asRecord(currentMetadata.dispatchBlock)
+    let nextBlock: Record<string, unknown> | null = Object.keys(currentBlock).length ? currentBlock : null
+    const refusals = { ...asRecord(currentMetadata.executorRefusals) }
+    let changed = false
+
+    if (entry?.requires === 'approval') {
+      // Missing approval is a property of the job, not of this agent: one global note.
+      if (currentBlock.reason !== entry.reason) {
+        nextBlock = { kind: 'not-approved', requires: 'approval', reason: entry.reason, at: now }
+        changed = true
+      }
+    } else if (approvedJobIds.has(jobId) && currentBlock.kind === 'not-approved') {
+      // Approved since the note was written; leaving it would read "awaiting approval" forever.
+      nextBlock = null
+      changed = true
+    }
+
+    if (entry && entry.requires !== 'approval') {
+      const assignedHere = currentMetadata.assignedAgentId === agent.id || currentMetadata.assigned_agent_id === agent.id
+      if (assignedHere && currentBlock.reason !== entry.reason) {
+        // Explicitly assigned to this agent, so its refusal IS the reason the job waits.
+        nextBlock = { kind: blockKind(entry.requires), requires: entry.requires, reason: entry.reason, at: now }
+        changed = true
+      }
+      /*
+       * A refusal by one executor must not block another valid one, so it is
+       * recorded under this agent's own key rather than as the job's global
+       * block. Only an agent that holds the role the job needs records one: a
+       * Patcher declining a cutover is the role boundary working, not a reason
+       * the cutover is waiting. Without this, an approved job whose only
+       * eligible executor is bound to another asset sat at "Queued" with no
+       * explanation anywhere in Live Migration.
+       */
+      const eligibleRole = entry.requires === 'scope' || entry.requires === ownRole
+      if (eligibleRole && asRecord(refusals[agent.id]).reason !== entry.reason) {
+        refusals[agent.id] = {
+          agentId: agent.id,
+          agentName: agent.name || agent.hostname || agent.id,
+          role: ownRole,
+          kind: blockKind(entry.requires),
+          requires: entry.requires,
+          reason: entry.reason,
+          at: now,
+        }
+        changed = true
+      }
+    } else if (refusals[agent.id]) {
+      // This agent no longer declines the job (rebound, re-scoped or authorised).
+      delete refusals[agent.id]
+      changed = true
+    }
+
+    if (!changed) continue
     const { error: blockError } = await client.from('migration_jobs').update({
-      metadata: {
-        ...blockedMetadata,
-        dispatchBlock: {
-        kind: entry.requires === 'approval' ? 'not-approved' : entry.requires === 'scope' ? 'out-of-scope' : 'agent-role',
-        requires: entry.requires,
-        reason: entry.reason,
-        at: now,
-      },
-      },
+      metadata: { ...currentMetadata, dispatchBlock: nextBlock, executorRefusals: refusals },
       updated_at: now,
-    }).eq('id', blockedJob.id).eq('user_id', agent.user_id)
+    }).eq('id', waitingJob.id).eq('user_id', agent.user_id).eq('updated_at', waitingJob.updated_at).in('status', ['queued', 'awaiting_agent'])
     if (blockError && !isMissingRuntimeTable(blockError)) {
       console.warn('[agent-remediation] dispatch-block note failed:', blockError.message)
+    } else if (!blockError) {
+      // The claim below compares updated_at; keep it aligned with the row just written.
+      waitingJob.updated_at = now
+      waitingJob.metadata = { ...currentMetadata, dispatchBlock: nextBlock, executorRefusals: refusals }
     }
   }
 
@@ -5532,7 +5636,7 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
       await client.from('migration_jobs').update({
         metadata: { ...metadata, dispatchBlock: { kind: 'no-snapshot', requires: 'snapshot', reason: snapshot.message, at: now } },
         updated_at: now,
-      }).eq('id', job.id).eq('user_id', agent.user_id)
+      }).eq('id', job.id).eq('user_id', agent.user_id).eq('updated_at', job.updated_at)
       await client.from('migration_events').insert({
         user_id: agent.user_id,
         migration_id: job.id,
@@ -5561,6 +5665,7 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
       preChangeSnapshotId: snapshot.snapshotId,
       /* Claimed — whatever was blocking it no longer is. */
       dispatchBlock: null,
+      executorRefusals: {},
       execution: {
         ...asRecord(metadata.execution),
         agentRequired: true,
@@ -5571,7 +5676,7 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
       },
     }
 
-    const { error: updateError } = await client
+    const { data: claimed, error: updateError } = await client
       .from('migration_jobs')
       .update({
         status: 'running',
@@ -5582,11 +5687,16 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
       })
       .eq('id', job.id)
       .eq('user_id', agent.user_id)
+      .eq('updated_at', job.updated_at)
+      .eq('status', job.status)
+      .select('id')
+      .maybeSingle()
 
     if (updateError) {
       console.warn('[agent-remediation] Claim failed:', updateError.message)
       continue
     }
+    if (!claimed) continue // Another poll won; the job goes to only one agent.
 
     await persistMigrationExecution(client, agent, job, {
       status: 'running',
@@ -5693,6 +5803,7 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
 router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: AgentRequest, res) => {
   const client = req.client || null
   const agent = req.agent!
+  if (!agentVersionAtLeast(agent.version, AGENT_COORDINATION_MIN_VERSION)) return jsonError(res, 409, 'AGENT_COORDINATION_UPGRADE_REQUIRED', `Upgrade to ${AGENT_COORDINATION_MIN_VERSION}+ for coordinated host changes`)
   if (!client) {
     jsonError(res, 503, 'DATABASE_UNAVAILABLE', 'Remediation job execution requires the database-backed migration workflow')
     return
@@ -5710,6 +5821,8 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
     return
   }
   const isHndlJob = remediationJobIsHndl(job)
+  if (['cancelled', 'rejected', 'rolled_back', 'completed'].includes(job.status)) return jsonError(res, 409, 'JOB_ALREADY_SETTLED', 'This job is no longer accepting execution changes')
+  if (jobExecutionClass(job) === 'remediation' && agentRole(agent.metadata?.role).id !== 'patcher') return jsonError(res, 403, 'AGENT_ROLE_MISMATCH', 'Configuration remediation requires the Patcher role')
   if (!migrationJobIsAgentExecutable(job)) {
     jsonError(res, 400, 'NOT_AGENT_EXECUTABLE_MIGRATION', 'Only queued PQC migration or HNDL remediation jobs can be executed by this endpoint')
     return
@@ -5799,8 +5912,12 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
   let evidenceResult: Awaited<ReturnType<typeof processEvidenceBatch>> | null = null
   if (evidence.length > 0) {
     try {
+      const association = await verifiedAgentBinding(client, agent)
+      if (association.unavailable) return jsonError(res, 503, 'AGENT_BINDING_UNAVAILABLE', 'The device profile could not be verified')
       evidenceResult = await processEvidenceBatch(client, agent.user_id, evidence, `agent-remediation:${agent.name || agent.id}`, {
         alertThreshold: policy.alertThreshold,
+        binding: association.binding || undefined,
+        agent,
       })
       const hndlRiskCount = Array.isArray(evidenceResult.scanner2?.hndlRisks) ? evidenceResult.scanner2.hndlRisks.length : 0
       validation = {
@@ -5888,16 +6005,21 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
   }
   if (nextStatus === 'completed') updatePayload.completed_at = now
 
-  const { error: updateError } = await client
+  const { data: savedEvent, error: updateError } = await client
     .from('migration_jobs')
     .update(updatePayload)
     .eq('id', job.id)
     .eq('user_id', agent.user_id)
+    .eq('updated_at', job.updated_at)
+    .eq('metadata->>assignedAgentId', agent.id)
+    .select('id')
+    .maybeSingle()
 
   if (updateError) {
     jsonError(res, 500, 'REMEDIATION_JOB_UPDATE_FAILED', updateError.message)
     return
   }
+  if (!savedEvent) return jsonError(res, 409, 'JOB_EXECUTION_CHANGED', 'The job changed while reporting execution; its newer state was preserved')
 
   /*
    * Persist the agent's own configuration backup onto the job's pre-change

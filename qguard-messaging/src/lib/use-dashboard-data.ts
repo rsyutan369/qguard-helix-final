@@ -4,7 +4,7 @@ import { openSecurityEventDetails, openTelemetryDetails } from "@/lib/account-ke
 import { ensureMessagingWorkspace, ensurePrekeyReadiness } from "@/lib/messaging-bootstrap";
 import { byteaToBytes } from "@/lib/encoding";
 import { requireSupabase } from "@/lib/supabase";
-import { isTauriRuntime } from "@/lib/tauri";
+import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import { useQGuardLiveSse } from "@/lib/live-sse";
 import { fetchPrekeyStatus } from "@/lib/prekey-hygiene";
 import { fallbackHardeningStatus, loadSecurityHardeningStatus } from "@/lib/security-hardening";
@@ -143,6 +143,7 @@ function emptyDashboardData(): DashboardData {
     contacts: [],
     conversations: [],
     vaultFiles: [],
+    vaultStore: { objects: 0, bytes: 0 },
     securityEvents: [],
     orgMembers: [],
     keyInventory: emptyKeyInventory(),
@@ -525,7 +526,12 @@ export function useDashboardData(user: User | null, session: Session | null) {
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
         .slice(0, 50);
 
-      const totalVaultBytes = vaultFiles.reduce((sum, file) => sum + file.size_bytes, 0);
+      // Quantum Vault Storage lives on this device (Rust core). Object count and
+      // ciphertext size need no vault unlock; names and types stay sealed.
+      const vaultStore = isTauriRuntime()
+        ? await safeInvoke<{ objects: number; bytes: number }>("vault_store_disk_usage", undefined, { objects: 0, bytes: 0 })
+        : { objects: 0, bytes: 0 };
+      const totalVaultBytes = vaultFiles.reduce((sum, file) => sum + file.size_bytes, 0) + vaultStore.bytes;
       const { snapshot, report } = buildSecurityPosture({
         profile,
         devices,
@@ -545,6 +551,7 @@ export function useDashboardData(user: User | null, session: Session | null) {
         contacts,
         conversations,
         vaultFiles,
+        vaultStore,
         securityEvents,
         orgMembers,
         keyInventory,

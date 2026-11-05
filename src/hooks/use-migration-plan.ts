@@ -1,8 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useAuth } from '@/contexts/auth-context';
-import { supabase } from '@/lib/supabase';
+import { useLiveResource } from '@/hooks/use-live-resource';
 import type { SharedResponsibilityIntelligence } from '@/lib/shared-responsibility';
 
 /* ------------------------------------------------------------------ */
@@ -224,141 +222,23 @@ const REALTIME_TABLES = [
  * mirrors the QR pages and scanner intelligence.
  */
 export function useMigrationPlan() {
-  const { session, user } = useAuth();
-  const token = session?.access_token;
-  const [plan, setPlan] = useState<MigrationPlan>(EMPTY_PLAN);
-  const [state, setState] = useState<LoadState>('loading');
-  const [error, setError] = useState<string | null>(null);
-  const [sseConnected, setSseConnected] = useState(false);
-  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const apply = useCallback((data: Partial<MigrationPlan> | null) => {
-    setPlan({ ...EMPTY_PLAN, ...(data || {}), hero: { ...EMPTY_PLAN.hero, ...(data?.hero || {}) } });
-  }, []);
-
-  const refresh = useCallback(async () => {
-    if (!token) {
-      apply(EMPTY_PLAN);
-      setState('success');
-      return;
-    }
-    setState((current) => (current === 'success' ? current : 'loading'));
-    try {
-      const response = await fetch('/api/v1/migration-planner', {
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-      apply(payload.data || {});
-      setState('success');
-      setError(null);
-    } catch (err) {
-      console.error('Migration plan load failed:', err);
-      setError(err instanceof Error ? err.message : 'Unable to load migration plan');
-      setState('error');
-    }
-  }, [token, apply]);
-
-  const queueRefresh = useCallback(() => {
-    if (refreshTimer.current) clearTimeout(refreshTimer.current);
-    refreshTimer.current = setTimeout(() => {
-      refreshTimer.current = null;
-      void refresh();
-    }, 400);
-  }, [refresh]);
-
-  useEffect(() => () => { if (refreshTimer.current) clearTimeout(refreshTimer.current); }, []);
-
-  useEffect(() => {
-    if (!token || !user) {
-      apply(EMPTY_PLAN);
-      setState('success');
-      return;
-    }
-    void refresh();
-  }, [token, user, refresh, apply]);
-
-  // Dedicated SSE stream over fetch() + Authorization header. EventSource cannot
-  // set request headers, which forces the bearer token into the URL query string
-  // where it leaks into access logs / proxies / browser history. Reading the
-  // text/event-stream body via a ReadableStream lets us authenticate with a
-  // header and keep the token out of the URL entirely.
-  useEffect(() => {
-    if (!token) return;
-    const controller = new AbortController();
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let cancelled = false;
-
-    const parseFrame = (frame: string) => {
-      let eventName = 'message';
-      const dataLines: string[] = [];
-      for (const line of frame.split('\n')) {
-        if (line.startsWith('event:')) eventName = line.slice(6).trim();
-        else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
-        // lines starting with ':' are heartbeats/comments — ignored
-      }
-      if (eventName === 'migration-plan' && dataLines.length) {
-        try {
-          apply(JSON.parse(dataLines.join('\n')));
-          setState('success');
-          setError(null);
-        } catch {
-          /* ignore malformed frame */
-        }
-      }
-    };
-
-    const connect = async () => {
-      try {
-        const response = await fetch('/api/v1/migration-planner/stream', {
-          headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
-          signal: controller.signal,
-        });
-        if (!response.ok || !response.body) throw new Error(`SSE ${response.status}`);
-        setSseConnected(true);
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let boundary = buffer.indexOf('\n\n');
-          while (boundary !== -1) {
-            parseFrame(buffer.slice(0, boundary));
-            buffer = buffer.slice(boundary + 2);
-            boundary = buffer.indexOf('\n\n');
-          }
-        }
-        throw new Error('stream ended');
-      } catch {
-        if (cancelled || controller.signal.aborted) return;
-        setSseConnected(false);
-        if (retry) clearTimeout(retry);
-        retry = setTimeout(() => void connect(), 10000);
-      }
-    };
-
-    void connect();
-    return () => {
-      cancelled = true;
-      controller.abort();
-      if (retry) clearTimeout(retry);
-      setSseConnected(false);
-    };
-  }, [token, apply]);
-
-  // Supabase realtime — refresh on any tenant migration / scan mutation
-  useEffect(() => {
-    if (!user) return;
-    const channels = REALTIME_TABLES.map((table) =>
-      supabase
-        .channel(`migration-plan-${table}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` }, queueRefresh)
-        .subscribe(),
-    );
-    return () => { for (const channel of channels) supabase.removeChannel(channel); };
-  }, [user, queueRefresh]);
-
-  return { plan, state, error, sseConnected, refresh };
+  const resource = useLiveResource<MigrationPlan>({
+    url: '/api/v1/migration-planner',
+    streamUrl: '/api/v1/migration-planner/stream',
+    event: 'migration-plan',
+    empty: EMPTY_PLAN,
+    normalize: (raw) => {
+      const next = raw as Partial<MigrationPlan>;
+      return { ...EMPTY_PLAN, ...next, hero: { ...EMPTY_PLAN.hero, ...next.hero } };
+    },
+    realtimeTables: REALTIME_TABLES,
+    channelPrefix: 'migration-plan',
+  });
+  return {
+    plan: resource.data,
+    state: resource.state,
+    error: resource.error,
+    sseConnected: resource.sseConnected,
+    refresh: resource.refresh,
+  };
 }

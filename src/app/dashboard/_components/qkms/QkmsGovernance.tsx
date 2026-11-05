@@ -46,7 +46,7 @@ const ENTROPY_COPY: Record<string, { label: string; tone: 'good' | 'info' | 'war
 };
 
 export default function QkmsGovernance() {
-  const { data, state, error, live, refresh, reconnect } = useKeyGovernance();
+  const { data, state, error, live, verifiedAt, refresh, reconnect } = useKeyGovernance();
   const { notice, show, dismiss } = useNotice();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [severityFilter, setSeverityFilter] = useState('');
@@ -86,6 +86,7 @@ export default function QkmsGovernance() {
       error={error}
       hasData={data?.hasData ?? false}
       generatedAt={data?.generatedAt ?? null}
+      verifiedAt={verifiedAt}
       latestEvidenceAt={data?.latestEvidenceAt ?? null}
       telemetry={data?.telemetry ?? null}
       nav={data?.nav ?? null}
@@ -114,8 +115,9 @@ export default function QkmsGovernance() {
             label="Approved custody"
             value={metrics.custodyCoveragePercent === null ? '—' : `${metrics.custodyCoveragePercent}%`}
             unmeasured={metrics.custodyCoveragePercent === null}
-            detail={`${fmtNumber(metrics.unmanagedCustodyKeys)} unmanaged or unknown`}
+            detail={`of keys with KNOWN custody · ${fmtNumber(metrics.unmanagedCustodyKeys)} of ${fmtNumber(metrics.totalKeys)} unmanaged or unknown`}
             tone={metrics.unmanagedCustodyKeys > 0 ? 'warning' : 'good'}
+            hint="HSM, managed KMS or vault share of the keys whose storage location is established. Keys with unknown custody are excluded from the percentage and counted beside it, so an estate of mostly unknown custody can read 100% here — read the two figures together."
           />
           <Kpi
             label="Audit coverage"
@@ -182,11 +184,29 @@ export default function QkmsGovernance() {
                     <div className="text-[9px] font-black uppercase tracking-wider text-white/35">Violations</div>
                     <div className={`font-mono text-[13px] font-black ${policy.violations > 0 ? 'text-red-300' : 'text-white/40'}`}>{fmtNumber(policy.violations)}</div>
                   </div>
-                  <div className="rounded-md border border-white/10 bg-black/20 py-1.5">
+                  <div
+                    className="rounded-md border border-white/10 bg-black/20 py-1.5"
+                    title={policy.compliance === null
+                      ? policy.evaluation === 'disabled'
+                        ? 'This policy is disabled, so it evaluated no key. That is not 100% compliance.'
+                        : 'No key falls inside this policy\'s scope, so nothing was evaluated. That is not 100% compliance.'
+                      : `${policy.keysInScope - Math.min(policy.keysInScope, policy.violations)} of ${policy.keysInScope} in-scope key(s) satisfy this policy.`}
+                  >
                     <div className="text-[9px] font-black uppercase tracking-wider text-white/35">Compliance</div>
-                    <div className={`font-mono text-[13px] font-black ${policy.compliance >= 95 ? 'text-emerald-300' : policy.compliance >= 70 ? 'text-amber-300' : 'text-red-300'}`}>{policy.compliance}%</div>
+                    {policy.compliance === null ? (
+                      <div className="font-mono text-[11px] font-black uppercase tracking-wide text-white/40">Not evaluated</div>
+                    ) : (
+                      <div className={`font-mono text-[13px] font-black ${policy.compliance >= 95 ? 'text-emerald-300' : policy.compliance >= 70 ? 'text-amber-300' : 'text-red-300'}`}>{policy.compliance}%</div>
+                    )}
                   </div>
                 </div>
+                {policy.evaluation !== 'evaluated' ? (
+                  <p className="mt-1.5 text-[10px] leading-snug text-white/40">
+                    {policy.evaluation === 'disabled'
+                      ? 'Disabled — configured but not enforced. No key is evaluated against it.'
+                      : 'Enabled, but no key is in its scope yet — configured, not yet evaluated.'}
+                  </p>
+                ) : null}
 
                 <div className="mt-2 flex flex-wrap gap-1">
                   <Pill tone="neutral">{policy.environmentScope}</Pill>
@@ -443,7 +463,7 @@ export default function QkmsGovernance() {
         )}
       </Panel>
 
-      <KeyDrawer keyId={selectedKey} onClose={() => setSelectedKey(null)} onChanged={() => void refresh(true)} />
+      <KeyDrawer keyId={selectedKey} syncTo={data?.generatedAt ?? null} onClose={() => setSelectedKey(null)} onChanged={() => void refresh(true)} />
     </QkmsShell>
   );
 }

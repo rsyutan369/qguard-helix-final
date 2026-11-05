@@ -536,9 +536,12 @@ export function Gauge({
 
       {/* Readout in the reserved band below the hub — never under the sweep. */}
       <div className="absolute inset-x-0 text-center" style={{ top: readoutTop }}>
+        {/* `text-white` as a CLASS, not an inline colour: the dashboard's light
+            theme remaps the class to ink, and an inline #ffffff rendered the
+            score white-on-parchment. Dark surfaces are unchanged. */}
         <p
-          className="font-black leading-none tracking-tighter"
-          style={{ fontSize: size * 0.155, color: unmeasured ? ACCENT.slate : '#ffffff' }}
+          className={cn('font-black leading-none tracking-tighter', !unmeasured && 'text-white')}
+          style={{ fontSize: size * 0.155, color: unmeasured ? ACCENT.slate : undefined }}
         >
           <CountUp value={unmeasured ? null : clamped} />
           {!unmeasured && <span className="ml-1 align-super text-[0.42em] font-bold text-slate-500">/100</span>}

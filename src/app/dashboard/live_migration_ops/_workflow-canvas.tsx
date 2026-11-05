@@ -93,7 +93,7 @@ const fitPadding = (expanded: boolean) => ({
 /** Which agents earn a visible slot when a stage has more than MAX_ROWS. */
 const URGENCY: Record<AgentWorkflowStatus, number> = {
   failed: 0, blocked: 1, retrying: 2, running: 3, awaiting_approval: 4, queued: 5,
-  paused: 6, waiting: 7, completed: 8, idle: 9, cancelled: 10,
+  paused: 6, waiting: 7, rolled_back: 8, completed: 8, idle: 9, cancelled: 10,
 }
 
 const byName = (a: WorkflowAgentInstance, b: WorkflowAgentInstance) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)
@@ -114,7 +114,7 @@ function branchState(state: AgentWorkflowStatus, online: boolean) {
   if (state === 'running' || state === 'retrying') return 'active'
   if (state === 'failed') return 'failed'
   if (state === 'blocked') return 'blocked'
-  if (state === 'completed') return 'completed'
+  if (state === 'completed' || state === 'rolled_back') return 'completed'
   return online ? 'waiting' : 'idle'
 }
 
@@ -190,11 +190,11 @@ const AgentNode = memo(function AgentNode({ data }: NodeProps<AgentFlowNode>) {
           {/* Trunk root: the joint the deployed agents branch from. */}
           <span className="qg-lw-trunk-root" style={{ left: TRUNK_X, background: visual.color, boxShadow: `0 0 10px ${visual.glow}` }} aria-hidden="true" />
           <div
-            className="pointer-events-none absolute flex items-center gap-1.5 whitespace-nowrap rounded-full border bg-[var(--lw-screen)] px-2 py-0.5 text-[10px] font-bold text-white/75"
+            className="pointer-events-none absolute flex items-center gap-1.5 whitespace-nowrap rounded-full border bg-[var(--lw-screen)] px-2 py-0.5 text-[10px] font-bold text-[color:var(--lw-ink-soft)]"
             style={{ left: TRUNK_X + 14, top: NODE_H + 12, borderColor: mix(visual.color, 30) }}
           >
             <span style={{ color: visual.color }}>{data.fleet.deployed} deployed</span>
-            <span className="text-white/30">·</span>
+            <span className="text-[color:var(--lw-ink-muted)]">·</span>
             <span style={{ color: data.fleet.online ? TONE.green : 'var(--lw-slate)' }}>{data.fleet.online} online</span>
           </div>
         </>
@@ -225,13 +225,13 @@ const OverflowNode = memo(function OverflowNode({ data }: NodeProps<OverflowFlow
       <Handle id="in" type="target" position={Position.Left} isConnectable={false} className="qg-lw-handle" />
       <a
         href="/downloads"
-        className="nodrag flex h-full items-center gap-2 rounded-xl border border-dashed bg-[var(--lw-card)] px-3 text-[11px] font-bold text-white/70 transition hover:text-white"
+        className="nodrag flex h-full items-center gap-2 rounded-xl border border-dashed bg-[var(--lw-card)] px-3 text-[11px] font-bold text-[color:var(--lw-ink-soft)] transition hover:text-[color:var(--lw-ink)]"
         style={{ borderColor: mix(visual.color, 35) }}
         title="Every deployed agent is listed in the Agent Center"
       >
         <span style={{ color: visual.color }}>+{data.hidden} more</span>
-        <span className="font-semibold text-white/45">{data.hiddenOnline} online</span>
-        <span className="ml-auto inline-flex items-center gap-1 text-white/55">Agent Center <ExternalLink className="h-3 w-3" aria-hidden="true" /></span>
+        <span className="font-semibold text-[color:var(--lw-ink-muted)]">{data.hiddenOnline} online</span>
+        <span className="ml-auto inline-flex items-center gap-1 text-[color:var(--lw-ink-muted)]">Agent Center <ExternalLink className="h-3 w-3" aria-hidden="true" /></span>
       </a>
     </div>
   )
@@ -306,12 +306,12 @@ const HandoffEdge = memo(function HandoffEdge(props: EdgeProps<AgentFlowEdge>) {
           title={`${data?.edge.handoffDetail ?? ''}${data?.edge.lastHandoffAt ? ` · ${new Date(data.edge.lastHandoffAt).toLocaleString()}` : ''}`}
         >
           <div
-            className="flex items-center gap-1.5 rounded-full border bg-[var(--lw-screen)] px-2.5 py-1 text-[10px] font-bold text-white shadow-lg"
+            className="flex items-center gap-1.5 rounded-full border bg-[var(--lw-screen)] px-2.5 py-1 text-[10px] font-bold text-[color:var(--lw-ink)] shadow-lg"
             style={{ borderColor: `${mix(tone, 40)}`, boxShadow: state === 'active' || state === 'completed' ? `0 0 16px ${mix(tone, 27)}` : undefined }}
           >
             <Icon className="h-3 w-3" style={{ color: tone }} aria-hidden="true" />
             <span>{data?.edge.label}</span>
-            {data?.edge.lastHandoffAt && <span className="font-mono font-normal text-white/45">{timeAgo(data.edge.lastHandoffAt, data.now)}</span>}
+            {data?.edge.lastHandoffAt && <span className="font-mono font-normal text-[color:var(--lw-ink-muted)]">{timeAgo(data.edge.lastHandoffAt, data.now)}</span>}
           </div>
         </div>
       </EdgeLabelRenderer>
@@ -642,13 +642,13 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
       role={expanded ? 'dialog' : undefined}
       aria-modal={expanded || undefined}
       aria-label={expanded ? 'Agent workflow canvas, full screen' : undefined}
-      className="qg-force-dark qg-lw-canvas relative overflow-hidden border border-white/[0.07] outline-none"
+      className="qg-lw-canvas relative overflow-hidden border outline-none"
       style={expanded ? undefined : { height: inlineHeight }}
     >
       {expanded && (
         <div className="pointer-events-none absolute left-4 top-3 z-10 flex items-center gap-3">
-          <span className="text-[11px] font-bold uppercase tracking-[0.18em] text-white/55">Collector → Scanner → Patcher → Migration Operator</span>
-          <span className="text-[10px] text-white/35">Esc to exit full screen</span>
+          <span className="text-[11px] font-bold uppercase tracking-[0.18em] text-[color:var(--lw-ink-muted)]">Collector → Scanner → Patcher → Migration Operator</span>
+          <span className="text-[10px] text-[color:var(--lw-ink-muted)]">Esc to exit full screen</span>
         </div>
       )}
       <ReactFlow<CanvasNode, CanvasEdge>
@@ -688,7 +688,7 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
           className="absolute bottom-14 right-3 top-3 z-20 w-[340px] max-w-[calc(100%-1.5rem)]"
         />
       )}
-      <div className="absolute bottom-3 right-3 flex overflow-hidden rounded-lg border border-white/10 bg-[var(--lw-screen)] backdrop-blur" role="toolbar" aria-label="Canvas view controls">
+      <div className="qg-lw-view-controls absolute bottom-3 right-3 flex overflow-hidden rounded-lg border bg-[var(--lw-screen)] backdrop-blur" role="toolbar" aria-label="Canvas view controls">
         {[
           { label: 'Zoom in', icon: Plus, run: () => flow.zoomIn({ duration: 200 }) },
           { label: 'Zoom out', icon: Minus, run: () => flow.zoomOut({ duration: 200 }) },
@@ -702,7 +702,7 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
             title={control.label}
             aria-label={control.label}
             aria-pressed={'pressed' in control ? control.pressed : undefined}
-            className="grid h-8 w-8 place-items-center text-white/60 transition hover:bg-white/10 hover:text-white"
+            className="grid h-8 w-8 place-items-center transition-colors"
           >
             <control.icon className="h-3.5 w-3.5" />
           </button>

@@ -78,7 +78,7 @@ export interface OverviewPayload extends QkmsCommonPayload {
   mode: 'overview';
   lifecycleFunnel: Array<{ state: LifecycleState; label: string; count: number; percent: number; keyIds: string[] }>;
   rotationPosture: RotationPosture;
-  readiness: { overall: number | null; bands: PqcReadiness['bands']; postureCounts: Record<KeyPqcPosture, number> };
+  readiness: Pick<PqcReadiness, 'overall' | 'verifiedReady' | 'declaredOnly' | 'decisionScope' | 'bands' | 'postureCounts'>;
   riskDistribution: DistributionRow[];
   distributions: QkmsDistributions;
   topRisks: KeyIndexEntry[];
@@ -210,11 +210,6 @@ const REALTIME_TABLES = [
   'assets',
 ] as const;
 
-/** qkms_* tables are tenant-keyed; the platform tables are user-keyed. */
-const TENANT_KEYED = new Set([
-  'qkms_keys', 'qkms_key_versions', 'qkms_policies',
-  'qkms_rotation_jobs', 'qkms_audit_events', 'qkms_storage_backends',
-]);
 
 const RETRY_MIN_MS = 3_000;
 const RETRY_MAX_MS = 30_000;
@@ -226,6 +221,8 @@ export interface UseQkmsResult<T extends QkmsPayload> {
   /** True only while the stream is genuinely open. Never "live" on stale data. */
   live: boolean;
   lastSyncedAt: string | null;
+  /** When the server last confirmed this view — moves on unchanged rebuilds too. */
+  verifiedAt: string | null;
   refresh: (force?: boolean) => Promise<void>;
   reconnect: () => void;
 }
@@ -256,6 +253,8 @@ export function useQkmsView<T extends QkmsPayload>(mode: QkmsMode): UseQkmsResul
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  /** Last time the server re-built the model and confirmed this view unchanged. */
+  const [verifiedAt, setVerifiedAt] = useState<string | null>(null);
 
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Guards against an out-of-order frame overwriting newer state. */
@@ -270,13 +269,17 @@ export function useQkmsView<T extends QkmsPayload>(mode: QkmsMode): UseQkmsResul
     setData(next);
     setState('success');
     setError(null);
+    setVerifiedAt(next.generatedAt);
     setLastSyncedAt(new Date().toISOString());
   }, []);
 
   const refresh = useCallback(
     async (force = false) => {
       if (!token) {
-        setState('success');
+        // No session is not an empty estate: rendering "no keys" here would
+        // read as a verified zero.
+        setError('Sign in to view QKMS intelligence.');
+        setState('error');
         return;
       }
       setState((current) => (current === 'success' ? current : 'loading'));
@@ -315,10 +318,6 @@ export function useQkmsView<T extends QkmsPayload>(mode: QkmsMode): UseQkmsResul
   );
 
   useEffect(() => {
-    if (!token || !user) {
-      setState('success');
-      return;
-    }
     void refresh();
   }, [token, user, refresh]);
 
@@ -347,6 +346,15 @@ export function useQkmsView<T extends QkmsPayload>(mode: QkmsMode): UseQkmsResul
           if (parsed && typeof parsed === 'object' && parsed.mode === mode) apply(parsed);
         } catch {
           /* malformed frame — ignore rather than blank the page */
+        }
+      } else if (eventName === 'qkms-verified') {
+        // The model was rebuilt and nothing on this view changed: record when
+        // it was last confirmed, without replacing data (and re-querying tables).
+        try {
+          const parsed = JSON.parse(body) as { mode?: string; generatedAt?: string };
+          if (parsed.mode === mode && parsed.generatedAt) setVerifiedAt(parsed.generatedAt);
+        } catch {
+          /* ignore */
         }
       } else if (eventName === 'qkms-error') {
         try {
@@ -412,7 +420,10 @@ export function useQkmsView<T extends QkmsPayload>(mode: QkmsMode): UseQkmsResul
             event: '*',
             schema: 'public',
             table,
-            filter: `${TENANT_KEYED.has(table) ? 'tenant_id' : 'user_id'}=eq.${user.id}`,
+            // user_id on every table, qkms_* included: those rows carry the caller
+            // as both tenant and user, and matching tenant_id alone would let a
+            // row another user planted under this tenant's id nudge the page.
+            filter: `user_id=eq.${user.id}`,
           },
           queueRefresh,
         )
@@ -427,7 +438,7 @@ export function useQkmsView<T extends QkmsPayload>(mode: QkmsMode): UseQkmsResul
     void refresh(true);
   }, [refresh]);
 
-  return { data, state, error, live, lastSyncedAt, refresh, reconnect };
+  return { data, state, error, live, lastSyncedAt, verifiedAt, refresh, reconnect };
 }
 
 /* ------------------------------------------------------------------ */
@@ -477,8 +488,12 @@ export interface KeyQuery {
  * The tables never hold the whole estate in the browser: filtering, sorting and
  * pagination all happen against the cached tenant model, so a 40 000-key
  * inventory renders in the same time as a 40-key one.
+ *
+ * `syncTo` is the view's `generatedAt`. When the stream pushes a newer model the
+ * page re-queries, so the table never shows keys in a state the KPIs above it
+ * have already moved past.
  */
-export function useKeyQuery(initial: KeyQuery = {}) {
+export function useKeyQuery(initial: KeyQuery = {}, syncTo: string | null = null) {
   const { session } = useAuth();
   const token = session?.access_token;
   const [page, setPage] = useState<KeyPage | null>(null);
@@ -520,7 +535,7 @@ export function useKeyQuery(initial: KeyQuery = {}) {
 
   useEffect(() => {
     void run(query);
-  }, [run, query]);
+  }, [run, query, syncTo]);
 
   const update = useCallback((patch: Partial<KeyQuery>) => {
     // Any filter change resets to the first page: leaving the offset in place
@@ -551,15 +566,20 @@ export function useKeyDetail() {
   const [detail, setDetail] = useState<KeyDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Opening key B while key A is still loading must never show A's record. */
+  const requestRef = useRef(0);
 
   const load = useCallback(
-    async (keyId: string | null) => {
+    async (keyId: string | null, options: { quiet?: boolean } = {}) => {
+      const ticket = ++requestRef.current;
       if (!keyId) {
         setDetail(null);
+        setLoading(false);
         return;
       }
       if (!token) return;
-      setLoading(true);
+      // A quiet reload (live push) keeps the open record on screen meanwhile.
+      if (!options.quiet) setLoading(true);
       setError(null);
       try {
         const response = await fetch(`${API_BASE}/keys/${encodeURIComponent(keyId)}`, {
@@ -567,13 +587,15 @@ export function useKeyDetail() {
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
+        if (ticket !== requestRef.current) return;
         setDetail(payload.data as KeyDetail);
       } catch (err) {
+        if (ticket !== requestRef.current) return;
         console.error('QKMS key detail failed:', err);
         setError(err instanceof Error ? err.message : 'Unable to load key detail');
-        setDetail(null);
+        if (!options.quiet) setDetail(null);
       } finally {
-        setLoading(false);
+        if (ticket === requestRef.current) setLoading(false);
       }
     },
     [token],
@@ -616,9 +638,17 @@ export function useQkmsActions(onChanged?: () => void) {
           body: JSON.stringify(body ?? {}),
         });
         const payload = await response.json().catch(() => ({}));
+        // A conflict means the record moved under the operator (another tab, an
+        // agent, a double click): reload so the controls reflect the real state.
+        if (response.status === 409) onChanged?.();
         if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
         onChanged?.();
-        return { ok: true, message: successMessage };
+        const versionNote = payload?.data?.validationStatus === 'pending'
+          ? ' Closed WITHOUT validation evidence: no new version was minted and the migration gate still requires validation.'
+          : payload?.data?.versionRecorded === false
+            ? ' The new key version could not be recorded; the version chain is unchanged.'
+            : '';
+        return { ok: true, message: `${successMessage}${versionNote}` };
       } catch (err) {
         return { ok: false, message: err instanceof Error ? err.message : 'Action failed' };
       } finally {

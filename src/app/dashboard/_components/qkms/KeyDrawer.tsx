@@ -14,7 +14,7 @@
  * renders and one that does not.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Activity,
@@ -65,10 +65,13 @@ export function KeyDrawer({
   keyId,
   onClose,
   onChanged,
+  syncTo = null,
 }: {
   keyId: string | null;
   onClose: () => void;
   onChanged?: () => void;
+  /** The page's model `generatedAt`; a newer push re-reads the open key quietly. */
+  syncTo?: string | null;
 }) {
   const { detail, loading, error, load } = useKeyDetail();
   const { notice, show, dismiss } = useNotice();
@@ -85,6 +88,15 @@ export function KeyDrawer({
     void load(keyId);
     setEditingOwner(false);
   }, [keyId, load]);
+
+  // Live push: refresh the open record without blanking it. The first render
+  // is covered by the effect above.
+  const syncedRef = useRef(syncTo);
+  useEffect(() => {
+    if (syncedRef.current === syncTo) return;
+    syncedRef.current = syncTo;
+    if (keyId) void load(keyId, { quiet: true });
+  }, [syncTo, keyId, load]);
 
   const key = detail?.key ?? null;
 
@@ -256,7 +268,7 @@ export function KeyDrawer({
               </Field>
             </div>
             <div className="mt-2 flex flex-wrap gap-1.5">
-              <PostureBadge posture={key.posture} />
+              <PostureBadge posture={key.posture} evidence={key.postureEvidence} />
               <RequirementBadge requirement={key.migrationRequirement} />
             </div>
             <ExplainBox tone="neutral" title="Why this posture">{key.postureReason}</ExplainBox>

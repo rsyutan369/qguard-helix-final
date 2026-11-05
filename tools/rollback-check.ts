@@ -171,7 +171,7 @@ console.log('\n[6] The agent refuses a rollback it cannot prove')
 const agentSrc = readFileSync('tools/qguard-agent/agent.ts', 'utf8')
 assert(/case 'rollback':/.test(agentSrc), 'the runtime implements the rollback command')
 assert(
-  /if \(!REMEDIATION_ENABLED \|\| !CONFIG_PATCHES_ENABLED\)/.test(agentSrc),
+  agentSrc.includes("!['patcher', 'operator'].includes(AGENT_ROLE) || !REMEDIATION_ENABLED || !CONFIG_PATCHES_ENABLED"),
   'a read-only agent refuses to write, whatever it is asked',
 )
 assert(

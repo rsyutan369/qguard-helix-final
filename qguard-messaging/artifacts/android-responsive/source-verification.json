@@ -1,0 +1,13 @@
+{
+  "checkedFiles": 321,
+  "unchangedFiles": 317,
+  "changedFiles": [
+    "src/components/mobile/MobileOnboarding.test.ts",
+    "src/components/mobile/MobileOnboarding.tsx",
+    "src/components/workspace/WorkspaceLockGate.tsx",
+    "src/pages/SecureChatPage.tsx"
+  ],
+  "allRustSourceUnchanged": true,
+  "lockValidationStateAndSubmissionUnchanged": true,
+  "chatOnlyPresentationAttributesChanged": true
+}

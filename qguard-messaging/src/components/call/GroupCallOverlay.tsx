@@ -38,9 +38,10 @@ export function GroupCallOverlay({ links, localStream, names, micEnabled, camera
   const statusOf = (phase: string) => (phase === "calling" ? "Ringing…" : phase === "ringing" ? "Joining…" : phase === "ended" ? "Left the call" : "Connecting…");
   return (
     <div className="fixed inset-0 z-[70] flex flex-col bg-ink-950 text-white">
-      <div className="flex items-center justify-between gap-3 px-5 py-3">
+      {/* Wraps on a phone, and clears the Android status bar / notch. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-5 pb-3" style={{ paddingTop: "max(0.75rem, env(safe-area-inset-top))" }}>
         <div className="flex items-center gap-2 text-sm font-bold"><Users size={16} /> Group call</div>
-        <div className="flex items-center gap-1.5 text-xs text-emerald-300"><ShieldCheck size={14} /> Each person&apos;s link is separately end-to-end encrypted</div>
+        <div className="flex min-w-0 items-center gap-1.5 text-xs text-emerald-300"><ShieldCheck size={14} className="shrink-0" /> Each person&apos;s link is separately end-to-end encrypted</div>
       </div>
       <div className="grid flex-1 grid-cols-1 gap-3 overflow-y-auto p-4 sm:grid-cols-2">
         {links.map((link) => (
@@ -54,9 +55,9 @@ export function GroupCallOverlay({ links, localStream, names, micEnabled, camera
         <VideoTile stream={localStream} label="You" muted status="Starting camera…" />
       </div>
       <div className="flex items-center justify-center gap-4 py-5" style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}>
-        <button type="button" onClick={onToggleMic} title={micEnabled ? "Mute microphone" : "Unmute microphone"} className={`flex h-12 w-12 items-center justify-center rounded-full ${micEnabled ? "bg-white/15" : "bg-rose-500"}`}>{micEnabled ? <Mic size={20} /> : <MicOff size={20} />}</button>
-        <button type="button" onClick={onToggleCamera} title={cameraEnabled ? "Turn camera off" : "Turn camera on"} className={`flex h-12 w-12 items-center justify-center rounded-full ${cameraEnabled ? "bg-white/15" : "bg-rose-500"}`}>{cameraEnabled ? <Video size={20} /> : <VideoOff size={20} />}</button>
-        <button type="button" onClick={onLeave} title="Leave the call" className="flex h-12 w-12 items-center justify-center rounded-full bg-rose-500 hover:bg-rose-600"><PhoneOff size={20} /></button>
+        <button type="button" onClick={onToggleMic} title={micEnabled ? "Mute microphone" : "Unmute microphone"} aria-label={micEnabled ? "Mute microphone" : "Unmute microphone"} className={`flex h-12 w-12 items-center justify-center rounded-full ${micEnabled ? "bg-white/15" : "bg-rose-500"}`}>{micEnabled ? <Mic size={20} /> : <MicOff size={20} />}</button>
+        <button type="button" onClick={onToggleCamera} title={cameraEnabled ? "Turn camera off" : "Turn camera on"} aria-label={cameraEnabled ? "Turn camera off" : "Turn camera on"} className={`flex h-12 w-12 items-center justify-center rounded-full ${cameraEnabled ? "bg-white/15" : "bg-rose-500"}`}>{cameraEnabled ? <Video size={20} /> : <VideoOff size={20} />}</button>
+        <button type="button" onClick={onLeave} title="Leave the call" aria-label="Leave the call" className="flex h-12 w-12 items-center justify-center rounded-full bg-rose-500 hover:bg-rose-600"><PhoneOff size={20} /></button>
       </div>
     </div>
   );

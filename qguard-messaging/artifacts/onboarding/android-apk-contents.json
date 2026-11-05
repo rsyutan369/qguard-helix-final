@@ -1,0 +1,22 @@
+{
+  "apkBytes": 22916767,
+  "apkSha256": "78f8abad950b531d548a8327687f4de8a700152e30345f9373578268e54095cc",
+  "apkSha3_256": "a05cb04812fa7b74dc161d353b1ea1a43fa8721798ffdc3469d09d098670fc06",
+  "nativeBytes": 17957864,
+  "nativeSha3_256": "83e28f443217655278a1c696453e89c383661d0187d5b10ed936c37270b35552",
+  "nativeMatchesFreshLibrary": true,
+  "zipCrcCheckPassed": true,
+  "currentUiBundle": "index-CjWTLbRC.js",
+  "containsCurrentUi": true,
+  "onboardingAssets": {
+    "splash.webp": true,
+    "messaging.webp": true,
+    "vault.webp": true,
+    "calls.webp": true,
+    "devices.webp": true,
+    "splash-logo.png": true
+  },
+  "nativeAbis": [
+    "arm64-v8a"
+  ]
+}

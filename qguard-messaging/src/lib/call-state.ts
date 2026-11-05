@@ -1,9 +1,15 @@
-import type { CallPhase } from "@/lib/call-types";
+import type { CallEndReason, CallMedia, CallPhase } from "@/lib/call-types";
 
 export interface CallState {
   phase: CallPhase;
   callId: string | null;
   role: "caller" | "callee" | null;
+  /** The conversation the call belongs to (null before a call starts). */
+  conversationId: string | null;
+  /** Voice (microphone only) or video. Fixed for the life of a call. */
+  media: CallMedia;
+  /** Why an ended call ended, when it ended without an error. */
+  endReason: CallEndReason | null;
   peerUserId: string | null;
   peerDeviceId: string | null;
   safetyNumber: string | null;
@@ -31,16 +37,16 @@ export interface CallState {
 }
 
 export type CallAction =
-  | { type: "start-outgoing"; callId: string; peerUserId: string; peerDeviceId: string }
-  | { type: "incoming"; callId: string; peerUserId: string; peerDeviceId: string }
+  | { type: "start-outgoing"; callId: string; peerUserId: string; peerDeviceId: string; media?: CallMedia; conversationId?: string }
+  | { type: "incoming"; callId: string; peerUserId: string; peerDeviceId: string; media?: CallMedia; conversationId?: string }
   | { type: "accept" }
   | { type: "remote-answered" }
   | { type: "media-connected"; safetyNumber: string; forwardSecret?: boolean; peerVerified?: boolean; peerVerifiedAt?: number | null; peerPaired?: boolean }
   | { type: "failed"; error: string }
-  | { type: "ended" };
+  | { type: "ended"; reason?: CallEndReason };
 
 export const INITIAL_CALL_STATE: CallState = {
-  phase: "idle", callId: null, role: null, peerUserId: null, peerDeviceId: null, safetyNumber: null,
+  phase: "idle", callId: null, role: null, conversationId: null, media: "video", endReason: null, peerUserId: null, peerDeviceId: null, safetyNumber: null,
   forwardSecret: null, peerVerified: null, peerVerifiedAt: null, peerPaired: null, error: null,
 };
 
@@ -50,10 +56,10 @@ export function callReducer(state: CallState, action: CallAction): CallState {
   switch (action.type) {
     case "start-outgoing":
       if (ACTIVE.includes(state.phase)) return state;
-      return { ...INITIAL_CALL_STATE, phase: "calling", role: "caller", callId: action.callId, peerUserId: action.peerUserId, peerDeviceId: action.peerDeviceId };
+      return { ...INITIAL_CALL_STATE, phase: "calling", role: "caller", conversationId: action.conversationId ?? null, media: action.media ?? "video", callId: action.callId, peerUserId: action.peerUserId, peerDeviceId: action.peerDeviceId };
     case "incoming":
       if (ACTIVE.includes(state.phase)) return state; // busy
-      return { ...INITIAL_CALL_STATE, phase: "ringing", role: "callee", callId: action.callId, peerUserId: action.peerUserId, peerDeviceId: action.peerDeviceId };
+      return { ...INITIAL_CALL_STATE, phase: "ringing", role: "callee", conversationId: action.conversationId ?? null, media: action.media ?? "video", callId: action.callId, peerUserId: action.peerUserId, peerDeviceId: action.peerDeviceId };
     case "accept":
       return state.phase === "ringing" ? { ...state, phase: "connecting" } : state;
     case "remote-answered":
@@ -73,9 +79,11 @@ export function callReducer(state: CallState, action: CallAction): CallState {
         }
         : state;
     case "failed":
-      return { ...state, phase: "ended", error: action.error };
+      return { ...state, phase: "ended", error: action.error, endReason: null };
     case "ended":
-      return { ...state, phase: "ended" };
+      // A second "ended" (a late remote hangup after ours) keeps the first reason.
+      if (state.phase === "ended") return state;
+      return { ...state, phase: "ended", endReason: action.reason ?? null };
     default:
       return state;
   }

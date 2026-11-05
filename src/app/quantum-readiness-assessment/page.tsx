@@ -1,436 +1,265 @@
-/**
- * Quantum Readiness Assessment — marketing overview (/quantum-readiness-assessment)
- *
- * Public showcase for the Quantum Readiness Assessment Engine™ (the dashboard module
- * at /dashboard/quantum-readiness). Light theme matching QGuard Messaging: white +
- * dot-grid background, CyberBackground particle field, gold/cyan/violet accents,
- * GlassCard system, Framer Motion reveals.
- *
- * Copy and module set are derived from the live dashboard (KPIs + 8 assessment
- * modules). Console/score figures are an illustrative product preview, clearly
- * labelled — never presented as a tenant's live posture.
- */
-import { motion } from 'motion/react';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import {
-  Activity,
-  AlertTriangle,
-  ArrowRight,
-  BrainCircuit,
-  Boxes,
-  Clock,
-  Cpu,
-  EyeOff,
-  FileText,
-  Gauge,
-  KeyRound,
-  LayoutDashboard,
-  Network,
-  Radar,
-  Rocket,
-  ScanSearch,
-  ShieldAlert,
-  ShieldCheck,
-  Sparkles,
-  Target,
-  TrendingUp,
-  type LucideIcon,
+  Activity, ArrowDown, ArrowRight, ArrowUpRight, Award, BrainCircuit, Check,
+  EyeOff, FileText, Fingerprint, Gauge, GitBranch, Layers3, LockKeyhole, Menu,
+  Network, Radar, ScanSearch, ShieldAlert, ShieldCheck, Sparkles, Wrench, X,
 } from 'lucide-react';
-import {
-  QuantumReadinessLayout,
-  Reveal,
-  Highlight,
-  Kicker,
-  SectionHeading,
-  GlassCard,
-  FeatureCard,
-  TrustStrip,
-  DarkButton,
-  GoldButton,
-  GhostButton,
-  CTASection,
-  CountUp,
-  ReadinessRing,
-  ScoreCard,
-  ModuleSpotlight,
-  type Feature,
-  type Score,
-} from './_shared';
+import { EvidenceLens, HeroLens } from './_lenses';
+import './assessment.css';
 
-/* Score tones (aligned with the dashboard palette). */
-const GREEN = '#22c55e';
-const RED = '#ef4444';
-const ORANGE = '#f97316';
-const AMBER = '#f59e0b';
-const CYAN = '#06b6d4';
-const BLUE = '#3b82f6';
-const VIOLET = '#8b5cf6';
-
-const TRUST = ['NIST FIPS 203', 'FIPS 204', 'FIPS 205', 'Evidence-Driven', 'Real-Time Telemetry', 'Multi-Tenant'];
-
-/* Illustrative preview figures — kept consistent between the hero console and the
-   scoring section below. Not a live tenant posture. */
-const DEMO = {
-  readiness: 74,
-  risk: 38,
-  hndl: 52,
-  pqcAdoption: 41,
-  assets: 12480,
-  vulnerable: 4860,
-  keys: 3204,
-  certs: 1190,
-};
-
-const SCORES: Score[] = [
-  { label: 'Quantum Readiness', value: DEMO.readiness, suffix: '/100', detail: 'Composite posture score', color: GREEN, ring: DEMO.readiness, icon: ShieldCheck },
-  { label: 'Quantum Risk', value: DEMO.risk, suffix: '/100', detail: 'Weighted exposure index', color: ORANGE, ring: DEMO.risk, icon: ShieldAlert },
-  { label: 'HNDL Risk', value: DEMO.hndl, suffix: '/100', detail: 'Harvest-now-decrypt-later', color: AMBER, ring: DEMO.hndl, icon: Target },
-  { label: 'PQC Adoption', value: DEMO.pqcAdoption, suffix: '%', detail: 'Assets already quantum-safe', color: CYAN, ring: DEMO.pqcAdoption, icon: Gauge },
-  { label: 'Assets Assessed', value: DEMO.assets, detail: `${DEMO.vulnerable.toLocaleString()} quantum-vulnerable`, color: BLUE, icon: Boxes },
-  { label: 'Keys Discovered', value: DEMO.keys, detail: `+ ${DEMO.certs.toLocaleString()} certificates analyzed`, color: VIOLET, icon: KeyRound },
+const DASHBOARD = '/dashboard/quantum-readiness';
+const ART = '/readiness-assessment';
+const NAV = [
+  { label: 'Overview', href: '#top' },
+  { label: 'Scoring', href: '#scoring' },
+  { label: 'Modules', href: '#modules' },
+  { label: 'Standards', href: '#standards' },
 ];
 
-const LIFECYCLE: Array<{ icon: LucideIcon; name: string; body: string; color: string }> = [
-  { icon: ScanSearch, name: 'Discover', body: 'Inventory every key, certificate and algorithm across cloud, on-prem and SaaS.', color: BLUE },
-  { icon: Gauge, name: 'Assess', body: 'Score quantum readiness, risk and HNDL exposure from real evidence.', color: CYAN },
-  { icon: BrainCircuit, name: 'Plan', body: 'Generate AI migration waves with sequencing and rollback paths.', color: VIOLET },
-  { icon: Rocket, name: 'Migrate', body: 'Execute PQC changes with validation checkpoints and guardrails.', color: ORANGE },
-  { icon: ShieldCheck, name: 'Validate', body: 'Confirm each asset is genuinely PQC-ready — no false positives.', color: GREEN },
-  { icon: Activity, name: 'Monitor', body: 'Continuously watch posture and drift, long after cutover.', color: AMBER },
+const STANDARDS = [
+  { algorithm: 'ML-KEM', purpose: 'Key establishment', standard: 'FIPS 203', url: 'https://csrc.nist.gov/pubs/fips/203/final' },
+  { algorithm: 'ML-DSA', purpose: 'Digital signatures', standard: 'FIPS 204', url: 'https://csrc.nist.gov/pubs/fips/204/final' },
+  { algorithm: 'SLH-DSA', purpose: 'Stateless hash-based signatures', standard: 'FIPS 205', url: 'https://csrc.nist.gov/pubs/fips/205/final' },
 ];
 
-const MODULE_GRID: Feature[] = [
-  { icon: TrendingUp, title: 'Executive Dashboard', body: 'Board-ready posture, business impact and forecast — the story your CISO can take upstairs.' },
-  { icon: Network, title: 'Quantum Exposure Graph™', body: 'Interactive dependency and blast-radius map showing exactly what breaks when an algorithm falls.' },
-  { icon: ShieldAlert, title: 'Quantum Risk Analysis', body: 'Technical risk prioritization with the evidence behind every score — algorithm, asset and severity.' },
-  { icon: Sparkles, title: 'AI Executive Advisor™', body: 'Evidence-grounded advisory that translates cryptography into decisions, timelines and dollars.' },
-  { icon: FileText, title: 'Report Center', body: 'Customer-facing reports and audit-ready evidence packages, generated on demand.' },
+const LIFECYCLE = [
+  { icon: ScanSearch, title: 'Discover', body: 'Inventory algorithms, keys, and certificates.' },
+  { icon: Gauge, title: 'Assess', body: 'Identify exposure and review the evidence behind each finding.' },
+  { icon: GitBranch, title: 'Plan', body: 'Group changes by risk, dependency, and rollout order.' },
+  { icon: Wrench, title: 'Migrate', body: 'Roll out changes with a recovery path.' },
+  { icon: ShieldCheck, title: 'Validate', body: 'Check the resulting configuration against readiness criteria.' },
+  { icon: Activity, title: 'Monitor', body: 'Watch for drift after cutover.' },
+  { icon: FileText, title: 'Govern', body: 'Record decisions and retain supporting evidence.' },
 ];
 
-const STANDARDS: Array<{ purpose: string; algo: string; standard: string }> = [
-  { purpose: 'Key establishment', algo: 'ML-KEM (512 / 768 / 1024)', standard: 'FIPS 203' },
-  { purpose: 'Digital signatures', algo: 'ML-DSA', standard: 'FIPS 204' },
-  { purpose: 'Stateless hash signatures', algo: 'SLH-DSA', standard: 'FIPS 205' },
-  { purpose: 'Symmetric / AEAD', algo: 'AES-256-GCM', standard: 'FIPS 197' },
-  { purpose: 'Hashing', algo: 'SHA3-256 / SHA3-512', standard: 'FIPS 202' },
+const MODULES = [
+  { icon: Network, title: 'Quantum Exposure Graph', body: 'Trace cryptographic dependencies and see what a change could affect.', to: `${DASHBOARD}/exposure-graph` },
+  { icon: ShieldAlert, title: 'Quantum Risk Analysis', body: 'Review affected assets and the evidence behind risk findings.', to: `${DASHBOARD}/risk-analysis` },
+  { icon: Wrench, title: 'Quantum Remediation Engine', body: 'Turn findings into asset-level remediation steps.', to: `${DASHBOARD}/remediation` },
+  { icon: Sparkles, title: 'AI Executive Advisor', body: 'Translate findings into priorities that leadership can review.', to: `${DASHBOARD}/ai-executive-advisor` },
+  { icon: EyeOff, title: 'Harvest Now, Decrypt Later', body: 'Prioritize sensitive data by exposure and confidentiality lifetime.', to: '/dashboard/harvest-now' },
+  { icon: Award, title: 'Quantum Trust Certification', body: 'Review the evidence needed to issue a readiness certificate.', to: '/dashboard/quantum-certification' },
+  { icon: FileText, title: 'Report Center', body: 'Package assessment findings and supporting evidence for review.', to: `${DASHBOARD}/reports` },
 ];
 
-/* Hero console mini-tile. */
-function ConsoleTile({ icon: Icon, label, value, tone }: { icon: LucideIcon; label: string; value: string; tone: string }) {
+function AssessmentHeader() {
+  const [expanded, setExpanded] = useState(false);
+  const toggle = useRef<HTMLButtonElement>(null);
+  const nav = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (expanded) nav.current?.querySelector<HTMLAnchorElement>("a")?.focus();
+  }, [expanded]);
+
   return (
-    <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
-      <Icon className="h-5 w-5" style={{ color: tone }} />
-      <div className="mt-2 font-mono text-[10px] uppercase tracking-widest text-slate-400">{label}</div>
-      <div className="font-mono text-sm font-bold text-white">{value}</div>
-    </div>
+    <header
+      className="qa-header"
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' && expanded) {
+          setExpanded(false);
+          toggle.current?.focus();
+        }
+      }}
+    >
+      <div className="qa-container qa-nav">
+        <Link to="/" className="qa-brand" aria-label="Qguard Helix home">
+          <img src="/NEW_LOGO.png" alt="" width="35" height="35" />
+          <span>Qguard Helix<small>ASSESSMENT ENGINE</small></span>
+        </Link>
+        <nav ref={nav} id="qa-navigation" className="qa-nav-links" aria-label="Assessment" data-expanded={expanded}>
+          {NAV.map(({ label, href }) => (
+            <a
+              key={href}
+              href={href}
+              onClick={() => {
+                setExpanded(false);
+                document.getElementById(href.slice(1))?.focus({ preventScroll: true });
+              }}
+            >
+              {label}
+            </a>
+          ))}
+          <Link to="/public-scan" onClick={() => setExpanded(false)}>Free scan <ArrowUpRight size={14} aria-hidden="true" /></Link>
+        </nav>
+        <Link className="qa-button qa-button--nav" to="/login">Launch app <ArrowUpRight size={15} aria-hidden="true" /></Link>
+        <button
+          ref={toggle}
+          className="qa-menu"
+          type="button"
+          aria-label={expanded ? 'Close assessment navigation' : 'Open assessment navigation'}
+          aria-expanded={expanded}
+          aria-controls="qa-navigation"
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? <X aria-hidden="true" /> : <Menu aria-hidden="true" />}
+        </button>
+      </div>
+    </header>
   );
 }
 
 export default function QuantumReadinessAssessmentPage() {
+  const { hash } = useLocation();
+  useEffect(() => {
+    const previous = document.title;
+    document.title = 'Quantum Readiness Assessment | Qguard Helix';
+    return () => { document.title = previous; };
+  }, []);
+  useEffect(() => {
+    if (hash) {
+      document.getElementById(hash.slice(1))?.scrollIntoView();
+    } else {
+      window.scrollTo({ top: 0 });
+    }
+  }, [hash]);
+
   return (
-    <QuantumReadinessLayout>
-      <span id="top" />
-
-      {/* ---------------------------------------------------------------- Hero -- */}
-      <section className="relative px-6 pb-16 pt-28 sm:pt-32">
-        <div className="mx-auto grid max-w-[88rem] items-center gap-12 lg:grid-cols-[1.05fr_0.95fr]">
-          <Reveal>
-            <Kicker>Quantum Readiness Assessment Engine™</Kicker>
-            <h1 className="mt-5 text-4xl font-black leading-[1.05] tracking-tight text-slate-900 sm:text-6xl">
-              Measure your <Highlight>quantum risk</Highlight>.<br />Prove your <Highlight>readiness</Highlight>.
-            </h1>
-            <p className="mt-5 max-w-xl text-base leading-relaxed text-slate-600 sm:text-lg">
-              The Quantum Readiness Assessment Engine turns cryptographic inventory, runtime telemetry and trust
-              intelligence into a single board-ready readiness score — with AI advisory, blast-radius mapping and
-              migration planning behind every number.
-            </p>
-            <div className="mt-8 flex flex-wrap items-center gap-3">
-              <GoldButton href="/login">Launch the App</GoldButton>
-              <DarkButton to="/dashboard/quantum-readiness">View Live Dashboard</DarkButton>
+    <div className="qguard-home qguard-home--light qa-page">
+      <a className="qa-skip" href="#qa-main">Skip to assessment content</a>
+      <AssessmentHeader />
+      <main id="qa-main" tabIndex={-1}>
+        <section id="top" tabIndex={-1} className="qa-hero" aria-labelledby="qa-title">
+          <div className="qa-container qa-hero-grid">
+            <div className="qa-hero-copy">
+              <span className="qa-kicker"><Radar size={16} aria-hidden="true" /> Quantum Readiness Assessment</span>
+              <h1 id="qa-title">See quantum risk.<br /><span>Plan what changes.</span></h1>
+              <p className="qa-lede">Find where your organization relies on quantum-vulnerable cryptography, trace the evidence behind each finding, and decide what to migrate first.</p>
+              <div className="qa-actions">
+                <Link className="qa-button qa-button--primary" to={DASHBOARD}>Open assessment <ArrowUpRight aria-hidden="true" /></Link>
+                <a className="qa-button qa-button--secondary" href="#scoring">Explore scoring <ArrowDown aria-hidden="true" /></a>
+              </div>
+              <p className="qa-hero-note"><Fingerprint size={16} aria-hidden="true" /> Built for security, infrastructure, and risk teams</p>
             </div>
-            <div className="mt-8">
-              <TrustStrip items={TRUST} />
-            </div>
-          </Reveal>
+            <HeroLens />
+          </div>
+          <div className="qa-container qa-reference-strip" aria-label="NIST post-quantum standards">
+            <span className="qa-reference-title"><ShieldCheck size={19} aria-hidden="true" /> NIST PQC standards</span>
+            {STANDARDS.map(({ algorithm, standard }) => (
+              <a key={algorithm} href="#standards"><span>{algorithm}</span><small>{standard}</small></a>
+            ))}
+          </div>
+        </section>
 
-          {/* Signature: live "Quantum Readiness Console" preview panel. */}
-          <Reveal delay={0.15}>
-            {/* Colours here use explicit slate/cyan (not text-white / gold) so the
-                light-theme override sheet leaves this dark instrument panel intact. */}
-            <div className="relative overflow-hidden rounded-2xl border-2 border-slate-900 bg-[#040810] p-6 text-slate-200 shadow-[0_30px_90px_rgba(2,6,23,0.35)]">
-              <div className="absolute inset-x-0 top-0 h-[3px] bg-gradient-to-r from-cyan-400 via-sky-500 to-violet-500" />
-              <div className="flex items-center justify-between">
-                <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-slate-400">QUANTUM_READINESS // LIVE PREVIEW</span>
-                <span className="inline-flex items-center gap-1.5 font-mono text-[10px] font-bold text-emerald-400">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" /> ASSESSING
-                </span>
-              </div>
-
-              <div className="mt-6 flex items-center gap-6">
-                <ReadinessRing value={DEMO.readiness} color={GREEN} size={140} stroke={12}>
-                  <div>
-                    <div className="text-3xl font-black text-slate-50">
-                      <CountUp value={DEMO.readiness} />
-                    </div>
-                    <div className="font-mono text-[9px] font-bold uppercase tracking-widest text-slate-400">Readiness</div>
-                  </div>
-                </ReadinessRing>
-                <div className="min-w-0 flex-1 space-y-3">
-                  <div>
-                    <div className="font-mono text-[9px] font-bold uppercase tracking-widest text-slate-500">Readiness Level</div>
-                    <div className="text-lg font-bold text-emerald-400">Advancing</div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <div className="font-mono text-[9px] font-bold uppercase tracking-widest text-slate-500">Critical</div>
-                      <div className="font-mono text-lg text-rose-400">27</div>
-                    </div>
-                    <div>
-                      <div className="font-mono text-[9px] font-bold uppercase tracking-widest text-slate-500">Findings</div>
-                      <div className="font-mono text-lg text-slate-200">1,842</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-6 grid grid-cols-2 gap-3">
-                <ConsoleTile icon={ShieldAlert} label="Quantum Risk" value={`${DEMO.risk}/100`} tone="#fb923c" />
-                <ConsoleTile icon={Target} label="HNDL Risk" value={`${DEMO.hndl}/100`} tone="#fbbf24" />
-                <ConsoleTile icon={Boxes} label="Assets" value={DEMO.assets.toLocaleString()} tone="#60a5fa" />
-                <ConsoleTile icon={KeyRound} label="Keys" value={DEMO.keys.toLocaleString()} tone="#a78bfa" />
-              </div>
-
-              <div className="mt-5 flex items-center justify-between rounded-xl border border-cyan-400/25 bg-cyan-400/10 px-4 py-3">
-                <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-cyan-200">Evidence-Grounded Scoring</span>
-                <ShieldCheck className="h-4 w-4 text-cyan-300" />
-              </div>
-            </div>
-          </Reveal>
-        </div>
-      </section>
-
-      {/* ---------------------------------------------------- The quantum threat -- */}
-      <section className="mx-auto max-w-[88rem] px-6 py-12">
-        <Reveal>
-          <GlassCard className="grid items-center gap-8 overflow-hidden p-6 sm:p-8 lg:grid-cols-2" hover={false}>
+        <section className="qa-section" aria-labelledby="qa-exposure-title">
+          <div className="qa-container qa-exposure">
+            <figure className="qa-editorial-figure">
+              <img src={`${ART}/archived-traffic.webp`} width={1200} height={800} loading="lazy" decoding="async" alt="A branch of a fiber-optic signal is diverted into a separate archive layer." />
+              <figcaption><EyeOff size={15} aria-hidden="true" /> Illustration of encrypted traffic being captured</figcaption>
+            </figure>
             <div>
-              <span className="inline-flex items-center gap-2 rounded-full border border-rose-300/60 bg-rose-50 px-3 py-1 font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-rose-600">
-                <Clock className="h-3.5 w-3.5" /> The deadline is already here
-              </span>
-              <h2 className="mt-4 text-3xl font-black tracking-tight text-slate-900 sm:text-4xl">
-                &ldquo;Harvest now, decrypt later&rdquo; isn&rsquo;t a <Highlight>someday</Highlight> problem.
-              </h2>
-              <p className="mt-3 text-base leading-relaxed text-slate-600">
-                Adversaries are already recording encrypted traffic to decrypt once a cryptographically-relevant quantum
-                computer arrives. Anything that must stay secret for a decade is exposed <em>today</em>. You can&rsquo;t
-                fix what you can&rsquo;t see — the first step is knowing exactly where RSA and ECC still live.
-              </p>
-              <div className="mt-6 grid grid-cols-3 gap-3">
-                {[
-                  { k: '2030', v: 'RSA & ECC deprecated (NIST)' },
-                  { k: '2035', v: 'Legacy crypto disallowed' },
-                  { k: '10+ yr', v: 'Secrets already at risk' },
-                ].map((s) => (
-                  <div key={s.k} className="rounded-xl border border-slate-200 bg-white/70 p-3 text-center">
-                    <div className="text-xl font-black text-slate-900">{s.k}</div>
-                    <div className="mt-1 text-[11px] leading-tight text-slate-500">{s.v}</div>
-                  </div>
-                ))}
-              </div>
+              <span className="qa-kicker"><LockKeyhole size={16} aria-hidden="true" /> Harvest now, decrypt later</span>
+              <h2 id="qa-exposure-title">How long does your data need to stay secret?</h2>
+              <p>Attackers can store encrypted traffic today and attempt to decrypt it later. Data that needs to stay confidential for years deserves an early look, especially when its protection relies on RSA or elliptic-curve cryptography.</p>
+              <ul className="qa-checks">
+                <li><Check aria-hidden="true" /> Identify where vulnerable algorithms protect sensitive data.</li>
+                <li><Check aria-hidden="true" /> Compare confidentiality requirements with migration lead time.</li>
+              </ul>
+              <Link className="qa-text-link" to="/dashboard/harvest-now">Explore HNDL exposure <ArrowRight aria-hidden="true" /></Link>
             </div>
-            <motion.div
-              whileHover={{ scale: 1.02 }}
-              transition={{ duration: 0.4 }}
-              className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-950 shadow-[0_24px_70px_rgba(2,6,23,0.25)]"
-            >
-              <div className="absolute inset-x-0 top-0 z-10 h-[3px] bg-gradient-to-r from-rose-500 via-gold to-cyan-400" />
-              <img src="/Breaking_RSA_ECC.png" alt="Quantum computers breaking RSA and ECC" className="h-full max-h-[320px] w-full object-cover opacity-95" />
-            </motion.div>
-          </GlassCard>
-        </Reveal>
-      </section>
+          </div>
+        </section>
 
-      {/* ----------------------------------------------------------- Lifecycle -- */}
-      <section className="mx-auto max-w-[88rem] px-6 py-14">
-        <SectionHeading
-          kicker="The Assessment Lifecycle"
-          title={<>From first scan to <Highlight>continuous assurance</Highlight></>}
-          subtitle="Every module maps to one stage of the quantum-safe journey — a single, evidence-driven loop from discovery through ongoing monitoring."
-        />
-        <div className="mt-12 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
-          {LIFECYCLE.map((stage, i) => {
-            const Icon = stage.icon;
-            return (
-              <Reveal key={stage.name} delay={(i % 6) * 0.06} className="h-full">
-                <GlassCard className="group relative h-full p-5">
-                  <span className="font-mono text-[11px] font-black tracking-widest text-slate-300">{String(i + 1).padStart(2, '0')}</span>
-                  <span
-                    className="mt-3 flex h-11 w-11 items-center justify-center rounded-xl border transition-transform duration-300 group-hover:scale-110"
-                    style={{ borderColor: `${stage.color}33`, color: stage.color, backgroundColor: `${stage.color}12` }}
-                  >
-                    <Icon className="h-5 w-5" />
-                  </span>
-                  <h3 className="mt-3 text-base font-black text-slate-900">{stage.name}</h3>
-                  <p className="mt-1.5 text-xs leading-relaxed text-slate-600">{stage.body}</p>
-                  {i < LIFECYCLE.length - 1 && (
-                    <ArrowRight className="absolute right-3 top-5 hidden h-4 w-4 text-slate-300 xl:block" />
-                  )}
-                </GlassCard>
-              </Reveal>
-            );
-          })}
-        </div>
-      </section>
+        <section id="scoring" tabIndex={-1} className="qa-section qa-scoring" aria-labelledby="qa-scoring-title">
+          <div className="qa-container">
+            <div className="qa-section-head">
+              <h2 id="qa-scoring-title">See what goes into a readiness score.</h2>
+              <p>Choose an evidence source to see what it contributes to the assessment and which decision it helps you make.</p>
+            </div>
+            <EvidenceLens />
+            <dl className="qa-indicators" aria-label="Assessment indicators">
+              <div><dt>Quantum readiness</dt><dd>Overall posture from available evidence.</dd></div>
+              <div><dt>Quantum risk</dt><dd>Exposure from vulnerable cryptography and affected assets.</dd></div>
+              <div><dt>HNDL risk</dt><dd>Exposure of data that must stay confidential over time.</dd></div>
+              <div><dt>PQC adoption</dt><dd>Extent of post-quantum cryptography in assessed assets.</dd></div>
+              <div><dt>Assets assessed</dt><dd>Coverage across inventoried assets.</dd></div>
+              <div><dt>Keys discovered</dt><dd>Keys identified in the assessment inventory.</dd></div>
+            </dl>
+          </div>
+        </section>
 
-      {/* ------------------------------------------------------------- Scoring -- */}
-      <section id="scoring" className="mx-auto max-w-[88rem] scroll-mt-24 px-6 py-14">
-        <SectionHeading
-          kicker="Board-Ready Scoring"
-          title={<>One score for the boardroom.<br /><Highlight>Full evidence</Highlight> for engineers.</>}
-          subtitle="Six live indicators roll thousands of findings into numbers a CISO can act on — each traceable back to the exact key, certificate or algorithm behind it."
-        />
-        <div className="mt-12 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {SCORES.map((score, i) => (
-            <ScoreCard key={score.label} score={score} delay={(i % 3) * 0.06} />
-          ))}
-        </div>
-        <p className="mx-auto mt-6 max-w-2xl text-center text-xs leading-relaxed text-slate-500">
-          Figures shown are an illustrative product preview. In production every score derives from your real scans,
-          telemetry and inventory — never fabricated.
-        </p>
-      </section>
+        <section className="qa-section qa-lifecycle" aria-labelledby="qa-lifecycle-title">
+          <div className="qa-container">
+            <div className="qa-section-head">
+              <h2 id="qa-lifecycle-title">From first scan to verified change.</h2>
+              <p>Start with an inventory. Use the evidence to plan the rollout, validate the change, and monitor what happens next.</p>
+            </div>
+            <ol className="qa-stages">
+              {LIFECYCLE.map(({ icon: Icon, title, body }) => (
+                <li key={title}><Icon aria-hidden="true" /><h3>{title}</h3><p>{body}</p></li>
+              ))}
+            </ol>
+          </div>
+        </section>
 
-      {/* ------------------------------------------------------------- Modules -- */}
-      <section id="modules" className="mx-auto max-w-[88rem] scroll-mt-24 px-6 py-14">
-        <SectionHeading
-          kicker="Inside the Engine"
-          title={<>Eight modules. One <Highlight>quantum readiness</Highlight> picture.</>}
-          subtitle="Discovery, scoring, AI advisory and HNDL threat intelligence — unified in a single assessment layer that the whole organization can read."
-        />
-
-        <div className="mt-12 space-y-8">
-          <ModuleSpotlight
-            icon={LayoutDashboard}
-            eyebrow="Command Center"
-            title="Run the assessment like a mission"
-            blurb="A live operational cockpit for your quantum-readiness program — assessment progress, telemetry health, critical findings and recommended actions in one continuously updating view."
-            bullets={[
-              'Real-time assessment progress and coverage',
-              'Live cryptographic telemetry with SSE health',
-              'Prioritized critical-findings feed',
-              'One click into every deep-dive module',
-            ]}
-            image="/monitoring.png"
-          />
-          <ModuleSpotlight
-            icon={BrainCircuit}
-            eyebrow="AI Migration Advisor™"
-            title="A migration plan that sequences itself"
-            blurb="Evidence-grounded AI turns your findings into ordered migration waves — with dependencies, effort, rollback paths and business impact scored for every move."
-            bullets={[
-              'Wave-based sequencing by risk and dependency',
-              'Built-in rollback and validation checkpoints',
-              'Effort, cost and impact estimates per wave',
-              'Grounded in your real inventory — no guesswork',
-            ]}
-            image="/Reports/quantum-readiness-migration-planner.png"
-            reverse
-          />
-          <ModuleSpotlight
-            icon={EyeOff}
-            eyebrow="Harvest Now, Decrypt Later"
-            title="Find the data adversaries are already harvesting"
-            blurb="A quantum threat operations center for harvest-now-decrypt-later risk — long-lived sensitive data, exposure windows and the assets whose encrypted traffic is worth stealing today."
-            bullets={[
-              'HNDL risk scoring from real inventory evidence',
-              'Exposure-window analysis against data lifetime',
-              'Internet-facing and high-value asset targeting view',
-              'Prioritized mitigations for the riskiest flows',
-            ]}
-            image="/HarvestNow.png"
-          />
-        </div>
-
-        <div className="mt-8 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-          {MODULE_GRID.map((f, i) => (
-            <FeatureCard key={f.title} feature={f} delay={(i % 3) * 0.06} />
-          ))}
-        </div>
-      </section>
-
-      {/* ------------------------------------------------------------ AI-native -- */}
-      <section className="mx-auto max-w-[88rem] px-6 py-8">
-        <Reveal>
-          <GlassCard className="relative overflow-hidden p-8 sm:p-10" hover={false}>
-            <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-violet-300/25 blur-[80px]" />
-            <div className="pointer-events-none absolute -bottom-16 -left-16 h-56 w-56 rounded-full bg-cyan-300/25 blur-[80px]" />
-            <div className="relative z-10 grid items-center gap-8 lg:grid-cols-[1.4fr_1fr]">
+        <section id="modules" tabIndex={-1} className="qa-section qa-modules" aria-labelledby="qa-modules-title">
+          <div className="qa-container">
+            <div className="qa-section-head">
+              <h2 id="qa-modules-title">Turn findings into a migration plan.</h2>
+              <p>Start in the assessment dashboard, then follow the evidence into the tools your team needs.</p>
+            </div>
+            <article className="qa-spotlight">
               <div>
-                <span className="inline-flex items-center gap-2 rounded-full border border-violet-300/60 bg-violet-50 px-3 py-1 font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-violet-600">
-                  <Sparkles className="h-3.5 w-3.5" /> AI-native, evidence-grounded
-                </span>
-                <h2 className="mt-4 text-2xl font-black tracking-tight text-slate-900 sm:text-3xl">
-                  Advice you can defend in an audit
-                </h2>
-                <p className="mt-3 text-sm leading-relaxed text-slate-600">
-                  Every AI recommendation cites the findings, assets and standards it was built from. No black boxes,
-                  no hallucinated posture — just traceable reasoning your executives and auditors can follow line by line.
-                </p>
-                <div className="mt-5 flex flex-wrap gap-3">
-                  <DarkButton to="/dashboard/quantum-readiness/ai-executive-advisor">AI Executive Advisor</DarkButton>
-                  <GhostButton to="/dashboard/quantum-readiness/ai-migration-advisor">AI Migration Advisor</GhostButton>
-                </div>
+                <span className="qa-kicker"><BrainCircuit size={17} aria-hidden="true" /> AI Migration Advisor</span>
+                <h3>Sequence the rollout.</h3>
+                <p>Group migrations into waves, inspect dependencies, and review validation and rollback steps before making changes.</p>
+                <Link className="qa-text-link" to={`${DASHBOARD}/ai-migration-advisor`}>Open Migration Advisor <ArrowRight aria-hidden="true" /></Link>
               </div>
-              <div className="grid grid-cols-3 gap-3">
-                {[
-                  { icon: Radar, k: 'Traceable', tone: CYAN },
-                  { icon: Cpu, k: 'Grounded', tone: VIOLET },
-                  { icon: AlertTriangle, k: 'Prioritized', tone: ORANGE },
-                ].map((c) => (
-                  <div key={c.k} className="rounded-xl border border-slate-200 bg-white/70 p-4 text-center">
-                    <c.icon className="mx-auto h-6 w-6" style={{ color: c.tone }} />
-                    <div className="mt-2 text-[11px] font-bold uppercase tracking-wide text-slate-700">{c.k}</div>
-                  </div>
-                ))}
-              </div>
+              <img src={`${ART}/migration-waves.webp`} width={1200} height={800} loading="lazy" decoding="async" alt="A single optical route connects four ascending circuit layers, illustrating staged migration." />
+            </article>
+            <div className="qa-module-grid">
+              {MODULES.map(({ icon: Icon, title, body, to }) => (
+                <Link key={to} className="qa-module" to={to}>
+                  <Icon className="qa-module-icon" aria-hidden="true" />
+                  <div><h3>{title}</h3><p>{body}</p></div>
+                  <ArrowUpRight className="qa-module-arrow" aria-hidden="true" />
+                </Link>
+              ))}
             </div>
-          </GlassCard>
-        </Reveal>
-      </section>
+          </div>
+        </section>
 
-      {/* ----------------------------------------------------------- Standards -- */}
-      <section id="standards" className="mx-auto max-w-[88rem] scroll-mt-24 px-6 py-14">
-        <SectionHeading
-          kicker="Standards We Measure Against"
-          title={<>Scored against the <Highlight>NIST</Highlight> post-quantum standards</>}
-          subtitle="Readiness isn't an opinion. Every asset is graded against the finalized NIST algorithms — so a PQC-ready badge actually means something."
-        />
-        <div className="mt-10">
-          <Reveal>
-            <GlassCard className="overflow-hidden" hover={false}>
-              <div className="grid grid-cols-1 divide-y divide-slate-200 sm:grid-cols-2 sm:divide-x lg:grid-cols-5 lg:divide-y-0">
-                {STANDARDS.map((row) => (
-                  <div key={row.purpose} className="p-5">
-                    <div className="font-mono text-[10px] font-bold uppercase tracking-widest text-slate-500">{row.purpose}</div>
-                    <div className="mt-2 font-mono text-sm font-bold text-slate-900">{row.algo}</div>
-                    <div className="mt-2 inline-flex rounded-full border border-gold/30 bg-gold/10 px-2 py-0.5 font-mono text-[10px] font-bold text-[#b8860b]">{row.standard}</div>
-                  </div>
-                ))}
-              </div>
-            </GlassCard>
-          </Reveal>
+        <section id="standards" tabIndex={-1} className="qa-section qa-standards" aria-labelledby="qa-standards-title">
+          <div className="qa-container qa-standards-grid">
+            <div>
+              <span className="qa-kicker"><Layers3 size={16} aria-hidden="true" /> Cryptographic reference</span>
+              <h2 id="qa-standards-title">The standards behind the assessment.</h2>
+              <p>NIST defines distinct post-quantum standards for key establishment and digital signatures. Review algorithm adoption alongside the protocol, configuration, and deployment evidence.</p>
+            </div>
+            <ul className="qa-standard-list">
+              {STANDARDS.map(({ algorithm, purpose, standard, url }) => (
+                <li key={standard}>
+                  <a href={url}>
+                    <span><strong>{algorithm}</strong><small>{purpose}</small></span>
+                    <span className="qa-standard-id">{standard} <ArrowUpRight size={17} aria-hidden="true" /></span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+
+        <section className="qa-close" aria-labelledby="qa-close-title">
+          <div className="qa-container qa-close-grid">
+            <div>
+              <h2 id="qa-close-title">Start with what you can verify.</h2>
+              <p>Open your workspace to review assessment evidence, or start with a free scan of a public endpoint.</p>
+            </div>
+            <div className="qa-actions">
+              <Link className="qa-button qa-button--primary" to={DASHBOARD}>Open assessment <ArrowUpRight aria-hidden="true" /></Link>
+              <Link className="qa-button qa-button--secondary" to="/public-scan">Run a free scan <ArrowRight aria-hidden="true" /></Link>
+            </div>
+          </div>
+        </section>
+      </main>
+      <footer className="qa-footer">
+        <div className="qa-container">
+          <Link to="/">Qguard Helix</Link>
+          <nav aria-label="Company">
+            <Link to="/docs">Documentation</Link><Link to="/contact">Contact</Link><Link to="/privacy">Privacy</Link><Link to="/terms">Terms</Link>
+          </nav>
         </div>
-        <p className="mx-auto mt-4 max-w-2xl text-center text-xs leading-relaxed text-slate-500">
-          Hybrid deployments (X25519 + ML-KEM, Ed25519 + ML-DSA) are recognized and scored as first-class quantum-safe posture.
-        </p>
-      </section>
-
-      {/* ----------------------------------------------------------------- CTA -- */}
-      <CTASection
-        title="See your quantum readiness score"
-        body="Run a discovery scan and watch inventory, telemetry and trust intelligence resolve into a single readiness number — with the evidence and migration plan behind it."
-        primary={{ label: 'Launch the App', href: '/login' }}
-        secondary={{ label: 'View Live Dashboard', to: '/dashboard/quantum-readiness' }}
-      />
-    </QuantumReadinessLayout>
+      </footer>
+    </div>
   );
 }

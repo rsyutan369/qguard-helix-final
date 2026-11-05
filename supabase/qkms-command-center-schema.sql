@@ -94,9 +94,10 @@ CREATE TABLE IF NOT EXISTS public.qkms_key_versions (
 ALTER TABLE public.qkms_key_versions ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS qkms_key_versions_tenant_isolation ON public.qkms_key_versions;
+-- Tenant-only predicate; see qkms-lifecycle-schema.sql for why it is not "tenant OR user".
 CREATE POLICY qkms_key_versions_tenant_isolation ON public.qkms_key_versions
-  FOR ALL USING (auth.uid() = tenant_id OR auth.uid() = user_id)
-  WITH CHECK (auth.uid() = tenant_id OR auth.uid() = user_id);
+  FOR ALL TO authenticated USING (auth.uid() = tenant_id)
+  WITH CHECK (auth.uid() = tenant_id AND auth.uid() = user_id);
 
 CREATE INDEX IF NOT EXISTS idx_qkms_key_versions_tenant
   ON public.qkms_key_versions(tenant_id, key_ref, version);

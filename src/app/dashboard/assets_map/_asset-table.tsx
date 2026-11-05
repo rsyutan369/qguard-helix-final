@@ -122,6 +122,7 @@ export function AssetTable({
                           {row.scanning.active ? <span className="inline-flex items-center gap-1 rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-200"><Radio className="h-3 w-3 animate-pulse" aria-hidden />Scanning{row.scanning.progress !== null ? ` ${Math.round(row.scanning.progress)}%` : ''}</span> : null}
                           {row.evidenceOnly ? <span className="rounded border border-slate-400/30 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider text-[var(--qg-text-muted)]" title="Discovered from scanner evidence; no asset record has been created yet.">Evidence only</span> : null}
                         </span>
+                        {row.deviceProfile ? <span className="mt-1 block text-[10px] text-[var(--qg-text-muted)]">Device profile · certificates, libraries and findings consolidated</span> : null}
                       </span>
                     </button>
                   </td>
@@ -216,6 +217,8 @@ function ComponentTable({ components, assetName, showRemediate }: { components: 
                 <td className="max-w-[260px] px-3 py-2">
                   <div className="break-words font-bold text-[var(--qg-dashboard-text)]">{component.name}</div>
                   <div className="text-[10px] text-[var(--qg-text-muted)]">{component.classLabel}{component.keySize ? ` · ${component.keySize}-bit` : ''}{component.instances > 1 ? ` · ${component.instances} observations` : ''}</div>
+                  {component.observedSubject && !component.name.includes(component.observedSubject) ? <div title={component.observedSubject} className="mt-1 line-clamp-2 break-words text-[10px] text-[var(--qg-dashboard-text-soft)]"><span className="font-bold">Observed subject:</span> {component.observedSubject}</div> : null}
+                  {component.location ? <div className="mt-1 break-all font-mono text-[10px] text-[var(--qg-text-muted)]">{component.location}</div> : null}
                 </td>
                 <td className="px-3 py-2 text-[var(--qg-dashboard-text-soft)]">{component.riskBearing}</td>
                 <td className="max-w-[200px] px-3 py-2 text-[var(--qg-dashboard-text)]">
@@ -261,9 +264,10 @@ function ComponentTable({ components, assetName, showRemediate }: { components: 
 
 export function AssetDetail({ row, now, onReport }: { row: AssetRegisterRow; now: number; onReport: () => void }) {
   const needsAction = row.componentList.filter((c) => c.posture !== 'pqc-ready');
-  const [tab, setTab] = useState<DetailTab>(needsAction.length ? 'action' : 'all');
+  const actionableFindings = row.postureList.filter((c) => c.severity !== 'safe');
+  const [tab, setTab] = useState<DetailTab>(needsAction.length || actionableFindings.length ? 'action' : 'all');
   const tabs: Array<{ id: DetailTab; label: string; count: number }> = [
-    { id: 'action', label: 'Needs action', count: needsAction.length },
+    { id: 'action', label: 'Needs action', count: needsAction.length + actionableFindings.length },
     { id: 'all', label: 'All components', count: row.componentList.length },
     { id: 'findings', label: 'Configuration findings', count: row.postureList.length },
   ];
@@ -281,6 +285,7 @@ export function AssetDetail({ row, now, onReport }: { row: AssetRegisterRow; now
         <p className="mb-3 rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-muted-panel)] p-2.5 text-[11px] font-semibold leading-relaxed text-[var(--qg-dashboard-text)]">{row.pqcStatusReason}</p>
         <Fact label="Target"><span className="break-all font-mono">{row.target}</span></Fact>
         <Fact label="Type">{row.typeLabel}</Fact>
+        {row.deviceProfile ? <Fact label="Inventory scope">One device · all agent observations{row.deviceProfile.subjects ? ` · ${row.deviceProfile.subjects} original subjects retained` : ''}</Fact> : null}
         <Fact label="Discovery source"><span className="space-y-1">{row.sources.map((source, index) => <span key={`${source.kind}:${source.agentId}:${index}`} className="block">{source.label}{source.agentName ? ` · ${source.agentName}` : ''}{source.collectorHost ? ` · ${source.collectorHost}` : ''}{source.collectorPlatform ? ` · ${source.collectorPlatform}` : ''}{source.systemModel ? <span className="block text-[var(--qg-text-muted)]">Hardware: {source.systemModel}</span> : null}</span>)}</span></Fact>
         <Fact label="Owner">{row.owner ?? <span className="italic text-[var(--qg-text-muted)]">Unassigned</span>}</Fact>
         <Fact label="Environment">{row.environment ?? '—'}</Fact>
@@ -317,8 +322,11 @@ export function AssetDetail({ row, now, onReport }: { row: AssetRegisterRow; now
         </div>
         <div role="tabpanel">
           {tab === 'action' ? (
-            needsAction.length ? (
-              <ComponentTable components={needsAction} assetName={row.name} showRemediate />
+            needsAction.length || actionableFindings.length ? (
+              <div className="space-y-4">
+                {needsAction.length ? <div><h3 className="mb-2 text-xs font-bold text-[var(--qg-dashboard-text)]">Cryptographic components requiring action or review</h3><ComponentTable components={needsAction} assetName={row.name} showRemediate /></div> : null}
+                {actionableFindings.length ? <div><h3 className="mb-2 text-xs font-bold text-[var(--qg-dashboard-text)]">Configuration findings requiring review</h3><ComponentTable components={actionableFindings} assetName={row.name} showRemediate={false} /></div> : null}
+              </div>
             ) : (
               <p className="rounded-lg border border-emerald-500/25 bg-emerald-500/8 p-4 text-sm font-semibold text-emerald-700 dark:text-emerald-200">
                 {row.components.total ? 'Every measured component on this asset is classified quantum-safe. Keep it under periodic re-validation.' : 'No cryptographic components have been measured on this asset yet — run an authorized scan.'}
@@ -326,7 +334,10 @@ export function AssetDetail({ row, now, onReport }: { row: AssetRegisterRow; now
             )
           ) : null}
           {tab === 'all' ? (
-            row.componentList.length ? <ComponentTable components={row.componentList} assetName={row.name} showRemediate /> : <p className="text-sm text-[var(--qg-text-muted)]">No cryptographic components measured.</p>
+            <div className="space-y-4">
+              {row.componentList.length ? <ComponentTable components={row.componentList} assetName={row.name} showRemediate /> : <p className="text-sm text-[var(--qg-text-muted)]">No cryptographic components measured.</p>}
+              {row.deviceProfile?.resources.length ? <details className="rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] p-3"><summary className="cursor-pointer text-xs font-bold text-[var(--qg-dashboard-text)]">Collected resource index · {row.deviceProfile.resources.length} subjects</summary><p className="my-3 text-[11px] leading-relaxed text-[var(--qg-text-muted)]">All collected subjects remain inside this device profile. Observing a certificate, file or process does not by itself establish a vulnerability. Classified components are listed above; configuration findings have their own tab.</p><div className="max-h-72 overflow-auto"><ul className="divide-y divide-[var(--qg-card-border)]">{row.deviceProfile.resources.map((resource) => <li key={resource.name} className="flex flex-wrap items-start justify-between gap-2 py-2 text-[11px]"><span className="min-w-0 flex-1 break-words font-mono text-[var(--qg-dashboard-text-soft)]">{resource.name}</span><span className="shrink-0 text-[10px] text-[var(--qg-text-muted)]">{resource.type}</span></li>)}</ul></div></details> : null}
+            </div>
           ) : null}
           {tab === 'findings' ? (
             row.postureList.length ? (

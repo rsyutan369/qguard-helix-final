@@ -88,7 +88,7 @@ export default function AiMigrationAdvisorPage() {
   const handoff = useCallback(
     (target: 'planner' | 'sandbox') => {
       const payload = buildMigrationHandoff(snapshot, model, user?.email || 'QGuard Helix');
-      const ok = writeMigrationHandoff(payload);
+      const ok = writeMigrationHandoff(payload, user?.id);
       setHandoffNote(ok ? `Roadmap handed off (${payload.waves.length} waves) — opening ${target === 'planner' ? 'Migration Planner' : 'Migration Sandbox'}…` : 'Handoff storage unavailable — continuing with navigation only.');
       window.setTimeout(() => navigate(target === 'planner' ? '/dashboard/migration-planner' : '/dashboard/migration-sandbox'), 350);
     },

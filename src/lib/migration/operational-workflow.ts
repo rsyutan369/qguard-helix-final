@@ -184,14 +184,45 @@ function controlLabel(key: string): string {
  * same block for the same row. A finished job's old refusal is history, not a
  * reason it is waiting.
  */
-export function dispatchBlockFor(metadata: unknown, status: string): DispatchBlock | null {
+export function dispatchBlockFor(metadata: unknown, status: string, liveAgentIds?: ReadonlySet<string>): DispatchBlock | null {
+  if (['completed', 'cancelled', 'stopped', 'rolled_back'].includes(status)) return null
   const block = rec(rec(metadata).dispatchBlock)
-  if (!block.reason || ['completed', 'cancelled', 'stopped', 'rolled_back'].includes(status)) return null
+  if (!block.reason) return executorRefusalBlock(metadata, status, liveAgentIds)
   return {
     kind: String(block.kind || 'unknown'),
     requires: String(block.requires || ''),
     reason: String(block.reason),
     at: String(block.at || ''),
+  }
+}
+
+const EXECUTOR_ROLE_LABELS: Record<string, string> = { patcher: 'Patcher', operator: 'Migration Operator' }
+
+/**
+ * Why an approved, queued job is still unclaimed, from the per-agent refusals
+ * the write agents recorded when they polled past it.
+ *
+ * Each executor of the right role writes only its own entry
+ * (`metadata.executorRefusals[agentId]`), so two agents refusing for different
+ * reasons never overwrite each other. A claim clears them all. Only a job that
+ * is still waiting for an executor can be blocked; entries from agents that no
+ * longer exist are ignored when the caller knows the live fleet.
+ */
+function executorRefusalBlock(metadata: unknown, status: string, liveAgentIds?: ReadonlySet<string>): DispatchBlock | null {
+  if (!['queued', 'awaiting_agent', 'pending'].includes(status)) return null
+  const refusals = Object.values(rec(rec(metadata).executorRefusals))
+    .map((entry) => rec(entry))
+    .filter((entry) => str(entry.reason) && (!liveAgentIds || liveAgentIds.has(str(entry.agentId))))
+    .sort((a, b) => str(b.at).localeCompare(str(a.at)))
+  if (refusals.length === 0) return null
+  const latest = refusals[0]
+  const who = `${EXECUTOR_ROLE_LABELS[str(latest.role)] || 'Agent'} ${str(latest.agentName) || str(latest.agentId).slice(0, 8)}`
+  const others = refusals.length > 1 ? ` ${plural(refusals.length - 1, 'other eligible agent')} also declined it.` : ''
+  return {
+    kind: str(latest.kind) || 'out-of-scope',
+    requires: str(latest.requires),
+    reason: `${who} declined this job: ${str(latest.reason)}${others}`,
+    at: str(latest.at),
   }
 }
 

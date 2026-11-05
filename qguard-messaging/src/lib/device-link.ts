@@ -18,8 +18,7 @@
  * A code typed by hand has no binding secret: the device still signs in, but is
  * left for the user to approve in the Device Trust Center like any new device.
  */
-import { hmac } from "@noble/hashes/hmac.js";
-import { sha3_256 } from "@noble/hashes/sha3.js";
+import { coreHmacSha3Hex } from "@/lib/core-crypto";
 import { supabaseAnonKey, supabaseUrl } from "@/lib/supabase";
 import { isAndroidRuntime, isTauriRuntime } from "@/lib/tauri";
 
@@ -167,11 +166,6 @@ export function parseLinkPayload(raw: string): ParsedLinkPayload | null {
 
 // ---- binding proof ---------------------------------------------------------
 
-function fromBase64Url(value: string): Uint8Array {
-  const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
-  return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
-}
-
 export interface LinkProofInput {
   bindingSecret: string;
   linkId: string;
@@ -181,15 +175,15 @@ export interface LinkProofInput {
   fingerprint: string;
 }
 
-export function computeLinkProof(input: LinkProofInput): string {
+/** HMAC-SHA3-256 over the link terms, computed by the cryptographic module. */
+export function computeLinkProof(input: LinkProofInput): Promise<string> {
   const message = ["qguard-device-link/v2", input.linkId, input.userId, input.deviceId, input.fingerprint].join("|");
-  const mac = hmac(sha3_256, fromBase64Url(input.bindingSecret), new TextEncoder().encode(message));
-  return Array.from(mac, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return coreHmacSha3Hex(input.bindingSecret, message);
 }
 
-export function verifyLinkProof(input: LinkProofInput, proof: string | null | undefined): boolean {
+export async function verifyLinkProof(input: LinkProofInput, proof: string | null | undefined): Promise<boolean> {
   if (!proof || !/^[0-9a-f]{64}$/.test(proof)) return false;
-  const expected = computeLinkProof(input);
+  const expected = await computeLinkProof(input);
   let diff = 0;
   for (let index = 0; index < expected.length; index += 1) diff |= expected.charCodeAt(index) ^ proof.charCodeAt(index);
   return diff === 0;
@@ -237,7 +231,7 @@ export async function finishPendingLinkCompletion(
   try {
     const identity = await registerDevice();
     if (!identity?.device_id || !identity.fingerprint) return "failed";
-    const proof = computeLinkProof({
+    const proof = await computeLinkProof({
       bindingSecret: pending.bindingSecret,
       linkId: pending.linkId,
       userId,

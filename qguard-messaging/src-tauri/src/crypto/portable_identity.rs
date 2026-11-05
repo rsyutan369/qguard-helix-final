@@ -29,15 +29,13 @@
 //! only where the user chooses to save it.
 
 use base64::Engine;
-use hmac::{Hmac, Mac};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use sha3::Sha3_256;
 use zeroize::Zeroize;
 
 use crate::crypto::hybrid_kex::LocalKemKeypair;
 use crate::crypto::kdf;
 use crate::crypto::passcode;
+use crate::crypto::provider;
 use crate::crypto::signatures::{
     dual_sign_87, dual_verify, dual_verify_87, VaultSigningKeypair,
 };
@@ -47,9 +45,13 @@ use crate::error::{QGuardError, Result};
 
 /// Bundle version this build writes (Argon2id-protected secrets).
 pub const BUNDLE_VERSION_CURRENT: &str = "1.2";
+/// Bundle version this build writes in FIPS approved mode, where Argon2id is
+/// not available: PBKDF2-HMAC-SHA-512 instead, otherwise the same as 1.2.
+pub const BUNDLE_VERSION_APPROVED: &str = "1.3";
 /// Bundle version written by the web vault (PBKDF2-SHA3-256 protected secrets).
 pub const BUNDLE_VERSION_LEGACY: &str = "1.1";
 pub const BUNDLE_KDF_CURRENT: &str = "Argon2id-HKDF-SHA3-256";
+pub const BUNDLE_KDF_APPROVED: &str = "PBKDF2-SHA512-HKDF-SHA3-256";
 pub const BUNDLE_KDF_LEGACY: &str = "PBKDF2-SHA3-256";
 const LEGACY_PBKDF2_ITERATIONS: u32 = 310_000;
 /// The fewest PBKDF2 iterations a bundle may declare and still be opened. The
@@ -210,16 +212,22 @@ impl PortableIdentity {
     /// Secrets are sealed with AES-256-GCM under a key stretched from the
     /// passphrase with Argon2id (64 MiB, 3 passes) and separated with
     /// HKDF-SHA3-256, so a stolen bundle costs real memory and time per guess.
+    /// In FIPS approved mode the stretch is PBKDF2-HMAC-SHA-512 (v1.3).
     pub fn export_bundle(&self, passphrase: &str) -> Result<String> {
-        if passphrase.chars().count() < MIN_PASSPHRASE_LEN {
+        let approved = provider::approved_mode();
+        let min_len = if approved { provider::APPROVED_PASSWORD_MIN_CHARS } else { MIN_PASSPHRASE_LEN };
+        if passphrase.chars().count() < min_len {
             return Err(QGuardError::InvalidInput(format!(
-                "identity passphrase must be at least {MIN_PASSPHRASE_LEN} characters"
+                "identity passphrase must be at least {min_len} characters"
             )));
         }
 
-        let mut salt = [0u8; 16];
-        rand::rngs::OsRng.fill_bytes(&mut salt);
-        let mut wrap_key = derive_bundle_key_argon2id(passphrase, &salt)?;
+        let salt: [u8; 16] = provider::random_array();
+        let mut wrap_key = if approved {
+            derive_bundle_key_pbkdf2_approved(passphrase, &salt)?
+        } else {
+            derive_bundle_key_argon2id(passphrase, &salt)?
+        };
 
         let mut secret_payload = serde_json::to_vec(&serde_json::json!({
             "x25519": b64().encode(self.kem.x25519_secret),
@@ -239,9 +247,31 @@ impl PortableIdentity {
         let mut data = sealed.ciphertext.clone();
         data.extend_from_slice(&sealed.tag);
 
+        let secrets = if approved {
+            serde_json::json!({
+                "encrypted": true,
+                "kdf": BUNDLE_KDF_APPROVED,
+                "prf": "HMAC-SHA-512",
+                "iterations": provider::APPROVED_PBKDF2_ITERATIONS,
+                "salt": b64().encode(salt),
+                "nonce": b64().encode(&sealed.nonce),
+                "data": b64().encode(&data),
+            })
+        } else {
+            serde_json::json!({
+                "encrypted": true,
+                "kdf": BUNDLE_KDF_CURRENT,
+                "memoryKiB": 65536,
+                "iterations": 3,
+                "parallelism": 1,
+                "salt": b64().encode(salt),
+                "nonce": b64().encode(&sealed.nonce),
+                "data": b64().encode(&data),
+            })
+        };
         let bundle = serde_json::json!({
             "label": self.label.clone().unwrap_or_else(|| "qguard-identity".to_string()),
-            "version": BUNDLE_VERSION_CURRENT,
+            "version": if approved { BUNDLE_VERSION_APPROVED } else { BUNDLE_VERSION_CURRENT },
             "type": "qguard-portable-hybrid-identity",
             "generatedAt": chrono::Utc::now().to_rfc3339(),
             "fingerprint": self.fingerprint(),
@@ -257,16 +287,7 @@ impl PortableIdentity {
                 "ed25519": b64().encode(&self.signer.ed25519_public),
                 "mldsa": b64().encode(&self.signer.mldsa87_public),
             },
-            "secrets": {
-                "encrypted": true,
-                "kdf": BUNDLE_KDF_CURRENT,
-                "memoryKiB": 65536,
-                "iterations": 3,
-                "parallelism": 1,
-                "salt": b64().encode(salt),
-                "nonce": b64().encode(&sealed.nonce),
-                "data": b64().encode(&data),
-            },
+            "secrets": secrets,
         });
 
         serde_json::to_string_pretty(&bundle)
@@ -317,6 +338,7 @@ impl PortableIdentity {
 
             let mut wrap_key = match kdf_name {
                 BUNDLE_KDF_CURRENT => derive_bundle_key_argon2id(passphrase, &salt)?,
+                BUNDLE_KDF_APPROVED => derive_bundle_key_pbkdf2_approved(passphrase, &salt)?,
                 BUNDLE_KDF_LEGACY => {
                     let iterations = secrets_node
                         .get("iterations")
@@ -429,18 +451,16 @@ impl PortableIdentity {
 
         // The X25519 public key must be the one derived from the secret,
         // otherwise senders would seal to a key this identity cannot open.
-        let derived = x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(
-            self.kem.x25519_secret,
-        ));
-        if derived.as_bytes() != self.kem.x25519_public.as_slice() {
+        let derived = provider::x25519_public(&self.kem.x25519_secret)?;
+        if derived.as_slice() != self.kem.x25519_public.as_slice() {
             return Err(QGuardError::InvalidInput(
                 "identity X25519 key pair does not match — the bundle is corrupt".to_string(),
             ));
         }
 
         // Same check for Ed25519, which anchors the sender attestation.
-        let signing = ed25519_dalek::SigningKey::from_bytes(&self.signer.ed25519_secret);
-        if signing.verifying_key().to_bytes().as_slice() != self.signer.ed25519_public.as_slice() {
+        let derived = provider::ed25519_public(&self.signer.ed25519_secret)?;
+        if derived.as_slice() != self.signer.ed25519_public.as_slice() {
             return Err(QGuardError::InvalidInput(
                 "identity Ed25519 key pair does not match — the bundle is corrupt".to_string(),
             ));
@@ -604,32 +624,24 @@ fn derive_bundle_key_argon2id(passphrase: &str, salt: &[u8]) -> Result<[u8; KEY_
     key
 }
 
+/// v1.3 (FIPS approved mode): PBKDF2-HMAC-SHA-512 prehash, then the same
+/// HKDF-SHA3-256 step as v1.2.
+fn derive_bundle_key_pbkdf2_approved(passphrase: &str, salt: &[u8]) -> Result<[u8; KEY_SIZE]> {
+    let mut ikm = passcode::pbkdf2_prehash(salt, passphrase.as_bytes())?;
+    let key = kdf::derive_32_with_salt(
+        salt,
+        &ikm,
+        &crate::security::obf::portable_identity_bundle_info(),
+    );
+    ikm.zeroize();
+    key
+}
+
 /// PBKDF2-HMAC-SHA3-256, used only to read v1.1 bundles created by the web
-/// vault. `dkLen` is 32 = one SHA3-256 block, so a single T-block is derived.
+/// vault.
 fn derive_bundle_key_pbkdf2(passphrase: &str, salt: &[u8], iterations: u32) -> Result<[u8; KEY_SIZE]> {
-    type HmacSha3 = Hmac<Sha3_256>;
-
-    let mut block = Vec::with_capacity(salt.len() + 4);
-    block.extend_from_slice(salt);
-    block.extend_from_slice(&1u32.to_be_bytes());
-
-    let mut mac = HmacSha3::new_from_slice(passphrase.as_bytes())
-        .map_err(|e| QGuardError::Crypto(format!("PBKDF2 HMAC init failed: {e}")))?;
-    mac.update(&block);
-    let mut u = mac.finalize().into_bytes();
     let mut out = [0u8; KEY_SIZE];
-    out.copy_from_slice(&u);
-
-    for _ in 1..iterations {
-        let mut mac = HmacSha3::new_from_slice(passphrase.as_bytes())
-            .map_err(|e| QGuardError::Crypto(format!("PBKDF2 HMAC init failed: {e}")))?;
-        mac.update(&u);
-        u = mac.finalize().into_bytes();
-        for (acc, byte) in out.iter_mut().zip(u.iter()) {
-            *acc ^= byte;
-        }
-    }
-    u.zeroize();
+    provider::pbkdf2(provider::Hash::Sha3_256, passphrase.as_bytes(), salt, iterations, &mut out)?;
     Ok(out)
 }
 
@@ -857,28 +869,64 @@ mod tests {
     #[test]
     fn pbkdf2_matches_a_known_answer() {
         // RFC-style KAT against an independent computation of
-        // PBKDF2-HMAC-SHA3-256("password", "salt", c=2, dkLen=32), so the hand
-        // written PBKDF2 above cannot drift from the standard construction.
-        type HmacSha3 = Hmac<Sha3_256>;
-        let expected = {
-            let mut mac = HmacSha3::new_from_slice(b"password").unwrap();
-            mac.update(b"salt\x00\x00\x00\x01");
-            let u1 = mac.finalize().into_bytes();
-            let mut mac = HmacSha3::new_from_slice(b"password").unwrap();
-            mac.update(&u1);
-            let u2 = mac.finalize().into_bytes();
-            let mut out = [0u8; 32];
-            for i in 0..32 {
-                out[i] = u1[i] ^ u2[i];
-            }
-            out
-        };
+        // PBKDF2-HMAC-SHA3-256("password", "salt", c=2, dkLen=32) from the
+        // HMAC primitive, so the derivation cannot drift from the standard.
+        let u1 = provider::hmac_sha3_256(b"password", b"salt\x00\x00\x00\x01").unwrap();
+        let u2 = provider::hmac_sha3_256(b"password", &u1).unwrap();
+        let mut expected = [0u8; 32];
+        for i in 0..32 {
+            expected[i] = u1[i] ^ u2[i];
+        }
         assert_eq!(derive_bundle_key_pbkdf2("password", b"salt", 2).unwrap(), expected);
         // One iteration is just U1.
-        let mut mac = HmacSha3::new_from_slice(b"password").unwrap();
-        mac.update(b"salt\x00\x00\x00\x01");
-        let u1 = mac.finalize().into_bytes();
-        assert_eq!(derive_bundle_key_pbkdf2("password", b"salt", 1).unwrap()[..], u1[..]);
+        assert_eq!(derive_bundle_key_pbkdf2("password", b"salt", 1).unwrap(), u1);
+    }
+
+    #[test]
+    fn approved_mode_bundles_use_pbkdf2_and_import_back() {
+        let identity = PortableIdentity::generate(Some("approved".to_string()));
+        let salt = [7u8; 16];
+        // The v1.3 key is PBKDF2-HMAC-SHA-512 then HKDF, never the Argon2id key.
+        let approved = derive_bundle_key_pbkdf2_approved("a passphrase of 14+", &salt).unwrap();
+        assert_ne!(approved, derive_bundle_key_argon2id("a passphrase of 14+", &salt).unwrap());
+        // A hand-built v1.3 bundle opens through the normal import path.
+        let json = identity.export_bundle("a passphrase of 14+").unwrap();
+        let mut bundle: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let secrets = bundle["secrets"].clone();
+        // Re-seal the exported (Argon2id) payload as v1.3, as approved mode would.
+        let plain = {
+            let data = decode_b64(secrets["data"].as_str().unwrap(), "data").unwrap();
+            let split = data.len() - symmetric::TAG_SIZE;
+            let key = derive_bundle_key_argon2id("a passphrase of 14+", &decode_b64(secrets["salt"].as_str().unwrap(), "salt").unwrap()).unwrap();
+            symmetric::decrypt(
+                &key,
+                &EncryptedEnvelope {
+                    nonce: decode_b64(secrets["nonce"].as_str().unwrap(), "nonce").unwrap(),
+                    ciphertext: data[..split].to_vec(),
+                    tag: data[split..].to_vec(),
+                },
+                BUNDLE_AAD,
+            )
+            .unwrap()
+        };
+        let new_salt = [9u8; 16];
+        let key = derive_bundle_key_pbkdf2_approved("a passphrase of 14+", &new_salt).unwrap();
+        let resealed = symmetric::encrypt(&key, &plain, BUNDLE_AAD).unwrap();
+        let mut data = resealed.ciphertext.clone();
+        data.extend_from_slice(&resealed.tag);
+        bundle["version"] = serde_json::json!(BUNDLE_VERSION_APPROVED);
+        bundle["secrets"] = serde_json::json!({
+            "encrypted": true,
+            "kdf": BUNDLE_KDF_APPROVED,
+            "prf": "HMAC-SHA-512",
+            "iterations": provider::APPROVED_PBKDF2_ITERATIONS,
+            "salt": b64().encode(new_salt),
+            "nonce": b64().encode(&resealed.nonce),
+            "data": b64().encode(&data),
+        });
+        let restored = PortableIdentity::import_bundle(&bundle.to_string(), "a passphrase of 14+").unwrap();
+        assert_eq!(restored.fingerprint(), identity.fingerprint());
+        assert!(PortableIdentity::import_bundle(&bundle.to_string(), "the wrong passphrase").is_err());
     }
 
     #[test]

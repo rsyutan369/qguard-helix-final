@@ -52,6 +52,7 @@ import type {
   MigrationGateState,
   MigrationRequirement,
   PipelineStatus,
+  PostureEvidence,
   QkmsMode,
   QkmsTelemetryHealth,
   RiskLevel,
@@ -61,6 +62,7 @@ import type {
 } from '@/lib/qkms/types';
 import { CUSTODY_LABEL, GATE_LABEL, LIFECYCLE_LABEL, ROTATION_JOB_LABEL, ROTATION_LABEL } from '@/lib/qkms/types';
 import type { LoadState } from '@/hooks/use-qkms';
+import { QkmsReveal } from './motion';
 
 export { Panel, PanelEmpty, Pill, SectionLabel, Term, TONE, absoluteTime, fmtNumber, fmtPercent, relativeTime };
 export {
@@ -99,6 +101,7 @@ export const QKMS_SHELL_CSS = `
   .qg-theme-light .qkms-shell select,
   .qg-theme-light .qkms-shell input { color: var(--qg-dashboard-text) !important; }
   .qkms-shell table { border-collapse: separate; border-spacing: 0; }
+  .qg-theme-light .qkms-shell .qkms-gate-field { opacity: 0.28 !important; mix-blend-mode: multiply; }
   @media (prefers-reduced-motion: reduce) {
     .qkms-shell *, .qkms-shell *::before, .qkms-shell *::after {
       animation-duration: 0.001ms !important;
@@ -220,14 +223,37 @@ const JOB_TONE: Record<RotationJobStatus, Tone> = {
   cancelled: 'neutral',
 };
 
-export function PostureBadge({ posture, reason }: { posture: KeyPqcPosture; reason?: string }) {
+const EVIDENCE_TITLE: Record<PostureEvidence, string> = {
+  observed: 'Observed: a certificate, the CBOM or an agent scan saw this algorithm.',
+  generated: 'Generated: this platform created the key, so its algorithm is known.',
+  declared: 'Declared only: a registry entry names this algorithm, but no scan or certificate has confirmed it. Not counted as PQC-ready.',
+  none: 'No source names an algorithm for this key.',
+};
+
+/**
+ * A post-quantum or hybrid claim resting on a registry declaration alone is
+ * shown as UNVERIFIED — the same key never reads as PQC-ready on one page and
+ * unverified on another, because readiness excludes it everywhere.
+ */
+export function PostureBadge({ posture, reason, evidence }: { posture: KeyPqcPosture; reason?: string; evidence?: PostureEvidence }) {
+  const unverified = evidence === 'declared' && (posture === 'post-quantum' || posture === 'hybrid');
+  const title = [reason, evidence ? EVIDENCE_TITLE[evidence] : null].filter(Boolean).join(' ');
   return (
-    <Pill tone={POSTURE_TONE[posture]} title={reason}>
-      <span className={cn('h-1.5 w-1.5 rounded-full', TONE[POSTURE_TONE[posture]].dot)} aria-hidden="true" />
+    <Pill tone={unverified ? 'warning' : POSTURE_TONE[posture]} title={title || undefined} className={unverified ? 'border-dashed' : undefined}>
+      <span className={cn('h-1.5 w-1.5 rounded-full', TONE[unverified ? 'warning' : POSTURE_TONE[posture]].dot)} aria-hidden="true" />
       {POSTURE_LABEL[posture]}
+      {unverified ? <span className="font-black uppercase tracking-wider opacity-80">· unverified</span> : null}
     </Pill>
   );
 }
+
+/**
+ * Tone for a posture-tagged distribution row. The model tags each row with the
+ * posture of the keys behind it; colouring by a regex over the label used to
+ * paint `ML-DSA` with the `DSA` (vulnerable) rule on some pages and not others.
+ */
+export const distributionTone = (row: { posture?: KeyPqcPosture; unverified?: boolean }): Tone =>
+  row.unverified ? 'warning' : row.posture ? POSTURE_TONE[row.posture] : 'neutral';
 
 export function LifecycleBadge({ state, reason }: { state: LifecycleState; reason?: string }) {
   return <Pill tone={LIFECYCLE_TONE[state]} title={reason}>{LIFECYCLE_LABEL[state]}</Pill>;
@@ -272,6 +298,7 @@ export function GateBadge({ state }: { state: MigrationGateState }) {
 }
 
 export const riskTone = (level: RiskLevel): Tone => RISK_TONE[level];
+export const gateTone = (state: MigrationGateState): Tone => GATE_TONE[state];
 export const postureTone = (posture: KeyPqcPosture): Tone => POSTURE_TONE[posture];
 export const severityTone = (severity: Severity): Tone => SEVERITY_TONE[severity];
 
@@ -377,7 +404,8 @@ export function QkmsNav({ counts }: { counts: NavCounts | null }) {
 /* ------------------------------------------------------------------ */
 
 const PIPELINE_COPY: Record<PipelineStatus, { label: string; tone: Tone; detail: string }> = {
-  active: { label: 'Live', tone: 'good', detail: 'Three or more key evidence sources reported within the last 7 days.' },
+  // Not 'Live': that word belongs to the stream indicator beside this pill.
+  active: { label: 'Sources current', tone: 'good', detail: 'Three or more key evidence sources reported within the last 7 days.' },
   'scan-running': { label: 'Scan running', tone: 'info', detail: 'A discovery scan is in progress; keys appear as it completes.' },
   partial: { label: 'Partial coverage', tone: 'warning', detail: 'Only some key evidence sources are current. Coverage is incomplete, so absence of a key is not proof it does not exist.' },
   stale: { label: 'Stale', tone: 'warning', detail: 'Key evidence exists but none of it is recent. Re-scan or check your collectors.' },
@@ -389,6 +417,7 @@ export function QkmsFreshness({
   live,
   state,
   generatedAt,
+  verifiedAt = null,
   latestEvidenceAt,
   telemetry,
   onRefresh,
@@ -397,6 +426,8 @@ export function QkmsFreshness({
   live: boolean;
   state: LoadState;
   generatedAt: string | null;
+  /** Last unchanged re-verification pushed by the stream. */
+  verifiedAt?: string | null;
   latestEvidenceAt: string | null;
   telemetry: QkmsTelemetryHealth | null;
   onRefresh: () => void;
@@ -424,7 +455,9 @@ export function QkmsFreshness({
       </span>
 
       <div className="flex flex-col text-right">
-        <span className="font-mono text-[9.5px] text-white/40">Computed {relativeTime(generatedAt)}</span>
+        <span className="font-mono text-[9.5px] text-white/40" title={`Model last changed ${absoluteTime(generatedAt)}`}>
+          Verified {relativeTime(verifiedAt && generatedAt && verifiedAt > generatedAt ? verifiedAt : generatedAt)}
+        </span>
         <span className="font-mono text-[9.5px] text-white/30" title={absoluteTime(latestEvidenceAt)}>
           Newest evidence {relativeTime(latestEvidenceAt)}
         </span>
@@ -685,6 +718,7 @@ export function QkmsShell({
   error,
   hasData,
   generatedAt,
+  verifiedAt = null,
   latestEvidenceAt,
   telemetry,
   nav,
@@ -702,6 +736,7 @@ export function QkmsShell({
   error: string | null;
   hasData: boolean;
   generatedAt: string | null;
+  verifiedAt?: string | null;
   latestEvidenceAt: string | null;
   telemetry: QkmsTelemetryHealth | null;
   nav: NavCounts | null;
@@ -734,6 +769,7 @@ export function QkmsShell({
             live={live}
             state={state}
             generatedAt={generatedAt}
+            verifiedAt={verifiedAt}
             latestEvidenceAt={latestEvidenceAt}
             telemetry={telemetry}
             onRefresh={onRefresh}
@@ -746,8 +782,20 @@ export function QkmsShell({
 
       {error && state === 'error' ? <QkmsError message={error} onRetry={onReconnect} /> : null}
       {!live && state === 'success' ? <QkmsConnectionLost onReconnect={onReconnect} lastSyncedAt={generatedAt} /> : null}
+      {telemetry?.degradedSources?.length ? (
+        <div role="status" className="flex items-start gap-2 rounded-lg border border-[var(--qg-notice-border)] bg-[var(--qg-notice-bg)] px-3 py-2 text-[11px] leading-snug text-[var(--qg-notice-text)]">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span>
+            <span className="font-black uppercase tracking-wider">Incomplete evidence.</span>{' '}
+            These supporting sources failed to load on the last refresh, so figures drawing on them may be understated:{' '}
+            <span className="font-mono">{telemetry.degradedSources.join(', ')}</span>.
+          </span>
+        </div>
+      ) : null}
 
-      {firstPaint ? <QkmsSkeleton /> : !hasData ? <NoKeysState telemetry={telemetry} /> : children}
+      {/* A load that never succeeded has no model to call empty: the error above
+          stands alone rather than beside a "no keys discovered" verdict. */}
+      {firstPaint ? <QkmsSkeleton /> : !generatedAt ? null : !hasData ? <NoKeysState telemetry={telemetry} /> : <QkmsReveal>{children}</QkmsReveal>}
 
       {!firstPaint ? <QkmsProvenance telemetry={telemetry} /> : null}
     </div>
@@ -842,7 +890,7 @@ function renderCell(key: KeyIndexEntry, column: KeyColumn): ReactNode {
     case 'environment': return <span className="text-white/60">{key.environment}</span>;
     case 'custody': return <CustodyBadge custody={key.custody} backend={key.backend} />;
     case 'version': return <span className="font-mono tabular-nums text-white/70">v{key.version}</span>;
-    case 'posture': return <PostureBadge posture={key.posture} />;
+    case 'posture': return <PostureBadge posture={key.posture} evidence={key.postureEvidence} />;
     case 'requirement': return <RequirementBadge requirement={key.migrationRequirement} />;
     case 'lifecycle': return <LifecycleBadge state={key.lifecycle} />;
     case 'rotation': return <RotationBadge state={key.rotation} />;

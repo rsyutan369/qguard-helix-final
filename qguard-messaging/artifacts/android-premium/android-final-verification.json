@@ -1,0 +1,30 @@
+{
+  "apk": "C:\\Users\\ruel3\\Music\\qguard-helix-final\\qguard-messaging\\src-tauri\\release\\QguardMessaging-1.5.0-premium-theme-arm64.apk",
+  "apkBytes": 22919887,
+  "apkSha256": "83b9d8aabbbab02352c2967990e71a3bbcc7fe8163091e08060af41b43c0a166",
+  "apkSha3_256": "e75c2e31e3b4027e8c8f37303d45c9c538861e087a4e9102dd69119f89f99c7f",
+  "nativeBytes": 17960984,
+  "nativeSha256": "6e0dc07dcb36305fef27a4c58ac1811fbcfc10193df1f98f8454db7fbd2023d7",
+  "nativeSha3_256": "1587c00e9d8c15ee8f4c8393319083147c74e453a12947ed88fb8b2a8b5b935b",
+  "currentUiAssets": [
+    "index-56A2jdWk.js",
+    "index-BjJkET6C.css"
+  ],
+  "zipCrcsPass": true,
+  "exactFreshNativeMatch": true,
+  "allOnboardingAssetsPresent": true,
+  "abis": [
+    "lib/arm64-v8a/libqguard_messaging_lib.so"
+  ],
+  "matchesPreviousOnboardingBuild": true,
+  "signatureVerified": true,
+  "certificateSha256": "595301f1c0dcccd8aae35ff99beac5583f57e2e7931f31fc54cad6dd95fc65a3",
+  "versionName": "1.5.0",
+  "versionCode": 1005000,
+  "minAndroidVersion": 10,
+  "unitTestsPassed": 599,
+  "testFilesPassed": 68,
+  "visualVerification": "artifacts/android-premium/verification.json",
+  "unchangedFunctionalSourceFiles": 320,
+  "physicalDeviceTested": false
+}

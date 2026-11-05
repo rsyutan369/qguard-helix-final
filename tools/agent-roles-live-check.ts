@@ -72,7 +72,7 @@ const ROLE_ENV: Record<string, Record<string, string>> = {
   operator: { QGUARD_ENABLE_REMEDIATION: 'true', QGUARD_ENABLE_CONFIG_PATCHES: 'true', QGUARD_ENABLE_MIGRATION: 'true' },
 }
 
-async function enrol(token: string, role: string, policy: Record<string, unknown>) {
+async function enrol(token: string, role: string, policy: Record<string, unknown>, assetId?: string) {
   const res = await api('/api/v1/agent-scanner/agents/enroll', token, {
     method: 'POST',
     body: JSON.stringify({
@@ -83,7 +83,7 @@ async function enrol(token: string, role: string, policy: Record<string, unknown
       /* Write roles are read-only until the operator authorises them. */
       remediationAuthorized: role === 'patcher' || role === 'operator',
       migrationAuthorized: role === 'operator',
-      metadata: { role, environment: 'lab' },
+      metadata: { role, environment: 'lab', ...(assetId ? { assetId } : {}) },
       policy: { enabled: true, intervalSeconds: 60, ...policy },
     }),
   })
@@ -214,12 +214,19 @@ async function main() {
 
     /* ============================================================== SCANNER */
     console.log('\n[2] SCANNER analyses and accurately identifies')
+    /* docs/AGENT_COEXISTENCE.md: every role on one host is assigned the SAME
+       asset. The Collector's first upload created this host's device profile;
+       without this the Scanner gets a second profile for the same machine and
+       the host's findings split across two assets. */
+    const { data: collectorRow } = await admin.from('scanner_agents').select('metadata').eq('id', collector.id).single()
+    const hostAssetId = String(collectorRow?.metadata?.deviceProfileAssetId || '')
+    check('the collector created this host\'s device-profile asset', Boolean(hostAssetId), hostAssetId || 'none')
     const scanner = await enrol(token, 'scanner', {
       scanTypes: ['tls', 'certificates', 'pki', 'ssh', 'packages', 'configs', 'libraries'],
       allowedPaths: [lab],
       allowedTargets: targets,
-    })
-    check('scanner enrols', Boolean(scanner.id))
+    }, hostAssetId)
+    check('scanner enrols assigned to the host asset', Boolean(scanner.id))
     const scannerRun = await runAgent('scanner', scanner.id, scanner.token)
     check('the shipped agent bundle completed a scanner scan', scannerRun.code === 0, `exit ${scannerRun.code}`)
 
@@ -248,8 +255,11 @@ async function main() {
     )
     check('RSA-2048 certificate classified quantum-VULNERABLE', scannerRows.some((r) => r.algorithm === 'RSA-2048' && r.is_vulnerable === true))
     check('JWT RS256 signing key classified quantum-VULNERABLE', scannerRows.some((r) => r.algorithm === 'RS256' && r.is_vulnerable === true))
-    check('dependencies produce NO algorithm finding (availability is not use)', !scannerRows.some((r) => /forge|jsonwebtoken/i.test(r.algorithm)))
-    check('an encrypted key produces NO finding', !scannerRows.some((r) => /not readable/i.test(r.algorithm)))
+    /* The device profile registers every observed component, so a library or an unreadable key may appear
+       as an UNCLASSIFIED component (observationOnly). What must never happen is a finding: a verdict. */
+    const isFinding = (r: Record<string, any>) => r.metadata?.observationOnly !== true || r.is_vulnerable === true || r.is_quantum_safe === true
+    check('dependencies produce NO algorithm finding (availability is not use)', !scannerRows.some((r) => /forge|jsonwebtoken/i.test(r.algorithm) && isFinding(r)))
+    check('an encrypted key produces NO finding', !scannerRows.some((r) => /not readable/i.test(r.algorithm) && isFinding(r)))
 
     const { data: exposures } = await admin.from('crypto_exposures').select('detected_value').eq('user_id', userId)
     check('no quantum exposure recorded for a safe or post-quantum primitive', !(exposures || []).some((e) => /ML-DSA|MLKEM|AES-256|SHA-256|HMAC/i.test(String(e.detected_value))))
@@ -258,16 +268,29 @@ async function main() {
 
     /* ============================================================== PATCHER */
     console.log('\n[3] PATCHER changes only approved work on authorised paths')
+    /* docs/AGENT_COEXISTENCE.md: every role on a host is assigned the SAME asset —
+       a file path alone cannot prove which machine a job is for. The Scanner's
+       findings live in its device profile, so that is the asset the writers serve. */
+    const { data: scannerRow } = await admin.from('scanner_agents').select('metadata').eq('id', scanner.id).single()
+    check('the scanner files into the same host asset (no second profile)', scannerRow?.metadata?.assetId === hostAssetId && !scannerRow?.metadata?.deviceProfileAssetId, JSON.stringify({ assetId: scannerRow?.metadata?.assetId, profile: scannerRow?.metadata?.deviceProfileAssetId }))
+
+    // A writer assigned to a DIFFERENT asset must decline — and say so where Live Migration can show it.
+    const strayPatcher = await enrol(token, 'patcher', {
+      scanTypes: ['configs', 'tls'],
+      allowedPaths: [path.join(lab, 'app')],
+      allowedTargets: [],
+    })
     const patcher = await enrol(token, 'patcher', {
       scanTypes: ['configs', 'tls'],
       allowedPaths: [path.join(lab, 'app')], // migrate/ is deliberately OUTSIDE its scope
       allowedTargets: [],
-    })
-    check('patcher enrols', Boolean(patcher.id))
+    }, hostAssetId)
+    check('patcher enrols assigned to the host asset', Boolean(patcher.id))
 
     // Real product flow: Harvest Now queues remediation from the scanner's findings.
     const { data: results } = await admin.from('pqc_scan_results').select('id, algorithm, metadata').eq('user_id', userId)
-    const findingFor = (file: string) => (results || []).find((r) => r.algorithm === 'X25519' && String(r.metadata?.evidenceRecord?.filePath || '').endsWith(file))
+    // Exact path in THIS run's lab: an earlier run's findings for the same relative file must not be reused.
+    const findingFor = (file: string) => (results || []).find((r) => r.algorithm === 'X25519' && String(r.metadata?.evidenceRecord?.filePath || '') === path.join(lab, file))
     const appFinding = findingFor(path.join('app', 'tls.conf'))
     const edgeFinding = findingFor(path.join('migrate', 'edge.conf'))
     check('the scanner produced the X25519 findings Harvest Now queues from', Boolean(appFinding && edgeFinding))
@@ -297,6 +320,17 @@ async function main() {
       check(`operator approval recorded for ${path.basename(job.metadata.filePath)}`, approve.status === 200, `HTTP ${approve.status}`)
     }
 
+    await runAgent('patcher', strayPatcher.id, strayPatcher.token)
+    check('WRONG ASSET: a patcher assigned elsewhere did not touch the file', sha256File(appFile) === appBefore)
+    const { data: strayView } = await admin.from('migration_jobs').select('status, metadata').eq('id', appJob.id).single()
+    const strayRefusal = strayView?.metadata?.executorRefusals?.[strayPatcher.id]
+    check('WRONG ASSET: the job was not claimed', strayView?.status === 'queued' && !strayView?.metadata?.assignedAgentId, String(strayView?.status))
+    check('WRONG ASSET: the refusal is recorded under that agent, naming the asset mismatch', strayRefusal?.kind === 'out-of-scope' && /assigned to/.test(String(strayRefusal?.reason)), JSON.stringify(strayRefusal || null).slice(0, 240))
+    check('APPROVAL: the stale "awaiting approval" note was withdrawn once approved', strayView?.metadata?.dispatchBlock?.kind !== 'not-approved', JSON.stringify(strayView?.metadata?.dispatchBlock || null).slice(0, 160))
+    const liveView = await api('/api/v1/migration/live', token)
+    const liveAppJob = (liveView.body?.data?.jobs || []).find((job: any) => job.id === appJob.id)
+    check('LIVE MIGRATION: the API explains why the approved job is waiting', /declined this job/.test(String(liveAppJob?.dispatchBlock?.reason || '')), String(liveAppJob?.dispatchBlock?.reason || 'no dispatchBlock').slice(0, 240))
+
     const patchRun = await runAgent('patcher', patcher.id, patcher.token)
     const appAfter = fs.readFileSync(appFile, 'utf8')
     check('APPROVED + IN SCOPE: the patcher changed the file to hybrid ML-KEM', /X25519MLKEM768/.test(appAfter), appAfter.replace(/\n/g, ' | ') + ' // ' + patchRun.out.split('\n').filter((l) => /remediation|Remediation/.test(l)).slice(-3).join(' / '))
@@ -310,7 +344,9 @@ async function main() {
 
     check('OUT OF SCOPE: the approved edge.conf job was NOT applied', sha256File(edgeFile) === edgeBefore)
     const { data: edgePost } = await admin.from('migration_jobs').select('metadata').eq('id', edgeJob.id).single()
-    check('OUT OF SCOPE: the refusal names scope', edgePost?.metadata?.dispatchBlock?.kind === 'out-of-scope', JSON.stringify(edgePost?.metadata?.dispatchBlock || null))
+    const edgeRefusal = edgePost?.metadata?.executorRefusals?.[patcher.id]
+    check('OUT OF SCOPE: the refusal names scope', edgeRefusal?.kind === 'out-of-scope' && /outside this agent/.test(String(edgeRefusal?.reason)), JSON.stringify(edgeRefusal || edgePost?.metadata?.dispatchBlock || null).slice(0, 240))
+    check('the claimed job carries no leftover refusals', Object.keys(appJobPost?.metadata?.executorRefusals || {}).length === 0)
     await api('/api/v1/migration/jobs/actions', token, { method: 'POST', body: JSON.stringify({ action: 'cancel', jobIds: [edgeJob.id] }) })
 
     /* ============================================================= OPERATOR */
@@ -319,7 +355,7 @@ async function main() {
       scanTypes: ['configs', 'tls'],
       allowedPaths: [path.join(lab, 'migrate')],
       allowedTargets: [],
-    })
+    }, hostAssetId)
     check('operator enrols', Boolean(operator.id), `HTTP ${operator.status}`)
 
     const gatewayFile = path.join(lab, 'migrate', 'gateway.conf')
@@ -329,7 +365,7 @@ async function main() {
     await admin.from('migration_plans').insert({ id: planId, user_id: userId, status: 'pending_approval', selected_asset_ids: [], configuration: { source: 'roles-live-check' }, metadata: { planId, name: 'Lab gateway hybrid cutover' } })
     const planJobId = crypto.randomUUID()
     await admin.from('migration_jobs').insert({
-      id: planJobId, user_id: userId, name: 'PQC Migration: lab gateway', job_type: 'protocol_upgrade', status: 'queued',
+      id: planJobId, user_id: userId, asset_id: hostAssetId, name: 'PQC Migration: lab gateway', job_type: 'protocol_upgrade', status: 'queued',
       target_algorithm: 'X25519MLKEM768', strategy: 'X25519 → X25519MLKEM768', progress: 0,
       metadata: { planId, source: 'migration-planner', filePath: gatewayFile, assetName: 'lab-gateway' },
     })

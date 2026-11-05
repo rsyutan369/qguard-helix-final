@@ -127,7 +127,7 @@ export type CreateCollectorInput = {
   description?: string;
   tags?: string[];
   policy: AgentPolicyInput;
-  /** Where this agent's findings are filed. Omitted means open discovery. */
+  /** Where this agent's findings are filed. Omitted uses its machine's device profile. */
   binding?: AgentBindingRequest;
 };
 
@@ -417,7 +417,7 @@ export function useAgentCollector(enabled: boolean) {
         }
         await Promise.all([fetchAll(), loadBindingTargets()]);
         const next = json?.data?.binding as { assetName?: string } | null;
-        return { ok: true, message: next?.assetName ? `New findings will be filed under ${next.assetName}.` : 'Binding removed — new findings use open discovery.' };
+        return { ok: true, message: next?.assetName ? `New findings will be filed under ${next.assetName}.` : 'New findings will use this machine’s device profile.' };
       } catch (err) {
         return { ok: false, message: err instanceof Error ? err.message : 'Binding update failed' };
       } finally {

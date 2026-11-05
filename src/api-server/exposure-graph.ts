@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { createSingleFlightCache } from '@/lib/single-flight-cache'
 import { deriveAssetPostureModel } from '@/lib/migration/asset-intelligence'
-import { buildSnapshot, isInternetFacing } from './quantum-readiness'
+import { buildSnapshot, isDeterministicReadGap, isInternetFacing, SnapshotReadError } from './quantum-readiness'
 import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
 import {
   classifyAlgorithmClass,
@@ -83,13 +83,19 @@ async function safeRows(
   limit: number,
   orderColumn = 'created_at',
 ): Promise<Row[]> {
+  // A deterministic gap reads as "no rows"; a transient failure fails the
+  // build (see SnapshotReadError) rather than drawing a graph without a table.
+  let result: { data: unknown; error: unknown }
   try {
-    const { data, error } = await client.from(table).select(columns).eq('user_id', userId).order(orderColumn, { ascending: false }).limit(limit)
-    if (error) return []
-    return (data as unknown as Row[]) || []
-  } catch {
+    result = await client.from(table).select(columns).eq('user_id', userId).order(orderColumn, { ascending: false }).limit(limit)
+  } catch (error) {
+    throw new SnapshotReadError(table, error)
+  }
+  if (result.error) {
+    if (!isDeterministicReadGap(result.error)) throw new SnapshotReadError(table, result.error)
     return []
   }
+  return (result.data as unknown as Row[]) || []
 }
 
 /* ================================================================== */

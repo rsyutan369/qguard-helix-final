@@ -40,6 +40,7 @@ import { useAuth } from '@/contexts/auth-context';
 import { usePublicScan } from '@/hooks/use-public-scan';
 import type { PublicScanReport } from '@/lib/scanner/public-scan/types';
 import { ACCENT, Panel, QuantumField, Reveal, SectionLabel } from './_ui';
+import { ResizablePanelRow } from '@/components/quantum-scan/resizable-panels';
 import { QuantumScanHero } from './_qve';
 import { ExposureModeTabs } from '@/components/exposure/ExposureModeTabs';
 import { useExposureAccess } from '@/hooks/use-exposure-access';
@@ -75,6 +76,13 @@ const LocalAssessmentPanel = WEBSITE_EDITION
 const DevAssessmentPanel = WEBSITE_EDITION
   ? null
   : React.lazy(() => import('@/components/exposure/DevAssessmentPanel').then((m) => ({ default: m.DevAssessmentPanel })));
+
+/**
+ * Ground for a panel opened in focus view. This page is dark in both themes and
+ * sits outside the dashboard's theme scope, so the focus view brings the page's
+ * own navy (QuantumField's #04060e) and opts out of the light-theme layer.
+ */
+const PUBLIC_FOCUS_SURFACE = 'qg-force-dark bg-[#04060e] text-slate-200 antialiased';
 
 function PanelLoading() {
   return (
@@ -711,30 +719,81 @@ export default function PublicScanPage() {
               <ExecutiveSummary report={report} />
             </Reveal>
 
-            <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,0.85fr)_minmax(0,1fr)]">
-              <Reveal>
-                <EncryptionScore report={report} />
-              </Reveal>
-              <Reveal delay={0.05}>
-                <AttackSurface report={report} />
-              </Reveal>
-              <Reveal delay={0.1}>
-                <CryptoIntelligencePanel report={report} />
-              </Reveal>
-            </div>
+            {/* Drag the handles between panels to widen one; each panel's
+                header button opens it in a full-screen focus view. Default
+                weights are the 1.35 / 0.85 / 1 columns this row always used. */}
+            <ResizablePanelRow
+              storageKey="public-scan.posture-row"
+              focusSurfaceClassName={PUBLIC_FOCUS_SURFACE}
+              panes={[
+                {
+                  id: 'encryption-score',
+                  title: 'Encryption Score',
+                  defaultSize: 1.35,
+                  minSize: 24,
+                  render: () => (
+                    <Reveal className="h-full">
+                      <EncryptionScore report={report} />
+                    </Reveal>
+                  ),
+                },
+                {
+                  id: 'attack-surface',
+                  title: 'Public Attack Surface',
+                  defaultSize: 0.85,
+                  minSize: 20,
+                  render: () => (
+                    <Reveal delay={0.05} className="h-full">
+                      <AttackSurface report={report} />
+                    </Reveal>
+                  ),
+                },
+                {
+                  id: 'crypto-intelligence',
+                  title: 'Cryptographic Intelligence',
+                  defaultSize: 1,
+                  minSize: 18,
+                  render: () => (
+                    <Reveal delay={0.1} className="h-full">
+                      <CryptoIntelligencePanel report={report} />
+                    </Reveal>
+                  ),
+                },
+              ]}
+            />
 
             <Reveal>
               <HandshakeFlow report={report} />
             </Reveal>
 
-            <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1.75fr)_minmax(0,1fr)]">
-              <Reveal>
-                <PublicFindings report={report} />
-              </Reveal>
-              <Reveal delay={0.05}>
-                <QuantumTimeline report={report} />
-              </Reveal>
-            </div>
+            <ResizablePanelRow
+              storageKey="public-scan.findings-row"
+              focusSurfaceClassName={PUBLIC_FOCUS_SURFACE}
+              panes={[
+                {
+                  id: 'findings',
+                  title: 'Public Findings',
+                  defaultSize: 1.75,
+                  minSize: 35,
+                  render: () => (
+                    <Reveal className="h-full">
+                      <PublicFindings report={report} />
+                    </Reveal>
+                  ),
+                },
+                {
+                  id: 'exposure-timeline',
+                  title: 'Quantum Exposure Timeline',
+                  defaultSize: 1,
+                  minSize: 20,
+                  render: () => (
+                    <Reveal delay={0.05} className="h-full">
+                      <QuantumTimeline report={report} />
+                    </Reveal>
+                  ),
+                },
+              ]}
+            />
 
             <Reveal>
               <Recommendations report={report} />

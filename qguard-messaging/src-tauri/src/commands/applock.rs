@@ -1,8 +1,9 @@
 //! Banking-grade app-entry PIN (Android). Sign in once with email/password,
 //! then unlock the app with a 4/6-digit PIN which restores the locally stored
 //! Supabase session. The session is encrypted under a random SEK; the SEK is
-//! wrapped under a PIN-derived key (Argon2id -> HKDF-SHA3-256); the whole
-//! config is encrypted at rest under the hardware-backed device DEK.
+//! wrapped under a PIN-derived key (Argon2id, or PBKDF2-HMAC-SHA-512 in FIPS
+//! approved mode, -> HKDF-SHA3-256); the whole config is encrypted at rest
+//! under the hardware-backed device DEK.
 //!
 //! Anti-brute-force: 3rd fail -> 5s, 4th -> 15s, 5th fail -> wipe the stored
 //! session and require full email/password login.
@@ -12,7 +13,9 @@ use serde::Serialize;
 use tauri::State;
 use zeroize::Zeroize;
 
-use crate::crypto::passcode::{self, KDF_ARGON2ID_V1};
+use crate::crypto::passcode;
+#[cfg(test)]
+use crate::crypto::passcode::KDF_ARGON2ID_V1;
 use crate::crypto::symmetric::{self, KEY_SIZE};
 use crate::crypto::EncryptedEnvelope;
 use crate::error::{QGuardError, Result};
@@ -90,14 +93,15 @@ fn attempts_remaining(failed_attempts: u32) -> u32 {
     MAX_ATTEMPTS.saturating_sub(failed_attempts)
 }
 
-/// Build the PIN-derived verifier + the SEK wrapped under the PIN key.
-/// Returns (salt, verifier, sek_wrapped_by_pin).
+/// Build the PIN-derived verifier + the SEK wrapped under the PIN key, with the
+/// device's current KDF. Returns (salt, verifier, sek_wrapped_by_pin, kdf).
 async fn seal_pin(
     pin: &str,
     sek: &[u8; KEY_SIZE],
-) -> Result<(Vec<u8>, String, EncryptedEnvelope)> {
+) -> Result<(Vec<u8>, String, EncryptedEnvelope, u8)> {
     let salt = passcode::random_salt();
-    let mut ikm = passcode::stretch_secret(KDF_ARGON2ID_V1, salt.clone(), pin.as_bytes().to_vec()).await?;
+    let kdf = passcode::preferred_kdf();
+    let mut ikm = passcode::stretch_secret(kdf, salt.clone(), pin.as_bytes().to_vec()).await?;
     let verifier = passcode::derive_verifier(&salt, &ikm, &crate::security::obf::applock_verifier_info());
     let verifier = match verifier {
         Ok(v) => v,
@@ -111,7 +115,7 @@ async fn seal_pin(
     let mut wrap_key = wrap_key?;
     let wrapped = symmetric::encrypt(&wrap_key, sek, &crate::security::obf::applock_material_aad());
     wrap_key.zeroize();
-    Ok((salt, verifier, wrapped?))
+    Ok((salt, verifier, wrapped?, kdf))
 }
 
 /// Verify a PIN against a stored record and, on success, recover the SEK.
@@ -152,18 +156,19 @@ async fn open_with_pin(record: &PersistedAppLock, pin: &str) -> Result<Option<[u
     Ok(Some(sek))
 }
 
-/// The duress PIN's verifier: Argon2id + HKDF-SHA3-256, like the real PIN's,
+/// The duress PIN's verifier: the same KDF + HKDF-SHA3-256 as the real PIN's,
 /// under its own salt and context. Nothing is wrapped under it.
 async fn seal_duress(pin: &str) -> Result<DuressPin> {
     let salt = passcode::random_salt();
-    let mut ikm = passcode::stretch_secret(KDF_ARGON2ID_V1, salt.clone(), pin.as_bytes().to_vec()).await?;
+    let kdf_version = passcode::preferred_kdf();
+    let mut ikm = passcode::stretch_secret(kdf_version, salt.clone(), pin.as_bytes().to_vec()).await?;
     let verifier = passcode::derive_verifier(&salt, &ikm, DURESS_VERIFIER_INFO);
     ikm.zeroize();
-    Ok(DuressPin { salt, verifier: verifier? })
+    Ok(DuressPin { salt, verifier: verifier?, kdf_version })
 }
 
 async fn duress_matches(duress: &DuressPin, pin: &str) -> Result<bool> {
-    let mut ikm = passcode::stretch_secret(KDF_ARGON2ID_V1, duress.salt.clone(), pin.as_bytes().to_vec()).await?;
+    let mut ikm = passcode::stretch_secret(duress.kdf_version, duress.salt.clone(), pin.as_bytes().to_vec()).await?;
     let verifier = passcode::derive_verifier(&duress.salt, &ikm, DURESS_VERIFIER_INFO);
     ikm.zeroize();
     Ok(verifier? == duress.verifier)
@@ -349,7 +354,7 @@ async fn applock_setup_inner(
     }
 
     let mut sek = symmetric::random_key();
-    let (salt, verifier, sek_wrapped) = match seal_pin(pin, &sek).await {
+    let (salt, verifier, sek_wrapped, kdf_version) = match seal_pin(pin, &sek).await {
         Ok(v) => v,
         Err(e) => {
             sek.zeroize();
@@ -378,7 +383,7 @@ async fn applock_setup_inner(
         }
     };
     let record = PersistedAppLock {
-        version: 1, enabled: true, digits, kdf_version: KDF_ARGON2ID_V1,
+        version: 1, enabled: true, digits, kdf_version,
         salt, verifier, sek_wrapped_by_pin: sek_wrapped, session_wrapped_by_sek: session_wrapped,
         failed_attempts: 0, lockout_until: None,
         inactivity_minutes: existing.as_ref().map(|r| r.inactivity_minutes).unwrap_or(DEFAULT_INACTIVITY_MINUTES),
@@ -447,6 +452,21 @@ async fn applock_unlock_inner(state: &State<'_, AppState>, pin: &str) -> Result<
             record.failed_attempts = 0;
             record.lockout_until = None;
             record.device.last_login_at = Utc::now();
+            // Re-seal under the device's current KDF (Argon2id <-> PBKDF2 when
+            // FIPS approved mode changed) while the PIN is proven. Best-effort:
+            // the old seal keeps working if this fails.
+            if passcode::needs_reseal(record.kdf_version) {
+                if let Ok((salt, verifier, sek_wrapped, kdf_version)) = seal_pin(pin, &sek).await {
+                    record.salt = salt;
+                    record.verifier = verifier;
+                    record.sek_wrapped_by_pin = sek_wrapped;
+                    record.kdf_version = kdf_version;
+                    state.audit_info(
+                        "applock_kdf_upgraded",
+                        &format!("App PIN re-sealed with {}", passcode::kdf_label(kdf_version)),
+                    );
+                }
+            }
             if let Err(e) = state.save_applock(&user_id, &record) {
                 sek.zeroize();
                 return Err(e);
@@ -588,7 +608,7 @@ async fn applock_change_pin_inner(
         // 5-strike ladder. Propagate as-is.
         Err(e) => return Err(e),
     };
-    let (salt, verifier, sek_wrapped) = match seal_pin(new_pin, &sek).await {
+    let (salt, verifier, sek_wrapped, kdf_version) = match seal_pin(new_pin, &sek).await {
         Ok(v) => v,
         Err(e) => {
             sek.zeroize();
@@ -599,7 +619,7 @@ async fn applock_change_pin_inner(
     record.verifier = verifier;
     record.sek_wrapped_by_pin = sek_wrapped;
     record.digits = digits;
-    record.kdf_version = KDF_ARGON2ID_V1;
+    record.kdf_version = kdf_version;
     record.failed_attempts = 0;
     record.lockout_until = None;
     if let Err(e) = state.save_applock(&user_id, &record) {
@@ -877,11 +897,11 @@ mod tests {
     #[tokio::test]
     async fn correct_pin_recovers_session_wrong_pin_fails() {
         let sek = symmetric::random_key();
-        let (salt, verifier, sek_wrapped) = seal_pin("123456", &sek).await.unwrap();
+        let (salt, verifier, sek_wrapped, kdf_version) = seal_pin("123456", &sek).await.unwrap();
         let session = sample_session();
         let session_wrapped = wrap_session_under_sek(&sek, &session).unwrap();
         let record = PersistedAppLock {
-            version: 1, enabled: true, digits: 6, kdf_version: KDF_ARGON2ID_V1,
+            version: 1, enabled: true, digits: 6, kdf_version,
             salt, verifier, sek_wrapped_by_pin: sek_wrapped, session_wrapped_by_sek: session_wrapped,
             failed_attempts: 0, lockout_until: None, inactivity_minutes: 10,
             device: DeviceRegistration {
@@ -951,15 +971,48 @@ mod tests {
         assert!(!duress_matches(&duress, "123456").await.unwrap());
         // Its verifier is not the real PIN's verifier for the same digits.
         let sek = symmetric::random_key();
-        let (salt, real_verifier, _) = seal_pin("911911", &sek).await.unwrap();
-        let ikm = passcode::secret_ikm(KDF_ARGON2ID_V1, &salt, b"911911").unwrap();
+        let (salt, real_verifier, _, kdf_version) = seal_pin("911911", &sek).await.unwrap();
+        let ikm = passcode::secret_ikm(kdf_version, &salt, b"911911").unwrap();
         assert_ne!(passcode::derive_verifier(&salt, &ikm, DURESS_VERIFIER_INFO).unwrap(), real_verifier);
+    }
+
+    /// An app PIN sealed with Argon2id still opens after the device moves to
+    /// PBKDF2 (FIPS approved mode), and the re-sealed record opens too.
+    #[tokio::test]
+    async fn an_argon2id_pin_record_opens_and_reseals_under_pbkdf2() {
+        use crate::crypto::passcode::KDF_PBKDF2_SHA512_V2;
+        let sek = symmetric::random_key();
+        let mut record = blank_record();
+        record.salt = passcode::random_salt();
+        let ikm = passcode::secret_ikm(KDF_ARGON2ID_V1, &record.salt, b"246810").unwrap();
+        record.verifier = passcode::derive_verifier(&record.salt, &ikm, &crate::security::obf::applock_verifier_info()).unwrap();
+        let wrap = passcode::derive_wrap_key(&record.salt, &ikm, &crate::security::obf::applock_sek_wrap_info()).unwrap();
+        record.sek_wrapped_by_pin = symmetric::encrypt(&wrap, &sek, &crate::security::obf::applock_material_aad()).unwrap();
+        record.kdf_version = KDF_ARGON2ID_V1;
+        assert_eq!(open_with_pin(&record, "246810").await.unwrap().unwrap(), sek);
+
+        // The re-seal the unlock path performs, done with PBKDF2 explicitly.
+        let salt = passcode::random_salt();
+        let ikm = passcode::secret_ikm(KDF_PBKDF2_SHA512_V2, &salt, b"246810").unwrap();
+        record.verifier = passcode::derive_verifier(&salt, &ikm, &crate::security::obf::applock_verifier_info()).unwrap();
+        let wrap = passcode::derive_wrap_key(&salt, &ikm, &crate::security::obf::applock_sek_wrap_info()).unwrap();
+        record.sek_wrapped_by_pin = symmetric::encrypt(&wrap, &sek, &crate::security::obf::applock_material_aad()).unwrap();
+        record.salt = salt;
+        record.kdf_version = KDF_PBKDF2_SHA512_V2;
+        assert_eq!(open_with_pin(&record, "246810").await.unwrap().unwrap(), sek);
+        assert!(open_with_pin(&record, "135790").await.unwrap().is_none());
+    }
+
+    #[test]
+    fn a_duress_pin_stored_before_it_recorded_a_kdf_reads_as_argon2id() {
+        let old: DuressPin = serde_json::from_str(r#"{"salt":[1,2,3],"verifier":"v"}"#).unwrap();
+        assert_eq!(old.kdf_version, KDF_ARGON2ID_V1);
     }
 
     #[test]
     fn the_lock_screen_never_says_a_duress_pin_exists() {
         let mut record = blank_record();
-        record.duress = Some(DuressPin { salt: vec![1; 16], verifier: "v".into() });
+        record.duress = Some(DuressPin { salt: vec![1; 16], verifier: "v".into(), kdf_version: KDF_ARGON2ID_V1 });
         assert!(!status_from(Some(&record), false).duress_configured, "locked: not revealed");
         assert!(status_from(Some(&record), true).duress_configured, "unlocked: the owner sees it");
         let wiped = signed_out_result();

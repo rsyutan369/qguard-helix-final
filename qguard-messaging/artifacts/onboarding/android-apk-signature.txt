@@ -1,0 +1,17 @@
+Verifies
+Verified using v1 scheme (JAR signing): false
+Verified using v2 scheme (APK Signature Scheme v2): true
+Verified using v3 scheme (APK Signature Scheme v3): false
+Verified using v3.1 scheme (APK Signature Scheme v3.1): false
+Verified using v4 scheme (APK Signature Scheme v4): false
+Verified for SourceStamp: false
+Number of signers: 1
+Signer #1 certificate DN: CN=QGuard Messaging, O=QGuard Helix
+Signer #1 certificate SHA-256 digest: 595301f1c0dcccd8aae35ff99beac5583f57e2e7931f31fc54cad6dd95fc65a3
+Signer #1 certificate SHA-1 digest: 6df328242fe558c96d9d6fbe6c6fbd6279238374
+Signer #1 certificate MD5 digest: 1b525f3b67bd906c21b6aa39591a790f
+Signer #1 key algorithm: RSA
+Signer #1 key size (bits): 4096
+Signer #1 public key SHA-256 digest: 82dc44ba9ff02803726a54058398a041918938e3b7e6e178c8ad6bb30e24ddef
+Signer #1 public key SHA-1 digest: eaefdb7d14d0412af814499161bc7c4a9e7d4461
+Signer #1 public key MD5 digest: 90e215471fb84289ec58083f71362a97

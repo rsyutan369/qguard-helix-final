@@ -23,9 +23,12 @@ import { FileClock, Layers, Radar, ShieldCheck, Sparkles } from 'lucide-react';
 import { usePqcKeyReadiness, useKeyQuery, useQkmsActions } from '@/hooks/use-qkms';
 import type { GatePrecheck, MigrationGateState } from '@/lib/qkms/types';
 import { KeyDrawer } from './KeyDrawer';
+import { GateField, MeasuredBar, MeasuredGauge } from './motion';
 import {
   ActionButton,
   BarRow,
+  distributionTone,
+  gateTone,
   ExplainBox,
   ExportMenu,
   GateBadge,
@@ -69,12 +72,12 @@ const DECISION_TONE = {
 } as const;
 
 export default function QkmsReadiness() {
-  const { data, state, error, live, refresh, reconnect } = usePqcKeyReadiness();
+  const { data, state, error, live, verifiedAt, refresh, reconnect } = usePqcKeyReadiness();
   const { notice, show, dismiss } = useNotice();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [precheckFilter, setPrecheckFilter] = useState<GatePrecheck | null>(null);
 
-  const query = useKeyQuery({ limit: 25, sort: 'risk', dir: 'desc', requirement: 'required' });
+  const query = useKeyQuery({ limit: 25, sort: 'risk', dir: 'desc', requirement: 'required' }, data?.generatedAt ?? null);
   const actions = useQkmsActions(() => { void refresh(true); query.reload(); });
   const exporter = useQkmsExport(actions.fetchExportModel);
 
@@ -101,6 +104,7 @@ export default function QkmsReadiness() {
       error={error}
       hasData={data?.hasData ?? false}
       generatedAt={data?.generatedAt ?? null}
+      verifiedAt={verifiedAt}
       latestEvidenceAt={data?.latestEvidenceAt ?? null}
       telemetry={data?.telemetry ?? null}
       nav={data?.nav ?? null}
@@ -127,6 +131,8 @@ export default function QkmsReadiness() {
       {/* ---- The gate ------------------------------------------------ */}
       {gate ? (
         <Panel>
+          <GateField tone={gateTone(gate.state)} live={live} />
+          <div className="relative">
           <SectionLabel
             icon={ShieldCheck}
             meta={gate.score !== null ? <span>{gate.score}% of prechecks pass · evaluated {relativeTime(gate.evaluatedAt)}</span> : undefined}
@@ -135,10 +141,11 @@ export default function QkmsReadiness() {
             Migration gate
           </SectionLabel>
 
-          <div className="flex flex-wrap items-start gap-3">
-            <GateBadge state={gate.state} />
+          <div className="flex flex-wrap items-center gap-4">
+            <MeasuredGauge value={gate.score} tone={gateTone(gate.state)} label="Prechecks" />
             <div className="min-w-0 flex-1">
-              <p className="text-[12.5px] font-semibold leading-relaxed text-white/80">{gate.why}</p>
+              <GateBadge state={gate.state} />
+              <p className="mt-2 text-[12.5px] font-semibold leading-relaxed text-white/80">{gate.why}</p>
               <p className="mt-1 text-[11px] leading-relaxed text-white/45">{GATE_MEANING[gate.state]}</p>
             </div>
           </div>
@@ -192,6 +199,7 @@ export default function QkmsReadiness() {
               </ul>
             </div>
           ) : null}
+          </div>
         </Panel>
       ) : null}
 
@@ -202,15 +210,18 @@ export default function QkmsReadiness() {
             label="Overall readiness"
             value={readiness.overall === null ? '—' : `${readiness.overall}%`}
             unmeasured={readiness.overall === null}
-            detail="Post-quantum or hybrid share of keys that need a quantum decision"
+            detail={readiness.decisionScope
+              ? `${fmtNumber(readiness.verifiedReady)} of ${fmtNumber(readiness.decisionScope)} key(s) needing a quantum decision are evidenced PQC or hybrid`
+              : 'No key needs a post-quantum decision'}
             tone={(readiness.overall ?? 0) >= 80 ? 'good' : 'warning'}
             hint="Symmetric and hash keys are excluded from the denominator: they were never at Shor risk, and including them would inflate readiness with material that never had to move."
           />
           <Kpi
             label="Post-quantum keys"
             value={fmtNumber(metrics.pqcReadyKeys)}
-            detail={`${fmtNumber(metrics.hybridKeys)} additional hybrid composite(s)`}
+            detail={`${fmtNumber(metrics.hybridKeys)} additional hybrid composite(s)${metrics.declaredPqcKeys ? ` · ${fmtNumber(metrics.declaredPqcKeys)} declared, unverified` : ''}`}
             tone="good"
+            hint="Counted only when a scan, certificate or this platform's key generation evidences the algorithm. Registry declarations alone are listed as unverified and excluded from readiness."
           />
           <Kpi
             label="Migration required"
@@ -249,13 +260,14 @@ export default function QkmsReadiness() {
                     </span>
                   </div>
                   {!notApplicable ? (
-                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
-                      <span className="block h-full rounded-full" style={{ width: `${Math.max(2, band.percent ?? 0)}%`, backgroundColor: TONE[tone].hex }} />
-                    </div>
+                    <div className="mt-2"><MeasuredBar percent={band.percent ?? 0} tone={tone} /></div>
                   ) : null}
                   <p className="mt-2 text-[10.5px] leading-snug text-white/50">{band.detail}</p>
                   {!notApplicable ? (
-                    <p className="mt-1 font-mono text-[9.5px] text-white/30">{band.ready} ready / {band.applicable} applicable</p>
+                    <p className="mt-1 font-mono text-[9.5px] text-white/30">
+                      {band.ready} evidenced ready / {band.applicable} applicable
+                      {band.declared ? <span className="ml-1 text-amber-300" title="PQC by registry declaration only — no scan or certificate confirms it, so it is not counted ready.">· {band.declared} declared, unverified</span> : null}
+                    </p>
                   ) : null}
                 </div>
               );
@@ -347,12 +359,7 @@ export default function QkmsReadiness() {
                   label={row.label}
                   count={row.count}
                   percent={row.percent}
-                  tone={
-                    /Post-Quantum|Quantum-Resistant/.test(row.label) ? 'good'
-                      : /Hybrid/.test(row.label) ? 'info'
-                        : /Deprecated|Vulnerable/.test(row.label) ? 'critical'
-                          : /Weakened/.test(row.label) ? 'warning' : 'neutral'
-                  }
+                  tone={distributionTone(row)}
                 />
               ))}
             </div>
@@ -394,7 +401,7 @@ export default function QkmsReadiness() {
         </Panel>
       </div>
 
-      <KeyDrawer keyId={selectedKey} onClose={() => setSelectedKey(null)} onChanged={() => { void refresh(true); query.reload(); }} />
+      <KeyDrawer keyId={selectedKey} syncTo={data?.generatedAt ?? null} onClose={() => setSelectedKey(null)} onChanged={() => { void refresh(true); query.reload(); }} />
     </QkmsShell>
   );
 }

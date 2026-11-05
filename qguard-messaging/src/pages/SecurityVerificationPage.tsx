@@ -20,7 +20,7 @@ import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
 import type { SecurityEvent, TelemetryEvent, TrustedDevice } from "@/lib/types";
-import { sha3_256Hex } from "@/lib/sha3";
+import { coreSha3Hex } from "@/lib/core-crypto";
 
 interface SafetyNumberResult {
   display?: string;
@@ -407,7 +407,7 @@ export default function SecurityVerificationPage({
   ) {
     try {
       const createdAt = new Date().toISOString();
-      const eventHash = sha3_256Hex(JSON.stringify({ eventType, severity, deviceId, metadata, createdAt }));
+      const eventHash = await coreSha3Hex(JSON.stringify({ eventType, severity, deviceId, metadata, createdAt }));
       await supabase.from("messaging_security_events").insert({
         user_id: userId,
         device_id: deviceId,

@@ -1,0 +1,14 @@
+{
+  "apk": "C:\\Users\\ruel3\\Music\\qguard-helix-final\\qguard-messaging\\src-tauri\\gen\\android\\app\\build\\outputs\\apk\\arm64\\release\\app-arm64-release.apk",
+  "apkBytes": 22920671,
+  "apkSha256": "19ff583ce8ff8ad5bf8faf9dc60488bbc7f68c25c3a3182fe7e84fcb363f6450",
+  "nativeBytes": 17961768,
+  "nativeSha256": "9c1854634885aeeea16850b17c7d1cc461fa041dfe092194268a747525255166",
+  "currentUiAssets": [
+    "index-PeqaNcap.js",
+    "index-OllFGzaM.css"
+  ],
+  "zipCrcsPass": true,
+  "exactFreshNativeMatch": true,
+  "allOnboardingAssetsPresent": true
+}

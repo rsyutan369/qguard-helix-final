@@ -181,6 +181,24 @@ pub(crate) fn local_vault_context(state: &AppState, need: VaultNeed) -> Result<L
 }
 
 impl LocalVaultContext {
+    /// The PIN-bound vault key. Vault Storage derives its index and thumbnail
+    /// keys from it (`vault::store::StoreKeys`); it is never written anywhere.
+    pub(crate) fn vault_key(&self) -> &[u8; KEY_SIZE] {
+        &self.vault_key
+    }
+
+    /// The personal recovery wrap key, when this context was built to seal and
+    /// personal recovery is configured.
+    pub(crate) fn personal_recovery_wrap_key(&self) -> Option<&[u8; KEY_SIZE]> {
+        self.recovery_wrap_key.as_deref()
+    }
+
+    /// Whether a container sealed with this context gets a recovery or
+    /// enterprise wrap.
+    pub(crate) fn seals_recovery_wraps(&self) -> bool {
+        self.recovery_wrap_key.is_some() || self.enterprise_recipient.is_some()
+    }
+
     /// What a container written now is sealed with.
     pub(crate) fn owner_seal(&self) -> vault_stream::OwnerSeal<'_> {
         vault_stream::OwnerSeal {
@@ -1315,7 +1333,7 @@ pub(crate) fn sanitize_dest_name(file_name: &str) -> String {
 
 /// `name`, or `name (n)` keeping the extension, so an existing file in `dir` is
 /// never overwritten.
-fn unique_in_dir(dir: &Path, name: &str) -> PathBuf {
+pub(crate) fn unique_in_dir(dir: &Path, name: &str) -> PathBuf {
     let candidate = dir.join(name);
     if !candidate.exists() {
         return candidate;

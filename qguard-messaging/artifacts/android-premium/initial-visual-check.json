@@ -1,0 +1,128 @@
+[
+  {
+    "theme": "light",
+    "screen": "dashboard",
+    "errors": [],
+    "text": "QGUARD\nPOLLING\nQUANTUM-SAFE CHAT & VAULT\nGOOD EVENING\nthere\nQUANTUM CORE\n0% · Action needed\n0 of 4 cryptographic layers fully active.\n0\n%\nIdentity\nHandshake\nSession\nRuntime\nNO ACTIVE DEVICE KEYS\nAES-256-GCM\nSecure Chat\nEnd-to-end encrypted\nCalls\nVoic",
+    "overflow": false
+  },
+  {
+    "theme": "light",
+    "screen": "chat",
+    "errors": [],
+    "text": "Chats\nPOLLING\nEND-TO-END ENCRYPTED\nML-KEM\n+\nX25519\nChats\nContacts\nArchived\nHidden\n\nAdd a trusted contact to start a private encrypted chat.\n\nStart a conversation\nHome\nChats\nVault\nSecurity\nSettings",
+    "overflow": false
+  },
+  {
+    "theme": "light",
+    "screen": "contacts",
+    "errors": [],
+    "text": "Secure Chat\nPOLLING\nEND-TO-END ENCRYPTED\nML-KEM\n+\nX25519\nChats\nContacts\nArchived\nHidden\n\nNo contacts yet. Find someone by name, username or their QGuard ID, and they appear here.\n\nAdd a contact\nHome\nChats\nVault\nSecurity\nSettings",
+    "overflow": false
+  },
+  {
+    "theme": "light",
+    "screen": "calls",
+    "errors": [],
+    "text": "QGUARD\nPOLLING\nQUANTUM-SAFE CHAT & VAULT\nVOICE & VIDEO · QUANTUM-ENCRYPTED\nCalls\nCalls\n\nQuantum-encrypted voice and video · history sealed on this device only\n\nNew call\nCALLS · 7 DAYS\n0\n0 in history\nMISSED · 7 DAYS\n0\nNone waiting\nTALK TIME · 7 DAYS\n0",
+    "overflow": false
+  },
+  {
+    "theme": "light",
+    "screen": "vault",
+    "errors": [],
+    "text": "QGUARD\nPOLLING\nQUANTUM-SAFE CHAT & VAULT\nLOCAL-FIRST · ON THIS DEVICE ONLY\nVault\nQuantum Vault\n\nPost-quantum encrypted storage on this device · AES-256-GCM · ML-DSA-87 · ML-KEM-1024\n\nVault Storage\nEncrypt & Decrypt Tools\n\nThis action requires the QGu",
+    "overflow": false
+  },
+  {
+    "theme": "light",
+    "screen": "quantum",
+    "errors": [],
+    "text": "QGUARD\nPOLLING\nQUANTUM-SAFE CHAT & VAULT\nPOST-QUANTUM POSTURE\nSecurity\nQuantum-safe Score\n0%\n6 stack checks need review\nHybrid Session\nNot Established\n0/1 trusted active devices\nHNDL Protection\nNot Ready\nAwaiting full suite evidence\nForward Secrecy\nN",
+    "overflow": false
+  },
+  {
+    "theme": "light",
+    "screen": "settings",
+    "errors": [],
+    "text": "QGUARD\nPOLLING\nQUANTUM-SAFE CHAT & VAULT\nSECURITY · ALERTS · RETENTION\nSettings\nQG\nQGuard User\nAAL1 Session\nAUTHENTICATOR\nNot enabled\nRECOVERY CODES\n0\nSESSION\nLocked\nTheme\nlight\nToggle Theme\nProfile controls ready\nWorkspace Lock\nZERO-TRUST\n\nSecure Ch",
+    "overflow": false
+  },
+  {
+    "theme": "light",
+    "screen": "unlock",
+    "errors": [],
+    "text": "Enter your PIN\n\nUnlock QGuard Messaging\n\n1\n2\n3\n4\n5\n6\n7\n8\n9\n0\nSign in with password instead",
+    "overflow": false
+  },
+  {
+    "theme": "light",
+    "screen": "login",
+    "errors": [],
+    "text": "QGuard Helix\nQUANTUM-SAFE · END-TO-END ENCRYPTED\nWelcome back\n\nSign in to your quantum-safe workspace.\n\nEmail\nMobile number\nEmail\nPassword\nForgot password?\nSign in securely\nNeed an account? RegisterResend verification email\nOR\nLink with QR code\n\nAlre",
+    "overflow": false
+  },
+  {
+    "theme": "dark",
+    "screen": "dashboard",
+    "errors": [],
+    "text": "QGUARD\nPOLLING\nQUANTUM-SAFE CHAT & VAULT\nGOOD EVENING\nthere\nQUANTUM CORE\n0% · Action needed\n0 of 4 cryptographic layers fully active.\n0\n%\nIdentity\nHandshake\nSession\nRuntime\nNO ACTIVE DEVICE KEYS\nAES-256-GCM\nSecure Chat\nEnd-to-end encrypted\nCalls\nVoic",
+    "overflow": false
+  },
+  {
+    "theme": "dark",
+    "screen": "chat",
+    "errors": [],
+    "text": "Chats\nPOLLING\nEND-TO-END ENCRYPTED\nML-KEM\n+\nX25519\nChats\nContacts\nArchived\nHidden\n\nAdd a trusted contact to start a private encrypted chat.\n\nStart a conversation\nHome\nChats\nVault\nSecurity\nSettings",
+    "overflow": false
+  },
+  {
+    "theme": "dark",
+    "screen": "contacts",
+    "errors": [],
+    "text": "Secure Chat\nPOLLING\nEND-TO-END ENCRYPTED\nML-KEM\n+\nX25519\nChats\nContacts\nArchived\nHidden\n\nNo contacts yet. Find someone by name, username or their QGuard ID, and they appear here.\n\nAdd a contact\nHome\nChats\nVault\nSecurity\nSettings",
+    "overflow": false
+  },
+  {
+    "theme": "dark",
+    "screen": "calls",
+    "errors": [],
+    "text": "QGUARD\nPOLLING\nQUANTUM-SAFE CHAT & VAULT\nVOICE & VIDEO · QUANTUM-ENCRYPTED\nCalls\nCalls\n\nQuantum-encrypted voice and video · history sealed on this device only\n\nNew call\nCALLS · 7 DAYS\n0\n0 in history\nMISSED · 7 DAYS\n0\nNone waiting\nTALK TIME · 7 DAYS\n0",
+    "overflow": false
+  },
+  {
+    "theme": "dark",
+    "screen": "vault",
+    "errors": [],
+    "text": "QGUARD\nPOLLING\nQUANTUM-SAFE CHAT & VAULT\nLOCAL-FIRST · ON THIS DEVICE ONLY\nVault\nQuantum Vault\n\nPost-quantum encrypted storage on this device · AES-256-GCM · ML-DSA-87 · ML-KEM-1024\n\nVault Storage\nEncrypt & Decrypt Tools\n\nThis action requires the QGu",
+    "overflow": false
+  },
+  {
+    "theme": "dark",
+    "screen": "quantum",
+    "errors": [],
+    "text": "QGUARD\nPOLLING\nQUANTUM-SAFE CHAT & VAULT\nPOST-QUANTUM POSTURE\nSecurity\nQuantum-safe Score\n0%\n6 stack checks need review\nHybrid Session\nNot Established\n0/1 trusted active devices\nHNDL Protection\nNot Ready\nAwaiting full suite evidence\nForward Secrecy\nN",
+    "overflow": false
+  },
+  {
+    "theme": "dark",
+    "screen": "settings",
+    "errors": [],
+    "text": "QGUARD\nPOLLING\nQUANTUM-SAFE CHAT & VAULT\nSECURITY · ALERTS · RETENTION\nSettings\nQG\nQGuard User\nAAL1 Session\nAUTHENTICATOR\nNot enabled\nRECOVERY CODES\n0\nSESSION\nLocked\nTheme\ndark\nToggle Theme\nProfile controls ready\nWorkspace Lock\nZERO-TRUST\n\nSecure Cha",
+    "overflow": false
+  },
+  {
+    "theme": "dark",
+    "screen": "unlock",
+    "errors": [],
+    "text": "Enter your PIN\n\nUnlock QGuard Messaging\n\n1\n2\n3\n4\n5\n6\n7\n8\n9\n0\nSign in with password instead",
+    "overflow": false
+  },
+  {
+    "theme": "dark",
+    "screen": "login",
+    "errors": [],
+    "text": "QGuard Helix\nQUANTUM-SAFE · END-TO-END ENCRYPTED\nWelcome back\n\nSign in to your quantum-safe workspace.\n\nEmail\nMobile number\nEmail\nPassword\nForgot password?\nSign in securely\nNeed an account? RegisterResend verification email\nOR\nLink with QR code\n\nAlre",
+    "overflow": false
+  }
+]

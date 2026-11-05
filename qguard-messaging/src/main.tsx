@@ -11,6 +11,8 @@ import "./styles/mobile.css";
 // sets that attribute -- which it only does on the Android runtime.
 import "./styles/android-modernist.css";
 import "./styles/android-modernist-pages.css";
+// Onboarding-matched paint layer; existing Android structure and logic remain.
+import "./styles/android-premium.css";
 
 // Applied BEFORE the first render so a cold launch paints Modernist straight
 // away instead of flashing the Cold Fusion palette for a frame.

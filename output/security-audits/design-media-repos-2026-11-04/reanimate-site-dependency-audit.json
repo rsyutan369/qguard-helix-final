@@ -1,0 +1,19 @@
+{
+  "scope": "reanimate-site",
+  "source_lockfile": "C:\\Users\\ruel3\\Music\\qguard-helix-final\\output\\security-audits\\design-media-repos-2026-11-04\\NiazMorshed2007--reanimate\\site\\bun.lock",
+  "distinct_package_names_queried": 477,
+  "exact_package_versions_queried": 494,
+  "findings": [
+    {
+      "package": "minimatch",
+      "locked_versions": [
+        "3.1.5",
+        "10.2.6"
+      ],
+      "severity": "moderate",
+      "title": "minimatch has potential denial of service via globparts amplification",
+      "url": "https://github.com/advisories/GHSA-g3hv-75wg-m249",
+      "vulnerable_versions": "<11.0.1"
+    }
+  ]
+}

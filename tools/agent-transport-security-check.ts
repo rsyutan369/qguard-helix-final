@@ -16,7 +16,7 @@
  */
 import { spawn } from 'node:child_process'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
@@ -185,7 +185,7 @@ console.log('\n[2] Generated installers')
   assert(curls.length >= 3 && curls.every((line) => line.includes("--proto '=https' --tlsv1.2")), `every curl is HTTPS-only with a TLS 1.2 floor (${curls.length})`)
   assert(curls.every((line) => !/\s-[a-zA-Z]*L/.test(line)), 'no curl follows redirects (-L) with the token header')
   assert(/^QGUARD_ENVIRONMENT=production$/m.test(linux), 'control-plane environment stamped (QGUARD_ENVIRONMENT=production)')
-  assert(linux.includes('QGUARD_STATE_DIR=/var/lib/qguard-agent') && linux.includes('install -d -m 0700 -o root -g root /var/lib/qguard-agent') && linux.includes('StateDirectory=qguard-agent'), 'persistent 0700 root key directory + systemd StateDirectory')
+  assert(linux.includes(`QGUARD_STATE_DIR=/var/lib/qguard-agent/${base.agentId}`) && linux.includes('install -d -m 0700 -o root -g root "$STATE_DIR" "$COORDINATION_DIR"') && linux.includes('StateDirectory=qguard-agent/$AGENT_ID'), 'persistent per-agent 0700 root key directory + systemd StateDirectory')
   const devLinux = out('linux', { apiUrl: 'http://localhost:3000', controlPlaneEnvironment: 'development' })
   assert(!devLinux.includes('--proto') && /^QGUARD_ENVIRONMENT=development$/m.test(devLinux), 'positive control: a development plaintext installer still works (no https lock)')
   assert(/^QGUARD_ENVIRONMENT=development$/m.test(out('linux', { controlPlaneEnvironment: undefined })), 'missing control-plane environment defaults to development, never upgraded silently')
@@ -269,6 +269,9 @@ console.log('\n[4] Built agent runtime against local test servers')
     const version = readFileSync(runtime, 'utf8').match(/1\.\d+\.\d+/)?.[0]
     const work = mkdtempSync(path.join(tmpdir(), 'qg-transport-'))
     const stateDir = path.join(work, 'state')
+    // Explicit configurations now fail closed when missing. Use an actual empty
+    // fixture to test environment-only enrollment without reading host config.
+    writeFileSync(path.join(work, 'no-config.env'), '', { mode: 0o600 })
 
     const listen = (handler: (req: IncomingMessage, body: Buffer) => [number, Record<string, string>, string]) =>
       new Promise<{ server: Server; port: number; seen: Array<{ req: IncomingMessage; body: Buffer }> }>((resolve) => {

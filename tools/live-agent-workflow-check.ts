@@ -176,6 +176,14 @@ console.log('\n[7] Approval and authority gates')
 
   const offline = buildAgentWorkflow({ now: NOW, agents: [agent('o1', 'operator', { lastSeenAt: iso(60) })], heartbeats: [], jobs: [job('j1')], evidence: EVIDENCE })
   assert(node(offline, 'operator').status === 'waiting', 'authorised operator offline → waiting', node(offline, 'operator').status)
+
+  /* A cutover that ran and was then reverted is neither "completed" (reads as
+     migrated) nor "cancelled — withdrawn by an operator" (reads as never run). */
+  const reverted = node(buildAgentWorkflow({ now: NOW, agents: [agent('o1', 'operator')], heartbeats: [], jobs: [job('j1', { status: 'rolled_back', agentId: 'o1' })], evidence: EVIDENCE }), 'operator')
+  assert(reverted.status === 'rolled_back', 'all jobs rolled back → rolled_back, not cancelled', `${reverted.status}: ${reverted.reason}`)
+  assert(!/withdrawn/.test(reverted.reason) && /not migrated/.test(reverted.reason), 'rolled-back stage says the asset is not migrated', reverted.reason)
+  const mixed = node(buildAgentWorkflow({ now: NOW, agents: [agent('o1', 'operator')], heartbeats: [], jobs: [job('j1', { status: 'rolled_back', agentId: 'o1' }), job('j2', { status: 'completed', agentId: 'o1' })], evidence: EVIDENCE }), 'operator')
+  assert(mixed.status === 'completed' && /rolled back/.test(mixed.currentTask), 'completed + rolled back → completed, naming the rollback', `${mixed.status}: ${mixed.currentTask}`)
 }
 
 /* ------------------------------------------------------------------ */

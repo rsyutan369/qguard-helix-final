@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Activity, AlertTriangle, BadgeCheck, Check, Copy, Maximize2, MessageSquareQuote, Mic, MicOff, Monitor, MonitorOff, Move, PhoneOff, ShieldCheck, Video, VideoOff } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
+import { Activity, AlertTriangle, BadgeCheck, Check, Copy, KeyRound, LockKeyhole, Maximize2, MessageSquareQuote, Mic, MicOff, Monitor, MonitorOff, Move, PhoneOff, ShieldCheck, Video, VideoOff } from "lucide-react";
+import { formatCallDuration } from "@/lib/call-history";
 import { callSecurityNeedsAttention, describeCallSecurity, formatVerifiedDate } from "@/lib/call-security";
 import { checkCallPhrase, describePairing, fetchCallPhrase, type CallPhrase } from "@/lib/contact-verification";
 import type { CallState } from "@/lib/call-state";
@@ -199,6 +200,53 @@ function PhrasePanel({ state, peerName, onClose }: { state: CallState; peerName:
   );
 }
 
+/**
+ * The stage of a voice call: no camera anywhere, so the person, the talk time
+ * and what protects the call take the screen. Remote audio plays through the
+ * hidden <audio> element (a voice call has no <video> to carry it).
+ */
+function VoiceStage({ peerName, peerUserId, statusLabel, connected, micEnabled, audioRef }: {
+  peerName: string;
+  peerUserId: string | null;
+  statusLabel: string;
+  connected: boolean;
+  micEnabled: boolean;
+  audioRef: RefObject<HTMLAudioElement | null>;
+}) {
+  return (
+    <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 overflow-hidden bg-[radial-gradient(circle_at_50%_32%,rgba(124,58,237,0.32),transparent_58%),radial-gradient(circle_at_50%_100%,rgba(8,145,178,0.22),transparent_55%)] px-6 pb-16 text-center">
+      <audio ref={audioRef} autoPlay className="hidden" />
+      <div className="relative flex h-44 w-44 items-center justify-center">
+        {/* Rings breathe while ringing/connecting and settle once connected. */}
+        <span className={`absolute inset-0 rounded-full border border-white/10 ${connected ? "" : "animate-ping"}`} />
+        <span className="absolute inset-3 rounded-full border border-white/15" />
+        <span className="absolute inset-6 rounded-full bg-white/5" />
+        <UserAvatar userId={peerUserId} name={peerName} size={124} className="relative ring-4 ring-white/20" />
+        {!micEnabled && (
+          <span className="absolute bottom-3 right-3 flex h-9 w-9 items-center justify-center rounded-full bg-rose-500 text-white ring-4 ring-ink-950" title="Your microphone is muted">
+            <MicOff size={16} />
+          </span>
+        )}
+      </div>
+      <div className="min-w-0 max-w-full">
+        <div className="truncate text-2xl font-bold tracking-tight text-white">{peerName}</div>
+        <div className="mt-1.5 font-mono text-sm tabular-nums text-white/70" aria-live="polite">{statusLabel}</div>
+      </div>
+      <div className="flex max-w-md flex-wrap items-center justify-center gap-2 text-[11px] font-semibold text-white/80">
+        <span className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 ring-1 ring-white/15">
+          <LockKeyhole size={12} className="text-emerald-300" /> Voice only · camera never opened
+        </span>
+        <span className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 ring-1 ring-white/15">
+          <KeyRound size={12} className="text-cyan-300" /> X25519 + ML-KEM-1024
+        </span>
+        <span className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 ring-1 ring-white/15">
+          <ShieldCheck size={12} className="text-violet-300" /> AES-256-GCM on every audio frame
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function InCallOverlay(props: {
   state: CallState; localStream: MediaStream | null; remoteStream: MediaStream | null;
   micEnabled: boolean; cameraEnabled: boolean; reconnecting?: boolean; peerName: string; peerUserId: string | null;
@@ -221,6 +269,22 @@ export function InCallOverlay(props: {
     });
   };
   const remoteRef = useRef<HTMLVideoElement>(null);
+  // A voice call plays the remote side through an <audio> element instead.
+  const remoteAudioRef = useRef<HTMLAudioElement>(null);
+  const isVoice = props.state.media === "voice";
+  // Talk time, from the moment media connected (per call).
+  const [connectedAt, setConnectedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { setConnectedAt(null); }, [props.state.callId]);
+  useEffect(() => {
+    if (props.state.phase === "connected") setConnectedAt((at) => at ?? Date.now());
+  }, [props.state.phase]);
+  useEffect(() => {
+    if (connectedAt === null) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [connectedAt]);
+  const talkTime = connectedAt !== null ? formatCallDuration((now - connectedAt) / 1000) : null;
   const stageRef = useRef<HTMLDivElement>(null);
   const pipRef = useRef<HTMLDivElement>(null);
   const [showSas, setShowSas] = useState(false);
@@ -235,7 +299,8 @@ export function InCallOverlay(props: {
   // stage). Null until first measured, then defaulted to the top-right corner.
   const [pipPos, setPipPos] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => { if (localRef.current) localRef.current.srcObject = props.localStream; }, [props.localStream]);
-  useEffect(() => { if (remoteRef.current) remoteRef.current.srcObject = props.remoteStream; }, [props.remoteStream]);
+  useEffect(() => { if (remoteRef.current) remoteRef.current.srcObject = props.remoteStream; }, [props.remoteStream, isVoice]);
+  useEffect(() => { if (remoteAudioRef.current) remoteAudioRef.current.srcObject = props.remoteStream; }, [props.remoteStream, isVoice]);
 
   // Keep the self-preview fully on-screen. Clamps a proposed position to the
   // stage bounds using the live element sizes (so it works at any PiP size).
@@ -334,7 +399,7 @@ export function InCallOverlay(props: {
   const securityAttention = callSecurityNeedsAttention(securityLines);
 
   const phaseLabel = props.reconnecting ? "Reconnecting…"
-    : props.state.phase === "connected" ? "Connected"
+    : props.state.phase === "connected" ? (talkTime ? `Connected · ${talkTime}` : "Connected")
     : props.state.phase === "connecting" ? "Connecting..."
     : props.state.phase === "calling" ? "Calling..." : props.state.phase;
 
@@ -366,6 +431,8 @@ export function InCallOverlay(props: {
               <MessageSquareQuote size={14} /> <span className="hidden sm:inline">Ask for their phrase</span>
             </button>
           )}
+          {/* Video quality has no meaning in a voice call. */}
+          {!isVoice && (
           <div className="flex items-center rounded-full bg-white/10 p-0.5" role="radiogroup" aria-label="Call quality">
             {QUALITY_OPTIONS.map((option) => (
               <button
@@ -381,6 +448,7 @@ export function InCallOverlay(props: {
               </button>
             ))}
           </div>
+          )}
           <button
             type="button"
             onClick={() => setShowSas((v) => !v)}
@@ -399,6 +467,17 @@ export function InCallOverlay(props: {
         </div>
       </div>
       <div ref={stageRef} className="relative flex-1 overflow-hidden">
+        {isVoice ? (
+          <VoiceStage
+            peerName={props.peerName}
+            peerUserId={props.peerUserId}
+            statusLabel={phaseLabel}
+            connected={props.state.phase === "connected"}
+            micEnabled={props.micEnabled}
+            audioRef={remoteAudioRef}
+          />
+        ) : (
+        <>
         <video ref={remoteRef} autoPlay playsInline className={`h-full w-full bg-black ${remoteFit === "cover" ? "object-cover" : "object-contain"}`} />
         {!props.remoteStream && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-ink-950/60">
@@ -434,6 +513,8 @@ export function InCallOverlay(props: {
             <Move size={10} /> You
           </div>
         </div>
+        </>
+        )}
         {showPhrase && props.state.phase === "connected" && (
           <PhrasePanel state={props.state} peerName={props.peerName} onClose={() => setShowPhrase(false)} />
         )}
@@ -518,7 +599,9 @@ export function InCallOverlay(props: {
           </div>
         )}
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-center text-[11px] text-white/60">
-          End-to-end encrypted. The server and network cannot see this call; only the person you called can see what you share.
+          {isVoice
+            ? "End-to-end encrypted. The server and network cannot hear this call; only the person you called can."
+            : "End-to-end encrypted. The server and network cannot see this call; only the person you called can see what you share."}
         </div>
         {props.stats && props.state.phase === "connected" && <CallStatsPanel stats={props.stats} />}
         {(props.screenShare?.active || screenShareError) && (
@@ -532,8 +615,10 @@ export function InCallOverlay(props: {
         style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
       >
         <button type="button" onClick={props.onToggleMic} title={props.micEnabled ? "Mute microphone" : "Unmute microphone"} className={`flex h-12 w-12 items-center justify-center rounded-full ${props.micEnabled ? "bg-white/15 text-white" : "bg-rose-500 text-white"}`}>{props.micEnabled ? <Mic size={20} /> : <MicOff size={20} />}</button>
+        {!isVoice && (
         <button type="button" onClick={props.onToggleCamera} title={props.cameraEnabled ? "Turn camera off" : "Turn camera on"} className={`flex h-12 w-12 items-center justify-center rounded-full ${props.cameraEnabled ? "bg-white/15 text-white" : "bg-rose-500 text-white"}`}>{props.cameraEnabled ? <Video size={20} /> : <VideoOff size={20} />}</button>
-        {props.screenShare && props.state.phase === "connected" && (
+        )}
+        {!isVoice && props.screenShare && props.state.phase === "connected" && (
           <button
             type="button"
             onClick={toggleScreenShare}
@@ -544,6 +629,7 @@ export function InCallOverlay(props: {
             {props.screenShare.active ? <MonitorOff size={20} /> : <Monitor size={20} />}
           </button>
         )}
+        {!isVoice && (
         <button
           type="button"
           onClick={() => setRemoteFit((fit) => (fit === "cover" ? "contain" : "cover"))}
@@ -553,6 +639,7 @@ export function InCallOverlay(props: {
         >
           <Maximize2 size={20} />
         </button>
+        )}
         <button type="button" onClick={props.onHangup} title="End call" className="flex h-12 w-12 items-center justify-center rounded-full bg-rose-500 text-white hover:bg-rose-600"><PhoneOff size={20} /></button>
       </div>
     </div>

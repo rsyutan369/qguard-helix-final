@@ -10,12 +10,14 @@ import { isNativeDialogOpen } from "@/lib/native-dialog-guard";
 // reflects status, drives unlock/setup, and enforces auto-lock + inactivity.
 
 export type WorkspaceScope = "chat" | "vault";
-export type UnlockMethod = "password" | "pin";
+/** `pattern` exists for the vault only (lib/pattern.ts). */
+export type UnlockMethod = "password" | "pin" | "pattern";
 
 export interface ScopeStatus {
   configured: boolean;
   hasPassword: boolean;
   hasPin: boolean;
+  hasPattern?: boolean;
   unlocked: boolean;
   failedAttempts: number;
   lockoutUntil: string | null;
@@ -37,6 +39,7 @@ const EMPTY_SCOPE: ScopeStatus = {
   configured: false,
   hasPassword: false,
   hasPin: false,
+  hasPattern: false,
   unlocked: false,
   failedAttempts: 0,
   lockoutUntil: null,
@@ -62,11 +65,20 @@ function readInactivityMinutes(userId: string): number {
   }
 }
 
+/** What a drawn pattern opened (`vault_pattern_unlock`). */
+interface PatternUnlock {
+  opened: "vault" | "hidden";
+  status: ScopeStatus;
+}
+
 export function useWorkspaceLock(userId: string | null) {
   const [status, setStatus] = useState<WorkspaceStatus | null>(null);
   // Why the status could not be read. Without it a failed read left both
   // workspaces on their loading skeleton with nothing to act on.
   const [loadError, setLoadError] = useState<string | null>(null);
+  // A hidden vault is open (vault::hidden). The Quantum Vault scope stays
+  // locked meanwhile; the core never has both open.
+  const [hiddenOpen, setHiddenOpen] = useState(false);
   const [inactivityMinutes, setInactivityMinutesState] = useState<number>(() =>
     userId ? readInactivityMinutes(userId) : DEFAULT_INACTIVITY_MINUTES,
   );
@@ -80,6 +92,8 @@ export function useWorkspaceLock(userId: string | null) {
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : typeof error === "string" ? error : "The workspace lock status could not be read.");
     }
+    const hidden = await safeInvoke<{ open: boolean }>("vault_hidden_status").catch(() => ({ open: false }));
+    setHiddenOpen(Boolean(hidden?.open));
   }, [userId]);
 
   useEffect(() => {
@@ -115,6 +129,43 @@ export function useWorkspaceLock(userId: string | null) {
     },
     [],
   );
+
+  /** Turn one unlock method off (at least one always remains). */
+  const removeCredential = useCallback(async (scope: WorkspaceScope, method: UnlockMethod) => {
+    const result = await safeInvoke<ScopeStatus>("workspace_remove_credential", { scope, method });
+    setStatus((current) => ({ ...(current ?? { chat: EMPTY_SCOPE, vault: EMPTY_SCOPE }), [scope]: result }));
+    return result;
+  }, []);
+
+  /**
+   * Unlock with a drawn pattern. The core decides what it opens — the Quantum
+   * Vault, a hidden vault, or nothing (a wrong attempt).
+   */
+  const patternUnlock = useCallback(
+    async (pattern: string): Promise<PatternUnlock["opened"]> => {
+      try {
+        const result = await safeInvoke<PatternUnlock>("vault_pattern_unlock", { pattern });
+        setStatus((current) => ({ ...(current ?? { chat: EMPTY_SCOPE, vault: EMPTY_SCOPE }), vault: result.status }));
+        setHiddenOpen(result.opened === "hidden");
+        return result.opened;
+      } catch (error) {
+        await refresh();
+        throw error;
+      }
+    },
+    [refresh],
+  );
+
+  /** A hidden vault was just created or opened from inside the Quantum Vault (which locked). */
+  const hiddenOpened = useCallback(async () => {
+    setHiddenOpen(true);
+    await refresh();
+  }, [refresh]);
+
+  const lockHidden = useCallback(async () => {
+    await safeInvoke("vault_hidden_lock").catch(() => undefined);
+    setHiddenOpen(false);
+  }, []);
 
   // Reset the Secure Chat lock (verifier-only, so no messages are lost). The
   // caller must re-authenticate the account before invoking this.
@@ -156,11 +207,13 @@ export function useWorkspaceLock(userId: string | null) {
     if (scope === "chat") clearChatPlaintextCaches();
     const result = await safeInvoke<ScopeStatus>("workspace_lock", { scope });
     setStatus((current) => ({ ...(current ?? { chat: EMPTY_SCOPE, vault: EMPTY_SCOPE }), [scope]: result }));
+    if (scope === "vault") setHiddenOpen(false); // the core closed it with the vault
   }, []);
 
   const lockAll = useCallback(async () => {
     clearChatPlaintextCaches();
     await safeInvoke("workspace_lock_all", undefined, null);
+    setHiddenOpen(false);
     setStatus((current) =>
       current
         ? {
@@ -184,7 +237,8 @@ export function useWorkspaceLock(userId: string | null) {
     [userId],
   );
 
-  const anyUnlocked = Boolean(status && (status.chat.unlocked || status.vault.unlocked));
+  // An open hidden vault counts: it must lock on the same triggers.
+  const anyUnlocked = Boolean(status && (status.chat.unlocked || status.vault.unlocked)) || hiddenOpen;
 
   // Auto-lock on app blur / minimize / tab hidden / close, and on inactivity.
   useEffect(() => {
@@ -195,7 +249,7 @@ export function useWorkspaceLock(userId: string | null) {
       // file attach) blurs the WebView and flips visibility to "hidden" without
       // the user actually leaving — never lock mid-dialog. See native-dialog-guard.
       if (isNativeDialogOpen()) return;
-      if (status && (status.chat.unlocked || status.vault.unlocked)) void lockAll();
+      if (anyUnlocked) void lockAll();
     };
 
     const resetInactivity = () => {
@@ -246,6 +300,11 @@ export function useWorkspaceLock(userId: string | null) {
     refresh,
     unlock,
     setup,
+    removeCredential,
+    patternUnlock,
+    hiddenOpen,
+    hiddenOpened,
+    lockHidden,
     lock,
     lockAll,
     resetChatLock,

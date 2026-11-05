@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   LockKeyhole,
   MessageSquare,
+  Phone,
   MonitorSmartphone,
   QrCode,
   Settings,
@@ -20,6 +21,7 @@ import { AboutModal } from "@/components/AboutModal";
 const iconMap = {
   dashboard: LayoutDashboard,
   chat: MessageSquare,
+  calls: Phone,
   vault: LockKeyhole,
   keys: KeyRound,
   devices: MonitorSmartphone,
@@ -35,10 +37,14 @@ interface SidebarProps {
   modules: MessagingModule[];
   snapshot: DashboardSnapshot;
   unreadMessages?: number;
+  /** Missed calls not yet looked at. */
+  missedCalls?: number;
+  /** Files shared with this account waiting for Accept / Decline. */
+  sharedFilesWaiting?: number;
   onNavigate: (page: Page) => void;
 }
 
-export default function Sidebar({ activePage, modules, snapshot, unreadMessages = 0, onNavigate }: SidebarProps) {
+export default function Sidebar({ activePage, modules, snapshot, unreadMessages = 0, missedCalls = 0, sharedFilesWaiting = 0, onNavigate }: SidebarProps) {
   const visibleModules = modules.filter((item) => item.module_id !== "admin" && item.route !== "admin");
   const [aboutOpen, setAboutOpen] = useState(false);
 
@@ -84,6 +90,22 @@ export default function Sidebar({ activePage, modules, snapshot, unreadMessages 
                     title={`${unreadMessages} unread encrypted message${unreadMessages === 1 ? "" : "s"}`}
                   >
                     {unreadMessages > 99 ? "99+" : unreadMessages}
+                  </span>
+                )}
+                {item.route === "calls" && missedCalls > 0 && (
+                  <span
+                    className="ml-auto flex h-5 min-w-[20px] items-center justify-center rounded-full bg-rose-500 px-1.5 text-[11px] font-bold leading-none text-white"
+                    title={`${missedCalls} missed call${missedCalls === 1 ? "" : "s"}`}
+                  >
+                    {missedCalls > 99 ? "99+" : missedCalls}
+                  </span>
+                )}
+                {item.route === "vault" && sharedFilesWaiting > 0 && (
+                  <span
+                    className="ml-auto flex h-5 min-w-[20px] items-center justify-center rounded-full bg-cyan-600 px-1.5 text-[11px] font-bold leading-none text-white"
+                    title={`${sharedFilesWaiting} shared file${sharedFilesWaiting === 1 ? "" : "s"} waiting for you`}
+                  >
+                    {sharedFilesWaiting > 99 ? "99+" : sharedFilesWaiting}
                   </span>
                 )}
               </button>

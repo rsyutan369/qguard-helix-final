@@ -190,6 +190,27 @@ export interface ReadinessBlendInputs {
   quantumRisk: number
   /** True only when runtime crypto telemetry was actually observed. */
   runtimeMeasured: boolean
+  /**
+   * False when there was no cryptographic posture to measure — no
+   * quantum-relevant component and no graded finding (see
+   * `readinessPostureMeasured`). Defaults to true for older callers.
+   */
+  postureMeasured?: boolean
+}
+
+/**
+ * Whether the readiness blend has any posture evidence to blend.
+ *
+ * With no component and no finding, `quantumRisk` is 0 because nothing was
+ * looked at, not because nothing is at risk. Feeding that 0 into the
+ * `100 − risk` term scored an evidence-free estate (a scan session that found
+ * nothing, or no data at all in the report's methodology) at 36/100.
+ * The snapshot, the scoped report model, the per-asset dossiers and the
+ * report methodology all ask this one predicate, so their sums agree.
+ */
+export function readinessPostureMeasured(inputs: { cryptoComponents: number; findings: SeverityCounts }): boolean {
+  const f = inputs.findings
+  return num(inputs.cryptoComponents) > 0 || num(f.critical) + num(f.high) + num(f.medium) + num(f.low) > 0
 }
 
 /**
@@ -198,6 +219,8 @@ export interface ReadinessBlendInputs {
  * evidence differently (they used to carry three copies of the formula).
  */
 export function blendQuantumReadiness(inputs: ReadinessBlendInputs): number {
+  // Nothing measured ⇒ nothing ready. Runtime visibility alone is not posture.
+  if (inputs.postureMeasured === false) return 0
   const w = READINESS_WEIGHTS
   const runtime = inputs.runtimeMeasured ? w.runtimeVisibility : 0
   const weightSum = w.pqcAdoption + w.riskPosture + runtime
@@ -998,7 +1021,12 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
     /* ---- readiness (asset-scoped analogue of the tenant readiness model) ---- */
     const assetPqcAdoption = componentCount > 0 ? ((pqcComponentCount + hybridComponentCount * 0.5) / componentCount) * 100 : 0
     const readinessScore = hasEvidence
-      ? blendQuantumReadiness({ pqcAdoption: assetPqcAdoption, quantumRisk: riskScore, runtimeMeasured: runtime.length > 0 })
+      ? blendQuantumReadiness({
+          pqcAdoption: assetPqcAdoption,
+          quantumRisk: riskScore,
+          runtimeMeasured: runtime.length > 0,
+          postureMeasured: readinessPostureMeasured({ cryptoComponents: componentCount, findings: severityCounts }),
+        })
       : 0
 
     /* ---- HNDL exposure ---- */

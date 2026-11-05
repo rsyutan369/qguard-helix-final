@@ -1,0 +1,11 @@
+{
+  "confirmed": true,
+  "capture_directory": "C:\\Users\\ruel3\\Music\\qguard-helix-final\\output\\security-audits\\design-media-repos-2026-11-04\\reanimate-path-repro\\capture",
+  "audit_owned_files_written_outside_capture": [
+    "C:\\Users\\ruel3\\Music\\qguard-helix-final\\output\\security-audits\\design-media-repos-2026-11-04\\reanimate-path-repro\\package.json",
+    "C:\\Users\\ruel3\\Music\\qguard-helix-final\\output\\security-audits\\design-media-repos-2026-11-04\\reanimate-path-repro\\outside-capture.wgsl"
+  ],
+  "existing_json_sentinel_overwritten": true,
+  "later_processing_error": null,
+  "scope": "Direct call to the original unmodified trace serializer with synthetic webpage-controlled data; no remote page visited and no packages installed."
+}

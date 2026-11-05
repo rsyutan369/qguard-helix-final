@@ -10,6 +10,165 @@ auto-update.
 
 ## [Unreleased]
 
+### Added
+
+- **Quantum Vault Storage (desktop and Android).** The Quantum Vault now keeps
+  your files for you: an encrypted library in the app's private storage with
+  folders, Photos & Videos, Documents, Audio, Favorites, Trash, search, sorting,
+  grid and list views, drag-and-drop (desktop), multi-file and folder import,
+  in-memory previews (images, video, audio, text), export, rename, move,
+  per-file and whole-vault integrity checks, and an activity log. Every file is
+  an ordinary v5 vault container: the cryptography is unchanged (AES-256-GCM
+  per chunk, per-file key under the PIN-bound vault key, recovery / enterprise
+  wraps, Ed25519 + ML-DSA-87 signed header). New: containers carry no file name
+  or type; names, folders, hashes and activity live in one index sealed under a
+  key derived from the vault key, with a second copy under the recovery key so
+  a lost device or forgotten PIN does not lose the names. Thumbnails are made
+  on-device and sealed under their own key. Permanent delete overwrites the
+  container header, destroying the only wrapped copies of the file key. File
+  types come from content, never from the extension. Nothing is uploaded.
+  Design and verification: `docs/QUANTUM_VAULT_STORAGE.md`.
+- The previous encrypt-anywhere workflow is unchanged under *Encrypt & Decrypt
+  Tools*.
+- **Encrypted cloud backup for Quantum Vault Storage (opt-in).** *Security &
+  Backup → Encrypted cloud backup*: off by default; when on, each file's
+  encrypted container and the folder list sealed with your recovery key are
+  uploaded in 8 MiB parts to a private bucket. Quotas come from your plan
+  (Basic 2 GB, Pro 10 GB, Elite 100 GB; Starter is local-only) and are enforced
+  by the database (migration 048). Uploads resume after interruptions; deleting
+  a file permanently deletes its cloud copy; a lapsed subscription pauses new
+  uploads but keeps existing backups restorable. *Restore from backup* on a new
+  device (or after a vault reset) needs only the recovery key — signing in
+  never decrypts anything — and re-binds each file to the new vault after
+  checking every part and the whole file. Files that went missing on this
+  device can be restored from their own backup.
+- **One Quantum Vault across your devices.** With backup on, every device you
+  approved in the Device Trust Center shares one library: files, folders,
+  renames, Trash and permanent deletes appear on all of them. Files from your
+  other devices are listed at once and downloaded (verified) when you open
+  them. A shared library key that only your devices hold — and only while the
+  vault is unlocked — seals the folder list and each file's key; the server
+  sees neither. Publishing never overwrites another device's newer changes.
+  Removing a device gives the library a new key that device never receives.
+  Migration 049.
+- **Share vault files with other QGuard users.** *Share* on any file: pick
+  people, *view only* or *view and save*, and an optional expiry. Cloud backup
+  does not need to be on: a file without a cloud copy gets one when it is
+  shared (that file only, sealed exactly as its backup would be), and with
+  backup off that copy is removed again once no share uses it (revoked,
+  expired or declined) — turning backup on makes it the file's backup instead,
+  and *Delete cloud backup* keeps the copies live shares use. Everyone
+  downloads that one encrypted copy: each recipient device gets its own key
+  envelope (X25519 + ML-KEM-1024), signed by your device (Ed25519 + ML-DSA-65). Recipients accept
+  or decline, preview in memory, or save their own re-sealed copy. *Shared by
+  me* shows who accepted and the access history, with revoke per person or for
+  everyone. People who blocked you are left out without being told.
+
+- **Unlock the Quantum Vault with a drawn pattern.** A third unlock method
+  next to the password and PIN: connect at least 6 dots on a 4 × 4 grid
+  (≈1.3 million patterns of 6 dots, 79 million of 8; all 3 × 3 patterns
+  together are fewer than the 6-digit PINs). Sealed exactly like the PIN —
+  Argon2id (64 MiB) → HKDF-SHA3-256 → AES-256-GCM wrap of the Vault Master
+  Key — with the same attempt limits. Set it at first setup or under
+  *Security & Backup → Unlock with a pattern*; an option hides the trail
+  while drawing. Not offered in FIPS approved mode, which keeps the vault
+  behind a 14+ character password.
+- **Hidden vaults.** *Security & Backup → Hidden vaults*: a separate vault
+  that opens only when its own pattern is drawn on the vault lock screen.
+  The app never lists hidden vaults; the lock screen offers the pattern pad
+  to everyone; a pattern that opens nothing is an ordinary wrong attempt;
+  nothing is written to the audit log, telemetry or the vault's activity
+  that tells a hidden vault apart. On disk every file — index, content or
+  cover — is header-less AES-256-GCM output or random padding with a random
+  name in one folder every account has, filled with cover files at
+  creation; sizes are rounded up. Keys come from the pattern (Argon2id) and
+  this device's secure key store, so a copied disk alone cannot be used to
+  test guesses. No cloud copy or sharing; deleting a file
+  removes its key from the index before overwriting the content, and the
+  previous index generation is overwritten too. *Erase all hidden vaults*
+  wipes them without needing their patterns. Design and stated limits:
+  `docs/QUANTUM_VAULT_STORAGE.md` §11.
+- **Hidden vault recovery phrase.** Inside a hidden vault, *Recovery phrase →
+  Set up* shows 12 words (BIP-39 English list, 128 random bits) once and asks
+  for three of them back. If the pattern is forgotten, *Forgot …? → Forgot a
+  hidden vault's pattern?* on the vault lock screen (or *Security & Backup →
+  Forgot a pattern? Use a recovery phrase*) takes the 12 words, then a new
+  pattern: the vault opens with all its files, the old pattern stops working
+  and the words keep working. The phrase is never stored; it opens one more
+  pool file that looks like every other, holding the vault's index key. It
+  does not depend on the device secure-store key, so it also recovers a vault
+  after that key was replaced, but only on the device that holds the files.
+  A new phrase replaces the old one; removing it, deleting the vault, *Erase
+  all* or another vault's duress erase makes the words open nothing. Design
+  and limits: `docs/QUANTUM_VAULT_STORAGE.md` §14.
+- **FIPS 140-3 readiness: one cryptographic boundary, wolfCrypt backend,
+  approved mode.** All cryptography now goes through `crypto::provider`;
+  nothing else names a crypto library. The default backend is the same
+  RustCrypto / dalek / PQClean code as before (byte-identical behaviour; it
+  is *not* a validated module). `--features wolfcrypt` routes the same calls
+  into wolfCrypt (tested against wolfSSL 5.9.4; the whole Rust suite passes on
+  both, and keys and signatures cross over in both directions). Known-answer
+  self-tests run at launch; a failure disables keyed operations. Encryption
+  nonces are chosen inside the module. **FIPS approved mode** (Settings →
+  Security, off by default) stretches passwords and PINs with
+  PBKDF2-HMAC-SHA-512 (600,000 iterations) instead of Argon2id and requires a
+  14+ character Quantum Vault password; existing credentials re-seal at their
+  next unlock (a vault PIN keeps Argon2id rather than get weaker). The
+  WebView's attachment encryption, digests, device-link proof and legacy
+  privacy-screen check moved into the module; call media frames stay in
+  WebCrypto. The CMVP certificate check and what remains (licence,
+  post-quantum certificate, platforms) are in `docs/FIPS_140_3.md`.
+
+### Changed
+
+- **Desktop dashboard: Secure Chat, Calls, Quantum Vault and Contacts cards.**
+  The same four cards as the Android dashboard now sit under the desktop
+  dashboard's metric cards, with the unread-message and missed-call counts,
+  and — as on Android — each locks its area first, so opening it always asks
+  for the PIN, password or pattern. Both dashboards build the cards from one
+  list (`lib/dashboard-hub.ts`). The Calls page, the voice and video buttons
+  in chat headers and the call screens were already shared by both.
+- **Group video calls on Android, and a Calls button in Secure Chat.** The
+  phone chat header now has the group video call button for groups of three
+  (desktop had it already); both headers use one set of call buttons — voice
+  and video in a direct chat, group video in a group, with the reason shown
+  when a group call cannot start. The group call screen wraps its header and
+  clears the Android status bar. A **Calls** button now sits beside Contacts
+  in Secure Chat (desktop right panel; phone folder tabs) with the missed-call
+  count, and opens the Calls page.
+- **New app logo.** The "Qguard Helix – Messaging & Vault" badge replaces the
+  previous logo on the desktop app and installer, the Android launcher and
+  adaptive icon, the in-app badge, favicon and Play Store icon (all regenerated
+  from `brand/qguard-messaging-logo.png` by `tools/brand-assets.mjs`).
+
+### Fixed
+
+- **Quantum Vault Storage was wider than a phone screen** and cut off its
+  details on the right (categories, sizes, activity). An implicit grid column
+  takes the width of its longest unbreakable line — one long file name
+  stretched the whole overview. Every vault grid now names its phone column;
+  checked in a 360 px wide render of the overview, Security, lock screen and
+  hidden vault. Activity entries added recently (sharing, library) show
+  words instead of their internal codes.
+- **Quantum Vault previews showed a broken image and videos did not play.**
+  Binary results from the core reached the page as an array of numbers (the
+  IPC had fallen back to postMessage because the content security policy did
+  not allow the app's own `ipc:` / `http://ipc.localhost` origin), and
+  `new Blob([numbers])` stored their text instead of the file. Every binary
+  result (previews, thumbnails, backup parts, shared-file previews) is now
+  normalised to bytes, the IPC origin is allowed (faster previews on desktop),
+  and the page's own CSP gained the `media-src blob:` it lacked, without which
+  a decrypted video or audio file could not play from memory.
+- **"invalid input: expected raw bytes" when opening or sending a Secure Chat
+  attachment between Android and desktop.** Android always delivers IPC calls
+  as JSON (and so did desktop once its IPC fell back to postMessage), so
+  commands that took a raw byte body failed. Attachment
+  encryption, digests and cloud-restore parts now cross the IPC as base64.
+- The dashboards' *Vault Usage* / *Vault stored* figures counted only the
+  retired cloud vault tables and always read 0 B. They now include the
+  encrypted objects in this device's vault storage (count and size on disk;
+  readable without unlocking, since the file system shows the same).
+
 ## [1.5.0] — 2026-10-22
 
 ### Added

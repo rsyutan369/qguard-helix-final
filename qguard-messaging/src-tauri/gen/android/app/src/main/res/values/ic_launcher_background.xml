@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-  <!-- Flat fallback of drawable/ic_launcher_background (QGuard navy). -->
-  <color name="ic_launcher_background">#FF06123A</color>
+  <!-- Flat fallback of drawable/ic_launcher_background: transparent, so the
+       launcher shows only the round Q logo with no dark canvas behind it. -->
+  <color name="ic_launcher_background">#00000000</color>
 </resources>

@@ -163,6 +163,8 @@ export interface RegisterComponent {
   severity: SeverityOrUnrated | 'safe'
   evidence: string | null
   recommendation: string | null
+  observedSubject: string | null
+  location: string | null
   /** NIST PQC target, consistent with the component's role (see `resolvePqcTarget`). */
   pqcReplacement: string | null
   /**
@@ -183,6 +185,7 @@ export interface AssetRegisterRow {
   type: string
   typeLabel: string
   sources: AssetScanSource[]
+  deviceProfile: { agentId: string; hostname: string; subjects: number; resources: Array<{ name: string; type: string }> } | null
   target: string
   host: string
   status: string
@@ -381,6 +384,7 @@ function toComponent(raw: unknown, assetId: string, index: number): RegisterComp
   const recommendation = text(metadata.recommendation) || null
   const keySize = text(row.key_size ?? metadata.keySize) || null
   const protocol = text(row.protocol ?? metadata.protocol) || null
+  const observed = asRecord(metadata.evidenceRecord)
   const target = resolvePqcTarget(anatomy.kind, algorithm, text(metadata.pqcReplacement) || null, posture)
   return {
     id: text(row.id) || `${assetId}-component-${index}`,
@@ -398,6 +402,8 @@ function toComponent(raw: unknown, assetId: string, index: number): RegisterComp
     severity: posture === 'vulnerable' && severity === 'safe' ? 'unrated' : severity,
     evidence,
     recommendation,
+    observedSubject: text(metadata.discoveredTarget) || text(observed.assetName || observed.asset_name) || null,
+    location: text(observed.filePath || observed.file_path) || text(observed.target) || null,
     pqcReplacement: target.target,
     pqcTargetSource: target.source,
     instances: Math.max(1, count(row.instances) || 1),
@@ -471,6 +477,13 @@ function deriveRow(
 ): AssetRegisterRow {
   const asset = asRecord(raw)
   const metadata = asRecord(asset.metadata)
+  const deviceProfile = asRecord(metadata.deviceProfile)
+  const resources = new Map<string, { name: string; type: string }>()
+  for (const item of Array.isArray(deviceProfile.subjects) ? deviceProfile.subjects : []) {
+    const resource = asRecord(item)
+    if (text(resource.name)) resources.set(text(resource.name), { name: text(resource.name), type: labelize(text(resource.type) || 'observed resource') })
+  }
+  for (const name of Object.keys(asRecord(asRecord(metadata.agentBinding).targetRisk))) if (!resources.has(name)) resources.set(name, { name, type: 'Observed resource' })
   const id = text(asset.id) || `asset-${index}`
   const name = text(asset.name) || 'Unnamed asset'
   const type = text(asset.type) || 'asset'
@@ -546,6 +559,7 @@ function deriveRow(
     type,
     typeLabel: labelize(type),
     sources: assetScanSources(asset),
+    deviceProfile: metadata.deviceProfile ? { agentId: text(deviceProfile.agentId), hostname: text(deviceProfile.hostname), subjects: resources.size, resources: [...resources.values()].sort((a, b) => a.name.localeCompare(b.name)) } : null,
     target,
     host,
     status: text(asset.status) || 'active',

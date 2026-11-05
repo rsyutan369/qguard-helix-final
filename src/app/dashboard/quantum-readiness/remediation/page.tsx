@@ -38,6 +38,7 @@ import {
   HeaderButton,
   MetricCard,
   Panel,
+  PendingBody,
   QuantumReadinessSubnav,
   Ring,
   SectionTitle,
@@ -170,6 +171,8 @@ export default function QuantumRemediationPage() {
           </Panel>
         ) : null}
 
+        {/* No figures before the engine answers (see PendingBody). */}
+        {state !== 'success' ? <PendingBody state={state} /> : (<>
         {/* Hero — live Certification Readiness Score */}
         <div className="grid gap-3 xl:grid-cols-[minmax(320px,380px)_1fr]">
           <Panel className="p-5">
@@ -201,7 +204,11 @@ export default function QuantumRemediationPage() {
                   ) : plan.estimatedCertificationDate ? (
                     <>
                       Estimated certification date:{' '}
-                      <span className="font-bold text-cyan-200">{longDate(plan.estimatedCertificationDate)}</span> (~
+                      {/* A week-granularity estimate: a date, never a time of day. */}
+                      <span className="font-bold text-cyan-200">
+                        {new Date(plan.estimatedCertificationDate).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' })}
+                      </span>{' '}
+                      (~
                       {integerFmt(plan.estimatedCompletionWeeks)} wk across {plan.parallelWorkstreams} workstream
                       {plan.parallelWorkstreams === 1 ? '' : 's'})
                     </>
@@ -312,7 +319,9 @@ export default function QuantumRemediationPage() {
               })}
               <p className="pt-1 text-[11px] text-white/40">
                 Projections are simulations over measured evidence — the live score only moves when a rescan verifies each
-                remediation. {plan.ladder[plan.ladder.length - 1]?.detail}
+                remediation.{' '}
+                {/* Only the eligible tail adds something; the other tail restated this note. */}
+                {plan.ladder[plan.ladder.length - 1]?.stage === 'Certification Eligible' ? plan.ladder[plan.ladder.length - 1]?.detail : null}
               </p>
             </div>
           ) : (
@@ -855,6 +864,7 @@ export default function QuantumRemediationPage() {
             </div>
           </div>
         </Panel>
+        </>)}
 
         {/* Footer */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-1 text-[11px] text-white/35">

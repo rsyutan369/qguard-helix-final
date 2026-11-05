@@ -1,9 +1,9 @@
 /**
  * Agent asset binding — WHERE an agent's findings land.
  *
- * Without a binding, every finding an agent uploads creates (or updates) an
- * asset named after whatever it observed: a host, a file path, a package. That
- * is correct for open discovery, but an operator who deploys an agent to cover
+ * Without an explicit binding, an installed agent uses one stable device
+ * profile. Its certificates, files and packages are components and observations
+ * inside that profile. An operator who deploys an agent to cover
  * "Payments API" or "/etc/nginx" wants the results filed under that name, not
  * scattered across forty auto-named rows.
  *
@@ -142,8 +142,8 @@ export function bindingPathIssue(kind: BindingKindId, value: string | null | und
  *
  * `legacyAssetId` is the `metadata.assetId` the Agent Center wizard has always
  * sent; it is honoured as an `existing` binding so that wizard keeps working.
- * An absent binding is `none` — never an error — because an unbound agent is a
- * legitimate, explicit choice (open discovery).
+ * An absent binding is `none` — the ingestion layer resolves the agent's
+ * default device profile once it first reports evidence.
  */
 export function parseBindingRequest(raw: unknown, legacyAssetId?: unknown): BindingParseResult {
   const body = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null

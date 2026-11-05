@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyDecline, buildCallPeer, isCallableDevice, type CallCandidateDevice } from "@/lib/call-targets";
+import { applyDecline, buildCallPeer, GROUP_CALL_SIZE, groupCallBlockedReason, isCallableDevice, type CallCandidateDevice } from "@/lib/call-targets";
 
 function device(id: string, overrides: Partial<CallCandidateDevice> = {}): CallCandidateDevice {
   return {
@@ -110,5 +110,22 @@ describe("applyDecline", () => {
     const r = applyDecline(["desktop", "android"], "someone-else", null);
     expect(r.remaining).toEqual(["desktop", "android"]);
     expect(r.endCall).toBe(false);
+  });
+});
+
+describe("groupCallBlockedReason", () => {
+  const ready = { supported: true, memberCount: GROUP_CALL_SIZE, peersReady: true, busy: false };
+
+  it("lets a ready group of three start a call", () => {
+    expect(groupCallBlockedReason(ready)).toBeNull();
+  });
+
+  it("names the first thing in the way, in order", () => {
+    expect(groupCallBlockedReason({ ...ready, supported: false })).toMatch(/requires/);
+    expect(groupCallBlockedReason({ ...ready, memberCount: 4 })).toBe("Group video calls work in groups of 3 people for now");
+    expect(groupCallBlockedReason({ ...ready, memberCount: 2 })).toMatch(/groups of 3/);
+    expect(groupCallBlockedReason({ ...ready, peersReady: false })).toMatch(/no device that can take calls/);
+    expect(groupCallBlockedReason({ ...ready, busy: true })).toBe("Finish the current call first");
+    expect(groupCallBlockedReason({ supported: false, memberCount: 5, peersReady: false, busy: true })).toMatch(/requires/);
   });
 });

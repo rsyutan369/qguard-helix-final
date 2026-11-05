@@ -310,7 +310,7 @@ export function useDashboard() {
 
   const fetchSummary = useCallback(async () => {
     if (!token) return
-    setSummaryState('loading')
+    setSummaryState(current => current === 'success' || current === 'offline' ? current : 'loading')
     try {
       const res = await fetch('/api/v1/dashboard/summary', { headers: apiHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -320,13 +320,13 @@ export function useDashboard() {
       setLastSyncAt(new Date().toISOString())
     } catch (err) {
       console.error('Failed to fetch dashboard summary:', err)
-      setSummaryState(prev => prev === 'success' ? 'offline' : 'error')
+      setSummaryState(prev => prev === 'success' || prev === 'offline' ? 'offline' : 'error')
     }
   }, [token])
 
   const fetchExecutive = useCallback(async () => {
     if (!token) return
-    setExecutiveState('loading')
+    setExecutiveState(current => current === 'success' || current === 'offline' ? current : 'loading')
     try {
       const res = await fetch('/api/v1/dashboard/executive', { headers: apiHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -335,13 +335,13 @@ export function useDashboard() {
       setExecutiveState('success')
     } catch (err) {
       console.error('Failed to fetch executive snapshot:', err)
-      setExecutiveState(prev => prev === 'success' ? 'offline' : 'error')
+      setExecutiveState(prev => prev === 'success' || prev === 'offline' ? 'offline' : 'error')
     }
   }, [token])
 
   const fetchEvents = useCallback(async () => {
     if (!token) return
-    setEventsState('loading')
+    setEventsState(current => current === 'success' || current === 'offline' ? current : 'loading')
     try {
       const res = await fetch('/api/v1/dashboard/events?limit=50', { headers: apiHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -351,7 +351,7 @@ export function useDashboard() {
       setEventsState('success')
     } catch (err) {
       console.error('Failed to fetch security events:', err)
-      setEventsState(prev => prev === 'success' ? 'offline' : 'error')
+      setEventsState(prev => prev === 'success' || prev === 'offline' ? 'offline' : 'error')
     }
   }, [token])
 
@@ -363,7 +363,7 @@ export function useDashboard() {
    */
   const fetchEstateWorkflow = useCallback(async () => {
     if (!token) return
-    setWorkflowState('loading')
+    setWorkflowState(current => current === 'success' || current === 'offline' ? current : 'loading')
     try {
       const res = await fetch('/api/v1/dashboard/estate-workflow', { headers: apiHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -381,13 +381,13 @@ export function useDashboard() {
       setWorkflowState('success')
     } catch (err) {
       console.error('Failed to fetch estate workflow:', err)
-      setWorkflowState(prev => prev === 'success' ? 'offline' : 'error')
+      setWorkflowState(prev => prev === 'success' || prev === 'offline' ? 'offline' : 'error')
     }
   }, [token])
 
   const fetchRecommendations = useCallback(async () => {
     if (!token) return
-    setRecommendationsState('loading')
+    setRecommendationsState(current => current === 'success' || current === 'offline' ? current : 'loading')
     try {
       const res = await fetch('/api/v1/dashboard/recommendations', { headers: apiHeaders })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -398,7 +398,7 @@ export function useDashboard() {
       setRecommendationsState('success')
     } catch (err) {
       console.error('Failed to fetch recommendations:', err)
-      setRecommendationsState(prev => prev === 'success' ? 'offline' : 'error')
+      setRecommendationsState(prev => prev === 'success' || prev === 'offline' ? 'offline' : 'error')
     }
   }, [token])
 

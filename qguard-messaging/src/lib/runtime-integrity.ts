@@ -1,4 +1,4 @@
-import { sha3_256Hex } from "./sha3";
+import { coreSha3Hex } from "./core-crypto";
 
 interface SecurityManifestAsset {
   path: string;
@@ -54,7 +54,7 @@ export async function verifyRuntimeAssetIntegrity(): Promise<RuntimeAssetIntegri
     const manifest = JSON.parse(manifestText) as SecurityManifest;
     const failedAssets: string[] = [];
     for (const asset of manifest.assets) {
-      const digest = sha3_256Hex(await fetchArrayBuffer(asset.path));
+      const digest = await coreSha3Hex(await fetchArrayBuffer(asset.path));
       if (digest !== asset.sha3_256?.toLowerCase()) failedAssets.push(asset.path);
     }
 

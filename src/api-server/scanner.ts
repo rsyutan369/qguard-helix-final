@@ -7,6 +7,7 @@ import { persistableTelemetry } from '@/lib/scanner/session-payload'
 import { findingIdentityKey, isCryptographicComponent, richerText } from '@/lib/scanner/finding-identity'
 import { cbomComponentKey, evidenceTimestamp, partitionAssetInventory } from '@/lib/scanner/asset-components'
 import { algorithmFamily, assetIsInternetFacing } from '@/lib/governance/subjects'
+import { foldDeviceAssetGraph } from '@/lib/agent-installer/device-profile'
 import { classifyCryptoRootCause } from '@/lib/crypto-root-cause'
 import { executeWebScan } from '@/lib/scanner/web-scanner/scan-orchestrator'
 import { repositoryProvider } from '@/lib/scanner/web-scanner/repo-scanner'
@@ -2318,10 +2319,10 @@ async function loadScannerTables(client: any, userId: string) {
   }
 
   if (!client) {
-    return {
+    return foldDeviceAssetGraph({
       ...memoryRows,
       mode: 'memory' as PersistenceMode,
-    }
+    })
   }
 
   try {
@@ -2342,7 +2343,7 @@ async function loadScannerTables(client: any, userId: string) {
       return databaseRows.concat(fallbackRows.filter((item) => !seen.has(item.id)))
     }
 
-    return {
+    return foldDeviceAssetGraph({
       assets: mergeRows(assets.error ? [] : assets.data || [], memoryRows.assets),
       inventory: mergeRows(inventory.error ? [] : inventory.data || [], memoryRows.inventory),
       exposures: mergeRows(exposures.error ? [] : exposures.data || [], memoryRows.exposures),
@@ -2350,12 +2351,12 @@ async function loadScannerTables(client: any, userId: string) {
       sessions: mergeRows(sessions.error ? [] : sessions.data || [], memoryRows.sessions),
       vulnerabilities: mergeRows(vulnerabilities.error ? [] : vulnerabilities.data || [], memoryRows.vulnerabilities),
       mode: (assets.error || inventory.error || exposures.error || results.error || sessions.error || vulnerabilities.error ? 'memory' : 'database') as PersistenceMode,
-    }
+    })
   } catch {
-    return {
+    return foldDeviceAssetGraph({
       ...memoryRows,
       mode: 'memory' as PersistenceMode,
-    }
+    })
   }
 }
 
@@ -3186,7 +3187,8 @@ function buildAssetsPayload(assets: any[], inventory: any[], exposures: any[], r
     const assetResults = results.filter((item) => item.asset_id === asset.id)
     const assetVulnerabilityRows = vulnerabilityRows.filter((item) => item.asset_id === asset.id)
     const vulnerabilities = buildAssetVulnerabilities(asset.id, crypto, assetExposures, assetResults, assetVulnerabilityRows)
-    const riskScore = assetRiskScore(asset, crypto, assetExposures, vulnerabilities)
+    const hasClassifiedEvidence = partition.components.some((item) => item.is_vulnerable || item.is_quantum_safe) || partition.posture.length > 0 || assetExposures.length > 0 || assetVulnerabilityRows.length > 0
+    const riskScore = asset.metadata?.deviceProfile && !hasClassifiedEvidence ? null : assetRiskScore(asset, crypto, assetExposures, vulnerabilities)
     const algorithms = Array.from(new Set(partition.components.map((item) => item.algorithm).filter(Boolean)))
     const pqcStatus = assetPqcStatus(partition.counts)
     // "Last scanned" is when the scanner last OBSERVED this asset. The asset row
@@ -3211,8 +3213,8 @@ function buildAssetsPayload(assets: any[], inventory: any[], exposures: any[], r
       postureObservations: partition.posture,
       componentCounts: partition.counts,
       riskScore,
-      qScore: asset.metadata?.qScore ?? Math.max(0, 100 - riskScore),
-      riskLevel: asset.metadata?.riskLevel || (riskScore >= 80 ? 'CRITICAL' : riskScore >= 60 ? 'HIGH' : riskScore >= 40 ? 'MEDIUM' : 'LOW'),
+      qScore: riskScore === null ? null : asset.metadata?.qScore ?? Math.max(0, 100 - riskScore),
+      riskLevel: riskScore === null ? 'NOT_ASSESSED' : asset.metadata?.riskLevel || (riskScore >= 80 ? 'CRITICAL' : riskScore >= 60 ? 'HIGH' : riskScore >= 40 ? 'MEDIUM' : 'LOW'),
       pqcStatus,
       complianceStatus: ASSET_PQC_STATUS_LABEL[pqcStatus],
       lastScanned: lastScannedMs ? new Date(lastScannedMs).toISOString() : asset.updated_at || asset.created_at,
@@ -3443,7 +3445,13 @@ export async function buildScannerIntelligence(token: string, userId: string) {
   if (!hasActiveScan && cached && Date.now() - cached.at < INTEL_CACHE_TTL_MS) return cached.promise
   const promise = computeScannerIntelligence(token, userId)
   intelCache.set(userId, { at: Date.now(), promise })
-  promise.catch(() => intelCache.delete(userId))
+  // A degraded build (a database read failed, so the view fell back to the
+  // in-memory store) is served to this caller but never cached. Cached, one
+  // read blip became 15 s of a different estate for every module built on this
+  // view (Quantum Readiness, Harvest Now, Remediation, Certification).
+  const forget = () => { if (intelCache.get(userId)?.promise === promise) intelCache.delete(userId) }
+  // (Without a database every build is memory-only and cheap to recompute.)
+  promise.then((view) => { if ((view as { mode?: string })?.mode === 'memory') forget() }, forget)
   if (intelCache.size > 500) {
     const now = Date.now()
     for (const [key, value] of intelCache) if (now - value.at > INTEL_CACHE_TTL_MS) intelCache.delete(key)

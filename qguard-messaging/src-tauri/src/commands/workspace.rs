@@ -14,26 +14,36 @@
 //!   written before this hardening (`kdf_version` 0) still verify and are
 //!   re-sealed under Argon2id on their next successful unlock.
 //! * Anti-bruteforce: 5 fails -> 30s, 10 -> 5min, 20 -> lockdown (re-login).
+//! * The vault also opens with a drawn pattern (`vault::pattern`), sealed
+//!   exactly like a PIN. The pattern pad is also how a hidden vault opens
+//!   (`vault::hidden`): see `vault_pattern_unlock`.
 
 use chrono::Utc;
 use serde::Serialize;
 use tauri::State;
 use zeroize::Zeroize;
 
-use crate::crypto::passcode::{self, KDF_ARGON2ID_V1};
+use crate::crypto::passcode;
+#[cfg(test)]
+use crate::crypto::passcode::KDF_ARGON2ID_V1;
+use crate::crypto::provider;
 use crate::crypto::signatures::VaultSigningKeypair;
 use crate::crypto::symmetric::{self, KEY_SIZE};
-use crate::crypto::{vault_recovery, EncryptedEnvelope};
+use crate::crypto::{mnemonic, vault_recovery, EncryptedEnvelope};
 use crate::error::{QGuardError, Result};
 use crate::state::{
     AppState, PersistedVaultMaster, PersistedVaultRecovery, PersistedWorkspaceScope,
     VaultRecoveryPublic, WorkspaceCredential,
 };
+use crate::vault::hidden::{self, HiddenKeys, HiddenSummary, HiddenVault, PATTERN_TAKEN};
+use crate::vault::pattern;
 
 const SCOPE_CHAT: &str = "chat";
 const SCOPE_VAULT: &str = "vault";
 const METHOD_PASSWORD: &str = "password";
 const METHOD_PIN: &str = "pin";
+const METHOD_PATTERN: &str = "pattern";
+const LOCKDOWN_MESSAGE: &str = "Too many attempts — this workspace is locked down. Sign out and back in to reset.";
 
 const MIN_PASSWORD_LEN: usize = 12;
 const MIN_PIN_LEN: usize = 6;
@@ -45,6 +55,7 @@ pub struct ScopeStatus {
     pub configured: bool,
     pub has_password: bool,
     pub has_pin: bool,
+    pub has_pattern: bool,
     pub unlocked: bool,
     pub failed_attempts: u32,
     pub lockout_until: Option<String>,
@@ -89,8 +100,59 @@ fn validate_secret(method: &str, secret: &str) -> Result<()> {
             }
             Ok(())
         }
+        // Only the canonical text of a drawable pattern, so one pattern is
+        // always exactly one secret.
+        METHOD_PATTERN => pattern::parse(secret).map(|_| ()),
         other => Err(QGuardError::InvalidInput(format!("unknown unlock method: {other}"))),
     }
+}
+
+/// `validate_secret`, plus what FIPS approved mode requires of the Quantum
+/// Vault: a password of at least `APPROVED_PASSWORD_MIN_CHARS` characters.
+/// PBKDF2 has no memory cost, so a PIN in front of the vault key would be
+/// guessable offline (see `provider::policy`).
+fn validate_for_scope(scope_name: &str, method: &str, secret: &str, approved: bool) -> Result<()> {
+    validate_secret(method, secret)?;
+    if method == METHOD_PATTERN && scope_name != SCOPE_VAULT {
+        return Err(QGuardError::InvalidInput("A pattern unlocks the Quantum Vault only.".to_string()));
+    }
+    if approved && scope_name == SCOPE_VAULT {
+        if method != METHOD_PASSWORD {
+            return Err(QGuardError::InvalidInput(format!(
+                "FIPS approved mode: the Quantum Vault must use a password of at least {} characters, not a PIN.",
+                provider::APPROVED_PASSWORD_MIN_CHARS
+            )));
+        }
+        if secret.chars().count() < provider::APPROVED_PASSWORD_MIN_CHARS {
+            return Err(QGuardError::InvalidInput(format!(
+                "FIPS approved mode: the Quantum Vault password must be at least {} characters.",
+                provider::APPROVED_PASSWORD_MIN_CHARS
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a credential sealed with `kdf` from this secret meets approved mode.
+fn approved_strength(method: &str, secret_chars: usize, kdf: u8) -> bool {
+    passcode::kdf_is_approved(kdf) && method == METHOD_PASSWORD && secret_chars >= provider::APPROVED_PASSWORD_MIN_CHARS
+}
+
+/// The KDF a proven credential is re-sealed under. Normally the device's
+/// preference; but a Quantum Vault PIN or pattern is never moved from Argon2id
+/// to PBKDF2: without Argon2id's memory cost a short secret in front of the
+/// vault key gets weaker, and approved mode wants it replaced by a password.
+fn reseal_target(scope_name: &str, method: &str) -> u8 {
+    let preferred = passcode::preferred_kdf();
+    if scope_name == SCOPE_VAULT && (method == METHOD_PIN || method == METHOD_PATTERN) && passcode::kdf_is_approved(preferred) {
+        passcode::KDF_ARGON2ID_V1
+    } else {
+        preferred
+    }
+}
+
+fn secret_chars(secret: &[u8]) -> usize {
+    std::str::from_utf8(secret).map(|s| s.chars().count()).unwrap_or(secret.len())
 }
 
 fn random_salt() -> Vec<u8> {
@@ -183,19 +245,37 @@ fn migrate_recovery_material(state: &AppState, user_id: &str, master: &Persisted
     }
 }
 
+/// Every account gets the hidden-vault pool (with its cover files) the first
+/// time its vault opens, hidden vaults or not, so the pool's existence says
+/// nothing. In the background: the first time writes a few MiB of noise.
+fn ensure_hidden_pool(state: &AppState, user_id: &str) {
+    let pool = state.hidden_pool(user_id);
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        let _ = pool.ensure();
+    }));
+}
+
 fn credential_for<'a>(scope: &'a PersistedWorkspaceScope, method: &str) -> Option<&'a WorkspaceCredential> {
     match method {
         METHOD_PASSWORD => scope.password.as_ref(),
         METHOD_PIN => scope.pin.as_ref(),
+        METHOD_PATTERN => scope.pattern.as_ref(),
         _ => None,
+    }
+}
+
+fn credential_slot<'a>(scope: &'a mut PersistedWorkspaceScope, method: &str) -> Result<&'a mut Option<WorkspaceCredential>> {
+    match method {
+        METHOD_PASSWORD => Ok(&mut scope.password),
+        METHOD_PIN => Ok(&mut scope.pin),
+        METHOD_PATTERN => Ok(&mut scope.pattern),
+        other => Err(QGuardError::InvalidInput(format!("unknown unlock method: {other}"))),
     }
 }
 
 fn check_lockout(scope: &PersistedWorkspaceScope) -> Result<()> {
     if scope.lockdown {
-        return Err(QGuardError::Trust(
-            "Too many attempts — this workspace is locked down. Sign out and back in to reset.".to_string(),
-        ));
+        return Err(QGuardError::Trust(LOCKDOWN_MESSAGE.to_string()));
     }
     if let Some(until) = scope.lockout_until {
         let now = Utc::now();
@@ -219,12 +299,51 @@ fn apply_failed_attempt(scope: &mut PersistedWorkspaceScope) {
     }
 }
 
+/// How long a pattern must wait after the last one that opened nothing, given
+/// how many opened nothing in the last 24 hours. Up to ~40 tries a day.
+fn pattern_wait(recent_misses: usize) -> Option<chrono::Duration> {
+    match recent_misses {
+        0..=4 => None,
+        5..=9 => Some(chrono::Duration::seconds(30)),
+        10..=19 => Some(chrono::Duration::minutes(5)),
+        _ => Some(chrono::Duration::hours(1)),
+    }
+}
+
+fn recent_pattern_misses(scope: &PersistedWorkspaceScope, now: chrono::DateTime<Utc>) -> Vec<chrono::DateTime<Utc>> {
+    scope.pattern_misses.iter().copied().filter(|at| now - *at < chrono::Duration::hours(24)).collect()
+}
+
+/// The pattern pace limit: separate from the attempt ladder, because a correct
+/// password or PIN clears that one and must not buy more pattern tries.
+fn check_pattern_pace(scope: &PersistedWorkspaceScope) -> Result<()> {
+    let now = Utc::now();
+    let recent = recent_pattern_misses(scope, now);
+    if let (Some(wait), Some(last)) = (pattern_wait(recent.len()), recent.iter().max()) {
+        let until = *last + wait;
+        if until > now {
+            let secs = (until - now).num_seconds().max(1);
+            return Err(QGuardError::Trust(format!("Too many patterns tried. Try again in {secs}s.")));
+        }
+    }
+    Ok(())
+}
+
+fn record_pattern_miss(scope: &mut PersistedWorkspaceScope) {
+    let now = Utc::now();
+    scope.pattern_misses = recent_pattern_misses(scope, now);
+    scope.pattern_misses.push(now);
+    let excess = scope.pattern_misses.len().saturating_sub(64);
+    scope.pattern_misses.drain(..excess);
+}
+
 fn scope_status(state: &AppState, scope_name: &str, scope: &Option<PersistedWorkspaceScope>) -> ScopeStatus {
     match scope {
         Some(s) => ScopeStatus {
             configured: s.configured(),
             has_password: s.password.is_some(),
             has_pin: s.pin.is_some(),
+            has_pattern: s.pattern.is_some(),
             unlocked: state.is_workspace_unlocked(scope_name),
             failed_attempts: s.failed_attempts,
             lockout_until: s.lockout_until.map(|t| t.to_rfc3339()),
@@ -235,6 +354,7 @@ fn scope_status(state: &AppState, scope_name: &str, scope: &Option<PersistedWork
             configured: false,
             has_password: false,
             has_pin: false,
+            has_pattern: false,
             unlocked: false,
             failed_attempts: 0,
             lockout_until: None,
@@ -266,6 +386,7 @@ fn status_of_record(state: &AppState, user_id: &str, scope_name: &str) -> ScopeS
             configured: true,
             has_password: false,
             has_pin: false,
+            has_pattern: false,
             unlocked: false,
             failed_attempts: 0,
             lockout_until: None,
@@ -285,7 +406,7 @@ pub async fn workspace_setup_credential(
     state.require_auth()?;
     let user_id = state.user_id()?;
     let scope_name = normalize_scope(&scope)?;
-    validate_secret(&method, &secret)?;
+    validate_for_scope(scope_name, &method, &secret, provider::approved_mode())?;
 
     let mut record = state
         .load_workspace_scope(&user_id, scope_name)?
@@ -298,7 +419,9 @@ pub async fn workspace_setup_credential(
     }
 
     let salt = random_salt();
-    let stretched = stretch_secret(KDF_ARGON2ID_V1, salt.clone(), secret.as_bytes().to_vec()).await;
+    let kdf = passcode::preferred_kdf();
+    let strong = approved_strength(&method, secret.chars().count(), kdf);
+    let stretched = stretch_secret(kdf, salt.clone(), secret.as_bytes().to_vec()).await;
     secret.zeroize();
     let mut ikm = stretched?;
     let verifier = derive_verifier_from_ikm(&salt, &ikm);
@@ -313,7 +436,8 @@ pub async fn workspace_setup_credential(
         salt: salt.clone(),
         verifier,
         wrapped_master: None,
-        kdf_version: KDF_ARGON2ID_V1,
+        kdf_version: kdf,
+        approved_strength: strong,
     };
 
     let mut first_vault_setup = false;
@@ -348,15 +472,12 @@ pub async fn workspace_setup_credential(
             state.delete_vault_master_file(&user_id)?;
             migrate_recovery_material(&state, &user_id, &master);
             state.set_vault_session(master)?;
+            ensure_hidden_pool(&state, &user_id);
         }
     }
     ikm.zeroize();
 
-    match method.as_str() {
-        METHOD_PASSWORD => record.password = Some(credential),
-        METHOD_PIN => record.pin = Some(credential),
-        _ => unreachable!("method validated above"),
-    }
+    *credential_slot(&mut record, &method)? = Some(credential);
     record.failed_attempts = 0;
     record.lockout_until = None;
     record.lockdown = false;
@@ -370,7 +491,10 @@ pub async fn workspace_setup_credential(
     if first_vault_setup {
         state.touch_telemetry(
             "vault",
-            "Quantum Vault unlock configured (password -> Argon2id -> HKDF-SHA3-256 -> VMK)",
+            &format!(
+                "Quantum Vault unlock configured (password -> {} -> HKDF-SHA3-256 -> VMK)",
+                passcode::kdf_label(kdf)
+            ),
             100,
         );
     }
@@ -400,7 +524,7 @@ pub async fn workspace_unlock(
 }
 
 async fn unlock_with_secret(
-    state: &State<'_, AppState>,
+    state: &AppState,
     user_id: &str,
     scope_name: &'static str,
     method: &str,
@@ -415,82 +539,90 @@ async fn unlock_with_secret(
         .ok_or_else(|| QGuardError::InvalidInput(format!("{method} is not set up for this workspace")))?
         .clone();
 
-    let mut ikm = stretch_secret(credential.kdf_version, credential.salt.clone(), secret_bytes.to_vec()).await?;
-    let verifier = derive_verifier_from_ikm(&credential.salt, &ikm);
-    let verifier = match verifier {
-        Ok(v) => v,
-        Err(e) => {
-            ikm.zeroize();
-            return Err(e);
+    match prove(scope_name, &credential, secret_bytes).await? {
+        Proof::Wrong => Err(wrong_secret(state, user_id, scope_name, &mut record, "Incorrect password or PIN.")?),
+        Proof::Right(unlocked_master) => {
+            finish_unlock(state, user_id, scope_name, method, record, &credential, secret_bytes, unlocked_master).await
         }
-    };
-    let ok = verifier == credential.verifier;
-
-    if !ok {
-        ikm.zeroize();
-        apply_failed_attempt(&mut record);
-        let lockdown = record.lockdown;
-        state.save_workspace_scope(user_id, &record)?;
-        state.audit_info("workspace_unlock_failed", &format!("Failed {scope_name} unlock"));
-        if lockdown {
-            return Err(QGuardError::Trust(
-                "Too many attempts — this workspace is locked down. Sign out and back in to reset.".to_string(),
-            ));
-        }
-        return Err(QGuardError::Trust("Incorrect password or PIN.".to_string()));
     }
+}
 
-    // For the vault, the real unlock is decrypting the VMK with the derived key.
-    let mut unlocked_master: Option<PersistedVaultMaster> = None;
-    if scope_name == SCOPE_VAULT {
-        let envelope = match credential.wrapped_master.as_ref() {
-            Some(e) => e,
-            None => {
-                ikm.zeroize();
-                return Err(QGuardError::Crypto("vault credential is missing its wrapped key".to_string()));
-            }
-        };
-        let wrap_key = derive_vault_wrap_key_from_ikm(&credential.salt, &ikm);
-        let mut wrap_key = match wrap_key {
-            Ok(key) => key,
-            Err(e) => {
-                ikm.zeroize();
-                return Err(e);
-            }
-        };
-        let decrypted = symmetric::decrypt(&wrap_key, envelope, &crate::security::obf::workspace_vault_wrap_aad());
-        wrap_key.zeroize();
-        let mut plaintext = match decrypted {
-            Ok(p) => p,
-            Err(_) => {
-                ikm.zeroize();
-                apply_failed_attempt(&mut record);
-                state.save_workspace_scope(user_id, &record)?;
-                return Err(QGuardError::Trust("Incorrect password or PIN.".to_string()));
-            }
-        };
-        let master = serde_json::from_slice(&plaintext)
-            .map_err(|e| QGuardError::Storage(format!("decode unlocked vault master: {e}")));
-        plaintext.zeroize();
-        let master: PersistedVaultMaster = match master {
-            Ok(m) => m,
-            Err(e) => {
-                ikm.zeroize();
-                return Err(e);
-            }
-        };
-        unlocked_master = Some(master);
-    }
+/// What proving a secret against one stored credential showed.
+enum Proof {
+    Wrong,
+    /// Right; for the vault, with the master key the credential unwrapped.
+    Right(Option<PersistedVaultMaster>),
+}
+
+/// Stretch `secret` exactly as `credential` was sealed and check it. For the
+/// vault the proof is the wrapped master key opening, not only the verifier.
+async fn prove(scope_name: &str, credential: &WorkspaceCredential, secret: &[u8]) -> Result<Proof> {
+    let mut ikm = stretch_secret(credential.kdf_version, credential.salt.clone(), secret.to_vec()).await?;
+    let outcome = open_with_ikm(scope_name, credential, &ikm);
     ikm.zeroize();
+    outcome
+}
 
-    // Transparent KDF hardening: a credential verified under the legacy
-    // direct-HKDF derivation is re-sealed under Argon2id (fresh salt) now that
-    // the secret is proven. Best-effort — a failure keeps the legacy credential
-    // working and the next successful unlock retries the upgrade.
-    if credential.kdf_version < KDF_ARGON2ID_V1 {
+fn open_with_ikm(scope_name: &str, credential: &WorkspaceCredential, ikm: &[u8]) -> Result<Proof> {
+    if derive_verifier_from_ikm(&credential.salt, ikm)? != credential.verifier {
+        return Ok(Proof::Wrong);
+    }
+    if scope_name != SCOPE_VAULT {
+        return Ok(Proof::Right(None));
+    }
+    let envelope = credential
+        .wrapped_master
+        .as_ref()
+        .ok_or_else(|| QGuardError::Crypto("vault credential is missing its wrapped key".to_string()))?;
+    let mut wrap_key = derive_vault_wrap_key_from_ikm(&credential.salt, ikm)?;
+    let decrypted = symmetric::decrypt(&wrap_key, envelope, &crate::security::obf::workspace_vault_wrap_aad());
+    wrap_key.zeroize();
+    let Ok(mut plaintext) = decrypted else {
+        return Ok(Proof::Wrong);
+    };
+    let master = serde_json::from_slice::<PersistedVaultMaster>(&plaintext)
+        .map_err(|e| QGuardError::Storage(format!("decode unlocked vault master: {e}")));
+    plaintext.zeroize();
+    Ok(Proof::Right(Some(master?)))
+}
+
+/// Count a wrong secret against the scope, and the error to answer with.
+fn wrong_secret(
+    state: &AppState,
+    user_id: &str,
+    scope_name: &str,
+    record: &mut PersistedWorkspaceScope,
+    message: &str,
+) -> Result<QGuardError> {
+    apply_failed_attempt(record);
+    state.save_workspace_scope(user_id, record)?;
+    state.audit_info("workspace_unlock_failed", &format!("Failed {scope_name} unlock"));
+    Ok(QGuardError::Trust(if record.lockdown { LOCKDOWN_MESSAGE } else { message }.to_string()))
+}
+
+/// A proven secret: re-seal it under the current KDF when needed, open the
+/// session and clear the attempt counter.
+#[allow(clippy::too_many_arguments)]
+async fn finish_unlock(
+    state: &AppState,
+    user_id: &str,
+    scope_name: &'static str,
+    method: &str,
+    mut record: PersistedWorkspaceScope,
+    credential: &WorkspaceCredential,
+    secret_bytes: &[u8],
+    unlocked_master: Option<PersistedVaultMaster>,
+) -> Result<ScopeStatus> {
+    // Transparent KDF migration: a credential sealed with any KDF other than its
+    // target — the legacy direct-HKDF derivation, Argon2id while FIPS approved
+    // mode is on, PBKDF2 after it was switched off (see `reseal_target`) — is
+    // re-sealed (fresh salt) now that the secret is proven. Best-effort — a
+    // failure keeps the old credential working and the next unlock retries.
+    let new_kdf = reseal_target(scope_name, method);
+    if credential.kdf_version != new_kdf {
         let upgrade: Result<WorkspaceCredential> = async {
             let new_salt = random_salt();
-            let mut new_ikm = stretch_secret(KDF_ARGON2ID_V1, new_salt.clone(), secret_bytes.to_vec()).await?;
+            let mut new_ikm = stretch_secret(new_kdf, new_salt.clone(), secret_bytes.to_vec()).await?;
             let new_verifier = derive_verifier_from_ikm(&new_salt, &new_ikm);
             let wrapped = unlocked_master
                 .as_ref()
@@ -501,19 +633,21 @@ async fn unlock_with_secret(
                 salt: new_salt,
                 verifier: new_verifier?,
                 wrapped_master: wrapped?,
-                kdf_version: KDF_ARGON2ID_V1,
+                kdf_version: new_kdf,
+                approved_strength: approved_strength(method, secret_chars(secret_bytes), new_kdf),
             })
         }
         .await;
         if let Ok(upgraded) = upgrade {
-            match method {
-                METHOD_PASSWORD => record.password = Some(upgraded),
-                METHOD_PIN => record.pin = Some(upgraded),
-                _ => {}
+            if let Ok(slot) = credential_slot(&mut record, method) {
+                *slot = Some(upgraded);
             }
             state.audit_info(
                 "workspace_kdf_upgraded",
-                &format!("Workspace {scope_name} {method} credential re-sealed with Argon2id"),
+                &format!(
+                    "Workspace {scope_name} {method} credential re-sealed with {}",
+                    passcode::kdf_label(new_kdf)
+                ),
             );
         }
     }
@@ -521,6 +655,7 @@ async fn unlock_with_secret(
     if let Some(master) = unlocked_master {
         migrate_recovery_material(state, user_id, &master);
         state.set_vault_session(master)?;
+        ensure_hidden_pool(state, user_id);
     }
 
     record.failed_attempts = 0;
@@ -555,6 +690,264 @@ pub fn workspace_lock_all(state: State<'_, AppState>) -> Result<()> {
     state.lock_all_workspaces();
     state.audit_info("workspace_lock_all", "All protected workspaces locked");
     Ok(())
+}
+
+/// Turn one unlock method off (for example the pattern) while the workspace
+/// is unlocked. At least one method always remains.
+#[tauri::command]
+pub fn workspace_remove_credential(state: State<'_, AppState>, scope: String, method: String) -> Result<ScopeStatus> {
+    state.require_auth()?;
+    let user_id = state.user_id()?;
+    let scope_name = normalize_scope(&scope)?;
+    if !state.is_workspace_unlocked(scope_name) {
+        return Err(QGuardError::Trust("Unlock the workspace before changing how it unlocks.".to_string()));
+    }
+    let mut record = state
+        .load_workspace_scope(&user_id, scope_name)?
+        .ok_or_else(|| QGuardError::NotFound("workspace is not configured yet".to_string()))?;
+    let methods = [record.password.is_some(), record.pin.is_some(), record.pattern.is_some()];
+    if credential_for(&record, &method).is_none() {
+        return Err(QGuardError::InvalidInput(format!("{method} is not set up for this workspace")));
+    }
+    if methods.iter().filter(|set| **set).count() <= 1 {
+        return Err(QGuardError::InvalidInput("Keep at least one way to unlock it.".to_string()));
+    }
+    *credential_slot(&mut record, &method)? = None;
+    state.save_workspace_scope(&user_id, &record)?;
+    state.audit_info("workspace_credential_removed", &format!("Workspace {scope_name} {method} removed"));
+    let loaded = state.load_workspace_scope(&user_id, scope_name)?;
+    Ok(scope_status(&state, scope_name, &loaded))
+}
+
+/// What a drawn pattern opened.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatternUnlock {
+    /// `vault` (the Quantum Vault) or `hidden` (a hidden vault).
+    pub opened: &'static str,
+    pub status: ScopeStatus,
+}
+
+/// Unlock with a drawn pattern: the Quantum Vault's own pattern, or a hidden
+/// vault's. Both checks always run, side by side, so how long an attempt takes
+/// says nothing about hidden vaults, and a pattern that opens neither counts
+/// as one wrong attempt, like a wrong PIN. A hidden vault wins if the two ever
+/// share a pattern (hidden vaults are made to differ from the vault's own).
+#[tauri::command]
+pub async fn vault_pattern_unlock(state: State<'_, AppState>, mut pattern: String) -> Result<PatternUnlock> {
+    state.require_auth()?;
+    let user_id = state.user_id()?;
+    let secret = pattern::secret_bytes(&pattern);
+    pattern.zeroize();
+    let secret = secret?;
+    let mut record = state
+        .load_workspace_scope(&user_id, SCOPE_VAULT)?
+        .ok_or_else(|| QGuardError::NotFound("workspace is not configured yet".to_string()))?;
+    check_lockout(&record)?;
+    check_pattern_pace(&record)?;
+
+    // A hidden vault that cannot be checked (no device key yet) is simply not
+    // found; it must never stand in the way of the vault's own pattern.
+    let hidden_check = state.hidden_pool_secrets(&user_id).ok().map(|secrets| {
+        let (pool, secret, user_id) = (state.hidden_pool(&user_id), secret.clone(), user_id.clone());
+        tauri::async_runtime::spawn_blocking(move || -> Result<Option<HiddenVault>> {
+            pool.ensure()?;
+            HiddenVault::open(pool, &user_id, HiddenKeys::derive(&secrets, &secret)?)
+        })
+    });
+    let own = match record.pattern.clone() {
+        Some(credential) => Some((prove(SCOPE_VAULT, &credential, &secret).await, credential)),
+        None => None,
+    };
+    let hidden = match hidden_check {
+        Some(task) => task.await.ok().and_then(|found| found.ok()).flatten(),
+        None => None,
+    };
+
+    if let Some(mut vault) = hidden {
+        // An armed decoy shows as an ordinary vault from the first moment; the
+        // erase of every other hidden vault runs after this returns, so the
+        // unlock takes no longer than any other.
+        let duress = vault.take_duress();
+        state.set_hidden_vault(vault)?;
+        if let Some(plan) = duress {
+            let open = state.hidden_vault()?;
+            drop(tauri::async_runtime::spawn_blocking(move || {
+                let _ = hidden::run_duress(plan, &open);
+            }));
+        }
+        // The same entry as any vault unlock: the log must not tell them apart.
+        state.audit_info("workspace_unlock", &format!("Workspace {SCOPE_VAULT} unlocked"));
+        let loaded = state.load_workspace_scope(&user_id, SCOPE_VAULT)?;
+        return Ok(PatternUnlock { opened: "hidden", status: scope_status(&state, SCOPE_VAULT, &loaded) });
+    }
+    if let Some((proof, credential)) = own {
+        if let Proof::Right(master) = proof? {
+            let status = finish_unlock(&state, &user_id, SCOPE_VAULT, METHOD_PATTERN, record, &credential, &secret, master).await?;
+            return Ok(PatternUnlock { opened: "vault", status });
+        }
+    }
+    record_pattern_miss(&mut record);
+    Err(wrong_secret(&state, &user_id, SCOPE_VAULT, &mut record, "Incorrect pattern.")?)
+}
+
+/// Create a hidden vault with a new pattern, from inside the unlocked Quantum
+/// Vault, and open it (the Quantum Vault locks). Every attempt counts against
+/// the vault's attempt limit, taken pattern or not: otherwise anyone inside
+/// the vault could test patterns here for free and learn which are in use.
+#[tauri::command]
+pub async fn vault_hidden_create(state: State<'_, AppState>, mut pattern: String) -> Result<HiddenSummary> {
+    state.require_auth()?;
+    let user_id = state.user_id()?;
+    let secret = pattern::secret_bytes(&pattern);
+    pattern.zeroize();
+    let secret = secret?;
+    if provider::approved_mode() {
+        return Err(QGuardError::InvalidInput(format!(
+            "FIPS approved mode: a hidden vault opens with a pattern, and approved mode accepts only a password of at least {} characters in front of vault keys. Turn approved mode off to create one.",
+            provider::APPROVED_PASSWORD_MIN_CHARS
+        )));
+    }
+    state.unlocked_vault_master()?;
+    let mut record = state
+        .load_workspace_scope(&user_id, SCOPE_VAULT)?
+        .ok_or_else(|| QGuardError::NotFound("workspace is not configured yet".to_string()))?;
+    check_lockout(&record)?;
+    check_pattern_pace(&record)?;
+    apply_failed_attempt(&mut record);
+    record_pattern_miss(&mut record);
+    state.save_workspace_scope(&user_id, &record)?;
+
+    if let Some(credential) = record.pattern.as_ref() {
+        if matches!(prove(SCOPE_VAULT, credential, &secret).await?, Proof::Right(_)) {
+            return Err(QGuardError::InvalidInput(PATTERN_TAKEN.to_string()));
+        }
+    }
+    let (pool, secrets, uid) = (state.hidden_pool(&user_id), state.hidden_pool_secrets(&user_id)?, user_id.clone());
+    let vault = tauri::async_runtime::spawn_blocking(move || -> Result<HiddenVault> {
+        HiddenVault::create(pool, &uid, HiddenKeys::derive(&secrets, &secret)?)
+    })
+    .await
+    .map_err(|e| QGuardError::Crypto(format!("hidden vault worker failed: {e}")))??;
+    let summary = vault.summary();
+    state.set_hidden_vault(vault)?;
+    Ok(summary)
+}
+
+/// Open a hidden vault from inside the unlocked Quantum Vault, to look after
+/// it (a decoy above all): its duress erase never fires here — only a pattern
+/// drawn on the lock screen sets it off. The Quantum Vault locks. Every attempt
+/// counts against the vault's attempt limit, as for creating one, so this is no
+/// cheaper a way to test patterns than the lock screen.
+#[tauri::command]
+pub async fn vault_hidden_open(state: State<'_, AppState>, mut pattern: String) -> Result<HiddenSummary> {
+    state.require_auth()?;
+    let user_id = state.user_id()?;
+    let secret = pattern::secret_bytes(&pattern);
+    pattern.zeroize();
+    let secret = secret?;
+    state.unlocked_vault_master()?;
+    let mut record = state
+        .load_workspace_scope(&user_id, SCOPE_VAULT)?
+        .ok_or_else(|| QGuardError::NotFound("workspace is not configured yet".to_string()))?;
+    check_lockout(&record)?;
+    check_pattern_pace(&record)?;
+    apply_failed_attempt(&mut record);
+    record_pattern_miss(&mut record);
+    state.save_workspace_scope(&user_id, &record)?;
+
+    let (pool, secrets, uid) = (state.hidden_pool(&user_id), state.hidden_pool_secrets(&user_id)?, user_id.clone());
+    let found = tauri::async_runtime::spawn_blocking(move || -> Result<Option<HiddenVault>> {
+        HiddenVault::open(pool, &uid, HiddenKeys::derive(&secrets, &secret)?)
+    })
+    .await
+    .map_err(|e| QGuardError::Crypto(format!("hidden vault worker failed: {e}")))??;
+    let vault = found.ok_or_else(|| QGuardError::InvalidInput("Incorrect pattern.".to_string()))?;
+    let summary = vault.summary();
+    state.set_hidden_vault(vault)?;
+    Ok(summary)
+}
+
+/// The one answer for a phrase that opens nothing here — whether no vault ever
+/// had it, it was replaced, or the vault was deleted or erased.
+const PHRASE_OPENS_NOTHING: &str =
+    "These words don't open a hidden vault on this device. Check each word and their order — a phrase that was replaced, or whose vault was deleted, no longer works.";
+
+/// The hidden vault a typed recovery phrase opens, found on the blocking pool
+/// (fast: no Argon2id — the phrase is 128 random bits).
+async fn find_by_phrase(state: &AppState, mut phrase: String) -> Result<HiddenVault> {
+    let entropy = mnemonic::decode(&phrase);
+    phrase.zeroize();
+    let entropy = entropy?;
+    let user_id = state.user_id()?;
+    let (pool, uid) = (state.hidden_pool(&user_id), user_id.clone());
+    tauri::async_runtime::spawn_blocking(move || HiddenVault::recover(pool, &uid, &entropy))
+        .await
+        .map_err(|e| QGuardError::Crypto(format!("hidden vault worker failed: {e}")))??
+        .ok_or_else(|| QGuardError::InvalidInput(PHRASE_OPENS_NOTHING.to_string()))
+}
+
+/// Check a hidden vault's recovery phrase before a new pattern is drawn: the
+/// vault it opens, summarised. Nothing changes and nothing opens. Usable from
+/// the lock screen (offered to everyone, like the pattern pad) and from inside
+/// the Quantum Vault.
+#[tauri::command]
+pub async fn vault_hidden_recovery_check(state: State<'_, AppState>, phrase: String) -> Result<HiddenSummary> {
+    state.require_auth()?;
+    Ok(find_by_phrase(&state, phrase).await?.summary())
+}
+
+/// Recover a hidden vault whose pattern is forgotten: its recovery phrase
+/// opens it, `pattern` becomes its new pattern (the old one stops working; the
+/// phrase keeps working), and it opens (the Quantum Vault locks). The new
+/// pattern is checked like a new hidden vault's — never the vault's own, never
+/// one in use — and, as there, every such attempt counts against the attempt
+/// limit, so this is no free way to test patterns. A phrase that opens nothing
+/// is refused before any pattern is looked at.
+#[tauri::command]
+pub async fn vault_hidden_recover(state: State<'_, AppState>, phrase: String, mut pattern: String) -> Result<HiddenSummary> {
+    state.require_auth()?;
+    let user_id = state.user_id()?;
+    let secret = pattern::secret_bytes(&pattern);
+    pattern.zeroize();
+    if provider::approved_mode() {
+        return Err(QGuardError::InvalidInput(format!(
+            "FIPS approved mode: a hidden vault opens with a pattern, and approved mode accepts only a password of at least {} characters in front of vault keys. Turn approved mode off to recover one.",
+            provider::APPROVED_PASSWORD_MIN_CHARS
+        )));
+    }
+    let secret = secret?;
+    let mut vault = find_by_phrase(&state, phrase).await?;
+    let from_lock_screen = state.unlocked_vault_master().is_err();
+
+    let mut record = state
+        .load_workspace_scope(&user_id, SCOPE_VAULT)?
+        .ok_or_else(|| QGuardError::NotFound("workspace is not configured yet".to_string()))?;
+    check_lockout(&record)?;
+    check_pattern_pace(&record)?;
+    apply_failed_attempt(&mut record);
+    record_pattern_miss(&mut record);
+    state.save_workspace_scope(&user_id, &record)?;
+    if let Some(credential) = record.pattern.as_ref() {
+        if matches!(prove(SCOPE_VAULT, credential, &secret).await?, Proof::Right(_)) {
+            return Err(QGuardError::InvalidInput(PATTERN_TAKEN.to_string()));
+        }
+    }
+
+    let secrets = state.hidden_pool_secrets(&user_id)?;
+    let vault = tauri::async_runtime::spawn_blocking(move || -> Result<HiddenVault> {
+        vault.rekey(HiddenKeys::derive(&secrets, &secret)?)?;
+        Ok(vault)
+    })
+    .await
+    .map_err(|e| QGuardError::Crypto(format!("hidden vault worker failed: {e}")))??;
+    let summary = vault.summary();
+    state.set_hidden_vault(vault)?;
+    if from_lock_screen {
+        // The same entry as any vault unlock from the lock screen.
+        state.audit_info("workspace_unlock", &format!("Workspace {SCOPE_VAULT} unlocked"));
+    }
+    Ok(summary)
 }
 
 /// Reset the Secure Chat lock after the user re-proves their account identity.
@@ -607,7 +1000,7 @@ pub async fn workspace_reset_vault(
 ) -> Result<ScopeStatus> {
     state.require_auth()?;
     let user_id = state.user_id()?;
-    if let Err(e) = validate_secret(&method, &secret) {
+    if let Err(e) = validate_for_scope(SCOPE_VAULT, &method, &secret, provider::approved_mode()) {
         secret.zeroize();
         return Err(e);
     }
@@ -671,7 +1064,9 @@ pub async fn workspace_reset_vault(
         configured_at: Utc::now(),
     };
     let salt = random_salt();
-    let stretched = stretch_secret(KDF_ARGON2ID_V1, salt.clone(), secret.as_bytes().to_vec()).await;
+    let kdf = passcode::preferred_kdf();
+    let strong = approved_strength(&method, secret.chars().count(), kdf);
+    let stretched = stretch_secret(kdf, salt.clone(), secret.as_bytes().to_vec()).await;
     secret.zeroize();
     let mut ikm = stretched?;
     let sealed = derive_verifier_from_ikm(&salt, &ikm)
@@ -682,17 +1077,12 @@ pub async fn workspace_reset_vault(
         salt,
         verifier,
         wrapped_master: Some(wrapped),
-        kdf_version: KDF_ARGON2ID_V1,
+        kdf_version: kdf,
+        approved_strength: strong,
     };
 
     let mut record = PersistedWorkspaceScope::new(SCOPE_VAULT);
-    match method.as_str() {
-        METHOD_PASSWORD => record.password = Some(credential),
-        METHOD_PIN => record.pin = Some(credential),
-        _ => {
-            return Err(QGuardError::InvalidInput(format!("unknown unlock method: {method}")));
-        }
-    }
+    *credential_slot(&mut record, &method)? = Some(credential);
 
     // Legacy keychain VMK (if any) must not linger — the VMK stays password-wrapped.
     state.delete_vault_master_file(&user_id)?;
@@ -862,6 +1252,7 @@ mod tests {
             verifier: "stand-in".to_string(),
             wrapped_master: None,
             kdf_version: KDF_ARGON2ID_V1,
+            approved_strength: false,
         });
         state.save_workspace_scope(&user_id, &record).expect("save");
 
@@ -941,5 +1332,172 @@ mod tests {
         assert!(validate_secret(METHOD_PIN, "1234ab").is_err()); // non-digit
         assert!(validate_secret(METHOD_PIN, "123456").is_ok());
         assert!(validate_secret(METHOD_PIN, "1234567890123").is_err()); // too long
+    }
+
+    #[test]
+    fn approved_mode_requires_a_fourteen_character_vault_password() {
+        // Standard mode: the ordinary rules.
+        assert!(validate_for_scope(SCOPE_VAULT, METHOD_PIN, "123456", false).is_ok());
+        assert!(validate_for_scope(SCOPE_VAULT, METHOD_PASSWORD, "twelve-chars", false).is_ok());
+        // Approved mode: the vault takes a password of 14+ characters only...
+        let pin = validate_for_scope(SCOPE_VAULT, METHOD_PIN, "123456789012", true).unwrap_err();
+        assert!(format!("{pin}").contains("not a PIN"), "{pin}");
+        assert!(validate_for_scope(SCOPE_VAULT, METHOD_PASSWORD, "thirteen-char", true).is_err());
+        assert!(validate_for_scope(SCOPE_VAULT, METHOD_PASSWORD, "fourteen-chars", true).is_ok());
+        // ...while the Secure Chat lock (a verifier, no key behind it) keeps PINs.
+        assert!(validate_for_scope(SCOPE_CHAT, METHOD_PIN, "123456", true).is_ok());
+    }
+
+    #[test]
+    fn a_vault_pin_is_never_moved_to_pbkdf2() {
+        // Standard mode (tests never switch the global policy on): Argon2id
+        // for every credential.
+        assert_eq!(reseal_target(SCOPE_VAULT, METHOD_PIN), KDF_ARGON2ID_V1);
+        assert_eq!(reseal_target(SCOPE_VAULT, METHOD_PASSWORD), passcode::preferred_kdf());
+        assert_eq!(reseal_target(SCOPE_CHAT, METHOD_PIN), passcode::preferred_kdf());
+    }
+
+    #[test]
+    fn approved_strength_needs_pbkdf2_a_password_and_fourteen_characters() {
+        use crate::crypto::passcode::KDF_PBKDF2_SHA512_V2;
+        assert!(approved_strength(METHOD_PASSWORD, 14, KDF_PBKDF2_SHA512_V2));
+        assert!(!approved_strength(METHOD_PASSWORD, 13, KDF_PBKDF2_SHA512_V2));
+        assert!(!approved_strength(METHOD_PIN, 12, KDF_PBKDF2_SHA512_V2));
+        assert!(!approved_strength(METHOD_PASSWORD, 40, KDF_ARGON2ID_V1));
+        assert_eq!(secret_chars("pässwörd".as_bytes()), 8);
+    }
+
+    /// A vault credential sealed with Argon2id opens with the same secret after
+    /// it is re-sealed under PBKDF2 (approved mode) — and back again.
+    #[test]
+    fn a_vault_master_survives_reseal_between_argon2id_and_pbkdf2() {
+        use crate::crypto::passcode::KDF_PBKDF2_SHA512_V2;
+        let master = PersistedVaultMaster {
+            version: 1,
+            vmk: symmetric::random_key(),
+            signer: VaultSigningKeypair::generate(),
+            configured_at: Utc::now(),
+        };
+        let secret = b"a long vault password";
+        for (from, to) in [(KDF_ARGON2ID_V1, KDF_PBKDF2_SHA512_V2), (KDF_PBKDF2_SHA512_V2, KDF_ARGON2ID_V1)] {
+            let salt = random_salt();
+            let ikm = secret_ikm(from, &salt, secret).unwrap();
+            let wrapped = wrap_master_under_ikm(&salt, &ikm, &master).unwrap();
+            // Unlock under the old KDF...
+            let key = derive_vault_wrap_key_from_ikm(&salt, &ikm).unwrap();
+            let opened: PersistedVaultMaster = serde_json::from_slice(
+                &symmetric::decrypt(&key, &wrapped, &crate::security::obf::workspace_vault_wrap_aad()).unwrap(),
+            )
+            .unwrap();
+            // ...re-seal under the new one, and the same secret opens it.
+            let new_salt = random_salt();
+            let new_ikm = secret_ikm(to, &new_salt, secret).unwrap();
+            let rewrapped = wrap_master_under_ikm(&new_salt, &new_ikm, &opened).unwrap();
+            let new_key = derive_vault_wrap_key_from_ikm(&new_salt, &new_ikm).unwrap();
+            let reopened: PersistedVaultMaster = serde_json::from_slice(
+                &symmetric::decrypt(&new_key, &rewrapped, &crate::security::obf::workspace_vault_wrap_aad()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(reopened.vmk, master.vmk);
+            assert_eq!(reopened.vault_key().unwrap(), master.vault_key().unwrap());
+            // The old KDF's key does not open the re-sealed credential.
+            assert!(symmetric::decrypt(&key, &rewrapped, &crate::security::obf::workspace_vault_wrap_aad()).is_err());
+        }
+    }
+
+    const DRAWN: &str = "4x4:0-1-2-3-7-11";
+
+    fn new_master() -> PersistedVaultMaster {
+        PersistedVaultMaster { version: 1, vmk: symmetric::random_key(), signer: VaultSigningKeypair::generate(), configured_at: Utc::now() }
+    }
+
+    /// A vault credential sealed from `secret` exactly as setup seals one.
+    fn sealed_credential(secret: &[u8], master: &PersistedVaultMaster) -> WorkspaceCredential {
+        let salt = random_salt();
+        let ikm = secret_ikm(KDF_ARGON2ID_V1, &salt, secret).unwrap();
+        WorkspaceCredential {
+            verifier: derive_verifier_from_ikm(&salt, &ikm).unwrap(),
+            wrapped_master: Some(wrap_master_under_ikm(&salt, &ikm, master).unwrap()),
+            salt,
+            kdf_version: KDF_ARGON2ID_V1,
+            approved_strength: false,
+        }
+    }
+
+    #[test]
+    fn a_pattern_is_a_vault_credential_held_to_the_pin_rules() {
+        assert!(validate_for_scope(SCOPE_VAULT, METHOD_PATTERN, DRAWN, false).is_ok());
+        assert!(validate_for_scope(SCOPE_VAULT, METHOD_PATTERN, "4x4:0-1-2-3-7", false).is_err(), "five dots");
+        assert!(validate_for_scope(SCOPE_CHAT, METHOD_PATTERN, DRAWN, false).is_err(), "vault only");
+        // Approved mode keeps the vault behind a 14+ character password.
+        assert!(validate_for_scope(SCOPE_VAULT, METHOD_PATTERN, DRAWN, true).is_err());
+        let mut record = PersistedWorkspaceScope::new(SCOPE_VAULT);
+        assert!(!record.configured());
+        *credential_slot(&mut record, METHOD_PATTERN).unwrap() = Some(WorkspaceCredential::default());
+        assert!(record.configured() && credential_for(&record, METHOD_PATTERN).is_some());
+    }
+
+    #[test]
+    fn pattern_tries_are_paced_and_no_success_resets_the_pace() {
+        let mut scope = PersistedWorkspaceScope::new(SCOPE_VAULT);
+        for _ in 0..4 {
+            record_pattern_miss(&mut scope);
+            assert!(check_pattern_pace(&scope).is_ok(), "the first misses of a day are free");
+        }
+        record_pattern_miss(&mut scope);
+        assert!(check_pattern_pace(&scope).is_err(), "the fifth means a pause");
+        // A correct password clears the attempt ladder — and not the pace.
+        scope.failed_attempts = 0;
+        scope.lockout_until = None;
+        assert!(check_pattern_pace(&scope).is_err());
+        // Misses age out after 24 hours instead.
+        scope.pattern_misses = scope.pattern_misses.iter().map(|at| *at - chrono::Duration::hours(25)).collect();
+        assert!(check_pattern_pace(&scope).is_ok());
+        assert!(recent_pattern_misses(&scope, Utc::now()).is_empty());
+        assert_eq!(pattern_wait(9), Some(chrono::Duration::seconds(30)));
+        assert_eq!(pattern_wait(20), Some(chrono::Duration::hours(1)));
+    }
+
+    #[test]
+    fn the_drawn_pattern_and_no_other_unwraps_the_vault_master() {
+        let master = new_master();
+        let credential = sealed_credential(&pattern::secret_bytes(DRAWN).unwrap(), &master);
+        let right = tauri::async_runtime::block_on(prove(SCOPE_VAULT, &credential, &pattern::secret_bytes(DRAWN).unwrap())).unwrap();
+        match right {
+            Proof::Right(Some(opened)) => assert_eq!(opened.vmk, master.vmk),
+            _ => panic!("the drawn pattern must open the vault"),
+        }
+        let other = pattern::secret_bytes("4x4:0-1-2-3-7-6").unwrap();
+        assert!(matches!(tauri::async_runtime::block_on(prove(SCOPE_VAULT, &credential, &other)).unwrap(), Proof::Wrong));
+    }
+
+    #[test]
+    fn only_one_vault_is_ever_open_and_every_lock_closes_a_hidden_one() {
+        let dir = std::env::temp_dir().join(format!("qguard-ws-test-{}", uuid::Uuid::new_v4()));
+        let user_id = format!("test-user-{}", uuid::Uuid::new_v4());
+        let state = AppState::new(dir.clone()).expect("create state");
+        let keys = |state: &AppState| {
+            HiddenKeys::derive(&state.hidden_pool_secrets(&user_id).unwrap(), &pattern::secret_bytes(DRAWN).unwrap()).unwrap()
+        };
+        let vault = HiddenVault::create(state.hidden_pool(&user_id), &user_id, keys(&state)).unwrap();
+
+        state.set_vault_session(new_master()).unwrap();
+        state.mark_workspace_unlocked(SCOPE_VAULT).unwrap();
+        state.set_hidden_vault(vault).unwrap();
+        assert!(state.is_hidden_vault_open());
+        assert!(state.unlocked_vault_master().is_err(), "opening a hidden vault locks the Quantum Vault");
+        assert!(!state.is_workspace_unlocked(SCOPE_VAULT));
+
+        state.lock_all_workspaces();
+        assert!(!state.is_hidden_vault_open(), "locking everything closes it");
+
+        // A restart re-derives the same device half of the key.
+        let restarted = AppState::new(dir.clone()).expect("restart");
+        let reopened = HiddenVault::open(restarted.hidden_pool(&user_id), &user_id, keys(&restarted)).unwrap().expect("opens again");
+        restarted.set_hidden_vault(reopened).unwrap();
+        restarted.set_vault_session(new_master()).unwrap();
+        assert!(!restarted.is_hidden_vault_open(), "unlocking the Quantum Vault closes it");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

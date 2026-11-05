@@ -1,9 +1,7 @@
-use hkdf::Hkdf;
-use sha3::{Digest, Sha3_256};
 use zeroize::Zeroize;
 
+use super::provider;
 use crate::error::{QGuardError, Result};
-
 
 pub fn hkdf_sha3_256(ikm: &[u8], info: &[u8], len: usize) -> Result<Vec<u8>> {
     if ikm.is_empty() || len == 0 || len > 8160 {
@@ -11,10 +9,8 @@ pub fn hkdf_sha3_256(ikm: &[u8], info: &[u8], len: usize) -> Result<Vec<u8>> {
     }
 
     let salt = crate::security::obf::hkdf_salt();
-    let hk = Hkdf::<Sha3_256>::new(Some(salt.as_slice()), ikm);
     let mut out = vec![0u8; len];
-    hk.expand(info, &mut out)
-        .map_err(|e| QGuardError::Crypto(format!("HKDF expand failed: {e}")))?;
+    provider::hkdf_sha3_256(Some(salt.as_slice()), ikm, info, &mut out)?;
     Ok(out)
 }
 
@@ -32,18 +28,13 @@ pub fn derive_32_with_salt(salt: &[u8], ikm: &[u8], info: &[u8]) -> Result<[u8; 
     if ikm.is_empty() {
         return Err(QGuardError::Crypto("invalid HKDF input".to_string()));
     }
-    let hk = Hkdf::<Sha3_256>::new(Some(salt), ikm);
     let mut out = [0u8; 32];
-    hk.expand(info, &mut out)
-        .map_err(|e| QGuardError::Crypto(format!("HKDF expand failed: {e}")))?;
+    provider::hkdf_sha3_256(Some(salt), ikm, info, &mut out)?;
     Ok(out)
 }
 
 pub fn sha3_256(data: &[u8]) -> [u8; 32] {
-    let digest = Sha3_256::digest(data);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    out
+    provider::sha3_256(data)
 }
 
 pub fn sha3_hex(data: &[u8]) -> String {

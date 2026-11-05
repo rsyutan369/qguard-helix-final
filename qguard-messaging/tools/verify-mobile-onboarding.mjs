@@ -1,0 +1,94 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+const {chromium} = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const base=process.env.QGUARD_PREVIEW_URL||'http://127.0.0.1:5174/';
+const output=path.resolve('artifacts/onboarding');
+await fs.mkdir(output,{recursive:true});
+const browser=await chromium.launch({headless:true,channel:'msedge'});
+const results={screens:[],checks:[],pageErrors:[],assetFailures:[]};
+const context=await browser.newContext({viewport:{width:393,height:852},deviceScaleFactor:1,isMobile:true,hasTouch:true});
+const page=await context.newPage();
+page.on('pageerror',e=>results.pageErrors.push(e.message));
+page.on('response',r=>{if(r.url().includes('/onboarding/')&&r.status()>=400)results.assetFailures.push({url:r.url(),status:r.status()});});
+await page.clock.install({time:new Date('2026-11-04T08:00:00Z')});
+await page.clock.pauseAt(new Date('2026-11-04T08:00:01Z'));
+await page.goto(base);
+await page.locator('.onb-splash').waitFor();
+await page.evaluate(()=>document.documentElement.setAttribute('data-qg-skin','modernist'));
+await page.waitForFunction(()=>[...document.querySelectorAll('.onb-splash img')].every(i=>i.complete&&i.naturalWidth>0));
+assert.equal(await page.locator('.onb-splash-logo').getAttribute('src'),'/onboarding/splash-logo.png');
+await page.screenshot({path:path.join(output,'01-splash.png'),animations:'disabled'});
+results.screens.push('01-splash.png');
+await page.clock.runFor(3100);
+await page.clock.resume();
+await page.locator('.onb-tour').waitFor();
+await page.waitForFunction(()=>[...document.querySelectorAll('.onb-visual img')].every(i=>i.complete&&i.naturalWidth>0));
+await page.evaluate(()=>document.fonts.ready);
+const ids=['messaging','vault','calls','devices'];
+for(let i=0;i<ids.length;i++){
+ if(i) {await page.getByRole('button',{name:'Next introduction page',exact:true}).click();await page.waitForTimeout(700);}
+ assert.equal(await page.locator('.onb-page.is-active').getAttribute('id'),'onb-page-'+ids[i]);
+ await page.locator('.is-active .onb-visual img').evaluate(i=>i.decode());
+ const file=`0${i+2}-${ids[i]}.png`;
+ await page.screenshot({path:path.join(output,file),animations:'disabled'});
+ results.screens.push(file);
+ const bounds=await page.locator('.onb-page.is-active .onb-copy').boundingBox();
+ assert(bounds.y>=0&&bounds.y+bounds.height<=852,'copy fits viewport');
+ assert.equal(await page.locator('article[inert]').count(),3);
+}
+results.checks.push('All five screens render with local artwork and Android skin; inactive slides are inert.');
+await page.getByRole('button',{name:'Previous introduction page'}).click();await page.waitForTimeout(700);
+assert.equal(await page.locator('.is-active').getAttribute('id'),'onb-page-calls');
+await page.keyboard.press('ArrowLeft');await page.waitForTimeout(700);
+assert.equal(await page.locator('.is-active').getAttribute('id'),'onb-page-vault');
+await page.getByRole('button',{name:/Go to page 1:/}).click();await page.waitForTimeout(700);
+const swipe=async(x1,y1,x2,y2)=>{
+ await page.locator('.onb-tour').dispatchEvent('touchstart',{touches:[{identifier:0,clientX:x1,clientY:y1}]});
+ await page.locator('.onb-tour').dispatchEvent('touchend',{changedTouches:[{identifier:0,clientX:x2,clientY:y2}]});
+ await page.waitForTimeout(700);
+};
+await swipe(300,300,100,305);
+assert.equal(await page.locator('.is-active').getAttribute('id'),'onb-page-vault');
+await swipe(100,300,110,500);
+assert.equal(await page.locator('.is-active').getAttribute('id'),'onb-page-vault');
+results.checks.push('Next, previous, direct navigation, keyboard, horizontal swipe and vertical gesture discrimination pass.');
+for(const size of [{width:320,height:568},{width:360,height:640},{width:412,height:915},{width:852,height:393}]){
+ await page.setViewportSize(size);
+ for(let i=0;i<4;i++){
+  await page.getByRole('button',{name:new RegExp(`Go to page ${i+1}:`)}).click();await page.waitForTimeout(700);
+  assert.equal(await page.locator('.onb-tour').evaluate(e=>e.scrollWidth<=e.clientWidth),true);
+  const button=await page.locator(i===3?'.onb-start':'.onb-next').boundingBox();
+  assert(button.x>=0&&button.y>=0&&button.x+button.width<=size.width&&button.y+button.height<=size.height,'CTA fits');
+  const copy=await page.locator('.is-active .onb-copy').boundingBox();
+  assert(copy.y>=0&&copy.y+copy.height<=size.height,'text fits');
+ }
+ results.checks.push(`Four pages fit ${size.width}x${size.height} with visible CTA and no horizontal overflow.`);
+}
+await page.setViewportSize({width:393,height:852});
+await page.emulateMedia({reducedMotion:'reduce'});
+await page.evaluate(()=>document.documentElement.classList.add('theme-dark'));
+assert.equal(await page.locator('.onb-tour').evaluate(e=>getComputedStyle(e).colorScheme),'light');
+assert.equal(await page.locator('.is-active .onb-visual img').evaluate(e=>getComputedStyle(e).animationName),'none');
+await page.screenshot({path:path.join(output,'reduced-motion-dark-system.png'),animations:'disabled'});
+results.checks.push('Reduced motion disables animations; dark system theme retains requested light onboarding.');
+await page.getByRole('button',{name:'Get Started',exact:true}).click();
+await page.locator('.onb-root').waitFor({state:'detached'});
+assert.equal(await page.evaluate(()=>localStorage.getItem('qguard_mobile_onboarding_done')),'1');
+await page.reload();await page.waitForTimeout(1800);
+assert.equal(await page.locator('.onb-root').count(),0);
+results.checks.push('Get Started persists original flag, reaches existing login and does not replay on reload.');
+await context.close();
+const skipContext=await browser.newContext({viewport:{width:360,height:800},isMobile:true});
+const skipPage=await skipContext.newPage();
+await skipPage.goto(base);
+await skipPage.getByRole('button',{name:'Skip',exact:true}).waitFor();
+await skipPage.getByRole('button',{name:'Skip',exact:true}).click();
+await skipPage.locator('.onb-root').waitFor({state:'detached'});
+assert.equal(await skipPage.evaluate(()=>localStorage.getItem('qguard_mobile_onboarding_done')),'1');
+results.checks.push('Skip reaches existing login and persists the original completion flag.');
+assert.equal(results.pageErrors.length,0);
+assert.equal(results.assetFailures.length,0);
+await fs.writeFile(path.join(output,'verification.json'),JSON.stringify(results,null,2));
+console.log(JSON.stringify(results,null,2));
+await browser.close();

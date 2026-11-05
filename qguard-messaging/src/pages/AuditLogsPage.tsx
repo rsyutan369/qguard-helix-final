@@ -22,7 +22,7 @@ import { describeSavedFile, saveFileToDevice } from "@/lib/save-file";
 import { supabase } from "@/lib/supabase";
 import { safeInvoke } from "@/lib/tauri";
 import type { SecurityEvent, TelemetryEvent, TrustedDevice } from "@/lib/types";
-import { sha3_256Hex } from "@/lib/sha3";
+import { coreSha3Hex } from "@/lib/core-crypto";
 import { summarizeContactDeviceProtection } from "@/lib/pq-status";
 
 interface AuditLogsPageProps {
@@ -247,7 +247,7 @@ export default function AuditLogsPage({ userId, devices, events, securityEvents,
   ) {
     try {
       const createdAt = new Date().toISOString();
-      const eventHash = sha3_256Hex(JSON.stringify({ eventType, severity, metadata, createdAt }));
+      const eventHash = await coreSha3Hex(JSON.stringify({ eventType, severity, metadata, createdAt }));
       await supabase.from("messaging_security_events").insert({
         user_id: userId,
         device_id: null,

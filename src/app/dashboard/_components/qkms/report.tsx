@@ -43,12 +43,12 @@ export function buildQkmsReport(model: QkmsIntelligence): InventoryReport {
   const kpis = [
     { label: 'Keys under management', value: String(metrics.totalKeys), detail: 'Distinct key identities across every evidence source' },
     { label: 'Migration gate', value: GATE_LABEL[readiness.gate.state], detail: readiness.gate.why.slice(0, 160) },
-    { label: 'PQC readiness', value: pct(metrics.pqcReadinessPercent), detail: 'Post-quantum or hybrid share of keys that need a quantum decision' },
+    { label: 'PQC readiness', value: pct(metrics.pqcReadinessPercent), detail: `Evidenced post-quantum or hybrid share of keys that need a quantum decision${readiness.declaredOnly ? ` (${readiness.declaredOnly} declared-only key(s) excluded as unverified)` : ''}` },
     { label: 'Critical-risk keys', value: String(metrics.criticalRiskKeys), detail: 'Weighted risk score of 80 or above' },
     { label: 'Governance violations', value: String(metrics.governanceViolations), detail: `Across ${metrics.keysWithViolations} key(s)` },
     { label: 'Rotation health', value: pct(metrics.rotationHealthPercent), detail: `${rotation.posture.governedKeys} key(s) have a determinable rotation state` },
     { label: 'Approved custody', value: pct(metrics.custodyCoveragePercent), detail: 'HSM, managed KMS or vault share of keys with known custody' },
-    { label: 'Audit coverage', value: pct(metrics.auditReadinessPercent), detail: 'Live keys carrying at least one evidence or audit record' },
+    { label: 'Audit coverage', value: pct(metrics.auditReadinessPercent), detail: 'Live keys with at least one QKMS audit record of a governed operation' },
   ]
 
   /* ---- Key register ------------------------------------------------ */
@@ -62,7 +62,7 @@ export function buildQkmsReport(model: QkmsIntelligence): InventoryReport {
     key.assetName || 'Unmapped',
     key.environment,
     `${key.backend} (${CUSTODY_LABEL[key.custody]})`,
-    POSTURE_TEXT[key.posture] || key.posture,
+    `${POSTURE_TEXT[key.posture] || key.posture}${key.postureEvidence === 'declared' ? ' (declared, unverified)' : ''}`,
     key.migrationRequirement,
     LIFECYCLE_LABEL[key.lifecycle],
     ROTATION_LABEL[key.rotation],
@@ -102,14 +102,14 @@ export function buildQkmsReport(model: QkmsIntelligence): InventoryReport {
     policy.environmentScope,
     policy.keysInScope,
     policy.violations,
-    `${policy.compliance}%`,
+    policy.compliance === null ? (policy.evaluation === 'disabled' ? 'Not evaluated (disabled)' : 'Not evaluated (no keys in scope)') : `${policy.compliance}%`,
   ])
 
   /* ---- Readiness ----------------------------------------------------- */
   const readinessRows = readiness.bands.map((band) => [
     band.label,
     band.applicable === 0 ? 'Not applicable' : String(band.applicable),
-    band.applicable === 0 ? '—' : String(band.ready),
+    band.applicable === 0 ? '—' : `${band.ready}${band.declared ? ` (+${band.declared} declared, unverified)` : ''}`,
     pct(band.percent),
     band.detail,
   ])

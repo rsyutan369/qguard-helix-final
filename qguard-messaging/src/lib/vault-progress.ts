@@ -33,6 +33,7 @@ const PHASE_LABELS: Record<string, string> = {
   unwrap_fek: "Unwrapping file key",
   finalize: "Finalizing",
   done: "Complete",
+  file: "Next file", // Vault Storage batch: one event per file before its own phases
 };
 
 export function phaseLabel(phase: string): string {
@@ -53,6 +54,7 @@ export function opLabel(op: string): string {
 // VMK seal, signing, streaming, finalize) — honest, not fabricated. The chunk
 // stage fills proportionally to real processed bytes.
 const PHASE_RANGE: Record<string, [number, number]> = {
+  file: [0, 0],
   init: [0, 5],
   verify: [0, 8], // decrypt: header signature verified
   fek: [5, 14],

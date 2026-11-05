@@ -8,9 +8,9 @@
 //! Field arithmetic uses the AES polynomial (x^8 + x^4 + x^3 + x + 1) with
 //! shift-and-add multiplication — no lookup tables indexed by secret data.
 
-use rand::rngs::OsRng;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
+
+use crate::crypto::provider::fill_random;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::{QGuardError, Result};
@@ -75,7 +75,7 @@ pub fn split(secret: &[u8; SECRET_LEN], k: u8, n: u8) -> Result<Vec<Share>> {
     let mut coefficients = Zeroizing::new(vec![0u8; usize::from(k)]);
     for (index, byte) in secret.iter().enumerate() {
         coefficients[0] = *byte;
-        OsRng.fill_bytes(&mut coefficients[1..]);
+        fill_random(&mut coefficients[1..]);
         for share in shares.iter_mut() {
             // Horner: c0 + x(c1 + x(c2 + ...)).
             let mut value = 0u8;
@@ -126,7 +126,7 @@ mod tests {
 
     fn secret() -> [u8; SECRET_LEN] {
         let mut out = [0u8; SECRET_LEN];
-        OsRng.fill_bytes(&mut out);
+        fill_random(&mut out);
         out
     }
 

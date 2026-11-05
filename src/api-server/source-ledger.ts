@@ -56,7 +56,7 @@ export function createSourceLedger(scope: string): SourceLedger {
       try {
         const { data, error } = await build(client.from(table))
         if (error) return fail(error.message || String(error))
-        const rows = (data as Row[]) || []
+        const rows = table === 'assets' ? ((data || []) as Row[]).filter((row) => !(row.metadata as Record<string, unknown> | null)?.consolidatedIntoAssetId) : (data as Row[]) || []
         const state: SourceReadState = limit !== null && rows.length >= limit ? 'truncated' : rows.length ? 'ok' : 'empty'
         record({
           key: table,

@@ -10,9 +10,8 @@
 /* ---------------- Theme tokens ----------------
  * Every surface and accent on the page reads these variables, so Light mode
  * is a token swap, not a second set of classes. Light accents are the DARK
- * end of each hue (AA on parchment). The canvas, agent cards, terminals and
- * JSON output are deliberate dark "screens" (`qg-force-dark`) in both themes:
- * the island re-declares the dark values for its own subtree.
+ * end of each hue (AA on parchment). The workflow follows the page theme;
+ * terminals and JSON output retain their dedicated dark screen palette.
  */
 .qg-lw,
 html.qg-theme-light .qg-lw .qg-force-dark {
@@ -22,6 +21,14 @@ html.qg-theme-light .qg-lw .qg-force-dark {
   --lw-field: #070d1c;
   --lw-card: rgba(6, 12, 26, 0.92);
   --lw-screen: rgba(5, 10, 22, 0.95);
+  --lw-canvas: #050a17;
+  --lw-grid: rgba(148, 163, 184, 0.045);
+  --lw-canvas-wash: rgba(34, 211, 238, 0.07);
+  --lw-card-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  --lw-edge-idle: rgba(148, 163, 184, 0.28);
+  --lw-edge-waiting: rgba(148, 163, 184, 0.5);
+  --lw-idle-opacity: 0.8;
+  --lw-offline-opacity: 0.75;
   --lw-ink: #ffffff;
   --lw-ink-soft: rgba(255, 255, 255, 0.7);
   --lw-ink-muted: rgba(255, 255, 255, 0.45);
@@ -46,6 +53,16 @@ html.qg-theme-light .qg-lw {
   --lw-panel-solid: #f8f4eb;
   --lw-raised: #fbf8f1;
   --lw-field: #fbf8f1;
+  --lw-card: #fffdf8;
+  --lw-screen: #fffcf6;
+  --lw-canvas: #f3eee4;
+  --lw-grid: rgba(105, 78, 52, 0.065);
+  --lw-canvas-wash: rgba(3, 105, 161, 0.045);
+  --lw-card-shadow: 0 8px 24px rgba(70, 54, 41, 0.08), 0 2px 5px rgba(70, 54, 41, 0.04);
+  --lw-edge-idle: #958575;
+  --lw-edge-waiting: #786957;
+  --lw-idle-opacity: 1;
+  --lw-offline-opacity: 1;
   --lw-ink: var(--qg-dashboard-text, #261b14);
   --lw-ink-soft: var(--qg-dashboard-text-soft, #463629);
   --lw-ink-muted: var(--qg-dashboard-text-muted, #6b5645);
@@ -92,10 +109,34 @@ html.qg-theme-light .qg-lw select option { background: #fbf8f1; color: #261b14; 
   position: relative;
   border-radius: 1rem;
   background:
-    radial-gradient(1200px 260px at 50% 0%, rgba(34, 211, 238, 0.07), transparent 70%),
-    linear-gradient(rgba(148, 163, 184, 0.045) 1px, transparent 1px) 0 0 / 28px 28px,
-    linear-gradient(90deg, rgba(148, 163, 184, 0.045) 1px, transparent 1px) 0 0 / 28px 28px,
-    #050a17;
+    radial-gradient(1200px 260px at 50% 0%, var(--lw-canvas-wash), transparent 70%),
+    linear-gradient(var(--lw-grid) 1px, transparent 1px) 0 0 / 28px 28px,
+    linear-gradient(90deg, var(--lw-grid) 1px, transparent 1px) 0 0 / 28px 28px,
+    var(--lw-canvas);
+  border-color: var(--lw-line);
+  color: var(--lw-ink);
+}
+
+.qg-lw-card--idle { opacity: var(--lw-idle-opacity); }
+.qg-lw-card--offline { opacity: var(--lw-offline-opacity); }
+
+.qg-lw-view-controls {
+  border-color: var(--lw-line);
+  box-shadow: var(--lw-card-shadow);
+}
+
+.qg-lw-view-controls button {
+  color: var(--lw-ink-soft);
+}
+
+.qg-lw-view-controls button:hover {
+  background: var(--lw-track);
+  color: var(--lw-ink);
+}
+
+.qg-lw-view-controls button:focus-visible {
+  outline: 2px solid var(--lw-sky);
+  outline-offset: -3px;
 }
 
 .qg-lw-canvas .react-flow {
@@ -144,7 +185,8 @@ html.qg-lw-fullscreen .qg-dashboard-main { overflow: hidden; }
 }
 
 .qg-lw-canvas .react-flow__node:focus-visible > div {
-  box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.85), 0 0 40px rgba(34, 211, 238, 0.25);
+  outline: 2px solid var(--lw-sky);
+  outline-offset: 4px;
 }
 
 .qg-lw-handle {
@@ -203,15 +245,15 @@ html.qg-lw-fullscreen .qg-dashboard-main { overflow: hidden; }
 }
 .qg-lw-branch-joint[data-state='active'],
 .qg-lw-branch-joint[data-state='completed'] { fill: var(--edge-color, #22d3ee); }
-.qg-lw-branch-joint[data-state='blocked'] { fill: #fbbf24; }
-.qg-lw-branch-joint[data-state='failed'] { fill: #f87171; }
+.qg-lw-branch-joint[data-state='blocked'] { fill: var(--lw-amber); }
+.qg-lw-branch-joint[data-state='failed'] { fill: var(--lw-red); }
 
-.qg-lw-edge[data-state='idle'] { stroke: rgba(148, 163, 184, 0.28); }
-.qg-lw-edge[data-state='waiting'] { stroke: rgba(148, 163, 184, 0.5); stroke-dasharray: 3 7; }
+.qg-lw-edge[data-state='idle'] { stroke: var(--lw-edge-idle); }
+.qg-lw-edge[data-state='waiting'] { stroke: var(--lw-edge-waiting); stroke-dasharray: 3 7; }
 .qg-lw-edge[data-state='active'] { stroke: var(--edge-color, #22d3ee); stroke-dasharray: 10 8; animation: qg-lw-flow 0.9s linear infinite; }
 .qg-lw-edge[data-state='completed'] { stroke: var(--edge-color, #34d399); }
-.qg-lw-edge[data-state='blocked'] { stroke: #fbbf24; stroke-dasharray: 6 6; }
-.qg-lw-edge[data-state='failed'] { stroke: #f87171; }
+.qg-lw-edge[data-state='blocked'] { stroke: var(--lw-amber); stroke-dasharray: 6 6; }
+.qg-lw-edge[data-state='failed'] { stroke: var(--lw-red); }
 
 .qg-lw-edge--glow[data-state='idle'],
 .qg-lw-edge--glow[data-state='waiting'] { opacity: 0; }

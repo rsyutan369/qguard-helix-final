@@ -1,0 +1,964 @@
+# MASTER IMPLEMENTATION PROMPT
+## Qguard Messaging — Quantum Vault
+### Hybrid Local + Cloud Storage | Post-Quantum Encryption | Secure File Sharing
+
+**PROJECT:** Qguard Messaging  
+**MODULE:** Quantum Vault  
+**PLATFORM:** Windows Desktop (Tauri 2), Android, Supabase Backend  
+**ARCHITECTURE:** Local-First Hybrid Storage with Optional Zero-Knowledge Cloud Synchronization  
+**SECURITY STANDARD:** Post-Quantum Cryptography (PQC)  
+**IMPLEMENTATION PRIORITY:** Production-Grade Security, Reliability, Data Integrity, and Cross-Platform Compatibility
+
+---
+
+# 1. PROJECT OBJECTIVE
+
+I want you to design, implement, and fully integrate a new major feature called **Quantum Vault** into my existing Qguard Messaging application.
+
+Quantum Vault will serve as a private, encrypted digital storage platform where users can securely store, organize, preview, download, back up, synchronize, and share their personal files.
+
+Supported content must include:
+
+- Pictures and photographs: JPG, JPEG, PNG, WEBP, HEIC.
+- Documents: PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, TXT, CSV.
+- Videos: MP4, MOV, AVI, MKV, WEBM.
+- Audio: MP3, WAV, AAC, FLAC.
+- Archives: ZIP, 7Z, RAR.
+- Other configurable file types.
+
+The implementation must support:
+
+1. Local encrypted storage.
+2. Optional encrypted cloud backup.
+3. Cross-device synchronization.
+4. Quantum-resistant cryptographic key protection.
+5. Secure file sharing between authorized Qguard Messaging users.
+6. Subscription-based storage quotas.
+7. Secure file previews and downloads.
+8. Recovery and device migration.
+9. File integrity verification.
+10. Enterprise-quality security auditing.
+
+**IMPORTANT:** This must be a real implementation, not a UI-only prototype.
+
+Do not use mock data, simulated uploads, fake encryption statuses, hardcoded storage usage, or fabricated synchronization events.
+
+All displayed information must come from actual application state, Rust services, backend responses, or persisted records.
+
+# 2. FIRST: CONDUCT A COMPLETE REPOSITORY AUDIT
+
+Before modifying anything, inspect the existing Qguard Messaging repository.
+
+Pay particular attention to:
+
+- `qguard-messaging/src-tauri`
+- Existing Rust cryptographic modules.
+- Existing AES-256-GCM implementation.
+- Existing ML-KEM-1024 implementation.
+- Existing SHA3-256 and HKDF implementation.
+- Existing local Quantum Vault.
+- Existing recovery key and recovery question functionality.
+- Existing Secure Chat encryption architecture.
+- Existing Android application.
+- Existing Supabase authentication.
+- Existing Supabase database schema.
+- Existing Supabase Storage configuration.
+- Existing subscription and billing system.
+- Existing device registration and authentication.
+- Existing desktop and Android login flows.
+
+Determine exactly how the current local-only Quantum Vault operates.
+
+Preserve working functionality and avoid unnecessary rewrites.
+
+Identify reusable encryption, recovery, storage, authentication, and database components.
+
+Do not create duplicate cryptographic engines, authentication systems, subscription systems, or competing vault implementations.
+
+Produce an implementation plan identifying:
+- Existing reusable modules.
+- Missing functionality.
+- Required database migrations.
+- Required Rust modules.
+- Required frontend components.
+- Required Android integration.
+- Required backend APIs.
+- Security risks and dependencies.
+
+After the audit, proceed with implementation rather than stopping at a report.
+
+# 3. QUANTUM VAULT USER INTERFACE
+
+Create a dedicated Quantum Vault section in the existing Qguard Messaging navigation.
+
+Recommended navigation:
+
+Quantum Vault
+- Overview
+- My Files
+- Photos & Videos
+- Documents
+- Audio & Media
+- Secure Folders
+- Shared Files
+- Recent Activity
+- Trash / Recovery
+- Backup & Synchronization
+- Security Settings
+
+The interface must match Qguard Messaging's existing branding and design language.
+
+Design requirements:
+
+- Premium enterprise-grade UI.
+- Modern glassmorphism used selectively.
+- Metallic and subtle quantum-inspired visual elements.
+- Professional light and dark themes consistent with the application.
+- Smooth transitions and responsive layouts.
+- Clear loading, upload, encryption, synchronization, and error states.
+- Accessible controls and keyboard navigation.
+- Desktop and Android responsive layouts.
+
+## Overview Dashboard
+
+Display actual information:
+
+- Total local storage used.
+- Total cloud storage used.
+- Available cloud capacity.
+- Number of encrypted files.
+- Number of photos and videos.
+- Number of documents.
+- Number of shared files.
+- Last successful backup.
+- Synchronization status.
+- Encryption status.
+- Registered devices.
+- Recent vault activity.
+
+All metrics must be derived from real persisted records and actual storage accounting.
+
+## My Files
+
+Implement a fully functional file manager.
+
+Requirements:
+
+- Grid and list views.
+- Drag-and-drop uploads.
+- Multi-file uploads.
+- Folder creation.
+- Nested folders.
+- Rename.
+- Move.
+- Copy where appropriate.
+- Download.
+- Secure delete.
+- Restore from trash where supported.
+- Search.
+- Sorting.
+- Filtering.
+- File properties.
+- File size and date information.
+- Upload progress.
+- Encryption progress.
+- Cloud synchronization progress.
+
+Support large files without loading their entire contents into memory.
+
+## Photos & Videos
+
+Implement:
+
+- Secure image gallery.
+- Thumbnail generation.
+- Video previews.
+- Album organization.
+- Full-screen viewing.
+- Video playback.
+- Download.
+- File details.
+- Search and filtering.
+
+Generate thumbnails locally.
+
+Thumbnails and previews must also be encrypted before persistent storage or cloud upload.
+
+Temporary plaintext media should exist only for the duration required for viewing and should be cleaned up as securely as the operating system permits.
+
+## Documents
+
+Implement:
+
+- PDF preview.
+- Image document preview.
+- Office document handling through safe local rendering or supported viewers.
+- Secure downloads.
+- Document organization.
+- Search and filtering.
+
+Do not expose unencrypted document contents to external cloud preview services.
+
+# 4. HYBRID STORAGE ARCHITECTURE
+
+Implement two independently functioning storage layers.
+
+## A. Local Quantum Vault
+
+Local storage must be the default.
+
+Requirements:
+
+- Store encrypted files on the user's device.
+- Encrypt before writing persistent file contents.
+- Support offline access.
+- Maintain encrypted metadata.
+- Support local file management.
+- Support local recovery.
+- Detect missing or corrupted files.
+- Verify file integrity.
+- Maintain persistent synchronization states.
+
+For desktop, use the existing Tauri 2 and Rust architecture.
+
+For Android, integrate with the existing Android application and platform-secure storage mechanisms.
+
+Do not expose private encryption keys to frontend JavaScript.
+
+## B. Quantum Cloud Vault
+
+Implement optional cloud backup and synchronization using the existing Supabase infrastructure.
+
+Use:
+
+- Supabase Auth.
+- PostgreSQL.
+- Supabase Storage.
+- Row Level Security.
+- Storage access policies.
+- Existing subscription entitlements.
+
+Create a private storage bucket dedicated to Quantum Vault encrypted objects.
+
+Only ciphertext may be uploaded.
+
+Never upload:
+- Plaintext files.
+- Plaintext encryption keys.
+- Plaintext private keys.
+- Unencrypted thumbnails.
+- Sensitive filenames or descriptions.
+- Unencrypted recovery material.
+
+Encrypt sensitive metadata client-side.
+
+The backend must only receive the minimum information needed for account ownership, authorization, quota enforcement, synchronization, and object management.
+
+Cloud storage must never become a plaintext processing environment.
+
+## C. Synchronization Engine
+
+Implement a persistent synchronization queue.
+
+Support:
+
+- Upload.
+- Download.
+- Resume interrupted transfers.
+- Retry failed operations.
+- Duplicate detection.
+- Conflict detection.
+- Cross-device synchronization.
+- File version tracking.
+- Deletion synchronization.
+- Background synchronization where supported.
+
+Use idempotent operations and durable job states.
+
+Never mark a file as synchronized before the uploaded object has been verified and its database state has been committed.
+
+Handle:
+- Network interruptions.
+- Application termination.
+- Device restarts.
+- Partial uploads.
+- Duplicate requests.
+- Concurrent modifications.
+- Expired authentication sessions.
+- Cloud quota exhaustion.
+
+Do not silently overwrite newer files.
+
+Implement explicit conflict resolution.
+
+# 5. POST-QUANTUM CRYPTOGRAPHIC ENGINE
+
+Use the existing Rust cryptographic infrastructure wherever possible.
+
+Required algorithms:
+
+- AES-256-GCM for file encryption.
+- ML-KEM-1024 for post-quantum key encapsulation.
+- HKDF-SHA3-256 for key derivation.
+- SHA3-256 for integrity-related hashing.
+- OS-backed cryptographically secure random number generation.
+
+Do not confuse ML-KEM with a digital signature algorithm.
+
+Do not use ML-KEM to directly encrypt large files.
+
+## A. Data Encryption Keys
+
+Generate a unique random 256-bit Data Encryption Key (DEK) for each file.
+
+Use that DEK to encrypt the file.
+
+Implement a separate key-envelope mechanism to protect the DEK.
+
+## B. ML-KEM Key Protection
+
+For each authorized owner or recipient:
+
+1. Obtain an authenticated ML-KEM-1024 public key.
+2. Validate its association with the authorized user and device.
+3. Perform ML-KEM encapsulation.
+4. Derive a key-encryption key through HKDF-SHA3-256.
+5. Wrap the file DEK using AES-256-GCM.
+6. Persist the resulting ciphertext envelope and required non-secret metadata.
+
+Each recipient must have an independently protected DEK envelope.
+
+The sender must not distribute their private keys.
+
+Use cryptographically authenticated public-key registration and key versioning.
+
+## C. Chunk-Based Encryption
+
+Implement authenticated chunk-based file encryption.
+
+Requirements:
+
+- Support large videos and documents.
+- Avoid loading entire files into memory.
+- Generate unique nonces for every encryption operation.
+- Never reuse an AES-GCM nonce with the same key.
+- Authenticate file ID, version, chunk index, and relevant metadata through AAD.
+- Detect missing, reordered, duplicated, or modified chunks.
+- Verify authentication before releasing decrypted content.
+- Implement a documented chunk format and versioning strategy.
+
+Consider crash-safe file encryption and partial-write recovery.
+
+## D. Key Management
+
+Implement:
+
+- Owner key management.
+- Device-specific keypairs.
+- Public-key registration.
+- Private-key protection.
+- Key versioning.
+- Key rotation.
+- Key backup.
+- Recovery.
+- Device revocation.
+- Secure device enrollment.
+
+Protect private keys using Windows DPAPI/Credential Manager or Windows CNG as appropriate, and Android Keystore where supported.
+
+Where hardware-backed protection is unavailable, use a clearly documented fallback with appropriate security controls.
+
+Do not store private keys in plaintext SQLite, local storage, frontend state, or Supabase.
+
+# 6. MULTI-DEVICE ENROLLMENT AND RECOVERY
+
+Users must be able to access their Quantum Vault across authorized desktop and Android devices.
+
+Account authentication must not automatically decrypt the vault.
+
+Implement explicit device authorization.
+
+New-device workflow:
+
+1. User signs into Qguard Messaging.
+2. New device is registered.
+3. User authorizes the device through an existing trusted device or recovery mechanism.
+4. The new device generates or receives its own cryptographic identity securely.
+5. Vault access is provisioned through authenticated key envelopes.
+6. Device registration and authorization events are recorded.
+
+Implement secure recovery using the existing recovery architecture where possible.
+
+Recovery must support:
+
+- Recovery key generation.
+- Secure recovery-key protection.
+- Encrypted backup.
+- Recovery verification.
+- Device replacement.
+- Revocation of lost devices.
+
+A recovery secret must never be stored in plaintext on the server.
+
+Design the recovery flow so that cloud account administrators cannot decrypt customer files.
+
+Test recovery independently from normal device synchronization.
+
+# 7. SECURE FILE SHARING
+
+Create a complete recipient-based encrypted file-sharing system.
+
+Users must be able to share selected files with other authenticated Qguard Messaging users.
+
+Implement:
+
+- Search/select recipients.
+- Recipient verification.
+- Share invitations.
+- Accept/reject invitations.
+- Recipient-specific encrypted key envelopes.
+- Read-only access.
+- Download permissions.
+- Optional expiration.
+- Revocation.
+- Access history.
+- Share status.
+- Notification integration.
+
+## Sharing encryption workflow
+
+1. Sender selects a file.
+2. Application verifies the recipient's authenticated public-key identity.
+3. Sender's application obtains the encrypted file's DEK through the authorized local key.
+4. Sender encapsulates a new ML-KEM-1024 shared secret to the recipient's public key.
+5. HKDF derives a recipient-specific key-encryption key.
+6. Sender wraps the DEK into a recipient-specific envelope.
+7. Backend stores the encrypted envelope and share authorization metadata.
+8. Recipient authenticates.
+9. Recipient retrieves the encrypted file and their envelope.
+10. Recipient's device decapsulates the shared secret using its private key.
+11. Recipient derives the key-encryption key and unwraps the DEK.
+12. Application decrypts and verifies the file.
+
+Do not duplicate the entire encrypted file for each recipient.
+
+## Sharing Security
+
+Implement:
+
+- Public-key authenticity verification.
+- Device identity validation.
+- Recipient authorization.
+- Revocation.
+- Replay protection.
+- Expiration enforcement.
+- Audit logging.
+- Protection against unauthorized envelope substitution.
+
+Important: revocation prevents future authorized retrieval, but cannot guarantee deletion of plaintext or keys already downloaded by a recipient.
+
+Clearly communicate this limitation to users.
+
+# 8. SUBSCRIPTION-BASED STORAGE MANAGEMENT
+
+Integrate Quantum Vault with the existing Qguard Messaging subscription and billing system.
+
+Proposed cloud storage tiers:
+
+| Plan | Cloud quota |
+|---|---:|
+| Starter | Local storage only |
+| Basic | 2 GB |
+| Pro | 10 GB |
+| Elite | 100 GB |
+
+Treat these as configurable proposed limits, not hardcoded plan assumptions.
+
+Implement backend-controlled entitlements.
+
+Requirements:
+
+- Check subscription status.
+- Check cloud storage quota.
+- Calculate actual storage consumption.
+- Reserve capacity for pending uploads.
+- Prevent quota bypass.
+- Handle subscription upgrades.
+- Handle downgrades.
+- Handle expiration.
+- Provide storage usage history.
+- Display available and consumed capacity.
+
+When a subscription expires:
+
+- Do not automatically delete user data.
+- Stop new cloud uploads if the entitlement no longer allows them.
+- Preserve existing data.
+- Allow permitted downloads and recovery.
+- Provide a configurable grace period.
+- Clearly explain the account's storage status.
+
+Local storage must remain separate from cloud storage quotas.
+
+# 9. SUPABASE DATABASE AND BACKEND IMPLEMENTATION
+
+Inspect existing database conventions and create migrations compatible with the current application.
+
+Proposed tables:
+
+- qv_vaults
+- qv_files
+- qv_folders
+- qv_devices
+- qv_device_keys
+- qv_key_envelopes
+- qv_shares
+- qv_share_recipients
+- qv_recovery
+- qv_sync_jobs
+- qv_audit_events
+- qv_storage_usage
+
+Adapt names if existing conventions require it.
+
+Implement:
+
+- Appropriate primary and foreign keys.
+- Indexes.
+- Ownership constraints.
+- RLS policies.
+- Storage policies.
+- Transaction-safe operations.
+- Referential integrity.
+- Migration rollback considerations.
+- Audit timestamps.
+- Key and object versioning.
+
+Every database operation must validate the authenticated user.
+
+Never trust user IDs, storage quotas, or authorization claims supplied by the frontend.
+
+Use the existing authenticated Supabase user JWT in backend operations where required by RLS.
+
+Do not use the service-role key in frontend code.
+
+Implement API endpoints using the existing active Express API architecture.
+
+Avoid implementing a duplicate or inactive legacy API route system.
+
+Suggested API operations:
+
+- Create vault.
+- Get vault status.
+- List files.
+- Upload encrypted file.
+- Download encrypted file.
+- Create folder.
+- Rename file.
+- Move file.
+- Delete file.
+- Restore file.
+- Create share.
+- Accept share.
+- Revoke share.
+- Register device.
+- Revoke device.
+- Start synchronization.
+- Get synchronization status.
+- Get storage usage.
+- Verify file integrity.
+
+All operations must have input validation, authorization, error handling, and appropriate audit events.
+
+# 10. FILE SECURITY AND MALWARE PROTECTION
+
+Implement secure file handling.
+
+Requirements:
+
+- Validate actual file contents where possible.
+- Do not trust extensions or MIME types.
+- Enforce configurable maximum file sizes.
+- Prevent path traversal.
+- Prevent malicious filenames.
+- Protect against decompression bombs.
+- Safely handle archives.
+- Avoid executing uploaded content.
+- Use isolated preview/rendering mechanisms.
+- Clean up temporary decrypted files.
+- Apply least-privilege file permissions.
+
+If malware scanning is added, make it an optional security layer that does not require exposing plaintext files to external services.
+
+Do not claim a file is malware-free simply because it was encrypted.
+
+# 11. AUDIT LOGGING AND SECURITY MONITORING
+
+Implement real persisted security events.
+
+Track:
+
+- Vault creation.
+- Vault unlock.
+- File encryption.
+- File decryption.
+- File upload.
+- File download.
+- Backup completion.
+- Synchronization completion.
+- Sharing invitations.
+- Sharing acceptance.
+- Sharing revocation.
+- Device registration.
+- Device revocation.
+- Recovery attempts.
+- Failed authentication.
+- Integrity verification failures.
+- Quota violations.
+
+Never log:
+- Plaintext files.
+- Encryption keys.
+- Private keys.
+- Recovery secrets.
+- Sensitive decrypted metadata.
+
+Provide a user-friendly security activity interface.
+
+Use real backend and application events, not simulated event generators.
+
+# 12. FRONTEND AND BACKEND INTEGRATION
+
+Review every new Quantum Vault frontend component.
+
+Verify:
+
+- Hooks are connected to real backend services.
+- State is persisted.
+- Upload progress reflects actual transfer progress.
+- Encryption progress reflects actual Rust operations.
+- Cloud synchronization reflects actual job status.
+- Storage metrics match backend accounting.
+- Sharing status matches persisted authorization records.
+- Errors are handled correctly.
+- Loading states are accurate.
+- Offline status is accurate.
+- Desktop and Android data remain consistent.
+
+Use the application's existing event architecture, Tauri commands, Rust services, and SSE/WebSocket infrastructure where appropriate.
+
+Do not introduce unnecessary polling or duplicate event systems.
+
+Do not display successful operations until the underlying operation has actually completed and been verified.
+
+# 13. PERFORMANCE AND RELIABILITY
+
+Optimize for:
+
+- Large videos.
+- Large documents.
+- Bulk uploads.
+- Limited-memory Android devices.
+- Interrupted network connections.
+- Background synchronization.
+- Concurrent file operations.
+- Large file collections.
+
+Implement:
+
+- Streaming encryption.
+- Bounded-memory processing.
+- Configurable upload concurrency.
+- Chunk retries.
+- Persistent job queues.
+- Atomic file replacement.
+- Crash recovery.
+- Database transaction safety.
+- Cancellation support.
+- Resource cleanup.
+
+Never compromise cryptographic nonce uniqueness or authentication to improve performance.
+
+# 14. TESTING REQUIREMENTS
+
+Create comprehensive automated tests.
+
+## Cryptographic tests
+
+- AES-256-GCM encryption/decryption.
+- ML-KEM-1024 encapsulation/decapsulation.
+- HKDF-SHA3-256 derivation.
+- DEK wrapping and unwrapping.
+- Invalid ciphertext rejection.
+- Authentication-tag failure.
+- Tampered chunk detection.
+- Nonce uniqueness.
+- Key version compatibility.
+- Recovery testing.
+
+## Storage tests
+
+- Local upload.
+- Cloud upload.
+- Local download.
+- Cloud download.
+- Offline file access.
+- Interrupted uploads.
+- Resumed uploads.
+- Duplicate uploads.
+- File deletion.
+- File restoration.
+- Storage quota enforcement.
+- Cross-device synchronization.
+
+## Sharing tests
+
+- Valid recipient.
+- Invalid recipient.
+- Unauthorized recipient.
+- Multiple recipients.
+- Revoked recipient.
+- Expired share.
+- Invalid envelope.
+- Device revocation.
+- Public-key substitution.
+- Unauthorized download.
+
+## Subscription tests
+
+- Starter restrictions.
+- Basic quota.
+- Pro quota.
+- Elite quota.
+- Upgrade.
+- Downgrade.
+- Expired subscription.
+- Quota exceeded.
+- Existing files after expiration.
+
+## Cross-platform tests
+
+- Windows desktop.
+- Android physical device.
+- Desktop-to-Android synchronization.
+- Android-to-desktop synchronization.
+- Device enrollment.
+- Device revocation.
+- Recovery on a new device.
+
+Never use fabricated successful test results.
+
+Clearly distinguish automated tests, integration tests, physical-device tests, and tests that remain pending.
+
+# 15. USER EXPERIENCE AND SECURITY MESSAGING
+
+Use clear status labels:
+
+- Encrypted Locally.
+- Cloud Backup Enabled.
+- Synchronization Pending.
+- Synchronization Complete.
+- Offline Available.
+- Integrity Verified.
+- Sharing Active.
+- Sharing Revoked.
+- Recovery Protected.
+- Storage Limit Reached.
+
+Only show these statuses when supported by actual application state.
+
+Provide clear explanations of:
+- Local versus cloud storage.
+- Encryption and key protection.
+- Device authorization.
+- File-sharing permissions.
+- Recovery limitations.
+- Subscription storage limits.
+
+# 16. IMPLEMENTATION RULES
+
+These requirements are mandatory.
+
+1. Do not break existing Qguard Messaging functionality.
+2. Preserve existing Secure Chat functionality.
+3. Preserve existing local Quantum Vault data.
+4. Do not silently migrate or delete existing user files.
+5. Do not create duplicate authentication systems.
+6. Do not create duplicate subscription systems.
+7. Do not hardcode storage quotas in the frontend.
+8. Do not use mock telemetry or fake file records.
+9. Do not expose private keys to frontend JavaScript.
+10. Do not upload plaintext files.
+11. Do not store plaintext recovery secrets.
+12. Do not trust frontend quota or authorization checks.
+13. Do not bypass Supabase RLS.
+14. Do not silently downgrade cryptographic algorithms.
+15. Do not claim quantum resistance without verifying the actual cryptographic implementation.
+16. Do not replace working modules without a documented reason.
+17. Maintain backward compatibility with existing vault data.
+18. Use secure database migrations.
+19. Maintain proper error handling and structured logging.
+20. Do not mark incomplete functionality as production-ready.
+
+If a required capability is unsupported by the existing implementation, identify the missing dependency and implement or document the appropriate solution rather than simulating functionality.
+
+# 17. DEVELOPMENT EXECUTION WORKFLOW
+
+Execute the implementation in controlled phases.
+
+**PHASE 1 — Repository Audit**
+- Inspect current architecture.
+- Map existing encryption modules.
+- Review local vault implementation.
+- Review Supabase schemas and RLS.
+- Review Android and desktop integration.
+- Produce a technical implementation plan.
+
+**PHASE 2 — Architecture and Database**
+- Create database migrations.
+- Implement RLS.
+- Create private cloud storage.
+- Implement API endpoints.
+- Implement storage entitlement enforcement.
+
+**PHASE 3 — Cryptographic Engine**
+- Implement or reuse Rust encryption services.
+- Implement chunked encryption.
+- Implement ML-KEM key envelopes.
+- Implement key management.
+- Implement secure metadata encryption.
+
+**PHASE 4 — Local Vault**
+- Integrate local storage.
+- Implement file management.
+- Implement media/document support.
+- Implement previews and downloads.
+
+**PHASE 5 — Cloud Integration**
+- Implement encrypted uploads.
+- Implement encrypted downloads.
+- Implement backup.
+- Implement synchronization.
+- Implement conflict handling.
+
+**PHASE 6 — Secure Sharing**
+- Implement recipient verification.
+- Implement recipient-specific envelopes.
+- Implement invitations.
+- Implement permissions.
+- Implement revocation.
+
+**PHASE 7 — Android and Multi-Device**
+- Integrate Android.
+- Implement device enrollment.
+- Implement key provisioning.
+- Implement synchronization.
+- Test physical-device workflows.
+
+**PHASE 8 — Recovery and Subscription**
+- Integrate recovery.
+- Implement subscription entitlements.
+- Implement storage quotas.
+- Implement expiration and downgrade policies.
+
+**PHASE 9 — UI and Experience**
+- Complete all dashboard pages.
+- Connect frontend components to real APIs.
+- Implement real progress and activity tracking.
+- Verify light and dark themes.
+
+**PHASE 10 — Verification**
+- Run Rust tests.
+- Run frontend tests.
+- Run backend integration tests.
+- Run cryptographic tests.
+- Run security checks.
+- Run desktop builds.
+- Run Android builds.
+- Validate database migrations.
+- Perform end-to-end testing.
+
+# 18. REQUIRED DELIVERABLES
+
+At completion, provide:
+
+1. Complete repository audit report.
+2. Implemented architecture.
+3. List of created and modified files.
+4. Rust encryption modules.
+5. Database migrations.
+6. Supabase RLS and Storage policies.
+7. Backend API implementation.
+8. Frontend Quantum Vault interface.
+9. Android integration.
+10. Cloud synchronization engine.
+11. Secure file-sharing implementation.
+12. Recovery implementation.
+13. Subscription quota integration.
+14. Automated tests.
+15. Security verification report.
+16. Build and deployment instructions.
+17. Known limitations and remaining tasks.
+
+Include a feature verification matrix:
+
+| Feature | Implementation | Tests | Status |
+|---|---|---|---|
+| Local encrypted storage | Evidence | Test results | Actual status |
+| AES-256-GCM | Evidence | Test results | Actual status |
+| ML-KEM-1024 | Evidence | Test results | Actual status |
+| Cloud backup | Evidence | Test results | Actual status |
+| Synchronization | Evidence | Test results | Actual status |
+| Secure sharing | Evidence | Test results | Actual status |
+| Device enrollment | Evidence | Test results | Actual status |
+| Recovery | Evidence | Test results | Actual status |
+| Storage quotas | Evidence | Test results | Actual status |
+| Android integration | Evidence | Test results | Actual status |
+
+Use accurate statuses:
+- Completed
+- Partially Implemented
+- Pending
+- Blocked
+- Failed
+
+Never mark a feature completed solely because its UI exists.
+
+---
+
+# FINAL ACCEPTANCE CRITERIA
+
+The Quantum Vault will only be considered ready when:
+
+- Users can store pictures, documents, videos, audio, and other supported files.
+- Files are encrypted before persistent storage.
+- Local vault operations work offline.
+- Optional cloud backup stores ciphertext only.
+- Cross-device synchronization works with authorized devices.
+- ML-KEM-1024 is genuinely integrated into DEK protection.
+- Secure sharing works using recipient-specific key envelopes.
+- Revocation prevents future authorized access.
+- Storage quotas are enforced by the backend.
+- Recovery works and is independently tested.
+- Desktop and Android functionality is validated.
+- Existing Qguard Messaging functionality remains operational.
+- No critical security vulnerabilities remain unresolved.
+- All claimed functionality has verifiable implementation and test evidence.
+
+**FINAL INSTRUCTION:**
+
+Work directly within the existing Qguard Messaging repository.
+
+Prioritize security, data integrity, architectural consistency, and production reliability over implementation speed.
+
+Build this as a genuine production-grade subsystem of Qguard Messaging, not a standalone prototype or visual demonstration.
+
+If you encounter architectural conflicts, inspect the existing implementation, explain the conflict, and choose the safest backward-compatible solution.
+
+Do not stop after creating the UI or writing a technical plan. Implement, integrate, test, verify, and document every feasible component.
+
+**QGUARD MESSAGING — QUANTUM VAULT**
+
+*Your Messages. Your Files. Your Privacy. Protected for the Quantum Era.*
+
+**Securing the Present. Preparing the Quantum Future!**

@@ -5,6 +5,7 @@ import { isInternetFacing } from '@/lib/migration/asset-intelligence'
 import { buildScannerIntelligence } from './scanner'
 import { evaluateEligibility, gatherEvidence, loadPolicy, type EvidenceBundle } from './quantum-certification'
 import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
+import { isDeterministicReadGap, SnapshotReadError } from './quantum-readiness'
 import type { CertificationPolicy, EligibilityResult } from '@/types/quantum-certification'
 import type {
   AdvisorAnswer,
@@ -85,17 +86,20 @@ function round1(value: number): number {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function safeRows(client: any, table: string, build: (query: any) => any): Promise<Record<string, unknown>[]> {
+  // A deterministic gap reads as "no rows"; a transient failure fails the
+  // build (see SnapshotReadError) rather than planning without a table.
+  let result: { data: unknown; error: { message?: string } | null }
   try {
-    const { data, error } = await build(client.from(table))
-    if (error) {
-      console.warn(`quantum-remediation ${table} query skipped:`, error.message || error)
-      return []
-    }
-    return (data as Record<string, unknown>[]) || []
+    result = await build(client.from(table))
   } catch (error) {
-    console.warn(`quantum-remediation ${table} query failed:`, (error as Error)?.message || error)
+    throw new SnapshotReadError(table, error)
+  }
+  if (result.error) {
+    if (!isDeterministicReadGap(result.error)) throw new SnapshotReadError(table, result.error)
+    console.warn(`quantum-remediation ${table} query skipped:`, result.error.message || result.error)
     return []
   }
+  return (result.data as Record<string, unknown>[]) || []
 }
 
 /* ------------------------------------------------------------------ */

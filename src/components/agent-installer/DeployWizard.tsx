@@ -42,6 +42,7 @@ import {
 } from '@/hooks/use-agent-installer';
 import { agentRolePlanCopy, useAgentEntitlement } from '@/hooks/use-agent-entitlement';
 import { CopyButton, StatusChip, fmtBytes, relTime } from './primitives';
+import { installationAttention } from '@/lib/agent-installer/installation-status';
 import {
   AppliedConfigurationCheck,
   ModuleScopeGrid,
@@ -596,8 +597,8 @@ export function DeployWizard({
                 label="Assigned asset"
                 hint={
                   installer.assets.length === 0
-                    ? 'No assets in your inventory yet. The agent will be created unassigned and its findings will create assets as it discovers them.'
-                    : "Binds this agent's findings to one of your own assets. Only assets in your tenant are listed, and the binding is re-verified server-side."
+                    ? 'The agent will use one device profile for its machine. Its certificates, components and findings will appear inside that profile.'
+                    : "Binds this agent's findings to one of your own assets. Adding a role to a machine that already reports? Select that machine's asset so it stays one device — left unlinked, this agent creates a second profile for the same host. Only your tenant's assets are listed, and the binding is re-verified server-side."
                 }
               >
                 <select
@@ -711,6 +712,20 @@ export function DeployWizard({
 
             {roleDefinition.mutatesTargets ? (
               <div className="space-y-3">
+                {!assetId ? (
+                  <div role="note" className="flex items-start gap-3 rounded-xl border border-amber-400/25 bg-amber-400/[0.05] p-4">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                    <span className="text-[11px] leading-relaxed text-amber-100/75">
+                      <span className="block text-sm font-bold text-amber-100">No assigned asset</span>
+                      A {roleDefinition.label} only executes jobs for the asset it is assigned to — a matching file path
+                      alone cannot prove which machine a job is for. Without an assignment it gets its own device profile and
+                      will decline jobs raised from your other agents' findings on this host.
+                      {installer.assets.length > 0
+                        ? ' Select the asset your Collector or Scanner reports into above (usually this host\'s device profile).'
+                        : ' Once a Collector or Scanner reports from this host, assign this agent to that asset in the Agent Center.'}
+                    </span>
+                  </div>
+                ) : null}
                 <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-amber-400/25 bg-amber-400/[0.05] p-4">
                   <input
                     type="checkbox"
@@ -1138,6 +1153,7 @@ function VerifyPanel({
   onOpenAgent: (agentId: string) => void;
 }) {
   const [activity, setActivity] = useState<Array<{ id: string; at: string; status: string; phase: string | null; message: string | null }>>([]);
+  const [checkedAt, setCheckedAt] = useState(Date.now);
 
   /* Depends on the loader, never on `installer` itself: the hook returns a new
      object every render and every load toggles its `busy` state, so an effect
@@ -1147,9 +1163,19 @@ function VerifyPanel({
   useEffect(() => {
     if (!agentId) return;
     let cancelled = false;
+    let loading = false;
     const load = async () => {
-      const result = await loadActivity(agentId);
-      if (!cancelled && result.ok && result.data) setActivity(result.data.activity);
+      if (loading) return;
+      loading = true;
+      try {
+        const result = await loadActivity(agentId);
+        if (!cancelled) {
+          setCheckedAt(Date.now());
+          if (result.ok && result.data) setActivity(result.data.activity);
+        }
+      } finally {
+        loading = false;
+      }
     };
     void load();
     const timer = setInterval(() => void load(), 5000);
@@ -1173,6 +1199,7 @@ function VerifyPanel({
   }, [activity, createdAgent]);
 
   const connection = createdAgent?.connectionState || 'Waiting';
+  const attention = installationAttention(activity, connection === 'Connected', checkedAt);
   const scan = agentId ? installer.scanProgress[agentId] : undefined;
 
   return (
@@ -1183,7 +1210,11 @@ function VerifyPanel({
             <div className="text-sm font-black text-white">{createdAgent?.name || 'Agent'}</div>
             <div className="mt-0.5 font-mono text-[11px] text-white/40">{agentId}</div>
           </div>
-          <StatusChip state={connection} />
+          {attention ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/30 bg-amber-400/10 px-2.5 py-0.5 text-[11px] font-bold text-amber-200">
+              <AlertTriangle className="h-3.5 w-3.5" />{attention.kind === 'failed' ? 'Verification failed' : 'Needs attention'}
+            </span>
+          ) : <StatusChip state={connection} />}
         </div>
 
         <ol className="mt-4 space-y-1.5">
@@ -1203,9 +1234,8 @@ function VerifyPanel({
         </ol>
 
         {connection !== 'Connected' ? (
-          <p className="mt-4 rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-[11px] leading-relaxed text-white/50">
-            Waiting for the first heartbeat. Run the installer on the target host — it reports each phase here as it goes. This
-            panel updates live; nothing needs to be refreshed.
+          <p role={attention ? 'alert' : 'status'} className={`mt-4 rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${attention ? 'border-amber-400/25 bg-amber-400/5 text-amber-100' : 'border-white/10 bg-black/30 text-white/50'}`}>
+            {attention?.message || 'Waiting for the first heartbeat. Run the installer on the target host. This panel updates automatically as installation and connection events arrive.'}
           </p>
         ) : null}
       </div>
@@ -1242,7 +1272,8 @@ function VerifyPanel({
         <span className="text-[11px] text-white/40">
           {connection === 'Connected'
             ? 'The agent is connected. Run its first scan from the agent detail view.'
-            : 'You can close this wizard — installation continues and the agent appears in the table below.'}
+            : attention ? 'Connection has not been verified. Follow the diagnostics above; you can reopen this agent from the table.'
+            : 'You can close this wizard and reopen the agent from the table to check its connection.'}
         </span>
         {agentId ? (
           <button

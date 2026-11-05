@@ -9,6 +9,7 @@ import {
   LockKeyhole,
   LogOut,
   MessageSquare,
+  Phone,
   MonitorSmartphone,
   Moon,
   QrCode,
@@ -25,6 +26,7 @@ import { APP_VERSION } from "@/lib/app-update";
 const iconMap = {
   dashboard: LayoutDashboard,
   chat: MessageSquare,
+  calls: Phone,
   vault: LockKeyhole,
   keys: KeyRound,
   devices: MonitorSmartphone,
@@ -53,16 +55,17 @@ const PRIMARY_TABS: { route: Page; label: string }[] = [
 const PAGE_KICKER: Record<string, string> = {
   dashboard: "Overview · Hybrid E2EE",
   chat: "End-to-end encrypted · ML-KEM + X25519",
-  vault: "Local-first · On this device only",
+  calls: "Voice & video · Quantum-encrypted",
   keys: "Identity · Prekeys · Rotation",
   devices: "Trust state per device",
   verification: "Safety numbers · Fingerprints",
   audit: "Tamper-evident local events",
-  quantum: "Post-quantum posture",
   admin: "Organisation security posture",
   subscription: "Plan · Billing · Activation",
-  settings: "Security · Alerts · Retention",
 };
+
+/** Pages named in the masthead itself, with no separate page head. */
+const TITLE_IN_MASTHEAD = new Set<Page>(["vault", "quantum", "settings"]);
 
 /** Compact realtime readout. Wording matches liveStatusLabel's meaning. */
 function liveTone(state: QGuardLiveStatus["state"]): { label: string; className: string } {
@@ -83,6 +86,8 @@ interface MobileShellProps {
   title: string;
   modules: MessagingModule[];
   unreadMessages: number;
+  /** Files shared with this account waiting for Accept / Decline (Vault tab badge). */
+  sharedFilesWaiting?: number;
   liveStatus: QGuardLiveStatus;
   theme: "light" | "dark";
   onToggleTheme: () => void;
@@ -104,6 +109,7 @@ export default function MobileShell({
   title,
   modules,
   unreadMessages,
+  sharedFilesWaiting = 0,
   liveStatus,
   theme,
   onToggleTheme,
@@ -121,6 +127,9 @@ export default function MobileShell({
   const activeIndex = tabs.findIndex((tab) => tab.route === activePage);
   const live = liveTone(liveStatus.state);
   const isChat = activePage === "chat";
+  // Pages whose title replaces the QGUARD wordmark and the page head, so the
+  // name is not repeated (QGUARD / kicker / title) three times over.
+  const titleInMasthead = TITLE_IN_MASTHEAD.has(activePage);
 
   // Close the sheet on hardware/gesture back so it never traps the user.
   useEffect(() => {
@@ -189,6 +198,13 @@ export default function MobileShell({
                 </span>
                 <h1 className="qgm-wordmark truncate">{title}</h1>
               </>
+            ) : titleInMasthead ? (
+              // These pages name themselves in the masthead instead of
+              // repeating "QGUARD" above a separate page head.
+              <>
+                <h1 className="qgm-wordmark truncate">{title}</h1>
+                <span className="qgm-tally" aria-hidden />
+              </>
             ) : (
               <>
                 <span className="qgm-wordmark">QGUARD</span>
@@ -252,8 +268,10 @@ export default function MobileShell({
           )}
         </div>
 
-        {/* ---- Modernist page identity (Android skin only) ---- */}
-        {!isChat && (
+        {/* ---- Modernist page identity (Android skin only) ----
+            Not on the home screen: it opens straight onto its greeting and
+            cards, without an "Overview · Dashboard" heading. */}
+        {!isChat && !titleInMasthead && activePage !== "dashboard" && (
           <div className="qgm-pagehead qgm-only px-5 pb-3.5 pt-2.5">
             <div className="qgm-pagekicker truncate">{PAGE_KICKER[activePage] ?? "Secure workspace"}</div>
             <h1 className="qgm-pagetitle mt-1.5 truncate">{title}</h1>
@@ -366,6 +384,11 @@ export default function MobileShell({
                 <span>{tab.label}</span>
                 {tab.route === "chat" && unreadMessages > 0 && (
                   <span className="qg-badge">{unreadMessages > 99 ? "99+" : unreadMessages}</span>
+                )}
+                {tab.route === "vault" && sharedFilesWaiting > 0 && (
+                  <span className="qg-badge" title={`${sharedFilesWaiting} shared file${sharedFilesWaiting === 1 ? "" : "s"} waiting`}>
+                    {sharedFilesWaiting > 99 ? "99+" : sharedFilesWaiting}
+                  </span>
                 )}
               </button>
             );

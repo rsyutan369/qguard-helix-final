@@ -388,14 +388,22 @@ function useSandbox() {
   const [sseActive, setSseActive] = useState(false)
   const esRef = useRef<EventSource | null>(null)
   const lastGeneratedAtRef = useRef(0)
+  const lastFingerprintRef = useRef<string | null>(null)
+  const userId = user?.id
+  const scopeRef = useRef(userId)
+  scopeRef.current = userId
+  const snapshotInFlight = useRef<{ userId: string; promise: Promise<void> } | null>(null)
 
-  const applySnapshot = useCallback((snapshot?: SandboxSnapshot | null) => {
+  const applySnapshot = useCallback((snapshot?: (SandboxSnapshot & { fingerprint?: string }) | null) => {
     if (snapshot) {
       // Snapshots arrive from three async sources (REST, SSE, action
       // responses); never let an older snapshot overwrite a newer one.
       const generatedMs = Date.parse(String(snapshot.generatedAt || '')) || Date.now()
       if (generatedMs < lastGeneratedAtRef.current) return
+      if (snapshot.fingerprint && snapshot.fingerprint === lastFingerprintRef.current) return
+      if (generatedMs === lastGeneratedAtRef.current) return
       lastGeneratedAtRef.current = generatedMs
+      lastFingerprintRef.current = snapshot.fingerprint || null
       const simulations = Array.isArray(snapshot.simulations) ? snapshot.simulations : []
       setData({
         ...snapshot,
@@ -410,26 +418,43 @@ function useSandbox() {
     setNotice({ kind, message })
   }, [])
 
-  const fetchSnapshot = useCallback(async () => {
-    if (!token) {
+  const fetchSnapshot = useCallback((): Promise<void> => {
+    if (!token || !userId) {
       setLoading(false)
-      return
+      return Promise.resolve()
     }
-    try {
-      const r = await fetch('/api/v1/sandbox/snapshot', { headers: { Authorization: `Bearer ${token}` } })
-      const j = await r.json().catch(() => ({}))
-      if (!r.ok) throw new Error(j?.error?.message || `HTTP ${r.status}`)
-      // A 200 with a missing/truncated body must not wipe the dashboard to the
-      // empty state — keep last-known-good data and surface the error instead.
-      if (!j?.data) throw new Error('Snapshot response was empty or malformed')
-      applySnapshot(j.data)
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Connection failed')
-    } finally {
-      setLoading(false)
-    }
-  }, [token, applySnapshot])
+    if (snapshotInFlight.current?.userId === userId) return snapshotInFlight.current.promise
+    const promise = (async () => {
+      try {
+        const r = await fetch('/api/v1/sandbox/snapshot', { headers: { Authorization: `Bearer ${token}` } })
+        const j = await r.json()
+        if (!r.ok) throw new Error(j?.error?.message || `HTTP ${r.status}`)
+        // A 200 with a missing/truncated body must not wipe the dashboard to the
+        // empty state — keep last-known-good data and surface the error instead.
+        if (!j?.data) throw new Error('Snapshot response was empty or malformed')
+        if (scopeRef.current !== userId) return
+        applySnapshot(j.data)
+        setError(null)
+      } catch (err) {
+        if (scopeRef.current === userId) setError(err instanceof Error ? err.message : 'Connection failed')
+      } finally {
+        if (scopeRef.current === userId) setLoading(false)
+      }
+    })()
+    snapshotInFlight.current = { userId, promise }
+    void promise.finally(() => {
+      if (snapshotInFlight.current?.promise === promise) snapshotInFlight.current = null
+    })
+    return promise
+  }, [token, userId, applySnapshot])
+
+  useEffect(() => {
+    lastGeneratedAtRef.current = 0
+    lastFingerprintRef.current = null
+    setData(EMPTY)
+    setError(null)
+    setLoading(Boolean(userId))
+  }, [userId])
 
   useEffect(() => {
     if (!notice) return
@@ -443,21 +468,30 @@ function useSandbox() {
   // SSE connection
   useEffect(() => {
     if (!token) return
+    let cancelled = false
     let retry: ReturnType<typeof setTimeout> | undefined
     const connect = () => {
+      if (cancelled) return
       const es = new EventSource(`/api/v1/sandbox/stream?token=${encodeURIComponent(token)}`)
       esRef.current = es
-      es.onopen = () => setSseActive(true)
-      es.onerror = () => { setSseActive(false); es.close(); retry = setTimeout(connect, 12000) }
+      es.onopen = () => { if (!cancelled) setSseActive(true) }
+      es.onerror = () => { es.close(); if (cancelled) return; setSseActive(false); if (retry) clearTimeout(retry); retry = setTimeout(connect, 12000) }
       es.addEventListener('sandbox-update', (e) => {
+        if (cancelled) return
         try {
           const d = JSON.parse(e.data)
           applySnapshot(d)
+          setLoading(false)
+          setError(null)
         } catch { /* skip */ }
+      })
+      es.addEventListener('sandbox-update-error', (e) => {
+        if (cancelled) return
+        try { setError(JSON.parse(e.data).message || 'Sandbox update failed') } catch { /* keep last good snapshot */ }
       })
     }
     connect()
-    return () => { if (retry) clearTimeout(retry); esRef.current?.close(); esRef.current = null; setSseActive(false) }
+    return () => { cancelled = true; if (retry) clearTimeout(retry); esRef.current?.close(); esRef.current = null; setSseActive(false) }
   }, [token, applySnapshot])
 
   // Supabase realtime. Refetches are debounced: while a simulation runs, the
@@ -1266,7 +1300,8 @@ export default function MigrationSandbox() {
   }, [])
   const [tab, setTab] = useState<ActiveTab>(() => plannerHandoffPlanId ? 'pipeline' : 'overview')
   // Roadmap handed off from the AI Migration Advisor™ (localStorage payload).
-  const [advisorHandoff, setAdvisorHandoff] = useState<MigrationHandoff | null>(() => readMigrationHandoff())
+  const { user } = useAuth()
+  const [advisorHandoff, setAdvisorHandoff] = useState<MigrationHandoff | null>(() => readMigrationHandoff(user?.id))
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const [logFilter, setLogFilter] = useState('')
   const [historyStatus, setHistoryStatus] = useState('all')
@@ -1591,7 +1626,7 @@ export default function MigrationSandbox() {
               suffix={
                 <div className="flex flex-wrap items-center gap-2">
                   <Pill className="border-violet-400/25 bg-violet-500/10 text-violet-300">confidence {advisorHandoff.confidencePct}%</Pill>
-                  <ActionBtn icon={CheckCircle2} label="Acknowledge" onClick={() => { clearMigrationHandoff(); setAdvisorHandoff(null) }} small />
+                  <ActionBtn icon={CheckCircle2} label="Acknowledge" onClick={() => { clearMigrationHandoff(user?.id); setAdvisorHandoff(null) }} small />
                 </div>
               }
             >

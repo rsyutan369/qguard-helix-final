@@ -16,6 +16,8 @@ path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Compiles wolfCrypt + wolfcrypt/qg_wolfcrypt.c, only with `--features wolfcrypt`.
+cc = { version = "1", optional = true }
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -42,10 +44,12 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 aes-gcm = "0.10"
 argon2 = "0.5"
 hkdf = "0.12"
-# PBKDF2-HMAC-SHA3-256 for reading web-vault v1.1 .qgkey bundles (see
-# crypto::portable_identity). Already in the lockfile as an hkdf dependency.
+# HMAC for the reference backend's PBKDF2 and HMAC-SHA3-256 (crypto::provider).
 hmac = "0.12"
 sha3 = "0.10"
+# SHA-256 / SHA-512 in the reference backend (PBKDF2-HMAC-SHA-512 in FIPS
+# approved mode). Already in the lockfile as an ed25519-dalek dependency.
+sha2 = "0.10"
 # FIPS 203 / FIPS 204 IMPLEMENTATIONS, PORTABLE (`clean`) BUILDS ONLY.
 #
 # `pqcrypto-mlkem` is ML-KEM (FIPS 203). It is NOT interchangeable with the
@@ -97,6 +101,13 @@ default = ["custom-protocol", "pure-rust-pqc"]
 custom-protocol = ["tauri/custom-protocol"]
 pure-rust-pqc = []
 oqs-backend = []
+# Route crypto::provider into wolfCrypt instead of the bundled RustCrypto /
+# dalek / PQClean crates. Needs WOLFSSL_DIR (a wolfSSL source tree) or
+# WOLFSSL_LIB_DIR + WOLFSSL_INCLUDE_DIR (a prebuilt, e.g. FIPS, library); see
+# docs/FIPS_140_3.md. Open-source wolfSSL is GPLv3: do not ship such a build.
+wolfcrypt = ["dep:cc"]
+# FIPS approved mode cannot be switched off (crypto::provider::policy).
+fips-approved-mode = []
 
 [profile.release]
 # Unwind (NOT abort) on panic. The Android build is single-process: the WebView

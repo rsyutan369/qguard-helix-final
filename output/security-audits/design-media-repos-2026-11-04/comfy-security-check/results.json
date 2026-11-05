@@ -1,0 +1,28 @@
+{
+  "checks_passed": 21,
+  "checks": [
+    "normal child contained",
+    "traversal not contained",
+    "prefix sibling not contained",
+    "input annotation resolved",
+    "output annotation resolved",
+    "temp annotation resolved",
+    "rejected escape: ../outside.txt",
+    "rejected escape: ../../outside.txt [output]",
+    "rejected escape: C:\\Users\\ruel3\\Music\\qguard-helix-final\\output\\security-audits\\design-media-repos-2026-11-04\\comfy-security-check\\outside.txt",
+    "existing local file visible",
+    "escaping file treated absent",
+    "dangerous MIME detected: text/html",
+    "dangerous MIME detected: TEXT/HTML; charset=utf-8",
+    "dangerous MIME detected: image/svg+xml",
+    "dangerous MIME detected: text/javascript",
+    "dangerous MIME detected: application/rss+xml",
+    "dangerous MIME detected: text/xml",
+    "raster MIME not marked executable",
+    "SVG inline image context allowed",
+    "SVG document context not allowed",
+    "SVG missing context not allowed"
+  ],
+  "symlink_case": "skipped: [WinError 1314] A required privilege is not held by the client: 'C:\\\\Users\\\\ruel3\\\\Music\\\\qguard-helix-final\\\\output\\\\security-audits\\\\design-media-repos-2026-11-04\\\\comfy-security-check\\\\outside' -> 'C:\\\\Users\\\\ruel3\\\\Music\\\\qguard-helix-final\\\\output\\\\security-audits\\\\design-media-repos-2026-11-04\\\\comfy-security-check\\\\input\\\\outside-link'",
+  "scope": "Original folder_paths module only; no PyTorch, server, models, custom nodes, or inference executed."
+}

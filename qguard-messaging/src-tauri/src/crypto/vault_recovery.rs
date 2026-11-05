@@ -18,7 +18,6 @@
 //! * Zero-knowledge: the root never leaves the user and is never sent to or
 //!   stored on the server.
 
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
@@ -44,9 +43,7 @@ const CHECKSUM_CHARS: usize = 4;
 const KEY_CHARS: usize = BODY_CHARS + CHECKSUM_CHARS;
 
 pub fn generate_recovery_root() -> [u8; RECOVERY_ROOT_SIZE] {
-    let mut root = [0u8; RECOVERY_ROOT_SIZE];
-    rand::rngs::OsRng.fill_bytes(&mut root);
-    root
+    crate::crypto::provider::random_array::<RECOVERY_ROOT_SIZE>()
 }
 
 fn base32_encode(data: &[u8]) -> String {
@@ -351,8 +348,7 @@ fn wrap_kem_with(
         KEM_ENCAPS_INFO,
         combiner,
     )?;
-    let mut salt = [0u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut salt);
+    let salt: [u8; 16] = crate::crypto::provider::random_array();
     let wrap_key = derive_kem_wrap_key(mode, &salt, &shared, recovery_secret);
     shared.zeroize();
     let mut wrap_key = wrap_key?;

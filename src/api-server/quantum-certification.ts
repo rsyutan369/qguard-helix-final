@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { sha3_256 } from '@noble/hashes/sha3.js'
 import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js'
 import { createAuthClient, getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
-import { buildSnapshot } from './quantum-readiness'
+import { buildSnapshot, isDeterministicReadGap, SnapshotReadError } from './quantum-readiness'
 import { buildReportModel } from '@/services/reporting/ReportEvidence'
 import { brandingSchema } from '@/services/reporting/schemas/ReportSchema'
 import type {
@@ -155,18 +155,24 @@ function isCertificateIdConflict(error: unknown): boolean {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function rows(client: any, table: string, build: (q: any) => any, onMissing?: () => void): Promise<Record<string, unknown>[]> {
+  // Evidence read here decides eligibility, and the monitor SUSPENDS an active
+  // certificate on a failed evaluation. A transient read failure read as "no
+  // rows" could fail a criterion and suspend a valid certificate, so it fails
+  // the build instead. Only a deterministic gap (not provisioned / no
+  // permission) reads as empty.
+  let result: { data: unknown; error: { message?: string } | null }
   try {
-    const { data, error } = await build(client.from(table))
-    if (error) {
-      if (isMissingTable(error)) onMissing?.()
-      else console.warn(`quantum-certification ${table} query skipped:`, error.message || error)
-      return []
-    }
-    return (data as Record<string, unknown>[]) || []
+    result = await build(client.from(table))
   } catch (error) {
-    console.warn(`quantum-certification ${table} query failed:`, (error as Error)?.message || error)
+    throw new SnapshotReadError(table, error)
+  }
+  if (result.error) {
+    if (isMissingTable(result.error)) onMissing?.()
+    else if (!isDeterministicReadGap(result.error)) throw new SnapshotReadError(table, result.error)
+    else console.warn(`quantum-certification ${table} query skipped:`, result.error.message || result.error)
     return []
   }
+  return (result.data as Record<string, unknown>[]) || []
 }
 
 /* ------------------------------------------------------------------ */
@@ -1605,14 +1611,21 @@ certificateVerificationRouter.get('/lookup', async (req: Request, res: Response)
   if (!service) return res.status(503).json({ error: { code: 'UNAVAILABLE', message: 'Verification service unavailable' } })
   const company = str(req.query.company).trim().slice(0, 120)
   if (!company) return res.status(400).json({ error: { code: 'VALIDATION', message: 'company query parameter required' } })
-  const found = await rows(service, CERT_TABLE, (q) =>
-    q
-      .select('certificate_id, organization, status, level, trust_score, issued_at, expires_at')
-      .ilike('organization', `%${company.replace(/[%_]/g, '')}%`)
-      .neq('status', 'superseded')
-      .order('issued_at', { ascending: false })
-      .limit(10),
-  )
+  let found: Record<string, unknown>[]
+  try {
+    found = await rows(service, CERT_TABLE, (q) =>
+      q
+        .select('certificate_id, organization, status, level, trust_score, issued_at, expires_at')
+        .ilike('organization', `%${company.replace(/[%_]/g, '')}%`)
+        .neq('status', 'superseded')
+        .order('issued_at', { ascending: false })
+        .limit(10),
+    )
+  } catch (error) {
+    // An unreadable registry is not "this company holds no certificate".
+    console.error('Certificate company lookup failed:', (error as Error)?.message || error)
+    return res.status(503).json({ error: { code: 'VERIFICATION_UNAVAILABLE', message: 'The certificate registry could not be read — retry shortly.' } })
+  }
   res.json({
     data: found.map((c) => ({
       certificateId: str(c.certificate_id),
@@ -1626,7 +1639,19 @@ certificateVerificationRouter.get('/lookup', async (req: Request, res: Response)
   })
 })
 
+// A registry read that fails must never answer "No certificate with this ID
+// exists": a third party would read a valid certificate as forged. Express 4
+// does not catch async throws, so the lookup is wrapped here.
 certificateVerificationRouter.get('/:certificateId', async (req: Request, res: Response) => {
+  try {
+    await verifyCertificateLookup(req, res)
+  } catch (error) {
+    console.error('Certificate verification lookup failed:', (error as Error)?.message || error)
+    if (!res.headersSent) res.status(503).json({ error: { code: 'VERIFICATION_UNAVAILABLE', message: 'The certificate registry could not be read — retry shortly. This is not a verification result.' } })
+  }
+})
+
+async function verifyCertificateLookup(req: Request, res: Response) {
   const ip = clientIp(req)
   if (rateLimited(ip)) return res.status(429).json({ error: { code: 'RATE_LIMITED', message: 'Too many verification requests — retry in a minute' } })
   const service = getServiceClient()
@@ -1730,6 +1755,6 @@ certificateVerificationRouter.get('/:certificateId', async (req: Request, res: R
     verifiedAt: new Date().toISOString(),
   }
   res.json({ data: payload })
-})
+}
 
 export default router

@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { useQkmsOverview, useQkmsActions } from '@/hooks/use-qkms';
 import { KeyDrawer } from './KeyDrawer';
+import { GateField, MeasuredGauge } from './motion';
 import {
   BarRow,
   ExplainBox,
@@ -45,6 +46,8 @@ import {
   TONE,
   fmtNumber,
   postureTone,
+  distributionTone,
+  gateTone,
   relativeTime,
   useNotice,
   useQkmsExport,
@@ -52,7 +55,7 @@ import {
 } from './shell';
 
 export default function QkmsOverview() {
-  const { data, state, error, live, refresh, reconnect } = useQkmsOverview();
+  const { data, state, error, live, verifiedAt, refresh, reconnect } = useQkmsOverview();
   const { notice, show, dismiss } = useNotice();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
@@ -84,6 +87,7 @@ export default function QkmsOverview() {
       error={error}
       hasData={data?.hasData ?? false}
       generatedAt={data?.generatedAt ?? null}
+      verifiedAt={verifiedAt}
       latestEvidenceAt={data?.latestEvidenceAt ?? null}
       telemetry={data?.telemetry ?? null}
       nav={data?.nav ?? null}
@@ -96,6 +100,8 @@ export default function QkmsOverview() {
       {/* ---- Migration gate: the headline decision ------------------- */}
       {gate ? (
         <Panel>
+          <GateField tone={gateTone(gate.state)} live={live} />
+          <div className="relative">
           <SectionLabel
             icon={ShieldCheck}
             href="/dashboard/qkms/readiness"
@@ -105,9 +111,12 @@ export default function QkmsOverview() {
             Migration gate
           </SectionLabel>
 
-          <div className="flex flex-wrap items-start gap-3">
-            <GateBadge state={gate.state} />
-            <p className="min-w-0 flex-1 text-[12.5px] leading-relaxed text-white/70">{gate.why}</p>
+          <div className="flex flex-wrap items-center gap-4">
+            <MeasuredGauge value={gate.score} tone={gateTone(gate.state)} label="Prechecks" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <GateBadge state={gate.state} />
+              <p className="text-[12.5px] leading-relaxed text-white/75">{gate.why}</p>
+            </div>
           </div>
 
           {gate.blockers.length ? (
@@ -136,6 +145,7 @@ export default function QkmsOverview() {
               </ol>
             </div>
           ) : null}
+          </div>
         </Panel>
       ) : null}
 
@@ -154,10 +164,10 @@ export default function QkmsOverview() {
             label="PQC readiness"
             value={metrics.pqcReadinessPercent === null ? '—' : `${metrics.pqcReadinessPercent}%`}
             unmeasured={metrics.pqcReadinessPercent === null}
-            detail={`${fmtNumber(metrics.pqcReadyKeys)} post-quantum · ${fmtNumber(metrics.hybridKeys)} hybrid`}
+            detail={`${fmtNumber(metrics.pqcReadyKeys)} post-quantum · ${fmtNumber(metrics.hybridKeys)} hybrid${metrics.declaredPqcKeys ? ` · ${fmtNumber(metrics.declaredPqcKeys)} declared, unverified` : ''}`}
             tone={metrics.pqcReadinessPercent !== null && metrics.pqcReadinessPercent >= 80 ? 'good' : 'warning'}
             href="/dashboard/qkms/readiness"
-            hint="Post-quantum or hybrid share of keys that actually need a quantum decision. Symmetric and hash keys are excluded — they were never at Shor risk, and counting them would inflate this figure."
+            hint="Post-quantum or hybrid share of keys that actually need a quantum decision. Symmetric and hash keys are excluded — they were never at Shor risk, and counting them would inflate this figure. Only EVIDENCED post-quantum material counts: a key whose PQC algorithm is only declared in the registry, with no scan or certificate confirming it, is shown as unverified and excluded."
           />
           <Kpi
             label="Critical-risk keys"
@@ -222,12 +232,7 @@ export default function QkmsOverview() {
                   label={row.label}
                   count={row.count}
                   percent={row.percent}
-                  tone={
-                    /Post-Quantum|Quantum-Resistant/.test(row.label) ? 'good'
-                      : /Hybrid/.test(row.label) ? 'info'
-                        : /Deprecated|Vulnerable/.test(row.label) ? 'critical'
-                          : /Weakened/.test(row.label) ? 'warning' : 'neutral'
-                  }
+                  tone={distributionTone(row)}
                 />
               ))}
             </div>
@@ -446,12 +451,7 @@ export default function QkmsOverview() {
                 label={row.label}
                 count={row.count}
                 percent={row.percent}
-                tone={
-                  /ML-KEM|ML-DSA|SLH-DSA/i.test(row.label) ? 'good'
-                    : /X25519MLKEM|hybrid/i.test(row.label) ? 'info'
-                      : /RSA|ECDSA|ECDH|DSA/i.test(row.label) ? 'critical'
-                        : /AES-256|SHA3|ChaCha/i.test(row.label) ? 'good' : 'neutral'
-                }
+                tone={distributionTone(row)}
                 suffix={<Pill tone={postureTone('unknown')} className="hidden xl:inline-flex">{row.count === 1 ? '1 key' : `${row.count} keys`}</Pill>}
               />
             ))}
@@ -459,7 +459,7 @@ export default function QkmsOverview() {
         ) : <PanelEmpty>No key algorithms have been discovered.</PanelEmpty>}
       </Panel>
 
-      <KeyDrawer keyId={selectedKey} onClose={() => setSelectedKey(null)} onChanged={() => void refresh(true)} />
+      <KeyDrawer keyId={selectedKey} syncTo={data?.generatedAt ?? null} onClose={() => setSelectedKey(null)} onChanged={() => void refresh(true)} />
     </QkmsShell>
   );
 }

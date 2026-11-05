@@ -1,0 +1,211 @@
+{
+  "masterSha256": "3d70345a2d9b3020dc773151cc9a0f3e7bf2820e03a07950d0f27c5082c1a821",
+  "masterMatchesSuppliedFile": true,
+  "checks": [
+    "Supplied master and splash PNGs are byte-identical.",
+    "All Android density buckets have correct sizes and visible content inside the 66dp adaptive safe circle.",
+    "Desktop PNG, ICO and ICNS files match staged generation; icon containers validate.",
+    "Windows installer BMP sizes and headers validate.",
+    "Application logic, Rust source, configuration, and existing release installers remain unchanged.",
+    "The only UI-source edits remove circular clipping from the final login logo."
+  ],
+  "assets": [
+    {
+      "file": "src-tauri/app-icon.png",
+      "width": 1024,
+      "height": 1024
+    },
+    {
+      "file": "public/brand/qguard-messaging-badge.webp",
+      "width": 384,
+      "height": 384
+    },
+    {
+      "file": "public/brand/favicon.png",
+      "width": 64,
+      "height": 64
+    },
+    {
+      "file": "brand/play-store-icon-512.png",
+      "width": 512,
+      "height": 512
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-mdpi/ic_launcher.png",
+      "width": 48,
+      "height": 48
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png",
+      "width": 48,
+      "height": 48
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-mdpi/ic_launcher_foreground.png",
+      "width": 108,
+      "height": 108,
+      "visibleRadius": 30.7001628660175,
+      "safeRadius": 33
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-hdpi/ic_launcher.png",
+      "width": 72,
+      "height": 72
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png",
+      "width": 72,
+      "height": 72
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-hdpi/ic_launcher_foreground.png",
+      "width": 162,
+      "height": 162,
+      "visibleRadius": 46.15733961137708,
+      "safeRadius": 49.5
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png",
+      "width": 96,
+      "height": 96
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png",
+      "width": 96,
+      "height": 96
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-xhdpi/ic_launcher_foreground.png",
+      "width": 216,
+      "height": 216,
+      "visibleRadius": 61.30660649554826,
+      "safeRadius": 66
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png",
+      "width": 144,
+      "height": 144
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png",
+      "width": 144,
+      "height": 144
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-xxhdpi/ic_launcher_foreground.png",
+      "width": 324,
+      "height": 324,
+      "visibleRadius": 91.91572226773827,
+      "safeRadius": 99
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
+      "width": 192,
+      "height": 192
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png",
+      "width": 192,
+      "height": 192
+    },
+    {
+      "file": "src-tauri/gen/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png",
+      "width": 432,
+      "height": 432,
+      "visibleRadius": 122.36216735576403,
+      "safeRadius": 132
+    },
+    {
+      "file": "src-tauri/icons/128x128.png",
+      "width": 128,
+      "height": 128
+    },
+    {
+      "file": "src-tauri/icons/128x128@2x.png",
+      "width": 256,
+      "height": 256
+    },
+    {
+      "file": "src-tauri/icons/32x32.png",
+      "width": 32,
+      "height": 32
+    },
+    {
+      "file": "src-tauri/icons/64x64.png",
+      "width": 64,
+      "height": 64
+    },
+    {
+      "file": "src-tauri/icons/icon.png",
+      "width": 512,
+      "height": 512
+    },
+    {
+      "file": "src-tauri/icons/Square107x107Logo.png",
+      "width": 107,
+      "height": 107
+    },
+    {
+      "file": "src-tauri/icons/Square142x142Logo.png",
+      "width": 142,
+      "height": 142
+    },
+    {
+      "file": "src-tauri/icons/Square150x150Logo.png",
+      "width": 150,
+      "height": 150
+    },
+    {
+      "file": "src-tauri/icons/Square284x284Logo.png",
+      "width": 284,
+      "height": 284
+    },
+    {
+      "file": "src-tauri/icons/Square30x30Logo.png",
+      "width": 30,
+      "height": 30
+    },
+    {
+      "file": "src-tauri/icons/Square310x310Logo.png",
+      "width": 310,
+      "height": 310
+    },
+    {
+      "file": "src-tauri/icons/Square44x44Logo.png",
+      "width": 44,
+      "height": 44
+    },
+    {
+      "file": "src-tauri/icons/Square71x71Logo.png",
+      "width": 71,
+      "height": 71
+    },
+    {
+      "file": "src-tauri/icons/Square89x89Logo.png",
+      "width": 89,
+      "height": 89
+    },
+    {
+      "file": "src-tauri/icons/StoreLogo.png",
+      "width": 50,
+      "height": 50
+    }
+  ],
+  "unchangedInstallers": [
+    "src-tauri/release/QguardMessaging-1.5.0-onboarding-arm64.apk",
+    "src-tauri/release/QguardMessaging-1.5.0-premium-theme-arm64.apk",
+    "src-tauri/release/QguardMessaging-1.5.0-responsive-ui-arm64.apk",
+    "src-tauri/release/QguardMessaging-release.aab",
+    "src-tauri/release/QguardMessaging-release.apk"
+  ],
+  "icoFrames": [
+    16,
+    24,
+    32,
+    48,
+    64,
+    256
+  ],
+  "unchangedFilesChecked": 333,
+  "applicationBuildsRun": false
+}

@@ -69,7 +69,7 @@ const STAGES: Array<{ status: RotationJobStatus; label: string; detail: string }
 const ROTATION_STATES: RotationState[] = ['healthy', 'due', 'overdue', 'in-progress', 'failed', 'never-rotated', 'not-applicable', 'unknown'];
 
 export default function QkmsRotation() {
-  const { data, state, error, live, refresh, reconnect } = useKeyRotation();
+  const { data, state, error, live, verifiedAt, refresh, reconnect } = useKeyRotation();
   const { notice, show, dismiss } = useNotice();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [jobFilter, setJobFilter] = useState('');
@@ -78,7 +78,7 @@ export default function QkmsRotation() {
   // No default rotation filter: landing on an empty queue because nothing is
   // overdue hides the estate the operator came to look at. Highest risk first,
   // then filter down.
-  const query = useKeyQuery({ limit: 25, sort: 'risk', dir: 'desc' });
+  const query = useKeyQuery({ limit: 25, sort: 'risk', dir: 'desc' }, data?.generatedAt ?? null);
   const actions = useQkmsActions(() => { void refresh(true); query.reload(); });
   const exporter = useQkmsExport(actions.fetchExportModel);
 
@@ -119,6 +119,7 @@ export default function QkmsRotation() {
       error={error}
       hasData={data?.hasData ?? false}
       generatedAt={data?.generatedAt ?? null}
+      verifiedAt={verifiedAt}
       latestEvidenceAt={data?.latestEvidenceAt ?? null}
       telemetry={data?.telemetry ?? null}
       nav={data?.nav ?? null}
@@ -428,7 +429,7 @@ export default function QkmsRotation() {
         </ExplainBox>
       </Panel>
 
-      <KeyDrawer keyId={selectedKey} onClose={() => setSelectedKey(null)} onChanged={() => { void refresh(true); query.reload(); }} />
+      <KeyDrawer keyId={selectedKey} syncTo={data?.generatedAt ?? null} onClose={() => setSelectedKey(null)} onChanged={() => { void refresh(true); query.reload(); }} />
     </QkmsShell>
   );
 }

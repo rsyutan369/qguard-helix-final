@@ -1,7 +1,9 @@
 pub mod hybrid_kex;
 pub mod kdf;
+pub mod mnemonic;
 pub mod passcode;
 pub mod portable_identity;
+pub mod provider;
 pub mod shamir;
 pub mod signatures;
 pub mod symmetric;

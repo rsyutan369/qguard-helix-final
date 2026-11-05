@@ -138,7 +138,7 @@ const INPUT = 'w-full rounded-xl border border-white/12 bg-white/[0.03] px-3.5 p
 const MODES: Array<{ id: BindingMode; label: string; detail: string; icon: LucideIcon }> = [
   { id: 'existing', label: 'Existing asset', detail: 'Bind to an asset already in your inventory', icon: Database },
   { id: 'new', label: 'Create new target', detail: 'Name an application, folder, file, profile …', icon: FolderPlus },
-  { id: 'none', label: 'Open discovery', detail: 'Each host or file found becomes its own asset', icon: Radar },
+  { id: 'none', label: 'Device profile', detail: 'All observations stay in one machine profile', icon: Radar },
 ];
 
 const CRITICALITY_TONE: Record<string, string> = {
@@ -422,8 +422,8 @@ export function AssetBindingPicker({
       {/* Open discovery */}
       {value.mode === 'none' ? (
         <div className="rounded-xl border border-white/10 bg-white/[0.02] px-4 py-3 text-[12px] leading-relaxed text-white/55">
-          Findings are filed under each host, file or package the agent observes, creating assets as it goes. You can bind this
-          agent to a target later from its details drawer.
+          The agent automatically uses one device profile for its machine. Certificates, libraries, files and configuration
+          findings appear inside that profile, with their original subjects and paths preserved.
         </div>
       ) : null}
 
@@ -463,7 +463,7 @@ export function AssetBindingPicker({
         <span className="rounded-lg border border-white/12 bg-white/[0.03] px-2.5 py-1 text-white/75">{agentName.trim() || 'This agent'}</span>
         <ArrowRight className="h-3.5 w-3.5 text-white/30" />
         {value.mode === 'none' ? (
-          <span className="rounded-lg border border-white/12 bg-white/[0.03] px-2.5 py-1 text-white/60">Each discovered host, file or package</span>
+          <span className="rounded-lg border border-white/12 bg-white/[0.03] px-2.5 py-1 text-white/60">One device profile · all observations</span>
         ) : label ? (
           <span className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-2.5 py-1 text-cyan-100">
             {(() => {

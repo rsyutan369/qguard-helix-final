@@ -1,12 +1,9 @@
-use pqcrypto_mlkem::mlkem1024;
-use pqcrypto_traits::kem::{Ciphertext, PublicKey, SecretKey, SharedSecret};
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
-use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
 use crate::error::{QGuardError, Result};
 
+use super::provider::{self, X25519Shared, MLKEM1024_PUBLIC_KEY_BYTES, MLKEM1024_SECRET_KEY_BYTES};
 use super::{
     kdf::{derive_32, sha3_256},
     AlgorithmSuite, HybridCiphertext, CURRENT_KEM_COMBINER, CURRENT_PQ_KEM, CURRENT_PQ_KEM_STANDARD,
@@ -39,18 +36,23 @@ pub struct LocalKemKeypair {
 }
 
 impl LocalKemKeypair {
-    pub fn generate() -> Self {
-        let x_secret = StaticSecret::random_from_rng(OsRng);
-        let x_public = X25519PublicKey::from(&x_secret);
-        let (ml_public, ml_secret) = mlkem1024::keypair();
+    pub fn try_generate() -> Result<Self> {
+        let (x_secret, x_public) = provider::x25519_generate()?;
+        let (ml_public, ml_secret) = provider::mlkem1024_generate()?;
 
-        Self {
-            x25519_secret: x_secret.to_bytes(),
-            x25519_public: x_public.as_bytes().to_vec(),
-            mlkem_secret: mlkem1024::SecretKey::as_bytes(&ml_secret).to_vec(),
-            mlkem_public: mlkem1024::PublicKey::as_bytes(&ml_public).to_vec(),
+        Ok(Self {
+            x25519_secret: *x_secret,
+            x25519_public: x_public.to_vec(),
+            mlkem_secret: ml_secret.to_vec(),
+            mlkem_public: ml_public,
             kem: CURRENT_PQ_KEM.to_string(),
-        }
+        })
+    }
+
+    /// [`Self::try_generate`] for callers with no error path. Fails only when
+    /// the cryptographic self-test has disabled key generation.
+    pub fn generate() -> Self {
+        Self::try_generate().expect("hybrid KEM key generation")
     }
 
     /// Structural check only: is this a well-formed ML-KEM-1024 encapsulation
@@ -58,11 +60,11 @@ impl LocalKemKeypair {
     /// the encodings are the same size — so never use it alone to decide
     /// whether stored material needs migrating. Use `is_current_suite`.
     pub fn is_current_public_key(public_key: &[u8]) -> bool {
-        mlkem1024::PublicKey::from_bytes(public_key).is_ok()
+        public_key.len() == MLKEM1024_PUBLIC_KEY_BYTES
     }
 
     pub fn is_current_secret_key(secret_key: &[u8]) -> bool {
-        mlkem1024::SecretKey::from_bytes(secret_key).is_ok()
+        secret_key.len() == MLKEM1024_SECRET_KEY_BYTES
     }
 
     /// True only for material this build's ML-KEM (FIPS 203) actually produced.
@@ -139,7 +141,7 @@ impl KemCombiner {
 /// Derive the hybrid shared key from both halves under `combiner`.
 fn combine_shared_secrets(
     combiner: KemCombiner,
-    classical: &x25519_dalek::SharedSecret,
+    classical: &X25519Shared,
     pq: &[u8],
     ephemeral_x25519_public: &[u8; 32],
     recipient_x25519_public: &[u8; 32],
@@ -228,27 +230,25 @@ pub fn encapsulate_with(
     let mut peer_x_arr = [0u8; 32];
     peer_x_arr.copy_from_slice(peer_x25519_public);
 
-    let eph_secret = EphemeralSecret::random_from_rng(OsRng);
-    let eph_public = X25519PublicKey::from(&eph_secret);
-    let peer_public = X25519PublicKey::from(peer_x_arr);
-    let classical_shared = eph_secret.diffie_hellman(&peer_public);
-
     // ML-KEM-1024 ONLY. The previous build chose its parameter set from the
     // LENGTH of the peer's public key and silently fell back to a weaker one,
     // which is a downgrade surface: anything that could substitute a shorter
     // key would have moved the session to a lower security level without a
     // word. There is exactly one accepted parameter set now, so there is
     // nothing to negotiate and nothing to downgrade to.
-    let pq_public = mlkem1024::PublicKey::from_bytes(peer_mlkem_public).map_err(|_| {
-        QGuardError::Crypto(format!(
-            "peer ML-KEM-1024 encapsulation key is malformed: {} bytes, expected {}",
+    if peer_mlkem_public.len() != MLKEM1024_PUBLIC_KEY_BYTES {
+        return Err(QGuardError::Crypto(format!(
+            "peer ML-KEM-1024 encapsulation key is malformed: {} bytes, expected {MLKEM1024_PUBLIC_KEY_BYTES}",
             peer_mlkem_public.len(),
-            mlkem1024::public_key_bytes(),
-        ))
-    })?;
-    let (pq_shared, pq_ciphertext_raw) = mlkem1024::encapsulate(&pq_public);
-    let mut pq = mlkem1024::SharedSecret::as_bytes(&pq_shared).to_vec();
-    let pq_ciphertext = mlkem1024::Ciphertext::as_bytes(&pq_ciphertext_raw).to_vec();
+        )));
+    }
+
+    let (eph_secret, eph_public) = provider::x25519_generate()?;
+    let classical_shared = provider::x25519_shared(&eph_secret, &peer_x_arr)?;
+    drop(eph_secret);
+
+    let (pq_ciphertext, pq_shared) = provider::mlkem1024_encapsulate(peer_mlkem_public)?;
+    let mut pq = pq_shared.to_vec();
     // The ciphertext records the combiner it was ACTUALLY made with, which is
     // not necessarily the newest one this build knows.
     let suite = AlgorithmSuite {
@@ -260,7 +260,7 @@ pub fn encapsulate_with(
         combiner,
         &classical_shared,
         &pq,
-        eph_public.as_bytes(),
+        &eph_public,
         &peer_x_arr,
         &pq_ciphertext,
         info,
@@ -270,7 +270,7 @@ pub fn encapsulate_with(
 
     Ok((
         HybridCiphertext {
-            x25519_ephemeral_public: eph_public.as_bytes().to_vec(),
+            x25519_ephemeral_public: eph_public.to_vec(),
             ml_kem_ciphertext: pq_ciphertext,
             suite,
         },
@@ -294,12 +294,10 @@ pub fn decapsulate(
     // guessed at.
     let combiner = KemCombiner::from_label(&ciphertext.suite.kem_combiner)?;
 
-    let our_secret = StaticSecret::from(*our_x25519_secret);
-    let our_public = X25519PublicKey::from(&our_secret);
+    let our_public = provider::x25519_public(our_x25519_secret)?;
     let mut peer_arr = [0u8; 32];
     peer_arr.copy_from_slice(&ciphertext.x25519_ephemeral_public);
-    let peer_public = X25519PublicKey::from(peer_arr);
-    let classical_shared = our_secret.diffie_hellman(&peer_public);
+    let classical_shared = provider::x25519_shared(our_x25519_secret, &peer_arr)?;
 
     let mut pq = decapsulate_pq_secret(
         our_mlkem_secret,
@@ -312,7 +310,7 @@ pub fn decapsulate(
         &classical_shared,
         &pq,
         &peer_arr,
-        our_public.as_bytes(),
+        &our_public,
         &ciphertext.ml_kem_ciphertext,
         info,
     );
@@ -347,12 +345,8 @@ fn decapsulate_pq_secret(
             "this envelope was sealed by a pre-FIPS-203 build ({LEGACY_PQ_KEM_PRE_FIPS}); {CURRENT_PQ_KEM} ({CURRENT_PQ_KEM_STANDARD}) cannot decapsulate it. Both devices must be running the FIPS 203 build."
         )));
     }
-    let pq_secret = mlkem1024::SecretKey::from_bytes(our_mlkem_secret)
-        .map_err(|e| QGuardError::Crypto(format!("invalid ML-KEM-1024 decapsulation key: {e:?}")))?;
-    let pq_ct = mlkem1024::Ciphertext::from_bytes(pq_ciphertext)
-        .map_err(|e| QGuardError::Crypto(format!("invalid ML-KEM-1024 ciphertext: {e:?}")))?;
-    let pq_shared = mlkem1024::decapsulate(&pq_ct, &pq_secret);
-    Ok(mlkem1024::SharedSecret::as_bytes(&pq_shared).to_vec())
+    let pq_shared = provider::mlkem1024_decapsulate(our_mlkem_secret, pq_ciphertext)?;
+    Ok(pq_shared.to_vec())
 }
 
 #[cfg(feature = "oqs-backend")]
@@ -480,8 +474,8 @@ mod tests {
         assert!(kp.is_current_suite());
         // Sizes are the FIPS 203 ML-KEM-1024 sizes — which are also the Kyber
         // sizes, which is precisely why the marker above has to exist.
-        assert_eq!(kp.mlkem_public.len(), mlkem1024::public_key_bytes());
-        assert_eq!(kp.mlkem_secret.len(), mlkem1024::secret_key_bytes());
+        assert_eq!(kp.mlkem_public.len(), MLKEM1024_PUBLIC_KEY_BYTES);
+        assert_eq!(kp.mlkem_secret.len(), MLKEM1024_SECRET_KEY_BYTES);
     }
 
     #[test]

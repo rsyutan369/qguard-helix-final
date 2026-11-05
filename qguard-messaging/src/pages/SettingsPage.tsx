@@ -25,9 +25,13 @@ import type { QGuardLiveEvent, QGuardLiveStatus } from "@/lib/live-sse";
 import { guardNativeFileInput } from "@/lib/native-dialog-guard";
 import { describeSavedFile, saveFileToDevice } from "@/lib/save-file";
 import { DevicePrivacyCard } from "@/components/DevicePrivacyCard";
+import { FipsModuleCard } from "@/components/FipsModuleCard";
 import { RecoveryCenterCard } from "@/components/RecoveryCenterCard";
 import { AiAssistantCard } from "@/components/AiAssistantCard";
 import { OfflineDeliveryCard } from "@/components/OfflineDeliveryCard";
+import NotificationSettingsPanel from "@/components/chat/NotificationSettingsPanel";
+import { useOptionalChatPreferences } from "@/lib/chat-preferences-context";
+import { Bell } from "lucide-react";
 import { syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
 import { fetchRatchetStatus, resetRatchetSession, setRatchetEnabled, type RatchetStatus } from "@/lib/ratchet-status";
 import { createEphemeralSupabaseClient, supabase } from "@/lib/supabase";
@@ -37,7 +41,7 @@ import type { Profile, SecurityEvent, TelemetryEvent } from "@/lib/types";
 import { useAppLock } from "@/lib/use-app-lock";
 import type { ThemeMode } from "@/lib/use-theme";
 import { INACTIVITY_OPTIONS, type WorkspaceStatus } from "@/lib/use-workspace-lock";
-import { sha3_256Hex } from "@/lib/sha3";
+import { coreSha3Hex } from "@/lib/core-crypto";
 import { hashRecoveryCode, recoveryHashScheme } from "@/lib/recovery-code-hash";
 
 interface GpuSafeModeStatus {
@@ -514,7 +518,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
         p_event_type: eventType,
         p_severity: severity,
         p_metadata: metadata,
-        p_email_hash: sha3_256Hex(accountAuditIdentifier(user) || email.trim().toLowerCase()),
+        p_email_hash: await coreSha3Hex(accountAuditIdentifier(user) || email.trim().toLowerCase()),
         p_user_id: user.id,
       });
     } catch {
@@ -525,7 +529,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
   async function enforceRateLimit(action: string, limit = 5) {
     const { data, error: limitError } = await supabase.rpc("check_qguard_profile_rate_limit", {
       p_action: action,
-      p_email_hash: sha3_256Hex(accountAuditIdentifier(user) || email.trim().toLowerCase()),
+      p_email_hash: await coreSha3Hex(accountAuditIdentifier(user) || email.trim().toLowerCase()),
       p_limit: limit,
       p_window_seconds: 300,
     });
@@ -597,7 +601,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
       await confirmSensitive("email_change");
       const { error: updateError } = await supabase.auth.updateUser({ email: target }, { emailRedirectTo: window.location.origin });
       if (updateError) throw updateError;
-      await audit("email_change_requested", "warning", { target_email_hash: sha3_256Hex(target) });
+      await audit("email_change_requested", "warning", { target_email_hash: await coreSha3Hex(target) });
       setStepUpCode("");
       setCurrentPassword("");
       setNewEmail("");
@@ -900,7 +904,7 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
                 </div>
                 <div className="mt-1 text-[11px] text-ink-500">
                   {scopeStatus?.configured
-                    ? `Protected by ${[scopeStatus.hasPassword ? "password" : null, scopeStatus.hasPin ? "PIN" : null].filter(Boolean).join(" + ")}`
+                    ? `Protected by ${[scopeStatus.hasPassword ? "password" : null, scopeStatus.hasPin ? "PIN" : null, scopeStatus.hasPattern ? "pattern" : null].filter(Boolean).join(" + ")}`
                     : `Open ${label} to set up a password or PIN.`}
                 </div>
               </div>
@@ -940,9 +944,12 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
 
       <SessionRatchetCard userId={user?.id ?? null} />
 
+      {user?.id && <FipsModuleCard />}
+
       {user?.id && <DevicePrivacyCard userId={user.id} appLock={appLock} />}
 
       {user?.id && <RecoveryCenterCard userId={user.id} />}
+      {user?.id && <NotificationsCard />}
       {user?.id && <AiAssistantCard />}
       {user?.id && <OfflineDeliveryCard />}
 
@@ -1408,6 +1415,29 @@ function ApplicationPinSection({
           </div>
         </>
       )}
+    </section>
+  );
+}
+
+/**
+ * App-wide Notifications & Sounds (migration 050). Each chat can override
+ * these from its own menu (Secure Chat → ⋮ → Notifications & sounds).
+ */
+function NotificationsCard() {
+  const prefs = useOptionalChatPreferences();
+  if (!prefs) return null;
+  return (
+    <section className="shell-card p-5">
+      <div className="flex items-center gap-2">
+        <Bell size={18} className="text-violet-600" />
+        <h2 className="text-base font-bold text-ink-950">Notifications &amp; sounds</h2>
+      </div>
+      <p className="mt-1 text-sm text-ink-600">
+        Defaults for every chat. Mute a chat, or give it its own sound, from that chat's menu. Changes apply at once on all your devices.
+      </p>
+      <div className="mt-4 max-w-xl">
+        <NotificationSettingsPanel scope={{ kind: "global" }} />
+      </div>
     </section>
   );
 }

@@ -70,11 +70,19 @@ export default function QuantumReadinessLandingPage() {
   const memo = useReadinessMemo(snapshot);
   const { scores, inventory } = snapshot;
 
+  // `in_progress` means evidence COVERAGE is partial (fewer than 6 of the 7
+  // source types), not that a scan is running. "Assessment In Progress" over a
+  // finished estate read as an active scan that never ended.
   const statusBadge = useMemo(() => {
+    const sources = snapshot.evidenceSources || [];
+    const present = sources.filter((source) => source.present).length;
+    // Before the payload arrives the snapshot is the empty default, whose
+    // status reads "not_started" — a claim about the estate nobody measured.
+    if (state !== 'success') return <Badge color={BLUE}>{state === 'loading' ? 'Loading' : 'Unavailable'}</Badge>;
     if (snapshot.assessmentStatus === 'complete') return <Badge color={GREEN}>Assessment Complete</Badge>;
-    if (snapshot.assessmentStatus === 'in_progress') return <Badge color={AMBER}>Assessment In Progress</Badge>;
+    if (snapshot.assessmentStatus === 'in_progress') return <Badge color={AMBER}>{sources.length ? `Partial Coverage · ${present} of ${sources.length} sources` : 'Partial Coverage'}</Badge>;
     return <Badge color={BLUE}>Not Started</Badge>;
-  }, [snapshot.assessmentStatus]);
+  }, [state, snapshot.assessmentStatus, snapshot.evidenceSources]);
 
   const kpis = [
     { label: 'Quantum Readiness', value: integerFmt(scores.quantumReadiness), suffix: '/100', detail: scores.quantumReadinessLevel, color: readinessTone(scores.quantumReadiness), ring: scores.quantumReadiness, icon: ShieldCheck },
@@ -220,7 +228,9 @@ export default function QuantumReadinessLandingPage() {
               <TruncationNote
                 shown={4}
                 total={snapshot.criticalFindings.length}
-                noun="critical findings"
+                // The list holds critical AND high records (deduplicated), so
+                // "of 24 critical findings" contradicted the hero's 9 critical.
+                noun="critical / high finding records"
                 rank="highest-severity"
                 to="/dashboard/quantum-readiness/risk-analysis"
               />

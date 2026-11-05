@@ -57,22 +57,22 @@ describe("link payload", () => {
 describe("binding proof", () => {
   const base = { bindingSecret: generateBindingSecret(), linkId: LINK_ID, userId: USER_ID, deviceId: DEVICE_ID, fingerprint: "QG-ABCD-1234-EF56" };
 
-  it("verifies the proof the new device computes", () => {
-    expect(verifyLinkProof(base, computeLinkProof(base))).toBe(true);
+  it("verifies the proof the new device computes", async () => {
+    expect(await verifyLinkProof(base, await computeLinkProof(base))).toBe(true);
   });
 
-  it("fails for a different device, fingerprint, account, link or secret", () => {
-    const proof = computeLinkProof(base);
-    expect(verifyLinkProof({ ...base, deviceId: "00000000-0000-4000-8000-000000000000" }, proof)).toBe(false);
-    expect(verifyLinkProof({ ...base, fingerprint: "QG-OTHER" }, proof)).toBe(false);
-    expect(verifyLinkProof({ ...base, userId: "11111111-1111-4111-8111-111111111111" }, proof)).toBe(false);
-    expect(verifyLinkProof({ ...base, linkId: "22222222-2222-4222-8222-222222222222" }, proof)).toBe(false);
-    expect(verifyLinkProof({ ...base, bindingSecret: generateBindingSecret() }, proof)).toBe(false);
+  it("fails for a different device, fingerprint, account, link or secret", async () => {
+    const proof = await computeLinkProof(base);
+    expect(await verifyLinkProof({ ...base, deviceId: "00000000-0000-4000-8000-000000000000" }, proof)).toBe(false);
+    expect(await verifyLinkProof({ ...base, fingerprint: "QG-OTHER" }, proof)).toBe(false);
+    expect(await verifyLinkProof({ ...base, userId: "11111111-1111-4111-8111-111111111111" }, proof)).toBe(false);
+    expect(await verifyLinkProof({ ...base, linkId: "22222222-2222-4222-8222-222222222222" }, proof)).toBe(false);
+    expect(await verifyLinkProof({ ...base, bindingSecret: generateBindingSecret() }, proof)).toBe(false);
   });
 
-  it("refuses missing or malformed proofs", () => {
-    expect(verifyLinkProof(base, null)).toBe(false);
-    expect(verifyLinkProof(base, "zz")).toBe(false);
+  it("refuses missing or malformed proofs", async () => {
+    expect(await verifyLinkProof(base, null)).toBe(false);
+    expect(await verifyLinkProof(base, "zz")).toBe(false);
   });
 });
 
@@ -101,7 +101,7 @@ describe("pending completion", () => {
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer access-token");
     const body = JSON.parse(String(init.body));
     expect(body.deviceId).toBe(DEVICE_ID);
-    expect(verifyLinkProof({ bindingSecret, linkId: LINK_ID, userId: USER_ID, deviceId: DEVICE_ID, fingerprint: "QG-FP" }, body.proof)).toBe(true);
+    expect(await verifyLinkProof({ bindingSecret, linkId: LINK_ID, userId: USER_ID, deviceId: DEVICE_ID, fingerprint: "QG-FP" }, body.proof)).toBe(true);
 
     expect(await finishPendingLinkCompletion(USER_ID, "access-token", async () => ({ device_id: DEVICE_ID, fingerprint: "QG-FP" }))).toBe("none");
   });

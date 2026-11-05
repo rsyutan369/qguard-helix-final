@@ -1,7 +1,7 @@
 /**
  * QGuard Messaging — Overview (/qguard-messaging)
  * Showcases the combined application: Secure Chat + Quantum Vault, and what is
- * new in 1.3.8 → 1.5.x. Every capability shown is taken from
+ * new in 1.3.8 → 1.5.x and the Quantum Vault Storage line. Every capability shown is taken from
  * qguard-messaging/CHANGELOG.md and the feature roadmap; opt-in, platform-limited
  * and unreviewed features are tagged as such.
  */
@@ -39,7 +39,7 @@ import {
 } from './_shared';
 import { Aurora, Marquee, StageFrame, Tilt3D } from './_motion';
 import { HeroLinkScene } from './_scenes-hero';
-import { Block, FeatureAtlas, NextUp, NumbersStrip, PlatformMatrix, ReleaseRail, StraightTalk } from './_catalog';
+import { Block, FeatureAtlas, NextUp, NumbersStrip, PlatformMatrix, ReleaseRail, StraightTalk, VaultNewGrid } from './_catalog';
 import { MessengerComparison } from './_comparison';
 
 const TRUST = ['NIST FIPS 203', 'FIPS 204', 'End-to-End Encrypted', 'Zero-Knowledge', 'Hybrid Post-Quantum'];
@@ -58,6 +58,11 @@ const TICKER = [
   'Duress PIN · panic wipe',
   'Offline & nearby delivery',
   'PIN-bound vault containers',
+  'Quantum Vault Storage',
+  'Draw-pattern vault unlock',
+  'Hidden vaults',
+  'Encrypted vault backup (opt-in)',
+  'Share vault files with QGuard users',
   'Helix posture import',
 ];
 
@@ -68,7 +73,7 @@ const COMBINED_FEATURES: Feature[] = [
   { icon: EyeOff, title: 'Zero-Knowledge', body: 'We store ciphertext, public keys and minimal routing metadata — never your private keys, plaintext, or recovery secrets. No message escrow exists for organisations either.' },
   { icon: Phone, title: 'Post-Quantum Encrypted Calls', body: '1:1 and three-person calls with per-frame encryption, a fresh post-quantum key per link, an authenticated caller and a verifiable call phrase.' },
   { icon: KeyRound, title: 'Forward Secrecy You Can Inspect', body: 'Prekeys rotate and retire by default; an opt-in ratchet gives every message its own key. The app tells you which one is protecting each device.' },
-  { icon: Server, title: 'On-Device Vault', body: 'The Quantum Vault encrypts files and folders entirely on your device — PIN-bound containers, nothing ever uploaded.' },
+  { icon: Server, title: 'On-Device Vault', body: 'The Quantum Vault encrypts files and folders on your device in PIN-bound containers. Nothing is uploaded unless you turn on encrypted backup or share a file — and then only ciphertext.' },
   { icon: Cpu, title: 'Native Crypto Core', body: 'Core cryptography runs natively in Rust on-device, and a start-up self-test measures it rather than assuming it.' },
 ];
 
@@ -143,7 +148,7 @@ export default function QguardMessagingOverview() {
               One app.<br />Quantum-safe <Highlight>chat</Highlight> &amp; <Highlight>vault</Highlight>.
             </h1>
             <p className="mt-5 max-w-xl text-base leading-relaxed text-slate-600 sm:text-lg">
-              End-to-end encrypted chat, groups, channels and calls, plus a strictly on-device Quantum Vault — protected by NIST post-quantum cryptography. Now with protection you can see, contacts you can verify, and recovery that does not depend on us.
+              End-to-end encrypted chat, groups, channels and calls, plus an on-device Quantum Vault — protected by NIST post-quantum cryptography. Now with protection you can see, contacts you can verify, and recovery that does not depend on us.
             </p>
             <p className="mt-4 max-w-xl border-l-2 border-gold pl-4 text-sm leading-relaxed text-slate-700 sm:text-base">
               QGuard Messaging protects your chats, voice and video calls, files and vault with post-quantum encryption by default. It uses NIST-standardized ML-KEM and ML-DSA, so what you send today stays protected against tomorrow's quantum computers. For Windows and Android.
@@ -202,17 +207,29 @@ export default function QguardMessagingOverview() {
           eyebrow="Quantum Vault"
           icon={Lock}
           title="Your files, sealed for the quantum age"
-          blurb="Encrypt any file or folder on your device into a sealed, tamper-evident container. Strictly local and zero-knowledge — your data never leaves your machine."
+          blurb="Encrypt any file or folder on your device into a sealed, tamper-evident container, and keep them in an encrypted library you can unlock with a drawn pattern. Zero-knowledge and local by default."
           bullets={[
             'PIN-bound .qvault v5: the vault lock is enforced by the cryptography',
             'Tamper-evident: any change, reorder or truncation is detected and refused, at any file or folder size',
-            'Share to a person with a Portable Hybrid Identity — never your device key',
-            'Quantum-safe offline recovery, with enterprise dual-control for teams',
+            'Vault Storage with sealed file names, opt-in encrypted backup and sharing with QGuard users',
+            'Draw-pattern unlock and hidden vaults the app never lists',
           ]}
           image="/helix-features/QuantumVault3.png"
           reverse
         />
       </section>
+
+      {/* New in the vault */}
+      <Block
+        kicker="New in the Quantum Vault"
+        title={<>A vault that <Highlight>keeps your files</Highlight> — and can keep a secret</>}
+        subtitle="Vault Storage, encrypted backup across your devices, sharing, pattern unlock and hidden vaults — built on the same signed v5 containers."
+      >
+        <VaultNewGrid compact />
+        <div className="mt-6 flex justify-center">
+          <DarkButton to="/qguard-messaging/quantum-vault">See the new vault features</DarkButton>
+        </div>
+      </Block>
 
       {/* Numbers */}
       <Block
@@ -292,7 +309,7 @@ export default function QguardMessagingOverview() {
         <div className="grid gap-5 sm:grid-cols-2">
           {[
             { to: '/qguard-messaging/secure-chat', icon: MessageSquareLock, title: 'Secure Chat', body: 'Messaging, groups, calls & recovery — quantum-safe and end-to-end encrypted.' },
-            { to: '/qguard-messaging/quantum-vault', icon: Lock, title: 'Quantum Vault', body: 'On-device, zero-knowledge file encryption with quantum-safe recovery.' },
+            { to: '/qguard-messaging/quantum-vault', icon: Lock, title: 'Quantum Vault', body: 'Zero-knowledge file encryption and storage, pattern unlock, hidden vaults and quantum-safe recovery.' },
           ].map((c, i) => (
             <Reveal key={c.to} delay={i * 0.08}>
               <Link to={c.to} className="block no-underline">

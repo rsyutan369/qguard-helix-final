@@ -477,6 +477,34 @@ console.log('\n15. An empty tenant produces an honest zero state')
   assert(empty.telemetry.pipelineStatus === 'no-sources', 'the pipeline says it has no sources')
 }
 
+/* 16 — work orders and policies are honest about what they evaluated ------- */
+console.log('\n16. Work orders resolve their key; unevaluated policies are not compliant')
+{
+  const target = 'key:qkms:22222222-2222-4222-8222-222222222222'
+  const audited = buildQkmsIntelligence({
+    ...inputs,
+    // A schema without the key_ref column stores it in evidence_json instead.
+    qkmsRotationJobs: [
+      { id: 'j9', tenant_id: 't', status: 'in progress', reason: 'Legacy schema order', created_at: at(-1), evidence_json: { key_ref: target, priority: 'high' } },
+    ],
+    qkmsPolicies: [
+      { id: 'p-off', tenant_id: 't', name: 'Disabled tenant policy', enabled: false, severity: 'high', environment_scope: 'all', require_pqc: true, created_at: at(-5) },
+      { id: 'p-none', tenant_id: 't', name: 'Policy with an empty scope', enabled: true, severity: 'medium', environment_scope: 'no-such-environment', require_owner: true, created_at: at(-5) },
+    ],
+  })
+  const job = audited.rotation.jobs.find((row) => row.id === 'job:j9')
+  assert(job?.keyId === target, 'a job carrying key_ref only in evidence_json resolves to its key', String(job?.keyId))
+  assert(job?.status === 'in-progress', 'a free-text "in progress" status normalises to in-progress', String(job?.status))
+  const targetKey = audited.keys.find((key) => key.id === target)
+  assert(Boolean(targetKey && !targetKey.capabilities.requestRotation), 'a key with an open work order cannot raise a second one')
+
+  const disabled = audited.governance.policies.find((policy) => policy.id === 'policy:p-off')
+  assert(disabled?.compliance === null && disabled?.evaluation === 'disabled', 'a disabled policy reports no compliance figure, not 100%', `${disabled?.compliance} / ${disabled?.evaluation}`)
+  const emptyScope = audited.governance.policies.find((policy) => policy.id === 'policy:p-none')
+  assert(emptyScope?.compliance === null && emptyScope?.evaluation === 'no-keys-in-scope', 'a policy whose scope selects no key reports no compliance figure', `${emptyScope?.compliance} / ${emptyScope?.evaluation}`)
+  assert(audited.governance.violations.every((row) => row.policyId !== 'policy:p-off'), 'a disabled policy raises no violation')
+}
+
 /* ------------------------------------------------------------------ */
 
 console.log(`\n${failures === 0 ? '✓ ALL CHECKS PASSED' : `✗ ${failures} CHECK(S) FAILED`}\n`)

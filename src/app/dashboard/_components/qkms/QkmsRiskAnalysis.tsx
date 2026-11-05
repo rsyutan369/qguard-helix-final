@@ -22,6 +22,7 @@ import { RISK_WEIGHTS } from '@/lib/qkms/types';
 import { KeyDrawer } from './KeyDrawer';
 import {
   BarRow,
+  distributionTone,
   ExplainBox,
   ExportMenu,
   FilterSelect,
@@ -58,11 +59,11 @@ const FACTOR_MEANING: Record<string, string> = {
 };
 
 export default function QkmsRiskAnalysis() {
-  const { data, state, error, live, refresh, reconnect } = useKeyRiskAnalysis();
+  const { data, state, error, live, verifiedAt, refresh, reconnect } = useKeyRiskAnalysis();
   const { notice, show, dismiss } = useNotice();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
-  const query = useKeyQuery({ limit: 25, sort: 'risk', dir: 'desc' });
+  const query = useKeyQuery({ limit: 25, sort: 'risk', dir: 'desc' }, data?.generatedAt ?? null);
   const actions = useQkmsActions(() => { void refresh(true); query.reload(); });
   const exporter = useQkmsExport(actions.fetchExportModel);
 
@@ -97,6 +98,7 @@ export default function QkmsRiskAnalysis() {
       error={error}
       hasData={data?.hasData ?? false}
       generatedAt={data?.generatedAt ?? null}
+      verifiedAt={verifiedAt}
       latestEvidenceAt={data?.latestEvidenceAt ?? null}
       telemetry={data?.telemetry ?? null}
       nav={data?.nav ?? null}
@@ -214,12 +216,7 @@ export default function QkmsRiskAnalysis() {
                   label={row.label}
                   count={row.count}
                   percent={row.percent}
-                  tone={
-                    /ML-KEM|ML-DSA|SLH-DSA|SHA3/i.test(row.label) ? 'good'
-                      : /hybrid|MLKEM/i.test(row.label) ? 'info'
-                        : /RSA|ECDSA|ECDHE|ECDH|Ed25519|X25519|DSA|Diffie/i.test(row.label) ? 'critical'
-                          : /AES-256|ChaCha/i.test(row.label) ? 'good' : 'neutral'
-                  }
+                  tone={distributionTone(row)}
                   onClick={() => query.update({ family: row.label })}
                 />
               ))}
@@ -237,12 +234,7 @@ export default function QkmsRiskAnalysis() {
                   label={row.label}
                   count={row.count}
                   percent={row.percent}
-                  tone={
-                    /Post-Quantum|Quantum-Resistant/.test(row.label) ? 'good'
-                      : /Hybrid/.test(row.label) ? 'info'
-                        : /Deprecated|Vulnerable/.test(row.label) ? 'critical'
-                          : /Weakened/.test(row.label) ? 'warning' : 'neutral'
-                  }
+                  tone={distributionTone(row)}
                 />
               ))}
             </div>
@@ -395,7 +387,7 @@ export default function QkmsRiskAnalysis() {
         )}
       </Panel>
 
-      <KeyDrawer keyId={selectedKey} onClose={() => setSelectedKey(null)} onChanged={() => { void refresh(true); query.reload(); }} />
+      <KeyDrawer keyId={selectedKey} syncTo={data?.generatedAt ?? null} onClose={() => setSelectedKey(null)} onChanged={() => { void refresh(true); query.reload(); }} />
     </QkmsShell>
   );
 }

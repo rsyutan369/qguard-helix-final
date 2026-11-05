@@ -1,0 +1,125 @@
+{
+  "screens": [
+    "light-dashboard.png",
+    "light-chat.png",
+    "light-contacts.png",
+    "light-calls.png",
+    "light-vault.png",
+    "light-quantum.png",
+    "light-settings.png",
+    "light-unlock.png",
+    "light-login.png",
+    "light-keys.png",
+    "light-devices.png",
+    "light-verification.png",
+    "light-audit.png",
+    "light-call-display.png",
+    "dark-dashboard.png",
+    "dark-chat.png",
+    "dark-contacts.png",
+    "dark-calls.png",
+    "dark-vault.png",
+    "dark-quantum.png",
+    "dark-settings.png",
+    "dark-unlock.png",
+    "dark-login.png",
+    "dark-keys.png",
+    "dark-devices.png",
+    "dark-verification.png",
+    "dark-audit.png",
+    "dark-call-display.png"
+  ],
+  "checks": [
+    "Masthead theme toggle persists dark mode through reload and returns to light.",
+    "Existing Settings theme action also remains functional.",
+    "Six primary surfaces fit 320×568 without horizontal page overflow; bottom navigation stays visible.",
+    "Six primary surfaces fit 360×640 without horizontal page overflow; bottom navigation stays visible.",
+    "Six primary surfaces fit 852×393 without horizontal page overflow; bottom navigation stays visible.",
+    "Six primary surfaces fit 768×1024 without horizontal page overflow; bottom navigation stays visible.",
+    "Reduced motion removes entrances and continuous decorative animation.",
+    "Premium stylesheet has no effect outside the Android skin boundary."
+  ],
+  "errors": [],
+  "contrast": [
+    {
+      "theme": "light",
+      "token": "--qg-text",
+      "ratio": 17.04407698964059
+    },
+    {
+      "theme": "light",
+      "token": "--qg-text-2",
+      "ratio": 9.355965802678616
+    },
+    {
+      "theme": "light",
+      "token": "--qg-text-3",
+      "ratio": 6.096369204928767
+    },
+    {
+      "theme": "light",
+      "token": "--m-accent-text",
+      "ratio": 7.53395042241664
+    },
+    {
+      "theme": "light",
+      "token": "--qgp-blue",
+      "ratio": 6.376112670519811
+    },
+    {
+      "theme": "light",
+      "token": "--qgp-success",
+      "ratio": 5.721896753158493
+    },
+    {
+      "theme": "light",
+      "token": "--qgp-warning",
+      "ratio": 6.421486211209072
+    },
+    {
+      "theme": "light",
+      "token": "--qgp-danger",
+      "ratio": 6.462844603609495
+    },
+    {
+      "theme": "dark",
+      "token": "--qg-text",
+      "ratio": 15.137230912980712
+    },
+    {
+      "theme": "dark",
+      "token": "--qg-text-2",
+      "ratio": 12.511234310325866
+    },
+    {
+      "theme": "dark",
+      "token": "--qg-text-3",
+      "ratio": 10.024913213973745
+    },
+    {
+      "theme": "dark",
+      "token": "--m-accent-text",
+      "ratio": 9.672104532850952
+    },
+    {
+      "theme": "dark",
+      "token": "--qgp-blue",
+      "ratio": 9.745993492403398
+    },
+    {
+      "theme": "dark",
+      "token": "--qgp-success",
+      "ratio": 10.55389205756544
+    },
+    {
+      "theme": "dark",
+      "token": "--qgp-warning",
+      "ratio": 10.92602878980451
+    },
+    {
+      "theme": "dark",
+      "token": "--qgp-danger",
+      "ratio": 9.797336655433044
+    }
+  ]
+}

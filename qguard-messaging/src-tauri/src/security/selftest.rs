@@ -19,6 +19,11 @@
 //!   * zeroize     — wiping really leaves zeros.
 //!   * rate limiter — the native limiter really refuses past its limit.
 //!
+//!   * module      — the known-answer and pairwise tests of the cryptographic
+//!     boundary itself (`crypto::provider::selftest`): published vectors for
+//!     every primitive, FIPS 203/204 vectors cross-checked between OpenSSL,
+//!     wolfCrypt and PQClean. A failure there also disables keyed operations.
+//!
 //! This is a functional self-test, not a validation: it shows the primitives
 //! work in this binary on this machine, not that the implementation is free of
 //! side channels or has been certified.
@@ -36,6 +41,7 @@ type Outcome = Result<(), String>;
 
 #[derive(Clone, Debug)]
 pub struct SelfTestReport {
+    pub module: Outcome,
     pub hybrid_kem: Outcome,
     pub signatures: Outcome,
     pub aead: Outcome,
@@ -46,11 +52,11 @@ pub struct SelfTestReport {
 
 impl SelfTestReport {
     pub fn post_quantum(&self) -> Outcome {
-        self.hybrid_kem.clone().and(self.signatures.clone())
+        self.module.clone().and(self.hybrid_kem.clone()).and(self.signatures.clone())
     }
 
     pub fn symmetric(&self) -> Outcome {
-        self.aead.clone().and(self.hash.clone())
+        self.module.clone().and(self.aead.clone()).and(self.hash.clone())
     }
 }
 
@@ -71,6 +77,7 @@ pub fn prime() {
 
 fn run() -> SelfTestReport {
     SelfTestReport {
+        module: module_known_answers(),
         hybrid_kem: hybrid_kem(),
         signatures: signatures(),
         aead: aead(),
@@ -85,6 +92,15 @@ fn ensure(condition: bool, failure: &str) -> Outcome {
         Ok(())
     } else {
         Err(failure.to_string())
+    }
+}
+
+fn module_known_answers() -> Outcome {
+    let report = crate::crypto::provider::self_test_report();
+    if report.passed {
+        Ok(())
+    } else {
+        Err(format!("cryptographic module self-test failed: {}", report.failed_names().join(", ")))
     }
 }
 
@@ -253,6 +269,7 @@ mod tests {
     #[test]
     fn every_primitive_passes_its_self_test_in_this_build() {
         let report = run();
+        assert_eq!(report.module, Ok(()));
         assert_eq!(report.hybrid_kem, Ok(()));
         assert_eq!(report.signatures, Ok(()));
         assert_eq!(report.aead, Ok(()));

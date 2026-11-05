@@ -58,8 +58,12 @@ export type ComponentPosture = 'vulnerable' | 'pqc-ready' | 'unclassified'
  * the per-asset register must too — two different keys for "one component" is
  * how the same asset reads 12 components on one page and 13 on another.
  */
-export function cbomComponentKey(item: Pick<InventoryRow, 'asset_id' | 'item_type' | 'algorithm' | 'name'>) {
-  return `${item.asset_id}:${item.item_type}:${item.algorithm}:${item.name}`
+export function cbomComponentKey(item: Pick<InventoryRow, 'asset_id' | 'item_type' | 'algorithm' | 'name' | 'metadata'>) {
+  const evidence = (item.metadata?.evidenceRecord || {}) as Record<string, unknown>
+  const subject = evidence.agentId || evidence.agent_id
+    ? evidence.certificateFingerprint || evidence.certificate_fingerprint || evidence.filePath || evidence.file_path || item.metadata?.discoveredTarget || evidence.assetName || evidence.asset_name || ''
+    : ''
+  return `${item.asset_id}:${item.item_type}:${item.algorithm}:${item.name}${subject ? `:${subject}` : ''}`
 }
 
 /**

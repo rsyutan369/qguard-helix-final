@@ -16,6 +16,7 @@ import {
   levelFromReadiness,
   levelFromRisk,
   quantumRiskFrom,
+  readinessPostureMeasured,
   severityPressureFrom,
 } from '@/lib/migration/asset-intelligence'
 import { isCryptographicComponent } from '@/lib/scanner/finding-identity'
@@ -23,6 +24,7 @@ import { algorithmFamily } from '@/lib/governance/subjects'
 import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
 import { syncScoreHistory } from './quantum-readiness-history'
 import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
+import { isMissingTable } from './operational-fleet'
 
 // The per-asset risk/posture derivation, algorithm classification and internet
 // exposure heuristic live in the shared migration intelligence engine so the
@@ -87,19 +89,49 @@ function recordOf(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
 }
 
+/**
+ * A read failure that is the SAME on every build: the table or column is not
+ * provisioned in this environment, or the role may not read it. Reading it as
+ * "no rows" is stable, so the snapshot stays consistent.
+ */
+export function isDeterministicReadGap(error: unknown): boolean {
+  if (isMissingTable(error)) return true
+  const e = error as { code?: unknown; message?: unknown } | null
+  const code = String(e?.code ?? '')
+  const message = String(e?.message ?? '').toLowerCase()
+  return code === '42703' || code === 'PGRST204' || code === '42501' || message.includes('permission denied')
+}
+
+/**
+ * A read that failed for a reason that may not recur (network, statement
+ * timeout, JWT, 5xx). It must fail the build. Swallowed as `[]`, one blip
+ * produced an all-zero "Not started" snapshot for a populated estate, and a
+ * failed scanner-intelligence read switched the component population
+ * mid-session (readiness 27 ↔ 62 on unchanged data). Either result was cached,
+ * streamed to every tab and written to score history.
+ */
+export class SnapshotReadError extends Error {
+  constructor(source: string, cause: unknown) {
+    super(`Quantum readiness read of ${source} failed: ${(cause as { message?: string })?.message || String(cause)}`)
+    this.name = 'SnapshotReadError'
+  }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function safeRows(client: any, table: string, build: (query: any) => any): Promise<Record<string, unknown>[]> {
+  let result: { data: unknown; error: unknown }
   try {
-    const { data, error } = await build(client.from(table))
-    if (error) {
-      console.warn(`Quantum readiness ${table} query skipped:`, error.message || error)
-      return []
-    }
-    return (data as Record<string, unknown>[]) || []
+    result = await build(client.from(table))
   } catch (error) {
-    console.warn(`Quantum readiness ${table} query failed:`, (error as Error)?.message || error)
+    throw new SnapshotReadError(table, error)
+  }
+  const { data, error } = result
+  if (error) {
+    if (!isDeterministicReadGap(error)) throw new SnapshotReadError(table, error)
+    console.warn(`Quantum readiness ${table} query skipped:`, (error as { message?: string }).message || error)
     return []
   }
+  return table === 'assets' ? ((data || []) as any[]).filter((row) => !row.metadata?.consolidatedIntoAssetId) : (data as Record<string, unknown>[]) || []
 }
 
 /**
@@ -113,6 +145,7 @@ async function safeRows(client: any, table: string, build: (query: any) => any):
 async function exactCount(client: any, table: string, userId: string, refine?: (query: any) => any): Promise<number | null> {
   try {
     let query = client.from(table).select('id', { count: 'exact', head: true }).eq('user_id', userId)
+    if (table === 'assets') query = query.is('metadata->>consolidatedIntoAssetId', null)
     if (refine) query = refine(query)
     const { count, error } = await query
     if (error) return null
@@ -254,11 +287,32 @@ async function computeSnapshot(token: string, userId: string) {
     severityCounts?: { critical?: number; high?: number; medium?: number; low?: number; safe?: number }
     findings?: IntelFinding[]
   }
+  // The component population comes from this view. Its absence is NOT a cue to
+  // fall back to raw crypto_inventory rows: those count every scan's copy of a
+  // component (75 rows / 50 "quantum-safe" against the view's 32 / 7 on one
+  // tenant), so the fallback published a different readiness for unchanged
+  // data. A failed read may also be a cached rejection from another caller's
+  // build, which the cache drops on failure, so retry once with this token,
+  // then fail the snapshot.
+  // The scanner view never throws on a failed read: it degrades to its
+  // in-memory store and says so with `mode: 'memory'`. When this snapshot's
+  // own reads reached the database and found the estate, a memory-mode view
+  // is a degraded read, not a different estate.
+  const estateInDatabase = persistence === 'database' && (assets.length > 0 || cryptoInventory.length > 0)
+  const readIntel = async (): Promise<IntelSnapshot> => {
+    const view = (await buildScannerIntelligence(token, userId)) as IntelSnapshot & { mode?: string }
+    if (estateInDatabase && view?.mode === 'memory') throw new Error('scanner tables partially unreadable (degraded to memory store)')
+    return view
+  }
   let intel: IntelSnapshot | null = null
   try {
-    intel = (await buildScannerIntelligence(token, userId)) as IntelSnapshot
+    intel = await readIntel()
   } catch {
-    intel = null
+    try {
+      intel = await readIntel()
+    } catch (error) {
+      throw new SnapshotReadError('scanner intelligence', error)
+    }
   }
   const intelSummary = intel?.summary
   const intelSeverity = intel?.severityCounts
@@ -520,7 +574,8 @@ async function computeSnapshot(token: string, userId: string) {
   }, 0)
   const latestRuntimeEventAt = latestRuntimeEventMs ? new Date(latestRuntimeEventMs).toISOString() : null
 
-  const quantumReadiness = hasData ? blendQuantumReadiness({ pqcAdoption, quantumRisk, runtimeMeasured }) : 0
+  const postureMeasured = readinessPostureMeasured({ cryptoComponents, findings: { critical, high, medium, low } })
+  const quantumReadiness = hasData ? blendQuantumReadiness({ pqcAdoption, quantumRisk, runtimeMeasured, postureMeasured }) : 0
 
   const hndlEvents = runtimeEvents.filter((e) => e.hndl_risk === true).length
   const hndlEventShare = runtimeEvents.length > 0 ? (hndlEvents / runtimeEvents.length) * 100 : 0

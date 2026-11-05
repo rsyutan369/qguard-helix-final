@@ -351,7 +351,7 @@ export async function buildWorkflowState(token: string, userId: string): Promise
   let certificates: WorkflowInputs['certificates'] = []
   if (client) {
     const [assetHead, sessionHead, planRows, validationRows, certRows] = await Promise.all([
-      client.from('assets').select('id', { count: 'exact', head: true }).eq('user_id', userId),
+      client.from('assets').select('id', { count: 'exact', head: true }).eq('user_id', userId).is('metadata->>consolidatedIntoAssetId', null),
       client.from('pqc_scan_sessions').select('id', { count: 'exact', head: true }).eq('user_id', userId),
       safeRows(client, 'migration_plans', (q) => q.select('id, status').eq('user_id', userId).order('updated_at', { ascending: false }).limit(100)),
       safeRows(client, 'migration_validation_logs', (q) => q.select('status').eq('user_id', userId).order('created_at', { ascending: false }).limit(200)),

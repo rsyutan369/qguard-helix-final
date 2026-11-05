@@ -12,12 +12,16 @@ async function main() {
   const admin = createClient(url, serviceKey, { auth: { persistSession: false } })
   // Account must be Basic tier or higher — the subscription gateway 403s the
   // quantum-readiness module for Starter accounts.
-  const { data: link } = await admin.auth.admin.generateLink({ type: 'magiclink', email: process.env.REPORT_CHECK_EMAIL || 'cybersniper26@gmail.com' })
+  const { data: link } = await admin.auth.admin.generateLink({ type: 'magiclink', email: process.env.REPORT_CHECK_EMAIL || 'zachmatthew369@gmail.com' })
   const tokenHash = (link!.properties as { hashed_token?: string }).hashed_token!
   const anon = createClient(url, anonKey, { auth: { persistSession: false } })
   const { data } = await anon.auth.verifyOtp({ type: 'magiclink', token_hash: tokenHash })
   const tok = data.session!.access_token
-  const snapshot = (await (await fetch(`${ORIGIN}/api/v1/quantum-readiness`, { headers: { Authorization: `Bearer ${tok}` } })).json()).data
+  const qrResponse = await fetch(`${ORIGIN}/api/v1/quantum-readiness`, { headers: { Authorization: `Bearer ${tok}` } })
+  const qrBody = await qrResponse.json().catch(() => ({}))
+  // A Starter account is refused this module (403): say so instead of crashing on `undefined.scores`.
+  if (!qrResponse.ok || !qrBody.data) throw new Error(`quantum-readiness snapshot unavailable: HTTP ${qrResponse.status} ${qrBody?.error?.message || ''} — use a Basic+ account (REPORT_CHECK_EMAIL)`)
+  const snapshot = qrBody.data
 
   const branding = brandingSchema.parse({})
   const r = buildReportModel(snapshot, branding, 'executive', 'Report Check')
@@ -77,7 +81,8 @@ async function main() {
   pass(r.executiveBlock.topBusinessRisks.length >= 3, `I2#8 Top business risks: ${r.executiveBlock.topBusinessRisks.map((b) => b.risk).join(' | ')}`)
   pass(r.benchmarking.rows.length === 5 && r.benchmarking.rows[0].readiness === snapshot.scores.quantumReadiness, `I2#9 Benchmarking: org=${r.benchmarking.rows[0]?.readiness} vs avg=${r.benchmarking.rows[1]?.readiness}`)
   // 7 checks since R7 added "Target Reconciliation Verified".
-  pass(r.reportValidation.checks.length === 7 && r.reportValidation.overall === 'PASS', `I2#10 Report validation: ${r.reportValidation.overall} (${r.reportValidation.checks.filter((c) => c.status === 'pass').length}/7)`)
+  // Count-agnostic: the validation list grows (it is 8 checks as of 2026-11-04).
+  pass(r.reportValidation.checks.length >= 7 && r.reportValidation.overall === 'PASS' && r.reportValidation.checks.every((c) => c.status === 'pass'), `I2#10 Report validation: ${r.reportValidation.overall} (${r.reportValidation.checks.filter((c) => c.status === 'pass').length}/${r.reportValidation.checks.length})`)
   for (const c of r.reportValidation.checks.filter((x) => x.status === 'fail')) console.log(`    ✗ failing check: ${c.check} — ${c.detail}`)
   const pillarSum = Math.round(r.readinessIndex.pillars.reduce((s, p) => s + p.contribution, 0))
   pass(r.readinessIndex.pillars.length === 8 && Math.abs(pillarSum - r.readinessIndex.overall) <= 1, `I2#11 Readiness index: Σ pillar contributions ${pillarSum} ≈ overall ${r.readinessIndex.overall}`)

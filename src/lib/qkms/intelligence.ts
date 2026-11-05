@@ -677,8 +677,9 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
   for (const row of inputs.qkmsRotationJobs) {
     // `key_ref` carries the canonical id; `key_id` is the legacy UUID column,
     // which could only ever address rows whose id happened to be a UUID and so
-    // silently detached jobs from derived keys.
-    const ref = str(row.key_ref) || str(row.key_id)
+    // silently detached jobs from derived keys. Schemas without the key_ref
+    // column carry it in evidence_json — the same resolution the job list uses.
+    const ref = str(row.key_ref) || str(record(row.evidence_json).key_ref) || str(row.key_id)
     if (!ref) continue
     const bucket = jobsByKeyRef.get(ref)
     if (bucket) bucket.push(row)
@@ -1151,10 +1152,11 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
 
   /* ---- Rotation jobs ---------------------------------------------- */
   const jobs: RotationJob[] = inputs.qkmsRotationJobs.map((row) => {
-    const keyRef = str(row.key_ref) || str(row.key_id) || null
+    const evidenceJson = record(row.evidence_json)
+    // Schemas without the key_ref column carry it inside evidence_json instead.
+    const keyRef = str(row.key_ref) || str(evidenceJson.key_ref) || str(row.key_id) || null
     const key = keyRef ? keyById.get(keyRef) || null : null
     const status = normaliseJobStatus(str(row.status))
-    const evidenceJson = record(row.evidence_json)
     const validationStatus = ((): RotationJob['validationStatus'] => {
       const declared = str(row.validation_status).toLowerCase()
       if (/pass/.test(declared)) return 'passed'
@@ -1565,7 +1567,12 @@ export function buildQkmsIntelligence(inputs: QkmsInputs): QkmsIntelligence {
       owners: distribution(keys.map((key) => ({ label: key.owner || 'Unassigned', keyId: key.id })), 10),
       environments: distribution(keys.map((key) => ({ label: key.environment, keyId: key.id })), 6),
       custody: distribution(keys.map((key) => ({ label: key.backend, keyId: key.id })), 10),
-      postures: withPosture(distribution(keys.map((key) => ({ label: postureLabel(key.posture), keyId: key.id })), 8), keyById),
+      // A post-quantum or hybrid posture resting on a registry declaration alone is
+      // its own row: it must not swell the evidenced Post-Quantum bar.
+      postures: withPosture(distribution(keys.map((key) => ({
+        label: isDeclaredPqc(key) ? `${postureLabel(key.posture)} (declared, unverified)` : postureLabel(key.posture),
+        keyId: key.id,
+      })), 8), keyById),
     },
 
     audit: auditRecords,
@@ -1588,8 +1595,18 @@ function withPosture(rows: DistributionRow[], keyById: Map<string, ManagedKey>):
       if (posture) counts.set(posture, (counts.get(posture) || 0) + 1)
     }
     const dominant = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
-    return dominant ? { ...row, posture: dominant } : row
+    const ids = row.keyIds || []
+    const unverified = ids.length > 0 && ids.every((id) => {
+      const key = keyById.get(id)
+      return Boolean(key && isDeclaredPqc(key))
+    })
+    return dominant ? { ...row, posture: dominant, ...(unverified ? { unverified: true } : {}) } : row
   })
+}
+
+/** Post-quantum or hybrid by registry declaration only — no observation confirms it. */
+function isDeclaredPqc(key: Pick<ManagedKey, 'posture' | 'postureEvidence'>): boolean {
+  return (key.posture === 'post-quantum' || key.posture === 'hybrid') && key.postureEvidence === 'declared'
 }
 
 export function postureLabel(posture: KeyPqcPosture): string {

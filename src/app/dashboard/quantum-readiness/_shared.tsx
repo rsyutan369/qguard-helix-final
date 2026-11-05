@@ -41,6 +41,8 @@ export interface QuantumReadinessSnapshot {
   lastAssessmentAt: string | null;
   assessmentProgress: number;
   assessmentStatus: 'not_started' | 'in_progress' | 'complete' | string;
+  /** The evidence types `assessmentProgress` is computed from (server: quantum-readiness.ts). */
+  evidenceSources?: Array<{ id: string; label: string; present: boolean }>;
   hasData: boolean;
   scores: {
     quantumReadiness: number;
@@ -488,22 +490,26 @@ export function MetricCard({
     <Panel className="min-h-[118px] p-4">
       <div className="flex h-full items-center justify-between gap-3">
         <div className="min-w-0">
-          <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-[0.08em]" style={{ color }}>
-            {Icon ? <Icon className="h-3.5 w-3.5" /> : null}
-            <span className="truncate">{label}</span>
+          {/* Wrap, never truncate: in the six-column KPI row a single-line label
+              read "QUANTU…", "HNDL R…" and the detail "7 of 32 com…". */}
+          <div className="flex items-start gap-1.5 text-[10px] font-black uppercase leading-tight tracking-[0.06em]" style={{ color }} title={label}>
+            {Icon ? <Icon className="mt-px h-3.5 w-3.5 shrink-0" /> : null}
+            <span className="line-clamp-2 break-words">{label}</span>
           </div>
           <div className="mt-3 flex items-baseline gap-1">
             <span className="text-2xl font-semibold text-white">{value}</span>
             {suffix ? <span className="text-xs font-semibold text-white/50">{suffix}</span> : null}
           </div>
-          <div className="mt-1 truncate text-[10px] font-bold" style={{ color }}>
+          <div className="mt-1 line-clamp-2 text-[10px] font-bold leading-snug" style={{ color }} title={detail}>
             {detail}
           </div>
         </div>
         {typeof ring === 'number' ? (
-          <Ring value={ring} color={color} size={58} stroke={7} />
+          <span className="shrink-0">
+            <Ring value={ring} color={color} size={50} stroke={6} />
+          </span>
         ) : Icon ? (
-          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-md border" style={{ borderColor: `${color}40`, color, backgroundColor: `${color}12` }}>
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md border" style={{ borderColor: `${color}40`, color, backgroundColor: `${color}12` }}>
             <Icon className="h-5 w-5" />
           </span>
         ) : null}
@@ -566,6 +572,28 @@ export function TrendChart({
   const pad = 34;
   if (!points.length) {
     return <EmptyState label={emptyLabel} hint={emptyHint} />;
+  }
+  // One point is not a trend: drawn as a path it is invisible (a lone `M x y`),
+  // leaving bare axis ticks that read as a broken chart.
+  if (points.length === 1) {
+    const only = points[0];
+    return (
+      <div className="rounded-md border border-dashed border-white/12 bg-black/15 p-4">
+        <div className="text-[10px] font-black uppercase tracking-wide text-white/45">{only.label} — first recorded point</div>
+        <div className="mt-2 grid grid-cols-2 gap-3">
+          {[
+            { label: labels.readiness, value: only.readiness, color: EMERALD },
+            { label: labels.risk, value: only.risk, color: RED },
+          ].map((item) => (
+            <div key={item.label}>
+              <div className="text-[10px] font-bold text-white/55">{item.label}</div>
+              <div className="font-mono text-xl font-semibold" style={{ color: item.color }}>{Math.round(item.value)}</div>
+            </div>
+          ))}
+        </div>
+        <p className="mt-2 text-[10px] text-white/40">A trend line appears once a second point is recorded. {emptyHint}</p>
+      </div>
+    );
   }
   const line = (values: number[]) =>
     values
@@ -784,6 +812,28 @@ export function ViewAllLink({ to, children }: { to: string; children: ReactNode 
 /* ------------------------------------------------------------------ */
 /* Page shell                                                         */
 /* ------------------------------------------------------------------ */
+/**
+ * Stand-in for a page body that has no server payload yet (loading) or could
+ * not get one (error). Deliberately shows NO figures: an empty default is not
+ * a measurement, and rendered as one it reads as an empty estate.
+ */
+export function PendingBody({ state }: { state: LoadState }) {
+  return (
+    <div className="grid gap-3 md:grid-cols-3" aria-busy={state === 'loading'} role="status">
+      {[0, 1, 2].map((i) => (
+        <Panel key={i} className="h-28 p-4">
+          <div className={cn('h-3 w-1/3 rounded bg-white/8', state === 'loading' && 'animate-pulse')} />
+          <div className={cn('mt-4 h-6 w-1/2 rounded bg-white/8', state === 'loading' && 'animate-pulse')} />
+          <div className={cn('mt-3 h-3 w-2/3 rounded bg-white/5', state === 'loading' && 'animate-pulse')} />
+        </Panel>
+      ))}
+      <p className="text-[11px] text-white/40 md:col-span-3">
+        {state === 'loading' ? 'Figures appear once the server answers.' : 'No figures are shown until the assessment loads — retry with Refresh.'}
+      </p>
+    </div>
+  );
+}
+
 export function QuantumReadinessShell({
   title,
   subtitle,
@@ -873,7 +923,10 @@ export function QuantumReadinessShell({
           </div>
         ) : null}
 
-        {children}
+        {/* Figures render only from a server payload. Before it arrives the page
+            body used to render its EMPTY defaults: "0 assets", "0/100 risk" and
+            "No assets yet — run a discovery scan" under a "Loading…" banner. */}
+        {state === 'success' ? children : <PendingBody state={state} />}
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-1 text-[11px] text-white/35">
           <span className="inline-flex items-center gap-2">

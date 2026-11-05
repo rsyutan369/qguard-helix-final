@@ -89,6 +89,10 @@ export function useLiveResource<T>(options: LiveResourceOptions<T>): LiveResourc
 
   const fingerprintRef = useRef<string | null>(null);
   const hasDataRef = useRef(false);
+  const scopeKey = `${userId ?? ''}:${url}`;
+  const scopeRef = useRef(scopeKey);
+  scopeRef.current = scopeKey;
+  const refreshInFlight = useRef<{ scope: string; forced: boolean; promise: Promise<void> } | null>(null);
   // Latest callbacks/options without re-running the connection effects.
   const normalizeRef = useRef(normalize);
   normalizeRef.current = normalize;
@@ -108,22 +112,39 @@ export function useLiveResource<T>(options: LiveResourceOptions<T>): LiveResourc
     setData(next);
   }, []);
 
-  const refresh = useCallback(async (options?: unknown) => {
-    if (!token) return;
-    try {
-      const target = isForceRequest(options) ? `${url}${url.includes('?') ? '&' : '?'}refresh=1` : url;
-      const response = await fetch(target, { headers: { Authorization: `Bearer ${token}` } });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-      apply(payload.data ?? {});
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Request failed';
-      console.error(`Live resource ${url} failed:`, err);
-      setError(message);
-      // Keep showing the last good payload; only an empty screen becomes an error screen.
-      if (!hasDataRef.current) setState('error');
+  const refresh = useCallback((options?: unknown): Promise<void> => {
+    if (!token) return Promise.resolve();
+    const running = refreshInFlight.current;
+    if (running?.scope === scopeKey) {
+      // A forced recovery after a mutation must not reuse a pre-write read.
+      if (isForceRequest(options) && !running.forced) return running.promise.then(() => refresh(options));
+      return running.promise;
     }
-  }, [token, url, apply]);
+    // REST fallbacks, realtime nudges and refresh clicks share one read.
+    const promise = (async () => {
+      try {
+        const target = isForceRequest(options) ? `${url}${url.includes('?') ? '&' : '?'}refresh=1` : url;
+        const response = await fetch(target, { headers: { Authorization: `Bearer ${token}` } });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
+        if (!payload?.data || typeof payload.data !== 'object') throw new Error('Live response was empty or malformed');
+        if (scopeRef.current !== scopeKey) return;
+        apply(payload.data);
+      } catch (err) {
+        if (scopeRef.current !== scopeKey) return;
+        const message = err instanceof Error ? err.message : 'Request failed';
+        console.error(`Live resource ${url} failed:`, err);
+        setError(message);
+        // Keep showing the last good payload; only an empty screen becomes an error screen.
+        if (!hasDataRef.current) setState('error');
+      }
+    })();
+    refreshInFlight.current = { scope: scopeKey, forced: isForceRequest(options), promise };
+    void promise.finally(() => {
+      if (refreshInFlight.current?.promise === promise) refreshInFlight.current = null;
+    });
+    return promise;
+  }, [token, url, scopeKey, apply]);
 
   // Tenant change ⇒ nothing from the previous tenant may remain on screen.
   // Keyed on the USER, not the token: the access token rotates hourly, and
@@ -135,7 +156,7 @@ export function useLiveResource<T>(options: LiveResourceOptions<T>): LiveResourc
     setError(null);
     setLastVerifiedAt(null);
     setState(userId ? 'loading' : 'success');
-  }, [userId]);
+  }, [userId, url]);
 
   // Stream (primary transport) with REST fallback.
   useEffect(() => {
@@ -151,6 +172,7 @@ export function useLiveResource<T>(options: LiveResourceOptions<T>): LiveResourc
     let attempt = 0;
 
     const handleFrame = (frame: string) => {
+      if (cancelled || scopeRef.current !== scopeKey) return;
       let name = 'message';
       const lines: string[] = [];
       for (const line of frame.split('\n')) {
@@ -169,6 +191,9 @@ export function useLiveResource<T>(options: LiveResourceOptions<T>): LiveResourc
           /* malformed frame — keep the current payload */
         }
       } else if (name === `${event}-unchanged`) {
+        // A good re-check after a failed build ends the failure: the shown
+        // payload is current again, so its error banner must not outlive it.
+        setError(null);
         setLastVerifiedAt(new Date().toISOString());
         setSseConnected(true);
         setTransport('stream');
@@ -231,7 +256,7 @@ export function useLiveResource<T>(options: LiveResourceOptions<T>): LiveResourc
       if (firstFrameTimer) clearTimeout(firstFrameTimer);
       setSseConnected(false);
     };
-  }, [token, streamUrl, event, apply, refresh]);
+  }, [token, streamUrl, event, scopeKey, apply, refresh]);
 
   // Supabase realtime: a tenant write nudges a refresh (de-duplicated by fingerprint).
   const tablesKey = (realtimeTables || []).join(',');

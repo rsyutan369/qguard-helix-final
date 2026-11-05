@@ -506,6 +506,28 @@ When minting a tenant session is not an option (the auto-mode classifier refuses
   subscription gateway authenticates before routing), so it cannot prove a route
   is mounted; list `router.stack` from the module instead.
 
+### Agent roles end to end (Collector / Scanner / Patcher / Migration Operator)
+
+The proof that each role does what the Agent Center and Downloads page promise:
+
+- `npx tsx tools/agent-roles-live-check.ts` — 73 checks. Builds a real lab (OpenSSL
+  RSA/ECDSA/ML-DSA-65 certs, hybrid X25519MLKEM768 and classical TLS servers) and runs
+  the SHIPPED bundle `tools/qguard-agent/dist/qguard-agent.cjs` once per role against
+  the dev server: collection, FIPS 203/204 classification, unapproved/wrong-asset/
+  out-of-scope refusals, approved patch + snapshot + re-scan validation, Patcher may
+  not run a cutover, Operator cutover, operator-verified byte-for-byte rollback, and
+  that Live Migration's API explains a waiting job. Needs OpenSSL 3.5+ and ssh-keygen.
+  ~8 min from this workstation (Supabase RTT ~600 ms) — give it a 25 min timeout.
+  It writes into the Elite QA tenant and does NOT clean up; run
+  `npx tsx .report-smoke/cleanup-roles-runs.mts [--apply]` (keyed on `roles-*` agents
+  and lab paths, dry run by default), never a tenant-wide reset.
+- `npx tsx tools/agent-authority-live-check.ts` — 23 checks; the wizard's write
+  authority switches are what the control plane enforces. Self-cleaning.
+- Signed-in renders: `node .report-smoke/live-migration-probe.mjs <dir> <email>
+  http://localhost:3000` (KPI cards == API, SSE frame == REST) and
+  `ROUTES=/dashboard/agents,/downloads node .report-smoke/route-shot.mjs <dir> <email>
+  http://localhost:3000` (API calls, console problems, overflow, screenshot).
+
 ## Evidence ladder
 
 Pick the weakest rung that actually proves the claim:

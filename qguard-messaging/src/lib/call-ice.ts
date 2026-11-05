@@ -117,8 +117,21 @@ export function hasConfiguredRelay(relay?: RelayConfig | null): boolean {
   return Boolean(relay?.turnUrls?.length || (import.meta.env.VITE_TURN_URL as string | undefined));
 }
 
-let cachedRelay: { value: RelayConfig | null; fetchedAt: number } | null = null;
+let cachedRelay: { value: RelayConfig | null; validUntil: number } | null = null;
 const RELAY_CACHE_MS = 5 * 60_000;
+/** Minted credentials are replaced this long before they expire, so no call starts on one about to lapse. */
+const MINTED_RENEW_BEFORE_MS = 60 * 60_000;
+
+/**
+ * How long a resolved relay may be reused (exported for tests). A relay row is
+ * re-read every 5 minutes so an operator's change lands quickly; minted
+ * credentials are kept until an hour before they expire, but never for less
+ * than the row interval, so a short-lived credential cannot cause a refetch storm.
+ */
+export function relayValidUntil(now: number, mintedExpiresAt: number | null): number {
+  if (mintedExpiresAt === null) return now + RELAY_CACHE_MS;
+  return Math.max(now + RELAY_CACHE_MS, mintedExpiresAt - MINTED_RENEW_BEFORE_MS);
+}
 
 /** Parse a messaging_call_relay row; null when unusable. Exported for tests. */
 export function parseRelayRow(row: unknown): RelayConfig | null {
@@ -237,9 +250,12 @@ export async function probeRelayHealth(force = false): Promise<RelayHealth> {
  */
 export function describeCallConnectFailure(health: RelayHealth | null): string {
   if (health?.status === "not-configured") {
+    // The relay is the `messaging_call_relay` row (see migration 032); there is
+    // no in-app settings screen for it, so the message does not point to one.
     return "Could not establish the encrypted media path. No TURN relay is configured for this "
-      + "workspace, so calls only connect between devices on the same network. An administrator "
-      + "can add a relay in the call relay settings to enable calls across different networks.";
+      + "workspace, so calls only connect between devices on the same network. Calls across "
+      + "different networks (for example mobile data to home Wi-Fi) need the workspace "
+      + "administrator to set up a TURN relay.";
   }
   if (health?.status === "unreachable") {
     return `Could not establish the encrypted media path. The configured TURN relay is not `
@@ -248,25 +264,54 @@ export function describeCallConnectFailure(health: RelayHealth | null): string {
   return "Could not establish the encrypted media path before the call timed out.";
 }
 
-/** Fetch + cache the operator relay row. Never throws. */
+function withTimeout<T>(work: PromiseLike<T>, ms: number, label: string): Promise<T> {
+  const timeout = new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error(label)), ms));
+  return Promise.race([Promise.resolve(work), timeout]);
+}
+
+/**
+ * Short-lived TURN credentials from the `call-relay` Edge Function (Cloudflare
+ * TURN), or null when the function is not deployed or not configured. The
+ * response is shaped like a relay row plus `expires_at`. Never throws.
+ */
+async function fetchMintedRelay(): Promise<{ relay: RelayConfig; expiresAt: number } | null> {
+  try {
+    // Cold starts of an Edge Function can take a few seconds; this runs at
+    // prewarm (mount / resume), not on the call's critical path.
+    const { data, error } = await withTimeout(supabase.functions.invoke("call-relay", { body: {} }), 6_000, "minted relay timeout");
+    if (error || !data) return null;
+    const relay = parseRelayRow(data);
+    const expiresAt = Date.parse(String((data as Record<string, unknown>).expires_at ?? ""));
+    return relay && Number.isFinite(expiresAt) && expiresAt > Date.now() ? { relay, expiresAt } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The operator relay row (`messaging_call_relay`), or null. Never throws. */
+async function fetchRelayRow(): Promise<RelayConfig | null> {
+  try {
+    const { data } = await withTimeout(
+      supabase.from("messaging_call_relay").select("stun_urls,turn_urls,turn_username,turn_credential").eq("id", 1).maybeSingle(),
+      2_500,
+      "relay config timeout",
+    );
+    return parseRelayRow(data);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve + cache the relay: minted short-lived credentials first, the
+ * operator row as the fallback. Never throws.
+ */
 async function resolveRelayConfig(): Promise<RelayConfig | null> {
   const now = Date.now();
-  if (cachedRelay && now - cachedRelay.fetchedAt < RELAY_CACHE_MS) return cachedRelay.value;
-  let relay: RelayConfig | null = null;
-  try {
-    const fetchRow = supabase
-      .from("messaging_call_relay")
-      .select("stun_urls,turn_urls,turn_username,turn_credential")
-      .eq("id", 1)
-      .maybeSingle();
-    const timeout = new Promise<never>((_, reject) =>
-      window.setTimeout(() => reject(new Error("relay config timeout")), 2_500));
-    const { data } = await Promise.race([fetchRow, timeout]);
-    relay = parseRelayRow(data);
-  } catch {
-    relay = null;
-  }
-  cachedRelay = { value: relay, fetchedAt: now };
+  if (cachedRelay && now < cachedRelay.validUntil) return cachedRelay.value;
+  const minted = await fetchMintedRelay();
+  const relay = minted?.relay ?? (await fetchRelayRow());
+  cachedRelay = { value: relay, validUntil: relayValidUntil(Date.now(), minted?.expiresAt ?? null) };
   return relay;
 }
 

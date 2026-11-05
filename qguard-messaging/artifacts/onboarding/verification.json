@@ -1,0 +1,22 @@
+{
+  "screens": [
+    "01-splash.png",
+    "02-messaging.png",
+    "03-vault.png",
+    "04-calls.png",
+    "05-devices.png"
+  ],
+  "checks": [
+    "All five screens render with local artwork and Android skin; inactive slides are inert.",
+    "Next, previous, direct navigation, keyboard, horizontal swipe and vertical gesture discrimination pass.",
+    "Four pages fit 320x568 with visible CTA and no horizontal overflow.",
+    "Four pages fit 360x640 with visible CTA and no horizontal overflow.",
+    "Four pages fit 412x915 with visible CTA and no horizontal overflow.",
+    "Four pages fit 852x393 with visible CTA and no horizontal overflow.",
+    "Reduced motion disables animations; dark system theme retains requested light onboarding.",
+    "Get Started persists original flag, reaches existing login and does not replay on reload.",
+    "Skip reaches existing login and persists the original completion flag."
+  ],
+  "pageErrors": [],
+  "assetFailures": []
+}
