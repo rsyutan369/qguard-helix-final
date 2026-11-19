@@ -35,7 +35,7 @@ export const SITE = {
    * the change log section) whenever the substance of a policy changes — not
    * for typo fixes.
    */
-  effectiveDate: '2026-09-15',
+  effectiveDate: '2026-11-19',
   /** Support response target published on the Contact page. */
   supportResponseTarget: '2 business days',
 } as const

@@ -46,6 +46,14 @@ const SECTIONS: LegalSection[] = [
           an avatar or organisation name.
         </P>
         <P>
+          <Term>Google Sign-In data.</Term> If you choose Google Sign-In, Google provides the basic identity details you
+          authorise for authentication, such as your verified email address, name and profile picture when supplied by
+          Google. We use these details only to create or link your Qguard Helix account and to sign you in. We do not
+          request or access your Gmail messages, Google Drive files, Calendar, contacts, or other Google Account data.
+          The details are stored as account profile data under the protections described in this policy; we do not retain
+          a Google provider token.
+        </P>
+        <P>
           <Term>Billing data.</Term> Subscription plan, billing cycle, status, renewal date, invoice records and the
           PayPal subscription and transaction identifiers. Payment card and PayPal login details are handled entirely by
           PayPal — <Term>they never reach our servers</Term>.
