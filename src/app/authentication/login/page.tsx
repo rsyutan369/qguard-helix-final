@@ -1,38 +1,17 @@
 "use client";
 
-import React, { useLayoutEffect, useRef, useState } from "react";
-import "../auth.css";
-import {
-  Activity,
-  AlertTriangle,
-  ArrowRight,
-  Cpu,
-  Home,
-  Lock,
-  Mail,
-  Radar,
-  Shield,
-  ShieldCheck
-} from "lucide-react";
-import { useAuth } from "@/contexts/auth-context";
-import { useTheme } from "@/contexts/theme-context";
-import ThemeToggle from "@/components/theme/ThemeToggle";
+import React, { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { CyberBackground } from "@/components/CyberBackground";
-
-const LOGIN_SIGNALS = [
-  { icon: ShieldCheck, label: "PQC Session", value: "ML-KEM Ready" },
-  { icon: Radar, label: "Crypto Discovery", value: "CBOM Live" },
-  { icon: Activity, label: "Threat Feed", value: "Live" }
-];
+import { Loader2, Lock, Mail } from "lucide-react";
+import { useAuth } from "@/contexts/auth-context";
+import { ButtonDot } from "@/pages/landing-chars";
+import { AuthAlert, AuthCard, AuthDivider, AuthField, AuthShell, GoogleButton } from "../AuthShell";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [remember, setRemember] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const nextParam = searchParams.get("next");
@@ -40,32 +19,18 @@ export default function LoginPage() {
   const safeNext = nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//") ? nextParam : "/dashboard";
   const nextQuery = nextParam && safeNext !== "/dashboard" ? `?next=${encodeURIComponent(safeNext)}` : "";
   const { signIn, signInWithGoogle } = useAuth();
-  const { mode, theme, setMode } = useTheme();
-  const isLightTheme = theme === "light";
-  const restoreModeRef = useRef(mode);
-
-  // Present the login experience in light mode by default while preserving
-  // whatever global theme the user had set for the rest of the app.
-  // useLayoutEffect (not useEffect) so the switch to light is committed
-  // *before* the browser paints the first frame — otherwise the page paints
-  // once in the global (dark) theme and the user sees a dark→light flash.
-  useLayoutEffect(() => {
-    setMode("light");
-    return () => setMode(restoreModeRef.current);
-  }, [setMode]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setError(null);
-    setSuccessMsg(null);
     try {
       const { error } = await signIn(email, password);
       if (error) {
         setIsLoading(false);
-        let msg = error.message || "Authentication failed.";
-        if (msg.includes("Invalid login")) msg = "ACCESS DENIED - Invalid credentials.";
-        else if (msg.includes("Email not confirmed")) msg = "Identity unverified. Check your inbox.";
+        let msg = error.message || "Sign-in failed. Please try again.";
+        if (msg.includes("Invalid login")) msg = "That email and password don't match an account.";
+        else if (msg.includes("Email not confirmed")) msg = "Please verify your email first. Check your inbox for the confirmation link.";
         setError(msg);
         return;
       }
@@ -83,7 +48,7 @@ export default function LoginPage() {
       navigate(target);
     } catch (err: any) {
       setIsLoading(false);
-      setError(err.message || "System error. Try again.");
+      setError(err.message || "Something went wrong. Please try again.");
     }
   };
 
@@ -94,206 +59,77 @@ export default function LoginPage() {
       const { error } = await signInWithGoogle();
       if (error) {
         setIsLoading(false);
-        setError("OAuth Error: " + error.message);
+        setError("Google sign-in failed: " + error.message);
         return;
       }
       setIsLoading(false);
     } catch (err: any) {
       setIsLoading(false);
-      setError("OAuth Error: " + err.message);
+      setError("Google sign-in failed: " + err.message);
     }
   };
 
   return (
-    <div className={`qguard-home qc-page qc-page-gold ${isLightTheme ? "qguard-home--light qc-page-home-light" : ""}`}>
-      <CyberBackground variant={isLightTheme ? "light" : "dark"} />
-      <div className="qc-hex-grid" />
-      <div className="qc-radial-glow" />
+    <AuthShell mode="login" nextQuery={nextQuery}>
+      <AuthCard kicker="Sign in" heading="Access your workspace" sub="Use your work email, or continue with Google.">
+        {error && <AuthAlert tone="error">{error}</AuthAlert>}
 
-      <header className="qc-auth-nav qc-in-1">
-        <Link to="/" className="qc-auth-brand">
-          <img
-            src="/NEW_LOGO.png"
-            alt="Qguard Helix logo"
-            className="qc-auth-logo-video"
+        <form onSubmit={handleSubmit} className="lp-auth__form" aria-busy={isLoading}>
+          <AuthField
+            id="login-email"
+            label="Work email"
+            icon={Mail}
+            type="email"
+            required
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@company.com"
           />
-          <span className="qc-auth-brand-copy">
-            <span className="qc-auth-brand-title">Qguard Helix</span>
-            <span className="qc-auth-brand-subtitle">Quantum Defense</span>
-          </span>
-        </Link>
 
-        <div className="qc-auth-nav-actions">
-          <ThemeToggle compact showSystem={false} />
-          <Link to="/" className="qc-auth-nav-link">
-            <Home size={15} />
-            Home
-          </Link>
-          <Link to={`/register${nextQuery}`} className="qc-auth-nav-cta">
-            Get Started
-          </Link>
-        </div>
-      </header>
+          <AuthField
+            id="login-password"
+            label="Password"
+            icon={Lock}
+            revealable
+            required
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Enter your password"
+            aside={
+              <Link to="/reset-password" className="lp-auth__inline-link">
+                Forgot password?
+              </Link>
+            }
+          />
 
-      <main className="qc-login-shell">
-        <section className="qc-login-hero qc-in-2" aria-labelledby="login-title">
-          <div className="qc-login-kicker">
-            <span className="qc-status-dot" />
-            Secure Identity Gateway
-          </div>
-          <h1 id="login-title" className="qc-auth-title">
-            Secure <span>Access Node</span>
-          </h1>
-          <p className="qc-auth-lede">
-            Access QGuard Helix through a hardened quantum-secure command center with real-time threat visibility, post-quantum protection, and enterprise-grade defense telemetry.
-          </p>
-
-          <div className="qc-signal-grid" aria-label="Session security checks">
-            {LOGIN_SIGNALS.map((signal) => {
-              const SignalIcon = signal.icon;
-
-              return (
-                <div key={signal.label} className="qc-signal-card">
-                  <SignalIcon size={18} />
-                  <span>{signal.label}</span>
-                  <strong>{signal.value}</strong>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className="qc-login-panel" aria-label="Login form">
-          <div className="qc-card qc-in-3">
-            <div className="qc-logo-wrap">
-              <div className="qc-logo-icon">
-                <Shield size={20} />
-              </div>
-              <span className="qc-logo-text">QGUARD</span>
-            </div>
-
-            <p className="qc-protocol-tag">QUANTUM PROTOCOL</p>
-            <h2 className="qc-heading">Identity Verification</h2>
-            <p className="qc-subtitle">
-              Verify quantum identity signature to proceed.
-            </p>
-
-            {error && (
-              <div className="qc-alert qc-alert-error">
-                <AlertTriangle size={14} className="text-[var(--qg-red)] shrink-0" />
-                <span>{error}</span>
-              </div>
+          <button type="submit" disabled={isLoading} className="lp-btn lp-btn--primary lp-btn--block lp-btn--dot lp-auth__submit">
+            {isLoading ? (
+              <>
+                <Loader2 className="lp-auth__spin" aria-hidden="true" />
+                Signing in…
+              </>
+            ) : (
+              <>
+                Sign in
+                <ButtonDot />
+              </>
             )}
-            {successMsg && (
-              <div className="qc-alert qc-alert-success">
-                <ShieldCheck size={14} className="text-[var(--qg-green)] shrink-0" />
-                <span>{successMsg}</span>
-              </div>
-            )}
+          </button>
 
-            <form onSubmit={handleSubmit} className="qc-form">
-              <div>
-                <label className="qc-field-label">Email Address</label>
-                <div className="qc-field-wrap">
-                  <Mail size={14} className="qc-field-icon" />
-                  <input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="Enter your email"
-                    className="qc-input"
-                  />
-                </div>
-              </div>
+          <AuthDivider />
 
-              <div>
-                <label className="qc-field-label">Password</label>
-                <div className="qc-field-wrap">
-                  <Lock size={14} className="qc-field-icon" />
-                  <input
-                    type="password"
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Enter secure passphrase"
-                    className="qc-input"
-                  />
-                </div>
-              </div>
+          <GoogleButton label="Continue with Google" disabled={isLoading} onClick={handleGoogleSignIn} />
+        </form>
 
-              <div className="qc-remember-row">
-                <label className="qc-remember-label">
-                  <input
-                    type="checkbox"
-                    checked={remember}
-                    onChange={(e) => setRemember(e.target.checked)}
-                    className="qc-checkbox"
-                  />
-                  Keep Terminal Persistent
-                </label>
-                <Link to="/reset-password" className="qc-forgot-btn" aria-label="Forgot password? Reset it">
-                  Lost Token?
-                </Link>
-              </div>
-
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="qc-btn qc-btn-cyan qc-btn-shimmer"
-              >
-                {isLoading ? (
-                  <Cpu size={16} className="animate-spin" />
-                ) : (
-                  <>Initialize Session <ArrowRight size={15} /></>
-                )}
-              </button>
-
-              <div className="qc-divider">
-                <div className="qc-divider-line" />
-                <span className="qc-divider-text">or</span>
-                <div className="qc-divider-line" />
-              </div>
-
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                disabled={isLoading}
-                className="qc-btn qc-btn-ghost"
-              >
-                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
-                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
-                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.84z" fill="#FBBC05" />
-                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335" />
-                </svg>
-                Continue with Google
-              </button>
-
-              <p className="qc-card-footer">
-                New deployment?{" "}
-                <Link to={`/register${nextQuery}`} className="qc-card-link">
-                  Request Credentials
-                </Link>
-              </p>
-            </form>
-          </div>
-
-          <div className="qc-status-bar qc-in-4">
-            <div className="qc-status-header">
-              <span className="qc-status-label">Quantum Sync Status</span>
-              <span className="qc-status-percent">100%</span>
-            </div>
-            <div className="qc-status-track">
-              <div className="qc-status-fill-bar" />
-            </div>
-            <div className="qc-status-indicator">
-              <span className="qc-status-dot" />
-              <span className="qc-status-text">Encrypted Connection Established</span>
-            </div>
-          </div>
-        </section>
-      </main>
-    </div>
+        <p className="lp-auth__card-foot">
+          New to Qguard Helix?{" "}
+          <Link to={`/register${nextQuery}`} viewTransition className="lp-link">
+            Create an account
+          </Link>
+        </p>
+      </AuthCard>
+    </AuthShell>
   );
 }

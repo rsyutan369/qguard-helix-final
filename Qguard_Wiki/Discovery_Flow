@@ -1,0 +1,354 @@
+# QGUARD MESSAGING — XFER & MESH
+## Mutual Device Authentication, Fingerprint Verification & Trusted Device Pairing
+
+### 1. OBJECTIVE
+
+Implement a professional, user-friendly, secure, and seamless device authentication and pairing workflow for the **XFER (Offline File Transfer)** and **MESH (Offline Mesh Messaging)** features in Qguard Messaging.
+
+This functionality must work across:
+
+- Android ↔ Android
+- Android ↔ Windows Desktop
+- Android ↔ macOS
+- Android ↔ Linux
+- Desktop ↔ Desktop
+
+The goal is to allow two Qguard Messaging users to discover each other, request a connection, mutually approve the connection, verify each other's cryptographic identity fingerprints, and establish a trusted encrypted communication session without manually entering any codes or credentials.
+
+Use the existing Qguard Messaging architecture and cryptographic engine. Do not introduce a separate or weaker authentication system.
+
+### 2. DEVICE DISCOVERY WORKFLOW
+
+When a user opens XFER or MESH and enables offline discovery:
+
+1. Discover nearby Qguard Messaging devices using the existing OFFGRID discovery and transport mechanisms.
+2. Display discovered devices in a professional nearby-devices interface.
+3. Display available device information:
+   - Device display name
+   - Platform (Android, Windows, macOS, Linux)
+   - Device avatar or platform icon
+   - Connection availability
+   - Existing trust status, if applicable
+4. Allow users to select a discovered device and initiate a connection request.
+
+Important:
+- Discovery must not automatically establish a trusted connection.
+- Discovery must not automatically authorize messaging or file transfers.
+- Only Qguard Messaging devices should participate in this OFFGRID ecosystem.
+- Do not require internet access, cloud authentication, or an external server.
+
+### 3. MUTUAL CONNECTION APPROVAL
+
+Implement a two-sided connection approval workflow.
+
+**Scenario: Device A discovers Device B.**
+
+Step 1 — Connection Request:
+
+Device A selects Device B and clicks:
+
+"Connect Device"
+
+Device A displays:
+
+"Connection request sent. Waiting for approval..."
+
+Step 2 — Incoming Request Notification:
+
+Device B immediately displays a professional popup or modal:
+
+**NEW DEVICE CONNECTION REQUEST**
+
+A nearby Qguard Messaging device wants to connect with you.
+
+Device information:
+- Device Name
+- Platform
+- Connection Type (XFER / MESH / Both)
+- Requesting Device Identity
+
+Available actions:
+
+[ Allow Connection ]  
+[ Do Not Allow ]
+
+The notification must be visible even if the user is currently viewing another screen, subject to operating-system notification permissions.
+
+Step 3 — Mutual Approval:
+
+- Device B must explicitly approve the connection.
+- Device A must receive the approval response.
+- Neither device should become trusted merely because the other device approved.
+- Both devices must complete cryptographic identity verification before establishing a trusted relationship.
+
+If either device rejects the request, cancel the pairing attempt and display an appropriate notification.
+
+### 4. AUTOMATIC CRYPTOGRAPHIC FINGERPRINT VERIFICATION
+
+After both devices approve the connection, initiate automatic mutual cryptographic identity verification.
+
+Do not require users to type, copy, paste, scan, or manually exchange fingerprints.
+
+Each device must independently:
+
+1. Retrieve the remote device's authenticated public identity key.
+2. Validate the identity-key binding and authentication transcript.
+3. Calculate a cryptographic fingerprint using a secure hash algorithm, preferably SHA3-256, consistent with the existing cryptographic architecture.
+4. Derive the same short authentication representation from the authenticated pairing transcript.
+5. Display the verification information on both devices.
+
+**Example UI:**
+
+DEVICE A:
+"Verify You're Connecting to the Right Device"
+
+Connected device: Ruel's Android
+
+Verification fingerprint:
+`A82F-91D4-7C21-B6E3`
+
+DEVICE B:
+"Verify You're Connecting to the Right Device"
+
+Connected device: Ruel's Desktop
+
+Verification fingerprint:
+`A82F-91D4-7C21-B6E3`
+
+The displayed short authentication representation must match on both devices.
+
+Include a simple verification instruction:
+
+"Check that the verification code displayed on both devices is identical. If they match, confirm that you recognize the other device."
+
+Buttons:
+
+[ They Match — Trust Device ]
+
+[ They Don't Match — Cancel ]
+
+IMPORTANT SECURITY REQUIREMENTS:
+
+- The short verification code must be derived from the complete authenticated handshake transcript, not independently generated random display values.
+- Use sufficient entropy in the underlying fingerprint and a carefully designed short authentication string.
+- Never treat matching display strings alone as cryptographic authentication.
+- Bind the verification transcript to both devices' public identity keys, ephemeral key exchange contributions, protocol version, session identifiers, and requested capabilities.
+- Protect against man-in-the-middle attacks, replay attacks, identity substitution, and downgrade attacks.
+- Use domain separation for XFER and MESH protocol contexts where appropriate.
+
+### 5. TRUST ESTABLISHMENT
+
+Once both users confirm that the verification codes match:
+
+1. Complete mutual identity authentication.
+2. Establish an authenticated encrypted session.
+3. Exchange authenticated device identity metadata.
+4. Register the remote device in the local Trusted Devices registry.
+5. Store the authenticated identity public key and relevant trust metadata.
+6. Record the pairing timestamp and supported capabilities.
+7. Display a successful pairing notification.
+
+Example:
+
+**DEVICE SUCCESSFULLY TRUSTED**
+
+You are now securely connected to:
+
+Ruel's Android
+
+Available capabilities:
+- Secure Offline Messaging
+- Offline File Transfer
+- OFFGRID Device Communication
+
+[ Start Messaging ] [ Send Files ]
+
+Trust must be established separately on each device. A user approving a connection does not automatically authorize unrestricted access to their files, messages, or local storage.
+
+### 6. XFER INTEGRATION
+
+Integrate the mutual authentication and trusted-device system into XFER.
+
+After successful pairing:
+
+- Allow users to select files for offline transfer.
+- Display the recipient's verified device identity.
+- Require explicit recipient acceptance before receiving files.
+- Display transfer progress, file size, transfer speed, and completion status.
+- Support transfer cancellation.
+- Verify file integrity using SHA3-256 or the existing approved integrity mechanism.
+- Use authenticated encryption for transferred content.
+- Prevent unauthorized file access or automatic file execution.
+
+A trusted device must not automatically receive files without user consent.
+
+### 7. MESH INTEGRATION
+
+Integrate the same trusted-device authentication system into MESH.
+
+After successful pairing:
+
+- Allow users to initiate offline secure conversations.
+- Display trusted nearby Qguard Messaging devices.
+- Establish authenticated encrypted messaging sessions.
+- Support reconnection when devices move out of range and return.
+- Preserve authorized device trust across application restarts.
+- Support multiple trusted devices.
+- Ensure message routing and relay operations cannot bypass identity authentication or authorization policies.
+
+For mesh relaying, do not assume that trusting one device automatically means trusting every device reachable through it.
+
+Every peer must maintain its own authenticated identity and authorization state.
+
+### 8. TRUSTED DEVICES MANAGEMENT
+
+Create a unified Trusted Devices management interface accessible from Qguard Messaging Settings.
+
+Display:
+
+- Device name
+- Platform
+- Identity fingerprint
+- First paired date
+- Last connected date
+- Available capabilities
+- Current connection status
+- Trust status
+
+Available actions:
+
+- View Device Details
+- Connect
+- Disconnect
+- Revoke Trust
+- Block Device
+
+Revoking trust must invalidate future authorization and prevent automatic reconnection as a trusted device.
+
+### 9. PROFESSIONAL UI/UX REQUIREMENTS
+
+Design a premium enterprise-grade interface consistent with Qguard Messaging's existing design system.
+
+Design characteristics:
+
+- Modern, clean, professional UI.
+- Light and dark theme support.
+- Subtle animations and transitions.
+- Clear connection-state indicators.
+- Platform-specific device icons.
+- Intuitive approval dialogs.
+- Readable cryptographic fingerprint presentation.
+- Responsive Android and desktop layouts.
+- Accessible controls and screen-reader support.
+
+Recommended connection states:
+
+1. Discovering Devices
+2. Device Discovered
+3. Connection Request Sent
+4. Awaiting Approval
+5. Connection Approved
+6. Verifying Identity
+7. Awaiting Mutual Confirmation
+8. Establishing Secure Session
+9. Trusted and Connected
+10. Connection Rejected / Cancelled / Failed
+
+Provide meaningful error messages and retry options.
+
+### 10. SECURITY AND ENGINEERING REQUIREMENTS
+
+- Reuse the existing Rust cryptographic engine and QHCE architecture.
+- Reuse existing identity keys where appropriate.
+- Never expose private keys to the frontend.
+- Never transmit private keys between devices.
+- Use authenticated key exchange and forward-secret session establishment.
+- Use cryptographically secure randomness.
+- Authenticate all pairing messages.
+- Protect against replay, spoofing, impersonation, and downgrade attacks.
+- Implement pairing expiration and request timeouts.
+- Implement rate limiting and repeated-request protection.
+- Prevent unauthorized background pairing.
+- Persist trust information securely using platform-appropriate protected storage.
+- Avoid trusting devices based solely on MAC addresses, Bluetooth names, IP addresses, or device display names.
+- Keep the pairing protocol independent of the underlying discovery transport.
+
+Do not invent cryptographic primitives or implement custom cryptographic algorithms.
+
+### 11. CROSS-PLATFORM ARCHITECTURE
+
+Implement a shared Rust pairing and authentication engine that exposes consistent APIs to:
+
+- Android
+- Windows
+- macOS
+- Linux
+
+The UI layer may differ between platforms, but the underlying cryptographic identity verification, pairing state machine, trust registry, and authentication protocol must remain consistent.
+
+Ensure proper integration with existing Android and Tauri desktop implementations.
+
+### 12. IMPLEMENTATION AND TESTING
+
+Before implementation:
+
+1. Audit the existing XFER and MESH implementations.
+2. Inspect device discovery and transport mechanisms.
+3. Inspect existing identity key management.
+4. Inspect the Rust cryptographic engine.
+5. Inspect existing video/audio call authentication workflows.
+6. Identify reusable components and avoid duplicate authentication systems.
+
+Implement the feature using the existing architecture.
+
+Create automated tests covering:
+
+- Android-to-Android pairing.
+- Android-to-desktop pairing.
+- Desktop-to-desktop pairing.
+- Simultaneous connection requests.
+- Incoming request approval and rejection.
+- Fingerprint mismatch.
+- Identity substitution.
+- Replay attacks.
+- Connection timeout.
+- Interrupted pairing.
+- Duplicate pairing requests.
+- Trust revocation.
+- Device reconnection.
+- Unauthorized file transfer attempts.
+- Unauthorized mesh messaging attempts.
+- Application restart and trust persistence.
+
+Do not use mocked devices, fake fingerprints, hardcoded connection states, or simulated successful cryptographic authentication in production.
+
+### 13. FINAL ACCEPTANCE CRITERIA
+
+The implementation is complete only when:
+
+- Both Android and desktop can discover nearby Qguard Messaging devices.
+- Users can initiate connections without manually exchanging information.
+- The receiving device displays an incoming connection approval popup.
+- Both users must explicitly approve and confirm the authenticated identity verification.
+- Both devices display the same transcript-derived verification code.
+- A mismatch prevents trusted pairing.
+- Successful authentication establishes a secure session.
+- Trusted devices are registered and manageable.
+- XFER and MESH share the same trusted-device authentication infrastructure.
+- Offline functionality works without internet access.
+- The implementation is tested on real Android and desktop devices.
+- Existing secure chat, video/audio calls, XFER, and MESH functionality remains intact.
+
+**FINAL OBJECTIVE:**
+
+Make Qguard Messaging device pairing as simple as connecting to a nearby device, while maintaining strong cryptographic identity authentication.
+
+Users should only need to:
+
+1. Discover the nearby Qguard Messaging device.
+2. Tap Connect.
+3. Approve the incoming request on the other device.
+4. Compare the verification codes displayed on both screens.
+5. Confirm that the codes match.
+
+Once completed, the devices become trusted peers and can securely communicate through Qguard Messaging XFER and MESH without requiring internet connectivity.

@@ -70,6 +70,7 @@ export interface AssetAlgorithm {
   standard: string;
   rationale: string;
   severity: string;
+  category: 'key-establishment' | 'signature' | 'symmetric' | 'hash' | 'protocol' | 'unknown';
 }
 
 export interface AssetDossier extends AssetSummaryRecord {
@@ -97,11 +98,19 @@ export interface AssetDossier extends AssetSummaryRecord {
   compliance: Array<{ framework: string; control: string; status: string; detail: string }>;
   timeline: Array<{ phase: string; durationHours: number; owner: string; description: string }>;
   validation: { records: number; lastStatus: string; lastAt: string | null; cutoverBlocked: boolean; blockerReason: string; validated: boolean };
-  jobs: Array<{ id: string; status: string; progress: number; jobType: string; targetAlgorithm: string; updatedAt: string }>;
+  jobs: Array<{ id: string; status: string; progress: number; jobType: string; targetAlgorithm: string; updatedAt: string; planId: string | null; error: string | null }>;
+  latestSandbox: { status: string; updatedAt: string | null; planId: string | null } | null;
   evidence: { sources: string[]; scanResults: number; exposures: number; runtimeEvents: number; certificates: number; components: number; note: string };
 }
 
 export interface PortfolioSummary {
+  vulnerableAssets: number;
+  immediateAttention: number;
+  verifiedMigrations: number;
+  pendingMigrations: number;
+  activeMigrations: number;
+  failedMigrations: number;
+  unverifiedCompletions: number;
   total: number;
   quantumVulnerable: number;
   hybrid: number;
@@ -123,6 +132,7 @@ export interface QueueEntry {
   name: string;
   type: string;
   environment: string;
+  owner: string;
   priority: string;
   priorityScore: number;
   riskScore: number;
@@ -136,6 +146,7 @@ export interface QueueEntry {
   successProbabilityPct: number;
   posture: Posture;
   postureLabel: string;
+  targets: string[];
 }
 
 export interface AssetFilters {
@@ -178,6 +189,8 @@ const EMPTY_PORTFOLIO: PortfolioResponse = {
   total: 0,
   totalUnfiltered: 0,
   summary: {
+    vulnerableAssets: 0, immediateAttention: 0, verifiedMigrations: 0, pendingMigrations: 0,
+    activeMigrations: 0, failedMigrations: 0, unverifiedCompletions: 0,
     total: 0, quantumVulnerable: 0, hybrid: 0, pqcReady: 0, internetFacing: 0,
     criticalPriority: 0, highPriority: 0, notStarted: 0, inProgress: 0, completed: 0,
     queued: 0, averageReadiness: 0, totalEffortHours: 0,
@@ -204,6 +217,7 @@ const WATCHED_FIELDS: Array<keyof AssetDossier> = [
   'riskScore', 'readinessScore', 'priority', 'priorityScore', 'posture',
   'migrationStatus', 'migrationProgressPct', 'componentCount',
   'vulnerableComponentCount', 'hndlScore', 'successProbabilityPct',
+  'latestSandbox', 'validation',
 ];
 
 function diffFields(previous: AssetDossier | null, next: AssetDossier): string[] {
@@ -215,13 +229,15 @@ function diffFields(previous: AssetDossier | null, next: AssetDossier): string[]
 /* Hook                                                                */
 /* ------------------------------------------------------------------ */
 
-export function useMigrationAssets() {
+export function useMigrationAssets(streamVerifiedAt: string | null) {
   const { session, user } = useAuth();
   const token = session?.access_token;
 
   const [filters, setFilters] = useState<AssetFilters>(DEFAULT_ASSET_FILTERS);
   const [portfolio, setPortfolio] = useState<PortfolioResponse>(EMPTY_PORTFOLIO);
   const [portfolioLoading, setPortfolioLoading] = useState(true);
+  const [page, setPage] = useState(0);
+  const pageSize = 100;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dossier, setDossier] = useState<AssetDossier | null>(null);
   const [position, setPosition] = useState<{ recommendedRank: number | null; totalRanked: number; rationale: string; riskPercentile: number } | null>(null);
@@ -231,14 +247,23 @@ export function useMigrationAssets() {
     planId: '', entries: [], totalEffortHours: 0, outOfOrder: [], updatedAt: null,
   });
   const [error, setError] = useState<string | null>(null);
+  const [portfolioError, setPortfolioError] = useState<string | null>(null);
+  const [dossierError, setDossierError] = useState<string | null>(null);
+  const [queueError, setQueueError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   const dossierRef = useRef<AssetDossier | null>(null);
   const selectedRef = useRef<string | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshEvidence = useRef(false);
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const filtersRef = useRef(filters);
+  const pageRef = useRef(page);
+  const portfolioRequest = useRef(0);
+  const dossierRequest = useRef(0);
+  const queueRequest = useRef(0);
   filtersRef.current = filters;
+  pageRef.current = page;
   selectedRef.current = selectedId;
 
   const authHeaders = useMemo(
@@ -257,9 +282,11 @@ export function useMigrationAssets() {
   );
 
   /* ---- portfolio ---- */
-  const loadPortfolio = useCallback(async () => {
+  const loadPortfolio = useCallback(async (force = false) => {
     if (!token) return;
+    const generation = ++portfolioRequest.current;
     const active = filtersRef.current;
+    const activePage = pageRef.current;
     const params = new URLSearchParams({
       search: active.search,
       posture: active.posture,
@@ -267,16 +294,20 @@ export function useMigrationAssets() {
       priority: active.priority,
       status: active.status,
       sort: active.sort,
-      limit: '400',
+      limit: String(pageSize),
+      offset: String(activePage * pageSize),
     });
+    if (force) params.set('refresh', '1');
     try {
       const data = (await request(`/assets?${params.toString()}`)) as PortfolioResponse;
+      if (generation !== portfolioRequest.current || filtersRef.current !== active || pageRef.current !== activePage) return;
+      if (activePage && activePage * pageSize >= data.total) setPage(Math.max(0, Math.ceil(data.total / pageSize) - 1));
       setPortfolio({ ...EMPTY_PORTFOLIO, ...data });
-      setError(null);
+      setPortfolioError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load the asset portfolio');
+      if (generation === portfolioRequest.current) setPortfolioError(err instanceof Error ? err.message : 'Unable to load the asset portfolio');
     } finally {
-      setPortfolioLoading(false);
+      if (generation === portfolioRequest.current) setPortfolioLoading(false);
     }
   }, [request, token]);
 
@@ -284,12 +315,13 @@ export function useMigrationAssets() {
   const loadDossier = useCallback(
     async (assetId: string, options: { silent?: boolean } = {}) => {
       if (!token) return;
+      const generation = ++dossierRequest.current;
       if (!options.silent) setDossierLoading(true);
       try {
         const data = (await request(`/assets/${encodeURIComponent(assetId)}`)) as { asset: AssetDossier; position: typeof position };
         // A late response for a superseded selection must never overwrite the
         // asset the operator is now looking at.
-        if (selectedRef.current !== assetId) return;
+        if (selectedRef.current !== assetId || generation !== dossierRequest.current) return;
         const changed = options.silent ? diffFields(dossierRef.current, data.asset) : [];
         dossierRef.current = data.asset;
         setDossier(data.asset);
@@ -299,11 +331,11 @@ export function useMigrationAssets() {
           if (highlightTimer.current) clearTimeout(highlightTimer.current);
           highlightTimer.current = setTimeout(() => setChangedFields([]), 6000);
         }
-        setError(null);
+        setDossierError(null);
       } catch (err) {
-        if (selectedRef.current === assetId) setError(err instanceof Error ? err.message : 'Unable to load the asset dossier');
+        if (selectedRef.current === assetId && generation === dossierRequest.current) setDossierError(err instanceof Error ? err.message : 'Unable to load the asset dossier');
       } finally {
-        setDossierLoading(false);
+        if (generation === dossierRequest.current) setDossierLoading(false);
       }
     },
     [request, token],
@@ -312,11 +344,14 @@ export function useMigrationAssets() {
   /* ---- queue ---- */
   const loadQueue = useCallback(async () => {
     if (!token) return;
+    const generation = ++queueRequest.current;
     try {
       const data = await request('/queue');
+      if (generation !== queueRequest.current) return;
       setQueue({ planId: data.planId, entries: data.entries || [], totalEffortHours: data.totalEffortHours || 0, outOfOrder: data.outOfOrder || [], updatedAt: data.updatedAt || null });
-    } catch {
-      /* the queue panel is auxiliary — never break the workspace */
+      setQueueError(null);
+    } catch (err) {
+      if (generation === queueRequest.current) setQueueError(err instanceof Error ? err.message : 'Unable to load the migration queue');
     }
   }, [request, token]);
 
@@ -327,16 +362,18 @@ export function useMigrationAssets() {
       try {
         const data = (await run()) as { planId: string; entries: QueueEntry[]; totalEffortHours: number; outOfOrder: string[]; updatedAt: string | null };
         if (data?.entries) {
+          ++queueRequest.current;
           setQueue({ planId: data.planId, entries: data.entries, totalEffortHours: data.totalEffortHours || 0, outOfOrder: data.outOfOrder || [], updatedAt: data.updatedAt || null });
+          setQueueError(null);
         }
-        await loadPortfolio();
+        await Promise.all([loadPortfolio(), selectedRef.current && loadDossier(selectedRef.current, { silent: true })]);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Queue update failed');
       } finally {
         setBusy(null);
       }
     },
-    [loadPortfolio],
+    [loadDossier, loadPortfolio],
   );
 
   const enqueue = useCallback(
@@ -365,18 +402,19 @@ export function useMigrationAssets() {
    * returns the Live Migration deep link.
    */
   const sendToLiveMigration = useCallback(
-    async (assets: Array<Pick<AssetSummaryRecord, 'id' | 'name' | 'type' | 'environment' | 'owner' | 'riskScore' | 'priority'>>, targetByAsset: Record<string, string> = {}) => {
+    async (assets: Array<Pick<AssetSummaryRecord, 'id' | 'name' | 'type' | 'environment' | 'owner' | 'riskScore' | 'priority'>>, targetByAsset: Record<string, string> = {}, action: 'start' | 'sandbox' = 'start', approvalPlanId?: string) => {
       if (!token) throw new Error('Authentication required');
       if (!assets.length) throw new Error('Select at least one asset to migrate.');
-      setBusy('dispatch');
+      setBusy(action === 'start' ? 'dispatch' : 'sandbox');
       setError(null);
       try {
-        const planId = `planner-asset-${Date.now()}`;
+        const planId = `planner-asset-${crypto.randomUUID()}`;
         const response = await fetch('/api/v1/migration/planner/create', {
           method: 'POST',
           headers: authHeaders,
           body: JSON.stringify({
-            action: 'start',
+            action,
+            approvalPlanId,
             planId,
             limit: Math.max(1, assets.length),
             assetIds: assets.map((a) => a.id),
@@ -405,7 +443,7 @@ export function useMigrationAssets() {
 
         // Stamp the authoritative, server-derived migration context onto the plan
         // so Live Migration loads the same intelligence the planner displayed.
-        await request(`/plans/${encodeURIComponent(createdPlanId)}/context`, {
+        if (action === 'start') await request(`/plans/${encodeURIComponent(createdPlanId)}/context`, {
           method: 'POST',
           body: JSON.stringify({ assetIds: assets.map((a) => a.id) }),
         }).catch(() => undefined);
@@ -414,6 +452,7 @@ export function useMigrationAssets() {
         return {
           planId: createdPlanId,
           liveMigrationUrl: payload?.data?.plan?.liveMigrationUrl || `/dashboard/live-migration?planId=${encodeURIComponent(createdPlanId)}`,
+          sandboxUrl: payload?.data?.sandboxUrl || `/dashboard/migration-sandbox?planId=${encodeURIComponent(createdPlanId)}`,
         };
       } finally {
         setBusy(null);
@@ -428,7 +467,10 @@ export function useMigrationAssets() {
       setSelectedId(assetId);
       selectedRef.current = assetId;
       setChangedFields([]);
+      setDossierError(null);
       if (!assetId) {
+        ++dossierRequest.current;
+        setDossierLoading(false);
         dossierRef.current = null;
         setDossier(null);
         setPosition(null);
@@ -442,15 +484,24 @@ export function useMigrationAssets() {
   );
 
   /* ---- live synchronisation ---- */
-  const queueRefresh = useCallback(() => {
-    if (refreshTimer.current) clearTimeout(refreshTimer.current);
-    refreshTimer.current = setTimeout(() => {
+  const queueRefresh = useCallback((force = false) => {
+    if (force) refreshEvidence.current = true;
+    if (refreshTimer.current) return;
+    refreshTimer.current = setTimeout(async () => {
       refreshTimer.current = null;
-      void loadPortfolio();
+      const fresh = refreshEvidence.current;
+      refreshEvidence.current = false;
+      if (fresh) await loadPortfolio(true);
+      else void loadPortfolio();
+      void loadQueue();
       const active = selectedRef.current;
       if (active) void loadDossier(active, { silent: true });
     }, 900);
-  }, [loadDossier, loadPortfolio]);
+  }, [loadDossier, loadPortfolio, loadQueue]);
+
+  useEffect(() => {
+    if (streamVerifiedAt) queueRefresh();
+  }, [streamVerifiedAt, queueRefresh]);
 
   useEffect(() => {
     if (!token) {
@@ -469,14 +520,14 @@ export function useMigrationAssets() {
     if (!token) return;
     const timer = setTimeout(() => void loadPortfolio(), filters.search ? 300 : 0);
     return () => clearTimeout(timer);
-  }, [filters, token, loadPortfolio]);
+  }, [filters, page, token, loadPortfolio]);
 
   useEffect(() => {
     if (!user) return;
     const channels = REALTIME_TABLES.map((table) =>
       supabase
-        .channel(`migration-assets-${table}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` }, queueRefresh)
+        .channel(`migration-assets-${user.id}-${table}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` }, () => queueRefresh(true))
         .subscribe(),
     );
     return () => { for (const channel of channels) supabase.removeChannel(channel); };
@@ -489,7 +540,10 @@ export function useMigrationAssets() {
 
   return {
     filters,
-    setFilters,
+    setFilters: useCallback((next: AssetFilters) => { setPage(0); setFilters(next); }, []),
+    page,
+    setPage,
+    pageSize,
     portfolio,
     portfolioLoading,
     selectedId,
@@ -505,10 +559,13 @@ export function useMigrationAssets() {
     applyRecommendedOrder,
     sendToLiveMigration,
     refresh: useCallback(async () => {
-      await Promise.all([loadPortfolio(), loadQueue()]);
-      if (selectedRef.current) await loadDossier(selectedRef.current, { silent: true });
+      await loadPortfolio(true);
+      await Promise.all([loadQueue(), selectedRef.current && loadDossier(selectedRef.current, { silent: true })]);
     }, [loadDossier, loadPortfolio, loadQueue]),
     error,
+    portfolioError,
+    dossierError,
+    queueError,
     busy,
   };
 }

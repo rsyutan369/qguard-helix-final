@@ -12,10 +12,10 @@ import { ExplodedStack } from './_stack';
 /* ----------------------------------------------------- envelope layers ------ */
 
 const ENVELOPE = [
-  { icon: FileLock2, title: 'Signed container', tag: 'ML-DSA-87 + Ed25519', tone: '#d4af37', body: 'The finished .qvault is dual-signed (FIPS 204 Level 5). A container is authenticated as this vault’s own before a single byte is written, so a swapped or forged file is refused.' },
-  { icon: ShieldCheck, title: 'Hybrid post-quantum seal', tag: 'X25519 + ML-KEM-1024 · sharing & enterprise', tone: '#8b5cf6', body: 'When you share a file to a person or enable enterprise recovery, the file key is also wrapped with a hybrid KEM, mixed by HKDF-SHA3-256 with a transcript-bound combiner (QGuard-HybridKEM-v2). ML-KEM only ever protects a key; it never encrypts content.' },
+  { icon: FileLock2, title: 'Signed container', tag: 'ML-DSA-87 + Ed25519', tone: '#d4af37', body: 'Standard .qvault v5 headers are signed with Ed25519 and ML-DSA-87. The reader checks the header before opening encrypted chunks.' },
+  { icon: ShieldCheck, title: 'Hybrid post-quantum seal', tag: 'X25519 + ML-KEM-1024 · sharing & enterprise', tone: '#8b5cf6', body: 'When you seal a portable file to a recipient or enable enterprise recovery, the file key is also wrapped with a hybrid KEM, mixed by HKDF-SHA3-256 with a transcript-bound combiner (QGuard-HybridKEM-v2). ML-KEM only ever protects a key; it never encrypts content.' },
   { icon: KeyRound, title: 'PIN-bound Vault Master Key', tag: '.qvault v5', tone: '#22d3ee', body: 'In v5 the file key is wrapped under the PIN-bound vault key, so the vault lock is enforced by the cryptography — not just a check in the interface. Older containers stay readable, are reported as not PIN-bound, and “re-protect” rewrites their header.' },
-  { icon: Lock, title: 'One AES-256-GCM key per file', tag: 'AES-256-GCM', tone: '#34d399', body: 'Each file gets its own random key. Content is streamed in authenticated chunks, so the app sets no size limit and every chunk is tied to its position.' },
+  { icon: Lock, title: 'One AES-256-GCM key per file', tag: 'AES-256-GCM', tone: '#34d399', body: 'Each file gets its own random key. Content is streamed in authenticated chunks, and each chunk is bound to its position.' },
   { icon: Layers, title: 'Your file or folder', tag: 'On your device', tone: '#e6edf7', body: 'Any file, or a whole folder (desktop) packed into one archive whose structure is hidden inside the ciphertext. Nothing is uploaded.' },
 ];
 
@@ -27,7 +27,7 @@ export function EnvelopeLayers() {
     <StageFrame
       title="The layered key envelope"
       icon={Layers}
-      note={<span>Read it from the outside in. The signature makes a forged or altered container fail before anything is written. To read a file, someone needs its per-file key — and that is only ever stored wrapped under your PIN-bound key, your recovery key, or (when you share or use enterprise recovery) a hybrid post-quantum seal.</span>}
+      note={<span>Read it from the outside in. The signature authenticates the header; AES-GCM checks the encrypted chunks during decryption. To read a file, someone needs its per-file key — and that is only ever stored wrapped under your PIN-bound key, your recovery key, or (when you share or use enterprise recovery) a hybrid post-quantum seal.</span>}
     >
       <div className="grid items-center gap-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <div>
@@ -250,7 +250,7 @@ export function RecoveryKeys() {
       <div className="mt-5 grid items-center gap-5 md:grid-cols-[1fr_auto_1fr]" style={{ perspective: 800 }}>
         <div className="flex flex-wrap justify-center gap-3">
           <Key label="Personal recovery key" on={personal} toggle={() => setPersonal((v) => !v)} icon={KeyRound} />
-          <Key label="Enterprise key (ML-KEM-1024)" on={enterprise} toggle={() => setEnterprise((v) => !v)} icon={Building2} />
+          <Key label="Enterprise key (X25519 + ML-KEM-1024)" on={enterprise} toggle={() => setEnterprise((v) => !v)} icon={Building2} />
         </div>
         <div className="mx-auto flex items-center justify-center" style={{ width: 64 }} aria-hidden>
           <div className="qm-ring" style={{ position: 'relative', left: 0, top: 0, width: 52, height: 52, animationDuration: '8s', transform: 'none', border: '1.5px dashed rgba(34,211,238,.6)' }} />

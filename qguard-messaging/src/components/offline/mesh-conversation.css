@@ -1,0 +1,286 @@
+/* Mesh conversation: one continuous thread with a trusted device. Uses the
+   offline workspace tokens (offline-dashboard.css) so light, dark and the
+   Android skin follow the rest of Mesh and XFER. */
+
+.mesh-conversation {
+  display: flex;
+  flex-direction: column;
+  /* MeshConversation measures the space its scroll area has left (below the
+     shell header, offline banner and notices, above the mobile navigation)
+     and sets --mesh-conversation-height; the viewport guess is only the
+     first-paint fallback. */
+  height: var(--mesh-conversation-height, min(76dvh, 760px));
+  overflow: hidden;
+  border: 1px solid var(--offline-rim);
+  border-radius: 1.1rem;
+  background: var(--offline-panel-bottom);
+}
+
+.mesh-conversation-header {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  padding: .7rem .8rem;
+  border-bottom: 1px solid var(--offline-rim);
+  background: var(--offline-panel-top);
+}
+
+.mesh-conversation-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border: 1px solid var(--offline-rim);
+  border-radius: .8rem;
+  background: var(--offline-panel-bottom);
+  color: var(--app-ink-800, currentColor);
+}
+
+.mesh-conversation-avatar {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--offline-accent) 14%, var(--offline-panel-bottom));
+  color: var(--offline-accent-strong);
+}
+
+.mesh-conversation-identity { min-width: 0; flex: 1; }
+
+.mesh-conversation-identity h2 {
+  overflow: hidden;
+  font-size: 1.02rem;
+  font-weight: 750;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mesh-conversation-identity p {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: .76rem;
+  font-weight: 600;
+  color: var(--app-ink-600, #5b6475);
+}
+
+.mesh-conversation-dot {
+  width: .5rem;
+  height: .5rem;
+  flex: none;
+  border-radius: 999px;
+  background: #94a3b8;
+}
+
+.mesh-conversation-identity p[data-tone="connected"] { color: var(--offline-success); }
+.mesh-conversation-identity p[data-tone="connected"] .mesh-conversation-dot { background: var(--offline-success); }
+.mesh-conversation-identity p[data-tone="pending"] .mesh-conversation-dot {
+  background: #d99a1e;
+  animation: mesh-conversation-pulse 1.4s ease-in-out infinite;
+}
+.mesh-conversation-identity p[data-tone="blocked"] .mesh-conversation-dot { background: #d6455d; }
+
+@keyframes mesh-conversation-pulse {
+  50% { opacity: .35; }
+}
+
+.mesh-conversation-thread {
+  flex: 1;
+  min-height: 6rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: .9rem .8rem 1rem;
+}
+
+.mesh-conversation-thread ol {
+  display: flex;
+  flex-direction: column;
+  gap: .45rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mesh-conversation-thread li { display: flex; }
+.mesh-conversation-thread li[data-mine="true"] { justify-content: flex-end; }
+
+.mesh-conversation-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: .4rem;
+  max-width: 34rem;
+  margin: 0 auto .9rem;
+  padding: .5rem .7rem;
+  border: 1px solid color-mix(in srgb, var(--offline-success) 30%, var(--offline-rim));
+  border-radius: .7rem;
+  font-size: .72rem;
+  line-height: 1.45;
+  color: var(--offline-success);
+  background: color-mix(in srgb, var(--offline-success) 7%, var(--offline-panel-bottom));
+}
+
+.mesh-conversation-notice svg { flex: none; margin-top: .1rem; }
+
+.mesh-conversation-empty {
+  margin: 2rem auto;
+  max-width: 24rem;
+  text-align: center;
+  font-size: .88rem;
+  line-height: 1.5;
+  color: var(--app-ink-600, #5b6475);
+}
+
+.mesh-conversation-bubble {
+  max-width: min(78%, 34rem);
+  padding: .55rem .75rem .4rem;
+  border: 1px solid var(--offline-rim);
+  border-radius: 1rem 1rem 1rem .3rem;
+  background: var(--offline-panel-top);
+  color: var(--app-ink-950, inherit);
+}
+
+li[data-mine="true"] .mesh-conversation-bubble {
+  border-color: transparent;
+  border-radius: 1rem 1rem .3rem 1rem;
+  background: #5b21b6;
+  color: #fff;
+}
+
+li[data-emergency] .mesh-conversation-bubble { box-shadow: inset 3px 0 0 #d6455d; }
+
+.mesh-conversation-flag,
+.mesh-conversation-group {
+  display: flex;
+  align-items: center;
+  gap: .3rem;
+  margin-bottom: .15rem;
+  font-size: .7rem;
+  font-weight: 750;
+}
+
+.mesh-conversation-flag { color: #d6455d; }
+li[data-mine="true"] .mesh-conversation-flag { color: #ffd4dc; }
+.mesh-conversation-group { opacity: .78; }
+
+.mesh-conversation-body {
+  font-size: .92rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mesh-conversation-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: .25rem .55rem;
+  margin-top: .2rem;
+  font-size: .68rem;
+  opacity: .82;
+}
+
+.mesh-conversation-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: .2rem;
+  font-weight: 650;
+}
+
+li[data-mine="true"] .mesh-conversation-meta span[data-tone="failed"] { color: #ffd4dc; }
+
+.mesh-conversation-details {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  color: inherit;
+}
+
+.mesh-conversation-error {
+  margin: 0 .8rem .4rem;
+  padding: .5rem .7rem;
+  border-radius: .6rem;
+  font-size: .78rem;
+  color: var(--app-ink-800, inherit);
+  background: color-mix(in srgb, #d99a1e 14%, var(--offline-panel-bottom));
+}
+
+.mesh-conversation-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: .5rem;
+  padding: .6rem .7rem calc(.6rem + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--offline-rim);
+  background: var(--offline-panel-top);
+}
+
+.mesh-conversation-composer textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 2.75rem;
+  max-height: 8rem;
+  padding: .65rem .85rem;
+  border: 1px solid var(--offline-rim);
+  border-radius: 1.4rem;
+  font-size: .92rem;
+  line-height: 1.35;
+  resize: none;
+  field-sizing: content;
+  background: var(--offline-panel-bottom);
+  color: inherit;
+}
+
+.mesh-conversation-composer textarea:focus-visible {
+  outline: 2px solid var(--offline-accent-strong);
+  outline-offset: 1px;
+}
+
+.mesh-conversation-emergency {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border: 1px solid var(--offline-rim);
+  border-radius: 999px;
+  color: var(--app-ink-500, #8a93a3);
+  cursor: pointer;
+}
+
+.mesh-conversation-emergency input { position: absolute; opacity: 0; pointer-events: none; }
+.mesh-conversation-emergency:has(input:checked) { border-color: #d6455d; color: #d6455d; background: color-mix(in srgb, #d6455d 10%, transparent); }
+.mesh-conversation-emergency:has(input:focus-visible) { outline: 2px solid var(--offline-accent-strong); outline-offset: 1px; }
+
+.mesh-conversation-send {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 999px;
+  background: #5b21b6;
+  color: #fff;
+}
+
+.mesh-conversation-send:disabled { opacity: .45; cursor: not-allowed; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mesh-conversation-identity p[data-tone="pending"] .mesh-conversation-dot { animation: none; }
+}
+
+@media (max-width: 640px) {
+  .mesh-conversation {
+    height: var(--mesh-conversation-height, calc(100dvh - 18rem));
+    border-radius: .9rem;
+  }
+  .mesh-conversation-bubble { max-width: 86%; }
+}

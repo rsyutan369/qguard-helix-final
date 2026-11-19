@@ -35,7 +35,7 @@ export function isNetworkFailure(error: unknown): boolean {
 
 export async function queueOutbox(item: OutboxItem): Promise<number> {
   const count = await safeInvoke<number>("outbox_put", { item });
-  if (typeof window !== "undefined") window.dispatchEvent(new Event(OUTBOX_QUEUED_EVENT));
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(OUTBOX_QUEUED_EVENT, { detail: count }));
   return count;
 }
 

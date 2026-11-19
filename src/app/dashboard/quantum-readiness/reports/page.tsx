@@ -1,813 +1,579 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
-import { motion } from 'framer-motion';
 import {
-  BadgeCheck,
-  Building2,
-  Calendar,
-  CheckSquare,
-  ChevronLeft,
-  ChevronRight,
-  Download,
-  Eye,
-  FileBarChart,
-  FileText,
-  FileSpreadsheet,
-  FileJson,
-  ImagePlus,
-  Landmark,
-  ListChecks,
-  Loader2,
-  Presentation,
-  RefreshCw,
-  Route as RouteIcon,
-  ShieldCheck,
-  Sparkles,
-  Square,
+  Archive, CheckCircle2, ChevronLeft, ChevronRight, Download, Eye, FileBarChart, FileJson,
+  FileSpreadsheet, FileText, ImagePlus, Landmark, Loader2, Presentation, RefreshCw,
+  Route as RouteIcon, Search, X,
 } from 'lucide-react';
 import {
-  Badge,
-  EmptyState,
-  HeaderButton,
-  Panel,
-  PrimaryButton,
-  QuantumReadinessShell,
-  SectionTitle,
-  integerFmt,
-  longDate,
-  riskTone,
-  useQuantumReadiness,
-  TruncationNote,
-  BLUE,
-  GREEN,
-  ORANGE,
-  VIOLET,
-  AMBER,
-  CYAN,
-  RED,
+  Badge, EmptyState, HeaderButton, Panel, PrimaryButton, QuantumReadinessShell, SectionTitle,
+  TruncationNote, useQuantumReadiness, AMBER, BLUE, GREEN,
 } from '../_shared';
 import { useAuth } from '@/contexts/auth-context';
 import { useReportAuditTrail } from '@/hooks/use-report-audit-trail';
 import { REPORT_TEMPLATES } from '@/services/reporting/templates';
-import { listSnapshotAssets, scopeSnapshotToAssets } from '@/services/reporting/ReportScope';
 import {
   REPORT_FORMATS,
   brandingSchema,
+  evidenceAssessmentReportSchema,
+  reportProvenanceSchema,
+  type EvidenceAssessmentReport,
   type ReportBranding,
-  type ReportChartImage,
   type ReportFormat,
   type ReportKind,
 } from '@/services/reporting/schemas/ReportSchema';
 
-/* Branding is a per-ACCOUNT convenience: keyed by user, so a second account on
-   the same browser never prints the first account's company name and logo on
-   its cover. Report history is NOT kept here any more — it is the tenant's
-   audit log (useReportAuditTrail). */
-const BRANDING_STORAGE_PREFIX = 'qg-report-branding';
-
-const FORMAT_META: Record<ReportFormat, { label: string; icon: typeof FileText; color: string }> = {
-  pdf: { label: 'PDF', icon: FileText, color: RED },
-  docx: { label: 'DOCX', icon: FileText, color: BLUE },
-  xlsx: { label: 'XLSX', icon: FileSpreadsheet, color: GREEN },
-  pptx: { label: 'PPTX', icon: Presentation, color: ORANGE },
-  csv: { label: 'CSV', icon: FileSpreadsheet, color: CYAN },
-  json: { label: 'JSON', icon: FileJson, color: VIOLET },
-  html: { label: 'HTML', icon: FileBarChart, color: AMBER },
+const FORMAT_ICONS: Record<ReportFormat, typeof FileText> = {
+  pdf: FileText,
+  docx: FileText,
+  xlsx: FileSpreadsheet,
+  pptx: Presentation,
+  csv: FileSpreadsheet,
+  json: FileJson,
+  html: FileBarChart,
 };
 
-const TEMPLATE_ICON: Record<ReportKind, typeof FileText> = {
-  executive: FileText,
-  technical: FileBarChart,
-  compliance: Landmark,
-  migration: RouteIcon,
+const TEMPLATE_META: Record<ReportKind, { icon: typeof FileText; name: string; description: string }> = {
+  executive: { icon: FileText, name: 'Executive briefing', description: 'Readiness, exposure and priority findings for leadership.' },
+  technical: { icon: FileBarChart, name: 'Technical assessment', description: 'Registered assets, CBOM and finding-level evidence.' },
+  compliance: { icon: Landmark, name: 'Compliance evidence', description: 'Source coverage and recorded evidence for control review.' },
+  migration: { icon: RouteIcon, name: 'PQC migration', description: 'Recorded migration activity and readiness evidence.' },
 };
 
-const ASSETS_PER_PAGE = 5;
+const ASSETS_PER_PAGE = 8;
+const MAX_LOGO_BYTES = 384 * 1024;
+const PAGE_BUTTON = 'inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-white/12 px-3 py-2 text-sm font-medium text-white/80 transition enabled:hover:border-blue-400/55 enabled:hover:bg-blue-500/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-300 disabled:cursor-not-allowed disabled:opacity-40';
+const FIELD = 'mt-1 w-full rounded-md border border-white/12 bg-black/20 px-3 py-2 text-sm text-white outline-none focus:border-blue-400/70';
 
-const POSTURE_META: Record<string, { label: string; color: string }> = {
-  vulnerable: { label: 'Vulnerable', color: RED },
-  pqc: { label: 'PQC-Ready', color: GREEN },
-  hybrid: { label: 'Hybrid', color: AMBER },
-  unknown: { label: 'Unclassified', color: '#94A3B8' },
-};
-
-/** Numbered pagination items — all pages when few, windowed with ellipses when many. */
-function paginationItems(current: number, total: number): Array<number | '…'> {
-  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
-  const keep = new Set([1, 2, total - 1, total, current - 1, current, current + 1]);
-  const pages = Array.from(keep).filter((p) => p >= 1 && p <= total).sort((a, b) => a - b);
-  const items: Array<number | '…'> = [];
-  let previous = 0;
-  for (const page of pages) {
-    if (page - previous > 1) items.push('…');
-    items.push(page);
-    previous = page;
-  }
-  return items;
+interface RegisteredAsset {
+  key: string;
+  name: string;
+  assetType: string;
+  environment: string;
 }
 
-function brandingKey(userId: string | undefined): string {
-  return `${BRANDING_STORAGE_PREFIX}:${userId || 'anonymous'}`;
+type Provenance = EvidenceAssessmentReport['provenance'];
+type CapturedReport = Pick<EvidenceAssessmentReport, 'meta' | 'provenance' | 'scope' | 'kpis' | 'executiveSummary' | 'integrity'>;
+type Capture = { report: CapturedReport; preview: boolean };
+
+function brandingKey(ownerId: string) {
+  return 'qg-report-branding:' + ownerId;
 }
 
-function loadBranding(userId: string | undefined): ReportBranding {
+function savedBranding(ownerId: string): ReportBranding {
   try {
-    const raw = localStorage.getItem(brandingKey(userId));
-    if (raw) return brandingSchema.parse(JSON.parse(raw));
+    const value = localStorage.getItem(brandingKey(ownerId));
+    if (value) {
+      const branding = brandingSchema.parse(JSON.parse(value));
+      if (branding.companyLogo && !/^data:image\/(png|jpeg);base64,[a-z0-9+/=]+$/i.test(branding.companyLogo)) {
+        branding.companyLogo = null;
+      }
+      return branding;
+    }
   } catch {
-    /* unavailable or malformed storage — fall back to defaults */
+    /* A disabled browser store or obsolete setting uses the defaults. */
   }
   return brandingSchema.parse({});
 }
 
-const isReportKind = (value: unknown): value is ReportKind => REPORT_TEMPLATES.some((t) => t.kind === value);
-const isReportFormat = (value: unknown): value is ReportFormat => (REPORT_FORMATS as readonly string[]).includes(String(value));
+function isReportFormat(value: unknown): value is ReportFormat {
+  return REPORT_FORMATS.some((format) => format === value);
+}
 
-function bumpVersion(version: string): string {
-  const parts = version.split('.').map((n) => parseInt(n, 10));
-  if (parts.length < 2 || parts.some((n) => Number.isNaN(n))) return '1.0';
-  parts[1] += 1;
-  return parts.join('.');
+function isRegisteredAsset(value: unknown): value is RegisteredAsset {
+  if (!value || typeof value !== 'object') return false;
+  const asset = value as Partial<RegisteredAsset>;
+  return typeof asset.key === 'string' && Boolean(asset.key) && typeof asset.name === 'string'
+    && typeof asset.assetType === 'string' && typeof asset.environment === 'string';
+}
+
+function utc(value: string | null | undefined) {
+  const timestamp = value ? Date.parse(value) : NaN;
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC') : 'Unavailable';
+}
+
+async function requestData<T>(path: string, token: string, signal: AbortSignal, body?: object): Promise<T> {
+  const response = await fetch('/api/v1/reports' + path, {
+    method: body ? 'POST' : 'GET',
+    cache: 'no-store',
+    signal,
+    headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(typeof payload?.error?.message === 'string' ? payload.error.message : `Report service returned HTTP ${response.status}.`);
+  }
+  if (payload?.data == null) throw new Error('The report service returned no evidence.');
+  return payload.data as T;
 }
 
 export default function ReportCenterPage() {
-  const { user } = useAuth();
+  const { user, session, loading } = useAuth();
+  if (!user || user.id !== session?.user.id || !session.access_token) {
+    return (
+      <div className="p-6 text-sm text-white/75" role="status">
+        {loading ? 'Loading your report workspace…' : 'Sign in to view your report workspace.'}
+      </div>
+    );
+  }
+  return <ReportWorkspace key={user.id} ownerId={user.id} token={session.access_token} />;
+}
+
+function ReportWorkspace({ ownerId, token }: { ownerId: string; token: string }) {
   const { snapshot, state, error: loadError, sseConnected, lastVerifiedAt, refresh } = useQuantumReadiness();
-  const reportTrail = useReportAuditTrail('report');
-  const recordReport = reportTrail.record;
-
-  const [branding, setBranding] = useState<ReportBranding>(() => loadBranding(user?.id));
+  const { entries, loaded, error: historyError, reload: reloadHistory } = useReportAuditTrail('report');
+  const [branding, setBranding] = useState(() => savedBranding(ownerId));
   const [kind, setKind] = useState<ReportKind>('executive');
-  const [busy, setBusy] = useState<string | null>(null);
-  const [previews, setPreviews] = useState<ReportChartImage[] | null>(null);
-  const [previewing, setPreviewing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Switching accounts loads that account's branding, never the previous one's.
-  useEffect(() => {
-    setBranding(loadBranding(user?.id));
-  }, [user?.id]);
-  // Asset scope — null means "all discovered assets" (full assessment scope).
-  const [selectedAssetKeys, setSelectedAssetKeys] = useState<Set<string> | null>(null);
+  const [format, setFormat] = useState<ReportFormat>('pdf');
+  const [assets, setAssets] = useState<RegisteredAsset[]>([]);
+  const [assetsStatus, setAssetsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [assetRefresh, setAssetRefresh] = useState(0);
+  const [selection, setSelection] = useState<Set<string> | null>(null);
+  const [query, setQuery] = useState('');
   const [assetPage, setAssetPage] = useState(1);
+  const [busy, setBusy] = useState<'preview' | 'generate' | 'download' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [capture, setCapture] = useState<Capture | null>(null);
+  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  const operation = useRef<AbortController | null>(null);
+  const previewHeading = useRef<HTMLHeadingElement | null>(null);
+  const previewButton = useRef<HTMLButtonElement | null>(null);
 
-  const generatedBy = user?.email || 'QGuard Helix';
-  const activeTemplate = useMemo(() => REPORT_TEMPLATES.find((t) => t.kind === kind)!, [kind]);
+  const activeTemplate = REPORT_TEMPLATES.find((template) => template.kind === kind)!;
+  const filteredAssets = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return needle ? assets.filter((asset) => `${asset.name} ${asset.assetType} ${asset.environment}`.toLowerCase().includes(needle)) : assets;
+  }, [assets, query]);
+  const pageCount = Math.max(1, Math.ceil(filteredAssets.length / ASSETS_PER_PAGE));
+  const page = Math.min(assetPage, pageCount);
+  const visibleAssets = filteredAssets.slice((page - 1) * ASSETS_PER_PAGE, page * ASSETS_PER_PAGE);
+  const assetKeys = useMemo(() => new Set(assets.map((asset) => asset.key)), [assets]);
+  const selectionCount = selection?.size ?? (assetsStatus === 'ready' ? assets.length : null);
+  const selectionMissing = assetsStatus === 'ready' && selection !== null && Array.from(selection).some((key) => !assetKeys.has(key));
+  const canCapture = busy === null && !selectionMissing && (selection === null || (assetsStatus === 'ready' && selection.size > 0));
 
-  const assetOptions = useMemo(() => listSnapshotAssets(snapshot), [snapshot]);
-  const selectedKeys = useMemo(
-    () => (selectedAssetKeys === null ? new Set(assetOptions.map((a) => a.key)) : selectedAssetKeys),
-    [selectedAssetKeys, assetOptions],
-  );
-  const selectedCount = useMemo(() => assetOptions.filter((a) => selectedKeys.has(a.key)).length, [assetOptions, selectedKeys]);
-  const isFullScope = assetOptions.length === 0 || selectedCount === assetOptions.length;
-  // Normalised keys handed to the report engine — null when the full scope is selected.
-  const scopeKeys = useMemo(
-    () => (isFullScope ? null : assetOptions.filter((a) => selectedKeys.has(a.key)).map((a) => a.key)),
-    [isFullScope, assetOptions, selectedKeys],
-  );
-  const scopeLabel = isFullScope ? `All assets (${assetOptions.length || snapshot.inventory.assetsAssessed})` : `${selectedCount} of ${assetOptions.length} assets`;
-
-  const assetPageCount = Math.max(1, Math.ceil(assetOptions.length / ASSETS_PER_PAGE));
-  useEffect(() => {
-    setAssetPage((page) => Math.min(page, assetPageCount));
-  }, [assetPageCount]);
-  const pagedAssets = useMemo(
-    () => assetOptions.slice((assetPage - 1) * ASSETS_PER_PAGE, assetPage * ASSETS_PER_PAGE),
-    [assetOptions, assetPage],
-  );
-
-  const toggleAsset = useCallback(
-    (key: string) => {
-      setSelectedAssetKeys((current) => {
-        const base = current === null ? new Set(assetOptions.map((a) => a.key)) : new Set(current);
-        if (base.has(key)) base.delete(key);
-        else base.add(key);
-        return base;
-      });
-    },
-    [assetOptions],
-  );
+  useLayoutEffect(() => () => operation.current?.abort(), []);
 
   useEffect(() => {
     try {
-      localStorage.setItem(brandingKey(user?.id), JSON.stringify(branding));
+      localStorage.setItem(brandingKey(ownerId), JSON.stringify(branding));
     } catch {
-      /* storage unavailable — branding simply is not remembered */
+      /* The current cover remains available when browser storage is disabled. */
     }
-  }, [branding, user?.id]);
+  }, [branding, ownerId]);
 
-  const updateBranding = useCallback(<K extends keyof ReportBranding>(key: K, value: ReportBranding[K]) => {
-    setBranding((current) => ({ ...current, [key]: value }));
-  }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    const timeout = setTimeout(() => controller.abort(), 30_000);
+    setAssetsStatus('loading');
+    void requestData<unknown>('/assets', token, controller.signal)
+      .then((data) => {
+        if (!active) return;
+        if (!Array.isArray(data) || !data.every(isRegisteredAsset)) throw new Error('Invalid registered inventory');
+        setAssets(Array.from(new Map(data.map((asset) => [asset.key, asset])).values()));
+        setAssetsStatus('ready');
+      })
+      .catch(() => {
+        if (active) setAssetsStatus('error');
+      })
+      .finally(() => clearTimeout(timeout));
 
-  const onLogoUpload = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    return () => {
+      active = false;
+      clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [token, snapshot, assetRefresh]);
+
+  useEffect(() => {
+    if (previewHtml) previewHeading.current?.focus();
+  }, [previewHtml]);
+
+  function setCover<K extends keyof ReportBranding>(field: K, value: ReportBranding[K]) {
+    setBranding((previous) => ({ ...previous, [field]: value }));
+  }
+
+  function uploadLogo(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
+    event.target.value = '';
     if (!file) return;
+    if (!['image/png', 'image/jpeg'].includes(file.type) || file.size > MAX_LOGO_BYTES) {
+      setError('Choose a PNG or JPEG logo up to 384 KiB.');
+      return;
+    }
     const reader = new FileReader();
-    reader.onload = () => updateBranding('companyLogo', String(reader.result));
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setCover('companyLogo', reader.result);
+        setError(null);
+      }
+    };
+    reader.onerror = () => setError('The logo file could not be read.');
     reader.readAsDataURL(file);
-  }, [updateBranding]);
+  }
 
-  // `reportKind` is explicit so "Regenerate" on a history row builds THAT row's
-  // template. It used to call setKind() then generate() in the same tick, and
-  // generate() closed over the previous kind — regenerating whatever template
-  // happened to be selected.
-  const generate = useCallback(
-    async (fmt: ReportFormat, reportKind: ReportKind = kind) => {
-      if (!snapshot.hasData) {
-        setError('No assessment evidence available — run a discovery scan before generating reports.');
-        return;
+  function toggleAsset(assetKey: string) {
+    setSelection((previous) => {
+      const next = new Set(previous ?? assets.map((asset) => asset.key));
+      if (next.has(assetKey)) next.delete(assetKey);
+      else next.add(assetKey);
+      return next;
+    });
+  }
+
+  async function runReport(action: 'preview' | 'generate' | 'download', saved?: { id: string; format: ReportFormat }) {
+    if (operation.current || (action !== 'download' && !canCapture)) return;
+    const controller = new AbortController();
+    operation.current = controller;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 90_000);
+    let savedOnServer = false;
+
+    setBusy(action);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const payload = saved
+        ? await requestData<unknown>('/' + encodeURIComponent(saved.id), token, controller.signal)
+        : await requestData<unknown>('/generate', token, controller.signal, {
+            kind,
+            format: action === 'preview' ? 'html' : format,
+            branding,
+            scopeAssets: selection === null ? null : Array.from(selection),
+            preview: action === 'preview',
+          });
+      clearTimeout(timeout);
+      if (controller.signal.aborted) return;
+      savedOnServer = action === 'generate';
+      if (savedOnServer) void reloadHistory();
+      const parsed = evidenceAssessmentReportSchema.safeParse(payload);
+      if (!parsed.success) throw new Error('The report service returned an invalid snapshot.');
+      const report = payload as EvidenceAssessmentReport;
+      if (report.provenance.workspaceOwnerId !== ownerId || report.meta.id !== report.provenance.reportId || (saved && saved.id !== report.meta.id)) {
+        throw new Error('The report snapshot identity could not be confirmed.');
       }
-      if (assetOptions.length > 0 && selectedCount === 0) {
-        setError('Select at least one asset in the Report Asset Scope panel to include in the report.');
-        return;
-      }
-      setBusy(fmt);
-      setError(null);
-      try {
-        const [{ buildReport }, { exportReport, downloadResult }] = await Promise.all([
-          import('@/services/reporting/ReportEngine'),
-          import('@/services/reporting/ReportExporter'),
-        ]);
-        const report = buildReport({ snapshot, branding, kind: reportKind, generatedBy, withCharts: fmt !== 'csv' && fmt !== 'json', scopeAssetKeys: scopeKeys });
-        const result = await exportReport(report, fmt);
+      const { exportReadinessReport } = await import('@/services/reporting/ReadinessDocument');
+      const result = await exportReadinessReport(report, action === 'preview' ? 'html' : saved?.format ?? format);
+      if (controller.signal.aborted) return;
+
+      if (action === 'preview') {
+        const html = await result.blob.text();
+        if (controller.signal.aborted) return;
+        setPreviewHtml(html);
+      } else {
+        const { downloadResult } = await import('@/services/reporting/ReportExporter');
+        if (controller.signal.aborted) return;
         downloadResult(result);
-        // Recorded in the tenant audit log. A failed write does not undo the
-        // download, but it is surfaced — an unrecorded report is not "audited".
-        const recorded = await recordReport({
-          reportId: report.meta.id,
-          kind: reportKind,
-          format: fmt,
-          title: report.meta.title,
-          version: report.meta.version,
-          scope: scopeLabel,
-          integrityHash: report.integrity?.hash || '',
-          generatedAt: report.meta.generatedAt,
-        });
-        if (!recorded) setError('The report was downloaded, but its audit-trail record could not be written.');
-        // Auto-increment version for the next generation (Phase 10 versioning).
-        updateBranding('reportVersion', bumpVersion(branding.reportVersion));
-      } catch (err) {
-        console.error('Report generation failed:', err);
-        setError(err instanceof Error ? err.message : 'Report generation failed');
-      } finally {
+        setPreviewHtml(null);
+        setNotice(saved ? 'Saved snapshot download started.' : 'Snapshot saved and download started.');
+      }
+      setCapture({
+        preview: action === 'preview',
+        report: {
+          meta: report.meta,
+          provenance: report.provenance,
+          scope: report.scope,
+          kpis: report.kpis,
+          executiveSummary: report.executiveSummary,
+          integrity: report.integrity,
+        },
+      });
+    } catch (err) {
+      if (timedOut) {
+        setError(action === 'generate' ? 'The request timed out. Refresh Report History to see whether the snapshot was saved.' : 'The report service timed out. Try again.');
+      } else if (!controller.signal.aborted) {
+        const message = err instanceof Error ? err.message : 'Unexpected report error.';
+        setError(savedOnServer ? `Snapshot saved. Export could not complete: ${message} Retry from Report History.` : message);
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (operation.current === controller) {
+        operation.current = null;
         setBusy(null);
       }
-    },
-    [snapshot, branding, kind, generatedBy, recordReport, updateBranding, assetOptions, selectedCount, scopeKeys, scopeLabel],
-  );
-
-  const preview = useCallback(async () => {
-    if (!snapshot.hasData) {
-      setError('No assessment evidence available to preview.');
-      return;
     }
-    if (assetOptions.length > 0 && selectedCount === 0) {
-      setError('Select at least one asset in the Report Asset Scope panel to include in the report.');
-      return;
-    }
-    setBusy('preview');
-    setError(null);
-    try {
-      const [{ buildReport }, { previewHtml }] = await Promise.all([
-        import('@/services/reporting/ReportEngine'),
-        import('@/services/reporting/ReportExporter'),
-      ]);
-      const report = buildReport({ snapshot, branding, kind, generatedBy, scopeAssetKeys: scopeKeys });
-      previewHtml(report);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Preview failed');
-    } finally {
-      setBusy(null);
-    }
-  }, [snapshot, branding, kind, generatedBy, assetOptions, selectedCount, scopeKeys]);
-
-  const loadPreviews = useCallback(async () => {
-    if (!snapshot.hasData) return;
-    setPreviewing(true);
-    try {
-      const { renderReportCharts } = await import('@/services/reporting/ReportCharts');
-      // Chart previews reflect the selected asset scope, matching the exports.
-      const chartSnapshot = scopeKeys ? scopeSnapshotToAssets(snapshot, scopeKeys) : snapshot;
-      setPreviews(renderReportCharts(chartSnapshot));
-    } catch (err) {
-      console.error('Chart preview failed:', err);
-    } finally {
-      setPreviewing(false);
-    }
-  }, [snapshot, scopeKeys]);
+  }
 
   return (
     <QuantumReadinessShell
-      title="Report Center"
-      subtitle="Enterprise Reporting Engine™ — generate professional, evidence-driven reports (PDF, DOCX, XLSX, CSV, JSON, HTML, PPTX) for executives, security teams, auditors and regulators. Every value is derived from live assessment telemetry."
-      badge={<Badge color={GREEN}>{integerFmt(reportTrail.entries.length)} generated</Badge>}
+      title="Quantum Readiness Reports"
+      subtitle="Capture workspace evidence for executive, technical, compliance and migration reviews. Each saved report preserves the data used at generation time."
       sseConnected={sseConnected}
       state={state}
       snapshot={snapshot}
       error={loadError}
       lastVerifiedAt={lastVerifiedAt}
       actions={
-        <>
-          <HeaderButton icon={RefreshCw} onClick={() => void refresh()}>
-            Refresh Data
-          </HeaderButton>
-          <HeaderButton icon={Eye} onClick={() => void preview()}>
-            {busy === 'preview' ? 'Opening…' : 'Preview'}
-          </HeaderButton>
-        </>
+        <HeaderButton icon={RefreshCw} onClick={() => {
+          setAssetRefresh((version) => version + 1);
+          void refresh({ force: true });
+          void reloadHistory();
+        }}>
+          Refresh workspace
+        </HeaderButton>
       }
     >
-      {error ? <div className="rounded-md border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div> : null}
-
-      {/* Template selection */}
-      <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-        <Panel className="p-5">
-          <SectionTitle suffix={<span className="text-[11px] text-white/40">{activeTemplate.audience}</span>}>Report Template</SectionTitle>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(21rem,0.63fr)]">
+        <Panel className="p-5 sm:p-6">
+          <SectionTitle>Report template</SectionTitle>
+          <div className="grid gap-3 sm:grid-cols-2">
             {REPORT_TEMPLATES.map((template) => {
-              const Icon = TEMPLATE_ICON[template.kind];
+              const { icon: Icon, name, description } = TEMPLATE_META[template.kind];
               const active = kind === template.kind;
               return (
-                <button
-                  key={template.kind}
-                  type="button"
+                <button key={template.kind} type="button" aria-pressed={active}
                   onClick={() => setKind(template.kind)}
-                  className={`rounded-lg border p-4 text-left transition ${active ? 'border-blue-400/50 bg-blue-500/10' : 'border-white/8 bg-white/[0.025] hover:border-blue-400/35'}`}
-                >
-                  <span className="grid h-10 w-10 place-items-center rounded-md border" style={{ borderColor: `${BLUE}40`, color: BLUE, backgroundColor: `${BLUE}12` }}>
-                    <Icon className="h-5 w-5" />
+                  className={`group flex min-h-28 items-start gap-3 rounded-lg border p-4 text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-300 ${active ? 'border-blue-400/65 bg-blue-500/12' : 'border-white/12 bg-white/[0.025] hover:border-blue-400/45'}`}>
+                  <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-md border border-blue-400/30 bg-blue-500/10 text-blue-300"><Icon className="h-[18px] w-[18px]" aria-hidden="true" /></span>
+                  <span>
+                    <span className="block text-sm font-semibold text-white">{name}</span>
+                    <span className="mt-1 block text-sm leading-5 text-white/65">{description}</span>
                   </span>
-                  <div className="mt-3 text-sm font-bold text-white">{template.name}</div>
-                  <div className="mt-0.5 text-[11px] text-white/45">{template.audience}</div>
-                  <p className="mt-1.5 text-[11px] leading-snug text-white/50">{template.description}</p>
-                </button>
-              );
-            })}
-          </div>
-        </Panel>
-      </motion.section>
-
-      <section className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-        {/* Branding */}
-        <Panel className="p-5 xl:col-span-5">
-          <SectionTitle suffix={<Building2 className="h-4 w-4 text-white/40" />}>Branding & Cover</SectionTitle>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <BrandingField label="Company Name" value={branding.companyName} onChange={(v) => updateBranding('companyName', v)} />
-            <BrandingField label="Business Unit" value={branding.businessUnit} onChange={(v) => updateBranding('businessUnit', v)} />
-            <BrandingField label="Report Owner" value={branding.reportOwner} onChange={(v) => updateBranding('reportOwner', v)} />
-            <BrandingField label="Reviewer" value={branding.reviewer} onChange={(v) => updateBranding('reviewer', v)} />
-            <BrandingField label="Classification" value={branding.classification} onChange={(v) => updateBranding('classification', v)} />
-            <BrandingField label="Version" value={branding.reportVersion} onChange={(v) => updateBranding('reportVersion', v)} />
-          </div>
-          <label className="mt-3 block">
-            <span className="block text-[10px] uppercase tracking-wide text-white/40">Custom Notes</span>
-            <textarea value={branding.customNotes} onChange={(e) => updateBranding('customNotes', e.target.value)} rows={2} className="mt-1 w-full resize-none rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs text-white outline-none focus:border-blue-400/50" />
-          </label>
-          <div className="mt-3 flex items-center gap-3">
-            <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-white/10 bg-white/[0.025] px-3 py-2 text-xs font-bold text-white/70 transition hover:border-blue-400/40 hover:text-blue-200">
-              <ImagePlus className="h-4 w-4" />
-              Upload Logo
-              <input type="file" accept="image/*" onChange={onLogoUpload} className="hidden" />
-            </label>
-            {branding.companyLogo ? (
-              <span className="inline-flex items-center gap-2 text-[11px] text-white/50">
-                <img src={branding.companyLogo} alt="logo" className="h-7 max-w-[120px] rounded border border-white/10 object-contain" />
-                <button type="button" onClick={() => updateBranding('companyLogo', null)} className="text-white/40 hover:text-red-300">remove</button>
-              </span>
-            ) : (
-              <span className="text-[11px] text-white/35">No logo — cover uses text branding.</span>
-            )}
-          </div>
-        </Panel>
-
-        {/* Generate / formats */}
-        <Panel className="p-5 xl:col-span-7">
-          <SectionTitle suffix={<Badge color={GREEN}>{activeTemplate.name}</Badge>}>Generate & Export</SectionTitle>
-          <p className="mb-3 text-[11px] text-white/45">Sections: {activeTemplate.sections.join(' · ')}</p>
-          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-            {REPORT_FORMATS.map((fmt) => {
-              const meta = FORMAT_META[fmt];
-              const Icon = meta.icon;
-              const recommended = activeTemplate.formats.includes(fmt);
-              return (
-                <button
-                  key={fmt}
-                  type="button"
-                  disabled={busy !== null || !snapshot.hasData}
-                  onClick={() => void generate(fmt)}
-                  className={`group/btn flex items-center justify-between gap-2 rounded-md border px-3 py-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${recommended ? 'border-white/12 bg-white/[0.03] hover:border-blue-400/45' : 'border-white/8 bg-black/20 hover:border-white/20'}`}
-                >
-                  <span className="flex items-center gap-2">
-                    {busy === fmt ? <Loader2 className="h-4 w-4 animate-spin" style={{ color: meta.color }} /> : <Icon className="h-4 w-4" style={{ color: meta.color }} />}
-                    <span className="text-xs font-bold text-white/85">{meta.label}</span>
-                  </span>
-                  {recommended ? <Sparkles className="h-3 w-3 text-blue-300/70" /> : null}
                 </button>
               );
             })}
           </div>
 
-          <div className="mt-4 flex flex-wrap items-center gap-2.5">
-            <PrimaryButton icon={Download} onClick={() => void generate(activeTemplate.formats[0])} disabled={busy !== null || !snapshot.hasData}>
-              Generate {FORMAT_META[activeTemplate.formats[0]].label}
-            </PrimaryButton>
-            <HeaderButton icon={Eye} onClick={() => void preview()}>
-              Preview HTML
-            </HeaderButton>
-            <HeaderButton icon={FileBarChart} onClick={() => void loadPreviews()}>
-              {previewing ? 'Rendering…' : 'Preview Charts'}
-            </HeaderButton>
-          </div>
-
-          {/* Scheduled delivery is not offered: no server-side scheduler exists
-              to run it. The control that stood here said "schedule saved" and
-              saved nothing — a dead button presented as a feature. */}
-          <p className="mt-4 flex items-start gap-2 rounded-md border border-white/8 bg-black/20 p-3 text-[11px] text-white/45">
-            <Calendar className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            Reports are generated on demand from the live assessment and recorded in your tenant audit trail below. Automated scheduled
-            delivery is not available in this deployment.
-          </p>
-        </Panel>
-      </section>
-
-      {/* Chart previews */}
-      {previews ? (
-        <Panel className="p-5">
-          <SectionTitle suffix={<span className="text-[11px] text-white/40">Embedded in PDF / DOCX / PPTX / XLSX</span>}>Visual Analysis Preview</SectionTitle>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {previews.map((chart) => (
-              <div key={chart.key} className="rounded-md border border-white/8 bg-white p-2">
-                <img src={chart.dataUrl} alt={chart.title} className="w-full rounded" />
-                <div className="mt-1 text-center text-[11px] font-semibold text-slate-600">{chart.title}</div>
+          <details className="mt-6 rounded-lg border border-white/12 bg-white/[0.018]">
+            <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-white/85">Cover and branding</summary>
+            <div className="border-t border-white/10 px-4 pb-4 pt-3">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {([
+                  ['companyName', 'Company name'], ['businessUnit', 'Business unit'],
+                  ['reportOwner', 'Report owner'], ['reviewer', 'Reviewer'],
+                  ['classification', 'Classification'], ['reportVersion', 'Version'],
+                ] as const).map(([field, label]) => (
+                  <label key={field} className="text-sm text-white/72">
+                    {label}
+                    <input value={branding[field]} onChange={(event) => setCover(field, event.target.value)} className={FIELD} />
+                  </label>
+                ))}
               </div>
-            ))}
-          </div>
-        </Panel>
-      ) : null}
-
-      {/* Shared Responsibility Assessment — ownership-classified migration intelligence
-          included in every generated report (same source as /dashboard/migration-intelligence). */}
-      {snapshot.sharedResponsibility && snapshot.sharedResponsibility.hasData ? (
-        <Panel className="p-5">
-          <SectionTitle suffix={<Badge color={CYAN}>Migration Intelligence™</Badge>}>
-            Shared Responsibility Assessment — Included In Every Report
-          </SectionTitle>
-          <p className="mb-4 text-[11px] text-white/45">
-            Every finding is classified by ownership — who owns it, who can fix it, and its migration dependency — and rendered in the exported
-            PDF, Word, PowerPoint, Excel, HTML and CSV. Figures reconcile with Migration Intelligence, Assets &amp; CBOM, the Migration Planner,
-            Remediation and Certification because they all derive from the same assessment snapshot.
-          </p>
-          {(() => {
-            const sr = snapshot.sharedResponsibility!;
-            const domColor = (d: string) => (d === 'customer' ? CYAN : d === 'provider' ? BLUE : VIOLET);
-            const totalDist = Math.max(1, sr.domainDistribution.customer + sr.domainDistribution.provider + sr.domainDistribution.ecosystem);
-            return (
-              <div className="space-y-5">
-                {/* Tri-part readiness */}
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  {([
-                    ['Overall', sr.readiness.overall.score, GREEN],
-                    ['Customer', sr.readiness.customer.score, CYAN],
-                    ['Provider', sr.readiness.provider.score, BLUE],
-                    ['Ecosystem', sr.readiness.ecosystem.score, VIOLET],
-                  ] as Array<[string, number, string]>).map(([label, score, color]) => (
-                    <div key={label} className="rounded-md border border-white/8 bg-white/[0.02] p-3 text-center">
-                      <div className="text-[9px] font-black uppercase tracking-wide text-white/40">{label} Readiness</div>
-                      <div className="mt-1 text-2xl font-semibold" style={{ color }}>{integerFmt(score)}</div>
-                      <div className="text-[9px] text-white/35">/100</div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Ownership split */}
-                <div>
-                  <div className="mb-1.5 flex items-center justify-between text-[10px] font-black uppercase tracking-wide text-white/45">
-                    <span>Ownership Split</span>
-                    <span className="font-mono normal-case text-white/40">{integerFmt(sr.totals.findings)} findings · {integerFmt(sr.widgets.actionableFindings)} actionable · {integerFmt(sr.widgets.migrationBlockers)} blockers</span>
-                  </div>
-                  <div className="flex h-2.5 overflow-hidden rounded-full bg-white/5">
-                    <div style={{ width: `${(sr.domainDistribution.customer / totalDist) * 100}%`, backgroundColor: CYAN }} />
-                    <div style={{ width: `${(sr.domainDistribution.provider / totalDist) * 100}%`, backgroundColor: BLUE }} />
-                    <div style={{ width: `${(sr.domainDistribution.ecosystem / totalDist) * 100}%`, backgroundColor: VIOLET }} />
-                  </div>
-                  <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[10px] font-bold">
-                    <span style={{ color: CYAN }}>Customer {integerFmt(sr.domainDistribution.customer)}</span>
-                    <span style={{ color: BLUE }}>Provider {integerFmt(sr.domainDistribution.provider)}</span>
-                    <span style={{ color: VIOLET }}>Ecosystem {integerFmt(sr.domainDistribution.ecosystem)}</span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-                  {/* Matrix preview — CONSOLIDATED ownership rows. One row per
-                      cryptographic exposure per owner per asset; the scanner's
-                      repeated detection channels are merged and counted. */}
-                  <div>
-                    <div className="mb-2 flex items-baseline justify-between gap-2">
-                      <span className="text-[10px] font-black uppercase tracking-wide text-white/50">Shared Responsibility Matrix</span>
-                      <span className="font-mono text-[9px] text-white/40">
-                        {integerFmt(sr.matrix.length)} ownership row{sr.matrix.length === 1 ? '' : 's'} ·{' '}
-                        {integerFmt(sr.matrix.reduce((sum, m) => sum + Math.max(1, m.occurrences ?? 1), 0))} instances
-                      </span>
-                    </div>
-                    <div className="overflow-x-auto rounded-md border border-white/8">
-                      <table className="w-full min-w-[480px] text-left text-[11px]">
-                        <thead>
-                          <tr className="border-b border-white/10 text-[9px] font-black uppercase tracking-wide text-white/40">
-                            <th className="px-2 py-1.5">Finding</th>
-                            <th className="px-2 py-1.5">Asset</th>
-                            <th className="px-2 py-1.5">Owner</th>
-                            <th className="px-2 py-1.5 text-right">Inst.</th>
-                            <th className="px-2 py-1.5">Priority</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {sr.matrix.slice(0, 8).map((m) => (
-                            <tr key={m.findingId} className="border-b border-white/5">
-                              <td className="max-w-[150px] truncate px-2 py-1.5 text-white/80" title={m.finding}>
-                                <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle" style={{ backgroundColor: domColor(m.domain) }} />
-                                {m.finding}
-                              </td>
-                              <td className="max-w-[120px] truncate px-2 py-1.5 text-white/55" title={(m.detectionLabels ?? [m.asset]).join(' · ')}>
-                                {m.asset}
-                              </td>
-                              <td className="px-2 py-1.5" style={{ color: domColor(m.domain) }}>{m.owner}</td>
-                              <td className="px-2 py-1.5 text-right font-mono text-white/60">{integerFmt(Math.max(1, m.occurrences ?? 1))}</td>
-                              <td className="px-2 py-1.5 capitalize text-white/60">{m.priority}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      {sr.matrix.length > 8 ? (
-                        <div className="pt-1.5 text-[10px] text-white/35">
-                          Showing the 8 highest-priority of {integerFmt(sr.matrix.length)} matrix rows — the full matrix is in the exported report.
-                        </div>
-                      ) : null}
-                    </div>
-                    <p className="mt-1.5 text-[10px] text-white/35">
-                      One row per exposure, owner and asset. Repeated scanner detections of the same exposure are consolidated — the instance count
-                      preserves the raw evidence.
-                    </p>
-                  </div>
-
-                  {/* 7-wave roadmap */}
-                  <div>
-                    <div className="mb-2 text-[10px] font-black uppercase tracking-wide text-white/50">Dependency-Ordered Roadmap — 7 Waves</div>
-                    <div className="space-y-1.5">
-                      {sr.waves.map((wave) => {
-                        const tone = wave.domain === 'mixed' ? ORANGE : domColor(wave.domain);
-                        const statusColor = wave.status === 'ready' ? GREEN : wave.status === 'complete' ? GREEN : wave.status === 'blocked' ? RED : AMBER;
-                        return (
-                          <div key={wave.wave} className="flex items-center gap-2.5 rounded-md border border-white/8 bg-white/[0.02] p-2">
-                            <span className="grid h-6 w-6 shrink-0 place-items-center rounded text-[10px] font-black" style={{ backgroundColor: `${tone}1a`, color: tone }}>{wave.wave}</span>
-                            <span className="min-w-0 flex-1 truncate text-[11px] font-bold text-white/80">{wave.name}<span className="ml-1.5 font-mono text-[9px] text-white/40">{integerFmt(wave.findingCount)}</span></span>
-                            <span className="rounded px-1.5 py-0.5 text-[8px] font-black uppercase" style={{ color: statusColor, backgroundColor: `${statusColor}1a` }}>{wave.status}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-
-                {sr.providerBreakdown.length ? (
-                  <div>
-                    <div className="mb-2 text-[10px] font-black uppercase tracking-wide text-white/50">Provider &amp; Ecosystem Readiness</div>
-                    <div className="flex flex-wrap gap-2">
-                      {sr.providerBreakdown.slice(0, 10).map((p) => (
-                        <span key={p.providerId} className="inline-flex items-center gap-1.5 rounded-md border border-white/8 bg-white/[0.02] px-2 py-1 text-[10px]" style={{ color: domColor(p.domain) }}>
-                          {p.name}<span className="font-mono text-white/50">×{integerFmt(p.count)}</span><span className="text-white/35">{p.pqRoadmapStatus.replace('_', ' ')}</span>
-                        </span>
-                      ))}
-                    </div>
-                    {sr.providerBreakdown.length > 10 ? (
-                      <div className="pt-1.5 text-[10px] text-white/35">
-                        Showing the 10 highest-volume of {integerFmt(sr.providerBreakdown.length)} attributed providers.
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
+              <label className="mt-3 block text-sm text-white/72">
+                Cover notes
+                <textarea value={branding.customNotes} onChange={(event) => setCover('customNotes', event.target.value)} rows={2} className={FIELD} />
+              </label>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <label className={`relative cursor-pointer focus-within:outline focus-within:outline-2 focus-within:outline-blue-300 ${PAGE_BUTTON}`}>
+                  <ImagePlus className="h-4 w-4" aria-hidden="true" /> Upload logo
+                  <input type="file" accept="image/png,image/jpeg" onChange={uploadLogo} className="sr-only" />
+                </label>
+                {branding.companyLogo ? (
+                  <>
+                    <img src={branding.companyLogo} alt="Report cover logo" className="h-8 max-w-32 object-contain" />
+                    <button type="button" onClick={() => setCover('companyLogo', null)} className={PAGE_BUTTON}>Remove logo</button>
+                  </>
+                ) : <span className="text-xs text-white/60">PNG or JPEG, up to 384 KiB.</span>}
               </div>
-            );
-          })()}
-        </Panel>
-      ) : null}
-
-      {/* Asset scope — choose which discovered assets the generated reports cover */}
-      <Panel className="p-5">
-        <SectionTitle
-          suffix={
-            assetOptions.length ? (
-              <Badge color={isFullScope ? GREEN : BLUE}>{isFullScope ? `All ${assetOptions.length} assets included` : `${selectedCount} of ${assetOptions.length} selected`}</Badge>
-            ) : (
-              <span className="text-[11px] text-white/40">No discovered assets</span>
-            )
-          }
-        >
-          Report Asset Scope
-        </SectionTitle>
-        <p className="mb-3 text-[11px] text-white/45">
-          Choose which discovered assets are included in generated reports. Scores, findings, migration waves, timelines and costs are recomputed for the
-          selected assets only, and every export records the scope for auditability.
-        </p>
-        {assetOptions.length ? (
-          <>
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setSelectedAssetKeys(null)}
-                disabled={isFullScope}
-                className="inline-flex items-center gap-1.5 rounded border border-white/10 bg-white/[0.025] px-2.5 py-1.5 text-[11px] font-bold text-white/65 transition hover:border-blue-400/40 hover:text-blue-200 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <ListChecks className="h-3.5 w-3.5" /> Select All
-              </button>
-              <button
-                type="button"
-                onClick={() => setSelectedAssetKeys(new Set<string>())}
-                disabled={selectedCount === 0}
-                className="inline-flex items-center gap-1.5 rounded border border-white/10 bg-white/[0.025] px-2.5 py-1.5 text-[11px] font-bold text-white/65 transition hover:border-blue-400/40 hover:text-blue-200 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <Square className="h-3.5 w-3.5" /> Clear Selection
-              </button>
-              {selectedCount === 0 ? (
-                <span className="text-[11px] font-semibold text-red-300/90">Select at least one asset — reports cannot be generated from an empty scope.</span>
-              ) : !isFullScope ? (
-                <span className="text-[11px] text-amber-200/80">Custom scope active — reports cover only the {selectedCount} selected asset{selectedCount === 1 ? '' : 's'}.</span>
-              ) : (
-                <span className="text-[11px] text-white/40">Full assessment scope — every discovered asset is included.</span>
-              )}
             </div>
+          </details>
+        </Panel>
 
-            <div className="overflow-hidden rounded-md border border-white/8">
-              {pagedAssets.map((asset, index) => {
-                const checked = selectedKeys.has(asset.key);
-                const posture = POSTURE_META[asset.posture] || POSTURE_META.unknown;
+        <Panel className="p-5 sm:p-6">
+          <SectionTitle suffix={<Badge color={BLUE}>On demand</Badge>}>Generate and export</SectionTitle>
+          <p className="mb-4 text-sm leading-6 text-white/68">The server reads the source records when you generate a report. Downloading a saved report uses its original snapshot.</p>
+          <fieldset>
+            <legend className="mb-2 text-sm font-semibold text-white/85">Export format</legend>
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+              {REPORT_FORMATS.map((item) => {
+                const Icon = FORMAT_ICONS[item];
                 return (
-                  <button
-                    key={asset.key}
-                    type="button"
-                    onClick={() => toggleAsset(asset.key)}
-                    aria-pressed={checked}
-                    className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition ${index > 0 ? 'border-t border-white/5' : ''} ${checked ? 'bg-blue-500/[0.06] hover:bg-blue-500/10' : 'bg-black/10 hover:bg-white/[0.03]'}`}
-                  >
-                    {checked ? <CheckSquare className="h-4 w-4 shrink-0 text-blue-300" /> : <Square className="h-4 w-4 shrink-0 text-white/30" />}
-                    <span className="min-w-0 flex-1">
-                      <span className={`block truncate text-xs font-bold ${checked ? 'text-white/90' : 'text-white/50'}`}>{asset.name}</span>
-                      <span className="block truncate text-[10px] text-white/40 capitalize">
-                        {asset.assetType} · {asset.environment}
-                        {asset.internetFacing ? ' · internet-facing' : ''}
-                        {asset.findingsCount > 0 ? ` · ${asset.findingsCount} finding${asset.findingsCount === 1 ? '' : 's'}` : ''}
-                      </span>
-                    </span>
-                    <span className="hidden rounded px-1.5 py-0.5 text-[10px] font-black sm:inline" style={{ color: posture.color, backgroundColor: `${posture.color}1a` }}>
-                      {posture.label}
-                    </span>
-                    <span className="w-14 shrink-0 text-right font-mono text-[11px] font-bold" style={{ color: riskTone(asset.riskScore) }}>
-                      {asset.riskScore}/100
-                    </span>
+                  <button key={item} type="button" aria-pressed={format === item} onClick={() => setFormat(item)}
+                    className={`${PAGE_BUTTON} ${format === item ? 'border-blue-400/70 bg-blue-500/15 text-blue-100' : 'bg-white/[0.02]'}`}
+                    title={activeTemplate.formats.includes(item) ? 'Recommended for this template' : undefined}>
+                    <Icon className="h-4 w-4 shrink-0" aria-hidden="true" /> {item.toUpperCase()}
                   </button>
                 );
               })}
             </div>
+          </fieldset>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <PrimaryButton icon={busy === 'generate' ? Loader2 : Download} disabled={!canCapture} onClick={() => void runReport('generate')}>
+              {busy === 'generate' ? 'Capturing snapshot…' : `Generate ${format.toUpperCase()}`}
+            </PrimaryButton>
+            <button ref={previewButton} type="button" className={PAGE_BUTTON} disabled={!canCapture} onClick={() => void runReport('preview')}>
+              <Eye className="h-4 w-4" aria-hidden="true" /> {busy === 'preview' ? 'Capturing preview…' : 'Preview report'}
+            </button>
+          </div>
+          <p className="mt-3 text-sm text-white/65">
+            {selection === null ? 'Scope: all registered assets' : `Scope: ${selectionCount} selected asset${selectionCount === 1 ? '' : 's'}`}
+          </p>
+          {busy ? <p role="status" className="mt-2 text-sm text-blue-200">{busy === 'download' ? 'Opening saved snapshot…' : 'Reading and validating report evidence…'}</p> : null}
+          {notice ? <p role="status" className="mt-3 flex items-center gap-2 text-sm text-emerald-300"><CheckCircle2 className="h-4 w-4" aria-hidden="true" />{notice}</p> : null}
+          {error ? <p role="alert" className="mt-3 rounded-md border border-red-400/35 bg-red-400/10 p-3 text-sm text-red-100">{error}</p> : null}
+        </Panel>
+      </div>
 
-            {assetPageCount > 1 ? (
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                <span className="text-[11px] text-white/40">
-                  Showing {(assetPage - 1) * ASSETS_PER_PAGE + 1}–{Math.min(assetPage * ASSETS_PER_PAGE, assetOptions.length)} of {assetOptions.length} assets
-                </span>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setAssetPage((page) => Math.max(1, page - 1))}
-                    disabled={assetPage === 1}
-                    aria-label="Previous page"
-                    className="grid h-7 w-7 place-items-center rounded border border-white/10 bg-white/[0.025] text-white/60 transition hover:border-blue-400/40 hover:text-blue-200 disabled:cursor-not-allowed disabled:opacity-35"
-                  >
-                    <ChevronLeft className="h-3.5 w-3.5" />
-                  </button>
-                  {paginationItems(assetPage, assetPageCount).map((item, index) =>
-                    item === '…' ? (
-                      <span key={`gap-${index}`} className="px-1 text-[11px] text-white/35">…</span>
-                    ) : (
-                      <button
-                        key={item}
-                        type="button"
-                        onClick={() => setAssetPage(item)}
-                        aria-current={assetPage === item ? 'page' : undefined}
-                        className={`h-7 min-w-7 rounded border px-1.5 text-[11px] font-bold transition ${assetPage === item ? 'border-blue-400/50 bg-blue-500/15 text-blue-200' : 'border-white/10 bg-white/[0.025] text-white/55 hover:border-blue-400/35 hover:text-blue-200'}`}
-                      >
-                        {item}
-                      </button>
-                    ),
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setAssetPage((page) => Math.min(assetPageCount, page + 1))}
-                    disabled={assetPage === assetPageCount}
-                    aria-label="Next page"
-                    className="grid h-7 w-7 place-items-center rounded border border-white/10 bg-white/[0.025] text-white/60 transition hover:border-blue-400/40 hover:text-blue-200 disabled:cursor-not-allowed disabled:opacity-35"
-                  >
-                    <ChevronRight className="h-3.5 w-3.5" />
-                  </button>
-                </div>
+      {capture ? <SnapshotDetails report={capture.report} preview={capture.preview} /> : null}
+      {previewHtml ? (
+        <Panel className="p-4 sm:p-5">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 ref={previewHeading} tabIndex={-1} className="text-base font-semibold text-white">Report preview</h2>
+            <button type="button" onClick={() => { setPreviewHtml(null); previewButton.current?.focus(); }} className={PAGE_BUTTON}><X className="h-4 w-4" aria-hidden="true" /> Close preview</button>
+          </div>
+          <iframe sandbox="" referrerPolicy="no-referrer" title="Quantum readiness report preview" srcDoc={previewHtml} className="h-[min(78vh,62rem)] w-full rounded-md border border-white/12 bg-white" />
+        </Panel>
+      ) : null}
+
+      <Panel className="p-5 sm:p-6">
+        <SectionTitle suffix={selectionCount === null ? null : <Badge color={BLUE}>{selectionCount} {selection === null ? 'registered' : 'selected'}</Badge>}>Registered asset scope</SectionTitle>
+        <p className="mb-4 text-sm text-white/68">Choose the registered assets to cover. For a custom scope, workspace-wide metrics require evidence attributable to that selection.</p>
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <button type="button" className={PAGE_BUTTON} aria-pressed={selection === null} disabled={selection === null} onClick={() => setSelection(null)}>Include all registered assets</button>
+          <button type="button" className={PAGE_BUTTON} disabled={selection?.size === 0 || (selection === null && assets.length === 0)} onClick={() => setSelection(new Set())}>Clear selection</button>
+          <label className="relative ml-auto w-full sm:w-64">
+            <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-white/55" aria-hidden="true" />
+            <input type="search" aria-label="Search registered assets" placeholder="Search registered assets" value={query}
+              onChange={(event) => { setQuery(event.target.value); setAssetPage(1); }} className={`${FIELD} mt-0 pl-9`} />
+          </label>
+        </div>
+        {selectionMissing ? <p className="mb-3 text-sm text-amber-200" role="alert">Some selected assets are no longer registered. Clear the selection or include all registered assets to proceed.</p> : null}
+        {selection?.size === 0 ? <p className="mb-3 text-sm text-amber-200">Select at least one registered asset to use a custom scope.</p> : null}
+        {assetsStatus === 'error' ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="text-sm text-amber-200" role="status">The registered asset list is unavailable.</p>
+            <button type="button" className={PAGE_BUTTON} onClick={() => setAssetRefresh((version) => version + 1)}>Retry asset list</button>
+          </div>
+        ) : assetsStatus === 'loading' && assets.length === 0 ? (
+          <p className="text-sm text-white/65" role="status">Loading registered assets…</p>
+        ) : visibleAssets.length ? (
+          <>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {visibleAssets.map((asset) => (
+                <label key={asset.key} className="flex min-h-12 cursor-pointer items-center gap-3 rounded-md border border-white/10 px-3 py-2 hover:bg-blue-500/10">
+                  <input type="checkbox" checked={selection?.has(asset.key) ?? true} onChange={() => toggleAsset(asset.key)} className="size-4 shrink-0 accent-blue-500" />
+                  <span className="min-w-0">
+                    <span className="block break-words text-sm font-semibold text-white/90">{asset.name}</span>
+                    <span className="text-xs capitalize text-white/62">{[asset.assetType, asset.environment].filter(Boolean).join(' · ')}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            {pageCount > 1 ? (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <button type="button" aria-label="Previous asset page" className={PAGE_BUTTON} disabled={page === 1} onClick={() => setAssetPage(page - 1)}><ChevronLeft className="h-4 w-4" /></button>
+                <span className="px-2 text-sm text-white/65">Page {page} of {pageCount}</span>
+                <button type="button" aria-label="Next asset page" className={PAGE_BUTTON} disabled={page === pageCount} onClick={() => setAssetPage(page + 1)}><ChevronRight className="h-4 w-4" /></button>
               </div>
             ) : null}
           </>
-        ) : (
-          <EmptyState
-            label="No discovered assets available yet."
-            hint="Run a discovery scan to populate the asset inventory — until then, reports cover the full assessment evidence."
-          />
-        )}
+        ) : <EmptyState label={assets.length ? 'No assets match your search.' : 'No registered assets in this workspace.'} />}
       </Panel>
 
-      {/* Audit trail / history */}
-      <Panel className="p-5">
-        <SectionTitle suffix={<span className="text-[11px] text-white/40">Tenant audit log · versioning &amp; integrity</span>}>Report History</SectionTitle>
-        {reportTrail.error ? (
-          <p className="mb-3 text-[11px] text-[var(--qg-notice-text)]">Report history: {reportTrail.error}</p>
-        ) : null}
-        {reportTrail.entries.length ? (
-          <div className="overflow-x-auto">
-            <table className="min-w-[860px] w-full text-left text-xs">
-              <thead>
-                <tr className="border-b border-white/8 text-[9px] uppercase tracking-[0.08em] text-white/35">
-                  <th className="pb-3 font-black">Report</th>
-                  <th className="pb-3 font-black">Version</th>
-                  <th className="pb-3 font-black">Format</th>
-                  <th className="pb-3 font-black">Scope</th>
-                  <th className="pb-3 font-black">Generated By</th>
-                  <th className="pb-3 font-black">Generated</th>
-                  <th className="pb-3 font-black">Integrity (SHA3-256)</th>
-                  <th className="pb-3 font-black">Regenerate</th>
-                </tr>
-              </thead>
-              <tbody>
-                {reportTrail.entries.slice(0, 20).map((entry) => {
-                  const format = isReportFormat(entry.format) ? entry.format : null;
-                  const meta = format ? FORMAT_META[format] : null;
-                  const entryKind = isReportKind(entry.kind) ? entry.kind : null;
-                  return (
-                    <tr key={entry.id} className="border-b border-white/5 text-white/70">
-                      <td className="py-3 font-medium text-white/82">{entry.title || 'Report'}</td>
-                      <td className="py-3 font-mono">{entry.version ? `v${entry.version}` : '—'}</td>
-                      <td className="py-3">
-                        {meta ? (
-                          <span className="rounded px-1.5 py-0.5 text-[10px] font-black" style={{ color: meta.color, backgroundColor: `${meta.color}1a` }}>{meta.label}</span>
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                      <td className="py-3 text-white/55">{entry.scope || 'All assets'}</td>
-                      <td className="max-w-[160px] truncate py-3 text-white/55">{entry.generatedBy || '—'}</td>
-                      <td className="py-3 text-white/50">{longDate(entry.generatedAt || entry.createdAt)}</td>
-                      <td className="py-3 font-mono text-[10px] text-white/45" title={entry.integrityHash || undefined}>
-                        {entry.integrityHash ? `${entry.integrityHash.slice(0, 16)}…` : '—'}
-                      </td>
-                      <td className="py-3">
-                        <button
-                          type="button"
-                          disabled={busy !== null || !format || !entryKind}
-                          onClick={() => {
-                            if (!format || !entryKind) return;
-                            setKind(entryKind);
-                            void generate(format, entryKind);
-                          }}
-                          className="inline-flex items-center gap-1 rounded border border-white/10 bg-white/[0.025] px-2 py-1 text-[10px] font-bold text-white/60 transition hover:border-blue-400/40 hover:text-blue-200 disabled:opacity-40"
-                        >
-                          <RefreshCw className="h-3 w-3" /> Regenerate
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            <TruncationNote shown={Math.min(20, reportTrail.entries.length)} total={reportTrail.entries.length} noun="recorded reports" rank="most recent" />
-            <p className="mt-2 text-[10px] text-white/35">Regenerate rebuilds the template from the CURRENT assessment — figures reflect today&apos;s evidence, not the original report&apos;s.</p>
-          </div>
+      <Panel className="p-5 sm:p-6">
+        <SectionTitle suffix={<Archive className="h-4 w-4 text-white/60" aria-hidden="true" />}>Report history</SectionTitle>
+        {historyError ? <p role="alert" className="mb-3 text-sm text-amber-200">{historyError}</p> : null}
+        {entries.length ? (
+          <>
+            <div className="overflow-x-auto rounded-md border border-white/10">
+              <table className="w-full min-w-[720px] text-left text-sm">
+                <thead className="bg-white/[0.035] text-xs text-white/68">
+                  <tr>
+                    {['Report', 'Scope', 'Captured (UTC)', 'Validation', 'Download'].map((label) => <th key={label} scope="col" className="px-3 py-2.5 font-semibold">{label}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.slice(0, 20).map((entry) => {
+                    const candidate = reportProvenanceSchema.safeParse((entry as typeof entry & { provenance?: unknown }).provenance);
+                    const provenance = candidate.success && candidate.data.workspaceOwnerId === ownerId && candidate.data.reportId === entry.reportId ? candidate.data : null;
+                    const entryFormat = isReportFormat(entry.format) ? entry.format : null;
+                    const saved = provenance && entry.reportId && entryFormat ? { id: entry.reportId, format: entryFormat } : null;
+                    return (
+                      <tr key={entry.id} className="border-t border-white/10 text-white/78">
+                        <td className="px-3 py-3">
+                          <span className="block font-semibold">{entry.title || 'Readiness report'}</span>
+                          <span className="text-xs text-white/55">{[entry.version && `Version ${entry.version}`, entryFormat?.toUpperCase()].filter(Boolean).join(' · ')}</span>
+                        </td>
+                        <td className="px-3 py-3">{entry.scope || 'Unavailable'}</td>
+                        <td className="whitespace-nowrap px-3 py-3 tabular-nums">{utc(provenance?.snapshotAt ?? entry.generatedAt ?? entry.createdAt)}</td>
+                        <td className="px-3 py-3">
+                          {provenance ? <ValidationBadge status={provenance.validationStatus} /> : <span className="text-white/60">Legacy audit entry</span>}
+                        </td>
+                        <td className="px-3 py-3">
+                          {saved ? <button className={PAGE_BUTTON} type="button" disabled={busy !== null} onClick={() => void runReport('download', saved)} aria-label={`Download saved ${saved.format.toUpperCase()} ${entry.title || 'report'}`}>
+                            <Download className="h-4 w-4" aria-hidden="true" /> {saved.format.toUpperCase()}
+                          </button> : <span className="text-xs text-white/55">Snapshot unavailable</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <TruncationNote shown={Math.min(20, entries.length)} total={entries.length} noun="history entries" rank="most recent" />
+          </>
         ) : (
-          <EmptyState
-            label={reportTrail.loaded ? 'No reports generated yet.' : 'Loading report history…'}
-            hint="Select a template and export format above — every generated report is recorded in your tenant audit log."
-          />
+          <EmptyState label={historyError ? 'Report history is unavailable.' : loaded ? 'No saved reports yet.' : 'Loading report history…'}
+            hint={loaded && !historyError ? 'Generate a report to save its evidence snapshot here.' : undefined} />
         )}
-        <div className="mt-4 flex items-center gap-2 text-[11px] text-white/40">
-          <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
-          Reports are tenant-scoped, evidence-driven, and SHA3-256 integrity-hashed. <BadgeCheck className="h-3.5 w-3.5 text-emerald-400" /> No fabricated findings.
-        </div>
       </Panel>
     </QuantumReadinessShell>
   );
 }
 
-function BrandingField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+function ValidationBadge({ status }: { status: Provenance['validationStatus'] }) {
+  return <Badge color={status === 'validated' ? GREEN : AMBER}>{status === 'validated' ? 'Validated' : 'Incomplete'}</Badge>;
+}
+
+function SnapshotDetails({ report, preview }: { report: CapturedReport; preview: boolean }) {
+  const { provenance, scope } = report;
+  const details = [
+    ['Report ID', provenance.reportId],
+    ['Organization ID', provenance.organizationId ?? 'Unavailable'],
+    ['Snapshot captured', utc(provenance.snapshotAt)],
+    ['Asset inventory version', provenance.assetInventoryVersion ?? 'Unavailable'],
+    ['CBOM version', provenance.cbomVersion ?? 'Unavailable'],
+    ['Assessment ID', provenance.assessmentId ?? 'Unavailable'],
+    ...(report.integrity?.hash ? [[
+      'Snapshot integrity hash (' + report.integrity.algorithm + ')', report.integrity.hash,
+    ]] : []),
+  ];
+
   return (
-    <label className="block">
-      <span className="block text-[10px] uppercase tracking-wide text-white/40">{label}</span>
-      <input value={value} onChange={(e) => onChange(e.target.value)} className="mt-1 w-full rounded-md border border-white/10 bg-black/20 px-3 py-2 text-xs text-white outline-none focus:border-blue-400/50" />
-    </label>
+    <Panel className="p-5 sm:p-6">
+      <SectionTitle suffix={<ValidationBadge status={provenance.validationStatus} />}>{preview ? 'Preview snapshot provenance' : 'Saved snapshot provenance'}</SectionTitle>
+      <h2 className="text-lg font-semibold text-white">{report.meta.title}</h2>
+      <p className="mt-1 text-sm text-white/68">{report.executiveSummary}</p>
+      <p className="mt-2 text-sm text-white/68">Registered asset scope: {scope.selectedAssetCount} of {scope.totalAssetCount}</p>
+      {report.kpis.length ? (
+        <dl className="my-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {report.kpis.map((metric) => (
+            <div key={metric.label} className="rounded-md border border-white/10 bg-white/[0.025] p-3">
+              <dt className="text-sm text-white/65">{metric.label}</dt>
+              <dd className="mt-1 text-xl font-semibold tabular-nums text-white">{metric.value}{metric.unit ? ` ${metric.unit}` : ''}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      <dl className="mt-4 grid gap-3 rounded-md border border-white/10 p-4 sm:grid-cols-2 lg:grid-cols-3">
+        {details.map(([label, value]) => (
+          <div key={label} className="min-w-0">
+            <dt className="text-xs font-semibold text-white/64">{label}</dt>
+            <dd className="mt-1 break-all font-mono text-xs text-white/87">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <h3 className="mb-2 mt-5 text-sm font-semibold text-white">Data completeness</h3>
+      {provenance.dataCompleteness.length > 0 ? <ul className="divide-y divide-white/10 rounded-md border border-white/10 px-3">
+        {provenance.dataCompleteness.map((source) => (
+          <li key={source.source} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2 text-sm">
+            <span className="font-semibold text-white/85">{source.source}</span>
+            <span className={source.status === 'available' ? 'text-emerald-300' : 'text-amber-200'}>
+              {{ available: 'Available', missing: 'Unavailable', partial: 'Partial' }[source.status]}
+            </span>
+            <span className="text-white/65">{source.detail}</span>
+          </li>
+        ))}
+      </ul> : <p className="text-sm text-white/65">Source coverage is unavailable.</p>}
+    </Panel>
   );
 }

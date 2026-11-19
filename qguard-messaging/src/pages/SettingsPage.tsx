@@ -38,7 +38,8 @@ import { createEphemeralSupabaseClient, supabase } from "@/lib/supabase";
 import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import { listTrustedDevices, revokeTrustedDevice, type TrustedDeviceRow } from "@/lib/trusted-devices";
 import type { Profile, SecurityEvent, TelemetryEvent } from "@/lib/types";
-import { useAppLock } from "@/lib/use-app-lock";
+import { useAppLock, type AppLockMethod } from "@/lib/use-app-lock";
+import { PatternCapture } from "@/components/vault/PatternCapture";
 import type { ThemeMode } from "@/lib/use-theme";
 import { INACTIVITY_OPTIONS, type WorkspaceStatus } from "@/lib/use-workspace-lock";
 import { coreSha3Hex } from "@/lib/core-crypto";
@@ -242,6 +243,7 @@ interface SettingsPageProps {
   // site in App.tsx has no `verifyAccountPassword` in scope.
   appLock?: ReturnType<typeof useAppLock>;
   verifyAccountPassword?: (password: string) => Promise<void>;
+  onOpenOfflineDevices?: () => void;
 }
 
 interface MfaEnrollment {
@@ -374,7 +376,7 @@ function ProofInput({ phone, value, onChange, sentTo, onSend }: {
   );
 }
 
-export default function SettingsPage({ theme, profile, telemetry, securityEvents, liveEvents, liveStatus, onToggleTheme, onRefresh, inactivityMinutes, onSetInactivityMinutes, workspaceStatus, onLockWorkspaces, appLock, verifyAccountPassword }: SettingsPageProps) {
+export default function SettingsPage({ theme, profile, telemetry, securityEvents, liveEvents, liveStatus, onToggleTheme, onRefresh, inactivityMinutes, onSetInactivityMinutes, workspaceStatus, onLockWorkspaces, appLock, verifyAccountPassword, onOpenOfflineDevices }: SettingsPageProps) {
   const auth = useAuth();
   const user = auth.user;
   const [displayName, setDisplayName] = useState(profile?.name ?? "");
@@ -797,6 +799,15 @@ export default function SettingsPage({ theme, profile, telemetry, securityEvents
 
   return (
     <div className="grid max-w-7xl gap-4">
+      {onOpenOfflineDevices && <section className="shell-card flex flex-wrap items-center justify-between gap-3 p-4" aria-label="Offline trusted devices">
+        <div className="min-w-0">
+          <h2 className="text-base font-bold text-ink-950">Offline trusted devices</h2>
+          <p className="text-sm text-ink-600">Manage the devices you paired with for Mesh and XFER.</p>
+        </div>
+        <button type="button" className="focus-ring min-h-12 rounded-lg border border-line bg-white px-4 text-sm font-semibold text-ink-900" onClick={onOpenOfflineDevices}>
+          Manage offline devices
+        </button>
+      </section>}
       <section className="profile-hero overflow-hidden border border-white/50 bg-white/75 p-5 shadow-tight backdrop-blur-xl">
         <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[280px_1fr_300px]">
           <div className="flex items-center gap-4">
@@ -1149,9 +1160,9 @@ function ApplicationPinSection({
   const [showChangeForm, setShowChangeForm] = useState(false);
   const [oldPin, setOldPin] = useState("");
   const [newPin, setNewPin] = useState("");
-  // Preselect the currently configured digit count (a 4-digit user sees
-  // "4-digit" preselected instead of always defaulting to 6).
-  const [newDigits, setNewDigits] = useState<4 | 6>(appLock.status?.digits === 4 ? 4 : 6);
+  // New credential: a 6-digit PIN or a drawn pattern (`oldPin` / `newPin` hold
+  // the pattern's canonical text for a pattern).
+  const [newMethod, setNewMethod] = useState<AppLockMethod>(appLock.status?.method ?? "pin");
   const [changeBusy, setChangeBusy] = useState(false);
   const [changeMsg, setChangeMsg] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
 
@@ -1184,14 +1195,17 @@ function ApplicationPinSection({
     );
   }
 
+  const currentIsPattern = status.method === "pattern";
+  const newSecretReady = newMethod === "pin" ? newPin.length === 6 : newPin.length > 0;
+
   const submitChangePin = async (event: FormEvent) => {
     event.preventDefault();
-    if (oldPin.length === 0 || newPin.length !== newDigits) return;
+    if (oldPin.length === 0 || !newSecretReady) return;
     setChangeBusy(true);
     setChangeMsg(null);
     try {
-      await appLock.changePin(oldPin, newPin, newDigits);
-      setChangeMsg({ tone: "ok", text: "PIN updated." });
+      await appLock.changePin(oldPin, newPin, newMethod === "pin" ? 6 : 0, newMethod);
+      setChangeMsg({ tone: "ok", text: newMethod === "pattern" ? "Pattern saved. Use it the next time you unlock." : "PIN updated." });
       setOldPin("");
       setNewPin("");
       setShowChangeForm(false);
@@ -1239,7 +1253,7 @@ function ApplicationPinSection({
         <div className="flex items-center gap-2 text-sm font-bold text-ink-950"><LockKeyhole size={18} /> Application PIN</div>
         <span className={`status-pill ${status.configured ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-700"}`}>
           {status.configured ? <ShieldCheck size={12} /> : <AlertTriangle size={12} />}
-          {status.configured ? `${status.digits}-digit PIN active` : "Not configured"}
+          {status.configured ? (currentIsPattern ? "Pattern lock active" : `${status.digits}-digit PIN active`) : "Not configured"}
         </span>
       </div>
       <p className="mt-1 text-sm text-ink-600">
@@ -1262,7 +1276,7 @@ function ApplicationPinSection({
               }}
               className="rounded-lg border border-line bg-white px-3 py-2 text-xs font-bold text-ink-700 hover:bg-canvas"
             >
-              {showChangeForm ? "Cancel" : "Change / switch 4↔6 digits"}
+              {showChangeForm ? "Cancel" : currentIsPattern ? "Change pattern or switch to PIN" : "Change PIN or switch to pattern"}
             </button>
             {verifyAccountPassword && (
               <button
@@ -1280,10 +1294,21 @@ function ApplicationPinSection({
           </div>
 
           {showChangeForm && (
-            <form onSubmit={submitChangePin} className="mt-4 grid gap-3 rounded-lg border border-line bg-canvas p-4">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="text-xs font-semibold text-ink-700">
-                  Current PIN
+            <form onSubmit={submitChangePin} className="mt-4 grid gap-4 rounded-lg border border-line bg-canvas p-4">
+              <div>
+                <div className="text-xs font-semibold text-ink-700">{currentIsPattern ? "Draw your current pattern" : "Current PIN"}</div>
+                {currentIsPattern ? (
+                  <div className="mt-2 max-w-xs">
+                    {oldPin ? (
+                      <p className="flex items-center gap-2 text-xs font-semibold text-emerald-600">
+                        <ShieldCheck size={13} /> Current pattern drawn
+                        <button type="button" onClick={() => setOldPin("")} className="font-semibold text-cyan-700 underline">Draw again</button>
+                      </p>
+                    ) : (
+                      <PatternCapture mode="unlock" onSubmit={async (pattern) => setOldPin(pattern)} />
+                    )}
+                  </div>
+                ) : (
                   <input
                     type="password"
                     inputMode="numeric"
@@ -1291,48 +1316,61 @@ function ApplicationPinSection({
                     maxLength={12}
                     value={oldPin}
                     onChange={(event) => setOldPin(event.target.value.replace(/\D/g, "").slice(0, 12))}
-                    className="mt-1.5 w-full rounded-lg border border-line bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                    className="mt-1.5 w-full max-w-xs rounded-lg border border-line bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300"
                   />
-                </label>
-                <label className="text-xs font-semibold text-ink-700">
-                  New {newDigits}-digit PIN
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-ink-700">Unlock with</span>
+                <div className="grid grid-cols-2 gap-1 rounded-lg border border-line bg-white p-1" role="radiogroup" aria-label="New unlock method">
+                  {([["pin", "6-digit PIN"], ["pattern", "Pattern"]] as const).map(([method, label]) => (
+                    <button
+                      key={method}
+                      type="button"
+                      role="radio"
+                      aria-checked={newMethod === method}
+                      onClick={() => { setNewMethod(method); setNewPin(""); }}
+                      className={`rounded-md px-3 py-1 text-xs font-bold transition ${newMethod === method ? "bg-cyan-600 text-white" : "text-ink-600 hover:bg-canvas"}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-ink-700">{newMethod === "pattern" ? "New pattern (draw it twice)" : "New 6-digit PIN"}</div>
+                {newMethod === "pattern" ? (
+                  <div className="mt-2 max-w-xs">
+                    {newPin ? (
+                      <p className="flex items-center gap-2 text-xs font-semibold text-emerald-600">
+                        <ShieldCheck size={13} /> New pattern confirmed
+                        <button type="button" onClick={() => setNewPin("")} className="font-semibold text-cyan-700 underline">Draw a different one</button>
+                      </p>
+                    ) : (
+                      <PatternCapture mode="set" submitLabel="Pattern confirmed" onSubmit={async (pattern) => setNewPin(pattern)} />
+                    )}
+                  </div>
+                ) : (
                   <input
                     type="password"
                     inputMode="numeric"
                     autoComplete="off"
-                    maxLength={newDigits}
+                    maxLength={6}
                     value={newPin}
-                    onChange={(event) => setNewPin(event.target.value.replace(/\D/g, "").slice(0, newDigits))}
-                    className="mt-1.5 w-full rounded-lg border border-line bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300"
+                    onChange={(event) => setNewPin(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                    className="mt-1.5 w-full max-w-xs rounded-lg border border-line bg-white px-3 py-2 text-sm outline-none focus:border-cyan-300"
                   />
-                </label>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-ink-700">New PIN length</span>
-                <div className="grid grid-cols-2 gap-1 rounded-lg border border-line bg-white p-1" role="radiogroup" aria-label="New PIN length">
-                  {([4, 6] as const).map((digitCount) => (
-                    <button
-                      key={digitCount}
-                      type="button"
-                      role="radio"
-                      aria-checked={newDigits === digitCount}
-                      onClick={() => { setNewDigits(digitCount); setNewPin(""); }}
-                      className={`rounded-md px-3 py-1 text-xs font-bold transition ${newDigits === digitCount ? "bg-cyan-600 text-white" : "text-ink-600 hover:bg-canvas"}`}
-                    >
-                      {digitCount}-digit
-                    </button>
-                  ))}
-                </div>
+                )}
               </div>
               {changeMsg && (
                 <p className={`text-xs font-semibold ${changeMsg.tone === "ok" ? "text-emerald-600" : "text-rose-600"}`}>{changeMsg.text}</p>
               )}
               <button
                 type="submit"
-                disabled={changeBusy || oldPin.length === 0 || newPin.length !== newDigits}
+                disabled={changeBusy || oldPin.length === 0 || !newSecretReady}
                 className="rounded-lg bg-cyan-600 px-4 py-2 text-xs font-bold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {changeBusy ? "Updating…" : "Update PIN"}
+                {changeBusy ? "Updating…" : newMethod === "pattern" ? "Save pattern" : "Update PIN"}
               </button>
             </form>
           )}

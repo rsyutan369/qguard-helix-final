@@ -501,6 +501,45 @@ pub(crate) fn import_one(
     progress: &mut dyn FnMut(VaultProgress),
 ) -> Result<ImportOutcome> {
     let (file, source_name, size) = open_import_source(source_path)?;
+    import_reader(session, (BufReader::new(file), source_name, size), base_parent, folder_parts, skip_duplicates, None, progress)
+}
+
+struct TransferImport<'a> {
+    state: &'a AppState,
+    owner: &'a str,
+    digest: &'a str,
+}
+
+/// Import an already-verified XFER stream without ever writing a plaintext
+/// intermediate. Duplicate content at the Vault root makes a retry safe
+/// after a crash between the Vault commit and XFER's destination receipt.
+pub(crate) fn import_transfer_stream(
+    state: &AppState,
+    owner: &str,
+    reader: impl Read,
+    source_name: String,
+    size: u64,
+    digest: &str,
+) -> Result<ImportOutcome> {
+    let session = open_session(state, VaultNeed::Seal)?;
+    if session.ctx.user_id != owner {
+        return Err(QGuardError::Trust("The active account changed before Vault import.".into()));
+    }
+    import_reader(
+        &session, (reader, source_name, size), None, &[], true,
+        Some(TransferImport { state, owner, digest }), &mut |_| {},
+    )
+}
+
+fn import_reader(
+    session: &StoreSession,
+    (mut reader, source_name, size): (impl Read, String, u64),
+    base_parent: Option<&str>,
+    folder_parts: &[String],
+    skip_duplicates: bool,
+    transfer: Option<TransferImport<'_>>,
+    progress: &mut dyn FnMut(VaultProgress),
+) -> Result<ImportOutcome> {
     if size > store::MAX_IMPORT_BYTES {
         return Err(QGuardError::InvalidInput(format!(
             "{source_name} is larger than the {} GB per-file limit",
@@ -508,7 +547,6 @@ pub(crate) fn import_one(
         )));
     }
     let name = store::clean_name(&source_name)?;
-    let mut reader = BufReader::new(file);
     let head = read_head(&mut reader)?;
     let detected = sniff::sniff(&head, &name);
     let mut hashing = HashingReader::new(Cursor::new(head).chain(reader));
@@ -541,11 +579,23 @@ pub(crate) fn import_one(
             return Err(error);
         }
     };
-    let (plaintext_sha3, _) = hashing.finish();
+    let (plaintext_sha3, bytes_read) = hashing.finish();
     let stored_bytes = store::file_len(&staging);
 
     let committed = (|| -> Result<ImportOutcome> {
         let _guard = lock_store()?;
+        if let Some(transfer) = transfer {
+            if bytes_read != size || plaintext_sha3 != transfer.digest {
+                return Err(QGuardError::Crypto("The verified transfer bytes changed before Vault import.".into()));
+            }
+            if transfer.state.offline_principal.owner(transfer.state)? != transfer.owner {
+                return Err(QGuardError::Trust("The verified local account changed during Vault import.".into()));
+            }
+            let active = local_vault_context(transfer.state, VaultNeed::Open)?;
+            if active.user_id != transfer.owner || active.vault_key() != session.ctx.vault_key() {
+                return Err(QGuardError::Trust("Unlock the original Quantum Vault and retry the import.".into()));
+            }
+        }
         let mut index = session.load()?;
         let parent = index.ensure_folder_path(base_parent, folder_parts)?;
         if skip_duplicates {

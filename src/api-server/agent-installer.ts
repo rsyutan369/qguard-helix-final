@@ -51,6 +51,7 @@ import {
   validateControlPlane,
 } from '@/lib/agent-installer/agent-environment'
 import { busStats, eventsSince, publishAgentEvent, subscribe } from './agent-event-bus'
+import { AGENT_DISCOVERY_EVENT } from '@/lib/migration/agent-discovery'
 import {
   decideAgentRole,
   decideScanTypes,
@@ -1289,10 +1290,11 @@ router.get('/events/stream', async (req, res) => {
   const flush = () => {
     if (closed) return
     for (const event of eventsSince(user.id, cursor)) {
+      cursor = event.id
+      if (event.name === AGENT_DISCOVERY_EVENT) continue
       res.write(`id: ${event.id}\n`)
       res.write(`event: ${event.name}\n`)
       res.write(`data: ${JSON.stringify({ agentId: event.agentId, at: event.at, ...event.payload })}\n\n`)
-      cursor = event.id
     }
   }
 

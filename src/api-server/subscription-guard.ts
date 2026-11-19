@@ -47,9 +47,12 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/api/v1/cost-assumptions', tier: 'basic' },
   { prefix: '/api/v1/sandbox', tier: 'basic' },
   { prefix: '/api/v1/harvest-now', tier: 'basic' },
+  { prefix: '/api/v1/dashboard/harvest-now', tier: 'basic' },
+  { prefix: '/api/v1/dashboard/migration-sandbox', tier: 'basic' },
   { prefix: '/api/v1/quantum-certification', tier: 'basic' }, // Quantum Trust Certification Engine (BASIC/PRO/ELITE)
   { prefix: '/api/v1/quantum-remediation', tier: 'basic' }, // Intelligent Quantum Remediation Engine (pairs with certification)
   { prefix: '/api/v1/migration-workflow', tier: 'basic' }, // Cross-module workflow rail (state-driven lifecycle)
+  { prefix: '/api/v1/estate-intelligence', tier: 'pro' }, // Estate Remediation Intelligence: fix plan, maps and campaigns for large estates
   { prefix: '/api/v1/migration-intelligence', tier: 'basic' }, // Shared Responsibility Quantum Migration Intelligence Engine™ (ownership model)
   { prefix: '/api/v1/copilot', tier: 'basic' }, // Sophia AI Security Copilot™ — available to every paying tenant; tools self-gate by RBAC + the caller's own module entitlements
   // BASIC scans its own assets (feeds QR Engine / Migration Planner / Sandbox).
@@ -77,6 +80,7 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/api/v1/migration', tier: 'pro' }, // timeline / phases / live-migration (NOT migration-planner: longer prefix wins)
   { prefix: '/api/v1/migration-snapshots', tier: 'pro' }, // Snapshot Management for safe rollback (live-migration)
   { prefix: '/api/v1/migration-orchestrator', tier: 'pro' }, // Massive-scale orchestration engine (migration-timeline, pqc-orchestration)
+  { prefix: '/api/v1/dashboard/pqc-orchestration', tier: 'pro' },
   { prefix: '/api/v1/dashboard/pqauth', tier: 'pro' },
   { prefix: '/api/v1/dashboard/telemetry-correlation', tier: 'pro' },
   { prefix: '/api/v1/dashboard/quantum-risk-scoring', tier: 'pro' },
@@ -86,6 +90,7 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   // reached Pro data from a Starter account.
   { prefix: '/api/v1/dashboard/drift', tier: 'pro' },
   { prefix: '/api/v1/runtime-crypto-intel', tier: 'pro' },
+  { prefix: '/api/v1/dashboard/runtime-crypto-intel', tier: 'pro' },
   { prefix: '/api/v1/dashboard/tls-telemetry', tier: 'pro' },
   { prefix: '/api/v1/dashboard/tls-orchestrator', tier: 'pro' },
   { prefix: '/api/v1/dashboard/pki-visibility', tier: 'pro' },
@@ -124,7 +129,8 @@ const API_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/api/qkms', tier: 'elite' }, // legacy alias mount
 ]
 
-function requiredTierForPath(path: string): PlanTier | null {
+export function requiredTierForPath(pathname: string): PlanTier | null {
+  const path = pathname.toLowerCase()
   let best: { prefix: string; tier: PlanTier } | null = null
   for (const entry of API_MIN_TIER) {
     if (path === entry.prefix || path.startsWith(entry.prefix + '/')) {
@@ -184,7 +190,8 @@ function deny(res: Response, required: PlanTier, ent: Entitlement) {
 export async function subscriptionGateway(req: Request, res: Response, next: NextFunction) {
   if (ENFORCEMENT === 'off') return next()
 
-  const path = (req.originalUrl || req.url || '').split('?')[0]
+  // Use Express's parsed pathname and case-insensitive mount semantics.
+  const path = `${req.baseUrl}${req.path}`
   const required = requiredTierForPath(path)
   if (!required) return next() // ungated module (billing, paypal, profile, overview, ...)
 

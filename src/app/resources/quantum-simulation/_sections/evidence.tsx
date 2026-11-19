@@ -639,7 +639,7 @@ function DefenceEvidencePanel() {
           <span>
             Nothing about the record layer changes. AES-256, SHA-384 and the whole transcript machinery stay exactly as they are;
             only the key agreement and the signatures move. That is why a migration measured in years rather than decades is
-            realistic — and why the deadline in NIST IR 8547 is a deadline rather than an aspiration.
+            realistic — and why published transition milestones should guide planning independently of CRQC estimates.
           </span>
         </span>
       </Callout>

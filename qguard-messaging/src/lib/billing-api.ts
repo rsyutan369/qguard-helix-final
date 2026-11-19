@@ -86,6 +86,82 @@ export async function postBilling<T = any>(
   body: unknown,
   options: { origin?: string; fetchImpl?: typeof fetch } = {},
 ): Promise<T> {
+  return requestBilling<T>("POST", path, accessToken, body, options);
+}
+
+/** GET from the billing service (subscription reads); same error contract as postBilling. */
+export async function getBilling<T = any>(
+  path: string,
+  accessToken: string | null,
+  options: { origin?: string; fetchImpl?: typeof fetch } = {},
+): Promise<T> {
+  return requestBilling<T>("GET", path, accessToken, undefined, options);
+}
+
+// ---- Typed subscription API (supabase/functions/billing/play-service.ts) ----
+
+export interface ServerSubscriptionSummary {
+  subscription: {
+    plan: string;
+    status: string;
+    provider: string | null;
+    providerLabel: string | null;
+    productId: string | null;
+    billingPeriod: "monthly" | "yearly";
+    purchaseDate: string | null;
+    currentPeriodStart: string | null;
+    nextRenewal: string | null;
+    expiration: string | null;
+    autoRenew: boolean;
+    cancelled: boolean;
+    cancelledAt: string | null;
+    verificationState: string | null;
+    lastVerifiedAt: string | null;
+  } | null;
+  access: boolean;
+  entitlements: { keys: string[]; validUntil: string | null };
+  message: string | null;
+  /** obfuscatedAccountId to pass to Google Play (SHA-256 of the account id). */
+  playAccountId: string;
+}
+
+export interface ServerCatalog {
+  products: Array<{ productId: string; tier: string; billingPeriod: "monthly" | "yearly"; platform: string; displayName: string; listPrice: { amount: number; currency: string } }>;
+  tiers: Array<{ tier: string; entitlements: Array<{ key: string; label: string }>; includes: string[] }>;
+  rules: { freeTier: boolean; freeTrial: boolean; annualDiscount: boolean; moneyBackGuarantee: boolean };
+  playProducts: Record<string, { monthly: string; yearly: string }>;
+}
+
+export interface VerifyResult {
+  productId: string;
+  plan: string;
+  cycle: string;
+  status: string;
+  entitled: boolean;
+  expiryTime: string | null;
+  autoRenew: boolean;
+  pending: boolean;
+  applied: boolean;
+}
+
+export const fetchSubscriptionSummary = (accessToken: string) => getBilling<ServerSubscriptionSummary>("/api/v1/subscriptions/me", accessToken);
+export const fetchCatalog = (platform: "google_play" | "paypal") => getBilling<ServerCatalog>(`/api/v1/subscriptions/catalog?platform=${platform}`, null);
+export const verifyPlayPurchase = (accessToken: string, purchaseToken: string) =>
+  postBilling<VerifyResult>("/api/v1/subscriptions/verify", accessToken, { purchaseToken });
+export const restorePlayPurchases = (accessToken: string, purchaseTokens: string[]) =>
+  postBilling<{ checked: number; restored: number; results: Array<{ ok: boolean; result?: VerifyResult; error?: { code: string; message: string } }> }>(
+    "/api/v1/subscriptions/restore",
+    accessToken,
+    { purchaseTokens },
+  );
+
+async function requestBilling<T>(
+  method: "GET" | "POST",
+  path: string,
+  accessToken: string | null,
+  body: unknown,
+  options: { origin?: string; fetchImpl?: typeof fetch },
+): Promise<T> {
   const origin = options.origin ?? billingApiOrigin();
   if (!origin) {
     throw new BillingRequestError("Billing is not configured in this build of QGuard Messaging.", null, "NOT_CONFIGURED");
@@ -94,10 +170,13 @@ export async function postBilling<T = any>(
 
   let response: Response;
   try {
+    const headers: Record<string, string> = method === "POST" ? { "Content-Type": "application/json" } : {};
+    if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
     response = await fetchImpl(`${origin}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-      body: JSON.stringify(body),
+      method,
+      headers,
+      body: method === "POST" ? JSON.stringify(body) : undefined,
+      cache: "no-store",
     });
   } catch {
     throw new BillingRequestError(

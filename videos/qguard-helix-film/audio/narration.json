@@ -1,0 +1,45 @@
+{
+  "landscape": {
+    "duration": 120,
+    "scenes": [0, 15, 30, 43, 59, 75, 91, 105],
+    "cues": [
+      [0.75, 4.6, "A private message. A financial transaction."],
+      [4.85, 8.7, "A document meant for just one person."],
+      [9, 14.5, "Every day, cryptography helps keep what we share private."],
+      [15.45, 21.2, "A sufficiently capable quantum computer could break RSA and elliptic-curve cryptography."],
+      [21.6, 25, "It's called harvest now, decrypt later."],
+      [25.25, 29.8, "Someone saves encrypted data today, hoping to unlock it years from now."],
+      [30.7, 35.2, "Meet QGuard Helix Messaging."],
+      [35.5, 42.5, "Built with post-quantum cryptography for everyday communications on Windows and Android."],
+      [43.55, 49.1, "Send private messages, photos and documents in Secure Chat."],
+      [49.55, 55, "Make end-to-end encrypted voice and video calls on supported devices."],
+      [55.3, 59, "Talk face to face, even miles apart."],
+      [59.55, 65.2, "With Quantum Vault, encrypt sensitive documents, photos and videos."],
+      [65.65, 72.3, "Hidden Vault gives you a separate, concealed storage space on your device."],
+      [75.55, 81.4, "Offgrid Mesh keeps nearby devices in touch over supported local connections."],
+      [81.8, 88.1, "With XFER, discover compatible devices and transfer files directly between them."],
+      [91.45, 95.9, "ML-KEM works alongside classical key agreement."],
+      [96.1, 100, "ML-DSA provides post-quantum signatures."],
+      [100.15, 104.9, "AES-256-GCM provides authenticated encryption."],
+      [107.15, 111.95, "The world is preparing for quantum."],
+      [112.3, 115.25, "Are your communications?"],
+      [116, 119.65, "Discover QGuard Helix today."]
+    ]
+  },
+  "portrait": {
+    "duration": 45,
+    "scenes": [0, 5, 10, 15, 20, 25, 30, 36],
+    "cues": [
+      [0.35, 4.7, "What you share today can still matter years from now."],
+      [5.2, 9.85, "Encrypted data can be saved today and targeted for decryption later."],
+      [10.45, 14.7, "Meet QGuard Helix Messaging."],
+      [15.3, 19.7, "Private messages. End-to-end encrypted voice and video calls."],
+      [20.25, 24.7, "Encrypt files in Quantum Vault. Keep others in Hidden Vault."],
+      [25.2, 29.85, "Message nearby with Offgrid Mesh. Share files with XFER."],
+      [30.25, 35.65, "Built with NIST-standardized ML-KEM and ML-DSA."],
+      [36.6, 40.5, "The world is preparing for quantum."],
+      [40.65, 42.3, "Are your communications?"],
+      [42.48, 44.95, "Discover QGuard Helix today."]
+    ]
+  }
+}

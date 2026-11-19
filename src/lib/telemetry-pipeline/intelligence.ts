@@ -34,6 +34,8 @@ import type {
   TelemetryPipelineIntelligence,
   ThroughputPoint,
 } from './types'
+import type { SourceRead } from '@/lib/source-read'
+import { isRuntimeOperationObservation } from '@/lib/telemetry/evidence-identity'
 
 type Row = Record<string, unknown>
 
@@ -227,9 +229,10 @@ export interface PipelineInputs {
   assets: Array<{ id: string; name: string; environment: string }>
   rowsBySource: Record<SourceKey, Row[]>
   /** Sources whose fetch hit the row cap, so their count is a lower bound. */
-  truncatedSources: SourceKey[]
+  truncatedSources?: SourceKey[]
   scannerAgents: Row[]
   connectorAccounts: Row[]
+  reads?: SourceRead[]
   now?: number
 }
 
@@ -251,11 +254,14 @@ export function buildTelemetryPipelineIntelligence(inputs: PipelineInputs): Tele
     const data = rows[entry.key] ?? []
     const lastMs = latestMs(data, ...entry.timeColumns)
     const ageMs = lastMs ? now - lastMs : null
-    const truncated = inputs.truncatedSources.includes(entry.key)
+    const truncated = inputs.truncatedSources?.includes(entry.key) || inputs.reads?.some((read) => read.key === entry.key && read.state === 'truncated') || false
 
     let health: HealthState
     let detail: string
-    if (data.length === 0) {
+    if (inputs.reads?.some((read) => read.key === entry.key && read.state === 'unavailable')) {
+      health = 'unavailable'
+      detail = 'Source query failed. Its counts and freshness are unavailable.'
+    } else if (data.length === 0) {
       health = 'absent'
       detail = `No rows. ${entry.feeds.join(', ')} ${entry.feeds.length === 1 ? 'has' : 'have'} no input from this source — any zero they show is unmeasured, not clean.`
     } else if (ageMs === null) {
@@ -336,11 +342,14 @@ export function buildTelemetryPipelineIntelligence(inputs: PipelineInputs): Tele
    * fed by scans with no live collector at all — that is a real and supported
    * configuration, not a failure.
    */
+  const activeConnectors = inputs.connectorAccounts.filter((account) => ['active', 'connected', 'ok'].includes(str(account.status).toLowerCase()))
+  const freshConnectors = activeConnectors.filter((account) => {
+    const synced = dateMs(account.last_sync_at)
+    return synced > 0 && synced <= now && now - synced <= DAY
+  })
   const collectionScore = fleet.measured
     ? percentOf(fleet.healthy, Math.max(1, fleet.total))
-    : inputs.connectorAccounts.length
-      ? 100
-      : 0
+    : percentOf(freshConnectors.length, inputs.connectorAccounts.length)
   const freshnessScore = percentOf(sources.filter((source) => source.health === 'healthy').length, Math.max(1, sources.length))
   const attributionScore = 100 - coverage.unattributedPercent
   const pipelineHealthScore = clamp((collectionScore + freshnessScore + attributionScore + quality.score) / 4)
@@ -354,7 +363,7 @@ export function buildTelemetryPipelineIntelligence(inputs: PipelineInputs): Tele
     headline: headlineFor({ healthState, fleet, sources, coverage, quality }),
     collectorsOnline: fleet.healthy,
     collectorsTotal: fleet.total,
-    connectorsActive: inputs.connectorAccounts.filter((account) => /active|connected|ok/i.test(str(account.status))).length,
+    connectorsActive: activeConnectors.length,
     connectorsTotal: inputs.connectorAccounts.length,
     eventsLast24h,
     eventsLast7d,
@@ -395,7 +404,8 @@ export function buildTelemetryPipelineIntelligence(inputs: PipelineInputs): Tele
     coverage,
     findings,
     sourceCounts,
-    truncated: inputs.truncatedSources.length > 0,
+    reads: inputs.reads ?? [],
+    truncated: Boolean(inputs.truncatedSources?.length || inputs.reads?.some((read) => read.state === 'truncated')),
   }
 }
 
@@ -441,15 +451,18 @@ function buildFleet(input: { agents: Row[]; heartbeats: Row[]; runtimeEvents: Ro
      */
     let health: HealthState
     let healthReason: string
-    if (!lastSeenMs && beats.length === 0 && eventsAttributed === 0) {
+    if (agent.revoked_at || reportedStatus.toLowerCase() === 'revoked') {
+      health = 'unavailable'
+      healthReason = 'Collector enrollment was revoked.'
+    } else if (!lastSeenMs && beats.length === 0 && eventsAttributed === 0) {
       health = 'silent'
       healthReason = 'Registered but has never sent a heartbeat or an attributable event.'
     } else if (silentForMs !== null && silentForMs > 24 * HOUR) {
       health = 'silent'
       healthReason = `Nothing received for ${formatDuration(silentForMs)}.`
-    } else if (silentForMs !== null && silentForMs > 15 * MINUTE) {
+    } else if (silentForMs !== null && silentForMs > 10 * MINUTE) {
       health = 'stale'
-      healthReason = `Last contact ${formatDuration(silentForMs)} ago, beyond the 15-minute heartbeat interval.`
+      healthReason = `Last contact ${formatDuration(silentForMs)} ago, beyond the 10-minute online window.`
     } else if (beats.length === 0 && eventsAttributed > 0) {
       health = 'degraded'
       healthReason = 'Producing events but no heartbeats, so availability cannot be monitored.'
@@ -764,7 +777,8 @@ function buildCoverage(input: {
     { key: 'crypto_exposures', label: 'Exposures', time: ['updated_at', 'created_at'] },
   ]
 
-  const byAsset = new Map<string, { sources: Set<string>; events: number; lastMs: number }>()
+  const byAsset = new Map<string, { sources: Set<string>; events: number; lastMs: number; lastRuntimeMs: number }>()
+  const knownAssets = new Set(assets.map((asset) => asset.id))
   let unattributed = 0
   let considered = 0
 
@@ -772,16 +786,20 @@ function buildCoverage(input: {
     for (const row of rows[entry.key] ?? []) {
       considered += 1
       const assetId = str(row.asset_id)
-      if (!assetId) {
+      if (!knownAssets.has(assetId)) {
         unattributed += 1
         continue
       }
-      const bucket = byAsset.get(assetId) ?? { sources: new Set<string>(), events: 0, lastMs: 0 }
+      const bucket = byAsset.get(assetId) ?? { sources: new Set<string>(), events: 0, lastMs: 0, lastRuntimeMs: 0 }
       bucket.sources.add(entry.label)
       bucket.events += 1
       for (const column of entry.time) {
         const ms = dateMs(row[column])
         if (ms > bucket.lastMs) bucket.lastMs = ms
+      }
+      if (entry.key === 'runtime_crypto_events' && isRuntimeOperationObservation(row)) {
+        const observed = dateMs(row.observed_at)
+        if (observed <= now) bucket.lastRuntimeMs = Math.max(bucket.lastRuntimeMs, observed)
       }
       byAsset.set(assetId, bucket)
     }
@@ -795,7 +813,7 @@ function buildCoverage(input: {
     let health: HealthState
     if (!bucket) health = 'absent'
     else if (ageMs === null) health = 'degraded'
-    else if (ageMs <= 24 * HOUR) health = 'healthy'
+    else if (bucket.lastRuntimeMs > 0 && now - bucket.lastRuntimeMs <= DAY) health = 'healthy'
     else if (ageMs <= 7 * DAY) health = 'stale'
     else health = 'silent'
 
@@ -810,7 +828,7 @@ function buildCoverage(input: {
     }
   })
 
-  const reporting = records.filter((record) => record.events > 0).length
+  const reporting = records.filter((record) => record.health === 'healthy').length
   return {
     assetsTotal: assets.length,
     assetsReporting: reporting,

@@ -2779,6 +2779,7 @@ async function runScanCycle(policyOverride?: AgentPolicy) {
 
   const evidence: ScannerEvidence[] = []
   const targetCount = policy.allowedTargets.length
+  const targetUploads: UploadOutcome[] = []
   let targetsDone = 0
 
   if (targetCount > 0) {
@@ -2788,6 +2789,7 @@ async function runScanCycle(policyOverride?: AgentPolicy) {
   for (const rawTarget of policy.allowedTargets) {
     const target = parseTarget(rawTarget)
     if (!target) continue
+    const offset = evidence.length
     try {
       if (target.type === 'tls' && scanTypes.has('tls')) {
         console.log(`Scanning TLS metadata for ${target.host}:${target.port}`)
@@ -2806,6 +2808,9 @@ async function runScanCycle(policyOverride?: AgentPolicy) {
       })
       console.warn(`Target scan failed for ${target.original}: ${(error as Error).message}`)
     }
+    if (evidence.length > offset) {
+      targetUploads.push(await uploadEvidence(evidence.slice(offset)))
+    }
     targetsDone += 1
     // 15% -> 45% across the authorised target sweep (TLS certificates + SSH).
     await reportScanStage(
@@ -2816,6 +2821,7 @@ async function runScanCycle(policyOverride?: AgentPolicy) {
     )
   }
 
+  const localEvidenceOffset = evidence.length
   const pathCount = policy.allowedPaths.length
   let pathsDone = 0
   if (pathCount > 0) {
@@ -2846,11 +2852,15 @@ async function runScanCycle(policyOverride?: AgentPolicy) {
   }
 
   await reportScanStage('building_cbom', 75, 'Building CBOM from collected evidence', { evidenceCount: evidence.length })
-  const evidenceUpload = await uploadEvidence(evidence)
+  const localUpload = await uploadEvidence(evidence.slice(localEvidenceOffset))
+  const evidenceUploads = [...targetUploads, localUpload]
+  const evidenceAccepted = evidenceUploads.reduce((total, upload) => total + upload.accepted, 0)
+  const evidenceRejected = evidenceUploads.reduce((total, upload) => total + upload.rejected, 0)
+  const evidenceOutOfPolicy = evidenceUploads.some((upload) => upload.outOfPolicy)
   await reportScanStage('calculating_exposure', 85, 'Calculating quantum exposure', {
     evidenceCount: evidence.length,
-    evidenceAccepted: evidenceUpload.accepted,
-    evidenceRejected: evidenceUpload.rejected,
+    evidenceAccepted,
+    evidenceRejected,
   })
   const evidenceRuntimeEvents = runtimeEventsEnabled(scanTypes) ? evidence.map(runtimeEventFromEvidence) : []
   let nativeRuntimeEvents: NativeRuntimeEvent[] = []
@@ -2884,14 +2894,14 @@ async function runScanCycle(policyOverride?: AgentPolicy) {
   // Anything the control plane declined is reported, never hidden and never
   // fatal. `outOfPolicy` is the operator's signal that this agent has no
   // authorised scope beyond its own host.
-  const uploadErrors = [evidenceUpload.error, runtimeUpload.error].filter(Boolean) as string[]
-  const rejectedByPolicy = evidenceUpload.rejected + runtimeUpload.rejected
+  const uploadErrors = [...evidenceUploads.map((upload) => upload.error), runtimeUpload.error].filter((error): error is string => Boolean(error))
+  const rejectedByPolicy = evidenceRejected + runtimeUpload.rejected
   await reportScanStage('publishing_findings', 92, 'Publishing findings to the control plane', {
     evidenceCount: evidence.length,
     runtimeEventCount: runtimeEvents.length,
-    accepted: evidenceUpload.accepted + runtimeUpload.accepted,
+    accepted: evidenceAccepted + runtimeUpload.accepted,
     rejectedByPolicy,
-    outOfPolicy: evidenceUpload.outOfPolicy || runtimeUpload.outOfPolicy,
+    outOfPolicy: evidenceOutOfPolicy || runtimeUpload.outOfPolicy,
     uploadErrors,
   })
   const remediationJobs = await executePendingRemediations(policy)
@@ -2907,9 +2917,9 @@ async function runScanCycle(policyOverride?: AgentPolicy) {
     runtimeEventCount: runtimeEvents.length,
     nativeRuntimeEventCount: nativeRuntimeEvents.length,
     nativeCollectors: nativeCollectorDiagnostics,
-    acceptedByControlPlane: evidenceUpload.accepted + runtimeUpload.accepted,
+    acceptedByControlPlane: evidenceAccepted + runtimeUpload.accepted,
     rejectedByPolicy,
-    outOfPolicy: evidenceUpload.outOfPolicy || runtimeUpload.outOfPolicy,
+    outOfPolicy: evidenceOutOfPolicy || runtimeUpload.outOfPolicy,
     uploadErrors,
     remediationJobs,
   })
@@ -2931,9 +2941,9 @@ async function runScanCycle(policyOverride?: AgentPolicy) {
     {
       evidenceCount: evidence.length,
       runtimeEventCount: runtimeEvents.length,
-      accepted: evidenceUpload.accepted + runtimeUpload.accepted,
+      accepted: evidenceAccepted + runtimeUpload.accepted,
       rejectedByPolicy,
-      outOfPolicy: evidenceUpload.outOfPolicy || runtimeUpload.outOfPolicy,
+      outOfPolicy: evidenceOutOfPolicy || runtimeUpload.outOfPolicy,
       degraded,
       uploadErrors,
       remediationJobs,
@@ -2944,18 +2954,18 @@ async function runScanCycle(policyOverride?: AgentPolicy) {
   // upload that was rejected is how a broken pipeline looks healthy in a log.
   console.log(
     `QGuard agent scan complete. Collected ${evidence.length} evidence record(s) and ${runtimeEvents.length} runtime event(s); ` +
-    `control plane accepted ${evidenceUpload.accepted + runtimeUpload.accepted}` +
+    `control plane accepted ${evidenceAccepted + runtimeUpload.accepted}` +
     (rejectedByPolicy > 0 ? `, declined ${rejectedByPolicy} as out of authorized scope` : '') +
     (uploadErrors.length > 0 ? `; ${uploadErrors.length} publish error(s): ${uploadErrors.join('; ')}` : '') +
     `. Processed ${remediationJobs} remediation job(s).`,
   )
-  if (evidenceUpload.outOfPolicy || runtimeUpload.outOfPolicy) {
+  if (evidenceOutOfPolicy || runtimeUpload.outOfPolicy) {
     console.log('No observation was in authorized scope. Add authorized targets or paths to this agent in the Agent Center to widen what it may report.')
   }
   return {
     evidenceCount: evidence.length,
     runtimeEventCount: runtimeEvents.length,
-    acceptedCount: evidenceUpload.accepted + runtimeUpload.accepted,
+    acceptedCount: evidenceAccepted + runtimeUpload.accepted,
     rejectedByPolicy,
     degraded,
     remediationJobs,

@@ -271,6 +271,14 @@ console.log('\n[3] Frameworks never borrow another number')
 const model = buildGovernanceIntelligence(populatedInputs())
 const measuredFrameworks = model.frameworks.filter((f) => f.measured)
 const unmeasuredFrameworks = model.frameworks.filter((f) => !f.measured)
+const transitionReferences = ['nist-ir-8547', 'nist-nccoe-pqc', 'eo-14412', 'omb-m-26-15', 'fips-pqc', 'cnsa-2']
+for (const id of transitionReferences) {
+  const source = model.frameworks.find((f) => f.id === id)
+  const requirements = model.requirements.filter((r) => r.frameworkId === id)
+  assert(source?.status === 'not-assessed' && source.score === null && requirements.length > 0 &&
+    requirements.every((r) => r.status === 'not-assessed' && r.score === null && r.lastValidatedAt === null),
+  `${id} stays unassessed even when the tenant has related measured controls`)
+}
 
 assert(unmeasuredFrameworks.every((f) => f.score === null), 'unmeasured frameworks keep a null score')
 assert(measuredFrameworks.length > 0, 'at least one framework is measurable on a populated tenant', `${measuredFrameworks.length}`)

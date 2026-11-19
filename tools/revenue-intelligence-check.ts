@@ -20,6 +20,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import {
   buildRevenueModel,
   classifySubscription,
+  CYCLE_CHANGE_ACTION,
   PLAN_CHANGE_ACTIONS,
   planChangeAuditAction,
   subscriptionEndedAt,
@@ -140,7 +141,7 @@ async function offline() {
   await check('MRR contribution: catalog, annual ÷ 12, contract override, and every exclusion', () => {
     const base = fixture.subscriptions[0]
     assert.equal(subscriptionMrrCents(base), 3000)
-    assert.equal(subscriptionMrrCents({ ...base, billing_cycle: 'annual' }), 2000)
+    assert.equal(subscriptionMrrCents({ ...base, billing_cycle: 'annual' }), 2000, 'annual charge remains 24000 / 12')
     assert.equal(subscriptionMrrCents({ ...base, amount_cents: 5000 }), 5000)
     assert.equal(subscriptionMrrCents({ ...base, status: 'cancelled' }), 0)
     assert.equal(subscriptionMrrCents({ ...base, status: 'past_due' }), 0)
@@ -148,6 +149,7 @@ async function offline() {
     assert.equal(subscriptionMrrCents({ ...base, provider: null, amount_cents: 19900 }), 0, 'hand-managed rows are not provider-billed')
     assert.equal(subscriptionMrrCents({ ...base, currency: 'EUR' }), 0, 'no FX: a EUR price is not summed as USD')
     assert.equal(subscriptionMrrCents({ ...base, status: 'pending_renewal' }), 3000)
+    assert.equal(subscriptionMrrCents({ ...base, status: 'trial' }), 0, 'no trials exist: trial is not access')
   })
 
   const model = buildRevenueModel(fixture)
@@ -191,8 +193,8 @@ async function offline() {
     assert.deepEqual(model.subscriptionAnalytics.churnWindow, { churned: 1, base: 3, days: 30 })
     assert.equal(model.kpis.churnPct, 33.3)
     assert.equal(model.kpis.retentionPct, 66.7)
-    assert.equal(model.kpis.arpuCents, 2167)
-    assert.equal(model.kpis.ltvCents, 6508)
+    assert.equal(model.kpis.arpuCents, 2167, '6500 MRR / 3 paying customers')
+    assert.equal(model.kpis.ltvCents, 6508, 'ARPU 2167 / churn 0.333')
   })
 
   await check('fixture: health = weighted mean of the four measured components', () => {
@@ -203,6 +205,49 @@ async function offline() {
   await check('fixture: plan changes counted by exact action, 30-day window, requests ignored', () => {
     assert.equal(model.subscriptionAnalytics.upgrades30d, 1)
     assert.equal(model.subscriptionAnalytics.downgrades30d, 0)
+  })
+
+  await check('MRR movement: a plan change with no recorded from-plan is NOT guessed (A 3000 + B 500 + C 100 → 6500)', () => {
+    const movement = model.mrrMovement
+    assert.equal(movement.startingMrrCents, 3600)
+    assert.equal(movement.newMrrCents, 3000, 'F: Google Play Pro created inside the window')
+    assert.equal(movement.expansionMrrCents, 0)
+    assert.equal(movement.contractionMrrCents, 0)
+    assert.equal(movement.churnedMrrCents, 100, 'C: Starter cancelled inside the window')
+    assert.equal(movement.endingMrrCents, 6500)
+    assert.equal(movement.unpricedChanges, 1)
+    assert.equal(movement.nrrPct, 97.2, '(3600 − 100) / 3600')
+    assert.equal(model.kpis.nrrPct, 97.2)
+  })
+
+  await check('MRR movement: upgrade expands MRR and switching Basic to annual contracts it', () => {
+    const moved = buildRevenueModel({
+      ...fixture,
+      auditEvents: [
+        { id: 'm1', user_id: U.a, action: PLAN_CHANGE_ACTIONS.upgraded, message: 'Basic → Pro', created_at: '2026-09-10T00:00:00Z', metadata: { fromPlan: 'Basic', toPlan: 'Pro' } },
+        { id: 'm2', user_id: U.b, action: CYCLE_CHANGE_ACTION, message: 'monthly → annual', created_at: '2026-09-01T00:00:00Z', metadata: { fromCycle: 'monthly', toCycle: 'annual' } },
+        { id: 'm3', user_id: U.c, action: PLAN_CHANGE_ACTIONS.downgraded, message: 'outside the window', created_at: '2026-07-01T00:00:00Z', metadata: { fromPlan: 'Pro', toPlan: 'Starter' } },
+      ],
+    }).mrrMovement
+    assert.equal(moved.startingMrrCents, 1700, 'A was Basic (800) + B was Basic monthly (800) + C Starter (100)')
+    assert.equal(moved.expansionMrrCents, 2200, 'A: 800 → 3000')
+    assert.equal(moved.contractionMrrCents, 300, 'B: 800 → 6000/12 = 500')
+    assert.equal(moved.churnedMrrCents, 100)
+    assert.equal(moved.newMrrCents, 3000)
+    assert.equal(moved.startingMrrCents + moved.newMrrCents + moved.expansionMrrCents - moved.contractionMrrCents - moved.churnedMrrCents, 6500)
+    assert.equal(moved.nrrPct, 205.9, '(1700 + 2200 − 300 − 100) / 1700')
+    assert.equal(moved.grrPct, 76.5, '(1700 − 300 − 100) / 1700')
+    assert.equal(moved.revenueChurnPct, 5.9, '100 / 1700')
+    assert.equal(moved.pricedChanges, 2)
+    assert.equal(moved.unpricedChanges, 0)
+  })
+
+  await check('MRR movement: no MRR 30 days ago → retention is null, never 0% or 100%', () => {
+    const young = buildRevenueModel({ ...fixture, subscriptions: [fixture.subscriptions[5]], auditEvents: [] })
+    assert.equal(young.mrrMovement.startingMrrCents, 0)
+    assert.equal(young.mrrMovement.nrrPct, null)
+    assert.equal(young.mrrMovement.grrPct, null)
+    assert.ok(young.reconciliation.ok)
   })
 
   await check('fixture: growth compares COMPLETED months (Aug vs Jul), never the partial month', () => {
@@ -509,12 +554,20 @@ async function live() {
     }
   })
 
-  await check('live: SSE stream delivers connected + snapshot; a bad token is refused', async () => {
-    const bad = await fetch(`${BASE}/api/v1/revenue/stream?token=forged`)
+  await check('live: SSE stream delivers connected + snapshot via a ticket; JWT-in-URL and forged tickets are refused', async () => {
+    const bad = await fetch(`${BASE}/api/v1/revenue/stream?ticket=forged`)
     assert.equal(bad.status, 401)
+    const jwtInUrl = await fetch(`${BASE}/api/v1/revenue/stream?token=${encodeURIComponent(owner.token)}`)
+    assert.equal(jwtInUrl.status, 401, 'the session JWT must never be accepted in a URL')
+    const minted = await fetch(`${BASE}/api/v1/stream-tickets`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${owner.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stream: 'revenue' }),
+    })
+    const ticket = ((await minted.json()) as any).data
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 20_000)
-    const response = await fetch(`${BASE}/api/v1/revenue/stream?token=${encodeURIComponent(owner.token)}`, { signal: controller.signal })
+    const response = await fetch(`${BASE}${ticket.path}?ticket=${encodeURIComponent(ticket.ticket)}`, { signal: controller.signal })
     assert.equal(response.status, 200)
     assert.match(String(response.headers.get('content-type')), /text\/event-stream/)
     const reader = response.body!.getReader()

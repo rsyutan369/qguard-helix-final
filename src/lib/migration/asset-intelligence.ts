@@ -25,6 +25,14 @@
  * fabricated.
  */
 
+// Both imports are used at call time only. `governance/subjects` imports
+// `classifyAlgorithm` from this module, and that cycle is safe for the same
+// reason: neither side touches the other while its module body evaluates.
+import { algorithmFamily } from '@/lib/governance/subjects'
+import { partitionAssetInventory, type InventoryRow } from '@/lib/scanner/asset-components'
+import { dedupeGradedObservations } from '@/lib/scanner/finding-identity'
+import { isPassingValidation, isSimulationJob } from '@/lib/migration/job-safety'
+
 /* ------------------------------------------------------------------ */
 /* Primitives                                                          */
 /* ------------------------------------------------------------------ */
@@ -381,7 +389,7 @@ export interface PqcTarget {
   target: string
   standard: string
   rationale: string
-  category: 'key-establishment' | 'signature' | 'symmetric' | 'hash' | 'protocol'
+  category: 'key-establishment' | 'signature' | 'symmetric' | 'hash' | 'protocol' | 'unknown'
 }
 
 /**
@@ -392,8 +400,12 @@ export function pqcTargetFor(algorithm: string, context = ''): PqcTarget {
   const algo = `${algorithm}`.toUpperCase()
   const ctx = `${context}`.toLowerCase()
 
-  if (/SHA-?1\b|\bMD5\b/.test(algo)) {
-    return { target: 'SHA3-256', standard: 'FIPS 202', rationale: 'Broken/deprecated hash — replace with SHA3-256 (Grover-resistant at 128-bit security).', category: 'hash' }
+  const signature = /ECDSA|\bDSA\b|ED25519|RSA.?PSS/.test(algo) || /signature|signing|code.?sign|jwt|token|x\.509|cert|\bpki\b/.test(ctx)
+  if (!signature && /SHA-?1\b|\bMD5\b/.test(algo) && !/kdf|password|\bhmac\b/.test(ctx + algo.toLowerCase())) {
+    return { target: 'SHA3-256', standard: 'FIPS 202', rationale: 'Replace the deprecated standalone digest where the protocol or stored format permits it. Check existing consumers and integrity records during the transition.', category: 'hash' }
+  }
+  if (!signature && /SHA-?[12]\b|SHA-?(?:224|256|384|512)\b|\bMD5\b|\bHKDF\b|\bPBKDF2\b/.test(algo)) {
+    return { target: 'Review protocol-approved hash or KDF', standard: 'FIPS 202 (SHA-3)', rationale: 'Replace a deprecated standalone digest with SHA3-256 where the format permits. For key derivation or password storage, retain a protocol-appropriate KDF with approved parameters.', category: 'hash' }
   }
   if (/\b(3DES|DES|RC4)\b/.test(algo)) {
     return { target: 'AES-256-GCM', standard: 'FIPS 197 / SP 800-38D', rationale: 'Legacy symmetric cipher — replace with AES-256-GCM for Grover-resistant 128-bit post-quantum strength.', category: 'symmetric' }
@@ -401,26 +413,16 @@ export function pqcTargetFor(algorithm: string, context = ''): PqcTarget {
   if (/AES-?128|AES128/.test(algo)) {
     return { target: 'AES-256-GCM', standard: 'FIPS 197 / SP 800-38D', rationale: 'Grover halves symmetric strength — AES-256 restores a 128-bit post-quantum margin.', category: 'symmetric' }
   }
-  if (/TLS\s?1\.[01]|SSL/.test(algo) || /tls\s?1\.[01]/.test(ctx)) {
-    return { target: 'TLS 1.3 + X25519MLKEM768', standard: 'RFC 8446 / FIPS 203', rationale: 'Deprecated transport — move to TLS 1.3 and negotiate the hybrid X25519MLKEM768 group.', category: 'protocol' }
+  if (/TLS\s?1\.[01]|SSL/.test(algo)) {
+    return { target: 'TLS 1.3 with supported hybrid key agreement', standard: 'RFC 8446 / RFC 10024', rationale: 'Upgrade deprecated transport and test a mutually supported TLS 1.3 hybrid group across the actual client, proxy and server path.', category: 'protocol' }
   }
-  if (/ECDSA|\bDSA\b|ED25519/.test(algo) || /signature|signing|code.?sign|jwt|token/.test(ctx)) {
-    return { target: 'ML-DSA-65 (hybrid with Ed25519)', standard: 'FIPS 204', rationale: 'Quantum-vulnerable digital signature — migrate to ML-DSA-65, hybridised with Ed25519 during transition.', category: 'signature' }
+  if (signature && /RSA|ECDSA|\bDSA\b|ED25519|ECC|SECP|P-?256|P-?384/.test(algo)) {
+    return { target: 'ML-DSA; evaluate SLH-DSA where supported', standard: 'FIPS 204 / FIPS 205', rationale: 'Classical public-key signatures face future forgery risk. Verify support in the signer, verifier, key provider and certificate or token format before choosing a signature profile.', category: 'signature' }
   }
-  if (/ECDH|X25519|\bDH\b|DIFFIE/.test(algo) || /key.?exchange|kex|handshake|tls/.test(ctx)) {
-    return { target: 'ML-KEM-768 (hybrid X25519MLKEM768)', standard: 'FIPS 203', rationale: 'Quantum-vulnerable key establishment — migrate to ML-KEM-768 in hybrid mode to protect against harvest-now-decrypt-later.', category: 'key-establishment' }
+  if (/ECDH|X25519|\bDH\b|DIFFIE/.test(algo) || (/(RSA|ECC|SECP)/.test(algo) && /key.?exchange|key.?transport|tls transport|kex/.test(ctx))) {
+    return { target: /tls/.test(ctx) ? 'Hybrid ML-KEM (X25519MLKEM768 if supported)' : 'Protocol-supported ML-KEM profile', standard: /tls/.test(ctx) ? 'FIPS 203 / RFC 10024' : 'FIPS 203', rationale: 'Classical key establishment can expose recorded traffic to future decryption. Check both peers and intermediaries for an agreed PQC or hybrid profile.', category: 'key-establishment' }
   }
-  if (/^RSA/.test(algo)) {
-    // RSA is used for both; certificates/signing → ML-DSA, transport → ML-KEM.
-    if (/cert|ca\b|pki|sign|jwt|token|firmware/.test(ctx)) {
-      return { target: 'ML-DSA-65 (hybrid with RSA during transition)', standard: 'FIPS 204', rationale: 'RSA signatures are broken by Shor — re-issue with ML-DSA-65 hybrid certificates.', category: 'signature' }
-    }
-    return { target: 'ML-KEM-768 (hybrid X25519MLKEM768)', standard: 'FIPS 203', rationale: 'RSA key transport is broken by Shor — migrate key establishment to hybrid ML-KEM-768.', category: 'key-establishment' }
-  }
-  if (/^ECC|SECP|P-?256|P-?384/.test(algo)) {
-    return { target: 'ML-KEM-768 + ML-DSA-65 (hybrid)', standard: 'FIPS 203 / FIPS 204', rationale: 'Elliptic-curve primitives are broken by Shor — migrate key establishment and signatures to the hybrid PQC stack.', category: 'key-establishment' }
-  }
-  return { target: 'ML-KEM-768 / ML-DSA-65 hybrid stack', standard: 'FIPS 203 / FIPS 204', rationale: 'Classical primitive with no quantum-resistant guarantee — adopt the platform hybrid PQC stack.', category: 'key-establishment' }
+  return { target: 'Confirm cryptographic use before choosing a replacement', standard: '', rationale: 'The observed name alone does not establish its function. Confirm where it is used and which replacements the platform and its peers support.', category: 'unknown' }
 }
 
 /* ------------------------------------------------------------------ */
@@ -436,6 +438,7 @@ export interface AssetAlgorithmRow {
   target: string
   standard: string
   rationale: string
+  category: PqcTarget['category']
   severity: string
 }
 
@@ -548,7 +551,8 @@ export interface AssetMigrationRecord {
    * `validated` is the separate, evidence-backed statement.
    */
   validation: { records: number; lastStatus: string; lastAt: string | null; cutoverBlocked: boolean; blockerReason: string; validated: boolean }
-  jobs: Array<{ id: string; status: string; progress: number; jobType: string; targetAlgorithm: string; updatedAt: string }>
+  jobs: Array<{ id: string; status: string; progress: number; jobType: string; targetAlgorithm: string; updatedAt: string; planId: string | null; error: string | null }>
+  latestSandbox: { status: string; updatedAt: string | null; planId: string | null } | null
   evidence: { sources: string[]; scanResults: number; exposures: number; runtimeEvents: number; certificates: number; components: number; note: string }
 }
 
@@ -571,6 +575,13 @@ export interface AssetPortfolio {
   generatedAt: string
   assets: AssetMigrationRecord[]
   summary: {
+    vulnerableAssets: number
+    immediateAttention: number
+    verifiedMigrations: number
+    pendingMigrations: number
+    activeMigrations: number
+    failedMigrations: number
+    unverifiedCompletions: number
     total: number
     quantumVulnerable: number
     hybrid: number
@@ -683,14 +694,14 @@ function migrationStateFor(jobs: Row[]): { status: string; progress: number; det
   const running = live.filter((j) => /running|in_progress|in-progress|executing|active|migrating/.test(norm(j)))
   const validating = live.filter((j) => /validat|verify/.test(norm(j)))
   const queued = live.filter((j) => /queue|pending|awaiting|scheduled/.test(norm(j)))
-  const completed = live.filter((j) => /complete|done|success/.test(norm(j)))
+  const completed = live.filter((j) => /^(completed|complete|done|success|succeeded)$/.test(norm(j)))
   const avg = Math.round(live.reduce((s, j) => s + clamp(num(j.progress)), 0) / live.length)
   const jobs_ = live
 
   if (failed.length) return { status: 'Failed', progress: avg, detail: `${failed.length} migration job(s) failed and require operator attention.` }
   if (running.length) return { status: 'In Progress', progress: avg, detail: `${running.length} migration job(s) executing.` }
-  if (validating.length) return { status: 'Validating', progress: Math.max(avg, 80), detail: `${validating.length} job(s) in post-migration validation.` }
-  if (queued.length) return { status: 'Queued', progress: avg, detail: `${queued.length} job(s) queued for agent claim.` }
+  if (validating.length) return { status: 'Validating', progress: avg, detail: `${validating.length} job(s) in post-migration validation.` }
+  if (queued.length) return { status: 'Queued', progress: avg, detail: `${queued.length} job(s) awaiting execution.` }
   if (completed.length === jobs_.length) return { status: 'Completed', progress: 100, detail: `All ${completed.length} migration job(s) completed.` }
   return { status: 'Planned', progress: avg, detail: `${jobs_.length} migration job(s) recorded.` }
 }
@@ -820,12 +831,23 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
 
   const records: AssetMigrationRecord[] = inputs.assets.map((asset) => {
     const id = str(asset.id)
-    const components = inventoryByAsset.get(id) || []
+    /* `crypto_inventory` stores measured cryptography AND scanner findings
+       about the estate. `inventoryRows` is everything bound to the asset;
+       `components` is the cryptography only, split and grouped by the SAME rule
+       the CBOM and the Asset Inventory use (`partitionAssetInventory`). Counting
+       the raw rows printed "42 of 42 vulnerable" here for an asset the Assets
+       page lists with 19 components, and made Σ per-asset vulnerable 59 against
+       a tenant headline of 25. */
+    const inventoryRows = inventoryByAsset.get(id) || []
+    const components = partitionAssetInventory(inventoryRows as InventoryRow[], algorithmFamily).components
     const scans = scanByAsset.get(id) || []
     const exposures = exposureByAsset.get(id) || []
     const certs = certByAsset.get(id) || []
     const runtime = runtimeByAsset.get(id) || []
-    const jobs = jobsByAsset.get(id) || []
+    const observedJobs = [...(jobsByAsset.get(id) || [])]
+      .sort((a, b) => str(b.updated_at || b.created_at).localeCompare(str(a.updated_at || a.created_at)))
+    const jobs = observedJobs.filter((job) => !isSimulationJob(job))
+    const sandbox = observedJobs.find((job) => isSimulationJob(job))
     const complianceRows = complianceByAsset.get(id) || []
 
     const riskScore = Math.round(model.assetRisk.get(id) || 0)
@@ -851,28 +873,38 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
     const componentCount = components.length
 
     /* ---- algorithm rollup ---- */
-    const algoMap = new Map<string, { instances: number; keySizes: Set<number>; protocols: Set<string>; severity: string }>()
-    const noteAlgorithm = (algorithm: string, keySize: number, protocol: string, severity: string) => {
-      const key = algorithm.trim()
-      if (!key) return
-      const entry = algoMap.get(key) || { instances: 0, keySizes: new Set<number>(), protocols: new Set<string>(), severity: 'medium' }
+    const algoMap = new Map<string, { algorithm: string; mapping: PqcTarget; instances: number; keySizes: Set<number>; protocols: Set<string>; severity: string }>()
+    const noteAlgorithm = (algorithm: string, keySize: number, protocol: string, severity: string, role = '') => {
+      if (!algorithm.trim()) return
+      const mapping = pqcTargetFor(algorithm, `${role} ${protocol} ${str(asset.type)}`)
+      const key = `${algorithm.trim()}|${mapping.category}`
+      const entry = algoMap.get(key) || { algorithm: algorithm.trim(), mapping, instances: 0, keySizes: new Set<number>(), protocols: new Set<string>(), severity: 'medium' }
       entry.instances += 1
       if (keySize > 0) entry.keySizes.add(keySize)
       if (protocol) entry.protocols.add(protocol)
       if (severityWeight(severity) > severityWeight(entry.severity)) entry.severity = severity
       algoMap.set(key, entry)
     }
-    for (const item of components) noteAlgorithm(str(item.algorithm), num(item.key_size), str(item.protocol), str(item.exposure_level) || 'medium')
-    for (const row of scans) noteAlgorithm(str(row.algorithm), 0, '', str(row.threat_level) || 'high')
+    for (const item of components) {
+      // One grouped component can stand for several observations of it.
+      for (let seen = 0; seen < Math.max(1, item.instances); seen += 1) {
+        noteAlgorithm(str(item.algorithm), num(item.key_size), str(item.protocol), str(item.exposure_level) || 'medium', str(item.item_type).replace(/_/g, ' '))
+      }
+    }
+    for (const row of scans) noteAlgorithm(str(row.algorithm), 0, '', str(row.threat_level) || 'high', `${str(row.finding_type).replace(/_/g, ' ')} ${str(row.description)}`)
     for (const cert of certs) noteAlgorithm(str(cert.algorithm), num(cert.key_size), 'X.509', cert.is_quantum_safe === true ? 'low' : 'high')
-    for (const event of runtime) noteAlgorithm(str(event.algorithm), 0, str(event.cipher_suite), str(event.severity) || 'medium')
+    for (const event of runtime) {
+      noteAlgorithm(str(event.algorithm), 0, str(event.protocol), str(event.severity) || 'medium')
+      const kex = str(event.key_exchange_algorithm)
+      if (kex && kex !== str(event.algorithm)) noteAlgorithm(kex, 0, str(event.protocol), str(event.severity) || 'medium', 'key exchange')
+    }
 
-    const algorithms: AssetAlgorithmRow[] = [...algoMap.entries()]
-      .map(([algorithm, entry]) => {
+    const algorithms: AssetAlgorithmRow[] = [...algoMap.values()]
+      .map(({ algorithm, mapping, ...entry }) => {
         const classification = classifyAlgorithm(algorithm)
-        const mapping = pqcTargetFor(algorithm, `${str(asset.type)} ${str(asset.name)} ${[...entry.protocols].join(' ')}`)
         return {
           algorithm,
+          category: mapping.category,
           classification,
           instances: entry.instances,
           keySizes: [...entry.keySizes].sort((a, b) => a - b),
@@ -913,7 +945,7 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
     const protocols = new Set<string>()
     const cipherSuites = new Set<string>()
     const keyExchange = new Set<string>()
-    for (const item of components) {
+    for (const item of inventoryRows) {
       const proto = str(item.protocol)
       if (proto) protocols.add(proto)
       if (/^(TLS|SSL|SSH|IKE)/i.test(str(item.name))) protocols.add(str(item.name))
@@ -978,14 +1010,16 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
       })
     }
     const findings = [...findingMap.values()].sort((a, b) => severityWeight(b.severity) - severityWeight(a.severity)).slice(0, 40)
-    const severityCounts = { critical: 0, high: 0, medium: 0, low: 0 }
-    for (const f of findings) {
-      const s = f.severity
-      if (s.includes('critical')) severityCounts.critical += f.instances
-      else if (s.includes('high')) severityCounts.high += f.instances
-      else if (s.includes('medium') || s.includes('moderate')) severityCounts.medium += f.instances
-      else if (s.includes('low')) severityCounts.low += f.instances
-    }
+    /* Severity counts are DISTINCT graded observations on this asset — the unit
+       the scanner, the Quantum Readiness Engine and the Sandbox count. Summing
+       `instances` instead re-counted a finding once per scan that saw it (and
+       once more for its `crypto_exposures` copy), so one asset read 18 critical
+       under a tenant headline of 9. */
+    const graded = dedupeGradedObservations([
+      ...scans.map((row) => ({ algorithm: row.algorithm || row.finding_type, subject: id, severity: row.threat_level })),
+      ...exposures.map((row) => ({ algorithm: row.detected_value || row.exposure_type, subject: id, severity: row.severity })),
+    ])
+    const severityCounts = { critical: graded.critical, high: graded.high, medium: graded.medium, low: graded.low }
 
     /* ---- dependencies ---- */
     const dependencyRows: AssetDependencyRow[] = []
@@ -1032,13 +1066,19 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
     /* ---- HNDL exposure ---- */
     const hndlEvents = runtime.filter((e) => e.hndl_risk === true).length
     const vulnerableShare = componentCount > 0 ? (vulnerableComponentCount / componentCount) * 100 : posture === 'vulnerable' ? 100 : 0
+    const dataProfile = recordOf(asset.metadata)
+    const sensitivity = str(dataProfile.data_sensitivity || dataProfile.dataSensitivity)
+    const retentionDays = num(dataProfile.retention_days || dataProfile.retentionDays)
+    const lastingImpact = /confidential|restricted|sensitive/i.test(sensitivity) || criticalityScore(businessCriticality) >= 78
+      ? 100
+      : Math.round(clamp(retentionDays / 3650 * 100))
     const hndlScore = hasEvidence
       ? Math.round(
           clamp(
             vulnerableShare * 0.45 +
               (runtime.length ? (hndlEvents / runtime.length) * 100 : 0) * 0.25 +
               (internetFacing ? 100 : 0) * 0.2 +
-              (criticalityScore(businessCriticality) >= 78 ? 100 : 0) * 0.1,
+              lastingImpact * 0.1,
           ),
         )
       : 0
@@ -1050,9 +1090,12 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
       ...(validationByAsset.get(id) || []),
       ...[...validationByJob.entries()].filter(([jobId]) => jobIds.has(jobId)).flatMap(([, rows]) => rows),
     ]
-    const lastValidation = validations
-      .slice()
-      .sort((a, b) => new Date(str(b.created_at)).getTime() - new Date(str(a.created_at)).getTime())[0]
+    const stageJobs = jobs.filter((job) => !/cancel/i.test(str(job.status)))
+    const lastValidationByJob = stageJobs.map((job) =>
+      [...(validationByJob.get(str(job.id)) || [])].sort((a, b) => str(b.created_at).localeCompare(str(a.created_at)))[0],
+    )
+    const lastValidation = lastValidationByJob.filter(Boolean).sort((a, b) => str(b.created_at).localeCompare(str(a.created_at)))[0]
+    const allJobsValidated = Boolean(lastValidationByJob.length) && lastValidationByJob.every((row) => isPassingValidation(row?.status))
 
     /* ---- effort ---- */
     const envMultiplier = /prod/i.test(environment) ? 1.4 : /stag|uat/i.test(environment) ? 1.1 : 0.9
@@ -1064,7 +1107,7 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
     const compatibilityNotes: string[] = []
     let compatibilityScore = 82
     if (algorithms.some((a) => /RSA|ECDSA|ECDH/i.test(a.algorithm))) {
-      compatibilityNotes.push('Hybrid X25519MLKEM768 / ML-DSA-65 preserves interoperability with classical peers during transition.')
+      compatibilityNotes.push('Check support separately for key establishment and signatures. Test each client, verifier and intermediary for interoperability and its fallback behavior.')
     }
     if (protocolList.some((p) => /1\.[01]/.test(p))) {
       compatibilityScore -= 25
@@ -1072,7 +1115,7 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
     }
     if (certs.length && !certs.some((c) => c.is_quantum_safe === true)) {
       compatibilityScore -= 10
-      compatibilityNotes.push('Certificate chain is fully classical — hybrid certificate issuance requires a CA that supports ML-DSA.')
+      compatibilityNotes.push('The observed chain is classical. Confirm CA issuance and relying-party support before staging a new certificate profile.')
     }
     if (blastRadius > 6) {
       compatibilityScore -= 12
@@ -1099,7 +1142,11 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
     const confidenceScore = clamp(100 - successProbabilityPct)
 
     const factorDefs: Array<[string, string, number, number, string]> = [
-      ['hndl', 'Harvest Now, Decrypt Later exposure', hndlScore, 18, hndlEvents ? `${hndlEvents} runtime event(s) flagged HNDL risk.` : `${Math.round(vulnerableShare)}% of components are quantum-vulnerable.`],
+      ['hndl', 'Harvest Now, Decrypt Later exposure', hndlScore, 18, [
+        hndlEvents ? `${hndlEvents} runtime event(s) flagged HNDL risk.` : `${Math.round(vulnerableShare)}% of components are quantum-vulnerable.`,
+        sensitivity ? `Data sensitivity recorded as ${sensitivity}.` : '',
+        retentionDays > 0 ? `Recorded retention is ${retentionDays} days.` : '',
+      ].filter(Boolean).join(' ')],
       ['criticality', 'Business criticality', criticalityScore(businessCriticality), 16, `Asset criticality recorded as ${businessCriticality}.`],
       ['internet', 'Internet exposure', internetFacing ? 100 : 15, 14, internetFacing ? 'Asset is internet-facing.' : 'Asset is internal only.'],
       ['legacy', 'Legacy cryptography', legacyScore, 14, `${vulnerableComponentCount} of ${componentCount || 0} component(s) quantum-vulnerable.`],
@@ -1136,13 +1183,13 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
     const recommendations: Array<{ id: string; title: string; detail: string; severity: string; standard: string; effort: string }> = []
     const seenTargets = new Set<string>()
     for (const algo of algorithms) {
-      if (algo.classification === 'pqc') continue
+      if (algo.classification === 'pqc' || algo.classification === 'hybrid' || algo.category === 'unknown') continue
       if (algo.classification === 'unknown' && vulnerableComponentCount === 0) continue
       const key = `${algo.target}`
       if (seenTargets.has(key)) continue
       seenTargets.add(key)
       recommendations.push({
-        id: `rec-${algo.algorithm.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+        id: `rec-${algo.category}-${algo.algorithm.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
         title: `Migrate ${algo.algorithm} → ${algo.target}`,
         detail: algo.rationale,
         severity: algo.classification === 'vulnerable' ? (severityWeight(algo.severity) >= 100 ? 'critical' : 'high') : 'medium',
@@ -1154,8 +1201,8 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
     if (certificates.some((c) => !c.quantumSafe)) {
       recommendations.push({
         id: 'rec-cert',
-        title: 'Re-issue certificates with hybrid ML-DSA chains',
-        detail: `${certificates.filter((c) => !c.quantumSafe).length} classical certificate(s) bound to this asset must be re-issued from a PQC-capable CA.`,
+        title: 'Review classical certificates for staged replacement',
+        detail: `Check CA issuance, trust stores and client compatibility for ${certificates.filter((c) => !c.quantumSafe).length} classical certificate(s). Validate chain building and certificate size before switching traffic.`,
         severity: soonestExpiry !== undefined && soonestExpiry <= 30 ? 'high' : 'medium',
         standard: 'FIPS 204 / NIST SP 800-57',
         effort: 'Medium',
@@ -1188,19 +1235,17 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
     const rollbackAvailable = hasEvidence
     const rollbackStrategy = {
       available: rollbackAvailable,
-      strategy: hybridComponentCount > 0 || algorithms.some((a) => a.target.includes('hybrid') || a.target.includes('Hybrid'))
-        ? 'Hybrid dual-stack rollback'
-        : 'Configuration snapshot rollback',
+      strategy: 'Staged rollback using a known-good configuration',
       steps: rollbackAvailable
         ? [
-            'Capture a pre-migration cryptographic snapshot (algorithms, certificates, configuration) with SHA3-256 integrity.',
-            'Deploy the PQC stack in hybrid mode so classical peers keep negotiating during the window.',
-            'Monitor runtime telemetry for handshake failures against the pre-cutover baseline.',
-            'On regression, disable the PQC named group / revert to the snapshotted certificate chain.',
+            'Retain an access-controlled snapshot of the supported pre-change configuration and verify that it can be restored.',
+            'Test rollback on a canary with a representative peer and agree on measurable rollback triggers.',
+            'Compare connectivity, application errors, and relevant cryptographic telemetry with the pre-cutover baseline.',
+            'On regression, revert the affected configuration according to the approved runbook and verify service recovery.',
             'Re-validate the restored posture and record the rollback in the audit vault.',
           ]
         : ['No evidence captured — a rollback plan cannot be prepared until this asset is scanned.'],
-      recoveryObjective: rollbackAvailable ? (internetFacing ? 'RTO ≤ 15 minutes (hybrid fallback)' : 'RTO ≤ 60 minutes') : EVIDENCE_UNAVAILABLE,
+      recoveryObjective: rollbackAvailable ? 'Agree on a recovery objective with the asset owner during rehearsal.' : EVIDENCE_UNAVAILABLE,
     }
 
     /* ---- approvals ---- */
@@ -1237,13 +1282,7 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
       ? `${topAlgorithms.length ? topAlgorithms.join(', ') : 'No algorithms resolved'}${protocolList.length ? ` · ${protocolList[0]}` : ''} · ${vulnerableComponentCount}/${componentCount || 0} vulnerable`
       : EVIDENCE_UNAVAILABLE
 
-    const downtime = !hasEvidence
-      ? EVIDENCE_UNAVAILABLE
-      : algorithms.some((a) => a.target.toLowerCase().includes('hybrid'))
-        ? 'Near-zero — hybrid cutover keeps classical peers negotiating'
-        : /prod/i.test(environment)
-          ? 'Maintenance window required (est. 15–45 min)'
-          : 'Rolling restart, no user-visible downtime expected'
+    const downtime = hasEvidence ? 'Confirm during rehearsal and schedule a change window.' : EVIDENCE_UNAVAILABLE
 
     return {
       id,
@@ -1258,10 +1297,11 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
       internetFacing,
       discoveredAt: isoOrNull(asset.created_at),
       lastEvidenceAt: latest([
-        isoOrNull(asset.updated_at),
         ...scans.map((r) => isoOrNull(r.created_at)),
         ...runtime.map((r) => isoOrNull(r.observed_at) || isoOrNull(r.created_at)),
         ...components.map((r) => isoOrNull(r.discovered_at) || isoOrNull(r.created_at)),
+        ...exposures.map((r) => isoOrNull(r.created_at)),
+        ...certs.map((r) => isoOrNull(r.created_at)),
       ]),
 
       hasEvidence,
@@ -1349,7 +1389,7 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
           blockerReason,
           // Only a real passing validation record proves the asset is validated —
           // never inferred from the absence of blockers.
-          validated: validations.some((v) => /pass|success|complete|valid/i.test(str(v.status))),
+          validated: allJobsValidated,
         }
       })(),
       jobs: jobs.slice(0, 10).map((job) => ({
@@ -1359,7 +1399,14 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
         jobType: str(job.job_type) || 'migration',
         targetAlgorithm: str(job.target_algorithm) || '—',
         updatedAt: str(job.updated_at) || str(job.created_at),
+        planId: str(recordOf(job.metadata).planId) || null,
+        error: str(recordOf(job.metadata).failureReason) || str(recordOf(job.metadata).lastError) || null,
       })),
+      latestSandbox: sandbox ? {
+        status: str(sandbox.status) || 'unknown',
+        updatedAt: isoOrNull(sandbox.updated_at) || isoOrNull(sandbox.created_at),
+        planId: str(recordOf(sandbox.metadata).planId) || null,
+      } : null,
       evidence: {
         sources: [
           components.length ? 'CBOM (crypto_inventory)' : null,
@@ -1383,7 +1430,16 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
   })
 
   /* ---- portfolio-level rollup ---- */
+  const vulnerable = records.filter((r) => r.posture === 'vulnerable' || r.vulnerableComponentCount > 0)
+  const verified = records.filter((r) => r.migrationStatus === 'Completed' && r.validation.validated && r.posture === 'pqc' && r.vulnerableComponentCount === 0)
   const summary = {
+    vulnerableAssets: vulnerable.length,
+    immediateAttention: vulnerable.filter((r) => ['Critical', 'High'].includes(r.priority)).length,
+    verifiedMigrations: verified.length,
+    pendingMigrations: vulnerable.filter((r) => ['Not Started', 'Planned', 'Queued'].includes(r.migrationStatus)).length,
+    activeMigrations: records.filter((r) => ['In Progress', 'Validating'].includes(r.migrationStatus)).length,
+    failedMigrations: records.filter((r) => r.migrationStatus === 'Failed').length,
+    unverifiedCompletions: records.filter((r) => r.migrationStatus === 'Completed').length - verified.length,
     total: records.length,
     quantumVulnerable: records.filter((r) => r.posture === 'vulnerable').length,
     hybrid: records.filter((r) => r.posture === 'hybrid').length,
@@ -1400,7 +1456,7 @@ export function buildAssetPortfolio(inputs: AssetPortfolioInputs): AssetPortfoli
   }
 
   const recommendedOrder = [...records]
-    .filter((r) => r.hasEvidence)
+    .filter((r) => r.hasEvidence && (r.posture === 'vulnerable' || r.vulnerableComponentCount > 0))
     .sort((a, b) => b.priorityScore - a.priorityScore || b.riskScore - a.riskScore || a.name.localeCompare(b.name))
     .slice(0, 25)
     .map((record, index) => {

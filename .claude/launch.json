@@ -12,6 +12,12 @@
       "runtimeExecutable": "cmd",
       "runtimeArgs": ["/c", "cd qguard-messaging && npm run dev"],
       "port": 5174
+    },
+    {
+      "name": "qguard-messaging-alt",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "cd qguard-messaging && npx vite --port 5184 --strictPort"],
+      "port": 5184
     }
   ]
 }

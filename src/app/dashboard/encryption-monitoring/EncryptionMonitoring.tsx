@@ -144,7 +144,7 @@ export default function EncryptionMonitoring() {
         icon={Lock}
         title="Encryption"
         accent="Monitoring"
-        subtitle="What protects your data: symmetric ciphers, hashes, key derivation, key material, storage encryption and vault protection — measured, graded against CNSA 2.0, and explained in terms of the threat that actually applies."
+        subtitle="What protects your data: symmetric ciphers, hashes, key derivation, key material, storage encryption and vault protection — measured and explained by cryptographic role and risk. CNSA 2.0 is a comparison for U.S. National Security Systems."
         right={
           <FreshnessBar
             live={live}
@@ -356,7 +356,7 @@ export default function EncryptionMonitoring() {
               <SectionLabel icon={Database} hint="Storage, database and KMS policy evidence. Each row is a measured surface, not a policy assumption.">
                 Encryption at rest
               </SectionLabel>
-              {!data.atRest.measured ? (
+              {!data.atRest.records.length ? (
                 <PanelEmpty>
                   No storage or key-management policy evidence has been collected. Connect a cloud account or deploy an agent — until then this page
                   cannot state whether your data at rest is encrypted, and will not guess.
@@ -639,12 +639,14 @@ function GroverExplainer({
           </thead>
           <tbody>
             {[
-              ['AES-256 · ChaCha20-Poly1305', '256-bit', '~128-bit', 'quantum-safe', 'CNSA 2.0 approved — no migration needed'],
+              ['AES-256', '256-bit', '~128-bit', 'quantum-safe', 'CNSA 2.0 cipher family; verify the mode and deployment'],
+              ['ChaCha20-Poly1305', '256-bit', '~128-bit', 'quantum-safe', 'Outside the CNSA 2.0 suite'],
               ['AES-192', '192-bit', '~96-bit', 'adequate', 'Sound; CNSA 2.0 specifies AES-256'],
               ['AES-128', '128-bit', '~64-bit', 'weakened', 'Not broken — below the bar for long-lived data'],
               ['3DES · DES · RC4', 'already broken', '—', 'broken', 'Classical break; quantum is irrelevant'],
-              ['SHA-384 · SHA-512 · SHA-3', '—', 'adequate margin', 'quantum-safe', 'CNSA 2.0 hash requirement'],
-              ['SHA-256', '128-bit collision', '~85-bit', 'adequate', 'Sound; CNSA 2.0 prefers SHA-384+'],
+              ['SHA-384 · SHA-512', '—', 'adequate margin', 'quantum-safe', 'CNSA 2.0 hash families'],
+              ['SHA-3', 'Varies by output', 'Varies by output', 'quantum-safe', 'NIST FIPS 202; outside the CNSA 2.0 suite'],
+              ['SHA-256', '128-bit collision', '~85-bit', 'adequate', 'Sound; CNSA 2.0 specifies SHA-384 or SHA-512'],
               ['SHA-1 · MD5', 'collision-broken', '—', 'broken', 'Classical break; fix independently of PQC'],
               ['RSA · ECDSA · ECDH (wrapping data)', 'sound today', 'recovered by Shor', 'quantum-vulnerable', 'A break, not a halving — prioritise by data lifetime'],
             ].map(([primitive, classical, quantum, verdict, note]) => (

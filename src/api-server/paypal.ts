@@ -731,13 +731,13 @@ async function isFirstPayment(db: SupabaseClient, invoice: { id: string; user_id
   return !data || data.length === 0
 }
 
-/** Money-back refund: stop PayPal billing and end access (same rule as the billing Edge Function). */
+/** Full refund of the first payment: stop PayPal billing and end access (same rule as the billing Edge Function). */
 async function cancelForRefund(db: SupabaseClient, subscriptionId: string, userId: string, refundCents: number, currency: string): Promise<void> {
   const sub = await subscriptionByProviderId(db, subscriptionId)
   if (!sub || sub.user_id !== userId || String(sub.status).toLowerCase() === 'cancelled') return
   if (!sub.cancel_at_period_end) {
     try {
-      await cancelSubscription(subscriptionId, 'Refunded under the money-back policy')
+      await cancelSubscription(subscriptionId, 'First payment refunded in full')
     } catch (err: any) {
       // 422: already cancelled at PayPal. Anything else means PayPal would keep billing.
       if (err?.status !== 422) throw err
@@ -750,7 +750,7 @@ async function cancelForRefund(db: SupabaseClient, subscriptionId: string, userI
   )
   await notify(db, userId, 'subscription', 'warning', 'Subscription cancelled after refund',
     `Your ${sub.plan} payment was refunded (${(refundCents / 100).toFixed(2)} ${currency}), so the subscription is cancelled and will not renew.`)
-  await audit(db, userId, BILLING_AUDIT.cancelled, 'Subscription cancelled: money-back refund', {
+  await audit(db, userId, BILLING_AUDIT.cancelled, 'Subscription cancelled: first payment refunded in full', {
     providerSubscriptionId: subscriptionId,
     fromStatus: sub.status,
     toStatus: 'cancelled',

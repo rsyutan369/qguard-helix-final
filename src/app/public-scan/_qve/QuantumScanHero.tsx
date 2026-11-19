@@ -88,8 +88,6 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
   const wide = useIsWide();
   const audio = useQveAudio();
   const state = useQveState();
-  /* Instrument palette. 'dark' unless a host wraps the engine in
-     QveThemeProvider, so /public-scan renders exactly as it always has. */
   const palette = useQvePalette();
 
   // Bind the real SSE stream into the engine's event store.
@@ -332,9 +330,9 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
       <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[19rem_minmax(0,1fr)]">
         {/* The rail is supporting detail — on a phone the hero and its input
             must come first. Order is preserved from the original layout. */}
-        <div className="order-2 space-y-5 lg:order-1">{railSlot}</div>
+        <div className="order-2 space-y-5 lg:order-1" data-lp-reveal>{railSlot}</div>
 
-        <Panel className="relative order-1 overflow-hidden lg:order-2" glow>
+        <Panel className="public-scan-console relative order-1 overflow-hidden lg:order-2" glow>
           <QuantumBackdrop
             run={state.run}
             progress={state.run === 'idle' ? 0 : state.progress}
@@ -345,14 +343,14 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
             dustCount={budget.dustCount}
           />
 
-          <div className="relative z-10 px-4 pb-5 pt-5 sm:px-7 sm:pb-6 sm:pt-6">
+          <div className="relative z-10 px-4 pb-5 pt-5 sm:px-7 sm:pb-7 sm:pt-7">
             {/* ── Header: badge + title | divider | promise ───────────────── */}
             <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,1.12fr)_1px_minmax(0,0.88fr)] lg:gap-7">
               <div className="min-w-0">
                 <span className="inline-flex items-center gap-2 rounded-full border border-cyan-400/25 bg-cyan-400/[0.08] px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
                   <Radar className="h-3 w-3" /> No registration required
                 </span>
-                <h1 className="mt-3.5 text-[2rem] font-black leading-[1.06] tracking-tight text-white sm:text-[2.6rem]">
+                <h1 className="public-scan-title mt-3.5 text-white">
                   Quantum Exposure Assessment
                 </h1>
               </div>
@@ -370,6 +368,7 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
                     type="button"
                     onClick={audio.toggle}
                     aria-pressed={audio.enabled}
+                    aria-label="Engine audio cues"
                     title={audio.enabled ? 'Mute engine audio cues' : 'Enable engine audio cues'}
                     className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-white/[0.08] bg-[#050a15]/70 px-2.5 py-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.16em] text-slate-500 backdrop-blur transition-colors hover:border-cyan-400/30 hover:text-cyan-300"
                   >
@@ -384,6 +383,38 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
                 </p>
               </div>
             </div>
+
+            {/* ── Target input ───────────────────────────────────────────── */}
+            <form
+              onSubmit={onSubmit}
+              className="public-scan-form mt-5 flex items-center gap-2 rounded-xl border border-cyan-400/25 bg-[#040810]/85 p-1.5 shadow-[0_0_34px_-22px_rgba(34,211,238,0.9)] transition-colors focus-within:border-cyan-400/55"
+            >
+              <Globe aria-hidden className="ml-2.5 h-4 w-4 shrink-0 text-slate-500" />
+              <input
+                value={target}
+                onChange={(event) => onTargetChange(event.target.value)}
+                placeholder="https://company.com"
+                aria-label="Domain or URL to assess"
+                autoComplete="url"
+                spellCheck={false}
+                className="min-w-0 flex-1 bg-transparent py-2 text-[14px] text-white outline-none placeholder:text-slate-600"
+              />
+              <button
+                type="submit"
+                disabled={scan.state === 'scanning'}
+                className="public-scan-primary inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3.5 py-2 text-[13px] font-bold disabled:cursor-not-allowed disabled:opacity-60 sm:px-5"
+              >
+                {scan.state === 'scanning' ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" /> Analyzing
+                  </>
+                ) : (
+                  <>
+                    <Search className="h-4 w-4" /> Analyze Now
+                  </>
+                )}
+              </button>
+            </form>
 
             {/* ── Visualization band ─────────────────────────────────────── */}
             <div ref={attachBand} className="relative mt-5">
@@ -480,37 +511,6 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
               />
             </div>
 
-            {/* ── Target input ───────────────────────────────────────────── */}
-            <form
-              onSubmit={onSubmit}
-              className="mt-5 flex items-center gap-2 rounded-xl border border-cyan-400/25 bg-[#040810]/85 p-1.5 shadow-[0_0_34px_-22px_rgba(34,211,238,0.9)] transition-colors focus-within:border-cyan-400/55"
-            >
-              <Globe aria-hidden className="ml-2.5 h-4 w-4 shrink-0 text-slate-500" />
-              <input
-                value={target}
-                onChange={(event) => onTargetChange(event.target.value)}
-                placeholder="https://company.com"
-                aria-label="Domain or URL to assess"
-                autoComplete="url"
-                spellCheck={false}
-                className="min-w-0 flex-1 bg-transparent py-2 text-[14px] text-white outline-none placeholder:text-slate-600"
-              />
-              <button
-                type="submit"
-                disabled={scan.state === 'scanning'}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-emerald-500 px-3.5 py-2 text-[13px] font-black text-[#04060e] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 sm:px-5"
-              >
-                {scan.state === 'scanning' ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" /> Analyzing
-                  </>
-                ) : (
-                  <>
-                    <Search className="h-4 w-4" /> Analyze Now
-                  </>
-                )}
-              </button>
-            </form>
 
             {/* ── Strapline, replaced by the live ticker during a scan ───── */}
             <div className="mt-3 min-h-[16px]">

@@ -1,0 +1,607 @@
+# QGUARD HELIX — Complete Codebase Security Audit, Vulnerability Assessment, Dependency Modernization & Enterprise-Grade Hardening
+
+## Primary Objective
+
+Perform a comprehensive, end-to-end security audit, code review, vulnerability assessment, dependency analysis, and security-hardening operation across the **entire QGUARD HELIX codebase**.
+
+The objective is to identify, validate, prioritize, and remediate security vulnerabilities, insecure implementations, outdated dependencies, unnecessary packages, deprecated libraries, unused code, and architectural weaknesses.
+
+Bring the application as close as reasonably achievable to enterprise-grade security standards while preserving all existing functionality, integrations, business logic, application behavior, and user experience.
+
+**This is an actual codebase audit and remediation task—not merely a documentation exercise or a report of potential issues.**
+
+You are authorized to inspect the entire repository, install and configure appropriate security-auditing tools, execute security scans, investigate findings, implement verified fixes, and run regression tests.
+
+However, do not make destructive or risky changes without first understanding their impact.
+
+---
+
+## 1. Full Codebase Discovery and Architecture Assessment
+
+Start by inspecting the entire repository and identifying every application component, service, package, dependency, integration, and execution environment.
+
+Review, at minimum:
+
+- Frontend application and all React components.
+- Backend services, Express APIs, middleware, and API routes.
+- Authentication and authorization implementations.
+- Supabase database, queries, policies, RLS, storage, and realtime integrations.
+- API endpoints and sensitive write operations.
+- SSE, WebSockets, and other real-time communication mechanisms.
+- Environment variables and configuration files.
+- Database migrations, schemas, triggers, and functions.
+- Cryptographic implementations and key-management components.
+- File uploads, downloads, sharing, and storage operations.
+- Authentication sessions, tokens, cookies, and password-handling mechanisms.
+- Build scripts, deployment configurations, and CI/CD workflows.
+- Third-party integrations and external API communications.
+- Administrative, subscription, payment, and revenue-management functionality.
+- All dashboard modules, subpages, features, buttons, forms, and user actions.
+
+Identify the actual technology stack and map how data moves between the frontend, backend, database, external services, and connected integrations.
+
+Do not assume that a feature is secure simply because it has frontend validation or authentication middleware.
+
+Inspect the actual implementation and execution paths.
+
+## 2. Install and Configure Security Auditing Tools
+
+Evaluate and use appropriate security-auditing tools where compatible with the development environment.
+
+Start with these repositories:
+
+1. Cloudflare Security Audit Skill:
+   https://github.com/cloudflare/security-audit-skill
+
+2. Semgrep:
+   https://github.com/semgrep/semgrep
+
+3. Trivy:
+   https://github.com/aquasecurity/trivy
+
+Also evaluate other reputable tools when they provide meaningful additional coverage.
+
+Potential tools include:
+
+- **Semgrep:** Static Application Security Testing (SAST), insecure code patterns, and custom security rules.
+- **Trivy:** Dependency vulnerabilities, container images, filesystem scanning, misconfigurations, and secrets detection.
+- **OSV-Scanner:** Known vulnerabilities in open-source dependencies.
+- **Gitleaks:** Hardcoded credentials, API keys, tokens, and exposed secrets.
+- **OWASP ZAP:** Dynamic Application Security Testing (DAST), where a safe test environment is available.
+- **npm audit:** JavaScript and Node.js dependency vulnerability assessment.
+- **GitHub Dependabot:** Dependency vulnerability alerts and update recommendations.
+- **CodeQL:** Deep static analysis where repository and tooling support are available.
+- **Checkov:** Infrastructure-as-code and cloud configuration security checks, where applicable.
+- **cargo-audit:** Rust dependency vulnerability assessment.
+- **cargo-deny:** Rust dependency policy, license, and advisory checks.
+- **cargo-geiger:** Identification of unsafe Rust code usage, where applicable.
+
+### Tool Installation Requirements
+
+Before installing anything:
+
+- Inspect the existing development environment and installed tools.
+- Check compatibility with the operating system, programming languages, framework versions, and project architecture.
+- Prefer established, actively maintained tools.
+- Avoid unnecessary dependencies and duplicated scanning tools.
+- Use isolated environments where appropriate.
+- Do not overwrite existing configurations or break the current development setup.
+- Pin tool versions where reproducibility is important.
+- Document installation and execution commands.
+
+Do not assume every tool is required. Select the appropriate combination based on the actual codebase.
+
+If a tool cannot be installed or executed, explain why and identify an alternative.
+
+## 3. Comprehensive OWASP Security Assessment
+
+Perform a detailed assessment against the current applicable OWASP security guidance, including the OWASP Top 10 for Web Applications and relevant API Security risks.
+
+Explicitly investigate the following:
+
+### A. Broken Access Control and BOLA/IDOR
+
+- Broken Object Level Authorization (BOLA).
+- Insecure Direct Object References (IDOR).
+- Unauthorized access to another user's records, files, conversations, subscriptions, or resources.
+- Privilege escalation.
+- Missing authorization checks on backend endpoints.
+- Inadequate tenant and organization isolation.
+- Administrative privilege abuse.
+- Improper role-based and permission-based access controls.
+- Missing ownership validation for sensitive operations.
+
+Verify authorization on the server side for every sensitive resource and operation.
+
+### B. Injection Vulnerabilities
+
+Investigate:
+
+- SQL Injection.
+- NoSQL Injection, if applicable.
+- Command Injection.
+- OS Command Injection.
+- Code Injection.
+- JavaScript Injection.
+- Cross-Site Scripting (XSS).
+- Template Injection.
+- LDAP Injection, if applicable.
+- Unsafe dynamic query construction.
+- Unsafe deserialization.
+- Insecure use of `eval`, dynamic execution, or shell commands.
+
+Use parameterized queries, safe APIs, strict validation, and appropriate output encoding.
+
+### C. Server-Side Request Forgery (SSRF)
+
+Inspect all features that make outbound HTTP requests or process user-supplied URLs.
+
+Check for:
+
+- Access to localhost and internal network services.
+- Cloud metadata endpoint access.
+- Private IP address access.
+- DNS rebinding.
+- Redirect-based SSRF.
+- URL parsing and validation bypasses.
+- Unsafe webhook and callback functionality.
+- Unrestricted external resource fetching.
+
+Implement appropriate destination validation, network restrictions, redirect controls, and outbound request policies.
+
+### D. Authentication and Session Security
+
+Review:
+
+- Login and registration.
+- Password storage and verification.
+- Session creation and invalidation.
+- JWT validation and expiration.
+- Refresh-token rotation and revocation.
+- Cookie security attributes.
+- Multi-factor authentication, where implemented.
+- Password reset and recovery.
+- Brute-force protection.
+- Account enumeration.
+- Authentication bypass.
+- Session fixation and hijacking.
+- Device and session management.
+
+Never trust frontend authentication state as the sole authorization mechanism.
+
+### E. API and Backend Security
+
+Inspect every API endpoint, including:
+
+- Authentication requirements.
+- Authorization enforcement.
+- Request validation.
+- Response sanitization.
+- Rate limiting.
+- Abuse prevention.
+- Request-size limits.
+- File-upload restrictions.
+- CORS policies.
+- CSRF protection where applicable.
+- Security headers.
+- Error handling.
+- Sensitive data exposure.
+- API versioning and backward compatibility.
+- Webhook signature validation.
+- Replay protection for sensitive operations.
+
+Pay special attention to `/api/v1/**` and all sensitive write operations.
+
+### F. Additional OWASP Risks
+
+Assess:
+
+- Security Misconfiguration.
+- Vulnerable and Outdated Components.
+- Cryptographic Failures.
+- Software Supply Chain Failures.
+- Insecure Design.
+- Software and Data Integrity Failures.
+- Security Logging and Monitoring Failures.
+- Server-side and client-side trust boundaries.
+- Business Logic Vulnerabilities.
+- Race Conditions and TOCTOU vulnerabilities.
+- Denial of Service (DoS) and resource exhaustion.
+
+Do not simply mark vulnerabilities as absent because a scanner did not detect them. Manually review critical application logic and security boundaries.
+
+## 4. Dependency, Package and Library Modernization
+
+Conduct a complete dependency inventory across all package managers and project components.
+
+Review:
+
+- `package.json` and lockfiles.
+- Node.js dependencies.
+- React and Vite dependencies.
+- Express and backend packages.
+- Supabase SDKs.
+- Rust `Cargo.toml` and `Cargo.lock`.
+- Tauri dependencies and plugins.
+- Native Android dependencies.
+- Build tools and development dependencies.
+- CI/CD actions and external build integrations.
+
+For every dependency, determine:
+
+1. Is it actively maintained?
+2. Is the installed version outdated?
+3. Does it have known security vulnerabilities?
+4. Is it deprecated or unsupported?
+5. Is it actually used in the codebase?
+6. Is it duplicated by another dependency?
+7. Does it introduce unnecessary attack surface?
+8. Is there a safer or better-maintained alternative?
+9. Will upgrading it introduce breaking changes?
+10. Is it required for production, development, testing, or building?
+
+### Dependency Remediation
+
+- Upgrade vulnerable packages to secure compatible versions.
+- Prefer stable, supported releases.
+- Replace abandoned or deprecated packages where justified.
+- Remove genuinely unused dependencies.
+- Remove unused code, dead imports, abandoned modules, and obsolete files only after verifying references.
+- Remove duplicate dependencies where safe.
+- Review transitive dependencies.
+- Regenerate lockfiles correctly.
+- Review package scripts and lifecycle hooks for suspicious behavior.
+- Avoid unnecessary dependencies and oversized packages.
+
+**Important:** Do not blindly upgrade every package to its newest version. Check compatibility, release notes, peer dependencies, framework requirements, and breaking changes.
+
+Do not remove packages or files based solely on text searches or automated unused-code reports. Verify dynamic imports, route registration, reflection, plugin discovery, build configuration, and runtime usage before removal.
+
+Preserve dependency versions when an upgrade would introduce unacceptable instability. Document any accepted residual risk.
+
+## 5. Secrets, Credentials and Environment Security
+
+Search the entire repository and Git history where accessible for:
+
+- Supabase service-role keys.
+- Database credentials.
+- API keys.
+- JWT signing secrets.
+- Private keys.
+- Encryption keys.
+- Cloudflare credentials.
+- Payment provider secrets.
+- OAuth client secrets.
+- Webhook signing secrets.
+- Hardcoded passwords.
+- Development and production credentials.
+
+Verify:
+
+- No production secrets are exposed in frontend bundles.
+- No sensitive credentials are committed to source control.
+- Environment variables are validated at startup.
+- Secrets are separated by environment.
+- Service-role credentials are restricted to trusted server-side execution.
+- Logging does not expose tokens, passwords, private keys, or sensitive personal information.
+- `.env`, `.env.local`, and other sensitive files are properly excluded from Git.
+- Secret rotation procedures are documented when exposure is confirmed.
+
+If a real credential is discovered, do not reproduce it in reports or terminal output unnecessarily. Treat confirmed exposure as an incident requiring rotation and remediation.
+
+## 6. Supabase, Database and Data Protection Audit
+
+Conduct a deep security review of the Supabase integration.
+
+Inspect:
+
+- Row Level Security (RLS).
+- SELECT, INSERT, UPDATE, and DELETE policies.
+- User and organization data isolation.
+- Database roles and permissions.
+- Service-role access.
+- Storage bucket policies.
+- File ownership and sharing permissions.
+- Realtime channel authorization.
+- Database functions and triggers.
+- SQL migrations.
+- RPC functions.
+- Search paths and SECURITY DEFINER functions.
+- SQL injection risks.
+- Sensitive database views.
+- Backup and recovery considerations.
+
+Verify that users cannot read, modify, delete, or access another user's data without explicit authorization.
+
+Test the actual policies and backend queries using appropriate test accounts and isolated test data.
+
+Never disable RLS as a workaround for application errors.
+
+## 7. QGUARD HELIX Cryptography and Security Architecture
+
+Because QGUARD HELIX is a post-quantum cybersecurity platform, conduct additional scrutiny of cryptographic implementations.
+
+Review:
+
+- Cryptographic algorithm selection.
+- Key generation and derivation.
+- Random number generation.
+- Key storage and protection.
+- Key rotation and revocation.
+- Encryption and decryption workflows.
+- Digital signature verification.
+- Certificate handling.
+- TLS configuration.
+- Cryptographic protocol negotiation.
+- Secure transport and data-at-rest encryption.
+- Cryptographic error handling.
+- Private key exposure and memory handling.
+- Cryptographic library versions and configuration.
+
+Verify correct algorithm roles:
+
+- ML-KEM: Key Encapsulation Mechanism.
+- ML-DSA: Digital Signature Algorithm.
+- SLH-DSA: Stateless Hash-Based Digital Signature Algorithm.
+- AES-256-GCM: Authenticated symmetric encryption.
+
+Check hybrid cryptographic implementations for downgrade attacks, improper key combination, invalid parameter handling, and unsafe fallback behavior.
+
+Verify that cryptographic implementations use established, reviewed libraries rather than custom cryptographic primitives.
+
+Review NIST FIPS 203, FIPS 204, FIPS 205 and applicable NIST cryptographic guidance where relevant.
+
+Do not claim FIPS validation, certification, or compliance unless supported by actual validation evidence.
+
+## 8. Frontend, Browser and Client-Side Security
+
+Review the complete frontend for:
+
+- XSS vulnerabilities.
+- Unsafe HTML rendering.
+- DOM manipulation risks.
+- Insecure local storage usage.
+- Exposed secrets.
+- Sensitive data in browser storage.
+- Weak client-side access controls.
+- Insecure redirect handling.
+- Clickjacking exposure.
+- Content Security Policy weaknesses.
+- Insecure third-party scripts.
+- Dependency and bundle vulnerabilities.
+- Unsafe file handling.
+- Insecure download and preview functionality.
+- Improper error messages.
+
+Verify that frontend controls are not being relied upon to enforce security-critical business rules.
+
+## 9. Infrastructure, Deployment and Build Security
+
+Inspect:
+
+- Cloudflare configuration.
+- Hosting and deployment settings.
+- HTTP security headers.
+- TLS configuration.
+- CORS policies.
+- Content Security Policy.
+- CI/CD workflows.
+- Build and release scripts.
+- Container configurations, if applicable.
+- Infrastructure-as-code, if applicable.
+- GitHub Actions permissions.
+- Dependency installation and build processes.
+- Production versus development configuration.
+- Debug endpoints and exposed diagnostic interfaces.
+
+Ensure development-only settings, debugging tools, test credentials, and unnecessary services cannot accidentally reach production.
+
+## 10. Safe Vulnerability Validation and Testing
+
+Do not rely exclusively on automated scanner reports.
+
+For every significant finding:
+
+1. Identify the affected file, function, endpoint, dependency, or configuration.
+2. Understand the actual execution path.
+3. Determine whether the vulnerability is exploitable.
+4. Identify the affected trust boundary and potential impact.
+5. Reproduce the issue safely in an isolated test environment where possible.
+6. Implement the appropriate remediation.
+7. Create or update a regression test.
+8. Re-run the relevant security checks.
+
+Use safe, non-destructive testing.
+
+Do not conduct destructive testing against production systems, real customer data, live payment systems, or external infrastructure without explicit authorization.
+
+Avoid exposing actual secrets or sensitive user information during testing.
+
+## 11. Controlled Remediation and Regression Prevention
+
+Security improvements must not break the application.
+
+Before modifying code:
+
+- Establish the current Git branch and working-tree status.
+- Review existing uncommitted changes.
+- Identify the current build and test baseline.
+- Record existing application behavior.
+- Map critical dependencies and integrations.
+- Identify high-risk changes and their rollback strategy.
+
+Do not overwrite or discard existing developer changes.
+
+Implement fixes in controlled, logical groups.
+
+After each significant group of changes, run the appropriate:
+
+- Unit tests.
+- Integration tests.
+- API tests.
+- Authentication and authorization tests.
+- Database and RLS tests.
+- Frontend tests.
+- TypeScript checks.
+- Lint checks.
+- Production builds.
+- Rust tests and checks.
+- Tauri builds, where applicable.
+- Android builds, where applicable.
+- End-to-end regression tests.
+- Security scans.
+
+Verify that existing features, routes, APIs, dashboards, user workflows, subscriptions, payments, authentication, and integrations continue to function.
+
+Do not silently disable features, remove functionality, bypass security checks, or replace real integrations with mock implementations to make tests pass.
+
+If a fix requires a breaking change, document the impact and migration requirements before applying it.
+
+## 12. Performance, Stability and Maintainability
+
+Security improvements must also preserve application stability.
+
+Review:
+
+- Unnecessary dependencies and bundle size.
+- Memory leaks.
+- Resource exhaustion.
+- Inefficient database queries.
+- Unbounded requests.
+- Missing pagination and query limits.
+- Unsafe background jobs.
+- Excessive API calls.
+- Unhandled exceptions.
+- Improper retry mechanisms.
+- Race conditions.
+- Connection management.
+- Logging and monitoring quality.
+
+Remove genuinely obsolete code and dependencies, but preserve code that is dynamically loaded, required by integrations, or used by runtime configuration.
+
+## 13. Security Severity and Remediation Prioritization
+
+Classify findings using CVSS 4.0 where applicable, alongside practical exploitability and business impact.
+
+Use the following priority levels:
+
+- **Critical:** Immediate remediation required. Potential system compromise, remote code execution, authentication bypass, exposed production secrets, or severe unauthorized data access.
+- **High:** Serious vulnerabilities that could compromise sensitive data, accounts, infrastructure, or business operations.
+- **Medium:** Meaningful weaknesses requiring remediation with appropriate priority.
+- **Low:** Limited-impact issues and defense-in-depth improvements.
+- **Informational:** Recommendations, modernization opportunities, and security best practices.
+
+For each finding, provide:
+
+- Finding ID.
+- Severity and CVSS score/vector when applicable.
+- Affected component and file.
+- Description of the vulnerability.
+- Evidence and reproduction details.
+- Potential business and security impact.
+- Recommended remediation.
+- Actual remediation performed.
+- Validation and regression-test results.
+- Remaining risk or limitation.
+
+Clearly distinguish confirmed vulnerabilities from potential findings, false positives, and informational recommendations.
+
+---
+
+## 14. Required Final Security Audit Report
+
+At completion, generate a comprehensive report containing:
+
+### A. Executive Security Summary
+- Overall security posture.
+- Total findings by severity.
+- Critical and high-risk vulnerabilities.
+- Major security improvements.
+- Remaining risks.
+
+### B. Security Scanner Results
+- Tools installed and versions.
+- Commands executed.
+- Scan coverage.
+- Findings and remediation status.
+- Tools that could not be executed and why.
+
+### C. Dependency Audit
+- Vulnerable dependencies.
+- Outdated dependencies.
+- Deprecated packages.
+- Removed unused dependencies.
+- Upgraded packages.
+- Accepted exceptions and compatibility constraints.
+
+### D. OWASP Assessment
+Provide a structured assessment of the applicable OWASP risks, including SSRF, BOLA, injection, authentication, authorization, cryptographic failures, and security misconfiguration.
+
+### E. Infrastructure and Configuration Audit
+Document environment, secrets, database, deployment, API, and build security findings.
+
+### F. Code Changes
+List the actual files changed, created, or removed, with a clear explanation of each modification.
+
+### G. Testing and Regression Results
+Provide actual test commands and results.
+
+Do not report a test as passing unless it was executed successfully.
+
+### H. Remaining Vulnerabilities
+List every unresolved finding, its severity, reason for not fixing it, and recommended next action.
+
+### I. Final Security Readiness Assessment
+State what has been verified, what remains unverified, and whether the application is ready for further staging or production security testing.
+
+Save the report in a clearly organized location within the repository, for example:
+
+`docs/security/COMPREHENSIVE_SECURITY_AUDIT.md`
+
+Also include machine-readable outputs where appropriate, such as SARIF, JSON, or dependency audit reports. Do not commit secrets or sensitive scanner artifacts.
+
+---
+
+## 15. Final Acceptance Criteria
+
+The task is not complete until the following requirements have been addressed:
+
+- [ ] Entire repository inspected.
+- [ ] Security tools evaluated and configured.
+- [ ] SAST completed.
+- [ ] Dependency and supply-chain scans completed.
+- [ ] Secrets scanning completed.
+- [ ] Applicable OWASP risks assessed.
+- [ ] SSRF, BOLA, IDOR, injection, and authorization paths investigated.
+- [ ] Authentication and session management reviewed.
+- [ ] Supabase RLS and database security reviewed.
+- [ ] Cryptographic implementations reviewed.
+- [ ] Outdated and vulnerable dependencies assessed.
+- [ ] Unused dependencies and obsolete code safely removed where justified.
+- [ ] Security fixes implemented and validated.
+- [ ] Regression tests executed.
+- [ ] Production build verified.
+- [ ] Existing application features and integrations preserved.
+- [ ] Remaining risks documented.
+- [ ] Final security audit report generated.
+
+**Important distinction:** A clean scanner report does not automatically mean an application is secure. The goal is evidence-based security assurance through automated scanning, manual code review, safe vulnerability validation, and regression testing.
+
+## NON-NEGOTIABLE ENGINEERING RULES
+
+1. NO FAKE SECURITY RESULTS.
+2. NO MOCK SECURITY SCANS.
+3. NO FABRICATED TEST RESULTS.
+4. NO BLIND DEPENDENCY UPGRADES.
+5. NO BLIND FILE OR PACKAGE DELETIONS.
+6. NO DISABLING SECURITY CONTROLS TO MAKE TESTS PASS.
+7. NO EXPOSURE OF PRODUCTION SECRETS.
+8. NO UNAUTHORIZED PRODUCTION TESTING.
+9. NO BREAKING EXISTING FEATURES OR BUSINESS LOGIC.
+10. NO CLAIMS OF ZERO VULNERABILITIES WITHOUT SUFFICIENT EVIDENCE.
+
+**Your responsibility is to make QGUARD HELIX demonstrably more secure, resilient, maintainable, and production-ready—not simply to make security scanners report fewer issues.**
+
+Work systematically, investigate thoroughly, fix responsibly, and verify every meaningful change.
+
+Thank you.

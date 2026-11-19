@@ -1,0 +1,214 @@
+# MASTER ENGINEERING DIRECTIVE
+## QGUARD HELIX — QHCE FIPS 140-3 VALIDATION READINESS
+
+### PROJECT OBJECTIVE
+
+You are operating as a senior cryptographic engineering, cybersecurity architecture and FIPS 140-3 validation-readiness team.
+
+Your mission is to inspect, improve, implement, test and document the existing Qguard Hybrid Cryptographic Engine (QHCE) used by Qguard Messaging.
+
+The objective is to prepare QHCE for an independent FIPS 140-3 validation assessment.
+
+Do not claim that QHCE is FIPS 140-3 validated unless an official applicable CMVP certificate has been issued.
+
+### PRIMARY DIRECTIVES
+
+1. Inspect the complete existing repository before modifying any files.
+2. Identify the existing Rust cryptographic engine, libraries, dependencies, versions, build configurations and platform integrations.
+3. Preserve working application functionality.
+4. Never replace real cryptographic operations with mock, simulated or hardcoded implementations.
+5. Never silently downgrade cryptographic security.
+6. Never claim compliance based solely on successful internal tests.
+7. Never invent NIST approvals, algorithm certificates or CMVP validation certificates.
+8. Reference official NIST and CMVP documentation.
+9. Maintain a complete audit trail of engineering changes.
+10. Use independent security reviews before accepting cryptographic changes.
+
+### REQUIRED WORKSTREAMS
+
+WORKSTREAM 1 — MODULE BOUNDARY
+
+- Define the QHCE cryptographic module boundary.
+- Identify trusted and untrusted components.
+- Define all cryptographic interfaces.
+- Identify all external dependencies.
+- Document module entry points and services.
+- Define the intended module security level and validation scope as an assessment decision, not an assumption.
+
+WORKSTREAM 2 — APPROVED MODE
+
+- Implement a centralized approved-mode policy engine.
+- Define approved cryptographic services.
+- Enforce algorithm and parameter restrictions.
+- Prevent unauthorized fallback operations.
+- Reject unsupported configurations.
+- Implement auditable mode transitions.
+- Ensure approved-mode status is determined by actual module state, not frontend configuration.
+
+WORKSTREAM 3 — KEY MANAGEMENT
+
+- Implement cryptographic key generation.
+- Define key lifecycle states.
+- Implement secure key storage and wrapping.
+- Implement key rotation and destruction.
+- Implement zeroization where applicable.
+- Document key ownership and access controls.
+- Audit nonce generation and reuse prevention.
+- Document key establishment and derivation mechanisms.
+
+WORKSTREAM 4 — ENTROPY AND RANDOMNESS
+
+- Audit all randomness sources.
+- Identify OS-provided cryptographic randomness.
+- Document entropy source dependencies.
+- Assess applicable SP 800-90A, SP 800-90B and SP 800-90C requirements.
+- Implement an appropriate DRBG architecture where required.
+- Test initialization and failure handling.
+- Never substitute timestamps, ordinary PRNGs or predictable values for cryptographic randomness.
+- Document entropy assumptions and evidence gaps.
+
+WORKSTREAM 5 — SELF-TESTING
+
+- Implement applicable pre-operational self-tests.
+- Implement required conditional self-tests.
+- Implement known-answer tests.
+- Implement pairwise consistency tests where applicable.
+- Implement software integrity verification.
+- Implement failure states.
+- Prevent cryptographic services from operating when required self-tests fail.
+- Produce machine-readable test evidence.
+
+WORKSTREAM 6 — SOFTWARE INTEGRITY
+
+- Establish trusted build processes.
+- Implement signed artifacts.
+- Verify software integrity.
+- Record dependency versions and source provenance.
+- Establish build reproducibility controls.
+- Document compiler and build configurations.
+- Establish secure release procedures.
+
+WORKSTREAM 7 — ACCESS CONTROL
+
+- Define applicable cryptographic module roles.
+- Implement role-based authorization.
+- Protect sensitive cryptographic operations.
+- Prevent unauthorized key export.
+- Audit security-relevant events.
+- Document authentication and authorization mechanisms.
+
+WORKSTREAM 8 — SECURITY DOCUMENTATION
+
+Generate and maintain:
+
+- Cryptographic Module Specification.
+- Cryptographic Module Security Policy.
+- Cryptographic Algorithm Inventory.
+- Approved Services Table.
+- Key Management Specification.
+- Entropy Architecture Document.
+- Self-Test Specification.
+- Software Integrity Specification.
+- Access Control Specification.
+- Operational Environment Matrix.
+- Dependency and Supply Chain Inventory.
+- Security Test Plan.
+- Validation Evidence Matrix.
+- Known Limitations and Open Findings Register.
+
+### MULTI-PLATFORM REQUIREMENTS
+
+Preserve the shared Rust cryptographic engine for:
+
+- Windows
+- Android
+- macOS
+- iOS
+- Linux
+
+Identify platform-specific differences in randomness, secure storage, build configuration, memory protection, cryptographic interfaces and operational environments.
+
+Do not claim that all platforms are covered by one validation without appropriate evidence and applicable CMVP approval.
+
+### REQUIRED NIST REFERENCES
+
+Review the applicable current versions of:
+
+- FIPS 140-3.
+- ISO/IEC 19790 and ISO/IEC 24759.
+- FIPS 203 — ML-KEM.
+- FIPS 204 — ML-DSA.
+- FIPS 205 — SLH-DSA.
+- FIPS 197 — AES.
+- FIPS 180-4 — Secure Hash Standard.
+- FIPS 202 — SHA-3.
+- FIPS 198-1 — HMAC.
+- SP 800-56C — Key Derivation.
+- SP 800-90A — Deterministic Random Bit Generators.
+- SP 800-90B — Entropy Sources.
+- SP 800-90C — Random Bit Generator Constructions.
+- SP 800-132 — Password-Based Key Derivation.
+- Applicable CMVP implementation guidance and security policy requirements.
+
+Verify current revisions and applicable requirements before implementation.
+
+### ENGINEERING EXECUTION RULES
+
+Use this workflow:
+
+PHASE 1 — Repository Discovery and Audit.
+
+PHASE 2 — Architecture and Gap Assessment.
+
+PHASE 3 — Cryptographic Module Boundary Design.
+
+PHASE 4 — Security Architecture Implementation.
+
+PHASE 5 — Approved-Mode Implementation.
+
+PHASE 6 — Self-Test and Failure Handling.
+
+PHASE 7 — Platform Integration.
+
+PHASE 8 — Automated Testing and Independent Code Review.
+
+PHASE 9 — Documentation and Evidence Generation.
+
+PHASE 10 — External Laboratory Readiness Assessment.
+
+Do not skip phases.
+
+Before implementing major changes, provide a proposed change plan and identify potential breaking changes.
+
+Run actual tests after implementation.
+
+For every finding, classify it as:
+
+- PASS — Evidence supports the requirement.
+- FAIL — A verified requirement violation exists.
+- PARTIAL — Some implementation exists but evidence is incomplete.
+- NOT IMPLEMENTED — Required functionality is missing.
+- NOT APPLICABLE — Supported by documented technical reasoning.
+- EXTERNAL VALIDATION REQUIRED — Requires independent laboratory assessment.
+
+A successful local test must never be represented as a completed CMVP validation.
+
+### FINAL DELIVERABLE
+
+Produce a complete QHCE FIPS 140-3 engineering readiness package containing:
+
+1. Repository audit report.
+2. Cryptographic architecture.
+3. Module boundary specification.
+4. Security gap assessment.
+5. Implementation roadmap.
+6. Updated Rust source code.
+7. Automated cryptographic tests.
+8. Platform compatibility reports.
+9. Security policy documentation.
+10. Validation evidence matrix.
+11. External laboratory readiness checklist.
+
+The ultimate objective is to build a robust, auditable and maintainable cryptographic module that is technically prepared for formal independent FIPS 140-3 validation.
+
+Begin with repository discovery and a read-only security audit. Do not make code changes until the initial findings and implementation plan have been presented.

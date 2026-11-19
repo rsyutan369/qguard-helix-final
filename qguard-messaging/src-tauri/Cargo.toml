@@ -1,6 +1,6 @@
 [package]
 name = "qguard-messaging"
-version = "1.5.0"
+version = "1.5.3"
 description = "QGuard Messaging - hybrid post-quantum secure desktop messaging"
 authors = ["QGuard Team"]
 edition = "2021"
@@ -16,6 +16,9 @@ path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+base64 = "0.22"
+serde_json = "1"
+url = "2"
 # Compiles wolfCrypt + wolfcrypt/qg_wolfcrypt.c, only with `--features wolfcrypt`.
 cc = { version = "1", optional = true }
 
@@ -25,6 +28,11 @@ tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 # Checkout URL validation for the paywall's billing_open_checkout command.
 url = "2"
+# Native HTTPS verification of the active Supabase session for local-only data.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+webpki-roots = "1"
+tempfile = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -77,7 +85,20 @@ pqcrypto-traits = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
-windows = { version = "0.62", features = ["Win32_Foundation"] }
+windows = { version = "0.62", features = [
+    "Devices_Bluetooth_Advertisement",
+    "Devices_Bluetooth_GenericAttributeProfile",
+    "Devices_WiFiDirect",
+    "Devices_Enumeration",
+    "Foundation",
+    "Networking_Connectivity",
+    "Storage_Streams",
+    "Security_Credentials",
+    "Win32_Foundation",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_NetworkManagement_WiFi",
+    "Win32_System_WinRT",
+] }
 
 # Desktop-only: OS keychain DEK storage, signed auto-updates, relaunch-after-update.
 # keyring v3 ships NO credential-store backend unless a platform feature is enabled.
@@ -89,6 +110,9 @@ windows = { version = "0.62", features = ["Win32_Foundation"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# Desktop alerts for offline pairing requests, XFER offers and transfer results
+# while the Qguard window is in the background (offline::alerts).
+tauri-plugin-notification = "2"
 
 # Android-only: JNI bridge into the Android Keystore (AndroidKeyStore provider) so
 # the device storage key is wrapped by a non-exportable, hardware-backed AES key.

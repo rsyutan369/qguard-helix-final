@@ -1,0 +1,90 @@
+/* Direct Wi-Fi link card. Uses the offline workspace tokens so light, dark and
+   the Android skin follow Mesh and XFER. */
+
+.wifi-link-card {
+  display: flex;
+  gap: .8rem;
+  align-items: flex-start;
+  padding: .9rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--offline-accent-strong) 40%, var(--offline-rim));
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--offline-accent-strong) 7%, var(--offline-panel-bottom));
+  color: var(--app-ink-950, inherit);
+}
+
+.wifi-link-card[data-state="connected"] {
+  border-color: color-mix(in srgb, var(--offline-success) 45%, var(--offline-rim));
+  background: color-mix(in srgb, var(--offline-success) 8%, var(--offline-panel-bottom));
+}
+
+.wifi-link-card[data-state="failed"] {
+  border-color: color-mix(in srgb, #d6455d 45%, var(--offline-rim));
+  background: color-mix(in srgb, #d6455d 7%, var(--offline-panel-bottom));
+}
+
+.wifi-link-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  background: var(--offline-panel-top);
+  color: var(--offline-accent-strong);
+}
+
+.wifi-link-card[data-state="connected"] .wifi-link-icon { color: var(--offline-success); }
+.wifi-link-card[data-state="failed"] .wifi-link-icon { color: #d6455d; }
+
+.wifi-link-spin { animation: wifi-link-spin 1s linear infinite; }
+
+@keyframes wifi-link-spin {
+  to { transform: rotate(360deg); }
+}
+
+.wifi-link-copy { display: grid; gap: .45rem; min-width: 0; flex: 1; }
+.wifi-link-copy h3 { font-size: .95rem; font-weight: 750; line-height: 1.3; }
+.wifi-link-copy p { font-size: .84rem; line-height: 1.5; color: var(--app-ink-700, inherit); overflow-wrap: anywhere; }
+
+.wifi-link-network { display: grid; gap: .35rem; }
+
+.wifi-link-value {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .5rem;
+  padding: .45rem .55rem;
+  border: 1px solid var(--offline-rim);
+  border-radius: .65rem;
+  background: var(--offline-panel-top);
+  font-size: .82rem;
+}
+
+.wifi-link-value span { font-weight: 700; color: var(--app-ink-600, inherit); }
+.wifi-link-value code { overflow-wrap: anywhere; font-size: .86rem; }
+.wifi-link-value button { display: grid; place-items: center; width: 2.25rem; height: 2.25rem; border-radius: .5rem; }
+
+.wifi-link-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+
+.wifi-link-actions button {
+  min-height: 2.75rem;
+  padding: .45rem .95rem;
+  border: 1px solid var(--offline-rim);
+  border-radius: .7rem;
+  background: var(--offline-panel-top);
+  color: var(--app-ink-800, inherit);
+  font-size: .84rem;
+  font-weight: 700;
+}
+
+.wifi-link-actions .wifi-link-primary {
+  border-color: transparent;
+  background: #5b21b6;
+  color: #fff;
+}
+
+.wifi-link-actions button:disabled { opacity: .5; cursor: not-allowed; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wifi-link-spin { animation: none; }
+}

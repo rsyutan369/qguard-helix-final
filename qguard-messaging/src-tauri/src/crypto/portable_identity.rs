@@ -36,6 +36,7 @@ use crate::crypto::hybrid_kex::LocalKemKeypair;
 use crate::crypto::kdf;
 use crate::crypto::passcode;
 use crate::crypto::provider;
+use crate::crypto::passphrase;
 use crate::crypto::signatures::{
     dual_sign_87, dual_verify, dual_verify_87, VaultSigningKeypair,
 };
@@ -221,6 +222,7 @@ impl PortableIdentity {
                 "identity passphrase must be at least {min_len} characters"
             )));
         }
+        passphrase::require_strong(passphrase)?;
 
         let salt: [u8; 16] = provider::random_array();
         let mut wrap_key = if approved {
@@ -530,6 +532,44 @@ pub fn short_fingerprint(fingerprint: &str) -> String {
         .join("-")
 }
 
+/// Shortest confirmation accepted when verifying a recipient out of band: the
+/// 16 hex characters of [`short_fingerprint`].
+///
+/// Anything less is not a comparison. Four characters collide by birthday after
+/// a few hundred identities and would let a near-miss pass; sixteen is 64 bits,
+/// which an attacker cannot grind a colliding identity for.
+pub const MIN_CONFIRMATION_CHARS: usize = 16;
+
+/// Whether what the user typed matches the fingerprint they were meant to
+/// compare against.
+///
+/// Deliberately forgiving about *format* and strict about *content*: the user is
+/// transcribing from a phone call or a video window, so dashes, spaces and case
+/// are all noise, but the digits themselves have to be right. Accepts the short
+/// form, the full 64-character fingerprint, or anything in between, as long as it
+/// is a genuine prefix of at least [`MIN_CONFIRMATION_CHARS`].
+pub fn confirmation_matches(typed: &str, fingerprint: &str) -> bool {
+    let typed = normalize_fingerprint(typed);
+    let expected = normalize_fingerprint(fingerprint);
+    if typed.len() < MIN_CONFIRMATION_CHARS || expected.len() < MIN_CONFIRMATION_CHARS {
+        return false;
+    }
+    if typed.len() > expected.len() {
+        return false;
+    }
+    expected.starts_with(&typed)
+}
+
+/// Strip the separators a person types and fold to one case, so `de80 ca7a` and
+/// `DE80-CA7A` compare equal.
+fn normalize_fingerprint(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
 /// Parse a public recipient bundle. Accepts the public recipient JSON, a full
 /// `.qgkey` bundle (public half only), or a `{ publics: {...} }` fragment.
 ///
@@ -746,9 +786,9 @@ mod tests {
     #[test]
     fn bundle_round_trips_and_rejects_a_wrong_passphrase() {
         let identity = PortableIdentity::generate(Some("Alice - laptop".to_string()));
-        let bundle = identity.export_bundle("correct horse battery").unwrap();
+        let bundle = identity.export_bundle(TEST_PASSPHRASE).unwrap();
 
-        let restored = PortableIdentity::import_bundle(&bundle, "correct horse battery").unwrap();
+        let restored = PortableIdentity::import_bundle(&bundle, TEST_PASSPHRASE).unwrap();
         assert_eq!(restored.fingerprint(), identity.fingerprint());
         assert_eq!(restored.kem.mlkem_secret, identity.kem.mlkem_secret);
         assert_eq!(restored.signer.mldsa87_secret, identity.signer.mldsa87_secret);
@@ -758,17 +798,25 @@ mod tests {
         assert!(PortableIdentity::import_bundle(&bundle, "").is_err());
     }
 
+    /// A passphrase that clears the entropy gate, so these tests exercise the
+    /// bundle rather than the gate. Seven independent words, the shape
+    /// `crypto::passphrase::generate` produces.
+    const TEST_PASSPHRASE: &str = "ridge lantern copper vessel marble tundra harbor";
+
     #[test]
-    fn short_passphrases_are_refused() {
+    fn weak_passphrases_are_refused_however_long_they_are() {
         let identity = PortableIdentity::generate(None);
         assert!(identity.export_bundle("short").is_err());
-        assert!(identity.export_bundle("exactly12chr").is_ok());
+        // Twelve characters used to be enough. It is not: a `.qgkey` is ground
+        // offline, so the bundle now requires real entropy rather than length.
+        assert!(identity.export_bundle("exactly12chr").is_err());
+        assert!(identity.export_bundle(TEST_PASSPHRASE).is_ok());
     }
 
     #[test]
     fn a_tampered_bundle_fails_to_open() {
         let identity = PortableIdentity::generate(None);
-        let bundle = identity.export_bundle("correct horse battery").unwrap();
+        let bundle = identity.export_bundle(TEST_PASSPHRASE).unwrap();
         let mut parsed: serde_json::Value = serde_json::from_str(&bundle).unwrap();
 
         // Flip one byte of the sealed secret payload.
@@ -776,17 +824,17 @@ mod tests {
         let mut raw = b64().decode(&data).unwrap();
         raw[0] ^= 0x01;
         parsed["secrets"]["data"] = serde_json::Value::String(b64().encode(&raw));
-        assert!(PortableIdentity::import_bundle(&parsed.to_string(), "correct horse battery").is_err());
+        assert!(PortableIdentity::import_bundle(&parsed.to_string(), TEST_PASSPHRASE).is_err());
     }
 
     #[test]
     fn a_swapped_public_key_is_caught_by_pair_validation() {
         let identity = PortableIdentity::generate(None);
         let other = PortableIdentity::generate(None);
-        let bundle = identity.export_bundle("correct horse battery").unwrap();
+        let bundle = identity.export_bundle(TEST_PASSPHRASE).unwrap();
         let mut parsed: serde_json::Value = serde_json::from_str(&bundle).unwrap();
         parsed["publics"]["x25519"] = serde_json::Value::String(b64().encode(&other.kem.x25519_public));
-        assert!(PortableIdentity::import_bundle(&parsed.to_string(), "correct horse battery").is_err());
+        assert!(PortableIdentity::import_bundle(&parsed.to_string(), TEST_PASSPHRASE).is_err());
     }
 
     #[test]
@@ -887,17 +935,17 @@ mod tests {
         let identity = PortableIdentity::generate(Some("approved".to_string()));
         let salt = [7u8; 16];
         // The v1.3 key is PBKDF2-HMAC-SHA-512 then HKDF, never the Argon2id key.
-        let approved = derive_bundle_key_pbkdf2_approved("a passphrase of 14+", &salt).unwrap();
-        assert_ne!(approved, derive_bundle_key_argon2id("a passphrase of 14+", &salt).unwrap());
+        let approved = derive_bundle_key_pbkdf2_approved(TEST_PASSPHRASE, &salt).unwrap();
+        assert_ne!(approved, derive_bundle_key_argon2id(TEST_PASSPHRASE, &salt).unwrap());
         // A hand-built v1.3 bundle opens through the normal import path.
-        let json = identity.export_bundle("a passphrase of 14+").unwrap();
+        let json = identity.export_bundle(TEST_PASSPHRASE).unwrap();
         let mut bundle: serde_json::Value = serde_json::from_str(&json).unwrap();
         let secrets = bundle["secrets"].clone();
         // Re-seal the exported (Argon2id) payload as v1.3, as approved mode would.
         let plain = {
             let data = decode_b64(secrets["data"].as_str().unwrap(), "data").unwrap();
             let split = data.len() - symmetric::TAG_SIZE;
-            let key = derive_bundle_key_argon2id("a passphrase of 14+", &decode_b64(secrets["salt"].as_str().unwrap(), "salt").unwrap()).unwrap();
+            let key = derive_bundle_key_argon2id(TEST_PASSPHRASE, &decode_b64(secrets["salt"].as_str().unwrap(), "salt").unwrap()).unwrap();
             symmetric::decrypt(
                 &key,
                 &EncryptedEnvelope {
@@ -910,7 +958,7 @@ mod tests {
             .unwrap()
         };
         let new_salt = [9u8; 16];
-        let key = derive_bundle_key_pbkdf2_approved("a passphrase of 14+", &new_salt).unwrap();
+        let key = derive_bundle_key_pbkdf2_approved(TEST_PASSPHRASE, &new_salt).unwrap();
         let resealed = symmetric::encrypt(&key, &plain, BUNDLE_AAD).unwrap();
         let mut data = resealed.ciphertext.clone();
         data.extend_from_slice(&resealed.tag);
@@ -924,7 +972,7 @@ mod tests {
             "nonce": b64().encode(&resealed.nonce),
             "data": b64().encode(&data),
         });
-        let restored = PortableIdentity::import_bundle(&bundle.to_string(), "a passphrase of 14+").unwrap();
+        let restored = PortableIdentity::import_bundle(&bundle.to_string(), TEST_PASSPHRASE).unwrap();
         assert_eq!(restored.fingerprint(), identity.fingerprint());
         assert!(PortableIdentity::import_bundle(&bundle.to_string(), "the wrong passphrase").is_err());
     }
@@ -1002,6 +1050,40 @@ mod tests {
             &other.kem.mlkem_public,
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_confirmation_must_actually_match_the_fingerprint() {
+        let identity = PortableIdentity::generate(None);
+        let fingerprint = identity.fingerprint();
+        let short = short_fingerprint(&fingerprint);
+
+        // The short form as displayed, and the ways a person might retype it.
+        assert!(confirmation_matches(&short, &fingerprint));
+        assert!(confirmation_matches(&short.to_lowercase(), &fingerprint));
+        assert!(confirmation_matches(&short.replace('-', " "), &fingerprint));
+        assert!(confirmation_matches(&short.replace('-', ""), &fingerprint));
+        // The full fingerprint, for someone who pastes rather than types.
+        assert!(confirmation_matches(&fingerprint, &fingerprint));
+
+        // A different identity must never satisfy it.
+        let other = PortableIdentity::generate(None);
+        assert!(!confirmation_matches(&short_fingerprint(&other.fingerprint()), &fingerprint));
+
+        // Too short to be a comparison: a four-character prefix would collide by
+        // birthday across a few hundred identities.
+        assert!(!confirmation_matches(&short[..4], &fingerprint));
+        assert!(!confirmation_matches("", &fingerprint));
+        assert!(!confirmation_matches("----", &fingerprint));
+
+        // One wrong character anywhere fails, including the last.
+        let mut wrong: Vec<char> = short.chars().collect();
+        let last = wrong.len() - 1;
+        wrong[last] = if wrong[last] == 'A' { 'B' } else { 'A' };
+        assert!(!confirmation_matches(&wrong.into_iter().collect::<String>(), &fingerprint));
+
+        // Longer than the real fingerprint cannot be a prefix of it.
+        assert!(!confirmation_matches(&format!("{fingerprint}00"), &fingerprint));
     }
 
     #[test]

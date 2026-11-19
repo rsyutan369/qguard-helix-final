@@ -5,12 +5,12 @@
  * labelled on the page; nothing is promised that the app does not do.
  */
 import { Check, Crown, MessageSquareLock, ShieldCheck, UserCog, Users } from 'lucide-react';
+import { MessagingBuildScope, SecurityCoverage } from '../_security-coverage';
 import {
   MessagingLayout,
   Reveal,
   Highlight,
   Kicker,
-  GoldButton,
   GhostButton,
   SectionHeading,
   GlassCard,
@@ -21,6 +21,7 @@ import {
 } from '../_shared';
 import { Aurora, Rise, StageFrame, Tag } from '../_motion';
 import { HeroChatScene } from '../_scenes-hero';
+import { LocalWorkflowLink, LocalWorkflows } from '../_local-workflows';
 import {
   AiBoundary,
   CallPhraseDemo,
@@ -34,12 +35,12 @@ import {
 } from '../_scenes-chat';
 import { Block, FeatureAtlas, LIMITS, StraightTalk } from '../_catalog';
 
-const TRUST = ['NIST FIPS 203', 'FIPS 204', 'End-to-End Encrypted', 'Zero-Knowledge', 'Hybrid Post-Quantum'];
+const TRUST = ['End-to-End Encrypted Chat & Calls', 'Hybrid Key Establishment', 'Device Verification'];
 
 const STEPS = [
-  { title: 'Encrypted on your device', body: 'Text, files, and call frames are sealed with AES-256-GCM before they ever leave you.' },
-  { title: 'Quantum-safe key exchange', body: 'Keys are agreed using hybrid X25519 + ML-KEM-1024 (NIST FIPS 203), bound to the transcript and fresh for every message and call.' },
-  { title: 'Only your contact can open it', body: 'The relay stores ciphertext and the routing metadata it needs — never content. Verify the safety number to confirm no one is in the middle.' },
+  { title: 'Encrypted on your device', body: 'The app encrypts message content and attachments with AES-256-GCM. Calls use separate AES-256-GCM media keys per peer link.' },
+  { title: 'Hybrid key establishment', body: 'Default direct chat envelopes and call handshakes use X25519 + ML-KEM-1024. Ratcheted sessions and shared group epochs manage keys differently.' },
+  { title: 'Verify the receiving device', body: 'The relay stores ciphertext and delivery metadata. Compare the safety number through a trusted channel to check the contact device’s keys.' },
 ];
 
 const VERIFY_STEPS = [
@@ -51,14 +52,14 @@ const VERIFY_STEPS = [
 
 const COMPARISON = [
   ['Encryption', 'End-to-end, hybrid post-quantum'],
-  ['Algorithms', 'NIST FIPS 203 ML-KEM-1024 + FIPS 204 ML-DSA-65, both signatures must verify'],
+  ['Direct message envelopes', 'X25519 + ML-KEM-1024 · Ed25519 + ML-DSA-65 · AES-256-GCM'],
   ['Calls', '1:1 and up to 3 people · per-frame E2EE · fresh post-quantum key per link'],
-  ['Server access to content', 'None (zero-knowledge)'],
+  ['Relay visibility', 'Ciphertext, recipient IDs, group membership and delivery timing'],
   ['Forward secrecy', 'Prekey rotation by default · per-message ratchet opt-in'],
   ['Disappearing / view-once / time-locked', 'Yes'],
   ['Device verification', 'Device pins, QR approval, safety numbers, call phrase, key-change alerts'],
   ['Recovery', 'Social recovery (k-of-n + PIN) and encrypted history backup'],
-  ['Harvest-now-decrypt-later resistant', 'Designed to resist — hybrid ML-KEM-1024 protects every message key'],
+  ['Channels and large groups', 'Shared AES-256-GCM epoch keys delivered through hybrid envelopes'],
 ];
 
 const ROLES = [
@@ -80,12 +81,13 @@ export default function SecureChatPage() {
               Conversations built for the <Highlight>quantum era</Highlight>.
             </h1>
             <p className="mt-5 max-w-xl text-base leading-relaxed text-slate-600 sm:text-lg">
-              Messages, groups, channels, calls and files — protected by NIST post-quantum cryptography, with protection you can inspect and contacts you can verify. Not even QGuard can read them.
+              Send encrypted messages and attachments, make voice and video calls, and verify contact devices. Direct chats, group channels and call media use different key schedules.
             </p>
+            <MessagingBuildScope />
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <DownloadButton />
-              <GoldButton href="/login">Start a secure chat</GoldButton>
               <GhostButton to="/qguard-messaging/quantum-vault">See Quantum Vault</GhostButton>
+              <LocalWorkflowLink>Explore Offgrid Mesh</LocalWorkflowLink>
             </div>
             <div className="mt-8">
               <TrustStrip items={TRUST} />
@@ -94,11 +96,11 @@ export default function SecureChatPage() {
 
           <Reveal delay={0.15}>
             <StageFrame
-              title="Secure Chat // sealed"
+              title="Secure Chat illustration"
               bodyClassName="!px-2 !py-2"
               note={
                 <>
-                  <span className="inline-flex items-center gap-2"><span className="qm-live-dot" aria-hidden />Messages decrypt on this device only.</span>
+                  <span className="inline-flex items-center gap-2"><span className="qm-live-dot" aria-hidden />Intended recipients’ devices decrypt the messages.</span>
                   <span>Example conversation.</span>
                 </>
               }
@@ -108,6 +110,8 @@ export default function SecureChatPage() {
           </Reveal>
         </div>
       </section>
+
+      <LocalWorkflows page="chat" />
 
       {/* Atlas */}
       <section className="relative mx-auto max-w-[88rem] px-6 py-16">
@@ -123,7 +127,7 @@ export default function SecureChatPage() {
       <Block
         kicker="Proof, not a label"
         title={<>A protection badge that <Highlight>shows its work</Highlight></>}
-        subtitle="The old always-green “E2EE active” line is gone. The chip now reads what the app can actually measure — and says so when it can't."
+        subtitle="The badge checks available recipient devices, their published suites and trust status. It shows when there is insufficient evidence for a protection label."
       >
         <Reveal><ProtectionBadgeExplorer /></Reveal>
       </Block>
@@ -132,7 +136,7 @@ export default function SecureChatPage() {
       <Block
         kicker="Forward secrecy, honestly"
         title={<>One key per message — <Highlight>when you turn it on</Highlight></>}
-        subtitle="By default every message has its own hybrid encapsulation and prekeys rotate and retire. The post-quantum ratchet goes further, and we label it as the unreviewed opt-in it is."
+        subtitle="Default direct envelopes use fresh hybrid encapsulation to a rotating signed prekey. The optional session ratchet requires support and opt-in on both devices. It has not been independently reviewed."
       >
         <Reveal><RatchetLab /></Reveal>
       </Block>
@@ -142,8 +146,8 @@ export default function SecureChatPage() {
         <Aurora />
         <SectionHeading
           kicker="Know who you're talking to"
-          title={<>Verify a contact, then <Highlight>prove it on the call</Highlight></>}
-          subtitle="Safety numbers settle who owns a device. The call phrase proves that device is the one on the line, so an impostor calling from another device cannot produce it — even with a cloned voice. It proves the device, not the person holding it."
+          title={<>Verify a contact device, then <Highlight>check it on a call</Highlight></>}
+          subtitle="Compare a safety number over a trusted channel. On a 1:1 call, compare the four words to check that the paired device is on the line. The phrase does not identify the speaker or detect synthetic media."
         />
         <div className="mt-10 grid gap-5 md:grid-cols-2 lg:grid-cols-4">
           {VERIFY_STEPS.map((s, i) => (
@@ -159,7 +163,7 @@ export default function SecureChatPage() {
       <Block
         kicker="Together"
         title={<>Groups, group calls and <Highlight>channels</Highlight></>}
-        subtitle="Groups use the same hybrid sealing, dual signatures and device checks as a direct chat, with no shared group key. Channels and large groups use a shared key per epoch, delivered only to members' devices over the same hybrid exchange."
+        subtitle="Small groups use the same hybrid sealing, dual signatures and device checks as a direct chat, with no shared group key. Channels and large groups use a shared key per epoch, delivered only to members' devices over the same hybrid exchange."
       >
         <div className="grid gap-5 md:grid-cols-3">
           {ROLES.map((r, i) => (
@@ -184,16 +188,16 @@ export default function SecureChatPage() {
       <Block
         kicker="If someone takes your phone"
         title={<>Layers between a stranger and <Highlight>your keys</Highlight></>}
-        subtitle="Lock the app, lock each workspace, hide it from Recent apps, and erase the device — or let a duress PIN do it quietly."
+        subtitle="Use workspace locks. Android also offers biometric app unlock, Recent apps masking and local app-data wipe controls."
       >
         <Reveal><LockStack /></Reveal>
       </Block>
 
       {/* Recovery */}
       <Block
-        kicker="Never locked out"
+        kicker="Optional recovery"
         title={<>Recovery that does not depend on <Highlight>trusting us</Highlight></>}
-        subtitle="Split your recovery key across people you have verified, and back up the keys to your history — neither the server nor any one helper can read them."
+        subtitle="Set up recovery before losing a device. Verified helpers can provide shares that combine with your recovery PIN or passphrase. Back up history keys separately."
       >
         <Reveal><ShamirRecovery /></Reveal>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-3 text-sm text-slate-600">
@@ -206,7 +210,7 @@ export default function SecureChatPage() {
       <Block
         kicker="Still delivers"
         title={<>When the relay is down, <Highlight>messages wait — safely</Highlight></>}
-        subtitle="A sealed message is kept on your device and goes out by itself. On Android it can even hop to a nearby QGuard phone."
+        subtitle="The encrypted outbox queues eligible messages for retry. Android also has opt-in Nearby delivery through Google Play services, separate from Offgrid Mesh."
       >
         <Reveal><ResilienceFlow /></Reveal>
       </Block>
@@ -254,6 +258,10 @@ export default function SecureChatPage() {
         <Reveal><StraightTalk items={LIMITS} /></Reveal>
       </Block>
 
+      <Block kicker="Security by workflow" title={<>What protects <Highlight>chat, media and local delivery</Highlight></>}>
+        <Reveal><SecurityCoverage area="chat" /></Reveal>
+      </Block>
+
       {/* About */}
       <section className="mx-auto max-w-4xl px-6 py-10">
         <Reveal>
@@ -265,15 +273,7 @@ export default function SecureChatPage() {
               <h2 className="text-xl font-black text-slate-900">About the security</h2>
             </div>
             <p className="mt-4 text-sm leading-relaxed text-slate-600">
-              QGuard Secure Chat is end-to-end encrypted with hybrid post-quantum cryptography: key exchange uses
-              <strong className="text-slate-900"> ML-KEM-1024 + X25519</strong> (NIST FIPS 203) through a transcript-bound combiner, identity and messages are
-              <strong className="text-slate-900"> dual-signed with ML-DSA-65 + Ed25519</strong> (FIPS 204), and content is sealed with
-              <strong className="text-slate-900"> AES-256-GCM</strong> keyed via <strong className="text-slate-900">HKDF-SHA3-256</strong>.
-              Every message is authenticated against the sender’s pinned device keys, replay-protected, and decrypted only on your
-              device. Prekeys rotate and are destroyed once every message sealed to them is recorded; the opt-in session ratchet adds a key
-              per message and a fresh ML-KEM-1024 exchange at least every 50 messages or 24 hours. Voice and video calls add per-frame end-to-end
-              encryption, per-call keys, an authenticated caller and a verifiable call phrase. Private keys never leave your device, and the
-              relay is zero-knowledge for content — it can never read your messages, files, or calls — though it does see who talks to whom and when.
+              On supported devices, calls use AES-256-GCM on encoded audio and video frames in addition to WebRTC transport protection. Call setup fails if the required media encryption cannot be installed. Screen sharing uses the same video encryption on supported desktop video calls. The encrypted history ledger retains keys for already-opened messages, including while the opt-in ratchet is active.
             </p>
             <p className="mt-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-900">
               <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
@@ -285,8 +285,7 @@ export default function SecureChatPage() {
 
       <CTASection
         title="Talk freely. Stay private."
-        body="Start an end-to-end encrypted conversation protected by NIST post-quantum cryptography — verify the safety number and no one in the middle, not even QGuard, can read it."
-        primary={{ label: 'Launch the App', href: '/login' }}
+        body="Install QGuard Messaging, then compare safety numbers in the app before sharing sensitive information."
         secondary={{ label: 'Back to Overview', to: '/qguard-messaging' }}
       />
     </MessagingLayout>

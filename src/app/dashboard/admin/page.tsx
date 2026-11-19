@@ -39,13 +39,19 @@ const tabs: Array<{ id: AdminTab; label: string; icon: typeof Activity }> = [
 ]
 
 function formatNumber(value?: number | null) {
-  // null = explicitly not measured (e.g. sessions when Supabase Auth is unreadable).
-  if (value === null) return '—'
-  return new Intl.NumberFormat('en-US').format(Number(value || 0))
+  // null / undefined = not measured (e.g. sessions when Supabase Auth is
+  // unreadable, or a figure that has not loaded). Never rendered as 0.
+  if (value === null || value === undefined) return '—'
+  return new Intl.NumberFormat('en-US').format(Number(value))
 }
 
 function formatCurrency(value?: number | null) {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(Number(value || 0) / 100)
+  if (value === null || value === undefined) return '—'
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value) / 100)
+}
+
+function formatPercent(value?: number | null) {
+  return value === null || value === undefined ? '—' : `${formatNumber(value)}%`
 }
 
 function normalizeText(value?: string | null) {
@@ -111,7 +117,7 @@ function SummaryCard({ title, rows }: { title: string; rows?: Array<{ label: str
               <span className="font-mono text-[var(--qg-text-primary)]">{row.count}</span>
             </div>
             <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
-              <div className="h-full rounded-full bg-[var(--color-gold)]" style={{ width: `${Math.max(4, (row.count / total) * 100)}%` }} />
+              <div className="h-full rounded-full bg-[var(--color-gold)]" style={{ width: `${row.count ? Math.max(4, (row.count / total) * 100) : 0}%` }} />
             </div>
           </div>
         ))}
@@ -172,7 +178,7 @@ function AdminDashboardContent() {
 
         {missingTables.length > 0 && (
           <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-4 text-xs text-amber-100">
-            Some Supabase tables are not available yet: {missingTables.join(', ')}. Apply the admin schema migration to unlock the full operational view.
+            Some sources could not be read: {missingTables.join(', ')}. Figures that depend on them show “—” rather than zero. Apply the admin schema migration if a table is missing.
           </div>
         )}
 
@@ -196,16 +202,28 @@ function AdminDashboardContent() {
             <div className="space-y-6">
               <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
                 <KpiCard icon={Users} label="Total Users" value={formatNumber(kpis.totalUsers)} sub={kpis.activeSessions === null ? 'Live sessions not measured' : `${formatNumber(kpis.activeSessions)} live sessions · ${formatNumber(kpis.activeUsers)} active in 30 days`} />
+                <KpiCard icon={Activity} label="New users · 30 days" value={formatNumber(kpis.newUsersLast30d)} sub={`${formatNumber(kpis.activeNowUsers)} active now · ${formatNumber(kpis.neverSignedInUsers)} never signed in`} />
+                <KpiCard icon={ShieldAlert} label="Restricted accounts" value={formatNumber(kpis.suspendedUsers === null || kpis.suspendedUsers === undefined ? null : Number(kpis.suspendedUsers) + Number(kpis.disabledUsers || 0))} sub={`${formatNumber(kpis.suspendedUsers)} suspended · ${formatNumber(kpis.disabledUsers)} disabled · ${formatNumber(kpis.pendingVerificationUsers)} unverified`} />
                 <KpiCard icon={Building2} label="Tenants" value={formatNumber(kpis.totalTenants)} sub={`${formatNumber(kpis.activeTenants)} not disabled`} />
-                <KpiCard icon={CreditCard} label="Collected · 7 days" value={formatCurrency(kpis.subscriptionRevenue)} sub={`${formatNumber(kpis.activeSubscriptions)} active subscriptions`} />
-                <KpiCard icon={ShieldCheck} label="Migration progress" value={`${formatNumber(kpis.migrationProgress)}%`} sub={`${formatNumber(kpis.completedScans)} completed scans`} />
                 <KpiCard icon={AlertTriangle} label="Critical / high events" value={formatNumber(kpis.criticalAlerts)} sub="security_events · latest 1000" />
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+                <KpiCard icon={CreditCard} label="Subscriptions with access" value={formatNumber(kpis.activeSubscriptions)} sub={`active, trial or renewal pending · ${formatNumber(kpis.trialSubscriptions)} trial`} />
+                <KpiCard icon={CreditCard} label="Provider-billed (paying)" value={formatNumber(kpis.payingSubscriptions)} sub={`${formatCurrency(kpis.mrrCents)} MRR · ${formatNumber(kpis.pastDueSubscriptions)} past due`} />
+                <KpiCard icon={CreditCard} label="Collected · 7 days" value={formatCurrency(kpis.subscriptionRevenue)} sub="USD charges collected, before refunds" />
+                <KpiCard icon={CreditCard} label="Expired subscriptions" value={formatNumber(kpis.expiredPlans)} sub="status = expired" />
+                <KpiCard icon={ShieldCheck} label="Migration progress" value={formatPercent(kpis.migrationProgress)} sub={kpis.migrationProgress === null ? 'No migration jobs recorded' : `${formatNumber(kpis.migrationJobs)} jobs · ${formatNumber(kpis.completedScans)} completed scans`} />
               </div>
               <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
                 <MiniBars label="New users" data={admin.stats?.charts?.userGrowth} />
                 <MiniBars label="Admin + security events" data={admin.stats?.charts?.tenantActivity} />
                 <MiniBars label="Vulnerability updates" data={admin.stats?.charts?.vulnerabilityTrend} />
                 <MiniBars label="Subscription changes" data={admin.stats?.charts?.subscriptionChanges} />
+              </div>
+              <div className="grid gap-4 lg:grid-cols-3">
+                <SummaryCard title="Account status" rows={admin.stats?.summaries?.accountStatus} />
+                <SummaryCard title="User activity" rows={admin.stats?.summaries?.userActivity} />
+                <SummaryCard title="Plan access by tier" rows={admin.stats?.summaries?.planAccess} />
               </div>
               <div className="grid gap-4 lg:grid-cols-3">
                 <SummaryCard title="Subscription status" rows={admin.stats?.summaries?.subscriptionStatus} />

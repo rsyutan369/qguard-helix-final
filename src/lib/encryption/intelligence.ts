@@ -34,7 +34,7 @@
 import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
 import { findingIdentityKey, namesCryptography, observationClass } from '@/lib/scanner/finding-identity'
 import type { AssetMigrationRecord } from '@/lib/migration/asset-intelligence'
-import { STRENGTH_LABEL, needsAction, severityForStrength, strengthOf, UNKNOWN_STRENGTH } from './strength'
+import { STRENGTH_LABEL, matchesCnsa2Primitive, needsAction, severityForStrength, strengthOf, UNKNOWN_STRENGTH } from './strength'
 import type {
   AlgorithmRow,
   AtRestCoverage,
@@ -177,12 +177,15 @@ function isProtocolName(value: string): boolean {
 }
 const MAC_RE = /HMAC|POLY1305|\bCMAC\b|\bGMAC\b|\bMAC\b/i
 
-/** Agent evidence types that describe data-at-rest or key-custody policy. */
-const AT_REST_EVIDENCE = new Set([
+const STORAGE_ENCRYPTION_EVIDENCE = new Set([
   'cloud-storage-encryption-policy',
   'cloud-database-crypto-policy',
   'database-crypto-policy',
   'container-crypto-policy',
+])
+
+const AT_REST_EVIDENCE = new Set([
+  ...STORAGE_ENCRYPTION_EVIDENCE,
   'cloud-kms-policy',
   'cloud-hsm-policy',
   'hsm-integration',
@@ -289,14 +292,16 @@ export interface EncryptionInputs {
 export function buildEncryptionIntelligence(inputs: EncryptionInputs): EncryptionIntelligence {
   const now = inputs.now ?? Date.now()
   const assetById = new Map(inputs.assets.map((asset) => [asset.id, asset]))
-  const assetByName = new Map(inputs.assets.map((asset) => [asset.name.toLowerCase(), asset]))
+  const assetByName = new Map<string, AssetMigrationRecord | null>()
+  for (const asset of inputs.assets) {
+    const name = asset.name.trim().toLowerCase()
+    if (name) assetByName.set(name, assetByName.has(name) ? null : asset)
+  }
 
   const resolveAsset = (assetId: unknown, name: unknown) => {
     const id = str(assetId)
-    if (id && assetById.has(id)) return assetById.get(id)!
-    const key = str(name).toLowerCase()
-    if (key && assetByName.has(key)) return assetByName.get(key)!
-    return null
+    if (id) return assetById.get(id) ?? null
+    return assetByName.get(str(name).trim().toLowerCase()) ?? null
   }
 
   /* ---------------------------------------------------------------- */
@@ -389,6 +394,8 @@ export function buildEncryptionIntelligence(inputs: EncryptionInputs): Encryptio
     if (operation === 'key_exchange') continue
 
     const metadata = recordOf(event.metadata)
+    if (metadata.observationKind === 'scan-evidence' || metadata.evidenceId || metadata.evidenceType ||
+      metadata.evidenceClass === 'library-presence' || metadata.evidenceClass === 'certificate') continue
     const asset = resolveAsset(event.asset_id, event.asset_name)
     const observedAt = isoOrNull(event.observed_at) || isoOrNull(event.created_at)
 
@@ -408,7 +415,7 @@ export function buildEncryptionIntelligence(inputs: EncryptionInputs): Encryptio
     addObservation({
       layer,
       algorithm,
-      assetId: asset?.id ?? (str(event.asset_id) || null),
+      assetId: asset?.id ?? null,
       assetName: asset?.name || str(event.asset_name) || str(event.host) || 'Unassigned',
       location: str(event.process_name) || str(event.host) || pick(metadata, ['file', 'path']) || 'Runtime',
       operation: operation && operation !== 'other' ? operation : null,
@@ -429,7 +436,8 @@ export function buildEncryptionIntelligence(inputs: EncryptionInputs): Encryptio
   for (const item of inputs.scannerEvidence) {
     const evidenceType = str(item.evidence_type).toLowerCase()
     const raw = recordOf(item.raw_evidence)
-    const asset = resolveAsset(null, item.asset_name)
+    const binding = recordOf(raw.binding)
+    const asset = resolveAsset(item.asset_id || (binding.attribution === 'bound' ? binding.assetId : null), item.asset_name)
     const observedAt = isoOrNull(item.observed_at) || isoOrNull(item.processed_at) || isoOrNull(item.created_at)
     const algorithm = str(item.observed_algorithm)
 
@@ -444,6 +452,9 @@ export function buildEncryptionIntelligence(inputs: EncryptionInputs): Encryptio
     /* At-rest and key-custody policy. */
     if (AT_REST_EVIDENCE.has(evidenceType)) {
       const encryptedRaw = raw.encrypted ?? raw.encryption_enabled ?? raw.encryptionEnabled ?? raw.atRestEncryption
+      const encrypted = STORAGE_ENCRYPTION_EVIDENCE.has(evidenceType) && asset && observedAt && typeof encryptedRaw === 'boolean'
+        ? encryptedRaw
+        : null
       const strength = algorithm ? strengthOf(algorithm, 'at-rest') : null
       atRestRecords.push({
         id: `atrest:${str(item.id)}`,
@@ -452,7 +463,7 @@ export function buildEncryptionIntelligence(inputs: EncryptionInputs): Encryptio
         assetName: asset?.name || str(item.asset_name) || str(item.target) || 'Unassigned',
         algorithm: algorithm || null,
         strength,
-        encrypted: typeof encryptedRaw === 'boolean' ? encryptedRaw : algorithm ? true : null,
+        encrypted,
         keyCustody:
           pick(raw, ['keyCustody', 'key_custody', 'keyManagement', 'key_management']) ||
           (/kms|hsm/.test(evidenceType) ? 'Provider-managed KMS/HSM' : 'Not recorded'),
@@ -581,8 +592,9 @@ export function buildEncryptionIntelligence(inputs: EncryptionInputs): Encryptio
   /* ---------------------------------------------------------------- */
 
   const allRows = [...symmetric, ...hashes, ...macs, ...kdfs]
-  const cnsaAssessed = allRows.filter((row) => row.strength.strength !== 'unknown').length
-  const cnsaPassing = allRows.filter((row) => row.strength.strength === 'quantum-safe' || row.strength.strength === 'post-quantum').length
+  const cnsaComparable = [...symmetric, ...hashes].filter((row) => row.strength.strength !== 'unknown')
+  const cnsaAssessed = cnsaComparable.length
+  const cnsaPassing = cnsaComparable.filter((row) => matchesCnsa2Primitive(row.label, row.layer)).length
   /*
    * Coverage counts DISTINCT TENANT ASSETS, never observation labels. Keying on
    * `assetId || assetName` counted hosts, process names and file paths as
@@ -757,9 +769,9 @@ function buildKeyInventory(rows: Row[], now: number): KeyInventory {
 /* ================================================================== */
 
 function buildAtRestCoverage(records: AtRestRecord[], assetTotal: number): AtRestCoverage {
-  const assetsCovered = new Set(records.map((row) => row.assetId || row.assetName).filter(Boolean)).size
+  const assetsCovered = new Set(records.filter((row) => row.encrypted !== null).map((row) => row.assetId).filter(Boolean)).size
   return {
-    measured: records.length > 0,
+    measured: assetsCovered > 0,
     records: records.sort((a, b) => (a.encrypted === false ? -1 : 1) - (b.encrypted === false ? -1 : 1)).slice(0, 200),
     encrypted: records.filter((row) => row.encrypted === true).length,
     unencrypted: records.filter((row) => row.encrypted === false).length,

@@ -188,7 +188,7 @@ export function buildPrechecks(
   violations: GovernanceViolation[],
   auditRecordCount: number,
 ): GatePrecheck[] {
-  const live = keys.filter((key) => key.lifecycle !== 'revoked' && key.lifecycle !== 'decommissioned' && key.lifecycle !== 'retired')
+  const live = keys.filter((key) => !['revoked', 'decommissioned', 'retired'].includes(key.lifecycle))
 
   const deprecated = live.filter((key) => key.posture === 'deprecated')
   const unowned = live.filter((key) => !key.owner)
@@ -305,10 +305,8 @@ export function buildMigrationGate(
   prechecks: GatePrecheck[],
   context: {
     openMigrationJobs: number
-    completedMigrationJobs: number
     openRotationJobs: number
-    unvalidatedRotationJobs: number
-    auditRecordCount: number
+    incompleteEvidence: boolean
     evidence: QkmsEvidenceRef[]
     nowIso: string
   },
@@ -319,7 +317,7 @@ export function buildMigrationGate(
   const passing = evaluated.filter((row) => row.decision === 'pass')
   const score = evaluated.length ? Math.round((passing.length / evaluated.length) * 100) : null
 
-  const live = keys.filter((key) => key.lifecycle !== 'revoked' && key.lifecycle !== 'decommissioned' && key.lifecycle !== 'retired')
+  const live = keys.filter((key) => !['revoked', 'decommissioned', 'retired', 'expired'].includes(key.lifecycle))
   const needsMigration = live.filter((key) => key.migrationRequirement === 'required' || key.migrationRequirement === 'recommended')
   // Migrated means EVIDENCED post-quantum material; a declaration cannot carry the gate to MIGRATED.
   const migrated = live.filter(isReady)
@@ -332,7 +330,11 @@ export function buildMigrationGate(
   let state: MigrationGateState
   let why: string
 
-  if (!keys.length) {
+  if (context.incompleteEvidence) {
+    state = 'NOT_READY'
+    why = 'Required input is incomplete. Review the limited or unavailable sources before making a migration decision.'
+    requiredActions.push('Restore complete coverage of the key inventory and governance sources.')
+  } else if (!keys.length) {
     state = 'NOT_READY'
     why = 'No cryptographic keys have been discovered for this tenant, so there is nothing to gate. Run a scan, deploy an agent collector or connect a cloud account to build the key inventory.'
   } else if (blocking.length) {
@@ -342,15 +344,9 @@ export function buildMigrationGate(
     state = 'MIGRATION_IN_PROGRESS'
     why = `${context.openMigrationJobs} migration job(s) and ${context.openRotationJobs} rotation work order(s) are open against this key estate. The gate stays open while that work completes.`
   } else if (needsMigration.length === 0 && migrated.length > 0) {
-    if (context.auditRecordCount === 0 || context.unvalidatedRotationJobs > 0) {
-      state = 'VALIDATION_REQUIRED'
-      why = context.unvalidatedRotationJobs > 0
-        ? `Every key that required migration is now post-quantum or hybrid, but ${context.unvalidatedRotationJobs} completed work order(s) have no post-rotation validation evidence attached. Migration is not proven until it is validated.`
-        : 'Every key that required migration is now post-quantum or hybrid, but no audit evidence has been recorded. Migration is not proven until it is evidenced.'
-    } else {
-      state = 'MIGRATED'
-      why = `All ${migrated.length} key(s) requiring a post-quantum decision now use post-quantum or hybrid material, every precheck passes, and ${context.auditRecordCount} audit record(s) evidence the change.`
-    }
+    state = 'VALIDATION_REQUIRED'
+    why = 'PQC or hybrid material was observed. QKMS has no provider-bound proof of migration and dependent service validation for the affected keys.'
+    requiredActions.push('Reconcile each affected key with its provider version and record independent validation of its dependent services.')
   } else if (warning.length) {
     state = 'NOT_READY'
     why = `No hard blocker remains, but ${warning.length} prerequisite(s) are still outstanding — starting here would migrate keys whose ownership, custody or rotation posture is not yet provable.`
@@ -368,7 +364,7 @@ export function buildMigrationGate(
     requiredActions: [...new Set(requiredActions)].slice(0, 8),
     evidence: context.evidence.slice(0, 8),
     prechecks,
-    score,
+    score: context.incompleteEvidence ? null : score,
     evaluatedAt: context.nowIso,
   }
 }
@@ -396,11 +392,12 @@ export function buildReadiness(
    * readiness with material that was never at quantum risk, which is the same
    * error as publishing AES-256 as a vulnerability, run in reverse.
    */
-  const decisionScope = keys.filter((key) =>
+  const decisionScope = keys.filter((key) => !['revoked', 'decommissioned', 'retired', 'expired'].includes(key.lifecycle) && (
     key.posture === 'post-quantum'
     || key.posture === 'hybrid'
     || key.posture === 'quantum-vulnerable'
-    || (key.posture === 'deprecated' && (key.keyClass === 'signature' || key.keyClass === 'certificate' || key.keyClass === 'key-establishment')))
+    || key.posture === 'unknown'
+    || (key.posture === 'deprecated' && (key.keyClass === 'signature' || key.keyClass === 'certificate' || key.keyClass === 'key-establishment'))))
 
   const ready = decisionScope.filter(isReady).length
 

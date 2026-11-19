@@ -66,6 +66,7 @@ import {
 const PAGE_SIZE = 25;
 
 const LIFECYCLE_TONE: Record<CertificateLifecycle, 'good' | 'warning' | 'critical' | 'neutral'> = {
+  'not-yet-valid': 'warning',
   valid: 'good',
   expiring: 'warning',
   expired: 'critical',
@@ -131,6 +132,7 @@ export default function PkiVisibility() {
         { label: 'Expiring (30d)', value: data.lifecycle.expiring, hex: TONE.warning.hex },
         { label: 'Expired', value: data.lifecycle.expired, hex: TONE.critical.hex },
         { label: 'Revoked', value: data.lifecycle.revoked, hex: '#a78bfa' },
+        { label: 'Not yet valid', value: data.lifecycle.notYetValid, hex: '#fbbf24' },
         { label: 'No expiry recorded', value: data.lifecycle.unknown, hex: '#64748b' },
       ].filter((row) => row.value > 0)
     : [];

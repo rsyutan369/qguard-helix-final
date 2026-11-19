@@ -131,10 +131,24 @@ export async function run(): Promise<number> {
 
   check('overview: MRR KPI shows the model value; QA estate shows — with the reason', () => {
     const html = text(render(PAGES[0][1], PAGES[0][2], context({ status: 'ready', snapshot: populated, stream: 'live' })))
-    assert.ok(html.includes(`MRR`) && html.includes('$35.00'), 'expected MRR $35.00 (Pro $30 + Basic annual $5)')
+    assert.ok(html.includes(`MRR`) && html.includes('$25.00'), 'expected MRR $25.00 (Pro $20 + Basic annual $60/12)')
     const qa = text(render(PAGES[0][1], PAGES[0][2], context({ status: 'ready', snapshot: qaOnly, stream: 'live' })))
     assert.match(qa, /No provider-billed subscription yet/)
     assert.doesNotMatch(qa, /\$39\.00/, 'the pre-fix dashboard showed $39.00 MRR for three QA seeds')
+  })
+  check('subscriptions: billing operations panel shows real RTDN state (empty, then populated)', () => {
+    const idle = text(render(PAGES[2][1], PAGES[2][2], context({ status: 'ready', snapshot: populated, stream: 'live' })))
+    assert.match(idle, /Google Play notifications \(RTDN\)/)
+    assert.match(idle, /No Google Play Real-Time Developer Notification has been received yet/)
+    const withInbox = toRevenueSnapshot(buildRevenueModel({
+      now: NOW, subscriptions: [], invoices: [], profiles: [], notifications: [], coverage: [],
+      auditEvents: [{ id: 'r1', user_id: USERS[0], action: 'subscription.renewed', message: 'renewed', created_at: '2026-09-20T00:00:00Z' }],
+      billingInbox: [{ id: 'i1', event_id: 'rtdn_1', notification_type: 'SUBSCRIPTION_RENEWED', status: 'dead_letter', attempts: 8, received_at: '2026-09-20T00:00:00Z', claimed_at: '2026-09-20T00:00:00Z', processed_at: null, last_error: 'UNBOUND' }],
+    }))
+    const busy = text(render(PAGES[2][1], PAGES[2][2], context({ status: 'ready', snapshot: withInbox, stream: 'live' })))
+    assert.match(busy, /Dead-lettered/)
+    assert.match(busy, /Last processing error: UNBOUND/)
+    assert.doesNotMatch(busy, /undefined|NaN/)
   })
   check('payments: the failed attempt is visible and excluded from revenue', () => {
     const html = text(render(PAGES[4][1], PAGES[4][2], context({ status: 'ready', snapshot: populated, stream: 'live' })))

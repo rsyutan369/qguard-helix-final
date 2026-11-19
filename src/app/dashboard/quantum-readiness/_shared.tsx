@@ -444,13 +444,31 @@ export function ScoreGauge({
   level,
   color,
   suffix = '/100',
+  notApplicable,
 }: {
   label: string;
   score: number;
   level: string;
   color: string;
   suffix?: string;
+  /** Why there is nothing to score. When set, no number is drawn: an
+   *  unmeasured dimension must never read as a perfect one. */
+  notApplicable?: string;
 }) {
+  if (notApplicable) {
+    return (
+      <div className="flex items-center gap-4">
+        <Ring value={0} color="rgba(148,163,184,0.45)" size={92} stroke={10}>
+          <div className="text-sm font-bold text-white/55">N/A</div>
+        </Ring>
+        <div className="min-w-0">
+          <div className="text-[10px] font-black uppercase tracking-[0.10em] text-white/45">{label}</div>
+          <div className="mt-1 text-sm font-bold text-white/60">Not applicable</div>
+          <div className="mt-0.5 text-[11px] leading-snug text-white/40">{notApplicable}</div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex items-center gap-4">
       <Ring value={score} color={color} size={92} stroke={10}>

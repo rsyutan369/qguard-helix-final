@@ -5,6 +5,8 @@ import { createAuthClient, getServerUser, getServiceClient } from '@/lib/supabas
 import { createSubscription, reviseSubscription, cancelSubscription, resolveOrigin, isPaypalConfigured } from './paypal'
 import { cancellationPatch, isCancellationRecorded } from '../../supabase/functions/billing/logic'
 import { trustedClientIp } from './runtime/client-ip'
+import { streamTokenFromRequest } from './runtime/stream-tickets'
+import { planChargeCents, type PlanTier } from '@/lib/billing/plan-pricing'
 
 type AuthedRequest = Request & {
   user?: User
@@ -12,7 +14,7 @@ type AuthedRequest = Request & {
   authClient?: SupabaseClient
 }
 
-type PlanName = 'Starter' | 'Basic' | 'Pro' | 'Elite'
+type PlanName = PlanTier
 type BillingCycle = 'monthly' | 'annual'
 type SubscriptionAction =
   | 'upgrade'
@@ -45,8 +47,8 @@ const PLAN_CATALOG: Record<PlanName, {
 }> = {
   Starter: {
     name: 'Starter',
-    monthlyCents: 100,
-    annualCents: 1200,
+    monthlyCents: planChargeCents('Starter', 'monthly'),
+    annualCents: planChargeCents('Starter', 'yearly'),
     teamMembers: 3,
     storageBytes: 5 * 1024 * 1024 * 1024,
     scanQuota: 25,
@@ -62,8 +64,8 @@ const PLAN_CATALOG: Record<PlanName, {
   },
   Basic: {
     name: 'Basic',
-    monthlyCents: 800,
-    annualCents: 6000,
+    monthlyCents: planChargeCents('Basic', 'monthly'),
+    annualCents: planChargeCents('Basic', 'yearly'),
     teamMembers: 5,
     storageBytes: 10 * 1024 * 1024 * 1024,
     scanQuota: 25,
@@ -79,8 +81,8 @@ const PLAN_CATALOG: Record<PlanName, {
   },
   Pro: {
     name: 'Pro',
-    monthlyCents: 3000,
-    annualCents: 24000,
+    monthlyCents: planChargeCents('Pro', 'monthly'),
+    annualCents: planChargeCents('Pro', 'yearly'),
     teamMembers: 15,
     storageBytes: 100 * 1024 * 1024 * 1024,
     scanQuota: 500,
@@ -96,8 +98,8 @@ const PLAN_CATALOG: Record<PlanName, {
   },
   Elite: {
     name: 'Elite',
-    monthlyCents: 19900,
-    annualCents: 180000,
+    monthlyCents: planChargeCents('Elite', 'monthly'),
+    annualCents: planChargeCents('Elite', 'yearly'),
     teamMembers: 250,
     storageBytes: 1024 * 1024 * 1024 * 1024,
     scanQuota: 5000,
@@ -120,8 +122,12 @@ function jsonError(res: Response, status: number, code: string, message: string)
 function extractToken(req: Request): string | null {
   const authHeader = req.headers.authorization
   if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7)
-  const queryToken = req.query.token
-  return typeof queryToken === 'string' && queryToken ? queryToken : null
+  // EventSource cannot send an Authorization header, so /stream (only)
+  // accepts a short-lived single-use `?ticket=`. The JWT is never read
+  // from a URL — every other billing route requires the header.
+  const path = (req.originalUrl || req.url || '').split('?')[0]
+  if (!path.endsWith('/stream')) return null
+  return streamTokenFromRequest(req)
 }
 
 function getClientIp(req: Request): string | null {

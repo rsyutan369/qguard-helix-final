@@ -6,6 +6,7 @@ import {
   Network, Radar, ScanSearch, ShieldAlert, ShieldCheck, Sparkles, Wrench, X,
 } from 'lucide-react';
 import { EvidenceLens, HeroLens } from './_lenses';
+import { SkyAtmosphere } from '@/components/sky/SkyAtmosphere';
 import './assessment.css';
 
 const DASHBOARD = '/dashboard/quantum-readiness';
@@ -115,7 +116,8 @@ export default function QuantumReadinessAssessmentPage() {
   }, [hash]);
 
   return (
-    <div className="qguard-home qguard-home--light qa-page">
+    <div className="qguard-home qguard-home--light qh-sky qa-page">
+      <SkyAtmosphere routeKey="quantum-readiness-assessment" />
       <a className="qa-skip" href="#qa-main">Skip to assessment content</a>
       <AssessmentHeader />
       <main id="qa-main" tabIndex={-1}>

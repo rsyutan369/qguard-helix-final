@@ -12,13 +12,13 @@
  * Webhook ids are identifiers, not secrets; the PayPal client secret is read
  * from .env and never printed.
  *
- * Usage:  npx tsx tools/paypal-webhook-setup.ts [--dry-run]
+ * Set SUPABASE_PROJECT_REF explicitly. Preview by default, or use --apply.
  */
 import 'dotenv/config'
 import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
-const PROJECT_REF = 'xsbdlahuecadzfajlvis'
+const PROJECT_REF = (process.env.SUPABASE_PROJECT_REF ?? '').trim()
 const WEBHOOK_URL = `https://${PROJECT_REF}.supabase.co/functions/v1/billing/api/v1/paypal/webhook`
 // Exactly the events the billing function handles.
 const EVENT_TYPES = [
@@ -37,7 +37,7 @@ const ENV = String(process.env.PAYPAL_ENV || 'live').toLowerCase() === 'sandbox'
 const BASE = ENV === 'sandbox' ? 'https://api-m.sandbox.paypal.com' : 'https://api-m.paypal.com'
 const CLIENT_ID = process.env.PAYPAL_CLIENT_ID || ''
 const SECRET = process.env.PAYPAL_SECRET_KEY || process.env.PAYPAL_CLIENT_SECRET || ''
-const DRY_RUN = process.argv.includes('--dry-run')
+const DRY_RUN = !process.argv.includes('--apply') || process.argv.includes('--dry-run')
 
 async function paypal(token: string | null, pathname: string, init: { method?: string; body?: unknown } = {}): Promise<any> {
   const response = await fetch(`${BASE}${pathname}`, {
@@ -82,10 +82,17 @@ function writeWebhookIdToEnv(id: string): string | null {
 }
 
 async function main() {
+  if (!/^[a-z0-9]{20}$/.test(PROJECT_REF) || process.env.VITE_SUPABASE_URL?.replace(/\/$/, '') !== `https://${PROJECT_REF}.supabase.co`) {
+    throw new Error('Set SUPABASE_PROJECT_REF to the project identified by VITE_SUPABASE_URL before changing PayPal webhooks')
+  }
   if (!CLIENT_ID || !SECRET) throw new Error('PAYPAL_CLIENT_ID / PAYPAL_SECRET_KEY are missing from .env')
   const accessToken = await token()
   const listed = await paypal(accessToken, '/v1/notifications/webhooks')
   const existing = (listed.webhooks ?? []).find((hook: any) => hook.url === WEBHOOK_URL)
+  const configured = (listed.webhooks ?? []).find((hook: any) => hook.id === process.env.PAYPAL_WEBHOOK_ID)
+  if (configured && configured.url !== WEBHOOK_URL) {
+    throw new Error(`The configured webhook points to ${configured.url}. Edit the existing listener in the correct PayPal REST app to use ${WEBHOOK_URL}, then verify the ID.`)
+  }
 
   let webhookId: string
   if (existing) {

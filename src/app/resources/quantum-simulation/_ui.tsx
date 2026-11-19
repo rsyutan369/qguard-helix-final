@@ -14,6 +14,7 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { CITATIONS, type CitationKey, type Provenance } from '@/lib/quantum-sim';
 import { PROVENANCE, QSR, tint } from './_theme';
+import { Chars } from '@/pages/landing-chars';
 
 /* ═══════════════════════════════════════════════════════════════ provenance */
 
@@ -72,10 +73,9 @@ export interface PanelProps {
 export function Panel({ eyebrow, title, subtitle, right, accent = QSR.live, className = '', bodyClassName = '', children }: PanelProps) {
   return (
     <section
-      className={`relative overflow-hidden rounded-2xl border ${className}`}
-      style={{ background: QSR.panel, borderColor: QSR.hairline, backdropFilter: 'blur(14px)' }}
+      className={`qsr-panel relative overflow-hidden rounded-2xl border ${className}`}
+      style={{ background: QSR.panel, borderColor: QSR.hairline }}
     >
-      <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px" style={{ background: `linear-gradient(90deg, transparent, ${tint(accent, 0.5)}, transparent)` }} />
       {(eyebrow || title || right) && (
         <header className="flex flex-wrap items-start justify-between gap-3 border-b px-5 py-4" style={{ borderColor: QSR.hairline }}>
           <div className="min-w-0">
@@ -96,35 +96,19 @@ export function Panel({ eyebrow, title, subtitle, right, accent = QSR.live, clas
 }
 
 export function SectionHeading({
-  index,
   eyebrow,
   title,
   lede,
-  accent = QSR.live,
 }: {
-  index: string;
   eyebrow: string;
   title: string;
   lede: React.ReactNode;
-  accent?: string;
 }) {
   return (
-    <div className="mb-6 flex gap-4 sm:gap-6">
-      <div
-        className="mt-1 hidden h-10 w-10 shrink-0 items-center justify-center rounded-lg border font-mono text-[13px] font-bold sm:flex"
-        style={{ color: accent, borderColor: tint(accent, 0.3), background: tint(accent, 0.07) }}
-      >
-        {index}
-      </div>
-      <div className="min-w-0">
-        <div className="font-mono text-[10px] font-bold uppercase tracking-[0.28em]" style={{ color: accent }}>
-          {eyebrow}
-        </div>
-        <h2 className="mt-1.5 text-2xl font-black leading-tight tracking-tight qsr-heading sm:text-[28px]">{title}</h2>
-        <p className="mt-2.5 max-w-3xl text-[13px] leading-relaxed" style={{ color: QSR.inkSoft }}>
-          {lede}
-        </p>
-      </div>
+    <div className="lp-head qsr-chapter__head">
+      <span className="lp-eyebrow">{eyebrow}</span>
+      <h2 className="lp-h2 qsr-heading" data-letters="scroll" aria-label={title}><Chars text={title} /></h2>
+      <p className="lp-lede">{lede}</p>
     </div>
   );
 }

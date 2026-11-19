@@ -11,6 +11,7 @@
  */
 import { motion } from 'motion/react';
 import { GovernanceTrustHero } from './_governance-trust-hero';
+import { PLAN_PRICING } from '@/lib/billing/plan-pricing';
 import {
   Award,
   Boxes,
@@ -367,9 +368,9 @@ export default function QuantumTrustGovernanceCenter() {
                 <ShieldCheck className="h-3.5 w-3.5 text-gold" /> Everything in Elite
               </span>
               <div className="mt-4 flex flex-wrap items-baseline gap-x-2">
-                <span className="font-mono text-4xl font-black text-slate-900">$199</span>
+                <span className="font-mono text-4xl font-black text-slate-900">${PLAN_PRICING.Elite.monthly}</span>
                 <span className="font-mono text-sm text-slate-500">/mo</span>
-                <span className="ml-2 rounded-full border border-gold/30 bg-gold/10 px-2 py-0.5 font-mono text-[10px] font-bold text-[#b8860b]">$150/mo billed yearly</span>
+                <span className="ml-2 rounded-full border border-gold/30 bg-gold/10 px-2 py-0.5 font-mono text-[10px] font-bold text-[#b8860b]">or ${(PLAN_PRICING.Elite.yearlyPerMonth * 12).toLocaleString("en-US")}/year</span>
               </div>
               <ul className="mt-6 grid gap-3 sm:grid-cols-2">
                 {INCLUDED.map((item) => (

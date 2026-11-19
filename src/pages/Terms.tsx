@@ -191,8 +191,8 @@ const SECTIONS: LegalSection[] = [
             <Link to="/refund" className="font-semibold text-gold no-underline hover:underline">
               Refund Policy
             </Link>{' '}
-            applies: a full refund is available within {REFUND_POLICY.initialWindowDays} days of your first payment for a
-            plan.
+            applies. Plans are paid from the start: there is no free trial and no money-back guarantee. Billing errors are
+            always corrected, and your statutory and app-store refund rights are unaffected.
           </LI>
           <LI>
             <Term>Price changes.</Term> We may change prices with at least 30 days' notice by email or in-product

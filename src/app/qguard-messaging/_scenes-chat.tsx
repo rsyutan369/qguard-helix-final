@@ -266,7 +266,7 @@ export function RatchetLab() {
                     {ratchet ? `K·${m.key}` : `ct·${m.key}`}
                   </div>
                   <div className="qm-mono" style={{ fontSize: 8.5, marginTop: 2, color: ratchet && m.deleted ? '#fb7185' : '#34d399' }}>
-                    {ratchet ? (m.deleted ? 'KEY DELETED' : 'KEY IN USE') : 'PREKEY EPOCH ≈ 24 h'}
+                    {ratchet ? (m.deleted ? 'CHAIN KEY ADVANCED' : 'KEY IN USE') : 'PREKEY EPOCH ≈ 24 h'}
                   </div>
                 </motion.div>
               ))}
@@ -294,7 +294,7 @@ export function RatchetLab() {
                 <span className="qm-mono qm-t-ink" style={{ fontSize: 12 }}>{sincePq}/{PQ_EVERY}</span>
               </div>
               <div className="qm-bar mt-2"><i style={{ width: `${(sincePq / PQ_EVERY) * 100}%`, transition: 'width .4s ease' }} /></div>
-              <div className="qm-t-mute mt-1" style={{ fontSize: 11 }}>At least every {PQ_EVERY} messages or 24 hours.</div>
+              <div className="qm-t-mute mt-1" style={{ fontSize: 11 }}>A refresh offer can start after {PQ_EVERY} messages or 24 hours of session activity; completion requires a peer response.</div>
               <dl className="mt-4 grid grid-cols-3 gap-2 text-center">
                 {[['Messages', count], ['X25519 turns', turns], ['PQ steps', pqSteps]].map(([k, v]) => (
                   <div key={String(k)} style={{ border: '1px solid rgba(148,163,184,.2)', borderRadius: 10, padding: '8px 4px' }}>
@@ -304,14 +304,14 @@ export function RatchetLab() {
                 ))}
               </dl>
               <div className="qm-t-mute mt-4" style={{ fontSize: 12, lineHeight: 1.55 }}>
-                A stolen session key stops working after the next reply, and each message key is deleted once used. The encrypted key ledger still keeps opened messages’ keys so history stays readable.
+                The session ratchet advances its keys as peers exchange messages. The encrypted ledger keeps keys for opened messages so history remains readable.
               </div>
             </>
           ) : (
             <>
               <div className="qm-mono qm-t-mute" style={{ fontSize: 10, letterSpacing: '.16em' }}>WHAT THIS MODE PROTECTS</div>
               <div className="qm-t-ink mt-3" style={{ fontSize: 12.5, lineHeight: 1.6 }}>
-                Every message runs its own hybrid X25519 + ML-KEM-1024 encapsulation. Forward secrecy reaches as far as the signed prekey: retired prekeys are destroyed once every message sealed to them has its key recorded — normally within about a day.
+                Every default one-shot envelope uses its own hybrid X25519 + ML-KEM-1024 encapsulation. Forward secrecy reaches as far as the signed prekey: retired prekeys are destroyed once every message sealed to them has its key recorded — normally within about a day.
               </div>
               <div className="qm-t-mute mt-3" style={{ fontSize: 12, lineHeight: 1.55 }}>
                 This is not a per-message ratchet, and we say so on purpose. It is why the ratchet exists as an opt-in.
@@ -373,7 +373,7 @@ export function CallPhraseDemo() {
     <StageFrame
       title="Prove it's the device you verified"
       icon={Fingerprint}
-      note={<span>Example words — real phrases come from the secret your two apps paired after you verified each other. Nothing is sent, so nothing can be copied. It proves a device, not a person, and says nothing about whether a voice is real.</span>}
+      note={<span>Example words — real phrases come from the secret your two apps paired after you verified each other. The words are derived locally rather than sent as a protocol message. Compare them only for the current call. It proves a device, not a person, and says nothing about whether a voice is real.</span>}
     >
       <div className="grid items-center gap-5 md:grid-cols-[auto_minmax(0,1fr)]">
         <div className="mx-auto" style={{ width: 120, height: 120, position: 'relative' }}>

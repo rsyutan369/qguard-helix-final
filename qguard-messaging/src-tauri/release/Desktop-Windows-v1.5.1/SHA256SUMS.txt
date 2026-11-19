@@ -1,0 +1,2 @@
+20eaf6bb31d51bc38804e131289c007a5071efa793c1668a1a9373d8d3f01ac9 *QGuard Messaging_1.5.1_x64-setup.exe
+e7ae0ddf2c2dfa08192b5e505a15133bdc080dd41d2f4b8b838bb1413464c4d6 *QGuard Messaging_1.5.1_x64-setup.exe.sig

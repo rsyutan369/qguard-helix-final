@@ -130,6 +130,13 @@ mod platform {
         biometric("availability", &[]).map(|raw| parse_availability(&raw)).unwrap_or(BiometricAvailability::Unavailable)
     }
 
+    /// Biometric sensors the device has ("fingerprint", "face", "iris").
+    pub fn biometric_modalities() -> Vec<String> {
+        biometric("modalities", &[])
+            .map(|raw| raw.split(',').map(str::trim).filter(|m| !m.is_empty()).map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
     pub fn biometric_enable(sek: &[u8; 32]) -> std::result::Result<String, BiometricFailure> {
         use base64::Engine as _;
         let encoded = Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(sek));
@@ -160,6 +167,10 @@ mod platform {
 
     pub fn biometric_availability() -> BiometricAvailability {
         BiometricAvailability::Unsupported
+    }
+
+    pub fn biometric_modalities() -> Vec<String> {
+        Vec::new()
     }
 
     pub fn biometric_enable(_sek: &[u8; 32]) -> std::result::Result<String, BiometricFailure> {

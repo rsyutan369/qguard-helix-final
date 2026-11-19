@@ -22,6 +22,14 @@
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />
+    <!-- Background Qguard Mesh (HelixMeshService.kt): a visible, user-enabled
+         connected-device service keeps encrypted Mesh delivery and relaying
+         running while Qguard is locked. The wake and multicast locks are held
+         only while that service runs. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
     <!-- Camera/mic are used for calls but the app is fully functional without
          them, so they must not gate installation (tablets, foldables). -->
@@ -55,6 +63,11 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".MeshForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
         <provider
           android:name="androidx.core.content.FileProvider"

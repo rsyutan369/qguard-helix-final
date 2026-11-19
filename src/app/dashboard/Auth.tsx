@@ -3,6 +3,7 @@ import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Shield, Mail, Lock, User, ArrowRight, Loader2, KeyRound, Activity, AlertCircle, Circle } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { SIGNUP_CONFIRMATION_URL } from '@/lib/signup-confirmation';
 import { Button } from '@/components/ui/button';
 
 export default function Auth() {
@@ -43,6 +44,7 @@ export default function Auth() {
           email,
           password,
           options: {
+            emailRedirectTo: SIGNUP_CONFIRMATION_URL,
             data: {
               full_name: fullName,
             },

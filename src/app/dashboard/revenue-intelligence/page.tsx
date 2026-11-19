@@ -28,6 +28,7 @@ export default function RevenueOverviewPage() {
         const hasSignups = snapshot.timeline.some((bucket) => bucket.newSignups > 0 || bucket.newSubscriptions > 0 || bucket.churnedSubscriptions > 0);
         const planMrr = subs.planBreakdown.filter((plan) => plan.mrrCents > 0);
         const noBilled = subs.byClass.provider === 0;
+        const movement = snapshot.mrrMovement;
 
         return (
           <>
@@ -120,6 +121,38 @@ export default function RevenueOverviewPage() {
                 </Panel>
               </div>
             </div>
+
+            <Panel className="p-4">
+              <SectionTitle suffix={<span className="text-[10px] font-bold text-white/40">trailing {movement.windowDays} days · provider-billed, USD</span>}>MRR Movement & Net Revenue Retention</SectionTitle>
+              {noBilled ? (
+                <EmptyState label="No recurring-revenue movement to report." hint="Movement is measured from provider-billed subscriptions; none exists yet." />
+              ) : (
+                <>
+                  <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-7">
+                    {[
+                      { label: 'Starting MRR', value: moneyFmt(movement.startingMrrCents), color: SLATE, title: `Subscriptions live ${movement.windowDays} days ago, at the price they had then` },
+                      { label: 'New', value: `+${moneyFmt(movement.newMrrCents)}`, color: EMERALD, title: `${countFmt(movement.newSubscriptions)} new provider-billed subscription(s)` },
+                      { label: 'Expansion', value: `+${moneyFmt(movement.expansionMrrCents)}`, color: GREEN, title: 'Upgrades, re-priced from the billing audit trail at list price' },
+                      { label: 'Contraction', value: `−${moneyFmt(movement.contractionMrrCents)}`, color: AMBER, title: 'Downgrades, re-priced from the billing audit trail at list price' },
+                      { label: 'Churned', value: `−${moneyFmt(movement.churnedMrrCents)}`, color: RED, title: `${countFmt(movement.churnedSubscriptions)} subscription(s) stopped granting access` },
+                      { label: 'MRR today', value: moneyFmt(movement.endingMrrCents), color: CYAN, title: 'Starting + new + expansion − contraction − churned' },
+                      { label: 'Net revenue retention', value: movement.nrrPct === null ? '—' : `${movement.nrrPct}%`, color: movement.nrrPct !== null && movement.nrrPct < 100 ? AMBER : EMERALD, title: movement.nrrPct === null ? `Needs provider-billed MRR that already existed ${movement.windowDays} days ago` : `(starting + expansion − contraction − churned) ÷ starting · gross retention ${movement.grrPct}%` },
+                    ].map((cell) => (
+                      <div key={cell.label} className="rounded-md border border-white/8 bg-white/[0.02] px-3 py-2.5" title={cell.title}>
+                        <div className="font-mono text-base font-semibold text-white">{cell.value}</div>
+                        <div className="mt-0.5 text-[10px] font-bold" style={{ color: cell.color }}>{cell.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-[10px] leading-relaxed text-white/35">
+                    {movement.nrrPct === null ? `Retention is not measurable yet: no provider-billed MRR existed ${movement.windowDays} days ago. ` : ''}
+                    Expansion and contraction are re-priced from recorded plan changes at list price
+                    {movement.unpricedChanges > 0 ? ` — ${countFmt(movement.unpricedChanges)} change(s) could not be re-priced and are shown as no movement` : ''}.
+                    A subscription row that was cancelled and re-activated inside the window counts as retained.
+                  </p>
+                </>
+              )}
+            </Panel>
 
             <div className="grid gap-3 xl:grid-cols-[1fr_1.5fr_1fr]">
               <Panel className="p-4">

@@ -492,3 +492,64 @@
   animation: qm-emit 6s ease-out infinite;
   animation-delay: var(--qm-delay, 0s);
 }
+.qm-local-section {
+  width: min(100%, 88rem);
+  margin-inline: auto;
+  padding: clamp(2rem, 5vw, 4.75rem) 1.5rem;
+  scroll-margin-top: 4.75rem;
+}
+.qm-local-heading { display: flex; align-items: end; justify-content: space-between; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem; }
+.qm-local-heading h2 { color: #0f172a; font-size: clamp(1.85rem, 4vw, 3.15rem); font-weight: 850; line-height: 1.08; letter-spacing: -.045em; text-wrap: balance; }
+.qm-local-heading p:not(.qm-local-kicker) { color: #475569; max-width: 59ch; margin-top: .65rem; line-height: 1.6; }
+.qm-local-kicker, .qm-local-platform, .qm-local-stage-label { display: inline-flex; align-items: center; gap: .45rem; font-weight: 700; }
+.qm-local-kicker { color: #075b73; margin-bottom: .75rem; font-size: .8rem; letter-spacing: .1em; text-transform: uppercase; }
+.qm-local-platform { color: #334155; border: 1px solid #b5c6da; background: #fff; border-radius: 999px; padding: .45rem .8rem; font-size: .8rem; }
+.qm-local-panel { --qm-local-accent: #86e4ed; color: #f1f5ff; background: #0a1424; border: 1px solid #2a4159; border-radius: 1.4rem; box-shadow: 0 22px 52px -28px #172e4b80; overflow: hidden; }
+.qm-local-panel[data-mode='mesh'] { --qm-local-accent: #c0caff; }
+.qm-local-panel[data-mode='vault'] { --qm-local-accent: #f6d48d; }
+.qm-local-controls { display: flex; flex-wrap: wrap; gap: .45rem; padding: .8rem clamp(.85rem, 3vw, 1.65rem); border-bottom: 1px solid #2a4159; }
+.qm-local-controls button { display: inline-flex; align-items: center; gap: .45rem; min-height: 44px; padding: .4rem .8rem; color: #d2def0; border: 1px solid transparent; border-radius: .65rem; font-size: .88rem; font-weight: 720; cursor: pointer; }
+.qm-local-controls button:hover { background: #182b42; }
+.qm-local-controls button[aria-pressed='true'] { color: var(--qm-local-accent); border-color: #466278; background: #192b42; }
+.qm-local-controls button:focus-visible, .qm-local-playback button:focus-visible, .qm-local-jump:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.qm-local-body { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: clamp(1rem, 4vw, 4rem); align-items: center; padding: clamp(1.1rem, 4vw, 2.65rem); }
+.qm-local-copy h3 { color: #f1f5ff; font-size: clamp(1.55rem, 3vw, 2.45rem); letter-spacing: -.035em; line-height: 1.12; font-weight: 780; text-wrap: balance; }
+.qm-local-copy p { color: #bdcce1; margin-top: .8rem; line-height: 1.65; max-width: 55ch; }
+.qm-local-copy ol { list-style: none; counter-reset: workflow; display: grid; gap: .65rem; margin-top: 1.35rem; }
+.qm-local-copy li { display: flex; gap: .65rem; align-items: center; font-size: .9rem; font-weight: 600; }
+.qm-local-copy li::before { counter-increment: workflow; content: counter(workflow); display: grid; place-items: center; flex: 0 0 1.55rem; height: 1.55rem; border: 1px solid #435d76; border-radius: .4rem; color: var(--qm-local-accent); font: 700 .75rem ui-monospace, monospace; }
+.qm-local-stage { min-width: 0; color: var(--qm-local-accent); border: 1px solid #2a4159; border-radius: .95rem; background: radial-gradient(ellipse at 50% 68%, #1b344d, #0d192c 78%); overflow: hidden; }
+.qm-local-stage-label { margin: .9rem .95rem 0; color: #c7d8ed; font-size: .73rem; }
+.qm-local-diagram { position: relative; height: clamp(10.5rem, 25vw, 17rem); }
+.qm-local-diagram canvas, .qm-local-fallback { position: absolute; inset: 0; width: 100%; height: 100%; }
+.qm-local-diagram[data-renderer='diagram'] canvas { visibility: hidden; }
+.qm-local-diagram[data-renderer='webgl'] .qm-local-fallback { opacity: 0; }
+.qm-local-flow { stroke: #e5fcff; stroke-linecap: round; stroke-dasharray: 12 38; }
+.qm-local-diagram[data-renderer='diagram'] .qm-local-flow { animation: qm-local-light-flow 1.8s linear infinite paused; }
+.qm-local-diagram[data-renderer='diagram'][data-flowing='true'] .qm-local-flow { animation-play-state: running; }
+@keyframes qm-local-light-flow { to { stroke-dashoffset: -50; } }
+@media (prefers-reduced-motion: reduce) {
+  .qm-local-diagram[data-renderer='diagram'] .qm-local-flow { animation: none; }
+}
+.qm-local-endpoints { display: flex; justify-content: space-between; gap: .8rem; padding: .65rem .95rem; border-top: 1px solid #2a4159; color: #d7e7f5; font-size: .75rem; font-weight: 650; }
+.qm-local-endpoints span:last-child { text-align: end; }
+.qm-local-status { display: grid; align-content: start; min-height: 6.25rem; gap: .25rem; padding: .85rem .95rem; background: #101e30; border-block: 1px solid #2a4159; }
+.qm-local-step-label { color: var(--qm-local-accent); font: 700 .72rem ui-monospace, monospace; letter-spacing: .04em; }
+.qm-local-status strong { color: #f1f5ff; line-height: 1.35; }
+.qm-local-status p { color: #bdcce1; font-size: .82rem; line-height: 1.45; }
+.qm-local-playback { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; padding: .55rem .7rem; }
+.qm-local-playback button { display: inline-flex; align-items: center; gap: .3rem; min-height: 44px; padding-inline: .55rem; color: #d7e7f5; border: 1px solid #3b526c; border-radius: .55rem; font-size: .8rem; font-weight: 700; cursor: pointer; }
+.qm-local-playback button:hover:not(:disabled) { background: #203852; }
+.qm-local-playback button:disabled { opacity: .5; cursor: default; }
+.qm-local-playback .qm-local-play { color: var(--qm-local-accent); background: #192b42; }
+.qm-local-playback .qm-local-light { margin-inline-start: auto; border-color: transparent; }
+.qm-local-note { display: flex; align-items: flex-start; gap: .55rem; color: #c6d4e6; border-top: 1px solid #2a4159; padding: .85rem clamp(1.1rem, 4vw, 2.65rem); font-size: .84rem; line-height: 1.55; }
+.qm-local-note svg { flex: none; margin-top: .12rem; color: var(--qm-local-accent); }
+.qm-local-jump { display: inline-flex; align-items: center; gap: .45rem; min-height: 44px; padding-inline: .45rem; color: #07566d; font-weight: 750; font-size: .9rem; text-underline-offset: .25em; }
+.qm-local-jump:hover { text-decoration: underline; }
+@media (max-width: 720px) {
+  .qm-local-section { padding-inline: 1rem; }
+  .qm-local-body { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+  .qm-local-controls { gap: .3rem; }
+  .qm-local-controls button { padding-inline: .45rem; font-size: .8rem; }
+}

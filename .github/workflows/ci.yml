@@ -1,6 +1,6 @@
 # Continuous integration — every pull request and every push to main.
-# A deployment (deploy-api.yml) only runs from main, so nothing reaches staging
-# or production unless these gates are green on the merged commit.
+# The obsolete DigitalOcean deployment workflow was removed. These checks
+# validate changes before they are published through the chosen hosting setup.
 name: CI
 
 on:
@@ -48,6 +48,7 @@ jobs:
           npx tsx tools/crypto-classification-check.ts
           npx tsx tools/agent-access-check.ts
           npx tsx tools/hero-grading-alignment-check.ts
+          npx tsx tools/csv-export-check.ts
 
       - name: Production build (as Vercel runs it)
         env:
@@ -156,7 +157,7 @@ jobs:
           test "$code" = "78"
 
       - name: Image vulnerability scan (report)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         continue-on-error: true
         with:
           image-ref: qguard-api:ci

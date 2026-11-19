@@ -425,6 +425,11 @@ export default defineConfig(({mode}) => {
         '@': path.resolve(rootDir, 'src'),
       },
     },
+    optimizeDeps: {
+      // This repo also contains standalone apps, video projects and audit
+      // output. Only the platform's HTML entry belongs to this dev server.
+      entries: 'index.html',
+    },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.

@@ -221,14 +221,14 @@ const ENDPOINTS: EndpointDoc[] = [
     method: 'GET',
     path: '/api/v1/vault/share/events',
     title: 'Share Events Stream',
-    description: 'Subscribe to a Server-Sent Events stream scoped to share link activity for the authenticated user. Receive real-time notifications when shares are accessed or expire.',
+    description: 'Use the Authorization bearer header to subscribe to security notifications about your own Vault share links.',
     auth: 'jwt',
     isSSE: true,
     responseFields: [
-      { field: 'share_accessed', type: 'event', required: false, description: 'Emitted when a recipient opens a share link (includes share_id and recipient IP)' },
-      { field: 'share_expired', type: 'event', required: false, description: 'Emitted when a share link reaches its expiry time' },
+      { field: 'failed_attempt', type: 'event', required: false, description: 'Emitted when a password attempt fails' },
+      { field: 'link_destroyed', type: 'event', required: false, description: 'Emitted when the failed-attempt limit destroys the share link' },
     ],
-    responseExample: 'event: share_accessed\ndata: {"share_id":"shr_xyz","ip":"198.51.100.22","accessed_at":"2026-04-07T12:00:00Z"}\n\nevent: share_expired\ndata: {"share_id":"shr_xyz","expired_at":"2026-04-08T10:00:00Z"}',
+    responseExample: 'event: failed_attempt\ndata: {"type":"failed_attempt","linkId":"00000000-0000-4000-8000-000000000001","fileName":"report.pdf","attemptsUsed":1,"remainingAttempts":2,"ip":"198.51.100.22","timestamp":"2026-04-07T12:00:00Z"}',
   },
 
   // 12. Download File

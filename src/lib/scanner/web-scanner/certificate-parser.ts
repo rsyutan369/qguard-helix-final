@@ -378,6 +378,7 @@ function walkCertificateChain(
   peerCert: tls.PeerCertificate & { issuerCertificate?: tls.PeerCertificate }
 ): CertificateChainEntry[] {
   const chain: CertificateChainEntry[] = []
+  const parsed: Array<crypto.X509Certificate | null> = []
   const visited = new Set<string>()
   let current: (tls.PeerCertificate & { issuerCertificate?: tls.PeerCertificate }) | undefined = peerCert
 
@@ -389,15 +390,23 @@ function walkCertificateChain(
     let sigAlg = 'unknown'
     let pubKeyAlg = 'unknown'
     let pubKeySize = 0
+    let x509Parsed: crypto.X509Certificate | null = null
 
     if (current.raw) {
       try {
         const x509 = new crypto.X509Certificate(current.raw)
+        x509Parsed = x509
         const pubKey = x509.publicKey
         pubKeyAlg = formatPublicKeyAlgorithm(pubKey.asymmetricKeyType || 'unknown', getKeySize(pubKey))
         pubKeySize = getKeySize(pubKey)
-        const certText = x509.toString()
-        sigAlg = extractSignatureAlgorithmFromText(certText)
+        /* Same DER OID read the leaf uses. `x509.toString()` is PEM, so the
+           text match below never found a "Signature Algorithm:" line and every
+           chain certificate reported `unknown`. The text read stays as the
+           fallback for a DER this parser cannot walk. */
+        const sigOid = extractSignatureAlgorithmOidFromDer(current.raw)
+        sigAlg = sigOid
+          ? lookupOid(sigOid)?.name || sigOid
+          : extractSignatureAlgorithmFromText(x509.toString())
       } catch {
         // Use defaults
       }
@@ -411,9 +420,38 @@ function walkCertificateChain(
       publicKeySize: pubKeySize,
       validTo: current.valid_to || '',
       isExpired: current.valid_to ? new Date(current.valid_to) < new Date() : false,
+      fingerprint256: current.fingerprint256 || undefined,
+      serialNumber: current.serialNumber || undefined,
+      validFrom: current.valid_from || undefined,
     })
+    parsed.push(x509Parsed)
 
     current = current.issuerCertificate
+  }
+
+  // Cryptographic links. Issuer/subject NAME equality is never sufficient: a
+  // link is only `true` when the issuer relationship checks AND the signature
+  // verifies under the presented issuer's public key.
+  for (let i = 0; i < chain.length; i++) {
+    const self = parsed[i]
+    const next = parsed[i + 1] ?? null
+    chain[i].signatureVerifiedByNext = null
+    if (self && next) {
+      try {
+        chain[i].signatureVerifiedByNext = Boolean(self.checkIssued(next)) && self.verify(next.publicKey)
+      } catch {
+        chain[i].signatureVerifiedByNext = false
+      }
+    }
+    if (self && chain[i].subject === chain[i].issuer) {
+      try {
+        chain[i].selfSignatureValid = self.verify(self.publicKey)
+      } catch {
+        chain[i].selfSignatureValid = false
+      }
+    } else {
+      chain[i].selfSignatureValid = null
+    }
   }
 
   return chain

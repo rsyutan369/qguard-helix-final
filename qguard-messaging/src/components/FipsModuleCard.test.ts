@@ -45,6 +45,12 @@ function buttonNamed(container: HTMLElement, text: string): HTMLButtonElement {
   return button as HTMLButtonElement;
 }
 
+async function openAdvanced(container: HTMLElement) {
+  await act(async () => {
+    buttonNamed(container, "Advanced: FIPS 140-3 approved mode").click();
+  });
+}
+
 beforeEach(() => {
   api.fetchCryptoModuleStatus.mockReset();
   api.setApprovedMode.mockReset();
@@ -52,9 +58,23 @@ beforeEach(() => {
 });
 
 describe("FipsModuleCard", () => {
+  it("shows only the self-test by default and keeps module details under Advanced", async () => {
+    api.fetchCryptoModuleStatus.mockResolvedValue(status());
+    const { container } = await render();
+    const compact = container.textContent ?? "";
+    expect(compact).toContain("Self-test passed: 2 known-answer and pairwise tests in 41 ms");
+    expect(compact).toContain("ML-KEM-1024");
+    expect(compact).not.toContain("RustCrypto");
+    expect(compact).not.toContain("CMVP");
+    expect(compact).not.toContain("Turn approved mode on");
+    await openAdvanced(container);
+    expect(container.textContent).toContain("RustCrypto + dalek + PQClean");
+  });
+
   it("reports an unvalidated module as unvalidated, with the self-test the core ran", async () => {
     api.fetchCryptoModuleStatus.mockResolvedValue(status());
     const { container } = await render();
+    await openAdvanced(container);
     const text = container.textContent ?? "";
     expect(text).toContain("Not a CMVP-validated module");
     expect(text).toContain("Self-test passed: 2 known-answer and pairwise tests in 41 ms");
@@ -72,6 +92,7 @@ describe("FipsModuleCard", () => {
       credentials: [],
     }));
     const { container } = await render();
+    await openAdvanced(container);
     const link = container.querySelector("a");
     expect(link?.textContent).toContain("CMVP certificate #5548");
     expect(link?.getAttribute("href")).toContain("/certificate/5548");
@@ -81,6 +102,7 @@ describe("FipsModuleCard", () => {
     api.fetchCryptoModuleStatus.mockResolvedValue(status({ credentials: [] }));
     api.setApprovedMode.mockResolvedValue(status({ approvedMode: true, credentials: [] }));
     const { container } = await render();
+    await openAdvanced(container);
     await act(async () => {
       buttonNamed(container, "Turn approved mode on").click();
     });
@@ -94,7 +116,9 @@ describe("FipsModuleCard", () => {
       selfTest: { passed: false, backend: "rustcrypto", ranAt: "2026-11-03T00:00:00Z", durationMs: 40, results: [{ name: "AES-256-GCM", passed: false, detail: "decrypt mismatch" }] },
     }));
     const { container } = await render();
+    // A failed self-test is never hidden behind Advanced.
     expect(container.textContent).toContain("Self-test failed");
+    await openAdvanced(container);
     expect(container.textContent).toContain("AES-256-GCM: decrypt mismatch");
     expect(buttonNamed(container, "Turn approved mode on").disabled).toBe(true);
   });
@@ -102,7 +126,8 @@ describe("FipsModuleCard", () => {
   it("cannot be switched when a build or the operator decides it", async () => {
     api.fetchCryptoModuleStatus.mockResolvedValue(status({ approvedMode: true, approvedModeSource: "build", credentials: [] }));
     const { container } = await render();
-    expect(container.textContent).toContain("Approved mode on · this build");
+    // Opens on its own: the build decides approved mode.
+    expect(container.textContent).toContain("FIPS approved mode on · this build");
     expect(buttonNamed(container, "Turn approved mode off").disabled).toBe(true);
   });
 

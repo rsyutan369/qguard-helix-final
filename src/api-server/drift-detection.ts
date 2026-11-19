@@ -54,18 +54,18 @@ async function compute(token: string, userId: string, force: boolean): Promise<D
   const [portfolio, scanSessions, scanResults, runtimeEvents, migrationJobs] = await Promise.all([
     buildPortfolio(token, userId, force),
     ledger.read(client, 'pqc_scan_sessions', 'Scan sessions', 60, (q) =>
-      q.select('id, status, total_assets, scanned_assets, findings_count, started_at, completed_at, created_at').eq('user_id', userId).order('completed_at', { ascending: false }).limit(60),
+      q.select('id, status, target_scope, metadata, total_assets, scanned_assets, findings_count, started_at, completed_at, created_at', { count: 'exact' }).eq('user_id', userId).order('completed_at', { ascending: false }).limit(60),
     ),
     // Bounded to the findings of the sessions we can actually compare. Ordered
     // newest-first so a truncated result keeps the two most recent sessions.
     ledger.read(client, 'pqc_scan_results', 'Scan findings', 4000, (q) =>
-      q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(4000),
+      q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, created_at', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).limit(4000),
     ),
     ledger.read(client, 'runtime_crypto_events', 'Runtime telemetry', 1000, (q) =>
-      q.select('id, asset_id, asset_name, host, algorithm, key_exchange_algorithm, downgrade_detected, observed_at, created_at').eq('user_id', userId).eq('downgrade_detected', true).order('observed_at', { ascending: false }).limit(1000),
+      q.select('id, asset_id, asset_name, host, port, algorithm, key_exchange_algorithm, downgrade_detected, metadata, observed_at, created_at', { count: 'exact' }).eq('user_id', userId).eq('downgrade_detected', true).order('observed_at', { ascending: false }).limit(1000),
     ),
     ledger.read(client, 'migration_jobs', 'Migration jobs', 400, (q) =>
-      q.select(`id, asset_id, name, job_type, status, target_algorithm, completed_at, updated_at, created_at, ${SIMULATION_MARKER_SELECT}`).eq('user_id', userId).order('updated_at', { ascending: false }).limit(400),
+      q.select(`id, asset_id, name, job_type, status, target_algorithm, completed_at, updated_at, created_at, metadata, ${SIMULATION_MARKER_SELECT}`).eq('user_id', userId).order('updated_at', { ascending: false }).limit(400),
     ),
   ])
 
@@ -76,6 +76,7 @@ async function compute(token: string, userId: string, force: boolean): Promise<D
       runtimeEvents,
       migrationJobs,
       assets: portfolio.assets,
+      reads: ledger.reads,
     }),
     reads: ledger.reads,
   }

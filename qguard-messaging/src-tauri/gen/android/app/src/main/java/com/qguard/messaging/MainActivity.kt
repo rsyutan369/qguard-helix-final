@@ -35,8 +35,19 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    HelixPermissionPrompt.onDestroyed(this)
+    if (isFinishing) {
+      HelixSmartConnect.stop(applicationContext)
+      HelixLocalHotspot.stop(applicationContext)
+    }
     CurrentActivity.clear(this)
     super.onDestroy()
+  }
+
+  override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    HelixPermissionPrompt.onResult(requestCode, grantResults)
+    HelixSmartConnect.onPermissionsResult(this, requestCode)
   }
 
   /**

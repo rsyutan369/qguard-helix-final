@@ -32,7 +32,8 @@ import {
   WidthType,
   type ISectionOptions,
 } from 'docx'
-import type { InventoryReport } from '../../InventoryReport'
+import type { DocumentExportInput } from './shared'
+import { validationLabel } from './shared'
 import type { ReportTable } from '../../schemas/ReportSchema'
 import type { AssetDossier, BarItem, DocumentBlock, DocumentKpi, StackSegment, TableEmphasis } from '../../ReportDocument'
 import { cellTone } from '../../ReportDocument'
@@ -274,7 +275,7 @@ function blockChildren(block: DocumentBlock): Child[] {
   }
 }
 
-export async function renderDocumentDocx(report: InventoryReport): Promise<Blob> {
+export async function renderDocumentDocx(report: DocumentExportInput): Promise<Blob> {
   const d = report.document!
   const { branding } = d
   const v = d.validation
@@ -317,8 +318,8 @@ export async function renderDocumentDocx(report: InventoryReport): Promise<Blob>
     new Paragraph({ spacing: { after: 80 }, children: [run(d.cover.subtitle, { color: MUTED, size: 30 })] }),
     new Paragraph({ spacing: { after: 360 }, children: [run(d.cover.scopeLine, { color: INK_SOFT, size: 22 })] }),
     factsTable(d.cover.facts),
-    new Paragraph({ spacing: { before: 360 }, children: [run('● ', { color: qualityHex, size: 20 }), run(`Report quality ${VALIDATION_LABEL[v.status]} · ${v.score}/100`, { bold: true, color: INK, size: 19 })] }),
-    ...(report.integrity ? [new Paragraph({ children: [run(`Sealed with ${report.integrity.algorithm} · ${report.integrity.hash.slice(0, 24)}… — verify on the closing page`, { color: MUTED, size: 16 })] })] : []),
+    new Paragraph({ spacing: { before: 360 }, children: [run('● ', { color: qualityHex, size: 20 }), run(validationLabel(v), { bold: true, color: INK, size: 19 })] }),
+    ...(report.integrity ? [new Paragraph({ children: [run(`${report.integrity.algorithm} digest · ${report.integrity.hash.slice(0, 24)}… · full digest on the closing page`, { color: MUTED, size: 16 })] })] : []),
   )
 
   /* ---- Contents + summary + narrative sections ---- */
@@ -366,20 +367,19 @@ export async function renderDocumentDocx(report: InventoryReport): Promise<Blob>
   }
   closing.push(
     heading('validation', 'Validation, Reconciliation & Integrity'),
-    new Paragraph({ spacing: { after: 120 }, children: [run('● ', { color: qualityHex, size: 22 }), run(`Report quality ${VALIDATION_LABEL[v.status]} · ${v.score}/100`, { bold: true, color: INK, size: 22 })] }),
-    ...wordTable({ title: 'Pre-export validation', columns: ['Check', 'Result', 'Detail'], rows: v.checks.map((c) => [c.check, VALIDATION_LABEL[c.status], c.detail]) }, { emphasis: [{ column: 1, kind: 'status' }], widths: [30, 12, 58] }),
-    ...wordTable(
+    new Paragraph({ spacing: { after: 120 }, children: [run('● ', { color: qualityHex, size: 22 }), run(validationLabel(v), { bold: true, color: INK, size: 22 })] }),
+    ...(v.checks.length ? wordTable({ title: 'Pre-export validation', columns: ['Check', 'Result', 'Detail'], rows: v.checks.map((c) => [c.check, VALIDATION_LABEL[c.status], c.detail]) }, { emphasis: [{ column: 1, kind: 'status' }], widths: [30, 12, 58] }) : []),
+    ...(report.reconciliation.length ? wordTable(
       { title: 'Reconciliation — dashboard vs exported', columns: ['Metric', 'Dashboard', 'Exported', 'Result'], rows: report.reconciliation.map((r) => [r.metric, r.dashboard, r.exported, r.matches ? 'MATCH' : 'REVIEW']) },
       { emphasis: [{ column: 3, kind: 'status' }], widths: [58, 14, 14, 14] },
-    ),
-    subHeading('Evidence & provenance'),
+    ) : []),
+    ...(d.provenance.length ? [subHeading('Evidence & provenance')] : []),
     ...d.provenance.map((p) => new Paragraph({ bullet: { level: 0 }, spacing: { after: 60 }, children: [run(p, { size: 19 })] })),
-    subHeading('Integrity seal'),
   )
   if (report.integrity) {
-    closing.push(factsTable([
+    closing.push(subHeading('Integrity digest'), factsTable([
       { label: 'Algorithm', value: report.integrity.algorithm },
-      { label: 'Signed at', value: utc(report.integrity.signedAt) },
+      { label: 'Recorded at', value: utc(report.integrity.signedAt) },
       { label: 'Report ID', value: report.meta.reportId || '—' },
       { label: 'Digest', value: report.integrity.hash },
     ]))
@@ -393,9 +393,9 @@ export async function renderDocumentDocx(report: InventoryReport): Promise<Blob>
       }
       closing.push(new Paragraph({ spacing: { after: 80 }, children: [new ExternalHyperlink({ link: url, children: [new TextRun({ text: url.split('?')[0], color: noHash(BRAND), underline: {}, size: 18 })] })] }))
     }
-    closing.push(para('The SHA3-256 digest decoded by the verification page must equal the digest printed above. Any alteration of this document changes the digest.', { color: MUTED, size: 17 }))
+    closing.push(para('The digest identifies the captured report model. Compare it with the report record held by your organization.', { color: MUTED, size: 17 }))
   }
-  closing.push(para(`Prepared by ${report.meta.generatedBy || 'QGuard Helix'}${branding.reportOwner ? ` for ${branding.reportOwner}` : ''}${branding.reviewer ? `; reviewer ${branding.reviewer}` : ''}. Generated ${utc(report.meta.generatedAt)} from evidence current to ${utc(report.meta.dataAsOf || null)}.`, { color: INK_SOFT, size: 18 }))
+  closing.push(para(`Prepared by ${report.meta.generatedBy || 'QGuard Helix'}${branding.reportOwner ? ` for ${branding.reportOwner}` : ''}${branding.reviewer ? `; reviewer ${branding.reviewer}` : ''}. Generated ${utc(report.meta.generatedAt)}. Latest evidence timestamp: ${utc(report.meta.dataAsOf)}.`, { color: INK_SOFT, size: 18 }))
   runs.push({ orientation: 'portrait', children: closing })
 
   const sections: ISectionOptions[] = [

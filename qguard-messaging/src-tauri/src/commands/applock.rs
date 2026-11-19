@@ -21,6 +21,8 @@ use crate::crypto::EncryptedEnvelope;
 use crate::error::{QGuardError, Result};
 use crate::security::device_privacy::{self, BiometricAvailability, BiometricFailure};
 use crate::state::{AppState, DeviceRegistration, DuressPin, PersistedAppLock, StoredSession};
+use crate::vault::pattern;
+use zeroize::Zeroizing;
 
 /// Domain separation for the duress PIN's verifier: never the same value the
 /// real PIN's verifier context would produce.
@@ -52,6 +54,51 @@ fn validate_pin(digits: u8, pin: &str) -> Result<()> {
         return Err(QGuardError::InvalidInput(format!("PIN must be exactly {digits} digits.")));
     }
     Ok(())
+}
+
+/// The app lock opened by a drawn pattern instead of a PIN.
+const METHOD_PATTERN: &str = "pattern";
+
+fn is_pattern(record: &PersistedAppLock) -> bool {
+    record.method.as_deref() == Some(METHOD_PATTERN)
+}
+
+/// A pattern's canonical text (`4x4:0-1-…`): the bytes the KDF stretches.
+fn canonical_pattern(raw: &str) -> Result<Zeroizing<String>> {
+    let bytes = pattern::secret_bytes(raw)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| QGuardError::InvalidInput("Draw your pattern again.".to_string()))?;
+    Ok(Zeroizing::new(text.to_string()))
+}
+
+/// A credential being SET: (stored method, stored digits, the secret to seal).
+/// A PIN must be `NEW_PIN_DIGITS` digits; a pattern at least
+/// `pattern::MIN_DOTS` dots on the 4 × 4 grid.
+fn new_secret(method: Option<&str>, digits: u8, raw: &str) -> Result<(Option<String>, u8, Zeroizing<String>)> {
+    match method {
+        None | Some("pin") => {
+            validate_pin(digits, raw)?;
+            Ok((None, digits, Zeroizing::new(raw.to_string())))
+        }
+        Some(METHOD_PATTERN) => Ok((Some(METHOD_PATTERN.to_string()), 0, canonical_pattern(raw)?)),
+        Some(other) => Err(QGuardError::InvalidInput(format!("Unknown lock method: {other}."))),
+    }
+}
+
+/// What the user entered at the lock screen, in the form the record was sealed with.
+fn entered_secret(record: &PersistedAppLock, raw: &str) -> Result<Zeroizing<String>> {
+    if is_pattern(record) {
+        canonical_pattern(raw)
+    } else {
+        Ok(Zeroizing::new(raw.to_string()))
+    }
+}
+
+fn wrong_secret_message(record: &PersistedAppLock) -> String {
+    format!(
+        "Incorrect {}. {} attempt(s) remaining.",
+        if is_pattern(record) { "pattern" } else { "PIN" },
+        attempts_remaining(record.failed_attempts)
+    )
 }
 
 fn clamp_inactivity(minutes: u32) -> u32 {
@@ -217,6 +264,8 @@ pub struct AppLockStatus {
     pub duress_configured: bool,
     /// Biometric unlock is set up on this device.
     pub biometric_enabled: bool,
+    /// "pin" or "pattern": which pad the lock screen shows.
+    pub method: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -251,12 +300,13 @@ fn status_from(record: Option<&PersistedAppLock>, unlocked: bool) -> AppLockStat
             requires_full_auth: false,
             duress_configured: unlocked && r.duress.is_some(),
             biometric_enabled: r.biometric_sek.is_some(),
+            method: if is_pattern(r) { METHOD_PATTERN.to_string() } else { "pin".to_string() },
         },
         None => AppLockStatus {
             configured: false, enabled: false, locked: false, digits: 0,
             failed_attempts: 0, attempts_remaining: MAX_ATTEMPTS, lockout_until: None,
             inactivity_minutes: DEFAULT_INACTIVITY_MINUTES, device: None, requires_full_auth: false,
-            duress_configured: false, biometric_enabled: false,
+            duress_configured: false, biometric_enabled: false, method: "pin".to_string(),
         },
     }
 }
@@ -326,12 +376,13 @@ pub async fn applock_setup(
     session: StoredSession,
     device_name: String,
     app_version: String,
+    method: Option<String>,
 ) -> Result<AppLockStatus> {
     // Thin wrapper: owns the PIN and guarantees it is zeroized on every exit
     // path of `applock_setup_inner` (success, validation error, auth error,
     // storage error, ...) rather than only on the paths the inner logic
     // happened to remember to zeroize inline.
-    let out = applock_setup_inner(&state, digits, &pin, &session, &device_name, &app_version).await;
+    let out = applock_setup_inner(&state, digits, &pin, &session, &device_name, &app_version, method.as_deref()).await;
     pin.zeroize();
     out
 }
@@ -343,18 +394,21 @@ async fn applock_setup_inner(
     session: &StoredSession,
     device_name: &str,
     app_version: &str,
+    method: Option<&str>,
 ) -> Result<AppLockStatus> {
     state.require_auth()?;
     let user_id = state.user_id()?;
-    validate_pin(digits, pin)?;
-    if let Some(duress) = state.load_applock(&user_id)?.and_then(|record| record.duress) {
-        if duress_matches(&duress, pin).await? {
-            return Err(QGuardError::InvalidInput("Choose a PIN different from your duress PIN.".to_string()));
+    let (method, digits, secret) = new_secret(method, digits, pin)?;
+    if method.is_none() {
+        if let Some(duress) = state.load_applock(&user_id)?.and_then(|record| record.duress) {
+            if duress_matches(&duress, &secret).await? {
+                return Err(QGuardError::InvalidInput("Choose a PIN different from your duress PIN.".to_string()));
+            }
         }
     }
 
     let mut sek = symmetric::random_key();
-    let (salt, verifier, sek_wrapped, kdf_version) = match seal_pin(pin, &sek).await {
+    let (salt, verifier, sek_wrapped, kdf_version) = match seal_pin(&secret, &sek).await {
         Ok(v) => v,
         Err(e) => {
             sek.zeroize();
@@ -391,6 +445,7 @@ async fn applock_setup_inner(
         duress: existing.as_ref().and_then(|r| r.duress.clone()),
         // A new SEK: whatever the biometric key wrapped is stale.
         biometric_sek: None,
+        method,
     };
     if existing.as_ref().is_some_and(|r| r.biometric_sek.is_some()) {
         device_privacy::biometric_disable();
@@ -404,7 +459,7 @@ async fn applock_setup_inner(
         return Err(e);
     }
     sek.zeroize();
-    state.audit_info("applock_setup", "App-entry PIN configured");
+    state.audit_info("applock_setup", if record.method.is_some() { "App-entry pattern configured" } else { "App-entry PIN configured" });
     Ok(status_from(Some(&record), true))
 }
 
@@ -425,12 +480,16 @@ async fn applock_unlock_inner(state: &State<'_, AppState>, pin: &str) -> Result<
         .ok_or_else(|| QGuardError::NotFound("app PIN is not configured".to_string()))?;
     check_lockout(&record)?;
 
+    // A pattern record takes the pattern's canonical text; a malformed one is
+    // refused before any attempt is counted (the pad never sends one).
+    let secret = entered_secret(&record, pin)?;
     // With a duress PIN set, BOTH checks always run, so how long an attempt
-    // takes does not tell a duress entry from any other.
-    let outcome = open_with_pin(&record, pin).await;
+    // takes does not tell a duress entry from any other. A duress PIN cannot
+    // be drawn, so a pattern lock skips it.
+    let outcome = open_with_pin(&record, &secret).await;
     let duress_hit = match record.duress.as_ref() {
-        Some(duress) => duress_matches(duress, pin).await.unwrap_or(false),
-        None => false,
+        Some(duress) if !is_pattern(&record) => duress_matches(duress, &secret).await.unwrap_or(false),
+        _ => false,
     };
     if duress_hit && !matches!(outcome, Ok(Some(_))) {
         // Erase this device's keys and sign out, leaving no record of why
@@ -456,7 +515,7 @@ async fn applock_unlock_inner(state: &State<'_, AppState>, pin: &str) -> Result<
             // FIPS approved mode changed) while the PIN is proven. Best-effort:
             // the old seal keeps working if this fails.
             if passcode::needs_reseal(record.kdf_version) {
-                if let Ok((salt, verifier, sek_wrapped, kdf_version)) = seal_pin(pin, &sek).await {
+                if let Ok((salt, verifier, sek_wrapped, kdf_version)) = seal_pin(&secret, &sek).await {
                     record.salt = salt;
                     record.verifier = verifier;
                     record.sek_wrapped_by_pin = sek_wrapped;
@@ -495,11 +554,8 @@ async fn applock_unlock_inner(state: &State<'_, AppState>, pin: &str) -> Result<
                 return Ok(AppLockUnlockResult { session: None, status });
             }
             state.save_applock(&user_id, &record)?;
-            state.audit_info("applock_unlock_failed", "Incorrect app PIN");
-            Err(QGuardError::Trust(format!(
-                "Incorrect PIN. {} attempt(s) remaining.",
-                attempts_remaining(record.failed_attempts)
-            )))
+            state.audit_info("applock_unlock_failed", "Incorrect app PIN or pattern");
+            Err(QGuardError::Trust(wrong_secret_message(&record)))
         }
         // Internal failure (e.g. Argon2id allocation failure, AES-GCM/decode
         // error) — NOT a wrong-PIN signal, so it must never advance the
@@ -558,8 +614,9 @@ pub async fn applock_change_pin(
     mut old_pin: String,
     mut new_pin: String,
     digits: u8,
+    new_method: Option<String>,
 ) -> Result<AppLockStatus> {
-    let out = applock_change_pin_inner(&state, &old_pin, &new_pin, digits).await;
+    let out = applock_change_pin_inner(&state, &old_pin, &new_pin, digits, new_method.as_deref()).await;
     old_pin.zeroize();
     new_pin.zeroize();
     out
@@ -570,21 +627,26 @@ async fn applock_change_pin_inner(
     old_pin: &str,
     new_pin: &str,
     digits: u8,
+    new_method: Option<&str>,
 ) -> Result<AppLockStatus> {
     state.require_auth()?;
     let user_id = state.user_id()?;
-    validate_pin(digits, new_pin)?;
 
     let mut record = state
         .load_applock(&user_id)?
         .ok_or_else(|| QGuardError::NotFound("app PIN is not configured".to_string()))?;
     check_lockout(&record)?;
-    if let Some(duress) = record.duress.as_ref() {
-        if duress_matches(duress, new_pin).await? {
-            return Err(QGuardError::InvalidInput("Choose a PIN different from your duress PIN.".to_string()));
+    // The new credential may switch PIN <-> pattern; without a method it keeps the current one.
+    let (method, digits, new_secret_text) = new_secret(new_method.or(record.method.as_deref()), digits, new_pin)?;
+    if method.is_none() {
+        if let Some(duress) = record.duress.as_ref() {
+            if duress_matches(duress, &new_secret_text).await? {
+                return Err(QGuardError::InvalidInput("Choose a PIN different from your duress PIN.".to_string()));
+            }
         }
     }
-    let mut sek = match open_with_pin(&record, old_pin).await {
+    let old_secret = entered_secret(&record, old_pin)?;
+    let mut sek = match open_with_pin(&record, &old_secret).await {
         Ok(Some(sek)) => sek,
         Ok(None) => {
             // Same max-5-attempts ladder as `applock_unlock`: a wrong old PIN
@@ -598,17 +660,14 @@ async fn applock_change_pin_inner(
                 ));
             }
             state.save_applock(&user_id, &record)?;
-            return Err(QGuardError::Trust(format!(
-                "Incorrect PIN. {} attempt(s) remaining.",
-                attempts_remaining(record.failed_attempts)
-            )));
+            return Err(QGuardError::Trust(wrong_secret_message(&record)));
         }
         // Internal failure (e.g. Argon2id allocation failure, AES-GCM/decode
         // error) — NOT a wrong-PIN signal, so it must never advance the
         // 5-strike ladder. Propagate as-is.
         Err(e) => return Err(e),
     };
-    let (salt, verifier, sek_wrapped, kdf_version) = match seal_pin(new_pin, &sek).await {
+    let (salt, verifier, sek_wrapped, kdf_version) = match seal_pin(&new_secret_text, &sek).await {
         Ok(v) => v,
         Err(e) => {
             sek.zeroize();
@@ -619,6 +678,7 @@ async fn applock_change_pin_inner(
     record.verifier = verifier;
     record.sek_wrapped_by_pin = sek_wrapped;
     record.digits = digits;
+    record.method = method;
     record.kdf_version = kdf_version;
     record.failed_attempts = 0;
     record.lockout_until = None;
@@ -654,10 +714,11 @@ pub async fn applock_reset(
     session: StoredSession,
     device_name: String,
     app_version: String,
+    method: Option<String>,
 ) -> Result<AppLockStatus> {
     // Forgotten-PIN / expired-token rebind: identical to setup but explicitly
     // resets counters. Frontend has re-authenticated the account first.
-    applock_setup(state, digits, pin, session, device_name, app_version).await
+    applock_setup(state, digits, pin, session, device_name, app_version, method).await
 }
 
 #[tauri::command]
@@ -709,6 +770,14 @@ async fn set_duress_inner(state: &AppState, pin: &str) -> Result<AppLockStatus> 
     let mut record = state
         .load_applock(&user_id)?
         .ok_or_else(|| QGuardError::NotFound("app PIN is not configured".to_string()))?;
+    // A pattern lock has no keypad to type a duress PIN on, and unlock never
+    // checks one against a drawn pattern: refuse rather than save a PIN that
+    // would silently do nothing.
+    if is_pattern(&record) {
+        return Err(QGuardError::InvalidInput(
+            "A duress PIN needs a PIN lock. Switch from the pattern to a 6-digit PIN first.".to_string(),
+        ));
+    }
     if let Ok(Some(mut sek)) = open_with_pin(&record, pin).await {
         sek.zeroize();
         return Err(QGuardError::InvalidInput("The duress PIN must be different from your PIN.".to_string()));
@@ -745,12 +814,16 @@ pub fn applock_clear_duress_pin(state: State<'_, AppState>) -> Result<AppLockSta
 pub struct BiometricStatus {
     pub availability: BiometricAvailability,
     pub enabled: bool,
+    /// Sensors the device has ("fingerprint", "face", "iris"), for labelling
+    /// the setup choices; Android decides which one its prompt uses.
+    pub modalities: Vec<String>,
 }
 
 fn biometric_status_for(record: Option<&PersistedAppLock>) -> BiometricStatus {
     BiometricStatus {
         availability: device_privacy::biometric_availability(),
         enabled: record.is_some_and(|record| record.biometric_sek.is_some()),
+        modalities: device_privacy::biometric_modalities(),
     }
 }
 
@@ -911,6 +984,7 @@ mod tests {
             created_at: Utc::now(),
             duress: None,
             biometric_sek: None,
+            method: None,
         };
 
         let recovered_sek = open_with_pin(&record, "123456").await.unwrap().unwrap();
@@ -923,6 +997,44 @@ mod tests {
         // use `Err` to mean "internal failure, do not count against the
         // 5-strike ladder".
         assert!(open_with_pin(&record, "000000").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_pattern_lock_opens_only_with_its_pattern() {
+        let (method, digits, secret) = new_secret(Some("pattern"), 6, "4x4:0-1-2-3-7-11").unwrap();
+        assert_eq!(method.as_deref(), Some("pattern"));
+        assert_eq!(digits, 0);
+        assert_eq!(secret.as_str(), "4x4:0-1-2-3-7-11");
+        let sek = symmetric::random_key();
+        let (salt, verifier, sek_wrapped, kdf_version) = seal_pin(&secret, &sek).await.unwrap();
+        let mut record = blank_record();
+        record.method = method;
+        record.digits = digits;
+        record.salt = salt;
+        record.verifier = verifier;
+        record.sek_wrapped_by_pin = sek_wrapped;
+        record.kdf_version = kdf_version;
+        assert!(is_pattern(&record));
+        let entered = entered_secret(&record, "4x4:0-1-2-3-7-11").unwrap();
+        assert_eq!(open_with_pin(&record, &entered).await.unwrap().unwrap(), sek);
+        // Another pattern is a wrong attempt (Ok(None)), never an error.
+        let other = entered_secret(&record, "4x4:0-1-2-3-7-6").unwrap();
+        assert!(open_with_pin(&record, &other).await.unwrap().is_none());
+        // Something the pad cannot draw is refused before any attempt is counted.
+        assert!(entered_secret(&record, "123456").is_err());
+        assert_eq!(wrong_secret_message(&record), "Incorrect pattern. 5 attempt(s) remaining.");
+    }
+
+    #[test]
+    fn new_credentials_are_checked_for_their_method() {
+        assert!(new_secret(None, 6, "123456").is_ok());
+        assert!(new_secret(Some("pin"), 6, "12345").is_err());
+        assert!(new_secret(Some("pattern"), 0, "4x4:0-1-2").is_err(), "fewer than six dots");
+        assert!(new_secret(Some("pattern"), 0, "123456").is_err());
+        assert!(new_secret(Some("face"), 6, "123456").is_err());
+        let (method, _, secret) = new_secret(Some("pin"), 6, "123456").unwrap();
+        assert!(method.is_none());
+        assert_eq!(secret.as_str(), "123456");
     }
 
     #[test]
@@ -961,6 +1073,7 @@ mod tests {
             created_at: Utc::now(),
             duress: None,
             biometric_sek: None,
+            method: None,
         }
     }
 

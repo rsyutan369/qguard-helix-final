@@ -196,7 +196,7 @@ export interface TlsEndpoint {
 /* Certificates                                                        */
 /* ------------------------------------------------------------------ */
 
-export type CertificateLifecycle = 'valid' | 'expiring' | 'expired' | 'revoked' | 'unknown'
+export type CertificateLifecycle = 'valid' | 'expiring' | 'expired' | 'revoked' | 'not-yet-valid' | 'unknown'
 
 export interface PkiCertificate {
   id: string
@@ -531,7 +531,7 @@ export interface TlsPkiIntelligence {
    * algorithm chart are one computation that every reader shares.
    */
   pki: {
-    lifecycle: { valid: number; expiring: number; expired: number; revoked: number; unknown: number }
+    lifecycle: { valid: number; expiring: number; expired: number; revoked: number; notYetValid: number; unknown: number }
     expiryBuckets: Array<{ label: string; count: number; percent: number; certificateIds: string[] }>
     issuers: Array<{
       issuer: string

@@ -40,7 +40,7 @@ export default function PublicApp() {
         <Router>
           <Routes>
             <Route path="/" element={<Landing />} />
-            <Route path="/docs" element={<DocsPage />} />
+            <Route path="/docs/*" element={<DocsPage />} />
             <Route path="/qguard-messaging" element={<QguardMessagingOverview />} />
             <Route path="/qguard-messaging/secure-chat" element={<QguardMessagingSecureChat />} />
             <Route path="/qguard-messaging/quantum-vault" element={<QguardMessagingQuantumVault />} />

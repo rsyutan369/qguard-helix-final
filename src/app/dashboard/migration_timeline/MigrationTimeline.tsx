@@ -41,7 +41,7 @@ type TabKey = 'chronology' | 'phases' | 'jobs' | 'throughput';
  * verified, and what must happen next.
  */
 export default function MigrationTimeline() {
-  const { data, state, error, transport, lastVerifiedAt, refresh } = useMigrationOrchestrator();
+  const { data, state, error, transport, lastVerifiedAt, refresh, reconnect } = useMigrationOrchestrator();
   const [searchParams, setSearchParams] = useSearchParams();
   const planId = searchParams.get('planId');
 
@@ -125,8 +125,9 @@ export default function MigrationTimeline() {
   const top = counts.nextActions?.[0] ?? null;
 
   const showSkeleton = state === 'loading' && !answered;
-  const showHardError = state === 'error' && !answered;
-  const empty = answered && !data.hasData;
+  const jobsUnavailable = answered && data.sources.jobs === 'unavailable';
+  const showHardError = (state === 'error' && !answered) || jobsUnavailable;
+  const empty = answered && !jobsUnavailable && !data.hasData;
 
   return (
     <IntelShell name="timeline-shell">
@@ -157,7 +158,7 @@ export default function MigrationTimeline() {
         </IntelHeader>
 
         {answered && transport !== 'stream' ? (
-          <ConnectionLostBanner lastGoodAt={data.generatedAt} error={error} onReconnect={() => void doRefresh()} transport={transport} lastVerifiedAt={lastVerifiedAt} />
+          <ConnectionLostBanner lastGoodAt={data.generatedAt} error={error} onReconnect={reconnect} transport={transport} lastVerifiedAt={lastVerifiedAt} />
         ) : null}
 
         {showHardError ? (
@@ -200,7 +201,7 @@ export default function MigrationTimeline() {
           />
         ) : null}
 
-        {answered && data.hasData ? (
+        {answered && !jobsUnavailable && data.hasData ? (
           <>
             <ModuleBrief
               what={<>Every recorded migration plan and job on one time axis — when it was recorded, approved, started and finished, and whether the change was verified.</>}

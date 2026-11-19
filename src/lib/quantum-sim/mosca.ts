@@ -147,7 +147,7 @@ export function crqcEstimates(baseYear = new Date().getUTCFullYear()): CrqcEstim
       label: `NIST planning horizon (${2035 - baseYear} yr)`,
       years: 2035 - baseYear,
       source:
-        'A policy deadline, not a forecast: NIST IR 8547 ipd disallows quantum-vulnerable public-key cryptography after 2035. Used as a planning proxy for Z because it is the date federal systems are measured against.',
+        'An illustrative planning proxy for Z: final NIST IR 8547 disallows covered quantum-vulnerable public-key cryptography after 2035. This is not a CRQC forecast or an agency-specific deadline.',
     },
     {
       id: 'nsa-cnsa',

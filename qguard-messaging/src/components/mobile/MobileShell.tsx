@@ -1,8 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   Activity,
+  ArrowLeftRight,
   CreditCard,
   Gauge,
+  History,
   KeyRound,
   LayoutDashboard,
   LayoutGrid,
@@ -12,9 +14,11 @@ import {
   Phone,
   MonitorSmartphone,
   Moon,
+  Network,
   QrCode,
   Settings,
   ShieldCheck,
+  SlidersHorizontal,
   Sun,
   X,
 } from "lucide-react";
@@ -28,6 +32,10 @@ const iconMap = {
   chat: MessageSquare,
   calls: Phone,
   vault: LockKeyhole,
+  mesh: Network,
+  xfer: ArrowLeftRight,
+  "transfer-history": History,
+  "offline-settings": SlidersHorizontal,
   keys: KeyRound,
   devices: MonitorSmartphone,
   verification: QrCode,
@@ -62,10 +70,14 @@ const PAGE_KICKER: Record<string, string> = {
   audit: "Tamper-evident local events",
   admin: "Organisation security posture",
   subscription: "Plan · Billing · Activation",
+  mesh: "Nearby · Trusted devices",
+  xfer: "Nearby · File transfer",
+  "transfer-history": "Local · File integrity",
+  "offline-settings": "Local network · Device trust",
 };
 
 /** Pages named in the masthead itself, with no separate page head. */
-const TITLE_IN_MASTHEAD = new Set<Page>(["vault", "quantum", "settings"]);
+const TITLE_IN_MASTHEAD = new Set<Page>(["vault", "quantum", "settings", "mesh", "xfer"]);
 
 /** Compact realtime readout. Wording matches liveStatusLabel's meaning. */
 function liveTone(state: QGuardLiveStatus["state"]): { label: string; className: string } {
@@ -93,6 +105,7 @@ interface MobileShellProps {
   onToggleTheme: () => void;
   onNavigate: (page: Page) => void;
   onSignOut: () => void;
+  connectivity?: ReactNode;
   children: ReactNode;
 }
 
@@ -115,6 +128,7 @@ export default function MobileShell({
   onToggleTheme,
   onNavigate,
   onSignOut,
+  connectivity,
   children,
 }: MobileShellProps) {
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -207,7 +221,7 @@ export default function MobileShell({
               </>
             ) : (
               <>
-                <span className="qgm-wordmark">QGUARD</span>
+                <span className="qgm-wordmark">QGUARD HELIX</span>
                 <span className="qgm-tally" aria-hidden />
               </>
             )}
@@ -264,7 +278,9 @@ export default function MobileShell({
               <span className="qgm-chatchip">X25519</span>
             </div>
           ) : (
-            <div className="qgm-kicker relative mt-1.5">Quantum-safe chat &amp; vault</div>
+            <div className="qgm-kicker relative mt-1.5">
+              {activePage === "mesh" || activePage === "xfer" ? PAGE_KICKER[activePage] : <>Quantum-safe chat &amp; vault</>}
+            </div>
           )}
         </div>
 
@@ -347,6 +363,7 @@ export default function MobileShell({
         </div>
         </div>
       </header>
+      {connectivity}
 
       {/* Content. overflow-x-hidden is the backstop against horizontal page
           panning: wide tables must scroll inside their own cards, never pan the
@@ -357,7 +374,9 @@ export default function MobileShell({
 
       {/* Floating navigation rail */}
       <nav className="mobile-safe-bottom pointer-events-none fixed inset-x-0 bottom-0 z-30 flex justify-center px-4 pb-3">
-        <div className="qg-nav pointer-events-auto">
+        {/* data-qg-bottom-bar: views that must stay clear of the rail (the Mesh
+            composer) measure its real top edge, safe-area inset included. */}
+        <div className="qg-nav pointer-events-auto" data-qg-bottom-bar>
           {activeIndex >= 0 && (
             <span
               className="qg-nav-pill"

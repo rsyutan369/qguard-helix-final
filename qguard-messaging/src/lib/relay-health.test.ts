@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { classifyRelayHealth, nextRecheckMs, probeRelay } from "./relay-health";
+import { classifyRelayHealth, nextRecheckMs, probeRelay, relayAvailability } from "./relay-health";
 
 const RELAY = "https://abcd.supabase.co";
+
+describe("relayAvailability", () => {
+  it("changes local routing only on a successful health probe or a transport failure", () => {
+    expect(relayAvailability({ kind: "ok" })).toBe("available");
+    expect(relayAvailability({ kind: "unreachable" })).toBe("unavailable");
+    expect(relayAvailability({ kind: "http_error", status: 401 })).toBe("unknown");
+    expect(relayAvailability({ kind: "http_error", status: 503 })).toBe("unknown");
+    expect(relayAvailability({ kind: "not_configured" })).toBe("unknown");
+  });
+});
 
 describe("classifyRelayHealth", () => {
   it("is quiet while the relay answers, even with a request-level 4xx", () => {

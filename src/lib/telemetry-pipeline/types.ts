@@ -20,7 +20,9 @@
 /* Shared vocabulary                                                   */
 /* ------------------------------------------------------------------ */
 
-export type HealthState = 'healthy' | 'degraded' | 'stale' | 'silent' | 'absent'
+import type { SourceRead } from '@/lib/source-read'
+
+export type HealthState = 'healthy' | 'degraded' | 'stale' | 'silent' | 'absent' | 'unavailable'
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low'
 
@@ -254,6 +256,7 @@ export interface TelemetryPipelineIntelligence {
   generatedAt: string
   latestEvidenceAt: string | null
   hasData: boolean
+  reads: SourceRead[]
 
   posture: PipelinePosture
   fleet: CollectorFleet

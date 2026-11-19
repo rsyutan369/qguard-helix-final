@@ -58,7 +58,8 @@ import { computeTrustAgility } from '@/lib/ecosystem/external-trust-intelligence
 // sandbox simulation can never count as an operational transition here while
 // Live Migration and the orchestration model say otherwise.
 import { orchestrationStatus, migrationPathCheck } from '@/lib/migration/orchestration-model'
-import { isPassingValidation, isSimulationRow } from '@/lib/migration/job-safety'
+import { isSimulationRow } from '@/lib/migration/job-safety'
+import { indexJobValidations, readJobVerification } from '@/lib/migration/orchestration-model'
 import type { SourceRead, SourceReadState } from '@/lib/source-read'
 
 export { EVIDENCE_UNAVAILABLE }
@@ -902,6 +903,7 @@ export interface AgilityInputs {
   runtimeEvents: Row[]
   generatedKeys: Row[]
   migrationJobs: Row[]
+  validationLogs?: Row[]
   scanSessions: Row[]
   securityEvents: Row[]
   connectorAccounts: Row[]
@@ -1855,7 +1857,7 @@ function deriveAssetAgility(
   latestJob: OperationalJob | null,
 ): AssetAgilityDerivation {
   const coupling = couplingByAsset.get(asset.id) || []
-  const validated = isPassingValidation(asset.validation.lastStatus)
+  const validated = latestJob?.status === 'completed' && latestJob.verified
 
   if (!asset.hasEvidence) {
     return {
@@ -3415,6 +3417,7 @@ interface OperationalJob {
   status: ReturnType<typeof orchestrationStatus>
   updatedAt: string | null
   targetAlgorithm: string
+  verified: boolean
 }
 
 /**
@@ -3422,25 +3425,33 @@ interface OperationalJob {
  * the platform's shared predicates. A failed or completed simulation is not a
  * cryptographic change to any production asset.
  */
-export function splitMigrationJobs(rows: Row[]): { operational: OperationalJob[]; simulations: Row[] } {
+export function splitMigrationJobs(rows: Row[], validations: Row[] = [], source: 'ok' | 'unavailable' | 'truncated' = 'ok'): { operational: OperationalJob[]; simulations: Row[] } {
   const operational: OperationalJob[] = []
   const simulations: Row[] = []
+  const validationIndex = indexJobValidations(validations)
   for (const row of rows) {
     if (isSimulationRow(row)) {
       simulations.push(row)
       continue
     }
+    const status = orchestrationStatus(row.status)
     operational.push({
       id: str(row.id),
       assetId: str(row.asset_id),
       name: str(row.name),
       jobType: str(row.job_type),
-      status: orchestrationStatus(row.status),
+      status,
+      verified: status === 'completed' && readJobVerification(row, validationIndex, source, true).state === 'passed',
       updatedAt: isoOrNull(row.updated_at) || isoOrNull(row.created_at),
       targetAlgorithm: str(row.target_algorithm),
     })
   }
   return { operational, simulations }
+}
+
+function agilityJobs(inputs: AgilityInputs) {
+  const state = inputs.sourceHealth?.find((source) => source.key === 'migration_validation_logs')?.state
+  return splitMigrationJobs(inputs.migrationJobs, inputs.validationLogs, state === 'unavailable' || state === 'truncated' ? state : 'ok')
 }
 
 /** Latest operational job per asset; withdrawn (stopped/cancelled) work is ignored. */
@@ -3502,7 +3513,6 @@ const CONFIG_EVENT_RE = /crypto|cert|key|tls|algorithm|cipher|rotat|policy|provi
 function buildChangeTracking(
   inputs: AgilityInputs,
   operational: OperationalJob[],
-  validatedAssetIds: Set<string>,
   securityEventsAvailable: boolean,
   jobsAvailable: boolean,
 ): ChangeTracking {
@@ -3515,7 +3525,7 @@ function buildChangeTracking(
           : job.status === 'running' || job.status === 'validating' ? 'migration-in-progress'
             : null
     if (!kind) continue
-    const validated = kind === 'migration-completed' ? validatedAssetIds.has(job.assetId) : null
+    const validated = kind === 'migration-completed' ? job.verified : null
     changes.push({
       id: `job-${job.id}`,
       at: job.updatedAt,
@@ -3743,7 +3753,6 @@ function buildLifecycle(
   blockers: AgilityBlocker[],
   operational: OperationalJob[],
   simulations: Row[],
-  validatedAssetIds: Set<string>,
 ): LifecycleStage[] {
   const evaluated = assetRows.filter((r) => r.hasEvidence)
   const assessed = evaluated.filter((r) => r.couplingAssessed)
@@ -3753,7 +3762,8 @@ function buildLifecycle(
   const live = operational.filter((j) => j.status !== 'stopped')
   const completedJobs = live.filter((j) => j.status === 'completed')
   const completedAssets = unique(completedJobs.map((j) => j.assetId).filter(Boolean))
-  const validatedCompleted = completedAssets.filter((id) => validatedAssetIds.has(id)).length
+  const unverifiedAssets = new Set(live.filter((job) => !job.verified).map((job) => job.assetId))
+  const validatedCompleted = completedAssets.filter((id) => !unverifiedAssets.has(id)).length
   const monitored = unique(inputs.runtimeEvents.map((e) => str(e.asset_id)).filter(Boolean)).length
   const completedScans = inputs.scanSessions.filter((s) => /complete|done|success/i.test(str(s.status)))
   const latestScan = completedScans
@@ -4051,9 +4061,8 @@ export function buildCryptoAgilityIntelligence(inputs: AgilityInputs): CryptoAgi
   const sourceStatus = inputs.sourceHealth ?? defaultSourceHealth(inputs)
   const readable = (key: string) => !sourceStatus.some((s) => s.key === key && s.state === 'unavailable')
 
-  const { operational, simulations } = splitMigrationJobs(inputs.migrationJobs)
+  const { operational, simulations } = agilityJobs(inputs)
   const latestJobs = latestOperationalJobByAsset(operational)
-  const validatedAssetIds = new Set(inputs.assets.filter((a) => isPassingValidation(a.validation.lastStatus)).map((a) => a.id))
   const provenanceIndex = buildProvenanceIndex(inputs)
 
   const couplingObservableAssets = observableCouplingAssets(inputs)
@@ -4230,7 +4239,7 @@ export function buildCryptoAgilityIntelligence(inputs: AgilityInputs): CryptoAgi
   responsibility.sort((a, b) => SEVERITY_RANK[b.priority] - SEVERITY_RANK[a.priority] || b.occurrences - a.occurrences)
 
   /* ---- 9. Lifecycle + recommendations + runtime -------------------- */
-  const lifecycle = buildLifecycle(inputs, assetRows, blockers, operational, simulations, validatedAssetIds)
+  const lifecycle = buildLifecycle(inputs, assetRows, blockers, operational, simulations)
   const relEnds = (r: Row) => [str(r.source_asset_id || r.parent_asset_id || r.from_asset_id), str(r.target_asset_id || r.child_asset_id || r.to_asset_id)]
   const recommendations = buildRecommendations(
     domains, blockers, coupling, assetRows, policy,
@@ -4238,7 +4247,7 @@ export function buildCryptoAgilityIntelligence(inputs: AgilityInputs): CryptoAgi
     (ids) => inputs.relationships.filter((r) => relEnds(r).some((id) => ids.has(id))).length,
   )
   const runtimeEvents = buildRuntimeEvents(inputs)
-  const changeTracking = buildChangeTracking(inputs, operational, validatedAssetIds, readable('security_events'), readable('migration_jobs'))
+  const changeTracking = buildChangeTracking(inputs, operational, readable('security_events'), readable('migration_jobs'))
 
   /* ---- 10. KPIs ---------------------------------------------------- */
   const kpis: AgilityKpi[] = [
@@ -4622,7 +4631,7 @@ export function deriveAgilityDerivations(inputs: AgilityInputs): Map<string, Ass
     couplingByAsset.set(finding.assetId, list)
   }
   const couplingObservableAssets = observableCouplingAssets(inputs)
-  const latestJobs = latestOperationalJobByAsset(splitMigrationJobs(inputs.migrationJobs).operational)
+  const latestJobs = latestOperationalJobByAsset(agilityJobs(inputs).operational)
   const derivations = new Map<string, AssetAgilityDerivation>()
   for (const asset of inputs.assets) {
     derivations.set(asset.id, deriveAssetAgility(asset, couplingByAsset, providerLocked, couplingObservableAssets, latestJobs.get(asset.id) ?? null))

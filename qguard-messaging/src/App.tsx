@@ -1,4 +1,5 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ComponentProps, type ReactNode } from "react";
+import { ArrowLeftRight, CircleCheck, FileDown, X } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
 import OnboardingTour from "@/components/onboarding/OnboardingTour";
@@ -9,11 +10,17 @@ import { PaywallGate } from "@/components/PaywallGate";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { RelayHealthBanner } from "@/components/RelayHealthBanner";
 import { OutboxCourier } from "@/components/OutboxCourier";
+import { ConnectivityIndicator } from "@/components/ConnectivityIndicator";
+import { OfflinePairingHost } from "@/components/offline/OfflinePairingHost";
+import { DeviceKeyRecoveryScreen } from "@/components/auth/DeviceKeyRecoveryScreen";
 import { WorkspaceLockGate } from "@/components/workspace/WorkspaceLockGate";
 import { AppLockScreen } from "@/components/applock/AppLockScreen";
+import SecuritySetupPage from "@/components/applock/SecuritySetupPage";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { AuthProvider, isTransientAuthError, useAuth } from "@/lib/auth-context";
 import { useSubscription } from "@/lib/use-subscription";
+import { hasMessagingAccess, OFFLINE_GRACE_MS, type MessagingSubscription } from "@/lib/subscription";
+import { OfflineModeShell, OfflineNoticeStack, isOfflineRoute, type OfflineRoute } from "@/components/offline/OfflineModeShell";
 import { useIsMobile } from "@/lib/use-mobile";
 import { useAppLock, type AppLockUnlockResult } from "@/lib/use-app-lock";
 import { settlePinRestore, type PinRestorePhase } from "@/lib/pin-restore";
@@ -25,11 +32,18 @@ import { supabase } from "@/lib/supabase";
 import { accountIdentifierLabel, accountProofKind, sendAccountProofCode, verifyAccountProof } from "@/lib/account-identity";
 import { finishPendingLinkCompletion, hasPendingLinkCompletion } from "@/lib/device-link";
 import { ensureMessagingWorkspace, syncCurrentMessagingDevice } from "@/lib/messaging-bootstrap";
-import { isAndroidRuntime, safeInvoke } from "@/lib/tauri";
+import { isAndroidRuntime, isTauriRuntime, safeInvoke } from "@/lib/tauri";
 import { APP_VERSION } from "@/lib/app-update";
 import { useTheme } from "@/lib/use-theme";
+import { useAvatarUrl } from "@/lib/avatars";
+import { useOfflineAvatarSync } from "@/lib/offline-avatars";
+import type { OfflineMode } from "@/lib/offline";
+import { useOfflineTransferMonitor, type TransferNotice } from "@/lib/use-offline-transfer-monitor";
+import { useOfflineMeshMonitor } from "@/lib/use-offline-mesh-monitor";
+import type { MeshNotice as MeshNoticeData } from "@/lib/offline";
+import { MeshNotice } from "@/components/offline/MeshNotice";
 import LoginPage from "@/pages/LoginPage";
-import type { Page } from "@/lib/types";
+import type { MessagingModule, Page } from "@/lib/types";
 import type { CallMedia } from "@/lib/call-types";
 import { useMissedCallCount } from "@/lib/use-missed-calls";
 import { useIncomingShares } from "@/lib/use-incoming-shares";
@@ -37,6 +51,7 @@ import { requestVaultSection } from "@/lib/vault-nav";
 import NotificationStack from "@/components/NotificationStack";
 import { ChatPreferencesProvider } from "@/lib/chat-preferences-context";
 import { requestOpenConversation } from "@/lib/chat-focus";
+import type { RelayAvailability } from "@/lib/relay-health";
 
 // Importer thunks are reused for both lazy() and idle-time prefetch (so the
 // first switch to a module is instant). Prefetch only downloads/parses chunks;
@@ -53,6 +68,7 @@ const pageImporters = {
   verification: () => import("@/pages/SecurityVerificationPage"),
   chat: () => import("@/pages/SecureChatPage"),
   calls: () => import("@/pages/CallsPage"),
+  offline: () => import("@/pages/OfflinePage"),
   subscription: () => import("@/pages/SubscriptionPage"),
   settings: () => import("@/pages/SettingsPage"),
 };
@@ -67,6 +83,7 @@ const HiddenVaultPage = lazy(pageImporters.hidden);
 const SecurityVerificationPage = lazy(pageImporters.verification);
 const SecureChatPage = lazy(pageImporters.chat);
 const CallsPage = lazy(pageImporters.calls);
+const OfflinePage = lazy(pageImporters.offline);
 const SubscriptionPage = lazy(pageImporters.subscription);
 const SettingsPage = lazy(pageImporters.settings);
 
@@ -75,6 +92,10 @@ const titles: Record<Page, [string, string]> = {
   chat: ["Secure Chat", "Hybrid encrypted messaging, voice notes, and file references."],
   calls: ["Calls", "Quantum-encrypted voice and video calls, with recent and missed calls."],
   vault: ["Quantum Vault", "Local-first encrypted files with signed metadata and hybrid grants."],
+  mesh: ["Qguard Mesh", "Private messages between trusted devices on your local network."],
+  xfer: ["Qguard XFER", "Send and receive verified files over a local connection."],
+  "transfer-history": ["Transfer History", "Review completed transfers and recover interrupted ones."],
+  "offline-settings": ["Offline Settings", "Manage local discovery and verify nearby devices."],
   keys: ["Key Management", "Identity keys, signed prekeys, one-time prekeys, and rotations."],
   devices: ["Device Trust Center", "QR approval, revocation, and trust posture per device."],
   verification: ["Security Verification", "Safety numbers, fingerprints, and QR verification."],
@@ -84,6 +105,9 @@ const titles: Record<Page, [string, string]> = {
   subscription: ["Subscription", "Your plan, billing history, and activation across all your devices."],
   settings: ["Settings", "Security modes, alerts, retention, and advanced options."],
 };
+
+const offlineModules: MessagingModule[] = (["mesh", "xfer", "transfer-history", "offline-settings"] as const)
+  .map((route, index) => ({ module_id: route, route, label: titles[route][0], icon: route, enabled: true, sort_order: 90 + index }));
 
 function ModuleFallback() {
   return (
@@ -96,14 +120,79 @@ function ModuleFallback() {
   );
 }
 
+function XferNotice({ notice, more, onOpen, onDismiss }: {
+  notice: TransferNotice;
+  more: number;
+  onOpen: () => void;
+  onDismiss: () => void;
+}) {
+  const verified = notice.status === "verified";
+  const offer = notice.status === "awaitingConsent";
+  const Icon = verified ? CircleCheck : offer ? FileDown : ArrowLeftRight;
+  const title = verified ? "File transfer verified" : offer ? "Incoming XFER offer" : "XFER in progress";
+  const detail = verified
+    ? notice.direction === "incoming" ? "Qguard verified the received files." : "The receiving device confirmed file integrity."
+    : offer ? "Review the offer before accepting any files." : "Follow verified progress on the transfer dashboard.";
+  const action = verified ? "View receipt" : offer ? "Review offer" : "View progress";
+  return (
+    <div className="shell-card p-3 shadow-soft">
+      <div className="flex items-start gap-3">
+        <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white ${verified ? "bg-emerald-700" : "bg-violet-700"}`}>
+          <Icon size={19} aria-hidden />
+        </span>
+        <div className="min-w-0 flex-1" role="status">
+          <p className="text-sm font-bold text-ink-950">{title}</p>
+          <p className="mt-1 text-xs text-ink-600">{detail}</p>
+          {more > 0 && <p className="mt-1 text-xs text-ink-600">{more} more XFER {more === 1 ? "update" : "updates"}</p>}
+        </div>
+        <button type="button" onClick={onDismiss} aria-label="Dismiss XFER notice"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-ink-600 hover:bg-canvas focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500">
+          <X size={17} aria-hidden />
+        </button>
+      </div>
+      <div className="mt-2 flex justify-end">
+        <button type="button" onClick={onOpen} className="min-h-11 rounded-xl bg-violet-700 px-4 text-xs font-bold text-white hover:bg-violet-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-500">{action}</button>
+      </div>
+    </div>
+  );
+}
+
+
+function AccountXferPage({ avatarUserId, localIdentity, ...props }: ComponentProps<typeof OfflinePage> & {
+  avatarUserId: string | null;
+}) {
+  const avatarUrl = useAvatarUrl(avatarUserId);
+  return <OfflinePage {...props} localIdentity={{ ...localIdentity, avatarUrl }} />;
+}
+
 function ProtectedMessagingApp() {
   const auth = useAuth();
+  const accountId = auth.user?.id;
+  // Offline mode (no internet): only Mesh, XFER and local records run. Every
+  // online service keeps its own user gate, so it stays idle until online.
+  const offline = auth.offline;
+  const onlineUser = offline ? null : auth.user;
+  const onlineUserId = onlineUser?.id ?? null;
+  const [relayObservation, setRelayObservation] = useState<{ accountId: string; value: RelayAvailability } | null>(null);
+  const [outboxObservation, setOutboxObservation] = useState<{ accountId: string; count: number } | null>(null);
+  const relay = relayObservation?.accountId === accountId ? relayObservation?.value ?? "unknown" : "unknown";
+  const outboxCount = outboxObservation?.accountId === accountId ? outboxObservation?.count ?? 0 : 0;
+  const onRelayAvailability = useCallback((value: RelayAvailability) => {
+    if (accountId) setRelayObservation((previous) => previous?.accountId === accountId && previous.value === value ? previous : { accountId, value });
+  }, [accountId]);
+  const onQueueCount = useCallback((count: number) => {
+    if (accountId) setOutboxObservation((previous) => previous?.accountId === accountId && previous.count === count ? previous : { accountId, count });
+  }, [accountId]);
+  const accessToken = auth.session?.access_token;
   // Android app-entry PIN gate (banking-grade). appLock.status is null until
   // the first `applock_status` round-trip resolves; `android` is stable per
   // runtime so every desktop build takes none of the gate branches below.
   const android = isAndroidRuntime();
   const appLock = useAppLock(auth.user?.id ?? null);
   const [forcePasswordLogin, setForcePasswordLogin] = useState(false);
+  // The Security Setup page stays up until its last step (biometric) is done,
+  // even though the lock is already configured once the PIN/pattern is saved.
+  const [securitySetupActive, setSecuritySetupActive] = useState(false);
   // Keeps the PIN gate up through a cold-launch session restore (see pin-restore.ts).
   const [pinRestore, setPinRestore] = useState<PinRestorePhase>("idle");
   // The build-time constant (vite define), not a window global: the window
@@ -112,12 +201,49 @@ function ProtectedMessagingApp() {
   const isMobile = useIsMobile();
   const [showMobileOnboarding, setShowMobileOnboarding] = useState(isMobileOnboardingPending);
   const { theme, toggleTheme } = useTheme();
-  const { data, loading, error, refresh, liveEvents, liveStatus } = useDashboardData(auth.user, auth.session);
+  const { data, loading, error, refresh, liveEvents, liveStatus } = useDashboardData(onlineUser, auth.session);
   const [page, setPage] = useState<Page>("dashboard");
-  const lockState = useWorkspaceLock(auth.user?.id ?? null);
+  const [pairedTarget, setPairedTarget] = useState<{ accountId: string; mode: OfflineMode; peer: string; intent?: "send" | "receive" } | null>(null);
+  const [transferTarget, setTransferTarget] = useState<{ accountId: string; id: string; returnPage?: Page } | null>(null);
+  const [focusedTransfer, setFocusedTransfer] = useState<{ accountId: string; id: string } | null>(null);
+  // A Mesh message a notice asked to open, or a sender to reply to.
+  const [meshTarget, setMeshTarget] = useState<{ accountId: string; id: string; sender: string; reply: boolean } | null>(null);
+  useEffect(() => {
+    setTransferTarget((current) => current?.accountId === accountId ? current : null);
+    setFocusedTransfer((current) => current?.accountId === accountId ? current : null);
+  }, [accountId]);
+  const lockState = useWorkspaceLock(onlineUserId);
   // Account-based paywall: billing_subscriptions (realtime) decides whether the
   // premium app shell mounts at all. Purchases on ANY platform unlock here live.
-  const subscriptionState = useSubscription(auth.user?.id ?? null);
+  const subscriptionState = useSubscription(onlineUserId);
+  // Offline, the verdict comes from the subscription row this device last saw
+  // online (kept sealed with the offline enrollment). UI gate only, as online.
+  const offlineSubscription = useMemo(() => {
+    const row = offline?.entitlement;
+    return row && row.user_id === offline.userId ? row as unknown as MessagingSubscription : null;
+  }, [offline]);
+  const offlineEntitled = offline !== null && hasMessagingAccess(offlineSubscription, Date.now(), OFFLINE_GRACE_MS);
+  // Online: verify the account for offline use, then keep the plan verdict so
+  // Mesh and XFER open after a restart without internet.
+  const onlineSubscription = !onlineUserId || subscriptionState.loading || subscriptionState.error
+    ? undefined : subscriptionState.subscription;
+  useEffect(() => {
+    if (!onlineUserId || !accessToken || auth.loading || relay !== "available" || !isTauriRuntime()) return undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await safeInvoke("offline_verify_principal");
+      } catch {
+        return;
+      }
+      if (cancelled || onlineSubscription === undefined) return;
+      await safeInvoke("offline_store_entitlement", { expectedAccount: onlineUserId, subscription: onlineSubscription })
+        .catch(() => undefined);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [onlineUserId, accessToken, auth.loading, relay, onlineSubscription]);
   const [vaultRecoveryEnabled, setVaultRecoveryEnabled] = useState(false);
   // Secure Chat opens on its Contacts tab only when the dashboard's Contacts
   // card asked for it; any other way in starts on the chat list.
@@ -127,8 +253,100 @@ function ProtectedMessagingApp() {
   const navigate = useCallback((next: Page) => {
     setChatOpensContacts(false);
     setChatIntent(null);
+    setPairedTarget(null);
+    setTransferTarget(null);
+    setFocusedTransfer(null);
+    setMeshTarget(null);
     setPage(next);
   }, []);
+  const currentTransferTarget = transferTarget?.accountId === accountId ? transferTarget : null;
+  const focusedTransferId = page === "xfer" && focusedTransfer?.accountId === accountId ? focusedTransfer?.id ?? null : null;
+  const openTransfer = useCallback((id: string) => {
+    if (!accountId || (page === "xfer" && focusedTransferId === id)) return;
+    if (page !== "xfer") navigate("xfer");
+    setTransferTarget({ accountId, id, returnPage: page === "xfer" ? currentTransferTarget?.returnPage : page });
+    setFocusedTransfer({ accountId, id });
+  }, [accountId, currentTransferTarget?.returnPage, focusedTransferId, navigate, page]);
+  const closeTransfer = useCallback(() => {
+    if (currentTransferTarget?.returnPage) {
+      navigate(currentTransferTarget.returnPage);
+    } else {
+      setTransferTarget(null);
+      setFocusedTransfer(null);
+    }
+  }, [currentTransferTarget?.returnPage, navigate]);
+  const onTransferFocus = useCallback((id: string | null) => {
+    if (!accountId || page !== "xfer") return;
+    setFocusedTransfer((current) => !id ? null
+      : current?.accountId === accountId && current.id === id ? current : { accountId, id });
+  }, [accountId, page]);
+  const xferEntitled = offline
+    ? offlineEntitled
+    : !subscriptionState.loading && subscriptionState.access && subscriptionState.subscription?.user_id === accountId;
+  const nativeXferEnabled = Boolean(isTauriRuntime() && accountId && (accessToken || offline) && !auth.loading
+    && xferEntitled
+    && (!android || (!appLock.loading && appLock.status?.configured && !appLock.status.locked
+      && !appLock.status.requiresFullAuth && pinRestore === "idle" && !forcePasswordLogin && !securitySetupActive)));
+  const transfers = useOfflineTransferMonitor({
+    accountId,
+    enabled: nativeXferEnabled,
+    focusedId: focusedTransferId,
+    onOpen: openTransfer,
+  });
+  const ownProfile = data.profile?.id === accountId ? data.profile : null;
+  // The native core shares this name with a device only after both users
+  // confirm a pairing code. It is a label, never an identifier.
+  const offlineOwnerName = ownProfile?.name?.trim() || ownProfile?.username?.trim() || null;
+  useEffect(() => {
+    if (!nativeXferEnabled || !accountId || !offlineOwnerName) return;
+    // The native side accepts the name only after the offline account check,
+    // which runs in parallel. Retry for a bounded time until it is accepted.
+    let cancelled = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const sync = async () => {
+      try {
+        await safeInvoke("offline_set_owner_name", { displayName: offlineOwnerName, expectedAccount: accountId });
+      } catch {
+        attempts += 1;
+        if (!cancelled && attempts < 24) timer = setTimeout(() => void sync(), 5_000);
+      }
+    };
+    void sync();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [accountId, nativeXferEnabled, offlineOwnerName]);
+  // The picture trusted devices see in Mesh and XFER: a thumbnail of the
+  // signed-in profile picture, exchanged on the authenticated channel.
+  // Unknown (offline, or the profile still loading) leaves the stored one.
+  const ownAvatarPath = !offline ? ownProfile?.avatar_storage_path : undefined;
+  const ownAvatarUrl = useAvatarUrl(ownAvatarPath ? accountId : null);
+  useOfflineAvatarSync({
+    accountId,
+    enabled: nativeXferEnabled && !offline,
+    avatarUrl: !ownProfile || offline ? undefined : ownAvatarPath ? ownAvatarUrl ?? undefined : null,
+  });
+  const openPairedPeer = useCallback((mode: OfflineMode, peer: string, intent?: "send" | "receive") => {
+    if (!accountId) return;
+    navigate(mode);
+    setPairedTarget({ accountId, mode, peer, intent });
+  }, [accountId, navigate]);
+  const meshMonitor = useOfflineMeshMonitor({ accountId, enabled: nativeXferEnabled });
+  const markMeshRead = meshMonitor.markRead;
+  // Offline mode has no relay: start automatic local discovery (when the user
+  // turned it on), as the connectivity indicator does when the relay drops.
+  useEffect(() => {
+    if (!offline || !nativeXferEnabled || !accountId) return;
+    void safeInvoke("offline_relay_state", { unavailable: true, expectedAccount: accountId }).catch(() => undefined);
+  }, [accountId, nativeXferEnabled, offline]);
+  const openMeshMessage = useCallback((notice: MeshNoticeData, reply: boolean) => {
+    if (!accountId) return;
+    void markMeshRead([notice]);
+    navigate("mesh");
+    setMeshTarget({ accountId, id: notice.id, sender: notice.sender, reply });
+  }, [accountId, markMeshRead, navigate]);
   // Ordinary dashboard links (Recent chats, My devices…). "contacts" is a tab
   // of Secure Chat rather than a page of its own.
   const navigateFromDashboard = useCallback(
@@ -160,7 +378,7 @@ function ProtectedMessagingApp() {
   const missedCalls = useMissedCallCount();
   // Files other people shared with this account, waiting for Accept / Decline:
   // the app-wide notice and the Quantum Vault badges (live via realtime).
-  const incomingShares = useIncomingShares(auth.user?.id ?? null);
+  const incomingShares = useIncomingShares(onlineUserId);
   const sharedFilesWaiting = incomingShares.pending.length;
   // "View" opens Quantum Vault on Shared → Shared with me (behind the vault lock).
   const openSharedFiles = useCallback(() => {
@@ -197,22 +415,26 @@ function ProtectedMessagingApp() {
   // The Subscription page is a client-side module every account has (it must
   // stay reachable to manage/cancel/restore) — appended to the DB-driven list.
   const navModules = useMemo(() => {
-    if (data.modules.length === 0) return data.modules;
+    const localModules = isTauriRuntime()
+      ? offlineModules.filter((module) => !data.modules.some((existing) => existing.route === module.route))
+      : [];
+    if (data.modules.length === 0) return localModules;
     return [
       // Calls sits right after Secure Chat, behind the same lock.
       ...data.modules.flatMap((module) => (module.route === "chat"
         ? [module, { module_id: "calls" as Page, label: "Calls", icon: "calls", route: "calls" as Page, enabled: true, sort_order: module.sort_order }]
         : [module])),
+      ...localModules,
       { module_id: "subscription" as Page, label: "Subscription", icon: "subscription", route: "subscription" as Page, enabled: true, sort_order: 98 },
     ];
   }, [data.modules]);
 
   useEffect(() => {
-    if (navModules.length === 0) return;
+    if (data.modules.length === 0) return;
     if (!navModules.some((module) => module.route === page)) {
       setPage(navModules[0].route);
     }
-  }, [navModules, page]);
+  }, [data.modules.length, navModules, page]);
 
   // Idle-time prefetch of route chunks so the first switch to each module is
   // instant. Only downloads/parses chunks — protected modules still don't mount
@@ -235,9 +457,14 @@ function ProtectedMessagingApp() {
 
   useEffect(() => {
     setPinRestore((phase) =>
-      settlePinRestore(phase, { signedIn: Boolean(auth.user && auth.session), loading: auth.loading }),
+      settlePinRestore(phase, { signedIn: Boolean(auth.user && (auth.session || auth.offline)), loading: auth.loading }),
     );
-  }, [pinRestore, auth.user, auth.session, auth.loading]);
+  }, [pinRestore, auth.user, auth.session, auth.offline, auth.loading]);
+
+  // Offline mode opens on Mesh and keeps to the offline workspaces.
+  useEffect(() => {
+    if (offline && !isOfflineRoute(page)) navigate("mesh");
+  }, [navigate, offline, page]);
 
   // Whether vault recovery is configured (for the lock-gate telemetry chip).
   useEffect(() => {
@@ -258,6 +485,49 @@ function ProtectedMessagingApp() {
   );
   const onboardingReady = Boolean(auth.user && auth.session) && !loading && !error && data.modules.length > 0;
   const onboarding = useOnboarding(auth.user?.id ?? null, tourSteps.length, onboardingReady);
+
+  // Mesh, XFER, Transfer History and Offline Settings: the same encrypted local
+  // workspace online and offline (no server is involved in either case).
+  const renderOfflineWorkspace = (user: NonNullable<typeof auth.user>, route: OfflineRoute): ReactNode => {
+    const mesh = route === "mesh" && meshTarget?.accountId === user.id ? meshTarget : null;
+    // Reply opens the composer for the sender; Open shows the message itself.
+    const paired = !mesh?.reply && pairedTarget?.accountId === user.id && pairedTarget.mode === route ? pairedTarget : null;
+    const initialPeer = mesh?.reply ? mesh.sender : paired?.peer;
+    // XFER: a receiver opens a "waiting for files" screen, not the composer.
+    const initialIntent = route === "xfer" ? paired?.intent : undefined;
+    const initialMessage = mesh && !mesh.reply ? { id: mesh.id, sender: mesh.sender } : undefined;
+    const initialTransferId = route === "xfer" ? currentTransferTarget?.id : undefined;
+    const accountName = user.user_metadata?.full_name;
+    const localIdentity = route === "xfer" ? {
+      displayName: ownProfile?.name?.trim() || ownProfile?.username?.trim() || (typeof accountName === "string" ? accountName.trim() : null),
+      deviceName: android ? appLock.status?.device?.deviceName : null,
+    } : undefined;
+    const key = `${user.id}:${route}:${initialTransferId ?? initialMessage?.id ?? initialPeer ?? ""}:${initialIntent ?? ""}`;
+    const common = { page: route, accountId: user.id, onNavigate: navigate, relay, initialPeer,
+      vaultUnlocked: !offline && lockState.status?.vault.unlocked === true };
+    const meshProps = { initialMessage, onMeshRead: markMeshRead };
+    return route === "xfer"
+      ? <AccountXferPage key={key} {...common} initialTransferId={initialTransferId} initialIntent={initialIntent} localIdentity={localIdentity}
+          avatarUserId={!offline && nativeXferEnabled && ownProfile?.avatar_storage_path ? user.id : null}
+          onTransferFocus={onTransferFocus} onCloseTransfer={initialTransferId ? closeTransfer : undefined} />
+      : <OfflinePage key={key} {...common} {...meshProps} />;
+  };
+  const renderPairingHost = (userId: string): ReactNode =>
+    isTauriRuntime() && <OfflinePairingHost key={userId} accountId={userId} onOpen={openPairedPeer} />;
+  const renderOfflineNotices = (): ReactNode => {
+    const [nextTransferNotice] = transfers.notices;
+    const xferNotice = nextTransferNotice && (
+      <XferNotice key={`${nextTransferNotice.id}:${nextTransferNotice.status}`} notice={nextTransferNotice} more={transfers.notices.length - 1}
+        onOpen={() => transfers.open(nextTransferNotice)} onDismiss={() => transfers.dismiss(nextTransferNotice)} />
+    );
+    const [nextMeshNotice] = meshMonitor.notices;
+    const meshNotice = nextMeshNotice && (
+      <MeshNotice key={`mesh:${nextMeshNotice.sender}:${nextMeshNotice.id}`} notice={nextMeshNotice} more={meshMonitor.notices.length - 1}
+        onOpen={() => openMeshMessage(nextMeshNotice, false)} onReply={() => openMeshMessage(nextMeshNotice, true)}
+        onDismiss={() => void markMeshRead([nextMeshNotice])} />
+    );
+    return meshNotice || xferNotice ? <>{meshNotice}{xferNotice}</> : null;
+  };
 
   // ---- The call engine mounts ABOVE every gate below ----
   //
@@ -336,6 +606,21 @@ function ProtectedMessagingApp() {
             access_token: result.session.accessToken,
             refresh_token: result.session.refreshToken,
           });
+          if (error && isTransientAuthError(error)) {
+            // No internet: the unlock still proves the account on this device,
+            // so Mesh and XFER open offline. The session returns online by
+            // itself once the network is back.
+            try {
+              await auth.resumeOfflineAfterUnlock(result.session);
+              return true;
+            } catch (offlineError) {
+              // Keep the PIN, pattern and stored session: lock again so the
+              // user can retry once the connection is back.
+              await appLock.lock().catch(() => undefined);
+              const reason = offlineError instanceof Error ? offlineError.message : String(offlineError);
+              throw new Error(`No internet connection. ${reason}`);
+            }
+          }
           if (error) {
             // Refresh token expired -> fall back to full auth, keep existing PIN.
             setForcePasswordLogin(true);
@@ -369,6 +654,7 @@ function ProtectedMessagingApp() {
           mode="unlock"
           email={accountIdentifierLabel(auth.user) || null}
           digits={appLock.status.digits}
+          method={appLock.status.method}
           attemptsRemaining={appLock.status.attemptsRemaining}
           lockoutUntil={appLock.status.lockoutUntil}
           busy={pinRestore !== "idle"}
@@ -381,6 +667,41 @@ function ProtectedMessagingApp() {
           } : undefined}
           onUsePassword={() => setForcePasswordLogin(true)}
         />
+      );
+    }
+
+    if (auth.deviceKeyRecovery) {
+      return <DeviceKeyRecoveryScreen recovery={auth.deviceKeyRecovery} onRetry={auth.retryDeviceKeys}
+        onReset={auth.resetDeviceKeys} onSignOut={auth.cancelDeviceKeyRecovery} />;
+    }
+
+    // ---- Offline mode: signed in on this device without internet ----
+    // Only the local, end-to-end encrypted workspaces run; online services
+    // (Secure Chat, Calls, Quantum Vault, billing) stay idle until online.
+    if (offline && auth.user) {
+      const route = isOfflineRoute(page) ? page : "mesh";
+      return (
+        <OfflineModeShell
+          session={offline}
+          android={android}
+          entitled={offlineEntitled}
+          page={route}
+          title={titles[route][0]}
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          onNavigate={navigate}
+          onReconnect={auth.reconnectOnline}
+          onSignInOnline={auth.exitOffline}
+          onSignOut={auth.signOut}
+          overlays={<>
+            {offlineEntitled && renderPairingHost(auth.user.id)}
+            {offlineEntitled && <OfflineNoticeStack>{renderOfflineNotices()}</OfflineNoticeStack>}
+          </>}
+        >
+          <ErrorBoundary resetKey={route}>
+            <Suspense fallback={<ModuleFallback />}>{offlineEntitled && renderOfflineWorkspace(auth.user, route)}</Suspense>
+          </ErrorBoundary>
+        </OfflineModeShell>
       );
     }
 
@@ -411,39 +732,37 @@ function ProtectedMessagingApp() {
       );
     }
 
-    // First login on Android with no PIN yet -> force PIN creation before the app.
-    if (android && !appLock.loading && auth.user && auth.session && !appLock.status?.configured) {
+    // Security Setup (new installation, new device, or after signing in again
+    // with the password): choose a PIN or a drawn pattern, plus fingerprint /
+    // face as extra ways in, before the app opens. After a password re-login
+    // (5 wrong attempts, or "use password") the lock is set again so it wraps
+    // the freshly restored session instead of trusting a stale one.
+    if (
+      android && !appLock.loading && auth.user && auth.session
+      && (!appLock.status?.configured || securitySetupActive || (forcePasswordLogin && appLock.status?.configured))
+    ) {
       const stored = auth.currentStoredSession();
+      const rebinding = Boolean(appLock.status?.configured) && forcePasswordLogin;
       return (
-        <AppLockScreen
-          mode="setup"
+        <SecuritySetupPage
           email={accountIdentifierLabel(auth.user) || null}
-          onSubmit={async (pin, digits) => {
+          reconfirm={rebinding}
+          onStart={() => setSecuritySetupActive(true)}
+          onSetup={async (method, secret) => {
             if (!stored) throw new Error("No active session to secure.");
-            const status = await appLock.setup(digits, pin, stored, "Android Device", appVersion);
+            const digits = method === "pin" ? 6 : 0;
+            const deviceName = appLock.status?.device?.deviceName ?? "Android Device";
+            const status = rebinding
+              ? await appLock.reset(digits, secret, stored, deviceName, appVersion, method)
+              : await appLock.setup(digits, secret, stored, deviceName, appVersion, method);
             if (status.device && auth.user) {
               await upsertTrustedDevice(supabase, auth.user.id, status.device).catch(() => undefined);
             }
-            setForcePasswordLogin(false);
           }}
-        />
-      );
-    }
-
-    // Forced-password re-login (5 wrong PIN attempts, or user chose "use
-    // password") re-authenticated the account -> re-confirm the existing PIN so
-    // it can re-wrap the freshly restored session, instead of silently trusting
-    // a stale local PIN against a session it never wrapped.
-    if (android && forcePasswordLogin && auth.user && auth.session && appLock.status?.configured) {
-      const stored = auth.currentStoredSession();
-      return (
-        <AppLockScreen
-          mode="setup"
-          email={accountIdentifierLabel(auth.user) || null}
-          digits={appLock.status.digits}
-          onSubmit={async (pin, digits) => {
-            if (!stored) throw new Error("No active session to secure.");
-            await appLock.reset(digits, pin, stored, appLock.status?.device?.deviceName ?? "Android Device", appVersion);
+          biometricStatus={appLock.biometricStatus}
+          onEnableBiometric={appLock.enableBiometric}
+          onDone={() => {
+            setSecuritySetupActive(false);
             setForcePasswordLogin(false);
           }}
         />
@@ -491,9 +810,13 @@ function ProtectedMessagingApp() {
     }
 
     const [title, subtitle] = titles[page];
+    const localVault = page === "vault" && isTauriRuntime()
+      && navModules.some((module) => module.route === "vault" && module.enabled);
 
     let content;
-    if (loading) {
+    if (isOfflineRoute(page)) {
+      content = renderOfflineWorkspace(auth.user, page);
+    } else if (loading && !localVault) {
       content = (
         <div className="grid gap-4">
           <div className="grid grid-cols-4 gap-4">
@@ -502,7 +825,7 @@ function ProtectedMessagingApp() {
           <div className="h-96 animate-pulse rounded-lg border border-line bg-white" />
         </div>
       );
-    } else if (error) {
+    } else if (error && !localVault) {
       content = (
         <div className="shell-card border-rose-100 bg-rose-50 p-6">
           <div className="text-sm font-bold text-rose-600">Could not open workspace</div>
@@ -623,6 +946,7 @@ function ProtectedMessagingApp() {
                 userId={auth.user.id}
                 telemetry={data.telemetry}
                 sharedFilesWaiting={sharedFilesWaiting}
+                onOpenTransfers={isTauriRuntime() ? () => navigate("xfer") : undefined}
                 vaultLock={{
                   status: lockState.status?.vault ?? null,
                   setPattern: (pattern: string) => lockState.setup("vault", "pattern", pattern),
@@ -652,7 +976,8 @@ function ProtectedMessagingApp() {
           content = <SubscriptionPage userId={auth.user.id} email={auth.user.email ?? null} accessToken={auth.session.access_token ?? null} state={subscriptionState} mode="manage" />;
           break;
         case "settings":
-          content = <SettingsPage theme={theme} onToggleTheme={toggleTheme} profile={data.profile} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} inactivityMinutes={lockState.inactivityMinutes} onSetInactivityMinutes={lockState.setInactivityMinutes} workspaceStatus={lockState.status} onLockWorkspaces={lockState.lockAll} appLock={appLock} verifyAccountPassword={verifyAccountPassword} />;
+          content = <SettingsPage theme={theme} onToggleTheme={toggleTheme} profile={data.profile} telemetry={data.telemetry} securityEvents={data.securityEvents} liveEvents={liveEvents} liveStatus={liveStatus} onRefresh={refresh} inactivityMinutes={lockState.inactivityMinutes} onSetInactivityMinutes={lockState.setInactivityMinutes} workspaceStatus={lockState.status} onLockWorkspaces={lockState.lockAll} appLock={appLock} verifyAccountPassword={verifyAccountPassword}
+            onOpenOfflineDevices={isTauriRuntime() ? () => navigate("offline-settings") : undefined} />;
           break;
         default:
           content = <DashboardPage data={data} liveEvents={liveEvents} liveStatus={liveStatus} onNavigate={navigateFromDashboard} onOpenArea={openProtectedArea} missedCalls={missedCalls} sharedFilesWaiting={sharedFilesWaiting} />;
@@ -665,6 +990,14 @@ function ProtectedMessagingApp() {
         <Suspense fallback={<ModuleFallback />}>{content}</Suspense>
       </ErrorBoundary>
     );
+    const connectivity = <ConnectivityIndicator key={auth.user.id} accountId={auth.user.id} relay={relay} outboxCount={outboxCount} vaultUnlocked={isTauriRuntime() && lockState.status?.vault.unlocked === true} showAlways={page === "settings" || page === "offline-settings"} />;
+    // The relay notice sits in the page flow under the header on every screen,
+    // so it cannot cover buttons or the bottom navigation. It stays mounted:
+    // its probe also drives automatic offline delivery.
+    const relayBanner = <RelayHealthBanner key={`relay:${auth.user.id}`} onAvailability={onRelayAvailability} />;
+    const pairingHost = renderPairingHost(auth.user.id);
+    // Offline notices share the app's notification stack on every screen.
+    const transferNotice = renderOfflineNotices();
 
     // Phone layout (Android build + narrow windows): compact header, floating
     // bottom navigation, and a module sheet replace the sidebar/top-bar chrome.
@@ -672,8 +1005,8 @@ function ProtectedMessagingApp() {
       return (
         <>
           <UpdateBanner />
-          <RelayHealthBanner />
-          <OutboxCourier />
+          <OutboxCourier key={`outbox:${auth.user.id}`} onQueueCount={onQueueCount} />
+          {pairingHost}
           <NotificationStack
             userId={auth.user.id}
             conversations={data.conversations}
@@ -681,6 +1014,7 @@ function ProtectedMessagingApp() {
             showShares={page !== "vault"}
             showMessages
             pendingShares={incomingShares.pending}
+            transferNotice={transferNotice}
             onRespondShare={incomingShares.respond}
             onViewShares={openSharedFiles}
             onOpenConversation={(alert) => openConversationFromAlert(alert.conversationId)}
@@ -696,6 +1030,9 @@ function ProtectedMessagingApp() {
             onToggleTheme={toggleTheme}
             onNavigate={navigate}
             onSignOut={auth.signOut}
+            // Mesh and XFER open straight onto the discovery radar, which
+            // reports its own local status, without the relay/vault chip row.
+            connectivity={<>{relayBanner}{page === "mesh" || page === "xfer" ? null : connectivity}</>}
           >
             {moduleContent}
           </MobileShell>
@@ -709,8 +1046,8 @@ function ProtectedMessagingApp() {
       // settings, locked chat, PIN screen), not only while Secure Chat is open.
       <>
         <UpdateBanner />
-        <RelayHealthBanner />
-        <OutboxCourier />
+        <OutboxCourier key={`outbox:${auth.user.id}`} onQueueCount={onQueueCount} />
+        {pairingHost}
         <NotificationStack
           userId={auth.user.id}
           conversations={data.conversations}
@@ -718,6 +1055,7 @@ function ProtectedMessagingApp() {
           showShares={page !== "vault"}
           showMessages
           pendingShares={incomingShares.pending}
+          transferNotice={transferNotice}
           onRespondShare={incomingShares.respond}
           onViewShares={openSharedFiles}
           onOpenConversation={(alert) => openConversationFromAlert(alert.conversationId)}
@@ -739,6 +1077,8 @@ function ProtectedMessagingApp() {
               onSignOut={auth.signOut}
               onStartTour={onboarding.replay}
             />
+            {relayBanner}
+            {page === "mesh" || page === "xfer" ? null : connectivity}
             <main className="min-h-0 flex-1 overflow-y-auto p-5">
               {moduleContent}
             </main>
@@ -758,8 +1098,8 @@ function ProtectedMessagingApp() {
   return (
     // Mute / Notifications & Sounds are read by Secure Chat, Settings, the
     // message alerts and the incoming-call ring (inside CallProvider).
-    <ChatPreferencesProvider userId={auth.user?.id ?? null}>
-      <CallProvider userId={auth.user?.id ?? ""}>
+    <ChatPreferencesProvider userId={onlineUserId}>
+      <CallProvider userId={onlineUserId ?? ""}>
         {renderShell()}
       </CallProvider>
     </ChatPreferencesProvider>

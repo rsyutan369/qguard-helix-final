@@ -1,8 +1,9 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { createHash, randomBytes } from 'node:crypto'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
-import { createAuthClient, getServerUser } from '@/lib/supabase-server'
+import { createAuthClient, getServerUser, getServiceClient } from '@/lib/supabase-server'
 import { trustedClientIp } from './runtime/client-ip'
+import { streamTokenFromRequest } from './runtime/stream-tickets'
 import {
   DEFAULT_THEME,
   normalizeTheme,
@@ -32,8 +33,37 @@ function jsonError(res: Response, status: number, code: string, message: string)
 function extractToken(req: Request): string | null {
   const authHeader = req.headers.authorization
   if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7)
-  const queryToken = req.query.token
-  return typeof queryToken === 'string' && queryToken ? queryToken : null
+  // EventSource cannot send an Authorization header, so /stream (only)
+  // accepts a short-lived single-use `?ticket=`. The JWT is never read
+  // from a URL.
+  const path = (req.originalUrl || req.url || '').split('?')[0]
+  if (!path.endsWith('/stream')) return null
+  return streamTokenFromRequest(req)
+}
+
+const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** The Supabase Auth session a (verified) access token belongs to. */
+function authSessionIdOf(token: string): string | null {
+  try {
+    const payload = token.split('.')[1]
+    if (!payload) return null
+    const claims = JSON.parse(Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')) as Record<string, unknown>
+    const id = typeof claims.session_id === 'string' ? claims.session_id : ''
+    return SESSION_UUID.test(id) ? id : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Identity of a Settings session row. Keyed on the Auth SESSION, not on the
+ * access token: the token rotates every hour, so hashing it listed one device
+ * as a new "session" after every refresh and made Revoke a cosmetic row hide.
+ */
+function sessionKeyOf(token: string): { hash: string; authSessionId: string | null } {
+  const authSessionId = authSessionIdOf(token)
+  return { hash: hashValue(authSessionId ? `sid:${authSessionId}` : token), authSessionId }
 }
 
 function getRefreshToken(req: Request): string | null {
@@ -391,7 +421,7 @@ async function touchDeviceAndSession(client: SupabaseClient, userId: string, tok
     .select('*')
     .single()
 
-  const sessionHash = hashValue(token)
+  const { hash: sessionHash, authSessionId } = sessionKeyOf(token)
   const { data: session } = await client
     .from('user_sessions')
     .upsert({
@@ -402,7 +432,9 @@ async function touchDeviceAndSession(client: SupabaseClient, userId: string, tok
       ip_address: devicePayload.ip_address,
       user_agent: userAgent,
       last_seen_at: now,
-      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      // "Seen recently" horizon: a session not seen for 30 days drops off the list.
+      expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      metadata: { source: 'profile_api', authSessionId },
     }, { onConflict: 'session_token_hash' })
     .select('*')
     .single()
@@ -434,6 +466,7 @@ async function fetchProfileBundle(client: SupabaseClient, user: User, token: str
       .select('*')
       .eq('user_id', user.id)
       .is('revoked_at', null)
+      .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
       .order('last_seen_at', { ascending: false })
       .limit(12),
     fetchActivity(client, user.id, 20),
@@ -589,7 +622,8 @@ router.get('/stream', async (req: Request, res: Response) => {
           .from('user_sessions')
           .select('id', { count: 'exact', head: true })
           .eq('user_id', user.id)
-          .is('revoked_at', null),
+          .is('revoked_at', null)
+          .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`),
         client
           .from('user_devices')
           .select('id', { count: 'exact', head: true })
@@ -1036,17 +1070,69 @@ router.patch('/devices/:id', async (req: AuthedRequest, res: Response) => {
   return res.json({ data: { device: normalizeDevice(data) } })
 })
 
+/**
+ * Revoke ONE of the caller's sessions — for real. The row is only marked
+ * revoked after Supabase Auth has ended that session (its refresh tokens are
+ * deleted with it, so the device cannot mint a new access token). This used
+ * to flip revoked_at on the display row and leave the device signed in.
+ */
 router.delete('/sessions/:id', async (req: AuthedRequest, res: Response) => {
-  const { data, error } = await req.authClient!
+  const userId = req.user!.id
+  const client = req.authClient!
+  if (!SESSION_UUID.test(String(req.params.id))) return jsonError(res, 400, 'VALIDATION_ERROR', 'Session id must be a UUID')
+  const { data: row, error: readError } = await client
     .from('user_sessions')
-    .update({ revoked_at: new Date().toISOString() })
+    .select('id,session_token_hash,metadata')
     .eq('id', req.params.id)
-    .eq('user_id', req.user!.id)
-    .select('*')
-    .single()
-  if (error || !data) return jsonError(res, 404, 'NOT_FOUND', 'Session not found')
-  await recordSecurityEvent(req.authClient!, req.user!.id, req, 'session.revoked', 'warning', 'Account session revoked', { sessionId: req.params.id })
-  return res.json({ data: { revoked: true } })
+    .eq('user_id', userId)
+    .is('revoked_at', null)
+    .maybeSingle()
+  if (readError || !row) return jsonError(res, 404, 'NOT_FOUND', 'Session not found')
+  if (row.session_token_hash === sessionKeyOf(req.token!).hash) {
+    return jsonError(res, 400, 'CURRENT_SESSION', 'This is the session you are using — sign out to end it.')
+  }
+
+  const authSessionId = typeof (row.metadata as Record<string, unknown> | null)?.authSessionId === 'string'
+    ? String((row.metadata as Record<string, unknown>).authSessionId)
+    : null
+  let authSessionEnded = false
+  if (authSessionId && SESSION_UUID.test(authSessionId)) {
+    const service = getServiceClient()
+    if (!service) return jsonError(res, 503, 'SESSION_REVOCATION_UNAVAILABLE', 'Session revocation is not configured on this server (service role missing). Nothing was changed.')
+    const { data: ended, error: rpcError } = await service.rpc('qguard_revoke_auth_session', { p_user_id: userId, p_session_id: authSessionId })
+    if (rpcError) {
+      console.error('[profile] session revocation failed:', rpcError.message)
+      return jsonError(res, 503, 'SESSION_REVOCATION_UNAVAILABLE', 'The session could not be ended: the database function qguard_revoke_auth_session is not installed (apply supabase/settings-session-revocation.sql). Nothing was changed.')
+    }
+    authSessionEnded = Number(ended ?? 0) > 0
+  }
+
+  const { error: markError } = await client
+    .from('user_sessions')
+    .update({ revoked_at: new Date().toISOString(), revoked_reason: authSessionId ? 'revoked_by_user' : 'stale_entry_removed' })
+    .eq('id', row.id)
+    .eq('user_id', userId)
+  if (markError) {
+    // The column revoked_reason is optional in older schemas — retry without it.
+    const retry = await client.from('user_sessions').update({ revoked_at: new Date().toISOString() }).eq('id', row.id).eq('user_id', userId)
+    if (retry.error) return jsonError(res, 500, 'UPDATE_ERROR', 'The session was ended but the list could not be updated — refresh the page.')
+  }
+  await recordSecurityEvent(client, userId, req, 'session.revoked', 'warning', authSessionId ? 'Account session revoked' : 'Stale session entry removed', {
+    sessionId: row.id,
+    authSessionEnded,
+    tracked: Boolean(authSessionId),
+  })
+  return res.json({
+    data: {
+      revoked: true,
+      authSessionEnded,
+      message: !authSessionId
+        ? 'Removed an old list entry that was not tied to a sign-in session.'
+        : authSessionEnded
+          ? 'Session ended. That device can no longer refresh its sign-in; an access token it already holds expires within the hour.'
+          : 'That sign-in session had already ended; the entry was removed.',
+    },
+  })
 })
 
 export default router

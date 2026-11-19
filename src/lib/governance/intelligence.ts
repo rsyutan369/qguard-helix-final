@@ -15,11 +15,13 @@
 import {
   CONTROL_CATALOG,
   CONTROL_BY_ID,
+  FRAMEWORK_BY_ID,
   FRAMEWORK_CATALOG,
   REQUIREMENT_CATALOG,
   resolveFrameworkId,
 } from './catalog'
 import { buildAuditEvents, type AuditInputs } from './audit'
+import { isUnverifiedIssuanceRecord } from '../crypto/issuance-evidence'
 import { buildEvidence, freshnessOf, type EvidenceInputs } from './evidence'
 import { evaluateControls, type CanonicalSnapshot, type ControlEvaluationInputs } from './controls'
 import { evaluatePolicies, severityOrder, type PolicyEvaluationContext } from './policy'
@@ -179,7 +181,7 @@ function rollupStatus(statuses: ControlStatus[]): ControlStatus {
   if (!inScope.length) return statuses.length ? 'not-applicable' : 'not-assessed'
   const measured = inScope.filter((status) => status !== 'not-assessed')
   if (!measured.length) return 'not-assessed'
-  if (measured.every((status) => status === 'compliant')) return 'compliant'
+  if (inScope.every((status) => status === 'compliant')) return 'compliant'
   if (measured.every((status) => status === 'non-compliant')) return 'non-compliant'
   return 'partial'
 }
@@ -194,17 +196,19 @@ function buildRequirements(controls: ControlRecord[], evidence: EvidenceRecord[]
   }
 
   return REQUIREMENT_CATALOG.map((definition) => {
+    const referenceOnly = FRAMEWORK_BY_ID.get(definition.frameworkId)?.referenceOnly === true
     const scoped = definition.controlIds.map((id) => controlById.get(id)).filter((control): control is ControlRecord => Boolean(control))
     const inScope = scoped.filter((control) => control.status !== 'not-applicable')
-    const measured = inScope.filter((control) => control.measured && control.score !== null)
+    const measured = referenceOnly ? [] : inScope.filter((control) => control.measured && control.score !== null)
     const totalWeight = measured.reduce((sum, control) => sum + control.weight, 0)
     const value = totalWeight > 0 ? clampPercent(measured.reduce((sum, control) => sum + (control.score ?? 0) * control.weight, 0) / totalWeight) : null
-    const status = rollupStatus(scoped.map((control) => control.status))
-    const lastValidatedAt = newest(...scoped.map((control) => control.lastValidatedAt))
+    const status = referenceOnly ? 'not-assessed' : rollupStatus(scoped.map((control) => control.status))
+    const lastValidatedAt = referenceOnly ? null : newest(...scoped.map((control) => control.lastValidatedAt))
 
     return {
       id: definition.id,
       frameworkId: definition.frameworkId,
+      referenceOnly,
       code: definition.code,
       title: definition.title,
       summary: definition.summary,
@@ -214,12 +218,12 @@ function buildRequirements(controls: ControlRecord[], evidence: EvidenceRecord[]
       measured: measured.length > 0,
       controlsTotal: scoped.length,
       controlsMeasured: measured.length,
-      controlsCompliant: scoped.filter((control) => control.status === 'compliant').length,
-      controlsFailing: scoped.filter((control) => control.status === 'non-compliant' || control.status === 'partial').length,
+      controlsCompliant: referenceOnly ? 0 : scoped.filter((control) => control.status === 'compliant').length,
+      controlsFailing: referenceOnly ? 0 : scoped.filter((control) => control.status === 'non-compliant' || control.status === 'partial').length,
       evidenceCount: evidenceByRequirement.get(definition.id) || 0,
       lastValidatedAt,
       evidenceFreshness: freshnessOf(lastValidatedAt, Date.now()).state,
-      unmeasuredControlIds: inScope.filter((control) => !control.measured).map((control) => control.id),
+      unmeasuredControlIds: inScope.filter((control) => referenceOnly || !control.measured).map((control) => control.id),
     }
   })
 }
@@ -251,13 +255,13 @@ function buildFrameworks(
     for (const requirement of scopedRequirements) for (const id of requirement.controlIds) controlIds.add(id)
     const scopedControls = [...controlIds].map((id) => controlById.get(id)).filter((control): control is ControlRecord => Boolean(control))
 
-    const measuredControls = scopedControls.filter((control) => control.measured && control.score !== null && control.status !== 'not-applicable')
+    const measuredControls = definition.referenceOnly ? [] : scopedControls.filter((control) => control.measured && control.score !== null && control.status !== 'not-applicable')
     const totalWeight = measuredControls.reduce((sum, control) => sum + control.weight, 0)
     const value = totalWeight > 0 ? clampPercent(measuredControls.reduce((sum, control) => sum + (control.score ?? 0) * control.weight, 0) / totalWeight) : null
 
-    const openFindings = scopedControls.reduce((sum, control) => sum + control.failing, 0)
-    const criticalFindings = scopedControls.filter((control) => control.severity === 'critical').length
-    const lastValidatedAt = newest(...scopedControls.map((control) => control.lastValidatedAt))
+    const openFindings = definition.referenceOnly ? 0 : scopedControls.reduce((sum, control) => sum + control.failing, 0)
+    const criticalFindings = definition.referenceOnly ? 0 : scopedControls.filter((control) => control.severity === 'critical').length
+    const lastValidatedAt = definition.referenceOnly ? null : newest(...scopedControls.map((control) => control.lastValidatedAt))
 
     return {
       id: definition.id,
@@ -268,7 +272,8 @@ function buildFrameworks(
       scope: definition.scope,
       reference: definition.reference,
       category: definition.category,
-      status: rollupStatus(scopedControls.map((control) => control.status)),
+      referenceOnly: definition.referenceOnly === true,
+      status: definition.referenceOnly ? 'not-assessed' : rollupStatus(scopedControls.map((control) => control.status)),
       score: value,
       measured: measuredControls.length > 0,
       requirementsTotal: scopedRequirements.length,
@@ -870,13 +875,14 @@ function buildTelemetry(input: GovernanceInputs, evidence: EvidenceRecord[], aud
 
 export function buildGovernanceIntelligence(inputs: GovernanceInputs): GovernanceIntelligence {
   const now = inputs.now ?? Date.now()
+  const generatedKeys = inputs.generatedKeys.filter((row) => !isUnverifiedIssuanceRecord(row))
 
   /* 1. Normalise the subject population once. */
   const subjects = buildSubjects({
     assets: inputs.assets,
     cryptoInventory: inputs.cryptoInventory,
     certificates: inputs.certificates,
-    generatedKeys: inputs.generatedKeys,
+    generatedKeys,
     runtimeEvents: inputs.runtimeEvents,
     vaultFiles: inputs.vaultFiles,
   })
@@ -912,7 +918,7 @@ export function buildGovernanceIntelligence(inputs: GovernanceInputs): Governanc
     scannerEvidence: inputs.scannerEvidence,
     cryptoInventory: inputs.cryptoInventory,
     certificates: inputs.certificates,
-    generatedKeys: inputs.generatedKeys,
+    generatedKeys,
     runtimeEvents: inputs.runtimeEvents,
     migrationJobs: inputs.migrationJobs,
     vaultFiles: inputs.vaultFiles,
@@ -935,7 +941,7 @@ export function buildGovernanceIntelligence(inputs: GovernanceInputs): Governanc
     scanSessions: inputs.scanSessions,
     complianceEvidence: inputs.complianceEvidence,
     scannerAlerts: inputs.scannerAlerts,
-    generatedKeys: inputs.generatedKeys,
+    generatedKeys,
     certificates: inputs.certificates,
     assets: inputs.assets,
   }

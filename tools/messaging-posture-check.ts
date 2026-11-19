@@ -27,10 +27,13 @@ const PRE_FIPS = { ...CURRENT, pq_kem_standard: undefined, kem_combiner: undefin
 const NOW = '2026-10-20T00:00:00.000Z'
 
 // Key establishment.
-check('FIPS 203 device → hybrid X25519 + ML-KEM-1024', messagingKeyEstablishment(CURRENT).algorithm === 'X25519 + ML-KEM-1024')
+check('FIPS 203 device → hybrid X25519 + ML-KEM-1024', messagingKeyEstablishment(CURRENT)?.algorithm === 'X25519 + ML-KEM-1024')
 const legacy = messagingKeyEstablishment(PRE_FIPS)
-check('NEG pre-FIPS Kyber device is NOT reported as post-quantum', legacy.algorithm === 'X25519' && Boolean(legacy.note), legacy)
-check('NEG device with no PQ KEM → classical', messagingKeyEstablishment({ classical_kex: 'X25519' }).algorithm === 'X25519')
+check('NEG pre-FIPS Kyber device is NOT reported as post-quantum', legacy?.algorithm === 'X25519' && Boolean(legacy.note), legacy)
+check('NEG device with no PQ KEM → classical', messagingKeyEstablishment({ classical_kex: 'X25519' })?.algorithm === 'X25519')
+check('NEG missing suite does not invent X25519', messagingKeyEstablishment(null) === null)
+check('NEG unmarked PQ field without classical evidence does not produce a row', messagingKeyEstablishment({ pq_kem: 'ML-KEM-1024' }) === null)
+check('NEG marked PQ KEM alone is not a hybrid', messagingKeyEstablishment({ pq_kem: 'ML-KEM-1024', pq_kem_standard: 'FIPS-203' })?.algorithm === 'ML-KEM-1024')
 check('signature pair is named as a hybrid', messagingSignature(CURRENT) === 'Ed25519 + ML-DSA-65')
 
 // Helix's own parser agrees with the grading.
@@ -50,6 +53,8 @@ const rows = messagingDeviceEvidence([
 ], NOW)
 check('NEG revoked and retired devices are left out', !rows.some((row) => /Revoked|Retired/.test(row.assetName)))
 check('four primitives per active device', rows.filter((row) => row.target === 'qguard-messaging:device:dev-1').length === 4)
+check('published suite rows are configuration evidence', rows.every((row) => row.confidence === 'medium' && row.rawEvidence.source === 'messaging_devices.suite'))
+check('NEG active device without suite produces no fabricated evidence', messagingDeviceEvidence([{ id: 'missing-suite' }], NOW).length === 0)
 check('every row is a messaging evidence row with a target', rows.every((row) => row.evidenceType === MESSAGING_EVIDENCE_TYPE && row.target.startsWith('qguard-messaging:device:')))
 check('the old phone is reported with its classical grade', rows.some((row) => row.assetName.includes('Old phone') && row.observedAlgorithm === 'X25519'))
 const leaked = JSON.stringify(rows)

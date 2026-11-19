@@ -1,8 +1,9 @@
-import React from "react";
-import { motion } from "framer-motion";
+import { useState } from "react";
+import { Chars } from "@/pages/landing-chars";
 import { useNavigate } from "react-router-dom";
 import {
   Activity,
+  ArrowRight,
   Database,
   Eye,
   GitBranch,
@@ -10,13 +11,7 @@ import {
   Network,
   RotateCcw,
   ShieldCheck,
-  Zap,
 } from "lucide-react";
-import { BorderBeam } from "./border-beam";
-import { Button } from "./button";
-import { Card } from "./card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "./tabs";
-import { TracingBeam } from "./tracing-beam";
 
 const ADVANCE_FEATURES = [
   {
@@ -117,151 +112,80 @@ const ADVANCE_FEATURES = [
   },
 ];
 
+/**
+ * Homepage "Advance Features" section. Styled by src/pages/landing.css (the
+ * .lp-* classes), so it must render inside the homepage root.
+ */
 export const Hero195 = () => {
   const navigate = useNavigate();
+  const [activeValue, setActiveValue] = useState(ADVANCE_FEATURES[0].value);
+  const activeIndex = Math.max(0, ADVANCE_FEATURES.findIndex((feature) => feature.value === activeValue));
+  const feature = ADVANCE_FEATURES[activeIndex];
 
   return (
-    <section
-      id="command-center"
-      className="relative left-1/2 w-screen -translate-x-1/2 overflow-hidden bg-transparent py-24 scroll-mt-24"
-    >
-      <div className="absolute left-1/2 top-0 h-full w-full -translate-x-1/2 overflow-hidden pointer-events-none">
-        <div className="absolute left-[-10%] top-[-10%] h-[40%] w-[40%] rounded-full bg-gold/5 blur-[120px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] h-[40%] w-[40%] rounded-full bg-gold/5 blur-[120px]" />
-      </div>
+    <section id="command-center" className="lp-section">
+      <div className="lp-wrap">
+        <div className="lp-head lp-head--split">
+          <div>
+            <p className="lp-eyebrow">Next-Gen PQC Infrastructure</p>
+            <h2 className="lp-h2" data-letters="scroll" aria-label="Qguard Helix - Advance Features">
+              <Chars text="Qguard Helix - Advance Features" />
+            </h2>
+            <p className="lp-lede">
+              A unified advanced-features dashboard for HNDL defense, runtime visibility, trust fabric, crypto
+              agility, migration execution, sandbox rehearsal, rollback snapshots, and Quantum Vault protection.
+            </p>
+          </div>
+          <button type="button" onClick={() => navigate("/auth")} className="lp-btn lp-btn--secondary">
+            Launch Advance Features
+            <ArrowRight aria-hidden="true" />
+          </button>
+        </div>
 
-      <TracingBeam className="max-w-none px-3 sm:px-6 xl:px-8">
-        <div className="mx-auto w-full max-w-[94rem]">
-          <div className="mb-16 text-center">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5 }}
-            >
-              <span className="mb-6 inline-block rounded-full border border-gold/30 bg-gold/10 px-4 py-1.5 font-mono text-xs font-bold uppercase tracking-[0.2em] text-gold">
-                Next-Gen PQC Infrastructure
-              </span>
-              <h2 className="mb-6 text-4xl font-black uppercase tracking-tight text-white md:text-6xl">
-                Qguard Helix - <span className="gold-glow text-gold">Advance Features</span>
-              </h2>
-              <p className="mx-auto max-w-2xl text-lg leading-relaxed text-muted-foreground">
-                A unified advanced-features dashboard for HNDL defense, runtime visibility, trust fabric, crypto
-                agility, migration execution, sandbox rehearsal, rollback snapshots, and Quantum Vault protection.
-              </p>
-            </motion.div>
+        <div className="lp-tabs" role="tablist" aria-label="Advance features">
+          {ADVANCE_FEATURES.map((item) => {
+            const Icon = item.icon;
 
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              whileInView={{ opacity: 1, scale: 1 }}
-              transition={{ delay: 0.2, duration: 0.5 }}
-              className="mt-10 flex justify-center gap-4"
-            >
-              <Button
-                onClick={() => navigate("/auth")}
-                size="lg"
-                className="bg-gold px-8 font-bold uppercase tracking-widest text-black transition-all hover:bg-white"
+            return (
+              <button
+                key={item.value}
+                type="button"
+                role="tab"
+                aria-selected={item.value === feature.value}
+                aria-controls="advance-feature-panel"
+                onClick={() => setActiveValue(item.value)}
               >
-                Launch Advance Features <Zap className="ml-2 h-4 w-4" />
-              </Button>
-            </motion.div>
+                <Icon className="lp-icon" aria-hidden="true" />
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div key={feature.value} id="advance-feature-panel" role="tabpanel" className="lp-feature lp-card">
+          <div className="lp-feature__media">
+            <img src={feature.image} alt={feature.alt} />
           </div>
 
-          <motion.div
-            initial={{ opacity: 0, y: 40 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3, duration: 0.7 }}
-            className="relative"
-          >
-            <Tabs defaultValue={ADVANCE_FEATURES[0].value} className="w-full">
-              <div className="mb-12 flex justify-center">
-                <TabsList className="flex h-auto flex-wrap justify-center rounded-xl border border-white/10 bg-white/5 p-1">
-                  {ADVANCE_FEATURES.map((feature) => {
-                    const Icon = feature.icon;
+          <div className="lp-feature__copy">
+            <div className="lp-feature__meta">
+              <span className="lp-label">{feature.label}</span>
+              <span className="lp-label">Feature {String(activeIndex + 1).padStart(2, "0")}</span>
+            </div>
+            <h3>{feature.title}</h3>
+            <p>{feature.description}</p>
 
-                    return (
-                      <TabsTrigger
-                        key={feature.value}
-                        value={feature.value}
-                        className="rounded-lg px-4 py-3 text-[10px] font-bold uppercase tracking-wide transition-all data-[state=active]:bg-gold data-[state=active]:text-black sm:text-xs lg:px-5"
-                      >
-                        <Icon className="mr-2 h-4 w-4" />
-                        {feature.label}
-                      </TabsTrigger>
-                    );
-                  })}
-                </TabsList>
-              </div>
-
-              {ADVANCE_FEATURES.map((feature, index) => {
-                const Icon = feature.icon;
-
-                return (
-                  <TabsContent
-                    key={feature.value}
-                    value={feature.value}
-                    className="mt-0 outline-none focus-visible:ring-0"
-                  >
-                    <Card className="group relative overflow-hidden rounded-2xl border-gold/25 bg-cyber-navy/55 py-0 shadow-[0_34px_120px_rgba(0,0,0,0.45)] backdrop-blur-xl">
-                      <BorderBeam size={360} duration={8} delay={2} />
-                      <div className="grid items-stretch gap-4 p-3 sm:p-4 md:p-6 lg:grid-cols-[minmax(0,1.55fr)_minmax(22rem,0.9fr)] xl:grid-cols-[minmax(0,1.7fr)_minmax(25rem,0.95fr)] xl:gap-6 xl:p-7">
-                        <div className="relative min-h-[22rem] overflow-hidden rounded-2xl border border-white/10 bg-black/40 md:min-h-[28rem] lg:h-full lg:min-h-[34rem] xl:min-h-[40rem]">
-                          <img
-                            src={feature.image}
-                            alt={feature.alt}
-                            className="h-full w-full object-cover object-center opacity-90 transition-opacity duration-500 group-hover:opacity-100"
-                          />
-                          <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-black/10 to-transparent pointer-events-none" />
-                          <div className="absolute right-4 top-4 md:right-6 md:top-6">
-                            <div className="flex items-center gap-2 rounded-full border border-gold/30 bg-black/60 px-4 py-2 shadow-[0_0_20px_rgba(212,175,55,0.2)] backdrop-blur-md">
-                              <Icon className="h-3 w-3 text-gold" />
-                              <span className="text-[10px] font-bold uppercase tracking-widest text-gold">
-                                {feature.status}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex h-full min-h-full flex-col justify-between rounded-2xl border border-white/10 bg-black/35 p-5 text-left md:p-7 xl:p-8">
-                          <div>
-                            <div className="mb-5 flex items-center justify-between gap-4">
-                              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-gold/30 bg-gold/10 text-gold">
-                                <Icon className="h-5 w-5" />
-                              </div>
-                              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.2em] text-white/35">
-                                // Feature {String(index + 1).padStart(2, "0")}
-                              </span>
-                            </div>
-                            <p className="mb-2 font-mono text-[10px] font-bold uppercase tracking-[0.22em] text-gold">
-                              {feature.label}
-                            </p>
-                            <h3 className="mb-3 text-2xl font-black uppercase tracking-tight text-white md:text-3xl">
-                              {feature.title}
-                            </h3>
-                            <p className="text-sm leading-7 text-white/62 xl:text-[15px] xl:leading-8">
-                              {feature.description}
-                            </p>
-                          </div>
-
-                          <div className="mt-6 grid gap-2 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
-                            {feature.highlights.map((highlight) => (
-                              <span
-                                key={highlight}
-                                className="rounded-lg border border-gold/20 bg-gold/10 px-3 py-2 text-center font-mono text-[10px] font-bold uppercase tracking-wide text-gold"
-                              >
-                                {highlight}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </Card>
-                  </TabsContent>
-                );
-              })}
-            </Tabs>
-          </motion.div>
+            <ul className="lp-feature__highlights">
+              <li className="lp-tag">{feature.status}</li>
+              {feature.highlights.map((highlight) => (
+                <li key={highlight} className="lp-tag">
+                  {highlight}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
-      </TracingBeam>
+      </div>
     </section>
   );
 };

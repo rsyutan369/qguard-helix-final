@@ -14,7 +14,11 @@
  *
  *   npx tsx tools/crypto-detection-check.ts
  */
-import http from 'node:http'
+import { EventEmitter } from 'node:events'
+import type { ClientRequest, IncomingMessage, RequestOptions } from 'node:http'
+import https from 'node:https'
+import { Readable } from 'node:stream'
+import { mock } from 'node:test'
 import {
   CRYPTO_PATTERNS,
   PRIORITY_EXTENSIONS,
@@ -23,6 +27,7 @@ import {
   isScannablePath,
 } from '../src/lib/scanner/web-scanner/crypto-patterns'
 import { scanWebCrypto } from '../src/lib/scanner/web-scanner/web-crypto-scanner'
+import { safeLookup } from '../src/lib/scanner/public-scan/safe-dns'
 
 let failures = 0
 function assert(condition: boolean, label: string) {
@@ -289,19 +294,21 @@ const BUNDLE = `const p = "RSASSA-PKCS1-v1_5"; nacl.sign(m,k); const k = "-----B
 
 async function verifyClientScanner() {
   console.log('\n=== Positive control: client-side web crypto scanner ===')
-  const server = http.createServer((req, res) => {
-    if (req.url === '/bundle.js') {
-      res.writeHead(200, { 'Content-Type': 'application/javascript' })
-      res.end(BUNDLE)
-      return
-    }
-    res.writeHead(200, { 'Content-Type': 'text/html' })
-    res.end(VULNERABLE_PAGE)
-  })
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-  const port = (server.address() as { port: number }).port
-  const result = await scanWebCrypto(`http://127.0.0.1:${port}/`)
-  await new Promise<void>((resolve) => server.close(() => resolve()))
+  const scannerRequests: Array<{ path: string; lookup: RequestOptions['lookup'] }> = []
+  const requestFixture = mock.method(https, 'request', ((url: URL, options: RequestOptions, receive: (response: IncomingMessage) => void) => {
+    scannerRequests.push({ path: url.pathname, lookup: options.lookup })
+    const bundle = url.pathname === '/bundle.js'
+    const response = Object.assign(Readable.from([Buffer.from(bundle ? BUNDLE : VULNERABLE_PAGE)]), {
+      statusCode: 200,
+      headers: { 'content-type': bundle ? 'application/javascript' : 'text/html' },
+    }) as IncomingMessage
+    return Object.assign(new EventEmitter(), {
+      end: () => queueMicrotask(() => receive(response)),
+    }) as ClientRequest
+  }) as typeof https.request)
+  const result = await scanWebCrypto('https://example.com/').finally(() => requestFixture.mock.restore())
+  assert(scannerRequests.map(({ path }) => path).join(',') === '/,/bundle.js', 'reads the page and its linked bundle')
+  assert(scannerRequests.every(({ lookup }) => lookup === safeLookup), 'all resource connections use the public DNS policy')
 
   const names = result.patterns.map((p) => p.algorithm).join(' | ')
   assert(result.patterns.length > 0, `finds planted client-side patterns (${result.patterns.length})`)
@@ -342,10 +349,6 @@ async function main() {
     return
   }
   console.log('All crypto detection checks passed.')
-  // Deliberately NOT process.exit(): forcing exit races libuv's teardown of the
-  // just-closed HTTP server on Windows and aborts with a handle assertion,
-  // which would report a passing run as exit code 127. Setting exitCode and
-  // letting the loop drain is the correct signal for CI.
   process.exitCode = 0
 }
 

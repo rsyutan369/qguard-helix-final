@@ -28,7 +28,7 @@ export function PaywallGate(props: {
             <img src="/brand/qguard-messaging-badge.webp" alt="QGuard Messaging" className="h-full w-full object-contain drop-shadow-[0_4px_10px_rgba(59,130,246,0.45)]" />
           </div>
           <div>
-            <div className="text-sm font-bold tracking-wide text-violet-600">QGUARD</div>
+            <div className="text-sm font-bold tracking-wide text-violet-600">QGUARD HELIX</div>
             <div className="text-[11px] font-medium text-ink-400">Quantum Messaging</div>
           </div>
         </div>

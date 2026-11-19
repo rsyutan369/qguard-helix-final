@@ -112,6 +112,8 @@ export interface OrchestratorOptions {
   onEngine?: (engine: string, ok: boolean, detail: string, unmeasured?: boolean) => void
   /** Called as individual measurements land, for the live visualization. */
   onObservation?: ObservationSink
+  onHttpEvidence?: (evidence: HttpIntelligence) => void
+  onCertificateEvidence?: (evidence: CertificateIntelligence) => void
   /** Called when an engine begins, so the rail reflects real start times. */
   onEngineStart?: (engine: string) => void
   /**
@@ -295,6 +297,7 @@ const caaAnswered = (dns: { caaQueryable: boolean; caaClimbComplete: boolean }) 
 
   onEngineStart?.('http-security')
   const httpPromise = runHttpEngine(host, port).then((result) => {
+    if (!signal?.aborted && result.data.reachable) options.onHttpEvidence?.(result.data)
     // HSTS is scored as its own control and reported on its own card, so the
     // transport-header tally EXCLUDES it — exactly as `http-security` in
     // controls.ts does. Counting every header here made the live hero say
@@ -356,6 +359,8 @@ const caaAnswered = (dns: { caaQueryable: boolean; caaClimbComplete: boolean }) 
 
   onEngineStart?.('certificate-intelligence')
   const certificateResult = await runCertificateEngine(host, port, options.onObservation)
+  stopIfCancelled()
+  if (certificateResult.data.certificate) options.onCertificateEvidence?.(certificateResult.data)
   onEngine?.(
     'certificate-intelligence',
     certificateResult.ok,

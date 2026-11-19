@@ -66,13 +66,14 @@ const scannerAlerts = [
   { id: 'al-tls', category: 'certificate-authority-trust-scanner', title: 'Weak cipher suite accepted on legacy.example.test', message: 'TLS_RSA_WITH_AES_128_CBC_SHA has no forward secrecy.', recommendation: 'Disable RSA key transport suites.', severity: 'high', metadata: { algorithm: 'TLS_RSA_WITH_AES_128_CBC_SHA' }, updated_at: AT },
 ]
 
-const tls = buildTlsPkiIntelligence({
+const tlsInputs: Parameters<typeof buildTlsPkiIntelligence>[0] = {
   assets: [],
   snapshot: { quantumReadiness: 40, quantumRisk: 60, quantumRiskLevel: 'High', assetsAssessed: 3 },
   runtimeEvents, cryptoInventory: inventory, certificates, scannerEvidence: [], scanResults: [], cryptoExposures: [], scannerAlerts,
   securityEvents: [], migrationJobs: [], migrationPlans: [], scanSessions: [], scannerAgents: [], connectorAccounts: [], agentHeartbeats: [],
   validationLogs: [], queuedAssetIds: [], now: NOW,
-})
+}
+const tls = buildTlsPkiIntelligence(tlsInputs)
 
 /* ------------------------------------------------------------------ */
 console.log('\nA. Only transport / PKI alerts become TLS findings')
@@ -167,6 +168,31 @@ console.log('\nE. Probe facts are "accepted", live facts are "negotiated"')
   const probeObs = tls.observations.find((o) => o.endpointId === legacy?.id && o.kind === 'protocol' && o.observed === 'TLS 1.0')
   assert(probeObs?.basis === 'scanner-probe' && /accepted/i.test(probeObs.evidence.detail) && !/^Negotiated/i.test(probeObs.evidence.detail), 'a probed version is described as accepted, not negotiated', probeObs?.evidence.detail)
   assert(tls.observations.every((o) => ['live-traffic', 'scanner-probe', 'inventory-record'].includes(o.basis)), 'every observation carries a basis')
+}
+
+console.log('\nG. Listener measurements and certificate identities stay separate')
+{
+  const result = buildTlsPkiIntelligence({
+    ...tlsInputs,
+    runtimeEvents: [
+      { ...runtimeEvents[0], metadata: { handshakes: 10 } },
+      { ...runtimeEvents[0], id: 'second-listener', port: 8443, key_exchange_algorithm: 'X25519', observed_at: days(-2) },
+      { id: 'failed-listener-attempt', host: 'live.example.test', port: 443, event_type: 'tls_handshake_failed', observed_at: days(-1) },
+      { ...runtimeEvents[0], id: 'latest-primary', key_exchange_algorithm: 'X25519', observed_at: days(-1) },
+    ],
+    certificates: [
+      certificates[0],
+      { ...certificates[0], id: 'same-serial-different-issuer', issuer: 'CN=Other Root', not_before: days(10) },
+    ],
+  })
+  const listeners = result.endpoints.filter((row) => row.host === 'live.example.test')
+  const primary = listeners.find((row) => row.port === 443)
+  assert(listeners.length === 2, 'the same host on 443 and 8443 remains two listeners')
+  assert(primary?.handshakeCount === 12, 'ten aggregated and two individual attempts count once each', String(primary?.handshakeCount))
+  assert(result.protocol.handshakeFailures === 1, 'a failure with no negotiated version or cipher still counts')
+  assert(primary?.posture === 'quantum-vulnerable', 'the newest valid handshake sets current key exchange posture', primary?.posture)
+  assert(result.certificates.length === 2, 'identical serial numbers under different issuers remain separate')
+  assert(result.pki.lifecycle.notYetValid === 1, 'a future notBefore is reported as not yet valid')
 }
 
 console.log(failures === 0 ? '\n✓ TLS / PKI / TRUST INTEGRITY INVARIANTS HOLD\n' : `\n✗ ${failures} CHECK(S) FAILED\n`)

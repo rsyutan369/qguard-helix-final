@@ -2541,7 +2541,7 @@ export function ExposureWorkflowGraph({
           border-color: var(--qg-dashboard-border) !important;
           box-shadow: var(--qg-panel-shadow);
         }
-        .qg-theme-light .qg-workflow-flow .react-flow__minimap-mask { fill: rgba(70, 48, 28, 0.16); }
+        .qg-theme-light .qg-workflow-flow .react-flow__minimap-mask { fill: rgba(11, 29, 58, 0.12); }
       `}</style>
     </div>
   );

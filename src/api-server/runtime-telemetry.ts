@@ -4,12 +4,6 @@
  * Reports the health of the telemetry pipeline itself: collector fleet,
  * ingestion lag, source freshness, signal quality and coverage.
  *
- * This replaces the `runtime` mode of `observability-dashboard.ts`, whose
- * builder accepted a mode discriminator and never read it — so
- * runtime-telemetry, certificate-telemetry and multi-cloud-telemetry all
- * returned byte-identical payloads. Those other two modes still use it and are
- * untouched.
- *
  * Row caps matter more here than on other dashboards: this page reports on the
  * SHAPE of the data, so a truncated fetch would misreport the very thing it
  * exists to measure. Caps are therefore generous, and any source that reaches
@@ -20,8 +14,9 @@ import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { buildTelemetryPipelineIntelligence } from '@/lib/telemetry-pipeline/intelligence'
 import type { SourceKey, TelemetryPipelineIntelligence } from '@/lib/telemetry-pipeline/types'
-
-type Row = Record<string, unknown>
+import type { Row } from '@/lib/migration/asset-intelligence'
+import { streamLiveSnapshot } from './live-snapshot-stream'
+import { createSourceLedger } from './source-ledger'
 
 type AuthedRequest = Request & {
   user?: { id: string; email?: string | null }
@@ -37,23 +32,8 @@ function num(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function safeRows(client: any, table: string, build: (query: any) => any): Promise<Row[]> {
-  try {
-    const { data, error } = await build(client.from(table))
-    if (error) {
-      console.warn(`[runtime-telemetry] ${table} query skipped:`, error.message || error)
-      return []
-    }
-    return (data as Row[]) || []
-  } catch (error) {
-    console.warn(`[runtime-telemetry] ${table} query failed:`, (error as Error)?.message || error)
-    return []
-  }
-}
-
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const token = getToken(req) || (typeof req.query.token === 'string' ? req.query.token : null)
+  const token = getToken(req)
   if (!token) return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
   const user = await getServerUser(token)
   if (!user) return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' } })
@@ -129,26 +109,33 @@ async function computeModel(token: string, userId: string): Promise<TelemetryPip
   if (!client) throw new Error('Database connection failed')
 
   const keys = Object.keys(SELECT) as SourceKey[]
+  const ledger = createSourceLedger('runtime-telemetry')
+  const read = async (table: string, columns: string, order: string, limit: number) => {
+    let capped = false
+    const label = table.replace(/_/g, ' ')
+    const rows = await ledger.read(client, table, label, null, async (query) => {
+      const result = await query.select(columns, { count: 'exact' }).eq('user_id', userId)
+        .order(order, { ascending: false, nullsFirst: false }).limit(limit)
+      capped = !result.error && typeof result.count === 'number' && result.count > (result.data?.length ?? 0)
+      return result
+    })
+    if (capped) ledger.note(table, label, 'truncated', rows.length, 'Only the most recent rows were read. Counts and coverage are partial.')
+    return rows
+  }
 
   const [assets, scannerAgents, connectorAccounts, ...sourceResults] = await Promise.all([
-    safeRows(client, 'assets', (q) => q.select('id, name, environment').eq('user_id', userId).limit(2000)),
-    safeRows(client, 'scanner_agents', (q) =>
-      q.select('id, name, status, hostname, platform, last_seen_at, metadata, created_at, updated_at').eq('user_id', userId).limit(500),
-    ),
-    safeRows(client, 'connector_accounts', (q) =>
-      q.select('id, provider, status, last_sync_at, created_at, updated_at').eq('user_id', userId).limit(500),
-    ),
-    ...keys.map((key) =>
-      safeRows(client, key, (q) => q.select(SELECT[key]).eq('user_id', userId).order(ORDER[key], { ascending: false }).limit(CAP[key])),
-    ),
+    read('assets', 'id, name, environment, metadata', 'updated_at', 2000),
+    read('scanner_agents', 'id, name, status, hostname, platform, last_seen_at, revoked_at, version, metadata, created_at, updated_at', 'last_seen_at', 500),
+    read('connector_accounts', 'id, provider, status, last_sync_at, created_at, updated_at', 'updated_at', 500),
+    ...keys.map((key) => read(key, SELECT[key], ORDER[key], CAP[key])),
   ])
 
+  if (ledger.reads.every((entry) => entry.state === 'unavailable')) {
+    throw new Error('Telemetry sources could not be read. Please try again shortly.')
+  }
   const rowsBySource = {} as Record<SourceKey, Row[]>
-  const truncatedSources: SourceKey[] = []
   keys.forEach((key, index) => {
-    const data = sourceResults[index] ?? []
-    rowsBySource[key] = data
-    if (data.length >= CAP[key]) truncatedSources.push(key)
+    rowsBySource[key] = sourceResults[index] ?? []
   })
 
   return buildTelemetryPipelineIntelligence({
@@ -158,7 +145,7 @@ async function computeModel(token: string, userId: string): Promise<TelemetryPip
       environment: str(asset.environment) || 'unknown',
     })),
     rowsBySource,
-    truncatedSources,
+    reads: ledger.reads,
     scannerAgents,
     connectorAccounts,
   })
@@ -169,7 +156,9 @@ export async function buildRuntimeTelemetryModel(token: string, userId: string, 
   if (!force && cached && Date.now() - cached.at < MODEL_TTL_MS) return cached.promise
   const promise = computeModel(token, userId)
   modelCache.set(userId, { at: Date.now(), promise })
-  promise.catch(() => modelCache.delete(userId))
+  promise.catch(() => {
+    if (modelCache.get(userId)?.promise === promise) modelCache.delete(userId)
+  })
   if (modelCache.size > 500) {
     const now = Date.now()
     for (const [key, value] of modelCache) if (now - value.at > MODEL_TTL_MS) modelCache.delete(key)
@@ -188,6 +177,7 @@ function projectView(model: TelemetryPipelineIntelligence) {
     generatedAt: model.generatedAt,
     latestEvidenceAt: model.latestEvidenceAt,
     hasData: model.hasData,
+    reads: model.reads,
     posture: model.posture,
     fleet: { ...model.fleet, collectors: model.fleet.collectors.slice(0, PAGE.collectors) },
     ingestion: model.ingestion,
@@ -228,44 +218,11 @@ router.get('/', async (req: AuthedRequest, res: Response) => {
   }
 })
 
-router.get('/stream', async (req: AuthedRequest, res: Response) => {
-  res.status(200)
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
-  res.flushHeaders?.()
-
-  let closed = false
-  const send = (event: string, data: unknown) => {
-    if (closed) return
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-  }
-
-  send('connected', { at: new Date().toISOString() })
-
-  let lastGeneratedAt = ''
-  const push = async () => {
-    try {
-      const data = await model(req)
-      if (data.generatedAt === lastGeneratedAt) return
-      lastGeneratedAt = data.generatedAt
-      send('pipeline', projectView(data))
-    } catch (error) {
-      send('pipeline-error', { message: error instanceof Error ? error.message : 'Telemetry pipeline unavailable' })
-    }
-  }
-
-  void push()
-  const interval = setInterval(() => void push(), 10_000)
-  const heartbeat = setInterval(() => {
-    if (!closed) res.write(': heartbeat\n\n')
-  }, 25_000)
-
-  req.on('close', () => {
-    closed = true
-    clearInterval(interval)
-    clearInterval(heartbeat)
+router.get('/stream', (req: AuthedRequest, res: Response) => {
+  streamLiveSnapshot(req, res, {
+    event: 'pipeline',
+    build: async () => projectView(await model(req)),
+    intervalMs: 10_000,
   })
 })
 

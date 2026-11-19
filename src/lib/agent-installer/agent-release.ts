@@ -386,6 +386,7 @@ export const AGENT_EVENTS = [
   'agent.scan_progress',
   'agent.scan_completed',
   'agent.finding_detected',
+  'agent.evidence_observed',
   'agent.migration_started',
   'agent.migration_progress',
   'agent.migration_completed',

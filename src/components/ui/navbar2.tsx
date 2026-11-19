@@ -142,7 +142,7 @@ const MEGA_MENUS: Record<MenuKey, MegaMenu> = {
           },
           {
             title: 'Quantum Trust & Governance Center',
-            description: 'Enterprise governance, full QKMS, and SOC 2 / PCI-DSS / NIST compliance across your estate.',
+            description: 'Enterprise governance, full QKMS, and evidence mapping for SOC 2, PCI DSS and NIST across your estate.',
             href: '/quantum-trust-governance-center',
             icon: ShieldCheck
           }

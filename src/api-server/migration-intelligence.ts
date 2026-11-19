@@ -8,6 +8,7 @@ import type {
   SharedResponsibilityIntelligence,
 } from '@/lib/shared-responsibility'
 import { buildOwnershipInputs } from './shared-responsibility-inputs'
+import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
 
 /**
  * Shared Responsibility Quantum Migration Intelligence Engine™ — aggregation router.
@@ -67,6 +68,9 @@ interface IntelligenceBundle {
   intelligence: SharedResponsibilityIntelligence
   findingsById: Map<string, OwnershipFinding>
   baseline: { quantumReadiness: number; quantumReadinessLevel: string }
+  /** The wire payload — ONE object per computation, so REST and every open
+   *  stream send the same thing and its fingerprint is hashed once. */
+  payload: SharedResponsibilityIntelligence & { baseline: { quantumReadiness: number; quantumReadinessLevel: string } }
 }
 
 async function computeMigrationIntelligence(token: string, userId: string): Promise<IntelligenceBundle> {
@@ -76,6 +80,14 @@ async function computeMigrationIntelligence(token: string, userId: string): Prom
     loadConnectorProviders(token, userId),
   ])
 
+  /* Unavailable is not empty. Both sources failing used to fall through to
+     `{}` and `{}`, which classifies as "no findings" and rendered the page's
+     onboarding state — "run your first scan" — to a tenant with a full estate
+     whenever the database hiccuped. Now it is an error the client can show
+     while it keeps the last good model. */
+  if (snapshotRes.status === 'rejected' && intelRes.status === 'rejected') {
+    throw new Error('Scan evidence is temporarily unavailable — migration intelligence could not be computed')
+  }
   const snapshot = snapshotRes.status === 'fulfilled' ? snapshotRes.value : {}
   const intel = intelRes.status === 'fulfilled' ? intelRes.value : {}
   const connectors = connectorProviders.status === 'fulfilled' ? connectorProviders.value : []
@@ -94,14 +106,11 @@ async function computeMigrationIntelligence(token: string, userId: string): Prom
   const findingsById = new Map<string, OwnershipFinding>()
   for (const f of intelligence.findings) findingsById.set(f.id, f)
 
-  return {
-    intelligence,
-    findingsById,
-    baseline: {
-      quantumReadiness: Number.isFinite(baselineOverall) ? Math.round(baselineOverall) : intelligence.readiness.overall.score,
-      quantumReadinessLevel: str(scores.quantumReadinessLevel) || intelligence.readiness.overall.level,
-    },
+  const baseline = {
+    quantumReadiness: Number.isFinite(baselineOverall) ? Math.round(baselineOverall) : intelligence.readiness.overall.score,
+    quantumReadinessLevel: str(scores.quantumReadinessLevel) || intelligence.readiness.overall.level,
   }
+  return { intelligence, findingsById, baseline, payload: { ...intelligence, baseline } }
 }
 
 /**
@@ -128,8 +137,8 @@ function buildMigrationIntelligence(token: string, userId: string): Promise<Inte
 router.get('/', async (req: Request, res: Response) => {
   const { user, token } = req as AuthedRequest
   try {
-    const { intelligence, baseline } = await buildMigrationIntelligence(token!, user!.id)
-    res.json({ ...intelligence, baseline })
+    const { payload } = await buildMigrationIntelligence(token!, user!.id)
+    res.json({ ...payload, fingerprint: payloadFingerprint(payload) })
   } catch (error) {
     res.status(500).json({ error: { code: 'MIGRATION_INTELLIGENCE_FAILED', message: (error as Error)?.message || 'Failed to build migration intelligence' } })
   }
@@ -167,30 +176,21 @@ router.get('/finding/:id', async (req: Request, res: Response) => {
   }
 })
 
-router.get('/stream', async (req: Request, res: Response) => {
+/**
+ * Live stream, on the platform's shared snapshot contract: a full frame first
+ * and whenever the CONTENT changes, a few-byte `-unchanged` frame otherwise, and
+ * `-error` with the stream left open when a build fails. This route used to
+ * re-send the whole model (~290 KB for a two-asset tenant) every 30 s to every
+ * open tab whether or not anything had changed, and kept computing under an
+ * expired token until the client noticed.
+ */
+router.get('/stream', (req: Request, res: Response) => {
   const { user, token } = req as AuthedRequest
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
-  res.setHeader('Connection', 'keep-alive')
-  // Matches every other SSE route: tells buffering proxies to stream through.
-  res.setHeader('X-Accel-Buffering', 'no')
-  res.flushHeaders?.()
-
-  let closed = false
-  const emit = async () => {
-    if (closed) return
-    try {
-      const { intelligence, baseline } = await buildMigrationIntelligence(token!, user!.id)
-      if (!closed) res.write(`event: migration-intelligence\ndata: ${JSON.stringify({ ...intelligence, baseline })}\n\n`)
-    } catch (error) {
-      if (!closed) res.write(`event: error\ndata: ${JSON.stringify({ message: (error as Error)?.message || 'stream error' })}\n\n`)
-    }
-  }
-
-  await emit()
-  const refresh = setInterval(emit, 30000)
-  const heartbeat = setInterval(() => { if (!closed) res.write(': heartbeat\n\n') }, 25000)
-  req.on('close', () => { closed = true; clearInterval(refresh); clearInterval(heartbeat) })
+  streamLiveSnapshot(req, res, {
+    event: 'migration-intelligence',
+    build: async () => (await buildMigrationIntelligence(token!, user!.id)).payload,
+    intervalMs: 15_000,
+  })
 })
 
 export default router

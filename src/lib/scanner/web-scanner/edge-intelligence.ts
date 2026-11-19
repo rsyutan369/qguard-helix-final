@@ -51,6 +51,7 @@
 import {
   runScanEngines,
   type ScanEvidenceBundle,
+  type OrchestratorOptions,
 } from '../public-scan/engines'
 import {
   describeKeyExchange,
@@ -332,9 +333,10 @@ export async function collectEdgeIntelligence(
    * so twenty-five assets cannot compound into a scan nobody waits for.
    */
   budgetMs?: number,
+  evidence?: Pick<OrchestratorOptions, 'onHttpEvidence' | 'onCertificateEvidence'>,
 ): Promise<EdgeIntelligenceResult> {
   const startedAt = Date.now()
-  const bundle = await runScanEngines({ host, port, onObservation, budgetMs })
+  const bundle = await runScanEngines({ host, port, onObservation, budgetMs, ...evidence })
 
   const tls = bundle.tls.data
   const cert = bundle.certificate.data
@@ -417,6 +419,7 @@ export async function collectEdgeIntelligence(
     },
     certificate: {
       probed: Boolean(cert.certificate) || bundle.certificate.ok,
+      fingerprintSha256: cert.certificate?.fingerprint ?? null,
       ocspStapled: cert.ocspStapled,
       ocspResponderState: cert.ocspResponderState,
       ocspResponderDetail: cert.ocspResponderDetail,
@@ -458,6 +461,7 @@ export async function collectEdgeIntelligence(
     http: {
       probed: true,
       reachable: http.reachable,
+      finalUrl: http.finalUrl,
       statusCode: http.statusCode,
       httpVersion: http.httpVersion,
       hsts: {

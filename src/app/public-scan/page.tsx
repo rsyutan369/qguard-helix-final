@@ -11,8 +11,9 @@
 'use client';
 
 import React from 'react';
+import { quotedCsvCell } from '@/lib/csv';
 import { Link } from 'react-router-dom';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence, MotionConfig, useReducedMotion } from 'motion/react';
 import {
   ArrowRight,
   Check,
@@ -24,6 +25,8 @@ import {
   Hourglass,
   Link2,
   Loader2,
+  Moon,
+  Sun,
   Lock,
   Printer,
   Radar,
@@ -39,9 +42,13 @@ import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/auth-context';
 import { usePublicScan } from '@/hooks/use-public-scan';
 import type { PublicScanReport } from '@/lib/scanner/public-scan/types';
-import { ACCENT, Panel, QuantumField, Reveal, SectionLabel } from './_ui';
+import { ACCENT, Panel, Reveal, SectionLabel } from './_ui';
 import { ResizablePanelRow } from '@/components/quantum-scan/resizable-panels';
 import { QuantumScanHero } from './_qve';
+import { QveThemeProvider, useQveInk, type QveTheme } from './_qve/theme';
+import { useLandingMotion } from '@/pages/landing-motion';
+import '@/pages/landing.css';
+import './public-scan.css';
 import { ExposureModeTabs } from '@/components/exposure/ExposureModeTabs';
 import { useExposureAccess } from '@/hooks/use-exposure-access';
 import type { ScanMode } from '@/lib/scanner/exposure/types';
@@ -77,12 +84,15 @@ const DevAssessmentPanel = WEBSITE_EDITION
   ? null
   : React.lazy(() => import('@/components/exposure/DevAssessmentPanel').then((m) => ({ default: m.DevAssessmentPanel })));
 
-/**
- * Ground for a panel opened in focus view. This page is dark in both themes and
- * sits outside the dashboard's theme scope, so the focus view brings the page's
- * own navy (QuantumField's #04060e) and opts out of the light-theme layer.
- */
-const PUBLIC_FOCUS_SURFACE = 'qg-force-dark bg-[#04060e] text-slate-200 antialiased';
+const THEME_KEY = 'qguard-public-scan-theme';
+
+function storedTheme(): QveTheme {
+  try {
+    return window.localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light';
+  } catch {
+    return 'light';
+  }
+}
 
 function PanelLoading() {
   return (
@@ -112,7 +122,7 @@ const NAV_LINKS = [
   { label: 'Governance', to: '/dashboard/quantum-governance' },
 ];
 
-function TopNav() {
+function TopNav({ theme, onThemeChange }: { theme: QveTheme; onThemeChange: () => void }) {
   /* Fail closed: the nav appears only when a session is CONFIRMED. While the
      session is still resolving the visitor is treated as anonymous, so the
      links can never flash up for someone who is not signed in. */
@@ -128,17 +138,15 @@ function TopNav() {
 
   return (
     <header
-      className={cn(
-        'sticky top-0 z-50 border-b transition-colors duration-300',
-        scrolled ? 'border-white/[0.08] bg-[#050810]/90 backdrop-blur-2xl' : 'border-white/[0.05] bg-[#050810]/60 backdrop-blur-xl',
-      )}
+      className="public-scan-nav sticky top-0 z-50 border-b backdrop-blur-xl"
+      data-scrolled={scrolled}
     >
       <div className="mx-auto flex h-16 max-w-[92rem] items-center justify-between gap-4 px-4 sm:px-6">
-        <Link to="/" className="flex min-w-0 items-center gap-2.5 no-underline">
+        <Link to="/" aria-label="Qguard Helix home" className="flex min-w-0 items-center gap-2.5 no-underline">
           <img src="/NEW_LOGO.png" alt="QGuard Helix" className="h-9 w-auto shrink-0 object-contain" />
-          <span className="hidden flex-col leading-none sm:flex">
+          <span className="flex flex-col leading-none">
             <span className="whitespace-nowrap text-[15px] font-black tracking-wide text-white">QGUARD HELIX</span>
-            <span className="mt-1 whitespace-nowrap font-mono text-[8.5px] font-bold uppercase tracking-[0.26em] text-cyan-400/80">
+            <span className="mt-1 hidden whitespace-nowrap font-mono text-[8.5px] font-bold uppercase tracking-[0.26em] text-slate-500 sm:block">
               Quantum Security Platform
             </span>
           </span>
@@ -167,12 +175,26 @@ function TopNav() {
             signed in is the same defect in the other direction, so the signed-in
             visitor gets the way back into the platform instead. */}
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            role="switch"
+            aria-label="Dark mode"
+            aria-checked={theme === 'dark'}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            className="public-scan-theme-switch"
+            onClick={onThemeChange}
+          >
+            <span className="public-scan-theme-track" aria-hidden="true">
+              <Sun size={14} />
+              <Moon size={14} />
+            </span>
+          </button>
           {signedIn ? (
             <Link
               to="/dashboard"
               className="inline-flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-3.5 py-2 text-[13px] font-bold text-cyan-300 no-underline transition-colors hover:bg-cyan-400/15"
             >
-              Open dashboard
+              <span className="hidden sm:inline">Open </span>Dashboard
             </Link>
           ) : (
             <>
@@ -281,6 +303,8 @@ function ScanRail({
   queue: ReturnType<typeof usePublicScan>['queue'];
   sharedViewers: ReturnType<typeof usePublicScan>['sharedViewers'];
 }) {
+  const colorOnSurface = useQveInk();
+  const reduceMotion = useReducedMotion();
   return (
     <Panel className="overflow-hidden">
       <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-3">
@@ -311,6 +335,7 @@ function ScanRail({
       <ol className="space-y-1 px-4 py-3">
         {stages.map((stage, index) => {
           const style = STAGE_STATE_STYLE[stage.state];
+          const ink = colorOnSurface(style.color);
           return (
             <li key={stage.key} className="flex items-start gap-3 py-1.5">
               <span
@@ -318,7 +343,7 @@ function ScanRail({
                 style={{
                   borderColor: `${style.color}55`,
                   backgroundColor: `${style.color}14`,
-                  color: style.color,
+                  color: ink,
                 }}
               >
                 {stage.state === 'complete' ? (
@@ -328,7 +353,7 @@ function ScanRail({
                 ) : (
                   index + 1
                 )}
-                {stage.state === 'running' && (
+                {stage.state === 'running' && !reduceMotion && (
                   <motion.span
                     className="absolute inset-0 rounded-full border"
                     style={{ borderColor: style.color }}
@@ -340,12 +365,11 @@ function ScanRail({
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline justify-between gap-2">
                   <p
-                    className="truncate text-[13px] font-bold"
-                    style={{ color: stage.state === 'waiting' ? '#94a3b8' : '#e2e8f0' }}
+                    className={cn('truncate text-[13px] font-bold', stage.state === 'waiting' ? 'text-slate-400' : 'text-slate-200')}
                   >
                     {stage.label}
                   </p>
-                  <span className="shrink-0 font-mono text-[9px] uppercase tracking-widest" style={{ color: style.color }}>
+                  <span className="shrink-0 font-mono text-[9px] uppercase tracking-widest" style={{ color: ink }}>
                     {style.label}
                   </span>
                 </div>
@@ -382,7 +406,6 @@ function downloadBlob(filename: string, content: string, mime: string) {
 }
 
 function toCsv(report: PublicScanReport): string {
-  const escape = (value: string) => `"${String(value).replace(/"/g, '""')}"`;
   const header = ['Control', 'Finding', 'Status', 'Severity', 'Business Impact', 'Quantum Impact', 'Next Step', 'Evidence'];
   const rows = report.findings.map((finding) =>
     [
@@ -395,7 +418,7 @@ function toCsv(report: PublicScanReport): string {
       finding.nextStep,
       finding.evidence,
     ]
-      .map(escape)
+      .map(quotedCsvCell)
       .join(','),
   );
   return [header.join(','), ...rows].join('\n');
@@ -482,6 +505,10 @@ function ExportBar({ report }: { report: PublicScanReport }) {
 /* ------------------------------------------------------------------ page --- */
 
 export default function PublicScanPage() {
+  const [theme, setTheme] = React.useState<QveTheme>(storedTheme);
+  const rootRef = React.useRef<HTMLDivElement>(null);
+  const glowRef = React.useRef<HTMLCanvasElement>(null);
+  const reduceMotion = useReducedMotion();
   // The whole result is kept (not just the destructured fields) because the QVE
   // hero consumes the live stream object directly to drive its event store.
   const scanResult = usePublicScan();
@@ -496,6 +523,22 @@ export default function PublicScanPage() {
      mode is deep-linkable and is reflected into the URL without a navigation,
      so a shared link opens on the tab the sender was looking at. */
   const [mode, setMode] = React.useState<ScanMode>('web');
+  const surfaceClassName = `public-scan-surface public-scan-surface--${theme}`;
+
+  useLandingMotion(rootRef, glowRef, false, {
+    animate: !reduceMotion,
+    allowNestedScroll: true,
+    smoothAnchors: false,
+    routeKey: mode,
+  });
+
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      // The switch still works for this visit when browser storage is disabled.
+    }
+  }, [theme]);
 
   /* Lock badges on the tabs. The tabs stay CLICKABLE when locked — the panel
      behind them is the feature disclosure that makes the case for the plan, so
@@ -535,9 +578,9 @@ export default function PublicScanPage() {
 
   React.useEffect(() => {
     if (state === 'complete' && resultsRef.current) {
-      resultsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      resultsRef.current.scrollIntoView({ behavior: reduceMotion ? 'instant' : 'smooth', block: 'start' });
     }
-  }, [state]);
+  }, [state, reduceMotion]);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -545,17 +588,21 @@ export default function PublicScanPage() {
   };
 
   return (
-    <div className="min-h-screen text-slate-200 antialiased">
-      <QuantumField />
-      <TopNav />
+    <MotionConfig reducedMotion="user">
+    <QveThemeProvider theme={theme}>
+    <div ref={rootRef} className={cn(surfaceClassName, 'public-scan-shell min-h-screen antialiased')}>
+      <div className="public-scan-atmosphere" aria-hidden="true">
+        <canvas ref={glowRef} width={96} height={60} />
+      </div>
+      <TopNav theme={theme} onThemeChange={() => setTheme((current) => current === 'light' ? 'dark' : 'light')} />
 
       {/* overflow-x-clip is the backstop: the findings table and handshake rail
           scroll inside their own containers, and nothing may push the page
           sideways on a phone. */}
-      <main className="mx-auto max-w-[92rem] overflow-x-clip px-4 pb-24 pt-6 sm:px-6">
+      <main className="relative mx-auto max-w-[92rem] overflow-x-clip px-4 pb-20 pt-6 sm:px-6 sm:pt-9">
         {/* ── Assessment mode: Web / Local / Dev (§3) ──────────────────── */}
         {!WEBSITE_EDITION && (
-          <div className="mb-5">
+          <div className="mb-5" data-lp-reveal>
             <ExposureModeTabs value={mode} onChange={changeMode} locked={lockedModes} scope="public-scan" />
           </div>
         )}
@@ -595,22 +642,7 @@ export default function PublicScanPage() {
             <>
               <ScanRail stages={stages} progress={progress} state={state} queue={queue} sharedViewers={sharedViewers} />
 
-              <Panel className="overflow-hidden border-violet-400/15">
-                <div className="px-4 py-4">
-                  <h3 className="text-[15px] font-black leading-tight text-white">
-                    Unlock Full Enterprise Assessment
-                  </h3>
-                  <p className="mt-2 text-[12px] leading-relaxed text-slate-400">
-                    Analyze your entire infrastructure, source code, cryptographic inventory and migration readiness.
-                  </p>
-                  <Link
-                    to="/register"
-                    className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-violet-500 to-cyan-400 px-4 py-2.5 text-[13px] font-black text-[#04060e] no-underline transition-opacity hover:opacity-90"
-                  >
-                    Explore Enterprise Platform <ArrowRight className="h-4 w-4" />
-                  </Link>
-                </div>
-              </Panel>
+              <EnterpriseUpsell />
             </>
           }
         />
@@ -724,7 +756,7 @@ export default function PublicScanPage() {
                 weights are the 1.35 / 0.85 / 1 columns this row always used. */}
             <ResizablePanelRow
               storageKey="public-scan.posture-row"
-              focusSurfaceClassName={PUBLIC_FOCUS_SURFACE}
+              focusSurfaceClassName={cn(surfaceClassName, 'public-scan-focus')}
               panes={[
                 {
                   id: 'encryption-score',
@@ -768,7 +800,7 @@ export default function PublicScanPage() {
 
             <ResizablePanelRow
               storageKey="public-scan.findings-row"
-              focusSurfaceClassName={PUBLIC_FOCUS_SURFACE}
+              focusSurfaceClassName={cn(surfaceClassName, 'public-scan-focus')}
               panes={[
                 {
                   id: 'findings',
@@ -837,6 +869,8 @@ export default function PublicScanPage() {
 
       <PublicScanFooter />
     </div>
+    </QveThemeProvider>
+    </MotionConfig>
   );
 }
 
@@ -854,7 +888,7 @@ function EnterpriseUpsell() {
         </p>
         <Link
           to="/register"
-          className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-violet-500 to-cyan-400 px-4 py-2.5 text-[13px] font-black text-[#04060e] no-underline transition-opacity hover:opacity-90"
+          className="public-scan-primary mt-4 flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-[13px] font-bold no-underline"
         >
           Explore Enterprise Platform <ArrowRight className="h-4 w-4" />
         </Link>
@@ -918,6 +952,7 @@ function EmptyState({ state }: { state: ReturnType<typeof usePublicScan>['state'
 /* ------------------------------------------------------------------- cta --- */
 
 function FinalCta() {
+  const ink = useQveInk();
   return (
     <Panel className="relative overflow-hidden border-cyan-400/20">
       <div
@@ -939,7 +974,7 @@ function FinalCta() {
           <div className="mt-6 flex flex-wrap gap-3">
             <Link
               to="/register"
-              className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-cyan-400 to-violet-500 px-5 py-2.5 text-[13px] font-black text-[#04060e] no-underline transition-opacity hover:opacity-90"
+              className="public-scan-primary inline-flex items-center gap-2 rounded-lg px-5 py-2.5 text-[13px] font-bold no-underline"
             >
               Request Enterprise Assessment <ArrowRight className="h-4 w-4" />
             </Link>
@@ -963,7 +998,7 @@ function FinalCta() {
             >
               <span
                 className="mt-0.5 rounded-md px-2 py-0.5 font-mono text-[9.5px] font-black uppercase tracking-widest"
-                style={{ backgroundColor: `${plan.color}1c`, color: plan.color }}
+                style={{ backgroundColor: `${plan.color}1c`, color: ink(plan.color) }}
               >
                 {plan.tier}
               </span>
@@ -980,8 +1015,8 @@ function FinalCta() {
 
 function PublicScanFooter() {
   return (
-    <footer className="relative z-10 border-t border-white/[0.06] bg-[#050810]/70 px-6 py-10 backdrop-blur-xl">
-      <div className="mx-auto flex max-w-[92rem] flex-col gap-6 md:flex-row md:items-start md:justify-between">
+    <footer className="public-scan-footer relative z-10 border-t px-6 py-10 backdrop-blur-xl">
+      <div className="mx-auto flex max-w-[92rem] flex-col gap-6 md:flex-row md:items-start md:justify-between" data-lp-reveal>
         <div className="max-w-md">
           <Link to="/" className="flex items-center gap-2.5 no-underline">
             <img src="/NEW_LOGO.png" alt="" className="h-9 w-auto object-contain" />

@@ -69,11 +69,10 @@ export function cbomComponentKey(item: Pick<InventoryRow, 'asset_id' | 'item_typ
 /**
  * Posture of ONE component, as a partition: every component is exactly one of
  * vulnerable / pqc-ready / unclassified, so the three counts always sum to the
- * total. A row flagged BOTH vulnerable and quantum-safe is contradictory; it is
- * read as pqc-ready here and surfaced by `contradictoryFlags` so a reconciliation
- * can state the divergence instead of silently counting the row twice.
+ * total. Conflicting flags require review, which puts the row in unclassified.
  */
 export function componentPosture(row: Pick<InventoryRow, 'is_vulnerable' | 'is_quantum_safe'>): ComponentPosture {
+  if (row.is_quantum_safe && row.is_vulnerable) return 'unclassified'
   if (row.is_quantum_safe) return 'pqc-ready'
   if (row.is_vulnerable) return 'vulnerable'
   return 'unclassified'

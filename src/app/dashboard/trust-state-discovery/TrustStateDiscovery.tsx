@@ -173,7 +173,7 @@ export default function TrustStateDiscovery() {
 
   if (!data) return null;
 
-  const incompleteChains = data.chainPaths.filter((path) => !path.complete).length;
+  const incompleteChains = data.incompleteChains;
   const inferredNodes = data.totals.nodes - data.totals.measuredNodes;
 
   return (
@@ -385,7 +385,7 @@ export default function TrustStateDiscovery() {
             </ul>
           )}
           <Basis>
-            {fmtNumber(incompleteChains)} of {fmtNumber(data.chainPaths.length)} chains are incomplete. An incomplete chain is reported
+            {fmtNumber(data.chainPaths.filter((path) => !path.complete).length)} of {fmtNumber(data.chainPaths.length)} displayed chains are incomplete. An incomplete chain is reported
             with the missing tier named, never scored as if it had passed.
           </Basis>
         </TrustPanel>

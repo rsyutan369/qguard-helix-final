@@ -25,6 +25,19 @@ code is built and what has already gone wrong.
 derivations over shared hooks*, not independent queries. When two ops pages
 disagree, someone added a query.
 
+**Units the Planner and Sandbox must share with Assets / CBOM / QR (issue #71):**
+
+- *Components* — `partitionAssetInventory(rows, algorithmFamily)`. Raw
+  `crypto_inventory` rows include scanner findings and per-scan repeats.
+- *Severity counts* — `dedupeGradedObservations`, one per (algorithm, asset).
+- *Per-asset risk* — the Planner shows the QR engine's risk ("QR risk"); the
+  Asset Inventory shows the scanner's ("Scanner risk"). Two measurements, each
+  labelled — do not substitute one for the other.
+- *Stage status* — "In Progress" needs a record of work; data alone is "Ready".
+- *Simulations vs migrations* — split `migration_jobs` with `isSimulationJob`.
+
+Live proof: `npx tsx tools/discovery-migration-consistency-check.ts`.
+
 ## Workflow layer
 
 An 11-stage state-driven lifecycle drives `WorkflowRail` across ~10 dashboards,
@@ -100,3 +113,6 @@ name was already taken by the scanner.
 - [ ] `migration_queue` excluded from plan counts.
 - [ ] Before/after state captured; rollback path tested.
 - [ ] Numbers cross-checked against Ops and Automation surfaces.
+- [ ] Component and severity counts use the shared rules above; the live
+      consistency check passes.
+- [ ] No stage, tile or chain claims work, blockage or topology without a record.

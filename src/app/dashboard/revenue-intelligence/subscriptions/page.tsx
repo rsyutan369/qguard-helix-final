@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { ArrowDownUp, CalendarClock, HeartPulse, Layers, Repeat, UserMinus } from 'lucide-react';
+import { BillingOpsPanel } from './_billing-ops-panel';
 import { AMBER, CYAN, EMERALD, GOLD, RED, SLATE, VIOLET, Panel, SectionTitle } from '@/app/dashboard/quantum-readiness/_shared';
 import {
   ClassPill, CountBars, DataTable, Kpi, LedgerLimitNote, MoneyBars, PLAN_COLORS, RevenuePage, SearchBox, SelectBox, StatusPill,
@@ -47,6 +48,8 @@ export default function SubscriptionAnalyticsPage() {
                 unmeasured={subs.healthReason} />
             </div>
 
+            {snapshot.billingOps && <BillingOpsPanel ops={snapshot.billingOps} />}
+
             <div className="grid gap-3 xl:grid-cols-[1.2fr_1fr_1fr]">
               <Panel className="p-4">
                 <SectionTitle>Status Board (all subscriptions)</SectionTitle>
@@ -71,7 +74,7 @@ export default function SubscriptionAnalyticsPage() {
                     </div>
                   ))}
                 </div>
-                <p className="mt-3 text-[10px] text-white/35">Counts sum to {countFmt(subs.total)} subscriptions. Access is granted by active, trial and pending-renewal only.</p>
+                <p className="mt-3 text-[10px] text-white/35">Counts sum to {countFmt(subs.total)} subscriptions. Access is granted by active and pending-renewal only — there is no free trial.</p>
               </Panel>
               <Panel className="p-4">
                 <SectionTitle>MRR by Plan</SectionTitle>

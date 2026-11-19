@@ -11,6 +11,7 @@ pub mod device_pins;
 pub mod history_backup;
 pub mod message_keys;
 pub mod messaging;
+pub(crate) mod offline;
 pub mod pq_ratchet;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -51,6 +52,7 @@ use commands::vault_hidden::*;
 use commands::vault_library::*;
 use commands::vault_share::*;
 use commands::workspace::*;
+use offline::commands::*;
 use state::AppState;
 use tauri::Manager;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -138,10 +140,13 @@ pub fn run() {
     // Signed auto-updates (minisign pubkey + endpoints in tauri.conf.json) and
     // relaunch-after-update support. Desktop-only: Android updates ship through
     // APK/Play distribution, and neither plugin compiles for mobile targets.
+    // Desktop notifications are raised from Rust (offline::alerts) only. No
+    // webview capability grants the notification plugin's JS commands.
     #[cfg(desktop)]
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init());
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init());
 
     builder
         .setup(move |app| {
@@ -160,6 +165,7 @@ pub fn run() {
                 let _ = crate::crypto::provider::self_test_report();
             });
             app.manage(state);
+            app.manage(OfflineRuntime::default());
 
             // Hash the running image now, on a background thread. It cannot
             // change while the process lives, so it is measured once — and
@@ -285,12 +291,18 @@ pub fn run() {
             vault_decrypt_path_with_enterprise,
             vault_decrypt_folder_path_with_enterprise,
             // Portable Hybrid Identity - seal containers to other people.
+            vault_passphrase_policy,
+            vault_passphrase_suggest,
+            vault_passphrase_strength,
             vault_identity_generate,
             vault_identity_import,
             vault_identity_status,
             vault_identity_lock,
             vault_identity_export_public,
             vault_parse_recipient,
+            vault_recipient_verify,
+            vault_recipient_unverify,
+            vault_recipient_trust_list,
             vault_load_recipient_file,
             vault_seal_path,
             vault_seal_folder_path,
@@ -463,6 +475,59 @@ pub fn run() {
             nearby_send,
             nearby_clear_outgoing,
             nearby_take_received,
+            offline_status,
+            offline_dashboard_snapshot,
+            offline_bluetooth_permissions,
+            offline_bluetooth_restart,
+            offline_hotspot_start,
+            offline_hotspot_stop,
+            offline_hotspot_details,
+            offline_verify_principal,
+            offline_sign_in,
+            offline_sign_out,
+            offline_resume_unlocked,
+            offline_enroll_password,
+            offline_store_entitlement,
+            offline_forget_device,
+            offline_set_background,
+            offline_set_relay,
+            offline_start,
+            offline_stop,
+            offline_pairing_snapshot,
+            offline_pairing_start,
+            offline_pairing_decide,
+            offline_revoke,
+            offline_block_peer,
+            offline_unblock_peer,
+            offline_disconnect_peer,
+            offline_set_auto,
+            offline_set_owner_name,
+            offline_set_avatar,
+            offline_avatar,
+            offline_wifi_link_join,
+            offline_wifi_link_close,
+            offline_set_share_picture,
+            offline_relay_state,
+            offline_connectivity,
+            offline_probe_peer,
+            offline_mesh_snapshot,
+            offline_mesh_send,
+            offline_mesh_retry,
+            offline_mesh_monitor,
+            offline_mesh_mark_read,
+            offline_link_events,
+            offline_xfer_list,
+            offline_xfer_monitor,
+            offline_xfer_pick_sources,
+            offline_xfer_offer,
+            offline_xfer_respond,
+            offline_xfer_resume,
+            offline_xfer_pause,
+            offline_xfer_stop,
+            offline_xfer_cancel,
+            offline_xfer_export,
+            offline::xfer_open::offline_xfer_open,
+            offline_xfer_import_vault,
             security_verify_fingerprint,
             security_export_report,
             security_hardening_status,
@@ -477,6 +542,8 @@ pub fn run() {
             billing_platform,
             billing_state,
             billing_launch_purchase,
+            billing_query_products,
+            billing_disconnect,
             billing_refresh_purchases,
             billing_open_checkout,
             downloads_save_begin,

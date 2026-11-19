@@ -37,6 +37,9 @@ pub fn key_material_aad() -> Vec<u8> { deobf(KEY_MATERIAL_AAD) }
 const VAULT_RECOVERY_MATERIAL_AAD: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 192, 37, 218, 76, 7, 181, 114, 153, 239, 1, 3, 241, 219, 15, 115, 145, 19, 252, 131, 123, 11, 175, 68, 43, 214, 23, 87, 181, 251, 9, 123, 133, 225, 109, 223, 14];
 pub fn vault_recovery_material_aad() -> Vec<u8> { deobf(VAULT_RECOVERY_MATERIAL_AAD) }
 
+const VAULT_RECIPIENT_TRUST_AAD: &[u8] = &[11,113,180,255,9,118,201,219,33,220,83,18,255,73,146,235,69,37,249,203,13,115,145,21,235,149,103,9,231,64,99];
+pub fn vault_recipient_trust_aad() -> Vec<u8> { deobf(VAULT_RECIPIENT_TRUST_AAD) }
+
 const VAULT_MASTER_MATERIAL_AAD: &[u8] = &[11, 113, 180, 255, 9, 118, 201, 192, 37, 218, 76, 7, 181, 114, 153, 239, 1, 3, 241, 219, 15, 115, 145, 12, 248, 147, 96, 24, 184, 27, 31, 154, 46, 83, 179, 247, 26, 126, 201, 251, 113];
 pub fn vault_master_material_aad() -> Vec<u8> { deobf(VAULT_MASTER_MATERIAL_AAD) }
 
@@ -130,6 +133,7 @@ mod tests {
         assert_eq!(key_material_aad(), b"QGuard-Messaging-Device-Key-Material-v1".to_vec());
         assert_eq!(vault_recovery_material_aad(), b"QGuard-Messaging-Vault-Recovery-Material-v1".to_vec());
         assert_eq!(vault_master_material_aad(), b"QGuard-Messaging-Vault-Master-Material-v1".to_vec());
+        assert_eq!(vault_recipient_trust_aad(), b"QGuard-Vault-Recipient-Trust-v1".to_vec());
         assert_eq!(workspace_vault_unlock_info(), b"QGuard-Workspace-Vault-Unlock-v1".to_vec());
         assert_eq!(workspace_vault_wrap_aad(), b"QGuard-Workspace-Vault-Wrap-v1".to_vec());
         assert_eq!(workspace_chat_verifier_info(), b"QGuard-Workspace-Chat-Verifier-v1".to_vec());

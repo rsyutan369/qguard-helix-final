@@ -622,21 +622,21 @@ const AGENT_SYNTH: Record<CopilotAgentId, (b: SynthBundle) => AgentContribution>
 
     if (status) {
       const frameworks = arr(status.data.frameworks) as Array<Record<string, unknown>>
-      const aligned = frameworks.filter((f) => str(f.status) === 'aligned').length
-      findings.push(`Framework posture: ${aligned}/${frameworks.length} aligned (${frameworks.map((f) => `${str(f.framework).split(' (')[0]}: ${str(f.status)}`).slice(0, 3).join('; ')}).`)
+      const aligned = frameworks.filter((f) => str(f.status) === 'mapped checks met').length
+      findings.push(`Framework posture: ${aligned}/${frameworks.length} mappings have all checks met (${frameworks.map((f) => `${str(f.framework).split(' (')[0]}: ${str(f.status)}`).slice(0, 3).join('; ')}).`)
     }
     if (nist) {
-      findings.push(`NIST PQC alignment — FIPS 203 ×${num(nist.data.fips203Components)}, FIPS 204 ×${num(nist.data.fips204Components)}, FIPS 205 ×${num(nist.data.fips205Components)} adopted component(s).`)
+      findings.push(`NIST PQC alignment — FIPS 203 ×${num(nist.data.fips203Components)}, FIPS 204 ×${num(nist.data.fips204Components)}, FIPS 205 ×${num(nist.data.fips205Components)} algorithm-family observation(s).`)
     }
     if (cnsa) {
       const met = num(cnsa.data.met)
       const total = num(cnsa.data.total)
-      findings.push(`CNSA 2.0 transition: ${met}/${total} requirement check(s) met.`)
+      findings.push(`CNSA 2.0 transition: ${met}/${total} selected algorithm signals observed. Applies to National Security Systems; inventory alone cannot determine compliance.`)
       if (met < total && cnsa.status !== 'empty') {
-        risk = { level: 'medium', drivers: [`${total - met} CNSA 2.0 gap(s)`] }
+        risk = { level: 'medium', drivers: [`${total - met} selected CNSA 2.0 signals not observed`] }
         recommendations.push({
           title: 'Advance the CNSA 2.0 transition',
-          detail: 'Adopt ML-KEM-1024 / ML-DSA-87 with AES-256 and SHA-384+ to satisfy the remaining CNSA 2.0 requirements.',
+          detail: 'If you operate National Security Systems, confirm the applicable profile, deployment evidence and scope before assessing CNSA 2.0.',
           priority: 'high',
           standards: [STANDARDS.CNSA_2, STANDARDS.FIPS_203, STANDARDS.FIPS_204],
           deepLink: modulePath('compliance'),
@@ -773,10 +773,10 @@ const AGENT_SYNTH: Record<CopilotAgentId, (b: SynthBundle) => AgentContribution>
       risk = { level: maxRisk(risk.level, 'high'), score: num(score.data.hndlRisk), drivers: [...risk.drivers, `HNDL risk score ${num(score.data.hndlRisk)}/100`] }
     }
     // Standards-based background (clearly non-tenant): the accepted migration driver.
-    findings.push('Context (industry guidance, not tenant telemetry): NIST finalized FIPS 203/204/205 in 2024 and CNSA 2.0 targets full national-security-system PQC transition by 2033 — regulated enterprises are expected to migrate well before a CRQC arrives.')
+    findings.push('Context (industry guidance, not tenant telemetry): NIST finalized FIPS 203/204/205 in 2024 and CNSA 2.0 targets full national-security-system PQC transition by 2033 — EO 14412 and OMB M-26-15 set different milestones for priority federal systems outside National Security Systems.')
     recommendations.push({
       title: 'Track the PQC standards clock',
-      detail: 'Align the migration roadmap to CNSA 2.0 milestones and NIST SP 800-131A algorithm sunsets rather than CRQC speculation.',
+      detail: 'Use the applicable federal milestones or final NIST IR 8547 transition guidance. Use CNSA 2.0 milestones for National Security Systems in scope.',
       priority: 'medium',
       standards: [STANDARDS.CNSA_2, STANDARDS.SP_800_131A, STANDARDS.ETSI_QSC],
       deepLink: modulePath('harvest_now'),
@@ -944,7 +944,7 @@ function extractIntelligence(toolData: Map<string, ToolResult>): TenantIntellige
     collectors: collectorsData ? { fleet: num(collectorsData.fleet), online: num(collectorsData.online) } : null,
     compliance: complianceData ? {
       frameworks: (arr(complianceData.frameworks) as Array<Record<string, unknown>>).map((f) => ({ framework: str(f.framework), status: str(f.status) })),
-      aligned: (arr(complianceData.frameworks) as Array<Record<string, unknown>>).filter((f) => str(f.status) === 'aligned').length,
+      aligned: (arr(complianceData.frameworks) as Array<Record<string, unknown>>).filter((f) => str(f.status) === 'mapped checks met').length,
       total: arr(complianceData.frameworks).length,
     } : null,
     dependencies: depsData ? { thirdParty: num(depsData.thirdPartyCount ?? depsData.thirdParty) } : null,

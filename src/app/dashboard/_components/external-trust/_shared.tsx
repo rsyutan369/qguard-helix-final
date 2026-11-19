@@ -106,9 +106,7 @@ export function downloadTextFile(filename: string, content: string, type: string
   URL.revokeObjectURL(url)
 }
 
-export function csvCell(value: unknown): string {
-  return `"${String(value ?? '').replaceAll('"', '""')}"`
-}
+export { quotedCsvCell as csvCell } from '@/lib/csv'
 
 /* ------------------------------------------------------------------ */
 /* Status pills                                                        */

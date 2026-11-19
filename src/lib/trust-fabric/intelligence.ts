@@ -93,6 +93,7 @@ export interface TrustFabricInputs {
   /** Estate scores published verbatim by the Quantum Readiness Engine. */
   snapshot: {
     quantumReadiness: number
+    readinessMeasured?: boolean
     quantumRisk: number
     quantumRiskLevel: string
     assetsAssessed: number
@@ -226,7 +227,7 @@ export function buildTrustFabricIntelligence(inputs: TrustFabricInputs): TrustFa
     current.count += 1
     if (active) current.active += 1
     current.status = current.active > 0 ? 'connected' : status || 'unknown'
-    current.lastSync = latestIso(current.lastSync, row.last_sync_at, row.updated_at)
+    current.lastSync = latestIso(current.lastSync, row.last_sync_at)
     connectorByProvider.set(provider, current)
   }
 
@@ -594,7 +595,7 @@ export function buildTrustFabricIntelligence(inputs: TrustFabricInputs): TrustFa
     const cloudShaped =
       kind === 'cloud-resource' || kind === 'kubernetes-workload' || kind === 'container' || kind === 'load-balancer' || kind === 'gateway'
     if (attribution.attributed || cloudShaped) {
-      const encryption = deriveEncryptionState(asset, corpus)
+      const encryption = deriveEncryptionState(metadata, now)
       const keyManagement = readKeyManagement(corpus)
       const tlsVersions = uniq(asset.tlsConfiguration.protocols.filter(Boolean))
       const compliance = deriveComplianceState(asset, inputs.complianceEvidence)
@@ -748,7 +749,7 @@ export function buildTrustFabricIntelligence(inputs: TrustFabricInputs): TrustFa
       .map((edge) => edge.to)
     const affectedAssetCount = node ? node.dependentCount : 0
 
-    const renewal = deriveRenewal(certificate, inputs.migrationJobs)
+    const renewal = deriveRenewal(certificate, inputs.migrationJobs, certificates)
     const owner = asset?.owner ?? ''
 
     return {
@@ -983,9 +984,6 @@ export function buildTrustFabricIntelligence(inputs: TrustFabricInputs): TrustFa
 /* Encryption / compliance derivation                                  */
 /* ================================================================== */
 
-const AT_REST_SIGNALS = /\baes[- ]?256\b|\baes[- ]?128\b|\baes\b|\bchacha20\b|encrypted at rest|sse-|encryption enabled|tde\b/i
-const UNENCRYPTED_SIGNALS = /unencrypted|no encryption|encryption disabled|plaintext|cleartext|\bhttp:\/\//i
-
 /**
  * Encryption state for a cloud resource.
  *
@@ -996,27 +994,14 @@ const UNENCRYPTED_SIGNALS = /unencrypted|no encryption|encryption disabled|plain
  * safety. Both are refused here.
  */
 function deriveEncryptionState(
-  asset: AssetMigrationRecord,
-  corpus: string,
+  metadata: Record<string, unknown>,
+  now: number,
 ): { state: EncryptionState; algorithms: string[] } {
-  const algorithms = uniq(
-    asset.algorithms
-      .filter((row) => /aes|chacha|3des|des|rc4|blowfish|ml-kem|kyber/i.test(row.algorithm || ''))
-      .map((row) => row.algorithm)
-      .filter(Boolean),
-  )
-
-  if (UNENCRYPTED_SIGNALS.test(corpus)) {
-    return { state: 'unencrypted', algorithms }
-  }
-  if (algorithms.length > 0) {
-    const weak = algorithms.some((algorithm) => /\b(3des|des|rc4|blowfish)\b/i.test(algorithm))
-    return { state: weak ? 'partially-encrypted' : 'encrypted', algorithms }
-  }
-  if (AT_REST_SIGNALS.test(corpus)) {
-    return { state: 'encrypted', algorithms }
-  }
-  return { state: 'not-observed', algorithms }
+  const observation = recordOf(metadata.atRestEncryption ?? metadata.encryptionAtRest)
+  const observedAt = dateMs(observation.observedAt ?? observation.observed_at)
+  if (typeof observation.enabled !== 'boolean' || !observedAt || observedAt > now) return { state: 'not-observed', algorithms: [] }
+  const algorithm = str(observation.algorithm)
+  return { state: observation.enabled ? 'encrypted' : 'unencrypted', algorithms: observation.enabled && algorithm ? [algorithm] : [] }
 }
 
 function deriveComplianceState(
@@ -1097,7 +1082,7 @@ function buildChainChecks(input: {
         }
       : rootNode
       ? rootNode.measured
-        ? { key: 'root-ca', label: 'Root CA', status: 'pass', detail: `Anchored to ${rootNode.label}, whose certificate is held in inventory.`, severity: null }
+        ? { key: 'root-ca', label: 'Root CA', status: 'not-evaluated', detail: `${rootNode.label} is present in inventory. Trust against a configured anchor was not verified.`, severity: null }
         : {
             key: 'root-ca',
             label: 'Root CA',
@@ -1120,7 +1105,7 @@ function buildChainChecks(input: {
   checks.push(
     caNode && caNode.kind === 'intermediate-ca'
       ? caNode.measured
-        ? { key: 'intermediate-ca', label: 'Intermediate CA', status: 'pass', detail: `Issued by ${caNode.label}; the intermediate certificate is present.`, severity: null }
+        ? { key: 'intermediate-ca', label: 'Intermediate CA', status: 'not-evaluated', detail: `${caNode.label} is present in inventory. The leaf signature was not verified against that certificate.`, severity: null }
         : {
             key: 'intermediate-ca',
             label: 'Intermediate CA',
@@ -1129,7 +1114,7 @@ function buildChainChecks(input: {
             severity: 'medium',
           }
       : caNode
-        ? { key: 'intermediate-ca', label: 'Intermediate CA', status: 'pass', detail: 'Certificate is issued directly by a root authority - no intermediate is required.', severity: null }
+        ? { key: 'intermediate-ca', label: 'Intermediate CA', status: 'not-evaluated', detail: 'Inventory suggests direct issuance from a root. Issuance was not verified.', severity: null }
         : {
             key: 'intermediate-ca',
             label: 'Intermediate CA',
@@ -1149,13 +1134,11 @@ function buildChainChecks(input: {
   )
 
   checks.push(
-    path && path.complete
-      ? { key: 'chain-order', label: 'Chain ordering', status: 'pass', detail: 'Leaf, intermediate and root appear in the correct issuing order.', severity: null }
-      : {
+    {
           key: 'chain-order',
           label: 'Chain ordering',
           status: 'not-evaluated',
-          detail: 'Ordering can only be verified once the full chain has been collected from the endpoint.',
+          detail: 'The served certificate chain and its signatures have not been verified.',
           severity: null,
         },
   )
@@ -1175,7 +1158,9 @@ function buildChainChecks(input: {
   /* ---- validity window ---- */
   const days = certificate.daysToExpiry
   checks.push(
-    days === null
+    certificate.lifecycle === 'not-yet-valid'
+      ? { key: 'validity', label: 'Validity window', status: 'fail', detail: 'The certificate validity window has not started.', severity: 'high' }
+      : days === null || !certificate.notBefore
       ? { key: 'validity', label: 'Validity window', status: 'not-evaluated', detail: 'No notAfter date recorded, so remaining lifetime is unknown.', severity: null }
       : days < 0
         ? { key: 'validity', label: 'Validity window', status: 'fail', detail: `Expired ${Math.abs(days)} days ago - clients will reject this certificate.`, severity: 'critical' }
@@ -1210,22 +1195,23 @@ function buildChainChecks(input: {
       severity: null,
     })
   } else {
-    const names = uniq([certificate.subject, certificate.name, ...certificate.san].map((value) => str(value).toLowerCase()).filter(Boolean))
+    const names = uniq(certificate.san.map((value) => str(value).toLowerCase()).filter(Boolean))
+    const hostname = host.toLowerCase().replace(/\.$/, '')
     const matched = names.some((name) => {
-      const clean = name.replace(/^cn=/i, '').trim()
+      const clean = name.replace(/^(?:dns|ip address):\s*/i, '').trim().replace(/\.$/, '')
       if (!clean) return false
-      if (clean === host.toLowerCase()) return true
-      if (clean.startsWith('*.')) return host.toLowerCase().endsWith(clean.slice(1))
-      return host.toLowerCase().endsWith(clean) || clean.endsWith(host.toLowerCase())
+      if (clean === hostname) return true
+      return clean.startsWith('*.') && clean.split('.').length >= 3 && hostname.split('.').slice(1).join('.') === clean.slice(2)
     })
     checks.push(
       matched
-        ? { key: 'hostname', label: 'Hostname / SAN match', status: 'pass', detail: `Subject or SAN covers ${host}.`, severity: null }
+        ? { key: 'hostname', label: 'Hostname / SAN match', status: 'pass', detail: `A recorded SAN covers ${host}.`, severity: null }
+        : !names.length ? { key: 'hostname', label: 'Hostname / SAN match', status: 'not-evaluated', detail: 'No SAN values were collected for this certificate.', severity: null }
         : {
             key: 'hostname',
             label: 'Hostname / SAN match',
             status: 'fail',
-            detail: `Neither the subject nor any recorded SAN covers ${host}; clients connecting to that name will see a name-mismatch error.`,
+            detail: `No recorded SAN covers ${host}.`,
             severity: 'high',
           },
     )
@@ -1303,11 +1289,13 @@ function remediationForCertificate(certificate: PkiCertificate, band: ExpiryBand
   return 'No action required; continue monitoring through the renewal cycle.'
 }
 
-function deriveRenewal(certificate: PkiCertificate, migrationJobs: Row[]): CertificateTrustRecord['renewal'] {
+function deriveRenewal(certificate: PkiCertificate, migrationJobs: Row[], certificates: PkiCertificate[]): CertificateTrustRecord['renewal'] {
+  const fingerprint = (value: unknown) => str(value).toLowerCase().replace(/[^a-f0-9]/g, '')
   const related = migrationJobs.filter((job) => {
-    if (certificate.assetId && str(job.asset_id) === certificate.assetId) return true
-    const corpus = `${str(job.name)} ${JSON.stringify(recordOf(job.metadata))}`.toLowerCase()
-    return certificate.serialNumber ? corpus.includes(certificate.serialNumber.toLowerCase()) : false
+    const metadata = recordOf(job.metadata)
+    if (certificate.assetId && job.asset_id && str(job.asset_id) !== certificate.assetId) return false
+    const prior = fingerprint(metadata.previousCertificateFingerprint ?? metadata.certificateFingerprint)
+    return str(metadata.previousCertificateId ?? metadata.certificateId) === certificate.id || Boolean(prior && prior === fingerprint(certificate.fingerprint))
   })
   const certJobs = related.filter((job) => /cert|tls|pki|renew/i.test(`${str(job.job_type)} ${str(job.name)}`))
   const pool = certJobs.length > 0 ? certJobs : []
@@ -1328,7 +1316,17 @@ function deriveRenewal(certificate: PkiCertificate, migrationJobs: Row[]): Certi
     return { status: 'failed', detail: `Renewal job "${str(newest.name) || newest.id}" failed and needs operator attention.`, lastAttemptAt: at }
   }
   if (/complete|success|done/.test(status)) {
-    return { status: 'renewed', detail: `Replacement completed by job "${str(newest.name) || newest.id}".`, lastAttemptAt: at }
+    const metadata = recordOf(newest.metadata)
+    const replacementId = str(metadata.replacementCertificateId)
+    const replacementFingerprint = fingerprint(metadata.replacementCertificateFingerprint)
+    const replacementObserved = certificates.some((candidate) => candidate.id !== certificate.id &&
+      (candidate.lifecycle === 'valid' || candidate.lifecycle === 'expiring') &&
+      ((replacementId && replacementId === candidate.id) || (replacementFingerprint && replacementFingerprint === fingerprint(candidate.fingerprint))) &&
+      ((certificate.endpointId && certificate.endpointId === candidate.endpointId) ||
+        (certificate.assetId && certificate.assetId === candidate.assetId && !certificate.endpointId)) &&
+      Boolean(at && dateMs(candidate.lastObservedAt) >= dateMs(at)))
+    if (replacementObserved) return { status: 'renewed', detail: `Replacement certificate observed for job "${str(newest.name) || newest.id}".`, lastAttemptAt: at }
+    return { status: 'unknown', detail: 'The renewal job completed. A matching replacement certificate has not been observed.', lastAttemptAt: at }
   }
   if (/running|in[- ]?progress|executing/.test(status)) {
     return { status: 'in-progress', detail: `Renewal is executing under job "${str(newest.name) || newest.id}".`, lastAttemptAt: at }
@@ -1423,7 +1421,7 @@ function buildCertificateIntelligence(input: {
   for (const record of trust) {
     if (record.failedChecks > 0) failed += 1
     else if (record.warnChecks > 0) warned += 1
-    else if (record.checks.every((check) => check.status === 'not-evaluated')) notEvaluated += 1
+    else if (record.checks.some((check) => check.status === 'not-evaluated')) notEvaluated += 1
     else passed += 1
   }
 
@@ -2180,7 +2178,8 @@ function buildScores(input: {
   if (certHealth !== null) parts.push({ label: 'certificate health', value: certHealth, weight: 0.25 })
   if (tlsSecurity !== null) parts.push({ label: 'TLS security', value: tlsSecurity, weight: 0.2 })
   if (chainHealth !== null) parts.push({ label: 'chain health', value: chainHealth, weight: 0.2 })
-  parts.push({ label: 'quantum readiness', value: snapshot.quantumReadiness, weight: 0.25 })
+  const quantum = (snapshot.readinessMeasured ?? snapshot.totalComponents > 0) ? snapshot.quantumReadiness : null
+  if (quantum !== null) parts.push({ label: 'quantum readiness', value: quantum, weight: 0.25 })
   if (cloudTrust !== null) parts.push({ label: 'cloud trust', value: cloudTrust, weight: 0.1 })
   const CONTRIBUTING_DIMENSIONS = 5
   const weightTotal = parts.reduce((sum, part) => sum + part.weight, 0)
@@ -2216,13 +2215,13 @@ function buildScores(input: {
     {
       key: 'quantum',
       label: 'Quantum Readiness',
-      value: snapshot.quantumReadiness,
-      measured: true,
+      value: quantum,
+      measured: quantum !== null,
       basis: 'Published verbatim by the Quantum Readiness Engine - the same score the QR pages, Migration Planner and reports show.',
       denominator: `${snapshot.assetsAssessed} assets assessed`,
       coveragePercent: percentOf(snapshot.assetsAssessed, Math.max(snapshot.assetsAssessed, 1)),
-      reason: `Estate quantum risk is ${snapshot.quantumRisk} (${snapshot.quantumRiskLevel}). ${snapshot.vulnerableComponents} of ${snapshot.totalComponents} cryptographic components are quantum vulnerable.`,
-      tone: toneForScore(snapshot.quantumReadiness),
+      reason: quantum === null ? 'Readiness has no assessed cryptographic evidence.' : `Estate quantum risk is ${snapshot.quantumRisk} (${snapshot.quantumRiskLevel}). ${snapshot.vulnerableComponents} of ${snapshot.totalComponents} cryptographic components are quantum vulnerable.`,
+      tone: toneForScore(quantum),
       href: '/dashboard/quantum-readiness',
     },
     {

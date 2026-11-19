@@ -38,6 +38,7 @@
 
 import {
   EVIDENCE_UNAVAILABLE,
+  recordOf,
 
   str,
   type AssetMigrationRecord,
@@ -46,6 +47,7 @@ import {
 import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
 import type { SourceRead } from '@/lib/source-read'
 import { isSimulationRow } from '@/lib/migration/job-safety'
+import { buildEvidenceAssetResolver, primitiveIdentity } from '@/lib/telemetry/evidence-identity'
 
 /* ================================================================== */
 /* Vocabulary                                                          */
@@ -192,6 +194,7 @@ export interface DriftInputs {
   /** Migration jobs, used to separate planned change from drift. */
   migrationJobs: Row[]
   assets: AssetMigrationRecord[]
+  reads?: SourceRead[]
   now?: number
 }
 
@@ -242,27 +245,28 @@ function isVulnerable(algorithm: string): boolean {
 export function buildDriftIntelligence(inputs: DriftInputs): DriftIntelligence {
   const now = inputs.now ?? Date.now()
 
-  const assetByName = new Map<string, AssetMigrationRecord>()
-  for (const asset of inputs.assets) {
-    if (asset.name) assetByName.set(asset.name.toLowerCase(), asset)
-    if (asset.hostname) assetByName.set(asset.hostname.toLowerCase(), asset)
-  }
   const assetById = new Map(inputs.assets.map((asset) => [asset.id, asset]))
-  const resolveAsset = (row: Row): AssetMigrationRecord | null => {
-    const byId = str(row.asset_id) ? assetById.get(str(row.asset_id)) : undefined
-    if (byId) return byId
-    const name = str(row.asset_name).toLowerCase() || str(row.host).toLowerCase()
-    return (name ? assetByName.get(name) : undefined) ?? null
-  }
+  const resolveAsset = buildEvidenceAssetResolver(inputs.assets)
 
   /* ---- Baseline selection ------------------------------------------- */
   const completed = inputs.scanSessions
-    .filter((session) => ms(session.completed_at) > 0)
+    .filter((session) => {
+      const metadata = recordOf(session.metadata)
+      const total = Number(session.total_assets ?? 0)
+      return ms(session.completed_at) > 0 && ['completed', 'succeeded', 'success'].includes(str(session.status).toLowerCase()) &&
+        metadata.scannerMode !== 'continuous-agent-evidence' && (!total || Number(session.scanned_assets ?? 0) >= total)
+    })
     .sort((a, b) => ms(b.completed_at) - ms(a.completed_at))
 
   const current = completed[0] ?? null
-  const previous = completed[1] ?? null
-  const available = Boolean(current && previous)
+  const scopeKey = (session: Row) => str(session.target_scope).split(',').map((target) => target.trim().toLowerCase()).filter(Boolean).sort().join(',')
+  const currentScope = current ? scopeKey(current) : ''
+  const previous = currentScope ? completed.slice(1).find((session) => scopeKey(session) === currentScope) ?? null : null
+  const findingsRead = inputs.reads?.find((read) => read.key === 'pqc_scan_results')
+  const findingsComplete = findingsRead?.state !== 'unavailable' && (findingsRead?.state !== 'truncated' ||
+    [current, previous].every((session) => session && session.findings_count != null &&
+      inputs.scanResults.filter((row) => row.scan_session_id === session.id).length >= Number(session.findings_count)))
+  const available = Boolean(current && previous && findingsComplete)
 
   const baseline: BaselineWindow = {
     available,
@@ -273,14 +277,18 @@ export function buildDriftIntelligence(inputs: DriftInputs): DriftIntelligence {
     sessionsCompared: available ? 2 : completed.length,
     totalSessions: inputs.scanSessions.length,
     note: available
-      ? 'Drift is measured by comparing the two most recent completed scans of this environment.'
+      ? 'Drift compares completed scans with matching target scope.'
+      : !findingsComplete
+        ? 'Scan findings are incomplete or unavailable. The scan comparison is withheld until both sets are available.'
       : completed.length === 1
-        ? 'Only one completed scan exists. Drift needs two observations of the same estate — run a second scan to establish a baseline. The findings from the first scan are not drift.'
+        ? 'Only one completed scan exists. Run a second scan with the same target scope to establish a baseline.'
+      : completed.length > 0
+        ? 'No comparable completed scan pair was found. Run another scan with the same target scope to establish a baseline.'
         : 'No completed scan has been recorded, so there is no baseline and no drift to measure.',
   }
 
   /* ---- Migration index: what change was PLANNED ---------------------- */
-  interface PlannedChange { jobId: string; name: string; target: string; at: number; status: string }
+  interface PlannedChange { jobId: string; name: string; target: string; previous: string; at: number; status: string }
   const plannedByAsset = new Map<string, PlannedChange[]>()
   for (const job of inputs.migrationJobs) {
     // A sandbox simulation changes a digital twin, never a production asset —
@@ -289,14 +297,16 @@ export function buildDriftIntelligence(inputs: DriftInputs): DriftIntelligence {
     const assetId = str(job.asset_id)
     if (!assetId) continue
     const status = str(job.status).toLowerCase()
-    if (!['completed', 'running', 'in-progress', 'in_progress'].includes(status)) continue
+    if (status !== 'completed' || !ms(job.completed_at)) continue
+    const metadata = recordOf(job.metadata)
     plannedByAsset.set(assetId, [
       ...(plannedByAsset.get(assetId) ?? []),
       {
         jobId: str(job.id),
         name: str(job.name) || 'Migration job',
         target: str(job.target_algorithm),
-        at: ms(job.completed_at || job.updated_at || job.created_at),
+        previous: str(job.source_algorithm || metadata.fromAlgorithm || metadata.sourceAlgorithm || metadata.from_algorithm || metadata.source_algorithm),
+        at: ms(job.completed_at),
         status,
       },
     ])
@@ -308,16 +318,17 @@ export function buildDriftIntelligence(inputs: DriftInputs): DriftIntelligence {
    * was active or completed inside the comparison window. Outside the window it
    * cannot explain a change that happened inside it.
    */
-  const plannedExplanation = (assetId: string | null, algorithm: string): PlannedChange | null => {
+  const plannedExplanation = (assetId: string | null, algorithm: string, phase: 'appeared' | 'disappeared', currentItems: Map<string, Item>): PlannedChange | null => {
     if (!assetId) return null
     const jobs = plannedByAsset.get(assetId) ?? []
-    const inWindow = jobs.filter((job) => job.at >= baselineAtMs)
-    if (!inWindow.length) return null
-    const targeted = inWindow.find((job) => job.target && algorithm && (
-      job.target.toLowerCase().includes(algorithm.toLowerCase()) ||
-      algorithm.toLowerCase().includes(job.target.toLowerCase())
-    ))
-    return targeted ?? inWindow[0]
+    const inWindow = jobs.filter((job) => job.at > baselineAtMs && job.at <= ms(current?.completed_at))
+    return inWindow.find((job) => {
+      const target = primitiveIdentity(job.target)
+      if (!target || !primitiveIdentity(algorithm)) return false
+      if (phase === 'appeared') return target === primitiveIdentity(algorithm)
+      return primitiveIdentity(job.previous) === primitiveIdentity(algorithm) &&
+        [...currentItems.values()].some((item) => item.assetId === assetId && primitiveIdentity(item.algorithm) === target)
+    }) ?? null
   }
 
   /* ---- Scan comparison ------------------------------------------------ */
@@ -332,7 +343,7 @@ export function buildDriftIntelligence(inputs: DriftInputs): DriftIntelligence {
       const algorithm = str(result.algorithm)
       if (!algorithm) continue
       const assetLabel = asset?.name || str(result.asset_name) || str(result.asset_id) || 'Unattributed'
-      const key = itemKey(assetLabel, algorithm)
+      const key = itemKey(asset?.id || str(result.asset_id) || `unattributed:${str(result.id)}`, algorithm)
       const existing = index.get(key)
       const severity = normalizeSeverity(result.threat_level)
       // Keep the worst severity when a session records an item more than once.
@@ -368,8 +379,8 @@ export function buildDriftIntelligence(inputs: DriftInputs): DriftIntelligence {
       action: string,
       evidence: string[],
     ): DriftEvent => {
-      const asset = item.assetId ? assetById.get(item.assetId) : assetByName.get(item.assetLabel.toLowerCase())
-      const explanation = driftClass === 'planned' ? plannedExplanation(item.assetId, item.algorithm) : null
+      const asset = item.assetId ? assetById.get(item.assetId) : undefined
+      const explanation = driftClass === 'planned' ? plannedExplanation(item.assetId, item.algorithm, before === null ? 'appeared' : 'disappeared', currentIndex) : null
       return {
         id: `${driftClass}:${key}`,
         driftClass,
@@ -407,7 +418,7 @@ export function buildDriftIntelligence(inputs: DriftInputs): DriftIntelligence {
         }
         continue
       }
-      const explanation = plannedExplanation(item.assetId, item.algorithm)
+      const explanation = plannedExplanation(item.assetId, item.algorithm, 'appeared', currentIndex)
       const vulnerable = isVulnerable(item.algorithm)
       if (explanation) {
         events.push(makeEvent(
@@ -441,17 +452,21 @@ export function buildDriftIntelligence(inputs: DriftInputs): DriftIntelligence {
     // Disappeared since the baseline.
     for (const [key, item] of baselineIndex) {
       if (currentIndex.has(key)) continue
-      const explanation = plannedExplanation(item.assetId, item.algorithm)
+      const explanation = plannedExplanation(item.assetId, item.algorithm, 'disappeared', currentIndex)
       // Symmetrically: only the disappearance of a QUANTUM-VULNERABLE item is a
       // risk improvement. A safe algorithm dropping out of the results is a
       // coverage change - usually narrower scan scope, never a security win.
       const wasVulnerable = isVulnerable(item.algorithm)
-      const disappearClass: DriftClass = explanation ? 'planned' : wasVulnerable ? 'improvement' : 'coverage'
+      const currentCoverage = Boolean(item.assetId && [...currentIndex.values()].some((other) => other.assetId === item.assetId &&
+        str(other.row.finding_type) === str(item.row.finding_type)))
+      const disappearClass: DriftClass = explanation ? 'planned' : wasVulnerable && currentCoverage ? 'improvement' : 'coverage'
       events.push(makeEvent(
         key, item, disappearClass, item.algorithm, null,
         `${item.algorithm} no longer detected on ${item.assetLabel}`,
         explanation
           ? 'A migration for this asset completed in the window, and the cryptography it targeted is no longer detected.'
+          : wasVulnerable && !currentCoverage
+            ? 'The current scan did not provide comparable evidence for this asset and observation type. The earlier finding remains unresolved.'
           : wasVulnerable
             ? 'Quantum-vulnerable cryptography present at the baseline scan is no longer detected. It may have been remediated, or the asset may simply not have been reachable in the latest scan.'
             : 'Cryptography present at the baseline scan is no longer detected. It carried no quantum risk, so this reflects scan coverage rather than a change in posture.',
@@ -470,12 +485,12 @@ export function buildDriftIntelligence(inputs: DriftInputs): DriftIntelligence {
   }
 
   /* ---- Runtime downgrades: first-hand drift evidence ------------------ */
-  const downgrades = inputs.runtimeEvents.filter((event) => Boolean(event.downgrade_detected))
+  const downgrades = inputs.runtimeEvents.filter((event) => recordOf(event.metadata).verifiedPqcFallback === true)
   const downgradeIndex = new Map<string, { count: number; row: Row; first: number; last: number }>()
   for (const event of downgrades) {
     const asset = resolveAsset(event)
     const label = asset?.name || str(event.asset_name) || str(event.host) || 'Unattributed'
-    const key = `${label.toLowerCase()}::${str(event.key_exchange_algorithm) || str(event.algorithm) || 'downgrade'}`
+    const key = `${asset?.id || str(event.id)}:${str(event.host)}:${str(event.port)}:${str(event.key_exchange_algorithm) || str(event.algorithm) || 'downgrade'}`
     const at = ms(event.observed_at || event.created_at)
     const existing = downgradeIndex.get(key)
     if (existing) {

@@ -35,18 +35,20 @@ export const SITE = {
    * the change log section) whenever the substance of a policy changes — not
    * for typo fixes.
    */
-  effectiveDate: '2026-09-15',
+  effectiveDate: '2026-11-19',
   /** Support response target published on the Contact page. */
   supportResponseTarget: '2 business days',
 } as const
 
 /**
- * Refund terms. `initialWindowDays` is the money-back window on a subscriber's
- * FIRST payment for a plan; renewal charges are not refundable, but a
- * subscriber can cancel any time before a renewal date to stop it.
+ * Refund terms (owner decision 2026-11-12, Qguard_Wiki/GooglePlay_Billing §1):
+ * QGuard offers NO promotional money-back guarantee. That never overrides
+ * refund rights under consumer law or an app store's own refund policy, and
+ * billing errors are always corrected. Renewal charges are not refundable, but
+ * a subscriber can cancel any time before a renewal date to stop it.
  */
 export const REFUND_POLICY = {
-  initialWindowDays: 7,
+  moneyBackGuarantee: false,
   renewalsRefundable: false,
   cancellationTakesEffect: 'end of the paid period',
   /** Business days from an approved request to PayPal issuing the refund. */

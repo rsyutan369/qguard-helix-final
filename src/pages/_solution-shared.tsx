@@ -11,7 +11,7 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { ChevronDown, Github, Globe, Linkedin, Twitter } from 'lucide-react';
-import { CyberBackground } from '../components/CyberBackground';
+import { SkyAtmosphere } from '@/components/sky/SkyAtmosphere';
 import { cn } from '@/lib/utils';
 import {
   Reveal,
@@ -221,15 +221,8 @@ export function SolutionLayout({
   React.useEffect(() => { window.scrollTo({ top: 0 }); }, [pathname]);
 
   return (
-    <div className="qguard-home qguard-home--light relative min-h-screen overflow-x-hidden bg-white text-slate-900">
-      <div
-        className="pointer-events-none fixed inset-0 -z-10 opacity-60"
-        style={{
-          backgroundImage: 'radial-gradient(rgba(148,163,184,0.18) 1px, transparent 1px)',
-          backgroundSize: '26px 26px',
-        }}
-      />
-      <CyberBackground variant="light" />
+    <div className="qguard-home qguard-home--light qh-sky relative min-h-screen overflow-x-hidden bg-white text-slate-900">
+      <SkyAtmosphere routeKey={pathname} />
       <SolutionNav homePath={homePath} brandTitle={brandTitle} brandSubtitle={brandSubtitle} navLinks={navLinks} />
       <main className="relative z-10">{children}</main>
       <SolutionFooter

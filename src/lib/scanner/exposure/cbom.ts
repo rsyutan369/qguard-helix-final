@@ -27,6 +27,7 @@ import type {
   QuantumStatus,
 } from './types';
 import { stableHash } from './types';
+import { quotedCsvCell } from '@/lib/csv';
 import { canonicalAlgorithmName, describeAlgorithm, migrationTargetFor } from './algorithms';
 import { postQuantumReadiness } from './exposure-truth';
 
@@ -222,7 +223,6 @@ export function cbomToJson(components: CbomComponent[], meta: { scanId: string; 
 
 /** Flat CSV, one row per component. */
 export function cbomToCsv(components: CbomComponent[]): string {
-  const escape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
   const header = [
     'Component ID', 'Algorithm', 'Canonical Algorithm', 'Key Size', 'Mode', 'Protocol',
     'Usage', 'Library', 'Package', 'Version', 'Language', 'File', 'Line',
@@ -250,7 +250,7 @@ export function cbomToCsv(components: CbomComponent[]): string {
       component.quantumStatus,
       component.evidence[0]?.summary ?? '',
     ]
-      .map(escape)
+      .map(quotedCsvCell)
       .join(','),
   );
   return [header.join(','), ...rows].join('\n');

@@ -1,0 +1,487 @@
+# QGUARD MESSAGING — XFER SHARE™
+## Premium Live File Transfer Progress Dashboard
+### Android + Windows + macOS + Linux
+
+### 1. PROJECT OBJECTIVE
+
+Implement a complete, real-time, visually rich File Transfer Progress Screen / Dashboard for Qguard Messaging XFER Share™.
+
+CURRENT PROBLEM:
+
+The application currently displays a transfer progress status, but there is no proper visual progress dashboard. Users cannot clearly see the transfer percentage, file information, transfer speed, remaining time, encryption status, or a comprehensive transfer activity interface.
+
+REQUIRED SOLUTION:
+
+Create a dedicated, premium, enterprise-grade Live Transfer Dashboard based on the attached reference image.
+
+Use the attached image as the primary visual and layout reference. Reproduce its overall design language, visual hierarchy, animations, colors, glowing elements, progress ring, sender/receiver presentation, and professional appearance.
+
+The dashboard must be implemented in BOTH:
+
+- Qguard Messaging Android application.
+- Qguard Messaging Desktop application.
+
+The sender and receiver must BOTH see their own synchronized transfer progress screens.
+
+Do not create a decorative-only interface. Every displayed metric and control must be connected to actual transfer-engine events and state.
+
+### 2. REFERENCE DESIGN AND VISUAL REQUIREMENTS
+
+Reproduce the visual concept of the attached XFER Share™ interface.
+
+Design direction:
+
+- Premium futuristic quantum cybersecurity aesthetic.
+- Deep navy / midnight-blue background.
+- Electric blue, cyan, violet, and magenta accents.
+- Subtle quantum particle animations and flowing network effects.
+- Glowing circular transfer progress indicator.
+- Glassmorphism panels.
+- Metallic/glowing borders.
+- Premium typography and iconography.
+- Smooth progress animations.
+- Consistent Qguard Messaging branding.
+
+The design must look like a polished commercial enterprise application, not a prototype or generic file-transfer utility.
+
+Support both light and dark themes while maintaining the reference's signature futuristic appearance.
+
+### 3. TRANSFER DASHBOARD LAYOUT
+
+Create a dedicated transfer screen that automatically opens whenever a file or folder transfer begins.
+
+#### A. Header
+
+Display:
+
+- Qguard Messaging logo.
+- XFER Share™ branding.
+- Subtitle: Secure File Transfer via Qguard Mesh.
+- Page title: File Transfer.
+- Back/navigation control.
+- More options menu.
+
+#### B. Sender and Receiver Information
+
+Display both participating users prominently.
+
+LEFT SIDE — SENDER:
+
+- User avatar/profile picture.
+- Display name.
+- Device name.
+- Platform indicator.
+- Verified/trusted device badge.
+
+RIGHT SIDE — RECEIVER:
+
+- User avatar/profile picture.
+- Display name.
+- Device name.
+- Platform indicator.
+- Verified/trusted device badge.
+
+Between them, display animated directional arrows indicating the transfer direction.
+
+Example:
+
+[Sender Avatar]  >>>  [Receiver Avatar]
+
+Ruel — Android     Alex — Windows Desktop
+
+The receiver must see the same participants with their positions reversed appropriately when necessary.
+
+Use actual authenticated device identity and profile information. Never use hardcoded demo identities.
+
+#### C. Main Visual Transfer Progress
+
+Create a large animated circular progress ring in the center of the screen.
+
+Display:
+
+- Large numerical percentage.
+- Current transfer state.
+- Animated circular progress.
+- File or folder icon.
+- Optional quantum encryption animation.
+
+Example:
+
+68%
+
+TRANSFERRING...
+
+The percentage must represent actual transfer progress based on confirmed transfer-engine data, not an arbitrary animation.
+
+Progress should update smoothly without introducing artificial or misleading progress.
+
+#### D. File and Folder Information
+
+Below the progress indicator, display:
+
+- Filename or folder name.
+- File type icon.
+- Total file size.
+- Transferred size.
+- Remaining size.
+- Number of files when transferring folders.
+- Completed files / total files.
+- Current file being transferred.
+
+Example:
+
+Mountain_Landscape.jpg
+
+24.8 MB / 36.5 MB
+
+For folder transfers, display the folder name and aggregated transfer progress, with an expandable list of individual files.
+
+Support multiple files and folders in a single transfer session.
+
+#### E. Transfer Performance Metrics
+
+Create a premium performance information panel displaying:
+
+- Current transfer speed.
+- Average transfer speed.
+- Estimated remaining time.
+- Elapsed time.
+- Total bytes transferred.
+
+Example:
+
+2.6 MB/s
+
+00:00:03 remaining
+
+Add a subtle real-time network activity visualization using actual throughput measurements.
+
+Do not generate random transfer speeds or artificial network graphs.
+
+#### F. Real-Time Throughput Graph
+
+Implement an animated network throughput graph.
+
+Requirements:
+
+- Display recent transfer throughput.
+- Update from actual transfer telemetry.
+- Support fluctuating network speeds.
+- Show temporary slowdowns and interruptions.
+- Clearly distinguish paused transfers from active transfers.
+
+The graph must be based on real transfer-engine measurements.
+
+### 4. QUANTUM ENCRYPTION STATUS
+
+This is an important Qguard Messaging differentiator.
+
+Display an encryption security panel near the bottom of the dashboard.
+
+Example:
+
+QUANTUM-RESISTANT ENCRYPTED TRANSFER
+
+Securely encrypted before transmission.
+
+Display the actual cryptographic configuration used for the current transfer.
+
+Where applicable, show:
+
+- ML-KEM-768 or the configured ML-KEM parameter set for key establishment.
+- ML-KEM-1024 if the existing transfer architecture specifically uses it.
+- ML-DSA or the configured digital signature algorithm, if used for authentication.
+- AES-256-GCM for authenticated payload encryption, if configured.
+- SHA3-256 for file integrity verification, if configured.
+- Hybrid or PQC-only security mode, according to the actual implementation.
+
+IMPORTANT:
+
+Do not claim ML-DSA encrypts files. It is a digital signature algorithm.
+
+ML-KEM is used for key encapsulation and key establishment, not bulk file encryption.
+
+AES-256-GCM or the existing approved symmetric encryption mechanism protects file contents.
+
+Only display algorithms that are genuinely implemented and active in the transfer session.
+
+The security panel must reflect the real cryptographic configuration, not hardcoded security labels.
+
+Display meaningful states:
+
+- Encryption Initializing
+- Quantum Key Establishment
+- Payload Encryption
+- Secure Transfer Active
+- Integrity Verification
+- Transfer Security Verified
+- Security Error
+
+If encryption is not successfully established, do not display the transfer as quantum encrypted.
+
+### 5. TRANSFER CONTROLS
+
+Implement fully functional transfer controls.
+
+**PAUSE**
+
+- Pause the transfer safely.
+- Synchronize the paused state with the other device.
+- Display Paused on both dashboards.
+- Preserve transfer session state.
+- Allow resumption.
+
+**RESUME**
+
+- Resume a previously paused transfer.
+- Synchronize the resumed state across both devices.
+- Continue from the last verified transfer checkpoint.
+
+**STOP**
+
+- Provide a Stop action that gracefully stops the active transfer.
+- Explain whether the transfer can be resumed.
+- Require confirmation where appropriate.
+
+**CANCEL**
+
+- Cancel the transfer session.
+- Stop further transmission.
+- Release temporary resources safely.
+- Synchronize cancellation with the other device.
+- Clean up incomplete files according to the transfer recovery policy.
+- Preserve completed files and never delete existing user files unintentionally.
+
+The interface must clearly distinguish Stop, Pause, Resume, and Cancel.
+
+All controls must invoke actual backend/Rust transfer-engine operations.
+
+### 6. SYNCHRONIZED TWO-DEVICE DASHBOARD
+
+CRITICAL REQUIREMENT:
+
+The same transfer session must have a live progress dashboard on BOTH participating devices.
+
+For example:
+
+DEVICE A:
+Android — Sender
+
+DEVICE B:
+Windows Desktop — Receiver
+
+Both screens must display synchronized information:
+
+- Sender and receiver identities.
+- File or folder name.
+- Total transfer size.
+- Actual transfer percentage.
+- Transferred bytes.
+- Current transfer speed where applicable.
+- Remaining size.
+- Estimated remaining time where available.
+- Encryption status.
+- Integrity verification status.
+- Pause/resume state.
+- Stop/cancel state.
+- Completion or failure status.
+
+Use the existing Qguard Mesh communication infrastructure to synchronize transfer events and status information.
+
+Requirements:
+
+1. Every transfer must have a unique transfer session ID.
+2. Sender and receiver must subscribe to the same logical transfer session.
+3. Transfer state must originate from authoritative transfer-engine events.
+4. Updates must be synchronized between both devices.
+5. Handle delayed, duplicate, reordered, and missing events.
+6. Reconcile state after temporary disconnection.
+7. Recover the correct transfer status after application restart where supported.
+8. Prevent stale status updates from overwriting newer transfer states.
+
+IMPORTANT:
+
+Transfer progress is directional.
+
+The sender and receiver may calculate different instantaneous network throughput values. Display local measurements accurately, while synchronizing shared transfer facts such as verified bytes received, total size, and session state.
+
+The receiver should not report a file as completed until the complete payload has been received and integrity verification has succeeded.
+
+### 7. TRANSFER COMPLETION SCREEN
+
+When the transfer finishes, automatically transition to a professional completion state.
+
+Display:
+
+SUCCESSFULLY TRANSFERRED
+
+- File or folder name.
+- Total transferred size.
+- Sender identity.
+- Receiver identity.
+- Total transfer duration.
+- Integrity verification result.
+- Encryption configuration.
+- Completion timestamp.
+
+Display a green/cyan security confirmation animation.
+
+Buttons:
+
+[ Open File ]
+
+[ Open Folder ]
+
+[ View Transfer Details ]
+
+[ Done ]
+
+The sender and receiver must both receive the completion notification.
+
+A successful transport operation alone must not be represented as successful integrity verification.
+
+### 8. TRANSFER FAILURE AND INTERRUPTION HANDLING
+
+Create dedicated UI states for:
+
+- Connection lost.
+- Receiver unavailable.
+- Transfer interrupted.
+- Insufficient storage.
+- File write failure.
+- Encryption initialization failure.
+- Integrity verification failure.
+- User cancellation.
+- Transfer timeout.
+
+Provide appropriate retry and recovery actions.
+
+Never display 100% completion when the transfer has not been fully received and verified.
+
+### 9. CROSS-PLATFORM IMPLEMENTATION
+
+Implement one shared transfer-state architecture using the existing Rust backend and transfer engine.
+
+Platforms:
+
+- Android.
+- Windows.
+- macOS.
+- Linux.
+
+The frontend can have platform-specific responsive layouts, but the underlying transfer session, encryption, progress calculation, event handling, and state synchronization must remain consistent.
+
+Use the existing Tauri 2 + Rust architecture for desktop and existing Android architecture.
+
+Do not create duplicate transfer engines.
+
+### 10. BACKEND AND EVENT INTEGRATION
+
+Before implementation, audit the existing XFER architecture.
+
+Inspect:
+
+- File transfer service.
+- Folder transfer implementation.
+- Qguard Mesh transport.
+- Encryption and key establishment.
+- Transfer session management.
+- Progress reporting.
+- Event broadcasting.
+- Android frontend.
+- Desktop frontend.
+
+Create or extend a unified transfer event model.
+
+Suggested events:
+
+- transfer.created
+- transfer.accepted
+- transfer.encrypting
+- transfer.key_established
+- transfer.started
+- transfer.progress
+- transfer.paused
+- transfer.resumed
+- transfer.stopped
+- transfer.cancelled
+- transfer.integrity_checking
+- transfer.completed
+- transfer.failed
+- transfer.interrupted
+- transfer.reconnected
+
+Each event should contain the necessary authenticated session context, sequence information, and relevant progress metadata.
+
+Use the existing real-time communication infrastructure. Do not introduce mock WebSocket events or fake progress updates.
+
+### 11. PERFORMANCE AND RELIABILITY
+
+- Do not block the UI during transfers.
+- Use asynchronous event-driven updates.
+- Avoid excessive UI re-rendering.
+- Throttle visual updates appropriately without losing authoritative progress.
+- Support large files.
+- Support multiple files and folders.
+- Handle temporary network interruptions.
+- Prevent duplicate transfer operations.
+- Preserve verified transfer checkpoints where supported.
+- Ensure reliable resource cleanup.
+
+### 12. TESTING AND ACCEPTANCE CRITERIA
+
+Test on real devices.
+
+Required scenarios:
+
+1. Android → Android.
+2. Android → Windows.
+3. Windows → Android.
+4. Windows → Windows.
+5. macOS and Linux interoperability.
+6. Single-file transfers.
+7. Multiple-file transfers.
+8. Folder transfers.
+9. Large-file transfers.
+10. Pause and resume.
+11. Stop and cancel.
+12. Network disconnection and reconnection.
+13. Application restart during transfer.
+14. Integrity verification failure.
+15. Encryption initialization failure.
+16. Simultaneous transfers.
+17. Sender and receiver progress synchronization.
+18. Completion notification on both devices.
+
+FINAL ACCEPTANCE REQUIREMENTS:
+
+- A dedicated Live Transfer Dashboard automatically appears when a transfer begins.
+- The interface closely follows the supplied visual reference.
+- Both devices display the transfer dashboard.
+- Both devices show synchronized, real transfer progress.
+- File names, file sizes, percentages, speed, and remaining time are accurate.
+- Folder transfers display aggregate and individual file progress.
+- Encryption status reflects the actual cryptographic implementation.
+- Pause, Resume, Stop, and Cancel work correctly.
+- Completion is reported only after successful receiving and integrity verification.
+- Android and Desktop implementations behave consistently.
+- Existing XFER and MESH functionality remains intact.
+
+### FINAL PRODUCT VISION
+
+Qguard XFER Share™ should deliver a premium, enterprise-grade quantum-resistant offline file-transfer experience.
+
+Users should immediately understand:
+
+WHO is sending the files.
+WHO is receiving the files.
+WHAT is being transferred.
+HOW MUCH has been transferred.
+HOW FAST the transfer is progressing.
+HOW LONG remains.
+WHETHER quantum-resistant encryption is active.
+WHETHER the file integrity has been verified.
+
+Both sender and receiver must always have clear, synchronized visibility into the transfer session.
+
+Deliver a production-ready implementation, not merely a visual redesign.

@@ -1,6 +1,8 @@
 // Shared helpers for the Owner Admin console models (src/lib/admin/*).
 // Pure and isomorphic: no Node or browser APIs.
 
+import { csvCell } from '@/lib/csv'
+
 export function text(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
@@ -60,12 +62,7 @@ export function modelVersion(value: unknown): string {
   return fnv1a(canonicalJson(value, CLOCK_KEYS))
 }
 
-export function csvCell(value: unknown): string {
-  let cell = value === null || value === undefined ? '' : String(value)
-  // Neutralise spreadsheet formulas (=, +, -, @, tab, CR) — CSV injection.
-  if (/^[=+\-@\t\r]/.test(cell)) cell = `'${cell}`
-  return /[",\n\r]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell
-}
+export { csvCell }
 
 export function toCsv<T>(columns: Array<{ header: string; value: (row: T) => unknown }>, rows: T[]): string {
   const lines = [columns.map((column) => csvCell(column.header)).join(',')]

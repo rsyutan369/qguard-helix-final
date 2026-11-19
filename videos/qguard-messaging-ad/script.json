@@ -1,0 +1,9 @@
+[
+  {"start":0,"end":12,"lines":["A private conversation. A video of your family.","A contract you’re about to sign.","What you share today can still matter years from now."]},
+  {"start":12,"end":32,"lines":["Much of our digital life relies on public-key cryptography like RSA", "and elliptic-curve algorithms, including ECDSA for digital signatures.","A sufficiently powerful quantum computer could break those protections.","And someone who wants your data can start collecting it today."]},
+  {"start":32,"end":47,"lines":["It’s called harvest now, decrypt later.","An attacker saves encrypted traffic today, hoping to unlock it years from now.","If the information will still be sensitive then, how you protect it matters now."]},
+  {"start":47,"end":66,"lines":["Meet QGuard Messaging for Windows and Android.","Send a private message. Share a video or a document.","Start a voice or video call.","Secure Chat protects what you send with end-to-end encryption", "and post-quantum key protection built in."]},
+  {"start":66,"end":87,"lines":["Here’s what happens behind the scenes.","QGuard combines classical key agreement with NIST-standardized ML-KEM to establish shared keys.","It uses ML-DSA signatures to help verify who sent the message,", "and AES-256-GCM to encrypt the content."]},
+  {"start":87,"end":107,"lines":["Some things are worth keeping to yourself.","With Quantum Vault, you can encrypt sensitive files on your device.","On Windows, you can seal an entire folder.","Your vault files stay local by default,", "with encrypted backup and sharing available when you choose."]},
+  {"start":107,"end":116,"lines":["What you share today should stay private tomorrow.","Explore QGuard Messaging for Windows and Android.","Start with your next conversation."]}
+]

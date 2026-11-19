@@ -1,0 +1,89 @@
+/*
+ * Estate Remediation Intelligence — page tokens and hand-built charts.
+ * Chart colours are validated pairs (dataviz validate_palette.js) per theme:
+ *   dark  open #5b7cf0 / validated #16a34a on #111827
+ *   light open #3f5fd6 / validated #15803d on white
+ * Everything else reads the global --qg-* tokens, so both themes follow.
+ */
+.qe {
+  --qe-open: #5b7cf0;
+  --qe-valid: #16a34a;
+  --qe-seq: 91, 124, 240;
+  --qe-ink: var(--qg-text-primary, #e2e8f0);
+  --qe-ink-2: var(--qg-text-secondary, #cbd5e1);
+  --qe-ink-3: var(--qg-text-muted, #94a3b8);
+  --qe-line: var(--qg-border, rgba(148, 163, 184, 0.18));
+  --qe-card: var(--qg-card-bg, rgba(15, 23, 42, 0.6));
+  --qe-raised: var(--qg-muted-panel, rgba(255, 255, 255, 0.04));
+  --qe-ease: cubic-bezier(0.22, 0.7, 0.2, 1);
+}
+
+html.qg-theme-light .qe {
+  --qe-open: #3f5fd6;
+  --qe-valid: #15803d;
+  --qe-seq: 63, 95, 214;
+}
+
+/* ---------- Tabs ---------- */
+.qe-tabs { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--qe-line); border-radius: 12px; background: var(--qe-raised); width: fit-content; max-width: 100%; overflow-x: auto; }
+.qe-tab { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 9px; font-size: 13px; font-weight: 600; color: var(--qe-ink-2); white-space: nowrap; transition: background 200ms var(--qe-ease), color 200ms var(--qe-ease); }
+.qe-tab svg { width: 15px; height: 15px; }
+.qe-tab:hover { color: var(--qe-ink); background: rgba(var(--qe-seq), 0.08); }
+.qe-tab[aria-selected="true"] { background: var(--qg-primary, #1e293b); color: var(--qg-primary-text, #fff); box-shadow: 0 8px 20px -14px rgba(11, 29, 58, 0.7); }
+.qe-tab:focus-visible { outline: 2px solid var(--qe-open); outline-offset: 2px; }
+
+/* ---------- Segmented control ---------- */
+.qe-seg { display: inline-flex; border: 1px solid var(--qe-line); border-radius: 10px; overflow: hidden; }
+.qe-seg button { padding: 7px 12px; font-size: 12px; font-weight: 600; color: var(--qe-ink-2); border-right: 1px solid var(--qe-line); }
+.qe-seg button:last-child { border-right: 0; }
+.qe-seg button[aria-pressed="true"] { background: rgba(var(--qe-seq), 0.14); color: var(--qe-ink); }
+.qe-seg button:focus-visible { outline: 2px solid var(--qe-open); outline-offset: -2px; }
+
+/* ---------- Fix plan ---------- */
+.qe-fix { display: grid; grid-template-columns: 44px minmax(0, 1fr) 110px 170px 120px 96px; gap: 14px; align-items: center; width: 100%; padding: 12px 14px; text-align: left; border-bottom: 1px solid var(--qe-line); transition: background 160ms var(--qe-ease); }
+.qe-fix:hover { background: rgba(var(--qe-seq), 0.05); }
+.qe-fix[aria-expanded="true"] { background: rgba(var(--qe-seq), 0.08); }
+.qe-fix:focus-visible { outline: 2px solid var(--qe-open); outline-offset: -2px; }
+@media (max-width: 1100px) {
+  .qe-fix { grid-template-columns: 40px minmax(0, 1fr) 96px; }
+  .qe-fix .qe-col-wide { display: none; }
+}
+.qe-rank { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; font-weight: 600; color: var(--qe-ink); background: rgba(var(--qe-seq), 0.1); }
+.qe-priority { height: 4px; border-radius: 4px; background: var(--qe-line); overflow: hidden; }
+.qe-priority > i { display: block; height: 100%; border-radius: 4px; background: var(--qe-open); }
+
+/* Segmented progress bar: status colours always carry a text legend nearby. */
+.qe-progress { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; background: var(--qe-line); }
+.qe-progress > i { display: block; height: 100%; min-width: 2px; }
+.qe-s-open { background: #94a3b8; }
+.qe-s-planned, .qe-s-running, .qe-s-awaiting-validation { background: var(--qe-open); }
+.qe-s-validated { background: var(--qe-valid); }
+.qe-s-failed, .qe-s-regressed { background: #dc2626; }
+.qe-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+
+/* ---------- Treemap ---------- */
+.qe-treemap { position: relative; width: 100%; border-radius: 12px; overflow: hidden; background: var(--qe-raised); }
+.qe-tile { position: absolute; padding: 8px 10px; border: 2px solid var(--qg-dashboard-bg, #0b1020); border-radius: 8px; overflow: hidden; text-align: left; transition: filter 160ms var(--qe-ease); }
+.qe-tile:hover, .qe-tile:focus-visible { filter: brightness(1.06) saturate(1.1); outline: none; box-shadow: inset 0 0 0 2px var(--qe-open); }
+.qe-tile strong { display: block; font-size: 13px; font-weight: 600; color: var(--qe-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qe-tile span { display: block; font-size: 11px; color: var(--qe-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- Heatmap ---------- */
+.qe-heat { width: 100%; border-collapse: separate; border-spacing: 2px; font-size: 12px; }
+.qe-heat th { font-weight: 600; color: var(--qe-ink-2); text-align: left; padding: 6px 8px; white-space: nowrap; }
+.qe-heat td { text-align: center; padding: 9px 6px; border-radius: 4px; color: var(--qe-ink); font-variant-numeric: tabular-nums; }
+.qe-heat td[data-strong="true"] { color: #fff; }
+
+/* ---------- SVG charts ---------- */
+.qe-chart text { fill: var(--qe-ink-2); font-size: 11px; font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; }
+.qe-chart .qe-axis { stroke: var(--qe-line); stroke-width: 1; }
+.qe-chart .qe-grid { stroke: var(--qe-line); stroke-width: 1; stroke-dasharray: 2 4; }
+.qe-chart .qe-strong { fill: var(--qe-ink); font-weight: 600; }
+.qe-flow { fill: none; stroke-opacity: 0.28; transition: stroke-opacity 160ms var(--qe-ease); }
+.qe-flow:hover, .qe-flow[data-active="true"] { stroke-opacity: 0.6; }
+
+.qe-tooltip { position: absolute; pointer-events: none; z-index: 5; min-width: 160px; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.45; background: var(--qg-code-bg, #0e1f3d); color: var(--qg-code-text, #dbe4f5); box-shadow: 0 12px 30px -16px rgba(0, 0, 0, 0.6); }
+
+@media (prefers-reduced-motion: reduce) {
+  .qe *, .qe *::before, .qe *::after { transition-duration: 0.001ms !important; animation-duration: 0.001ms !important; }
+}

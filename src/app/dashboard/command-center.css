@@ -1,0 +1,636 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+/*
+ * Every dashboard page in Light mode, in the homepage's look: navy ink,
+ * periwinkle accent, cyan dot, IBM Plex, white cards on the bowl glow.
+ *
+ * How it works: DashboardLayout puts `qh-cc` on the shell root on every
+ * dashboard route. Every rule here is gated on `html.qg-theme-light`, so
+ * Dark mode is untouched.
+ *
+ *  1. The light palette itself is the global `--qg-*` token block on
+ *     `html.qg-theme-light` in src/index.css; this file only adds the
+ *     `--qh-*` homepage tokens below.
+ *  2. Shell, card, wash and tone rules (sections 2-4) apply on every page.
+ *     `:not(#_)` only raises specificity above the bridge's selectors.
+ *     Typography and header rules (5-6) are scoped to `.qh-cc-page`, the
+ *     Overview's root, because they restyle its specific markup.
+ *  3. Tone colours drawn for a navy ground (#22d3ee cyan text is ~1.8:1 on
+ *     white) are remapped to darker shades of the SAME hue, so every category
+ *     keeps its meaning and its colour family.
+ *  4. Type: IBM Plex, sentence-case mono labels, nothing under 10px.
+ *     The Estate Exposure Workflow (`.qh-cc-keep`) is a dense tool and keeps
+ *     its own type scale.
+ */
+
+/* ---------- 1. Tokens ---------- */
+
+html.qg-theme-light .qh-cc {
+  --qh-ink: #0b1d3a;
+  --qh-ink-2: #33435f;
+  --qh-ink-3: #55637d;
+  --qh-accent: #5b7cf0;
+  --qh-accent-ink: #3f5fd6;
+  --qh-dot: #2fe0d0;
+  --qh-navy: #0e1f3d;
+  --qh-raised: #f3f6fc;
+  --qh-line: rgba(11, 29, 58, 0.1);
+  --qh-line-strong: rgba(11, 29, 58, 0.2);
+  --qh-ease: cubic-bezier(0.22, 0.7, 0.2, 1);
+  --qh-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --qh-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Only the Light-mode Overview shows the eyebrow. */
+.qh-cc-eyebrow {
+  display: none;
+}
+
+/* Letter-reveal spans (landing-chars) must stay whole words in every theme. */
+.qh-cc-page .lp-word {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.qh-cc-page .lp-ch {
+  display: inline-block;
+}
+
+/* ---------- 2. Shell: background, glow, progress, sidebar ---------- */
+
+html.qg-theme-light .qh-cc:not(#_) {
+  background: #f6f8fd;
+  font-family: var(--qh-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+html.qg-theme-light .qh-cc:not(#_) :is(.font-sans, .font-mono) {
+  font-family: var(--qh-sans);
+}
+
+html.qg-theme-light .qh-cc:not(#_) .font-mono {
+  font-family: var(--qh-mono);
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-dashboard-main {
+  background: #ffffff !important;
+}
+
+/* The glow canvas replaces the vignette, grid and scanlines. */
+html.qg-theme-light .qh-cc:not(#_) .qg-dashboard-bg-layers {
+  display: none;
+}
+
+.qh-cc-atmo {
+  position: sticky;
+  top: 0;
+  z-index: 0;
+  height: 100dvh;
+  margin-bottom: -100dvh;
+  pointer-events: none;
+  background: #ffffff;
+}
+
+.qh-cc-atmo canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Reading progress along the top edge of the page. */
+.qh-cc-progress {
+  position: sticky;
+  top: 0;
+  z-index: 25;
+  height: 2px;
+  margin-bottom: -2px;
+  background: linear-gradient(90deg, var(--qh-accent), var(--qh-dot));
+  transform: scaleX(var(--qh-scroll, 0));
+  transform-origin: left center;
+  pointer-events: none;
+}
+
+html.qg-theme-light .qh-cc:not(#_) :is(.qg-dashboard-sidebar, .qg-dashboard-mobile-header) {
+  box-shadow: 1px 0 0 rgba(11, 29, 58, 0.06), 14px 0 36px -28px rgba(11, 29, 58, 0.3);
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-dashboard-mobile-header {
+  box-shadow: 0 1px 0 rgba(11, 29, 58, 0.06), 0 12px 30px -22px rgba(11, 29, 58, 0.3);
+  backdrop-filter: saturate(1.4) blur(14px);
+}
+
+html.qg-theme-light .qh-cc:not(#_) :is(.qg-dashboard-sidebar, .qg-dashboard-mobile-header) [class*="border-blue-"] {
+  border-color: rgba(91, 124, 240, 0.3) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) :is(.qg-dashboard-sidebar, .qg-dashboard-mobile-header) [class*="bg-blue-"] {
+  background: rgba(91, 124, 240, 0.08) !important;
+  box-shadow: none !important;
+}
+
+/* Brand: wordmark in sans, tagline in mono, both in sentence case. */
+html.qg-theme-light .qh-cc:not(#_) .qg-dashboard-sidebar .text-slate-50,
+html.qg-theme-light .qh-cc:not(#_) .qg-dashboard-mobile-header .text-slate-50 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-transform: none;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-dashboard-sidebar [class*="text-cyan-300/60"] {
+  margin-top: 2px;
+  font-family: var(--qh-mono);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--qh-ink-3) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-dashboard-sidebar .qg-sidebar-section {
+  font-family: var(--qh-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--qh-ink-3) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-dashboard-sidebar .qg-sidebar-section:hover {
+  color: var(--qh-accent-ink) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-sidebar-link span {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-sidebar-link:hover {
+  background: var(--qg-sidebar-hover) !important;
+  color: var(--qh-ink) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-sidebar-link:hover svg {
+  color: var(--qh-accent-ink);
+}
+
+/* Active page: the navy pill of the homepage's primary button, cyan icon. */
+html.qg-theme-light .qh-cc:not(#_) .qg-sidebar-link.qg-sidebar-link--active,
+html.qg-theme-light .qh-cc:not(#_) .qg-sidebar-link.qg-sidebar-link--active:hover {
+  background: var(--qh-navy) !important;
+  border-color: var(--qh-navy) !important;
+  color: #ffffff !important;
+  box-shadow: 0 10px 24px -14px rgba(11, 29, 58, 0.6) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-sidebar-link.qg-sidebar-link--active svg {
+  color: var(--qh-dot);
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-sidebar-link__bar {
+  background: linear-gradient(180deg, var(--qh-accent), var(--qh-dot)) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-dashboard-sidebar :is(.qg-theme-toggle__switch, .qg-theme-toggle__system) {
+  background: #f6f8fd;
+  border-color: var(--qg-sidebar-border);
+  box-shadow: none;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-dashboard-sidebar :is(a, button):hover:not(.qg-sidebar-link) {
+  background-color: var(--qg-sidebar-hover) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) ::-webkit-scrollbar-thumb {
+  background: rgba(11, 29, 58, 0.16);
+}
+
+html.qg-theme-light .qh-cc:not(#_) ::-webkit-scrollbar-thumb:hover {
+  background: rgba(11, 29, 58, 0.28);
+}
+
+/* ---------- 3. Page surfaces ---------- */
+
+html.qg-theme-light .qh-cc:not(#_) .qg-executive-panel {
+  border-radius: 14px;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-executive-panel::before {
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--qh-accent) 35%, var(--qh-dot) 55%, transparent 80%);
+  opacity: 0;
+  transition: opacity 400ms var(--qh-ease);
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-executive-panel:hover::before {
+  opacity: 0.9;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-executive-panel::after {
+  content: none;
+}
+
+/* Tiles inside a card read as a raised inset, not as a second card. */
+html.qg-theme-light .qh-cc:not(#_) .qg-executive-panel [class*="bg-white/"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  background: var(--qh-raised) !important;
+  border-color: rgba(11, 29, 58, 0.07) !important;
+  box-shadow: none !important;
+}
+
+/* Progress tracks and idle dots: a quiet ink tint (a white track on a white card disappears). */
+html.qg-theme-light .qh-cc:not(#_) [class*="rounded-full"][class*="bg-white/"]:not(.qg-force-dark):not(.qg-force-dark *) {
+  background: rgba(11, 29, 58, 0.08) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Cyan / sky / blue washes: a periwinkle wash. */
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([class*="bg-blue-"], [class*="bg-sky-"], [class*="bg-cyan-"]):not(.qg-force-dark):not(.qg-force-dark *) {
+  background: rgba(91, 124, 240, 0.08) !important;
+  border-color: rgba(91, 124, 240, 0.26) !important;
+  box-shadow: none !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([class*="hover:bg-blue-"], [class*="hover:bg-sky-"], [class*="hover:bg-cyan-"]):hover:not(.qg-force-dark):not(.qg-force-dark *) {
+  background: rgba(91, 124, 240, 0.14) !important;
+  border-color: rgba(91, 124, 240, 0.4) !important;
+}
+
+/* Solid dots and rails keep their solid colour (a wash would erase them). */
+/* (These repeat the wash rule's :not()s so they outrank it.) */
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.bg-cyan-400, .bg-cyan-500):not(.qg-force-dark):not(.qg-force-dark *) { background: #0891b2 !important; border-color: transparent !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.bg-sky-400, .bg-sky-500):not(.qg-force-dark):not(.qg-force-dark *) { background: #0284c7 !important; border-color: transparent !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.bg-blue-400, .bg-blue-500):not(.qg-force-dark):not(.qg-force-dark *) { background: #4f6ee8 !important; border-color: transparent !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.bg-emerald-400, .bg-emerald-500, .bg-green-500) { background: #16a34a; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.bg-amber-300, .bg-amber-400, .bg-amber-500, .bg-yellow-500) { background: #d97706; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.bg-red-400, .bg-red-500) { background: #dc2626; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.bg-violet-400) { background: #7c5ce6; }
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([class*="border-blue-"], [class*="border-sky-"], [class*="border-cyan-"]):not([class*="bg-"]):not(.qg-force-dark):not(.qg-force-dark *) {
+  border-color: rgba(91, 124, 240, 0.3) !important;
+}
+
+/* Dark fills the bridge does not know: loading / empty states become cards. */
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([class*="bg-[#080d1a]"], [class*="bg-[#050a15]"]):not(.qg-force-dark):not(.qg-force-dark *) {
+  background: #ffffff !important;
+  border-color: var(--qh-line) !important;
+  box-shadow: var(--qg-panel-shadow) !important;
+}
+
+/* KPI hover explanation: a deliberate navy panel with light text. */
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [class*="bg-[#0b1327]"] {
+  background: rgba(14, 31, 61, 0.96) !important;
+  color: #dbe4f5 !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [class*="ring-[#0b1327]"] {
+  --tw-ring-color: #ffffff;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(tr, td, th) {
+  border-color: rgba(11, 29, 58, 0.08) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(input, textarea)::placeholder {
+  color: #8a96ad !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope .recharts-cartesian-grid line,
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope .recharts-polar-grid-angle line,
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope .recharts-polar-grid-concentric circle {
+  stroke: rgba(11, 29, 58, 0.08) !important;
+}
+
+/* Gauge track drawn as faint white for a navy ground. */
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope circle[stroke="rgba(255,255,255,0.08)"] {
+  stroke: rgba(11, 29, 58, 0.09);
+}
+
+/* ---------- 4. Tone colours (same hue, readable on white) ---------- */
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.text-cyan-100, .text-cyan-200, .text-cyan-300, .text-cyan-400, .text-sky-300, .text-sky-400, .text-blue-300, .text-blue-400):not(.qg-force-dark):not(.qg-force-dark *) {
+  color: var(--qh-accent-ink) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.text-amber-100, .text-amber-200):not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #92400e !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.text-amber-300, .text-amber-400, .text-yellow-300, .text-yellow-400):not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #b45309 !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.text-orange-300, .text-orange-400, .text-orange-500):not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #c2410c !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.text-emerald-100, .text-emerald-200, .text-emerald-300, .text-emerald-400, .text-green-300, .text-green-400, .text-green-500):not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #15803d !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.text-red-100, .text-red-200, .text-red-300, .text-red-400, .text-red-500):not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #b42318 !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.text-violet-200, .text-violet-300, .text-violet-400, .text-purple-300, .text-purple-400):not(.qg-force-dark):not(.qg-force-dark *) {
+  color: #6941c6 !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.text-slate-100, .text-slate-200):not(.qg-force-dark):not(.qg-force-dark *) {
+  color: var(--qh-ink) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is(.text-slate-400, .text-slate-500):not(.qg-force-dark):not(.qg-force-dark *) {
+  color: var(--qh-ink-3) !important;
+}
+
+/* Inline tone colours from the executive primitives. Text uses the 700 shade
+   (>= 4.5:1 on white); bars, rings and lines the 600 shade (>= 3:1). */
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style^="color: rgb(34, 211, 238)"] { color: #0e7490 !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style^="color: rgb(96, 165, 250)"] { color: #3f5fd6 !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style^="color: rgb(167, 139, 250)"] { color: #6941c6 !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style^="color: rgb(52, 211, 153)"] { color: #15803d !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style^="color: rgb(248, 113, 113)"] { color: #b42318 !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style^="color: rgb(251, 191, 36)"] { color: #b45309 !important; }
+
+/* Pale slate text set inline for a navy ground (#e2e8f0, #cbd5e1, #f1f5f9) reads as ink here. */
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([style^="color: rgb(226, 232, 240)"], [style*="; color: rgb(226, 232, 240)"], [style^="color: rgb(203, 213, 225)"], [style*="; color: rgb(203, 213, 225)"], [style^="color: rgb(241, 245, 249)"], [style*="; color: rgb(241, 245, 249)"]):not(.qg-force-dark):not(.qg-force-dark *) { color: var(--qh-ink) !important; }
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style*="background-color: rgb(34, 211, 238)"] { background-color: #0891b2 !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style*="background-color: rgb(56, 189, 248)"] { background-color: #0284c7 !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style*="background-color: rgb(96, 165, 250)"] { background-color: #4f6ee8 !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style*="background-color: rgb(129, 140, 248)"] { background-color: #6366f1 !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style*="background-color: rgb(167, 139, 250)"] { background-color: #7c5ce6 !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style*="background-color: rgb(52, 211, 153)"] { background-color: #16a34a !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style*="background-color: rgb(16, 185, 129)"] { background-color: #059669 !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style*="background-color: rgb(248, 113, 113)"] { background-color: #dc2626 !important; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope [style*="background-color: rgb(251, 191, 36)"] { background-color: #d97706 !important; }
+
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([stroke="#22d3ee"]) { stroke: #0891b2; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([stroke="#60a5fa"]) { stroke: #4f6ee8; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([stroke="#a78bfa"]) { stroke: #7c5ce6; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([stroke="#34d399"]) { stroke: #16a34a; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([stroke="#f87171"]) { stroke: #dc2626; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([stroke="#fbbf24"]) { stroke: #d97706; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([fill="#22d3ee"], [stop-color="#22d3ee"]) { fill: #0891b2; stop-color: #0891b2; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([fill="#60a5fa"], [stop-color="#60a5fa"]) { fill: #4f6ee8; stop-color: #4f6ee8; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([fill="#a78bfa"], [stop-color="#a78bfa"]) { fill: #7c5ce6; stop-color: #7c5ce6; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([fill="#34d399"], [stop-color="#34d399"]) { fill: #16a34a; stop-color: #16a34a; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([fill="#f87171"], [stop-color="#f87171"]) { fill: #dc2626; stop-color: #dc2626; }
+html.qg-theme-light .qh-cc:not(#_) .dashboard-theme-scope :is([fill="#fbbf24"], [stop-color="#fbbf24"]) { fill: #d97706; stop-color: #d97706; }
+
+/* ---------- 5. Typography ---------- */
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-page :is(.font-black, .font-extrabold) {
+  font-weight: 600;
+}
+
+/* Tracked, all-caps micro labels become sentence-case mono labels. */
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-page .uppercase:not(h1, h2, h3, a, button, .qh-cc-keep *) {
+  font-family: var(--qh-mono);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-page :is(a, button).uppercase:not(.qh-cc-keep *) {
+  font-family: var(--qh-sans);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* In-panel headings (e.g. Security Events) read as titles, not spaced capitals.
+   The page title has its own rule further down. */
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-page :is(h2, h3, h4).uppercase:not(.qh-cc-title, .qh-cc-keep *) {
+  font-family: var(--qh-sans);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  text-transform: none;
+  color: var(--qh-ink) !important;
+}
+
+/* Nothing on the Overview below 10px. */
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-page :is([class~="text-[7px]"], [class~="text-[8px]"]):not(.qh-cc-keep *) {
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-page :is([class~="text-[9px]"], [class~="text-[9.5px]"]):not(.qh-cc-keep *) {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-page :is([class~="text-[10px]"], [class~="text-[10.5px]"]):not(.qh-cc-keep *) {
+  font-size: 12px;
+}
+
+/* Big numbers: Plex at medium weight, tabular so live updates don't jitter. */
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-page :is([class~="text-[26px]"], [class~="text-[28px]"], .text-3xl, .text-4xl) {
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Section headings between rows. */
+/* Outranks the generic uppercase-label rule above. */
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-page .qh-cc-section .qh-cc-section__title.uppercase {
+  font-family: var(--qh-sans);
+  font-size: 19px;
+  line-height: 1.25;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  text-transform: none;
+  color: var(--qh-ink) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-section__title svg {
+  width: 18px;
+  height: 18px;
+  color: var(--qh-accent-ink) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-section__link {
+  background: linear-gradient(var(--qh-accent), var(--qh-accent)) left bottom / 0 1px no-repeat;
+  transition: background-size 350ms var(--qh-ease);
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-section__link:hover {
+  background-size: 100% 1px;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-page .qh-cc-section .qh-cc-section__meta.uppercase {
+  font-family: var(--qh-mono);
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--qh-ink-2) !important;
+  text-align: right;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-page .qg-executive-panel .qh-cc-panel-title.uppercase {
+  font-family: var(--qh-sans);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  text-transform: none;
+  color: var(--qh-ink) !important;
+}
+
+/* ---------- 6. Page header ---------- */
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-head {
+  padding: 12px 0 8px;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-eyebrow {
+  position: relative;
+  display: block;
+  margin-bottom: 14px;
+  padding-left: 18px;
+  font-family: var(--qh-mono);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--qh-ink-2);
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-eyebrow::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  width: 6px;
+  height: 6px;
+  background: var(--qh-accent);
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-head__icon {
+  display: none;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-title {
+  font-family: var(--qh-sans);
+  font-size: clamp(32px, 3.4vw, 48px);
+  line-height: 1.06;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  text-transform: none;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-title__mark {
+  position: relative;
+  display: inline-block;
+  color: var(--qh-accent-ink) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-title__mark::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 0.07em;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--qh-accent), var(--qh-dot));
+  transform: scaleX(0);
+  transform-origin: left center;
+  animation: qh-cc-underline 900ms var(--qh-ease) 1300ms forwards;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-lede {
+  margin-top: 12px;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 400;
+  color: var(--qh-ink-2) !important;
+}
+
+/* Status pills sit on the glow: give them a white ground and darker text. */
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-head__status > :is(div, a, span) {
+  backdrop-filter: blur(6px);
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-head__status > [class*="rounded-full"] {
+  background-color: rgba(255, 255, 255, 0.85) !important;
+  box-shadow: 0 1px 2px rgba(11, 29, 58, 0.06) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-head__status > span {
+  color: var(--qh-ink-2) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-foot {
+  border-color: var(--qh-line) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-foot :is(span, div) {
+  color: var(--qh-ink-3) !important;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qh-cc-foot .opacity-30 {
+  opacity: 0.7;
+}
+
+/* ---------- 7. Motion (armed by useScrollerMotion) ---------- */
+
+html.qg-theme-light .qh-cc .qg-dashboard-main[data-motion] [data-reveal] {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 900ms var(--qh-ease) var(--lp-delay, 0ms), transform 900ms var(--qh-ease) var(--lp-delay, 0ms);
+}
+
+html.qg-theme-light .qh-cc .qg-dashboard-main[data-motion] [data-reveal][data-in] {
+  opacity: 1;
+  transform: none;
+}
+
+html.qg-theme-light .qh-cc .qg-dashboard-main .lp-ch {
+  will-change: opacity, filter;
+}
+
+html.qg-theme-light .qh-cc:not(#_) .qg-executive-panel:hover {
+  transform: translateY(-3px);
+  transition: transform 450ms var(--qh-ease), box-shadow 450ms var(--qh-ease), border-color 300ms var(--qh-ease);
+}
+
+/* Page change: the new module rises in, like the homepage's fade-ups. */
+html.qg-theme-light .qh-cc .dashboard-theme-scope[data-route-enter] {
+  animation: qh-cc-route-in 620ms var(--qh-ease) both;
+}
+
+@keyframes qh-cc-route-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes qh-cc-underline {
+  to { transform: scaleX(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.qg-theme-light .qh-cc .dashboard-theme-scope[data-route-enter] {
+    animation: none;
+  }
+
+  html.qg-theme-light .qh-cc:not(#_) .qh-cc-title__mark::after {
+    animation: none;
+    transform: scaleX(1);
+  }
+
+  html.qg-theme-light .qh-cc:not(#_) .qg-executive-panel:hover {
+    transform: none;
+  }
+}
+
+@media (max-width: 1023px) {
+  .qh-cc-progress {
+    top: 57px;
+  }
+}

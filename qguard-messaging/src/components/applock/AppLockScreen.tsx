@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Delete, Fingerprint, LockKeyhole, ShieldAlert } from "lucide-react";
+import { ArrowLeft, Delete, Fingerprint, LockKeyhole, ShieldAlert } from "lucide-react";
+import { PatternCapture } from "@/components/vault/PatternCapture";
+import type { AppLockMethod } from "@/lib/use-app-lock";
 
 type Mode = "setup" | "unlock";
 
@@ -15,6 +17,14 @@ interface AppLockScreenProps {
   onBiometric?: () => Promise<void>; // throws on cancel/failure; offered once automatically
   busy?: boolean;
   busyLabel?: string; // shown while `busy`, e.g. restoring the session after a correct PIN
+  /** Unlock: which pad to show — the PIN keypad or the 4 × 4 pattern pad. */
+  method?: AppLockMethod;
+  /** Setup: start at entering the PIN (the Security Setup page already chose it). */
+  skipChoose?: boolean;
+  /** Setup: go back to the Security Setup choices. */
+  onBack?: () => void;
+  /** Unlock: what the biometric button says (e.g. "Use fingerprint"). */
+  biometricLabel?: string;
 }
 
 function useLockoutCountdown(lockoutUntil?: string | null): number {
@@ -35,7 +45,8 @@ function useLockoutCountdown(lockoutUntil?: string | null): number {
 export function AppLockScreen(props: AppLockScreenProps) {
   const { mode, attemptsRemaining, lockoutUntil, rootWarning, onSubmit, onUsePassword, busy, busyLabel } = props;
   const [chosenDigits, setChosenDigits] = useState<number>(props.digits ?? 6);
-  const [stage, setStage] = useState<"choose" | "enter" | "confirm">(mode === "setup" ? "choose" : "enter");
+  const [stage, setStage] = useState<"choose" | "enter" | "confirm">(mode === "setup" && !props.skipChoose ? "choose" : "enter");
+  const patternUnlock = mode === "unlock" && props.method === "pattern";
   const [entry, setEntry] = useState("");
   const [firstPin, setFirstPin] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -135,11 +146,11 @@ export function AppLockScreen(props: AppLockScreenProps) {
   }, [disabled]);
 
   const heading = useMemo(() => {
-    if (mode === "unlock") return "Enter your PIN";
+    if (mode === "unlock") return patternUnlock ? "Draw your pattern" : "Enter your PIN";
     if (stage === "choose") return "Create your app PIN";
     if (stage === "confirm") return "Confirm your PIN";
     return `Enter a ${digits}-digit PIN`;
-  }, [mode, stage, digits]);
+  }, [mode, stage, digits, patternUnlock]);
 
   const subheading = useMemo(() => {
     if (mode === "unlock") return "Unlock QGuard Messaging";
@@ -168,6 +179,16 @@ export function AppLockScreen(props: AppLockScreenProps) {
         />
       </div>
 
+      {props.onBack && !busy && (
+        <button
+          type="button"
+          onClick={props.onBack}
+          className="qg-focusable absolute left-4 top-[calc(env(safe-area-inset-top,0px)+16px)] flex items-center gap-1 text-[13px] font-semibold"
+          style={{ color: "var(--qg-helix)" }}
+        >
+          <ArrowLeft size={16} /> Back
+        </button>
+      )}
       <div className="flex w-full max-w-[21rem] flex-col items-center gap-7">
         <div className="qg-rise text-center" style={{ ["--qg-i" as string]: 0 }}>
           <span
@@ -205,7 +226,26 @@ export function AppLockScreen(props: AppLockScreenProps) {
           </div>
         )}
 
-        {mode === "setup" && stage === "choose" ? (
+        {patternUnlock ? (
+          <div className="w-full">
+            <PatternCapture
+              mode="unlock"
+              disabled={disabled}
+              onSubmit={(pattern) => onSubmit(pattern, 0)}
+            />
+            {busy && busyLabel && (
+              <p role="status" className="qg-mono mt-2 text-center text-[11.5px]" style={{ color: "var(--qg-text-2)" }}>{busyLabel}</p>
+            )}
+            {lockoutRemaining > 0 && (
+              <p className="mt-2 text-center text-[12.5px] font-semibold" style={{ color: "var(--qg-warn)" }}>Too many attempts. Try again in {lockoutRemaining}s.</p>
+            )}
+            {typeof attemptsRemaining === "number" && attemptsRemaining < 5 && lockoutRemaining === 0 && (
+              <p className="qg-mono mt-1 text-center text-[11px]" style={{ color: "var(--qg-text-3)" }}>
+                {attemptsRemaining} attempt{attemptsRemaining === 1 ? "" : "s"} remaining
+              </p>
+            )}
+          </div>
+        ) : mode === "setup" && stage === "choose" ? (
           <div className="qg-rise flex w-full flex-col gap-2.5" style={{ ["--qg-i" as string]: 2 }}>
             <button
               onClick={() => { setChosenDigits(6); setStage("enter"); }}
@@ -315,7 +355,7 @@ export function AppLockScreen(props: AppLockScreenProps) {
             className="qg-focusable mb-3 flex items-center gap-2 text-[13px] font-semibold disabled:opacity-40"
             style={{ color: "var(--qg-helix)" }}
           >
-            <Fingerprint size={16} /> Use fingerprint or face
+            <Fingerprint size={16} /> {props.biometricLabel ?? "Use fingerprint or face"}
           </button>
         )}
 

@@ -1,0 +1,2 @@
+1f0a472a7ca122fb78454801580d073f51ad55ee16904ade2820ce107e6ac8a8 *Qguard-Messaging-Release.aab
+6fa6f48cce72ef85261166164ad232377f5b4bf60229ffa9f65ee6a25abd9817 *Qguard-Messaging-1.5.2-arm64-release.apk

@@ -225,8 +225,8 @@ for (const [status, stage] of [['completed', 'completed'], ['failed', 'failed'],
 }
 
 {
-  // The sandbox's own Rollback writes `rollback_requested` and dispatches nothing;
-  // only Migration Snapshot Management records a disposition.
+  // A historical rollback request may lack a disposition. Keep distinguishing
+  // those records from requests the operational service actually dispatched.
   const undispatched = describe({ status: 'rollback_requested' })
   assert(/nothing has been dispatched/.test(undispatched.headline) && /pre-change snapshot in Live Migration/.test(undispatched.nextAction),
     'a rollback request nothing dispatched is not described as "awaiting an executor"', undispatched.headline)
@@ -246,7 +246,7 @@ for (const status of ['completed', 'cancelled', 'stopped', 'rolled_back']) {
 }
 assert(dispatchBlockFor({ dispatchBlock: { kind: 'x' } }, 'queued') === null, 'a block without a reason is not shown')
 const migrationSrc = readFileSync('src/api-server/migration.ts', 'utf8')
-assert(/dispatchBlock: dispatchBlockFor\(metadata, status\)/.test(migrationSrc), 'Live Migration reads the shared rule')
+assert(/dispatchBlock: dispatchBlockFor\(metadata, status(?:, liveAgentIds)?\)/.test(migrationSrc), 'Live Migration reads the shared rule')
 assert(!/const block = asRecord\(metadata\.dispatchBlock\)/.test(migrationSrc), 'Live Migration keeps no private copy of it')
 
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -262,10 +262,10 @@ assert(/operation === 'remediation' && role !== 'patcher' && role !== 'operator'
 section('§5 sandbox.ts contract')
 
 const sandboxSrc = readFileSync('src/api-server/sandbox.ts', 'utf8')
-assert(/const SANDBOX_ENGINE_ONLY_ACTIONS = \['pause', 'resume', 'retry', 'stop', 'restore_snapshot'\]/.test(sandboxSrc), 'engine-only actions are listed')
-assert(/const refusal = sandboxEngineActionRefusal\(job, action\)\s*\n\s*if \(refusal\) \{\s*\n\s*return res\.status\(409\)/.test(sandboxSrc), 'the single-job action route refuses them on operational jobs (409)')
-assert(/&& !sandboxEngineActionRefusal\(job, action\)\)/.test(sandboxSrc), 'the bulk route filters them out too')
-const refusalIndex = sandboxSrc.indexOf('const refusal = sandboxEngineActionRefusal(job, action)')
+assert(/function sandboxEngineActionRefusal\(job: any\): string \| null \{\s*if \(isSandboxSimulationJob\(job\)\) return null/.test(sandboxSrc), 'only simulation jobs permit mutation')
+assert(/const refusal = sandboxEngineActionRefusal\(job\)\s*\n\s*if \(refusal\) \{\s*\n\s*return res\.status\(409\)/.test(sandboxSrc), 'the single-job action route refuses changes on operational jobs (409)')
+assert(/const eligibleJobs = \(jobs \|\| \[\]\)\.filter\(isSandboxSimulationJob\)/.test(sandboxSrc), 'the bulk route permits only simulation jobs')
+const refusalIndex = sandboxSrc.indexOf('const refusal = sandboxEngineActionRefusal(job)')
 const updateIndex = sandboxSrc.indexOf('const update = actionUpdate(job, action, now, {')
 assert(refusalIndex > 0 && updateIndex > refusalIndex, 'the refusal runs before any write')
 assert(/operational = isSandbox \? null : describeOperationalWorkflow\(/.test(sandboxSrc), 'every operational row carries the shared description')
@@ -385,7 +385,7 @@ const text = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/&#x27;|&ap
     ] },
   })
   const t = text(render(sim))
-  assert(/Enterprise Migration Pipeline/.test(t) && /Production Approval Gate/.test(t), 'a completed simulation keeps its stage rail and approval gate')
+  assert(/Enterprise Migration Pipeline/.test(t) && /Analytical Review/.test(t) && !/Production Approval Gate/.test(t), 'a completed simulation keeps its stage rail and analytical review')
   assert(/Restore Snapshot/.test(t), 'a simulation keeps its snapshot restore')
   assert(!/Execution Readiness/.test(t), 'no operational panel on a simulation')
   assert(/Tenant quantum risk: 45\/100/.test(t) && /Tenant quantum risk: Not assessed/.test(t), 'snapshot risk: a measured score, or "Not assessed" — never 0')

@@ -18,7 +18,7 @@ import { buildInfo } from './lifecycle'
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{8,128}$/
 const SENSITIVE_QUERY_KEYS = new Set([
   'token', 'access_token', 'refresh_token', 'id_token', 'apikey', 'api_key', 'key',
-  'secret', 'signature', 'sig', 'password', 'code', 'jwt', 'auth',
+  'secret', 'signature', 'sig', 'password', 'code', 'jwt', 'auth', 'ticket',
 ])
 
 export function redactUrl(originalUrl: string): string {

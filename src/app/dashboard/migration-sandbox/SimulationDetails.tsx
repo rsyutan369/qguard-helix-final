@@ -396,14 +396,13 @@ export function SimulationDetailsModal({
 
           {canDecide && (
             <div className="mb-5 rounded-xl border border-gold/20 bg-gold/[0.03] p-4">
-              <div className="mb-2 text-xs font-black uppercase tracking-wider text-gold">Production Approval Gate</div>
+              <div className="mb-2 text-xs font-black uppercase tracking-wider text-gold">Analytical Review</div>
               <p className="mb-3 text-[11px] leading-relaxed text-white/45">
-                Record a governed decision for this completed simulation. Approval never modifies production — it produces
-                audit evidence consumed by the operational migration workflow.
+                Record your review of a modeled scenario. Use the lab for cryptographic checks and the planner for production change approval.
               </p>
               <div className="flex flex-wrap gap-2">
-                <ActionBtn icon={ThumbsUp} label={busy('approval:approve') ? 'Approving…' : 'Approve for Production'} variant="success"
-                  onClick={() => { if (window.confirm(`Approve "${simulation.name}" for production planning?`)) void onApproval(simulation.id, 'approve') }}
+                <ActionBtn icon={ThumbsUp} label={busy('approval:approve') ? 'Recording…' : 'Accept analytical review'}
+                  onClick={() => { if (window.confirm(`Accept the analytical review of "${simulation.name}"?`)) void onApproval(simulation.id, 'approve') }}
                   disabled={pendingAction !== null} />
                 <ActionBtn icon={ThumbsDown} label={busy('approval:reject') ? 'Rejecting…' : 'Reject'} variant="danger"
                   onClick={() => { if (window.confirm(`Reject "${simulation.name}"?`)) void onApproval(simulation.id, 'reject') }}
@@ -475,7 +474,7 @@ export function SimulationDetailsModal({
                         <span>Snapshot: {String(snap.status || simulationState.status || '--')} | {String(snap.progress ?? simulationState.progress ?? '--')}%</span>
                         <span>Current: {simulation.status} | {simulation.progress}%</span>
                         <span>Tenant quantum risk: {snapshotRiskLabel(riskState)}</span>
-                        <span>Compliance: {String(complianceState.score ?? '--')}</span>
+                        <span>Tenant control evidence: {complianceState.score == null ? "Not assessed" : `${String(complianceState.score)}%`}</span>
                       </div>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {isSandbox && (
@@ -507,7 +506,7 @@ export function SimulationDetailsModal({
             {isSandbox && simulation.status === 'failed' && <ActionBtn icon={RefreshCw} label={busy('retry') ? 'Retrying' : 'Retry'} onClick={() => onAction(simulation.id, 'retry')} disabled={busy('retry')} variant="gold" />}
             {isSandbox && simulation.status === 'running' && <ActionBtn icon={Square} label={busy('stop') ? 'Stopping' : 'Stop'} onClick={() => onAction(simulation.id, 'stop')} disabled={busy('stop')} variant="danger" />}
             {isSandbox && ['running', 'paused', 'completed'].includes(simulation.status) && <ActionBtn icon={RotateCcw} label={busy('rollback') ? 'Rolling Back' : 'Rollback'} onClick={() => onAction(simulation.id, 'rollback')} disabled={busy('rollback')} variant="danger" />}
-            <ActionBtn icon={Save} label={busy('snapshot') ? 'Capturing' : 'Snapshot'} onClick={() => onAction(simulation.id, 'snapshot')} disabled={busy('snapshot')} />
+            {isSandbox && <ActionBtn icon={Save} label={busy('snapshot') ? 'Capturing' : 'Model checkpoint'} onClick={() => onAction(simulation.id, 'snapshot')} disabled={busy('snapshot')} />}
             {isSandbox && snapshots.length > 0 && <ActionBtn icon={Upload} label={busy('restore_snapshot') ? 'Restoring' : 'Restore Snapshot'} onClick={() => onAction(simulation.id, 'restore_snapshot', { snapshotId: String(snapshots[snapshots.length - 1]?.id || '') })} disabled={busy('restore_snapshot')} />}
             {deleteAllowed && <ActionBtn icon={Trash2} label={busy('delete') ? 'Deleting' : 'Delete Simulation'} onClick={() => { if (window.confirm('Delete this completed simulation and purge its execution artifacts? Audit and security records will remain.')) onAction(simulation.id, 'delete') }} disabled={busy('delete')} variant="danger" />}
             {!isSandbox && op && (

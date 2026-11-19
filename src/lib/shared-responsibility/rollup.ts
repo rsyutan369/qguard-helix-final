@@ -94,7 +94,11 @@ function domainReadiness(
     return { domain, score: 0, level: 'Not Started', total: 0, resolved: 0, actionable: 0, blocked: 0 }
   }
   if (total === 0) {
-    return { domain, score: 100, level: 'Quantum-Ready', total: 0, resolved: 0, actionable: 0, blocked: 0 }
+    // Nothing is classified to this domain, so nothing was measured. The score
+    // stays 100 only because the overall blend weights it by ZERO findings;
+    // every surface must read `total === 0` as "not applicable", and the level
+    // says so rather than claiming "Quantum-Ready" for an unassessed domain.
+    return { domain, score: 100, level: 'Not applicable', total: 0, resolved: 0, actionable: 0, blocked: 0 }
   }
   const contributions = subset.map((f) =>
     domain === 'customer' ? customerReadinessFromSeverity(f.severity) : roadmapReadiness(f.attribution.pqRoadmapStatus),
@@ -474,10 +478,12 @@ export function buildSharedResponsibility(
   })
 
   // Blockers — high-impact findings gated on an upstream dependency.
-  const blockers = findings
+  const allBlockers = findings
     .filter((f) => f.migrationDependencyStatus !== 'ready' && (f.severity === 'critical' || f.severity === 'high'))
     .sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] || b.quantumRiskScore - a.quantumRiskScore)
-    .slice(0, maxBlockers)
+  // The LIST is capped for the payload; the COUNT is not, or a large estate
+  // would report exactly `maxBlockers` blockers however many it has.
+  const blockers = allBlockers.slice(0, maxBlockers)
 
   // Widget counters.
   const vendorCategories = new Set(['saas', 'identity_provider', 'payment', 'communications'])
@@ -488,7 +494,7 @@ export function buildSharedResponsibility(
     vendorFindings: findings.filter((f) => vendorCategories.has(f.attribution.category)).length,
     browserDependencies: findings.filter((f) => f.attribution.category === 'browser').length,
     cloudDependencies: findings.filter((f) => cloudCategories.has(f.attribution.category)).length,
-    migrationBlockers: blockers.length,
+    migrationBlockers: allBlockers.length,
     actionableFindings: actionable.length,
     waitingDependencies: waiting.length,
     migrationProgress: overallScore,

@@ -65,10 +65,10 @@ export const ENTERPRISE_PIPELINE = [
   { id: 'performance_benchmark', label: 'Performance Benchmark', detail: 'Handshake, latency, throughput, and resource impact benchmarked before vs after.', at: 60 },
   { id: 'security_validation', label: 'Security Validation', detail: 'Downgrade resistance, key material handling, and policy conformance verified.', at: 69 },
   { id: 'rollback_validation', label: 'Rollback Validation', detail: 'Snapshot restore, RTO/RPO, and recovery posture exercised in the twin.', at: 78 },
-  { id: 'compliance_validation', label: 'Compliance Validation', detail: 'NIST PQC, CNSA 2.0, FIPS, and regulatory control evidence collected.', at: 86 },
+  { id: 'compliance_validation', label: 'Compliance Validation', detail: 'Review tenant control evidence separately from simulation results.', at: 86 },
   { id: 'ai_risk_analysis', label: 'AI Risk Analysis', detail: 'Sophia correlates results into confidence, blockers, and residual risk.', at: 93 },
   { id: 'executive_approval', label: 'Executive Approval', detail: 'Simulation verdict awaits an explicit operator approval decision.', at: 100, gate: true },
-  { id: 'production_ready', label: 'Production Ready', detail: 'Approved for production planning — execution still requires the operational migration workflow.', at: 100, gate: true },
+  { id: 'production_ready', label: 'Planner review', detail: 'Review empirical evidence and change approval in Migration Planner.', at: 100, gate: true },
 ] as const
 
 export const ENGINE_PIPELINE_STAGES = ENTERPRISE_PIPELINE.filter((s) => !('gate' in s && s.gate))
@@ -500,7 +500,7 @@ export function predictFailures(bundle: TwinBundle, graph: ReturnType<typeof bui
    ═══════════════════════════════════════════════════════════════════════════ */
 
 export const BENCHMARK_METHODOLOGY =
-  'Modeled projection: published NIST/Open Quantum Safe benchmark characteristics for ML-KEM-768 hybrid key exchange and ML-DSA-65 signatures, weighted by the algorithm mix discovered in this tenant\'s real crypto inventory. Not live production measurements — validate final numbers with a Performance Benchmark simulation on representative hardware.'
+  'Modeled Level 3 scenario. Local heuristics use the observed tenant algorithm mix. Use the cryptographic lab for measurements and representative staging hardware for production sizing.'
 
 export function buildPerformanceBenchmark(bundle: TwinBundle) {
   const inv = bundle.inventory || []
@@ -772,7 +772,7 @@ export function buildSophiaAdvisor(
   benchmark: ReturnType<typeof buildPerformanceBenchmark>,
   rollback: ReturnType<typeof buildRollbackAnalysis>,
   impact: ReturnType<typeof buildBusinessImpact>,
-  context: { pqcReadiness: number; quantumRiskScore: number | null; complianceScore: number }
+  context: { pqcReadiness: number; quantumRiskScore: number | null; complianceScore: number | null }
 ) {
   const workflows = bundle.workflows || []
   const sims = workflows.filter((w) => w.isSandbox)
@@ -835,7 +835,7 @@ export function buildSophiaAdvisor(
 
   const executiveSummary = !hasData
     ? 'No discovered assets or crypto inventory yet — connect scanners and run discovery to activate the migration sandbox digital twin.'
-    : `Digital twin of ${twin.summary.totalNodes} asset(s) at ${twin.summary.fidelityPct}% fidelity. Migration confidence ${migrationConfidencePct}%, compatibility ${compatibilityScorePct}%, rollback confidence ${rollbackConfidencePct === null ? 'not yet assessed' : `${rollbackConfidencePct}%`}. ${blockers.length > 0 ? `${blockers.length} blocker(s) require remediation before production approval.` : failed > 0 ? 'Failed simulations must be retried before approval.' : completed > 0 ? `${completed} simulation(s) completed validation — evidence supports controlled production planning.` : 'Run simulations to convert twin analysis into approval-grade evidence.'} Predicted failure probability ${predictions.overallFailureProbabilityPct}% across ${predictions.predictions.length} evidence-backed prediction categories.`
+    : `Analytical model for ${twin.summary.totalNodes} recorded asset(s). ${blockers.length > 0 ? `${blockers.length} modeled blocker(s) require review.` : failed > 0 ? 'Review failed analytical runs.' : completed > 0 ? `${completed} analytical run(s) finished.` : 'Select a scenario to review the recorded evidence.'} Use lab checks and representative staging tests to determine compatibility.`
 
   const narrative = !hasData ? [] : [
     `The twin covers ${twin.summary.nodesWithEvidence}/${twin.summary.totalNodes} assets with real crypto evidence (${twin.summary.coveragePct}% coverage), ${twin.summary.trustRelationships} trust relationship(s), and ${twin.summary.runtimeSignalsSampled} runtime signal(s).`,
@@ -890,19 +890,19 @@ export function buildApprovalGate(
   sophia: ReturnType<typeof buildSophiaAdvisor>,
   predictions: ReturnType<typeof predictFailures>,
   rollback: ReturnType<typeof buildRollbackAnalysis>,
-  complianceScore: number
+  complianceScore: number | null
 ) {
   const sims = (bundle.workflows || []).filter((w) => w.isSandbox)
   const completed = sims.filter((w) => lower(w.status) === 'completed')
   const failed = sims.filter((w) => lower(w.status) === 'failed')
   const running = sims.filter((w) => ['running', 'queued', 'paused'].includes(lower(w.status)))
 
-  const simulationStatus: 'PASS' | 'FAILED' | 'PENDING' = sims.length === 0
+  const simulationStatus: 'MODELED' | 'FAILED' | 'PENDING' = sims.length === 0
     ? 'PENDING'
     : failed.length > 0 || sophia.detectedBlockers.some((b) => b.severity === 'critical')
       ? 'FAILED'
       : completed.length > 0 && running.length === 0
-        ? 'PASS'
+        ? 'MODELED'
         : 'PENDING'
 
   const gate = (id: string, label: string, value: string, status: 'pass' | 'warn' | 'fail') => ({ id, label, value, status })
@@ -920,7 +920,8 @@ export function buildApprovalGate(
     ),
     gate('business_risk', 'Business Risk', `${predictions.overallFailureProbabilityPct}% failure probability`, predictions.overallFailureProbabilityPct <= 25 ? 'pass' : predictions.overallFailureProbabilityPct <= 50 ? 'warn' : 'fail'),
     gate('downtime', 'Predicted Downtime', `${rollback.downtimePredictionMin} min`, rollback.downtimePredictionMin <= 5 ? 'pass' : rollback.downtimePredictionMin <= 20 ? 'warn' : 'fail'),
-    gate('compliance', 'Compliance Posture', `${complianceScore}%`, complianceScore >= 75 ? 'pass' : complianceScore >= 55 ? 'warn' : 'fail'),
+    gate('compliance', 'Tenant control evidence', complianceScore === null ? 'Not assessed' : `${complianceScore}%`,
+      complianceScore === null ? 'fail' : complianceScore >= 75 ? 'pass' : complianceScore >= 55 ? 'warn' : 'fail'),
   ]
 
   const decisions = sims
@@ -945,19 +946,19 @@ export function buildApprovalGate(
 
   return {
     simulationStatus,
-    productionReady: simulationStatus === 'PASS' && gates.every((g) => g.status !== 'fail') && approvedCount > 0,
+    productionReady: false,
     aiRecommendation: simulationStatus === 'FAILED'
       ? 'Block production deployment — resolve blockers and failed simulations, then re-run the affected scenarios.'
-      : simulationStatus === 'PASS'
-        ? (gates.some((g) => g.status === 'fail') ? 'Simulation passed but a readiness gate is failing — remediate before approval.' : 'Evidence supports approval for production planning via the operational migration workflow.')
+      : simulationStatus === 'MODELED'
+        ? 'Analytical review is available. Record cryptographic and protocol evidence in the lab, then review the proposal in Migration Planner.'
         : sims.length === 0
-          ? 'No simulations executed yet — production approval requires at least one completed sandbox validation.'
-          : 'Simulations still in progress — wait for completion before an approval decision.',
+          ? 'No analytical runs are recorded yet.'
+          : 'Analytical runs are in progress.',
     gates,
     eligibleSimulations: completed.map((w) => ({ id: str(w.id), name: str(w.name), completedAt: w.completedAt || null, approval: (w?.metadata?.approval as Row) || null })).slice(0, 12),
     decisions: decisions.slice(0, 20),
     counts: { completed: completed.length, failed: failed.length, running: running.length, approved: approvedCount, rejected: rejectedCount, reviewRequested: reviewCount },
-    guarantee: 'Approval records a governed decision with full audit evidence. The sandbox never migrates, rotates, restarts, or modifies production systems.',
+    guarantee: 'A review decision records acceptance of analytical evidence. Production change approval belongs in Migration Planner.',
   }
 }
 
@@ -1067,7 +1068,7 @@ export function buildTelemetryFrame(bundle: TwinBundle) {
    AGGREGATE ASSEMBLER — one call used by the sandbox snapshot builder
    ═══════════════════════════════════════════════════════════════════════════ */
 
-export function assembleTwinIntelligence(bundle: TwinBundle, context: { pqcReadiness: number; quantumRiskScore: number | null; complianceScore: number }) {
+export function assembleTwinIntelligence(bundle: TwinBundle, context: { pqcReadiness: number; quantumRiskScore: number | null; complianceScore: number | null }) {
   const twin = buildDigitalTwin(bundle)
   const graph = buildDependencyGraph(bundle)
   const topology = buildTopology(twin)

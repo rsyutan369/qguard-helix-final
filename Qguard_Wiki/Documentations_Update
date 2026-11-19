@@ -1,0 +1,788 @@
+# PROJECT: QGUARD HELIX — COMPLETE ENTERPRISE DOCUMENTATION & LEARNING CENTER
+
+**Target URL:** http://localhost:3000/docs
+
+**Project:** QGUARD HELIX  
+**Documentation Type:** Enterprise-Grade Product Documentation, User Guides, Technical Documentation, Tutorials, and Interactive Learning Center.
+
+## 1. PRIMARY OBJECTIVE
+
+Conduct a comprehensive audit of the entire QGUARD HELIX ecosystem and transform the existing `/docs` page into a complete, premium, enterprise-grade documentation and learning center.
+
+The documentation must cover the entire QGUARD HELIX Platform, including:
+
+1. The main QGUARD HELIX dashboard and every accessible dashboard page.
+2. Every sub-page, module, feature, functionality, tab, interface, and user action.
+3. Post-Quantum Cryptography (PQC) capabilities.
+4. Quantum Readiness Assessment Engine (QRAE).
+5. Cryptographic discovery, inventory, and risk intelligence.
+6. PQC Migration Planner and Migration Sandbox.
+7. Cryptographic Agility and migration orchestration.
+8. Advanced security intelligence, monitoring, and governance.
+9. QGUARD HELIX Messaging applications across supported platforms.
+10. All relevant account management, subscription, settings, administration, and support capabilities.
+
+Do not create generic or superficial documentation.
+
+Actually inspect the existing source code, routes, components, modules, API endpoints, backend services, database schemas, Supabase integrations, and application workflows.
+
+Document the actual implemented behavior of each feature.
+
+The final result must be a reliable, comprehensive, easy-to-understand knowledge center that customers can use to understand, configure, operate, troubleshoot, and maximize the capabilities of QGUARD HELIX.
+
+## 2. PHASE ONE — COMPLETE PLATFORM DISCOVERY AND AUDIT
+
+Before writing documentation, perform a systematic discovery of the entire application.
+
+### A. Main Dashboard Discovery
+
+Start with:
+
+http://localhost:3000/dashboard
+
+Inspect every accessible page, route, nested route, sub-page, and module under `/dashboard`.
+
+Identify and document:
+
+- Dashboard overview and command center.
+- Navigation menus and sidebar sections.
+- All available modules.
+- Every page and sub-page.
+- Tabs and expandable sections.
+- Forms and configuration options.
+- Action buttons and their actual behavior.
+- Charts, graphs, metrics, and reports.
+- Filters, search functions, and data tables.
+- Modals, dialogs, and confirmation workflows.
+- User permissions and role-based functionality.
+- Backend integrations and data sources.
+- API connections and database dependencies.
+
+Do not assume that a page is functional simply because its UI exists.
+
+Verify how each feature actually works and whether it is connected to the backend.
+
+### B. Application Source Code Discovery
+
+Inspect the existing project architecture and identify:
+
+- React and Vite application structure.
+- Frontend routes and components.
+- Express API endpoints.
+- Backend services and business logic.
+- Supabase authentication and database integrations.
+- Storage and realtime functionality.
+- Hooks and state management.
+- SSE and WebSocket integrations, where implemented.
+- User authentication and authorization.
+- Subscription and billing integrations.
+- External services and integrations.
+- Error handling and validation.
+
+Use the actual implementation as the source of truth.
+
+### C. QGUARD HELIX Messaging Discovery
+
+Inspect the complete QGUARD HELIX Messaging application, including supported Windows, Android, and other implemented platforms.
+
+Document all available capabilities, including:
+
+- Account registration and authentication.
+- Secure messaging.
+- Encrypted voice calls.
+- Encrypted video calls.
+- Group conversations and calls.
+- Message delivery and synchronization.
+- Multi-device connectivity.
+- Device pairing and trust verification.
+- Quantum Vault.
+- Hidden Vault.
+- File and folder protection.
+- Secure file sharing.
+- Offgrid Mesh.
+- Bluetooth device discovery and communication.
+- XFER offline file transfer.
+- Device discovery and pairing.
+- Application security and privacy settings.
+- Subscription and account management.
+
+Document platform-specific differences wherever functionality differs between Android, Windows, and other supported platforms.
+
+Do not describe unsupported features as operational.
+
+---
+
+## 3. PHASE TWO — CREATE THE COMPLETE DOCUMENTATION STRUCTURE
+
+Organize `/docs` into a professional documentation hierarchy.
+
+Use the following structure as the proposed documentation architecture. Adapt it to the actual application modules discovered during the audit.
+
+### SECTION 01 — GETTING STARTED
+
+- Welcome to QGUARD HELIX.
+- What Is QGUARD HELIX?
+- Platform Overview.
+- Key Features and Capabilities.
+- Understanding Post-Quantum Cryptography.
+- Platform Requirements.
+- Creating Your Account.
+- Signing In.
+- Navigating the Dashboard.
+- Understanding Your Workspace.
+- First-Time User Setup.
+- Quick Start Guide.
+- Understanding Subscription Plans.
+
+### SECTION 02 — PLATFORM DASHBOARD
+
+- Dashboard Overview.
+- Executive Command Center.
+- Dashboard Navigation.
+- Understanding Security Metrics.
+- Understanding Charts and Visualizations.
+- Notifications and Alerts.
+- User Preferences.
+- Workspace Settings.
+- Account and Profile Management.
+
+### SECTION 03 — QUANTUM READINESS ASSESSMENT ENGINE (QRAE)
+
+- Introduction to QRAE.
+- QRAE Command Center.
+- Quantum Readiness Assessment.
+- Cryptographic Asset Discovery.
+- Cryptographic Inventory.
+- Quantum Exposure Graph.
+- Cryptographic Dependency Mapping.
+- Vulnerable Algorithm Identification.
+- Quantum Risk Analysis.
+- Harvest Now, Decrypt Later Risk Engine.
+- AI Security Advisors.
+- Executive Security Reports.
+- Understanding Risk Scores.
+- Interpreting Assessment Results.
+
+Include practical tutorials showing how to perform an assessment, understand the results, identify vulnerable assets, and determine recommended next steps.
+
+### SECTION 04 — CRYPTOGRAPHIC BILL OF MATERIALS (CBOM) INTELLIGENCE
+
+- Introduction to CBOM.
+- Understanding Cryptographic Bill of Materials.
+- Discovering Cryptographic Components.
+- Identifying Algorithms and Protocols.
+- Mapping Cryptographic Dependencies.
+- Understanding Asset Relationships.
+- Reviewing Cryptographic Inventory.
+- Identifying Legacy Cryptography.
+- Managing Cryptographic Lifecycle Information.
+- CBOM Reporting and Exporting.
+
+### SECTION 05 — PQC MIGRATION PLANNER
+
+- Introduction to PQC Migration.
+- Understanding the Migration Planner.
+- Creating a Migration Project.
+- Selecting Assets for Migration.
+- Reviewing Asset Readiness.
+- Understanding Cryptographic Dependencies.
+- Migration Prioritization.
+- Selecting Replacement Algorithms.
+- Hybrid Cryptographic Migration.
+- Creating Migration Roadmaps.
+- Migration Phases and Milestones.
+- Assigning Migration Tasks.
+- Tracking Migration Progress.
+- Reviewing Migration Recommendations.
+- Migration Reports.
+
+Provide a complete practical walkthrough:
+
+How to move from an identified vulnerable cryptographic asset to a structured, prioritized post-quantum migration plan.
+
+### SECTION 06 — MIGRATION SANDBOX
+
+- Introduction to Migration Sandboxing.
+- Understanding the Sandbox Environment.
+- Selecting Real Assets for Testing.
+- Creating Sandbox Test Scenarios.
+- Configuring Proposed Cryptographic Changes.
+- Testing Post-Quantum Algorithms.
+- Testing Hybrid Cryptographic Configurations.
+- Compatibility Testing.
+- Interoperability Testing.
+- Performance and Latency Testing.
+- Dependency Validation.
+- Reviewing Test Results.
+- Identifying Migration Failures.
+- Comparing Before-and-After Results.
+- Approving Migration Recommendations.
+- Exporting Sandbox Reports.
+
+Include a detailed step-by-step tutorial explaining how users can safely evaluate proposed cryptographic changes before considering production deployment.
+
+Clearly explain the difference between a sandbox simulation, a controlled integration test, and an actual production migration.
+
+### SECTION 07 — CRYPTOGRAPHIC AGILITY
+
+- Understanding Cryptographic Agility.
+- Why Crypto Agility Matters.
+- Cryptographic Algorithm Management.
+- Algorithm Replacement Strategies.
+- Hybrid Cryptographic Architectures.
+- Cryptographic Policy Management.
+- Key and Certificate Lifecycle.
+- Managing Cryptographic Dependencies.
+- Supporting Evolving Cryptographic Standards.
+- Crypto Agility Monitoring.
+
+Explain how organizations can reduce long-term dependence on individual cryptographic algorithms and prepare for future cryptographic changes.
+
+### SECTION 08 — ADVANCED PQC AND SECURITY TECHNOLOGIES
+
+Provide dedicated documentation for each implemented cryptographic capability.
+
+Include:
+
+- ML-KEM — FIPS 203.
+- ML-DSA — FIPS 204.
+- SLH-DSA — FIPS 205.
+- AES-256-GCM.
+- SHA-256 and SHA-3.
+- HKDF-SHA-256.
+- Hybrid Key Exchange.
+- Post-Quantum Digital Signatures.
+- Cryptographic Key Management.
+- Quantum Key Management System (QKMS).
+- Post-Quantum Public Key Infrastructure.
+- TLS and SSH cryptographic considerations.
+
+For every algorithm, explain:
+
+1. What it is.
+2. What security problem it addresses.
+3. How it works at a high level.
+4. Where it is used within QGUARD HELIX.
+5. How it relates to other cryptographic components.
+6. Important implementation considerations.
+7. Relevant NIST standards, where applicable.
+
+IMPORTANT: Clearly distinguish key encapsulation mechanisms, digital signature algorithms, symmetric encryption, hashing, and key derivation functions.
+
+### SECTION 09 — ADVANCED SECURITY INTELLIGENCE
+
+Document every implemented advanced security module, including:
+
+- Harvest Now, Decrypt Later Risk Engine.
+- Quantum Digital Twin.
+- Runtime Cryptographic Telemetry Engine.
+- Quantum Trust Fabric.
+- QKMS.
+- SPIFFE/SPIRE integration.
+- PQAuth.
+- Cryptographic Security Monitoring.
+- Security Alerts and Notifications.
+- Cryptographic Governance.
+- Compliance Intelligence.
+- Security Reporting.
+- AI-Assisted Security Analysis.
+
+Explain each module's purpose, available capabilities, configuration, workflows, and expected outputs.
+
+### SECTION 10 — QGUARD HELIX MESSAGING
+
+Create a dedicated documentation category for the QGUARD HELIX Messaging ecosystem.
+
+Organize it into:
+
+**A. Getting Started**
+- Installing the Application.
+- Creating an Account.
+- Logging In.
+- Device Registration.
+- Initial Configuration.
+- Understanding the Interface.
+
+**B. Secure Messaging**
+- Starting a Conversation.
+- Sending and Receiving Messages.
+- Message Encryption.
+- Message Synchronization.
+- Group Messaging.
+- Disappearing Messages.
+- Device Trust and Verification.
+
+**C. Secure Voice and Video Calls**
+- Starting a Voice Call.
+- Starting a Video Call.
+- Receiving Calls.
+- Group Calls.
+- Call Verification.
+- Troubleshooting Connectivity.
+
+**D. Quantum Vault**
+- Understanding Quantum Vault.
+- Creating Secure Storage.
+- Adding Files and Folders.
+- Managing Documents.
+- Protecting Photos and Videos.
+- Secure File Sharing.
+- Local Storage and Backup Options.
+- Recovery and Access Management.
+
+**E. Hidden Vault**
+- Understanding Hidden Vault.
+- Configuring Hidden Storage.
+- Managing Protected Content.
+- Access and Privacy Controls.
+- Security Considerations.
+
+**F. Offgrid Mesh**
+- Understanding Offgrid Mesh.
+- Device Discovery.
+- Bluetooth Connectivity.
+- Pairing Devices.
+- Establishing Trusted Connections.
+- Sending Messages Offline.
+- Receiving Replies.
+- Troubleshooting Device Discovery.
+- Managing Active Sessions.
+- Disconnecting Devices.
+
+**G. XFER**
+- Understanding XFER.
+- Discovering Nearby Devices.
+- Establishing Connections.
+- Sending Files.
+- Receiving Files.
+- Transfer Progress.
+- Completing Transfers.
+- Sending Additional Files.
+- Troubleshooting Transfer Failures.
+
+**H. Cross-Platform Support**
+- Windows Desktop Guide.
+- Android Guide.
+- Other Supported Platforms.
+- Multi-Device Synchronization.
+- Platform-Specific Features.
+- Device Compatibility.
+
+Include screenshots and practical walkthroughs wherever possible.
+
+### SECTION 11 — ADMINISTRATION AND ACCOUNT MANAGEMENT
+
+Document all implemented administrative and management capabilities.
+
+Include:
+
+- User Management.
+- Roles and Permissions.
+- Organization Management.
+- Account Settings.
+- Subscription Management.
+- Billing and Payments.
+- Usage Monitoring.
+- Administrative Dashboard.
+- Customer Management.
+- Revenue Intelligence.
+- Subscription Analytics.
+- Payment Management.
+- Forecasting and Reports.
+- Audit Logs.
+- System Configuration.
+
+Separate end-user documentation from administrator-only documentation.
+
+Never expose confidential internal configuration, secrets, API keys, credentials, or sensitive infrastructure information.
+
+### SECTION 12 — API AND DEVELOPER DOCUMENTATION
+
+Where supported by the actual implementation, document:
+
+- Platform Architecture.
+- API Overview.
+- Authentication.
+- Authorization.
+- API Endpoints.
+- Request and Response Examples.
+- Error Codes.
+- Rate Limits.
+- Webhooks.
+- Realtime Integrations.
+- Database Integration.
+- Security Considerations.
+- Integration Tutorials.
+
+Use actual API contracts and schemas. Never invent endpoints or example responses that do not reflect the implementation.
+
+### SECTION 13 — TROUBLESHOOTING AND FAQ
+
+Create a comprehensive troubleshooting center.
+
+Include:
+
+- Login and Authentication Issues.
+- Dashboard Loading Problems.
+- Missing or Inaccurate Data.
+- Asset Discovery Problems.
+- Assessment Failures.
+- Migration Planning Errors.
+- Sandbox Testing Failures.
+- Cryptographic Compatibility Issues.
+- Device Connectivity Issues.
+- Messaging Problems.
+- Voice and Video Call Issues.
+- Vault Access Issues.
+- Offgrid Mesh Connection Issues.
+- XFER Transfer Problems.
+- Subscription and Billing Issues.
+
+For every troubleshooting article, provide:
+
+1. Symptoms.
+2. Possible Causes.
+3. Diagnostic Steps.
+4. Recommended Solutions.
+5. How to Verify the Issue Is Resolved.
+
+Also include a searchable FAQ.
+
+---
+
+## 4. PHASE THREE — STEP-BY-STEP INTERACTIVE TUTORIALS
+
+Documentation must not be limited to descriptions.
+
+Create practical, structured tutorials that guide users through actual platform workflows.
+
+Each tutorial should contain:
+
+- Tutorial title.
+- What the user will accomplish.
+- Required permissions.
+- Prerequisites.
+- Estimated completion time.
+- Step-by-step instructions.
+- Relevant screenshots.
+- Expected results.
+- Important security considerations.
+- Common mistakes.
+- Troubleshooting guidance.
+- Related documentation links.
+
+Example tutorials:
+
+**Tutorial 1: Perform Your First Quantum Readiness Assessment**
+
+Guide the user through accessing QRAE, discovering cryptographic assets, reviewing assessment results, understanding exposure, and generating a report.
+
+**Tutorial 2: Create Your First PQC Migration Roadmap**
+
+Guide the user through selecting vulnerable assets, reviewing dependencies, prioritizing migration, selecting appropriate cryptographic alternatives, and generating a migration plan.
+
+**Tutorial 3: Test a Migration in the Sandbox**
+
+Guide the user through selecting an asset, creating an isolated test environment, configuring proposed cryptographic changes, executing tests, and reviewing the results.
+
+**Tutorial 4: Evaluate Cryptographic Agility**
+
+Show how users can review their cryptographic dependencies and evaluate strategies for replacing or upgrading cryptographic algorithms.
+
+**Tutorial 5: Set Up QGUARD HELIX Messaging**
+
+Guide users through installation, account setup, device configuration, secure messaging, and device verification.
+
+**Tutorial 6: Use Offgrid Mesh and XFER**
+
+Demonstrate how to discover nearby devices, establish connections, communicate without internet connectivity, and transfer files.
+
+Build additional tutorials for other important workflows discovered during the audit.
+
+---
+
+## 5. PHASE FOUR — PREMIUM DOCUMENTATION USER EXPERIENCE
+
+Transform the existing `/docs` page into a modern, professional, enterprise-grade documentation interface.
+
+### Design Direction
+
+Use the QGUARD HELIX brand identity:
+
+- Pearl White Light Mode.
+- Midnight Navy Dark Mode.
+- Ice Blue and Violet accents.
+- Premium glassmorphism.
+- Subtle gradients.
+- Clean typography.
+- Elegant spacing.
+- Sophisticated icons.
+- Smooth transitions.
+- Responsive layouts.
+
+The documentation should feel like a premium enterprise technology knowledge center.
+
+Use established documentation UX patterns inspired by Stripe Docs, Vercel Docs, and Linear's product documentation.
+
+### Required Interface Components
+
+**A. Documentation Sidebar**
+
+- Hierarchical navigation.
+- Expandable categories.
+- Nested pages.
+- Clear active-page indicators.
+- Collapsible sidebar.
+- Searchable navigation.
+- Responsive mobile navigation.
+
+**B. Documentation Search**
+
+Implement a functional search system that searches across all published documentation.
+
+Search should support:
+
+- Article titles.
+- Headings.
+- Content.
+- Keywords.
+- Module names.
+- Technical terminology.
+
+Provide relevant search results and direct navigation to the matching article or section.
+
+**C. Main Documentation Content**
+
+Each article must support:
+
+- Clear page titles.
+- Introductory explanations.
+- Hierarchical headings.
+- Step-by-step instructions.
+- Screenshots.
+- Diagrams.
+- Code examples where relevant.
+- Tables.
+- Warnings and important notes.
+- Related articles.
+- Previous and next navigation.
+
+**D. Table of Contents**
+
+Display an automatically generated article table of contents based on headings.
+
+Allow users to jump directly to relevant sections.
+
+**E. Interactive Learning Elements**
+
+Where appropriate, implement:
+
+- Interactive walkthroughs.
+- Expandable explanations.
+- Step-by-step progress indicators.
+- Copy-to-clipboard code examples.
+- Image galleries.
+- Video tutorials.
+- Architecture diagrams.
+- Workflow visualizations.
+- Downloadable guides.
+
+All interactive elements must work correctly.
+
+**F. Documentation Feedback**
+
+Provide a simple feedback mechanism:
+
+- Was this article helpful?
+- Yes / No.
+- Optional feedback submission.
+
+Only implement feedback storage when properly connected to the backend.
+
+**G. Documentation Metadata**
+
+Display:
+
+- Last updated date.
+- Article category.
+- Reading time.
+- Relevant product/module.
+- Related documentation.
+
+Only display meaningful and accurate metadata.
+
+---
+
+## 6. PHASE FIVE — SCREENSHOTS, DIAGRAMS AND VISUAL GUIDES
+
+Use actual QGUARD HELIX application interfaces as the primary visual references.
+
+Capture screenshots of:
+
+- Dashboard overview.
+- QRAE.
+- Quantum Exposure Graph.
+- CBOM Intelligence.
+- Migration Planner.
+- Migration Sandbox.
+- Cryptographic Agility.
+- Security Monitoring.
+- Administrative Dashboard.
+- Messaging interfaces.
+- Quantum Vault.
+- Hidden Vault.
+- Offgrid Mesh.
+- XFER.
+
+For every important workflow, include screenshots that correspond to the actual step being described.
+
+Also create useful architecture diagrams showing:
+
+- Overall QGUARD HELIX architecture.
+- Enterprise cryptographic discovery workflow.
+- Quantum readiness assessment lifecycle.
+- PQC migration lifecycle.
+- Migration sandbox workflow.
+- Cryptographic agility lifecycle.
+- Messaging security architecture.
+- Offgrid Mesh connectivity.
+- XFER device-to-device transfer workflow.
+
+Do not use misleading generic screenshots as representations of actual product functionality.
+
+Redact personal information, credentials, access tokens, and sensitive customer data.
+
+---
+
+## 7. PHASE SIX — DOCUMENTATION ACCURACY AND MAINTAINABILITY
+
+This is a critical requirement.
+
+The documentation must remain synchronized with the actual application.
+
+Implement a maintainable documentation architecture using the project's existing technology stack.
+
+Requirements:
+
+- Reusable documentation layouts and components.
+- Structured content management.
+- Centralized navigation configuration.
+- Reusable tutorial components.
+- Reusable warning and information blocks.
+- Search indexing.
+- Stable documentation routes.
+- Internal article linking.
+- Version-aware documentation where appropriate.
+
+Where practical, establish a traceability relationship between documented features and their actual application routes, modules, and API implementations.
+
+Do not create documentation for imaginary functionality.
+
+For every feature, classify its implementation status internally as:
+
+1. Fully implemented and verified.
+2. Partially implemented.
+3. UI available but backend integration incomplete.
+4. Planned or under development.
+5. Deprecated or unavailable.
+
+Only publish operational instructions for verified functionality. Clearly label partial or upcoming capabilities.
+
+---
+
+## 8. PHASE SEVEN — QUALITY ASSURANCE AND VALIDATION
+
+After implementation, perform a complete audit of the documentation center.
+
+Verify:
+
+**Navigation**
+- Every sidebar link works.
+- Every article route loads.
+- Nested navigation works.
+- Previous and next navigation works.
+- Breadcrumbs are correct.
+
+**Search**
+- Search returns relevant articles.
+- Search results navigate correctly.
+- Empty searches are handled properly.
+- Search works across all documentation categories.
+
+**Content**
+- No missing major modules.
+- No duplicate or contradictory instructions.
+- No broken images.
+- No inaccurate screenshots.
+- No invented features.
+- No incorrect cryptographic explanations.
+- No placeholder documentation.
+
+**Responsiveness**
+- Desktop.
+- Laptop.
+- Tablet.
+- Android.
+- Mobile browsers.
+
+**Performance**
+- Efficient rendering.
+- Optimized images.
+- Fast navigation.
+- No unnecessary API requests.
+- No console errors.
+
+**Accessibility**
+- Keyboard navigation.
+- Proper heading hierarchy.
+- Readable contrast.
+- Accessible controls.
+- Screen-reader-friendly navigation.
+
+Run the existing project tests, type checks, linting, and production build as appropriate.
+
+Fix any issues introduced by the implementation.
+
+Do not break existing application functionality, routes, authentication, dashboard modules, or other existing pages.
+
+---
+
+## 9. FINAL ACCEPTANCE CRITERIA
+
+The task is complete only when:
+
+1. The existing `/docs` page has been transformed into a comprehensive enterprise documentation center.
+2. Every accessible and relevant QGUARD HELIX dashboard module has been inventoried and documented.
+3. All major pages, sub-pages, and features have appropriate documentation.
+4. QGUARD HELIX Messaging has its own comprehensive documentation category.
+5. Practical step-by-step tutorials are available.
+6. Actual application screenshots and relevant architecture diagrams are included.
+7. Documentation search works correctly.
+8. Sidebar navigation and internal links work correctly.
+9. Desktop and mobile layouts are polished and responsive.
+10. Technical explanations accurately reflect the implementation.
+11. No fabricated features, unsupported claims, or placeholder content remain.
+12. Documentation is structured for future updates and expansion.
+
+## FINAL DELIVERABLE
+
+Deliver a complete, functional, premium, enterprise-grade QGUARD HELIX Documentation & Learning Center at:
+
+http://localhost:3000/docs
+
+The final result must be suitable for:
+
+- New customers onboarding to QGUARD HELIX.
+- Enterprise security teams.
+- CISOs, CTOs, and IT administrators.
+- Security architects and cryptographic engineers.
+- QGUARD HELIX Messaging users.
+- Technical developers and integration teams.
+
+**FINAL DESIGN AND PRODUCT VISION:**
+
+Build more than a documentation page.
+
+Build the official QGUARD HELIX Enterprise Knowledge Center — a centralized destination where users can learn, understand, configure, operate, troubleshoot, and master every capability of the QGUARD HELIX ecosystem.
+
+**PREMIUM. COMPREHENSIVE. TECHNICALLY ACCURATE. ENTERPRISE-READY.**

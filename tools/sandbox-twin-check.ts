@@ -218,11 +218,11 @@ assert(emptySophia.verdict === 'no_data' && emptySophia.migrationConfidencePct =
 /* [9] Approval gate */
 console.log('\n[9] Production approval gate')
 const gate = buildApprovalGate(bundle, sophia, predictions, rollback, context.complianceScore)
-assert(['PASS', 'FAILED', 'PENDING'].includes(gate.simulationStatus), 'verdict is PASS/FAILED/PENDING', gate.simulationStatus)
+assert(['MODELED', 'FAILED', 'PENDING'].includes(gate.simulationStatus), 'verdict is MODELED/FAILED/PENDING', gate.simulationStatus)
 assert(gate.simulationStatus === 'FAILED', 'critical blockers force FAILED verdict', gate.simulationStatus)
 assert(gate.gates.length === 5, '5 readiness gates (confidence/rollback/risk/downtime/compliance)')
 assert(gate.decisions.length === 1 && gate.decisions[0].decision === 'approve', 'approval decisions read from job metadata')
-assert(gate.guarantee.toLowerCase().includes('never'), 'production-safety guarantee stated')
+assert(gate.guarantee.includes('Migration Planner'), 'production decisions stay with Migration Planner')
 const cleanWorkflows = [{ ...workflows[0] }]
 const cleanBundle: TwinBundle = { ...bundle, workflows: cleanWorkflows, exposures: [], certificates: [certificates[0]], inventory: [inventory[4]], runtimeEvents: [] }
 const cleanGraph = buildDependencyGraph(cleanBundle)
@@ -232,7 +232,7 @@ const cleanRollback = buildRollbackAnalysis(cleanBundle, cleanPred)
 const cleanImpact = buildBusinessImpact(cleanBundle, cleanPred)
 const cleanSophia = buildSophiaAdvisor(cleanBundle, cleanTwin, cleanGraph, cleanPred, buildPerformanceBenchmark(cleanBundle), cleanRollback, cleanImpact, { pqcReadiness: 92, quantumRiskScore: 12, complianceScore: 85 })
 const cleanGate = buildApprovalGate(cleanBundle, cleanSophia, cleanPred, cleanRollback, 85)
-assert(cleanGate.simulationStatus === 'PASS', 'clean completed simulation → PASS', cleanGate.simulationStatus)
+assert(cleanGate.simulationStatus === 'MODELED' && !cleanGate.productionReady, 'clean analytical run is modeled evidence and cannot declare production readiness', cleanGate.simulationStatus)
 const emptyGate = buildApprovalGate(EMPTY, emptySophia, noPred, buildRollbackAnalysis(EMPTY, noPred), 0)
 assert(emptyGate.simulationStatus === 'PENDING', 'no simulations → PENDING')
 

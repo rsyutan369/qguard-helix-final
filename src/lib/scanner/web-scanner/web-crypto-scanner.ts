@@ -4,6 +4,7 @@
  */
 
 import type { WebCryptoScanResult, WebCryptoMatch, ThreatLevel } from './types'
+import { requestPublicWebResource } from '../public-scan/public-http'
 
 const FETCH_TIMEOUT = 5_000 // 5 seconds per request
 const MAX_SCRIPTS = 10
@@ -318,29 +319,15 @@ const WEB_CRYPTO_PATTERNS = [
 /**
  * Fetch a URL with timeout and size limit
  */
-async function safeFetch(url: string): Promise<string | null> {
+async function safeFetch(url: string) {
   try {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT)
-
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'QGuard-Scanner/2.4',
-        'Accept': 'text/html,application/javascript,text/javascript',
-      },
-      signal: controller.signal,
-      redirect: 'follow',
+    const response = await requestPublicWebResource(url, {
+      method: 'GET',
+      accept: 'text/html,application/javascript,text/javascript',
+      timeoutMs: FETCH_TIMEOUT,
+      bodyLimit: MAX_CONTENT_SIZE,
     })
-
-    clearTimeout(timeout)
-
-    if (!response.ok) return null
-
-    const contentLength = response.headers.get('content-length')
-    if (contentLength && parseInt(contentLength) > MAX_CONTENT_SIZE) return null
-
-    const text = await response.text()
-    return text.length > MAX_CONTENT_SIZE ? text.substring(0, MAX_CONTENT_SIZE) : text
+    return response.ok && response.body ? response : null
   } catch {
     return null
   }
@@ -357,25 +344,11 @@ function extractScripts(html: string, baseUrl: string): { inline: string[]; exte
   const srcPattern = /<script[^>]+src=["']([^"']+)["']/gi
   let match: RegExpExecArray | null
   while ((match = srcPattern.exec(html)) !== null) {
-    let src = match[1]
-    // Resolve relative URLs
-    if (src.startsWith('//')) {
-      src = 'https:' + src
-    } else if (src.startsWith('/')) {
-      try {
-        const url = new URL(baseUrl)
-        src = `${url.protocol}//${url.host}${src}`
-      } catch {
-        continue
-      }
-    } else if (!src.startsWith('http')) {
-      try {
-        src = new URL(src, baseUrl).href
-      } catch {
-        continue
-      }
+    try {
+      external.push(new URL(match[1], baseUrl).href)
+    } catch {
+      continue
     }
-    external.push(src)
   }
 
   // Extract inline scripts
@@ -445,8 +418,8 @@ export async function scanWebCrypto(url: string): Promise<WebCryptoScanResult> {
   let scriptsAnalyzed = 0
 
   // Step 1: Fetch the main page HTML
-  const html = await safeFetch(url)
-  if (!html) {
+  const page = await safeFetch(url)
+  if (!page) {
     return {
       url,
       pagesScanned: 0,
@@ -456,11 +429,12 @@ export async function scanWebCrypto(url: string): Promise<WebCryptoScanResult> {
   }
 
   // Step 2: Scan the HTML itself for inline crypto
+  const html = page.body
   const htmlMatches = scanContent(html, `${url} (inline)`)
   allPatterns.push(...htmlMatches)
 
   // Step 3: Extract and scan scripts
-  const { inline, external } = extractScripts(html, url)
+  const { inline, external } = extractScripts(html, page.url)
 
   // Scan inline scripts
   for (let i = 0; i < inline.length; i++) {
@@ -471,9 +445,9 @@ export async function scanWebCrypto(url: string): Promise<WebCryptoScanResult> {
 
   // Scan external scripts
   for (const scriptUrl of external) {
-    const scriptContent = await safeFetch(scriptUrl)
-    if (scriptContent) {
-      const matches = scanContent(scriptContent, scriptUrl)
+    const script = await safeFetch(scriptUrl)
+    if (script) {
+      const matches = scanContent(script.body, scriptUrl)
       allPatterns.push(...matches)
       scriptsAnalyzed++
     }

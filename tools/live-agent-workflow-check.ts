@@ -27,6 +27,10 @@ import { assetScanSources, scanSourceFor } from '../src/lib/assets/scan-provenan
 import { buildAssetRegister, filterRows } from '../src/lib/assets/asset-register'
 import { classifyHostIdentity } from './qguard-agent/host-identity'
 import { assetIsInternetFacing } from '../src/lib/governance/subjects'
+import { AGENT_DISCOVERY_EVENT, projectAgentDiscovery } from '../src/lib/migration/agent-discovery'
+import { busStats, eventsSince, publishAgentEvent, subscribe } from '../src/api-server/agent-event-bus'
+import { scanEvidenceWithModules } from '../src/lib/scanner/scanner_2/modules'
+import type { ScannerEvidenceRecord } from '../src/types/scanner.types'
 
 let failures = 0
 function assert(cond: boolean, label: string, extra = '') {
@@ -440,6 +444,44 @@ console.log('\n[20] Asset source attribution is evidence-based and filterable')
   assert(register.rows[0].pqcStatus === 'not-measured', 'discovery without cryptographic observations never claims PQC readiness')
   assert(filterRows(register.rows, { agentId: 'c1' }).length === 1 && filterRows(register.rows, { agentId: 'other' }).length === 0, 'asset register filters the exact agent provenance')
   assert(filterRows(register.rows, { sourceKind: 'windows-device' }).length === 1 && filterRows(register.rows, { sourceKind: 'cloud' }).length === 0, 'source category filter is exact')
+}
+
+console.log('\n[21] Discovery cards project accepted evidence and stay in the reporting workspace')
+{
+  const evidence: ScannerEvidenceRecord = {
+    id: 'e-1',
+    agentId: 'scanner-1',
+    sourceType: 'local-agent',
+    evidenceType: 'tls-certificate',
+    assetName: 'example.test',
+    target: 'https://user:pass@example.test/private?token=hidden',
+    observedAlgorithm: 'RSA-2048',
+    certificateFingerprint: '11:22:33',
+    observedAt: iso(1),
+  }
+  const [finding] = scanEvidenceWithModules([evidence], 'fixture')
+  assert(finding?.target.id === evidence.id, 'classified finding joins the exact originating evidence record')
+  const observed = projectAgentDiscovery(evidence, undefined, false, iso(-5))
+  assert(observed.map((item) => item.kind).join(',') === 'endpoint,certificate,algorithm', 'one evidence record can produce three separate, traceable cards')
+  assert(observed.every((item) => !item.severity && item.asset === 'example.test'), 'observation alone has no severity and the target omits credential and query data')
+  const classified = projectAgentDiscovery(evidence, finding, true, iso(2))
+  assert(classified.find((item) => item.kind === 'algorithm')?.recommendation === finding?.recommendation, 'algorithm uses the originating finding recommendation')
+  assert(classified.find((item) => item.kind === 'certificate')?.severity === 'critical', 'certificate expiration is measured at the observation time')
+  assert(!projectAgentDiscovery({ ...evidence, observedAt: undefined }, undefined, false, iso(2)).some((item) => item.severity), 'unknown observation time cannot establish expiration')
+  const protocol = projectAgentDiscovery({ ...evidence, evidenceType: 'tls-protocol', observedAlgorithm: 'TLSv1.2' }, undefined, false, null)
+  assert(protocol.length === 1 && protocol[0].kind === 'endpoint' && protocol[0].protocol === 'TLSv1.2', 'a negotiated protocol is endpoint evidence, not an algorithm')
+  assert(projectAgentDiscovery({ ...evidence, id: undefined }, undefined, false, null).length === 0, 'records without an evidence reference do not render')
+  const cursor = busStats().sequence
+  let ownNotifications = 0
+  let otherNotifications = 0
+  const own = subscribe('workspace-a', () => { ownNotifications += 1 })
+  const other = subscribe('workspace-b', () => { otherNotifications += 1 })
+  publishAgentEvent('workspace-a', AGENT_DISCOVERY_EVENT, evidence.agentId!, { discoveries: classified })
+  own()
+  other()
+  const [frame] = eventsSince('workspace-a', cursor)
+  assert(ownNotifications === 1 && frame?.agentId === evidence.agentId, 'the reporting workspace receives its own agent frame')
+  assert(otherNotifications === 0 && eventsSince('workspace-b', cursor).length === 0, 'other workspaces do not receive or replay the frame')
 }
 
 console.log(`\n${failures ? `✗ ${failures} check(s) failed` : '✓ all live agent workflow checks passed'}\n`)

@@ -78,11 +78,11 @@ const AGILITY_TTL_MS = 15_000
 const agilityCache = new Map<string, { at: number; promise: Promise<CryptoAgilityIntelligence> }>()
 const inputsCache = new Map<string, { at: number; promise: Promise<AgilityInputs> }>()
 
-async function loadInputs(token: string, userId: string): Promise<AgilityInputs> {
+async function loadInputs(token: string, userId: string, force: boolean): Promise<AgilityInputs> {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
 
-  const [portfolio, snapshot] = await Promise.all([buildPortfolio(token, userId), buildSnapshot(token, userId)])
+  const [portfolio, snapshot] = await Promise.all([buildPortfolio(token, userId, force), buildSnapshot(token, userId)])
 
   const ledger = createSourceLedger('Crypto agility')
   const reads = await Promise.all([
@@ -102,17 +102,19 @@ async function loadInputs(token: string, userId: string): Promise<AgilityInputs>
       q.select('id, asset_id, name, subject, algorithm, key_size, issuer, not_after, is_quantum_safe, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1500),
     ),
     ledger.read(client, 'runtime_crypto_events', 'Runtime telemetry', 3000, (q) =>
-      q.select('id, asset_id, asset_name, algorithm, protocol, cipher_suite, severity, risk_score, is_pqc, is_legacy, hndl_risk, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(3000),
+      q.select('id, asset_id, asset_name, algorithm, key_exchange_algorithm, protocol, cipher_suite, severity, risk_score, is_pqc, is_legacy, hndl_risk, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(3000),
     ),
     ledger.read(client, 'generated_keys', 'Key inventory', 1000, (q) => q.select('id, algorithm, bit_length, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1000)),
-    // Only the three metadata keys `isSimulationJob` reads are projected — a
-    // sandbox simulation must never count as an operational change here.
+    // Read the same-job evidence fallback and the markers that exclude simulations.
     ledger.read(client, 'migration_jobs', 'Migration jobs', 600, (q) =>
       q
-        .select(`id, asset_id, name, job_type, status, target_algorithm, progress, created_at, updated_at, ${SIMULATION_MARKER_SELECT}`)
+        .select(`id, asset_id, name, job_type, status, target_algorithm, progress, created_at, updated_at, last_validation:metadata->lastValidation, ${SIMULATION_MARKER_SELECT}`)
         .eq('user_id', userId)
         .order('updated_at', { ascending: false })
         .limit(600),
+    ),
+    ledger.read(client, 'migration_validation_logs', 'Migration validation evidence', 600, (q) =>
+      q.select('id, migration_id, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).order('id', { ascending: false }).limit(600),
     ),
     ledger.read(client, 'pqc_scan_sessions', 'Scan sessions', 120, (q) => q.select('id, status, findings_count, completed_at, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(120)),
     ledger.read(client, 'security_events', 'Security events', 200, (q) =>
@@ -131,6 +133,7 @@ async function loadInputs(token: string, userId: string): Promise<AgilityInputs>
     runtimeEvents,
     generatedKeys,
     migrationJobs,
+    validationLogs,
     scanSessions,
     securityEvents,
     connectorAccounts,
@@ -170,6 +173,7 @@ async function loadInputs(token: string, userId: string): Promise<AgilityInputs>
     runtimeEvents,
     generatedKeys,
     migrationJobs,
+    validationLogs,
     scanSessions,
     securityEvents,
     connectorAccounts,
@@ -182,7 +186,7 @@ async function loadInputs(token: string, userId: string): Promise<AgilityInputs>
 function cachedInputs(token: string, userId: string, force = false): Promise<AgilityInputs> {
   const cached = inputsCache.get(userId)
   if (!force && cached && Date.now() - cached.at < AGILITY_TTL_MS) return cached.promise
-  const promise = loadInputs(token, userId)
+  const promise = loadInputs(token, userId, force)
   inputsCache.set(userId, { at: Date.now(), promise })
   promise.catch(() => inputsCache.delete(userId))
   if (inputsCache.size > 500) {

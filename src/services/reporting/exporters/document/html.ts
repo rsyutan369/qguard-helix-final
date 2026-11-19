@@ -7,7 +7,8 @@
  * an accessible label plus the same numbers in text, so no value is colour-only
  * or tooltip-only.
  */
-import type { InventoryReport } from '../../InventoryReport'
+import type { DocumentExportInput } from './shared'
+import { validationLabel } from './shared'
 import type { ReportTable } from '../../schemas/ReportSchema'
 import type { AssetDossier, BarItem, DocumentBlock, DocumentKpi, StackSegment, TableEmphasis } from '../../ReportDocument'
 import { cellTone } from '../../ReportDocument'
@@ -126,7 +127,7 @@ function block(b: DocumentBlock): string {
   }
 }
 
-export function renderDocumentHtml(report: InventoryReport): Blob {
+export function renderDocumentHtml(report: DocumentExportInput): Blob {
   const d = report.document!
   const { branding } = d
   const logo = safeImage(branding.companyLogo)
@@ -147,13 +148,14 @@ export function renderDocumentHtml(report: InventoryReport): Blob {
     : ''
 
   const integrity = report.integrity
-    ? `<div class="seal">${url ? `<div class="qr">${qrSvg(url, 148)}</div>` : ''}<dl class="facts one"><div><dt>Algorithm</dt><dd>${esc(report.integrity.algorithm)}</dd></div><div><dt>Digest</dt><dd class="mono">${esc(report.integrity.hash)}</dd></div><div><dt>Signed at</dt><dd>${esc(utc(report.integrity.signedAt))}</dd></div><div><dt>Report ID</dt><dd>${esc(report.meta.reportId || '—')}</dd></div>${url ? `<div><dt>Verify</dt><dd><a href="${esc(url)}" rel="noopener noreferrer">${esc(url.split('?')[0])}</a></dd></div>` : ''}</dl></div><p class="muted">The SHA3-256 digest decoded by the verification page must equal the digest printed here. Any alteration of this document changes the digest.</p>`
-    : '<p class="muted">This document was not sealed at generation time.</p>'
+    ? `<div class="seal">${url ? `<div class="qr">${qrSvg(url, 148)}</div>` : ''}<dl class="facts one"><div><dt>Algorithm</dt><dd>${esc(report.integrity.algorithm)}</dd></div><div><dt>Digest</dt><dd class="mono">${esc(report.integrity.hash)}</dd></div><div><dt>Recorded at</dt><dd>${esc(utc(report.integrity.signedAt))}</dd></div><div><dt>Report ID</dt><dd>${esc(report.meta.reportId || '—')}</dd></div>${url ? `<div><dt>Digest reference</dt><dd><a href="${esc(url)}" rel="noopener noreferrer">${esc(url.split('?')[0])}</a></dd></div>` : ''}</dl></div><p class="muted">The digest identifies the captured report model. Compare it with the report record held by your organization.</p>`
+    : ''
 
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(d.cover.title)} — ${esc(branding.companyName)}</title>
 <meta name="generator" content="QGuard Helix Enterprise Reporting">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <style>
 :root{--ink:#0F172A;--soft:#334155;--muted:#64748B;--line:#E2E8F0;--band:#F8FAFC;--brand:${BRAND}}
 *{box-sizing:border-box}
@@ -248,7 +250,7 @@ a{color:var(--brand)}
   <div class="sub">${esc(d.cover.subtitle)}</div>
   <div class="scope">${esc(d.cover.scopeLine)}</div>
   <dl class="meta">${d.cover.facts.map((f) => `<div><dt>${esc(f.label)}</dt><dd>${esc(f.value)}</dd></div>`).join('')}</dl>
-  <div class="quality">${pill(`Report quality ${VALIDATION_LABEL[v.status]} · ${v.score}/100`, qualityHex)}${report.integrity ? ` <span class="muted">Sealed with ${esc(report.integrity.algorithm)} · ${esc(report.integrity.hash.slice(0, 24))}…</span>` : ''}</div>
+  <div class="quality">${pill(validationLabel(v), qualityHex)}${report.integrity ? ` <span class="muted">${esc(report.integrity.algorithm)} digest · ${esc(report.integrity.hash.slice(0, 24))}…</span>` : ''}</div>
 </header>
 <div class="shell">
 <nav class="toc" aria-label="Contents"><b>Contents</b><ol>${entries.map((e) => `<li><a href="#${esc(e.id)}">${esc(e.title)}</a></li>`).join('')}</ol></nav>
@@ -257,12 +259,12 @@ a{color:var(--brand)}
 ${sections}
 ${decisions}
 <section id="validation" class="break"><h2>Validation, Reconciliation &amp; Integrity</h2>
-<p>${pill(`Report quality ${VALIDATION_LABEL[v.status]} · ${v.score}/100`, qualityHex)}</p>
-${table({ title: 'Pre-export validation', columns: ['Check', 'Result', 'Detail'], rows: v.checks.map((c) => [c.check, VALIDATION_LABEL[c.status], c.detail]) }, [{ column: 1, kind: 'status' }])}
-${table({ title: 'Reconciliation — dashboard vs exported', columns: ['Metric', 'Dashboard', 'Exported', 'Result'], rows: report.reconciliation.map((r) => [r.metric, r.dashboard, r.exported, r.matches ? 'MATCH' : 'REVIEW']) }, [{ column: 3, kind: 'status' }])}
-<h3 style="margin-top:22px">Evidence &amp; provenance</h3><ul class="bullets">${d.provenance.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>
-<h3 style="margin-top:22px">Integrity seal</h3>${integrity}
-<p class="muted">Prepared by ${esc(report.meta.generatedBy || 'QGuard Helix')}${branding.reportOwner ? ` for ${esc(branding.reportOwner)}` : ''}${branding.reviewer ? `; reviewer ${esc(branding.reviewer)}` : ''}. Generated ${esc(utc(report.meta.generatedAt))} from evidence current to ${esc(utc(report.meta.dataAsOf || null))}.</p>
+<p>${pill(validationLabel(v), qualityHex)}</p>
+${v.checks.length ? table({ title: 'Pre-export validation', columns: ['Check', 'Result', 'Detail'], rows: v.checks.map((c) => [c.check, VALIDATION_LABEL[c.status], c.detail]) }, [{ column: 1, kind: 'status' }]) : ''}
+${report.reconciliation.length ? table({ title: 'Reconciliation — dashboard vs exported', columns: ['Metric', 'Dashboard', 'Exported', 'Result'], rows: report.reconciliation.map((r) => [r.metric, r.dashboard, r.exported, r.matches ? 'MATCH' : 'REVIEW']) }, [{ column: 3, kind: 'status' }]) : ''}
+${d.provenance.length ? `<h3 style="margin-top:22px">Evidence &amp; provenance</h3><ul class="bullets">${d.provenance.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}
+${integrity ? `<h3 style="margin-top:22px">Integrity digest</h3>${integrity}` : ''}
+<p class="muted">Prepared by ${esc(report.meta.generatedBy || 'QGuard Helix')}${branding.reportOwner ? ` for ${esc(branding.reportOwner)}` : ''}${branding.reviewer ? `; reviewer ${esc(branding.reviewer)}` : ''}. Generated ${esc(utc(report.meta.generatedAt))}. Latest evidence timestamp: ${esc(utc(report.meta.dataAsOf))}.</p>
 </section>
 </main>
 </div>

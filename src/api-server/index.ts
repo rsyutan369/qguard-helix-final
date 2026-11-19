@@ -15,6 +15,7 @@ import cryptoAgilityRoutes from './crypto-agility'
 import runtimeCryptoIntelRoutes from './runtime-crypto-intel'
 import driftDetectionRoutes from './drift-detection'
 import externalTrustRoutes from './external-trust'
+import estateIntelligenceRoutes from './estate-intelligence'
 import migrationIntelligenceRoutes from './migration-intelligence'
 import {
   tlsTelemetryRoutes,
@@ -46,9 +47,12 @@ import profileRoutes from './profile'
 import billingRoutes from './billing'
 import paypalRoutes from './paypal'
 import playBillingRoutes from './play-billing'
+import { googlePlayWebhookRoutes, subscriptionRoutes } from './subscriptions'
 import revenueRoutes from './revenue'
 import adminRoutes from './admin'
+import streamTicketRoutes from './runtime/stream-tickets'
 import scannerRoutes from './scanner'
+import liveScanRoutes from './live-scan'
 import publicScanRoutes from './public-scan'
 import demoRequestRoutes from './demo-request'
 import downloadRoutes, { blockPublicInstallerPath } from './downloads'
@@ -80,6 +84,7 @@ const shareIpAttempts = new Map<string, { count: number; windowStart: number }>(
 const SHARE_RATE_LIMIT_WINDOW_MS = 60_000
 const SHARE_RATE_LIMIT_MAX_REQUESTS = 10
 const SHARE_MAX_PASSWORD_ATTEMPTS = 3
+const SHARE_WRITE_RETRIES = 5
 const DEFAULT_SHARE_EXPIRY_SECONDS = 15 * 60
 const MAX_SHARE_EXPIRY_SECONDS = 7 * 24 * 60 * 60
 const MAX_SHARE_DOWNLOADS = 25
@@ -313,7 +318,7 @@ export function createApiServer() {
   // 80 MB bodies. body-parser skips an already-parsed body, so the general
   // parser below leaves these requests alone.
   app.use(
-    ['/api/v1/auth', '/api/v1/public-scan', '/api/v1/demo-request', '/api/v1/paypal/webhook', '/api/v1/play-billing/rtdn'],
+    ['/api/v1/auth', '/api/v1/public-scan', '/api/v1/demo-request', '/api/v1/paypal/webhook', '/api/v1/play-billing/rtdn', '/api/v1/webhooks/google-play'],
     express.json({ limit: process.env.API_PUBLIC_JSON_LIMIT || '256kb', verify: keepRawBody }),
   )
 
@@ -495,166 +500,198 @@ export function createApiServer() {
     }
 
     const ip = readClientIp(req)
-    const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null
-
-    const { data: linkData, error: queryError } = await db
+    const loadShare = () => db
       .from('vault_shared_links')
       .select('id, user_id, encrypted_file_data, encryption_metadata, original_filename, original_size, mime_type, expires_at, max_downloads, download_count, is_revoked, is_password_protected, password_hash, failed_password_attempts, is_destroyed')
       .eq('id', linkId)
-      .single()
+      .maybeSingle()
 
-    if (queryError || !linkData) {
-      const detail = queryError ? `${queryError.code}: ${queryError.message}` : 'no row returned'
-      console.error('[share/public] Query failed - linkId:', linkId, '| error:', detail)
-      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Shared link not found or has expired' } })
-      return
+    const respondWithStorageError = () => {
+      res.status(503).json({ error: { code: 'SHARE_UNAVAILABLE', message: 'Share service is temporarily unavailable. Please try again.' } })
     }
+    let rateLimitChecked = false
+    for (let attempt = 0; attempt < SHARE_WRITE_RETRIES; attempt++) {
+      const { data: linkData, error: queryError } = await loadShare()
+      if (queryError && queryError.code !== '22P02') {
+        respondWithStorageError()
+        return
+      }
+      if (!linkData) {
+        res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Shared link not found or has expired' } })
+        return
+      }
 
-    const metadata = readShareMetadata(linkData.encryption_metadata)
-    const remainingAttempts = Math.max(0, SHARE_MAX_PASSWORD_ATTEMPTS - (linkData.failed_password_attempts || 0))
-    const passwordKdf = publicPasswordKdfMetadata(metadata)
-    const recipientWrap = metadataObject(metadata, 'recipientWrap')
+      const metadata = readShareMetadata(linkData.encryption_metadata)
+      const remainingAttempts = Math.max(0, SHARE_MAX_PASSWORD_ATTEMPTS - (linkData.failed_password_attempts || 0))
+      const passwordKdf = publicPasswordKdfMetadata(metadata)
+      const recipientWrap = metadataObject(metadata, 'recipientWrap')
 
-    if (linkData.is_destroyed) {
-      res.status(410).json({
-        error: {
-          code: 'DESTROYED',
-          message: 'This shared link has been permanently destroyed due to too many failed password attempts. The sender must share the file again.',
-        },
-      })
-      return
-    }
-
-    if (linkData.is_revoked) {
-      res.status(410).json({ error: { code: 'REVOKED', message: 'This shared link has been revoked' } })
-      return
-    }
-
-    if (linkData.expires_at && new Date(linkData.expires_at) < new Date()) {
-      res.status(410).json({ error: { code: 'EXPIRED', message: 'This shared link has expired' } })
-      return
-    }
-
-    if (linkData.max_downloads !== null && linkData.download_count >= linkData.max_downloads) {
-      res.status(410).json({ error: { code: 'LIMIT_REACHED', message: 'Download limit reached for this link' } })
-      return
-    }
-
-    if (linkData.is_password_protected) {
-      const passwordSalt = metadataText(metadata, 'passwordSalt')
-      if (!passwordHash) {
-        res.json({
-          data: {
-            requiresPassword: true,
-            originalFilename: linkData.original_filename,
-            originalSize: Number(linkData.original_size || 0),
-            mimeType: linkData.mime_type || 'application/octet-stream',
-            passwordSalt,
-            passwordKdf,
-            recipientWrap,
-            remainingAttempts,
+      if (linkData.is_destroyed) {
+        res.status(410).json({
+          error: {
+            code: 'DESTROYED',
+            message: 'This shared link has been permanently destroyed due to too many failed password attempts. The sender must share the file again.',
           },
         })
         return
       }
 
-      if (isShareIpRateLimited(ip)) {
-        res.status(429).json({ error: { code: 'RATE_LIMITED', message: 'Too many attempts. Please wait before trying again.' } })
+      if (linkData.is_revoked) {
+        res.status(410).json({ error: { code: 'REVOKED', message: 'This shared link has been revoked' } })
         return
       }
 
-      if (passwordHash !== linkData.password_hash) {
-        const attemptsUsed = (linkData.failed_password_attempts || 0) + 1
-        const nextRemaining = Math.max(0, SHARE_MAX_PASSWORD_ATTEMPTS - attemptsUsed)
-        const shouldDestroy = attemptsUsed >= SHARE_MAX_PASSWORD_ATTEMPTS
+      if (linkData.expires_at && new Date(linkData.expires_at) < new Date()) {
+        res.status(410).json({ error: { code: 'EXPIRED', message: 'This shared link has expired' } })
+        return
+      }
 
-        await db
-          .from('vault_shared_links')
-          .update({
-            failed_password_attempts: attemptsUsed,
-            is_destroyed: shouldDestroy,
-            encrypted_file_data: shouldDestroy ? null : linkData.encrypted_file_data,
-            encryption_metadata: shouldDestroy ? null : linkData.encryption_metadata,
-            password_hash: shouldDestroy ? null : linkData.password_hash,
-          })
-          .eq('id', linkId)
+      if (linkData.max_downloads !== null && linkData.download_count >= linkData.max_downloads) {
+        res.status(410).json({ error: { code: 'LIMIT_REACHED', message: 'Download limit reached for this link' } })
+        return
+      }
 
-        emitShareLinkEvent({
-          type: shouldDestroy ? 'link_destroyed' : 'failed_attempt',
-          linkId,
-          ownerId: linkData.user_id,
-          fileName: linkData.original_filename,
-          attemptsUsed,
-          remainingAttempts: nextRemaining,
-          ip,
-          timestamp: new Date().toISOString(),
-        })
-
-        if (shouldDestroy) {
-          res.status(410).json({
-            error: {
-              code: 'DESTROYED',
-              message: 'This shared link has been permanently destroyed due to too many failed password attempts. All encrypted data has been wiped. The sender must share the file again.',
-              attemptsUsed,
-              remainingAttempts: 0,
+      if (linkData.is_password_protected) {
+        const passwordSalt = metadataText(metadata, 'passwordSalt')
+        if (!passwordHash) {
+          res.json({
+            data: {
+              requiresPassword: true,
+              originalFilename: linkData.original_filename,
+              originalSize: Number(linkData.original_size || 0),
+              mimeType: linkData.mime_type || 'application/octet-stream',
+              passwordSalt,
+              passwordKdf,
+              recipientWrap,
+              remainingAttempts,
             },
           })
           return
         }
 
-        res.status(403).json({
-          error: {
-            code: 'WRONG_PASSWORD',
-            message: `Incorrect password. ${nextRemaining} attempt${nextRemaining === 1 ? '' : 's'} remaining before this link is permanently destroyed.`,
+        if (!rateLimitChecked && isShareIpRateLimited(ip)) {
+          res.status(429).json({ error: { code: 'RATE_LIMITED', message: 'Too many attempts. Please wait before trying again.' } })
+          return
+        }
+        rateLimitChecked = true
+
+        if (passwordHash !== linkData.password_hash) {
+          const attemptsUsed = (linkData.failed_password_attempts || 0) + 1
+          const nextRemaining = Math.max(0, SHARE_MAX_PASSWORD_ATTEMPTS - attemptsUsed)
+          const shouldDestroy = attemptsUsed >= SHARE_MAX_PASSWORD_ATTEMPTS
+
+          const { data: updated, error: updateError } = await db
+            .from('vault_shared_links')
+            .update({
+              failed_password_attempts: attemptsUsed,
+              ...(shouldDestroy && {
+                is_destroyed: true,
+                encrypted_file_data: null,
+                encryption_metadata: null,
+                password_hash: null,
+              }),
+            })
+            .eq('id', linkId)
+            .eq('is_revoked', false)
+            .eq('is_destroyed', false)
+            .eq('failed_password_attempts', linkData.failed_password_attempts)
+            .eq('download_count', linkData.download_count)
+            .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+            .select('id')
+            .maybeSingle()
+          if (updateError) {
+            respondWithStorageError()
+            return
+          }
+          if (!updated) continue
+
+          emitShareLinkEvent({
+            type: shouldDestroy ? 'link_destroyed' : 'failed_attempt',
+            linkId,
+            ownerId: linkData.user_id,
+            fileName: linkData.original_filename,
             attemptsUsed,
             remainingAttempts: nextRemaining,
-          },
-        })
+            ip,
+            timestamp: new Date().toISOString(),
+          })
+
+          if (shouldDestroy) {
+            res.status(410).json({
+              error: {
+                code: 'DESTROYED',
+                message: 'This shared link has been permanently destroyed due to too many failed password attempts. All encrypted data has been wiped. The sender must share the file again.',
+                attemptsUsed,
+                remainingAttempts: 0,
+              },
+            })
+            return
+          }
+
+          res.status(403).json({
+            error: {
+              code: 'WRONG_PASSWORD',
+              message: `Incorrect password. ${nextRemaining} attempt${nextRemaining === 1 ? '' : 's'} remaining before this link is permanently destroyed.`,
+              attemptsUsed,
+              remainingAttempts: nextRemaining,
+            },
+          })
+          return
+        }
+      }
+
+      const metadataPayload = metadataText(metadata, 'encryptedPayload')
+      const encryptedPayload = metadataPayload && isBase64Payload(metadataPayload)
+        ? metadataPayload
+        : byteaToText(linkData.encrypted_file_data)
+      const iv = metadataText(metadata, 'iv')
+      const integrityHash = metadataText(metadata, 'integrityHash')
+
+      if (!encryptedPayload || !iv || !integrityHash) {
+        res.status(410).json({ error: { code: 'PAYLOAD_MISSING', message: 'Shared file payload is unavailable. The sender must create a new share link.' } })
         return
       }
-    }
 
-    const metadataPayload = metadataText(metadata, 'encryptedPayload')
-    const encryptedPayload = metadataPayload && isBase64Payload(metadataPayload)
-      ? metadataPayload
-      : byteaToText(linkData.encrypted_file_data)
-    const iv = metadataText(metadata, 'iv')
-    const integrityHash = metadataText(metadata, 'integrityHash')
+      const { data: updated, error: updateError } = await db
+        .from('vault_shared_links')
+        .update({
+          download_count: (linkData.download_count || 0) + 1,
+          last_accessed_at: new Date().toISOString(),
+        })
+        .eq('id', linkId)
+        .eq('is_revoked', false)
+        .eq('is_destroyed', false)
+        .eq('download_count', linkData.download_count)
+        .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
+        .select('id')
+        .maybeSingle()
+      if (updateError) {
+        respondWithStorageError()
+        return
+      }
+      if (!updated) continue
 
-    if (!encryptedPayload || !iv || !integrityHash) {
-      res.status(410).json({ error: { code: 'PAYLOAD_MISSING', message: 'Shared file payload is unavailable. The sender must create a new share link.' } })
+      res.json({
+        data: {
+          encryptedPayload,
+          iv,
+          integrityHash,
+          originalFilename: linkData.original_filename,
+          originalSize: Number(linkData.original_size || 0),
+          mimeType: linkData.mime_type || 'application/octet-stream',
+          isPasswordProtected: !!linkData.is_password_protected,
+          passwordSalt: metadataText(metadata, 'passwordSalt'),
+          passwordKdf,
+          recipientWrap,
+        },
+      })
       return
     }
-
-    await db
-      .from('vault_shared_links')
-      .update({
-        download_count: (linkData.download_count || 0) + 1,
-        last_accessed_at: new Date().toISOString(),
-      })
-      .eq('id', linkId)
-
-    res.json({
-      data: {
-        encryptedPayload,
-        iv,
-        integrityHash,
-        originalFilename: linkData.original_filename,
-        originalSize: Number(linkData.original_size || 0),
-        mimeType: linkData.mime_type || 'application/octet-stream',
-        isPasswordProtected: !!linkData.is_password_protected,
-        passwordSalt: metadataText(metadata, 'passwordSalt'),
-        passwordKdf,
-        recipientWrap,
-      },
-    })
+    respondWithStorageError()
   })
 
   app.get('/api/v1/vault/share/events', async (req, res) => {
-    const authHeader = req.headers.authorization
-    const headerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
-    const queryToken = typeof req.query.token === 'string' ? req.query.token : null
-    const token = headerToken || queryToken
+    const token = getToken(req)
     const user = token ? await getServerUser(token) : null
 
     if (!user) {
@@ -664,7 +701,7 @@ export function createApiServer() {
 
     res.status(200)
     res.setHeader('Content-Type', 'text/event-stream')
-    res.setHeader('Cache-Control', 'no-cache, no-transform')
+    res.setHeader('Cache-Control', 'private, no-store, no-transform')
     res.setHeader('Connection', 'keep-alive')
     res.setHeader('X-Accel-Buffering', 'no')
     res.flushHeaders?.()
@@ -750,6 +787,7 @@ export function createApiServer() {
   app.use('/api/v1/runtime-crypto-intel', runtimeCryptoIntelRoutes)
   app.use('/api/v1/dashboard/drift', driftDetectionRoutes)
   app.use('/api/v1/external-trust', externalTrustRoutes)
+  app.use('/api/v1/estate-intelligence', estateIntelligenceRoutes)
   app.use('/api/v1/migration-intelligence', migrationIntelligenceRoutes)
   // TLS & PKI Intelligence Command Center - four projections of one model.
   app.use('/api/v1/dashboard/tls-telemetry', tlsTelemetryRoutes)
@@ -782,8 +820,14 @@ export function createApiServer() {
   app.use('/api/v1/billing', billingRoutes)
   app.use('/api/v1/paypal', paypalRoutes)
   app.use('/api/v1/play-billing', playBillingRoutes)
+  app.use('/api/v1/subscriptions', subscriptionRoutes)
+  app.use('/api/v1/webhooks/google-play', googlePlayWebhookRoutes)
   app.use('/api/v1/revenue', revenueRoutes)
   app.use('/api/v1/admin', adminRoutes)
+  app.use('/api/v1/stream-tickets', streamTicketRoutes)
+  // Real Time Scanning — mounted before the scanner router so its paths are
+  // not shadowed; same `/api/v1/scanner` BASIC gate in subscription-guard.
+  app.use('/api/v1/scanner/live', liveScanRoutes)
   app.use('/api/v1/scanner', scannerRoutes)
   app.use('/api/v1/agent-installer', agentInstallerRoutes)
   app.use('/api/v1/agent-scanner', agentScannerRoutes)

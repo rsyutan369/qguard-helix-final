@@ -1,4 +1,5 @@
 import Papa from 'papaparse';
+import { CSV_FORMULA_PREFIX, csvCell } from '@/lib/csv';
 import type { EnterpriseAssessmentReport } from '../schemas/ReportSchema';
 
 /**
@@ -28,10 +29,14 @@ export function exportCsv(report: EnterpriseAssessmentReport): Blob {
   }));
 
   const csv = findingRows.length
-    ? Papa.unparse(findingRows)
+    ? Papa.unparse(findingRows, { escapeFormulae: CSV_FORMULA_PREFIX })
     : Papa.unparse([{ id: 'Evidence Not Available' }]);
 
-  const header = `# ${report.meta.title} — ${report.branding.companyName}\n# Generated ${report.meta.generatedAt} | Version ${report.meta.version} | ${report.branding.classification}\n`;
+  const header = [
+    `# ${report.meta.title} — ${report.branding.companyName}`,
+    `# Generated ${report.meta.generatedAt} | Version ${report.meta.version} | ${report.branding.classification}`,
+    '',
+  ].map(csvCell).join('\n');
 
   // Shared Responsibility Assessment™ — ownership-classified matrix (aligned with
   // the Migration Intelligence Engine) appended as a second CSV block for GRC ingestion.
@@ -58,7 +63,7 @@ export function exportCsv(report: EnterpriseAssessmentReport): Blob {
       `# Customer readiness ${sr.readiness.customer}/100 | Provider ${sr.readiness.provider}/100 | Ecosystem ${sr.readiness.ecosystem}/100 | Overall ${sr.readiness.overall}/100\n` +
       `# Customer-controlled ${sr.customerControlled} | Provider-controlled ${sr.providerControlled} | Ecosystem-dependent ${sr.ecosystemDependent} | Actionable now ${sr.actionableNow} | Blockers ${sr.migrationBlockers}\n` +
       `# ${sr.matrix.length} consolidated ownership row(s) representing ${sr.matrixInstances} raw scanner instance(s)\n` +
-      (ownershipRows.length ? Papa.unparse(ownershipRows) : '');
+      (ownershipRows.length ? Papa.unparse(ownershipRows, { escapeFormulae: CSV_FORMULA_PREFIX }) : '');
   }
 
   return new Blob([header, csv, srBlock], { type: 'text/csv;charset=utf-8' });

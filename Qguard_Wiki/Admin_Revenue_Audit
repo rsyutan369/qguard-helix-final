@@ -1,0 +1,553 @@
+# QGUARD HELIX — COMPREHENSIVE ADMINISTRATION DASHBOARD & REVENUE INTELLIGENCE AUDIT
+
+## OBJECTIVE
+
+Perform a comprehensive, end-to-end technical audit, validation, debugging, and remediation of the Qguard Helix Administration Dashboard, Account Settings, and Revenue Intelligence modules.
+
+The primary objective is to ensure that every dashboard, metric, financial figure, subscription record, customer activity, payment transaction, revenue forecast, feature, tab, and action button displays accurate information derived from actual backend data and real-time system activity.
+
+**CRITICAL REQUIREMENT: NO MOCK DATA, NO HARDCODED METRICS, NO SIMULATED REVENUE, AND NO FAKE USER ACTIVITY.**
+
+All displayed information must originate from actual database records, authenticated user activity, verified payment transactions, subscription events, and authoritative backend services.
+
+Do not simply review the UI. Trace the complete data flow from the database and backend services through APIs, event streams, frontend hooks, state management, and rendered components.
+
+---
+
+## 1. PAGES AND MODULES UNDER AUDIT
+
+Perform a complete audit of every page, subpage, tab, component, and associated functionality.
+
+### A. Administration Dashboard
+http://localhost:3002/dashboard/admin
+
+Audit:
+- Total registered users.
+- Active users and inactive users.
+- New user registrations.
+- User login and session activity.
+- Online users and last-seen timestamps.
+- User account status and verification.
+- Subscription distribution by plan.
+- User subscription status.
+- Trial users and expired trials.
+- Suspended, disabled, and deleted accounts.
+- User management and administrative actions.
+- System activity and audit logs.
+- Administrative notifications.
+- System health and service status.
+- Administrative permissions and role-based access control.
+
+Ensure all user statistics reflect actual user records and accurately distinguish between registered, active, online, suspended, and inactive users.
+
+### B. Account Settings
+http://localhost:3002/dashboard/settings
+
+Audit:
+- Account profile management.
+- Company and organization settings.
+- Administrative account settings.
+- Security and authentication settings.
+- Password and session management.
+- Notification preferences.
+- API and integration settings.
+- Billing and subscription preferences.
+- Save, update, reset, and delete actions.
+- Validation, error handling, and success notifications.
+
+Ensure every setting persists correctly in the database and that updated values are immediately reflected throughout the application where applicable.
+
+### C. Revenue Intelligence — Main Dashboard
+http://localhost:3002/dashboard/revenue-intelligence
+
+Audit:
+- Total revenue.
+- Monthly Recurring Revenue (MRR).
+- Annual Recurring Revenue (ARR).
+- Total subscription revenue.
+- New recurring revenue.
+- Expansion revenue.
+- Contraction revenue.
+- Churned revenue.
+- Net Revenue Retention (NRR).
+- Customer Lifetime Value (LTV).
+- Average Revenue Per User (ARPU).
+- Customer Acquisition Cost (CAC), if actual acquisition cost data exists.
+- Revenue growth and historical comparisons.
+- Revenue distribution by subscription plan.
+- Revenue trends and performance charts.
+
+Validate all calculations against actual underlying financial and subscription records.
+
+### D. Revenue Management
+http://localhost:3002/dashboard/revenue-intelligence/revenue
+
+Audit:
+- Gross revenue.
+- Net revenue.
+- Recurring revenue.
+- One-time payments.
+- Revenue by subscription plan.
+- Revenue by billing period.
+- Revenue by customer.
+- Revenue by transaction.
+- Refunds and chargebacks.
+- Discounts and promotional adjustments.
+- Taxes and applicable fees.
+- Revenue history and trends.
+- Date-range filtering.
+- Revenue export and reporting.
+
+Ensure financial calculations are consistent with actual successful, settled, refunded, disputed, and failed payment records.
+
+### E. Subscription Management
+http://localhost:3002/dashboard/revenue-intelligence/subscriptions
+
+Audit:
+- Total subscriptions.
+- Active subscriptions.
+- Trial subscriptions.
+- Pending subscriptions.
+- Cancelled subscriptions.
+- Expired subscriptions.
+- Past-due subscriptions.
+- Suspended subscriptions.
+- Subscription upgrades and downgrades.
+- Plan changes.
+- Billing cycles.
+- Renewal dates.
+- Trial expiration dates.
+- Subscription cancellation and reactivation.
+- Subscription history.
+- Subscription distribution by plan.
+
+Verify that every subscription status is synchronized with the actual subscription database and payment provider.
+
+Ensure subscription lifecycle events correctly update the customer account, entitlements, billing records, and administrative dashboard.
+
+### F. Customer Management
+http://localhost:3002/dashboard/revenue-intelligence/customers
+
+Audit:
+- Customer directory.
+- Customer profiles.
+- Registered customer information.
+- Email verification.
+- Current subscription and plan.
+- Customer payment history.
+- Total customer lifetime revenue.
+- Account creation date.
+- Last login and activity.
+- Subscription history.
+- Customer status.
+- Customer search and filtering.
+- Customer details and transaction history.
+- Customer account management actions.
+
+Ensure customer records are correctly associated with their subscriptions, payment transactions, and authenticated user identities.
+
+### G. Payment Management
+http://localhost:3002/dashboard/revenue-intelligence/payments
+
+Audit:
+- Successful payments.
+- Pending payments.
+- Failed payments.
+- Refunded payments.
+- Partially refunded payments.
+- Disputed transactions.
+- Chargebacks.
+- Payment methods.
+- Transaction references.
+- Payment timestamps.
+- Customer and subscription associations.
+- Payment provider synchronization.
+- Payment reconciliation.
+- Transaction search and filtering.
+- Payment details and export functionality.
+
+Verify payment information against the authoritative payment provider records and backend transaction database.
+
+Do not classify an initiated or pending payment as revenue until it meets the application's defined recognition and settlement criteria.
+
+### H. Revenue Forecasting
+http://localhost:3002/dashboard/revenue-intelligence/forecast
+
+Audit:
+- Monthly revenue forecast.
+- Quarterly revenue forecast.
+- Annual revenue forecast.
+- Projected MRR and ARR.
+- Expected subscription renewals.
+- Expected customer churn.
+- New customer acquisition projections.
+- Subscription upgrades and downgrades.
+- Revenue growth projections.
+- Historical revenue comparisons.
+- Forecast assumptions and calculation methodology.
+- Best-case, expected-case, and worst-case scenarios.
+- Forecast confidence and limitations.
+
+Forecasts must be calculated using actual historical revenue, subscription lifecycle data, customer behavior, and documented assumptions.
+
+Clearly distinguish actual historical financial results from estimated future revenue.
+
+Never present projected revenue as realized revenue.
+
+---
+
+## 2. COMPLETE FRONTEND-TO-BACKEND DATA FLOW AUDIT
+
+Trace the complete architecture of every module.
+
+Verify:
+
+1. Database tables, relationships, indexes, and constraints.
+2. Backend API endpoints and service implementations.
+3. Supabase queries and database subscriptions, where applicable.
+4. Authentication and authorization.
+5. Frontend data-fetching hooks.
+6. React Query or equivalent caching and synchronization.
+7. State management and component dependencies.
+8. Server-Sent Events (SSE), WebSockets, or Supabase Realtime integrations.
+9. Event listeners and cleanup mechanisms.
+10. Loading, error, empty, and success states.
+
+For every displayed metric, identify:
+
+- Its authoritative data source.
+- The database table or backend service.
+- The API endpoint.
+- The frontend hook consuming the data.
+- The calculation or transformation applied.
+- The component rendering the result.
+- The real-time update mechanism, if applicable.
+
+Ensure there are no disconnected frontend components, stale caches, duplicate event listeners, missing subscriptions, incorrect API routes, or hardcoded fallback values masquerading as real data.
+
+### Real-Time Synchronization Requirements
+
+Implement or repair the appropriate real-time data pipeline.
+
+When an important event occurs, affected dashboard components should update automatically without requiring a manual page refresh.
+
+Examples:
+
+- A new user registers → update registered user statistics.
+- A user logs in → update activity and last-seen information.
+- A user purchases a subscription → update subscription counts and applicable revenue metrics.
+- A subscription expires → update subscription status and entitlements.
+- A customer upgrades their plan → update subscription distribution and recurring revenue.
+- A customer cancels → update cancellation statistics and applicable revenue projections.
+- A payment succeeds → update payment records and recognized revenue according to the configured accounting rules.
+- A payment fails → update payment status and applicable subscription billing state.
+- A refund is processed → update net revenue and refund records.
+
+Ensure events are processed reliably, with proper authorization, duplicate-event protection, and reconciliation mechanisms.
+
+Do not expose sensitive financial or customer information through unauthorized real-time channels.
+
+---
+
+## 3. REVENUE CALCULATION AND FINANCIAL ACCURACY
+
+Perform a dedicated audit of all financial formulas.
+
+Validate:
+
+- MRR calculation.
+- ARR calculation.
+- Gross revenue.
+- Net revenue.
+- Refund calculations.
+- Subscription revenue.
+- Churn rate.
+- Revenue churn.
+- Customer churn.
+- NRR.
+- LTV.
+- ARPU.
+- Revenue growth.
+- Forecast calculations.
+
+Important requirements:
+
+1. Define consistent billing-period normalization for monthly and annual subscriptions.
+2. Avoid counting the same payment more than once.
+3. Exclude failed and uncollected payments from recognized revenue.
+4. Account for refunds, discounts, and applicable adjustments.
+5. Handle subscription upgrades, downgrades, cancellations, and prorations correctly.
+6. Prevent cancelled or expired subscriptions from being incorrectly counted as active.
+7. Handle different currencies using documented exchange-rate sources and conversion timestamps, if multiple currencies are supported.
+8. Clearly distinguish cash collected, gross billings, net billings, and recognized revenue.
+
+Document the formula used for every major financial KPI.
+
+---
+
+## 4. PAYMENT PROVIDER AND SUBSCRIPTION INTEGRATION
+
+Inspect all existing payment provider integrations, including PayPal and Stripe if configured.
+
+Verify:
+
+- Payment initiation.
+- Payment confirmation.
+- Subscription creation.
+- Subscription renewal.
+- Subscription cancellation.
+- Payment failure handling.
+- Refund processing.
+- Webhook signature verification.
+- Webhook event processing.
+- Idempotency.
+- Transaction reconciliation.
+- Subscription status synchronization.
+
+The backend database and payment provider must not silently disagree.
+
+Implement proper webhook handling and reconciliation workflows to identify missing, delayed, duplicated, or inconsistent transactions.
+
+Never trust frontend payment status as the authoritative confirmation of a successful transaction.
+
+---
+
+## 5. ADMINISTRATIVE SECURITY AND ACCESS CONTROL
+
+Perform a security audit of the entire administrative environment.
+
+Verify:
+
+- Only authorized administrators can access administrative routes.
+- Role-based access control (RBAC) is enforced on the backend.
+- Frontend route protection is not the only security mechanism.
+- Supabase Row Level Security (RLS) policies are correctly configured.
+- Customer financial information is protected.
+- Sensitive administrative actions require appropriate permissions.
+- Administrative actions generate immutable or tamper-resistant audit records.
+- Session expiration and authentication are handled correctly.
+- API endpoints reject unauthorized requests.
+- Secrets and payment credentials are never exposed to frontend code.
+
+Pay particular attention to administrative actions such as:
+
+- Changing customer subscription plans.
+- Suspending or reactivating accounts.
+- Cancelling subscriptions.
+- Processing refunds.
+- Modifying account permissions.
+- Changing billing configurations.
+
+---
+
+## 6. FUNCTIONALITY AND INTERACTION TESTING
+
+Test every visible component and interactive element.
+
+This includes:
+
+- Navigation menus.
+- Tabs.
+- Dropdowns.
+- Search fields.
+- Filters.
+- Date-range selectors.
+- Pagination.
+- Sorting.
+- Data tables.
+- Charts.
+- Export buttons.
+- Refresh buttons.
+- Modal dialogs.
+- Confirmation dialogs.
+- Save and update buttons.
+- Subscription management actions.
+- Customer management actions.
+- Payment management actions.
+- Revenue reporting actions.
+
+For each feature:
+
+1. Verify that the control performs its advertised function.
+2. Verify that it communicates with the correct backend endpoint.
+3. Verify that backend validation is applied.
+4. Verify that successful operations persist in the database.
+5. Verify that the UI reflects the updated state.
+6. Verify appropriate loading and error handling.
+7. Verify that unauthorized operations are rejected.
+
+Do not leave decorative, nonfunctional, or placeholder buttons in the production dashboard.
+
+---
+
+## 7. TESTING AND VALIDATION STRATEGY
+
+Perform comprehensive testing across the entire module.
+
+Required testing:
+
+- Frontend component testing.
+- Backend API testing.
+- Database integration testing.
+- Authentication and authorization testing.
+- Real-time event testing.
+- Webhook integration testing.
+- Subscription lifecycle testing.
+- Revenue calculation testing.
+- Payment reconciliation testing.
+- End-to-end user workflow testing.
+- Regression testing.
+
+Use actual development database records and payment-provider sandbox events where appropriate.
+
+Do not generate fake production revenue or modify real customer financial records during testing.
+
+Create controlled test fixtures in an isolated test environment.
+
+Cross-check dashboard figures against independent database queries and payment-provider records.
+
+Verify that multiple dashboard pages display consistent values for the same underlying records.
+
+---
+
+## 8. UI/UX AND DATA PRESENTATION
+
+Preserve the existing Qguard Helix premium enterprise design language.
+
+Improve the interface where necessary without unnecessarily redesigning working components.
+
+Ensure:
+
+- Accurate metric cards.
+- Consistent charts and reporting periods.
+- Proper currency formatting.
+- Accurate date and timezone presentation.
+- Clear subscription status indicators.
+- Consistent customer and payment information.
+- Responsive layouts.
+- Functional filters and search.
+- Real-time loading indicators.
+- Meaningful empty states.
+- Action confirmation dialogs.
+- Clear success and error notifications.
+
+Clearly label actual figures, estimates, projections, and unavailable data.
+
+Do not display fabricated values simply to make dashboards appear populated.
+
+---
+
+## 9. IMPLEMENTATION AND REMEDIATION
+
+This is not a read-only review.
+
+After completing the audit, fix every identified issue within the existing architecture.
+
+Prioritize:
+
+1. Incorrect financial calculations.
+2. Inaccurate user and subscription statistics.
+3. Broken backend integrations.
+4. Missing or incorrect real-time synchronization.
+5. Incorrect payment and subscription statuses.
+6. Broken administrative actions.
+7. Security and authorization vulnerabilities.
+8. Frontend state synchronization issues.
+9. UI inconsistencies and incomplete functionality.
+
+Preserve existing working features and avoid unnecessary architectural changes.
+
+Do not create duplicate APIs, redundant database tables, parallel implementations, or unnecessary services.
+
+Follow the existing Qguard Helix coding conventions and architecture.
+
+---
+
+## 10. FINAL AUDIT REPORT
+
+When the implementation and testing are complete, provide a detailed audit report containing:
+
+### A. Audit Summary
+- Overall system condition.
+- Modules successfully audited.
+- Modules successfully repaired.
+- Outstanding issues.
+
+### B. Findings and Fixes
+For every issue discovered, document:
+- Affected page or module.
+- Description of the issue.
+- Root cause.
+- Files and components modified.
+- Backend or database changes.
+- Fix implemented.
+- Validation performed.
+
+### C. Data Integrity Report
+Show whether:
+- User statistics match actual database records.
+- Subscription counts match actual subscription records.
+- Revenue metrics match verified financial records.
+- Payment records match payment-provider transactions.
+- Customer records are correctly associated.
+- Forecast calculations use valid historical data.
+
+### D. Real-Time Integration Report
+Document:
+- Backend event sources.
+- SSE/WebSocket/Supabase Realtime integrations.
+- Frontend hooks.
+- Events tested.
+- Update latency, where measured.
+- Event delivery and duplicate-processing behavior.
+- Remaining synchronization limitations.
+
+### E. Functional Testing Results
+Provide a page-by-page testing matrix showing:
+- Feature or action.
+- Expected behavior.
+- Actual behavior.
+- Test result.
+- Fix applied, if necessary.
+
+### F. Security Findings
+Document authorization, RLS, payment webhook, customer data protection, and administrative access-control results.
+
+### G. Remaining Issues
+List any unresolved problems honestly. Do not mark untested functionality as passed.
+
+---
+
+## FINAL ACCEPTANCE CRITERIA
+
+The audit is considered complete only when:
+
+- All eight specified pages have been reviewed.
+- Every important metric is backed by an identifiable authoritative data source.
+- No mock or hardcoded values are presented as live business data.
+- Frontend and backend data remain synchronized.
+- Real-time events correctly update affected dashboard components.
+- Revenue calculations are independently validated.
+- Payment and subscription statuses are accurate.
+- Administrative controls perform their intended operations.
+- Customer and financial information is protected.
+- All interactive tabs, buttons, filters, and reporting features work correctly.
+- Critical and high-severity findings are resolved and retested.
+- All remaining limitations are documented.
+
+**MOST IMPORTANT: DO NOT JUST MAKE THE DASHBOARD LOOK FUNCTIONAL. MAKE THE UNDERLYING SYSTEM FUNCTIONALLY CORRECT, FINANCIALLY ACCURATE, SECURE, AND FULLY CONNECTED TO REAL BACKEND DATA.**
+
+Work systematically, inspect the existing codebase before making changes, trace every data dependency, implement the necessary fixes, and verify the results through actual tests.
+
+Do not declare completion based solely on successful builds or visually correct frontend components. A successful build is not proof of correct data, working integrations, or accurate financial reporting.
+
+My additional recommendation
+For Qguard Helix, I would add three particularly important requirements to this audit:
+
+1. Revenue reconciliation: Your administration dashboard should be able to reconcile Supabase subscription records against PayPal/Stripe transactions. This prevents your displayed revenue from becoming inaccurate when webhooks are delayed, duplicated, or missed.
+
+2. Entitlement synchronization: When a customer purchases, upgrades, downgrades, or cancels a subscription, their actual Qguard Messaging, Quantum Vault, and other plan-dependent entitlements should automatically reflect the correct subscription status.
+
+3. Financial audit trail: Every administrative change involving payments, refunds, subscription modifications, and customer account status should have an auditable record of who performed it, when it happened, and what changed.
+
+One important distinction: SSE is useful for pushing server events to dashboards, but it should not be treated as the source of truth. The database and verified backend transactions remain authoritative.

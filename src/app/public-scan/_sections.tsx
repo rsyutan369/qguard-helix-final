@@ -7,6 +7,7 @@
  * reason, which is itself part of the product story.
  */
 import React from 'react';
+import { useQveInk, useQveTheme } from './_qve/theme';
 import { motion } from 'motion/react';
 import {
   Activity,
@@ -79,6 +80,7 @@ const PQ_CASE_SHORT: Record<PublicScanReport['executive']['postQuantumKeyAgreeme
 };
 
 export function ExecutiveSummary({ report }: { report: PublicScanReport }) {
+  const ink = useQveInk();
   const { executive } = report;
   const [gradingOpen, setGradingOpen] = React.useState(false);
 
@@ -178,7 +180,7 @@ export function ExecutiveSummary({ report }: { report: PublicScanReport }) {
                   viewport={{ once: true }}
                   transition={{ duration: 0.5, delay: index * 0.06 }}
                   className="truncate text-[2rem] font-black leading-none tracking-tight"
-                  style={{ color: card.color }}
+                  style={{ color: ink(card.color) }}
                 >
                   {card.big}
                 </motion.p>
@@ -203,8 +205,9 @@ export function ExecutiveSummary({ report }: { report: PublicScanReport }) {
  * computed from (same 12 weighted categories, same score thresholds, same
  * risk-level vocabulary), so a user can verify the live result against it. */
 function GradingReferenceModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const theme = useQveTheme();
   return (
-    <Modal open={open} onClose={onClose} title="How the Grading Works" maxWidthClassName="max-w-6xl">
+    <Modal open={open} onClose={onClose} title="How the Grading Works" maxWidthClassName="max-w-6xl" surfaceClassName={`public-scan-surface public-scan-surface--${theme}`}>
       <div className="bg-[#04060e] p-3 sm:p-5">
         <img
           src="/downloads/Security_Grade.png"
@@ -223,6 +226,7 @@ function GradingReferenceModal({ open, onClose }: { open: boolean; onClose: () =
 /* =========================================================== encryption ==== */
 
 export function EncryptionScore({ report }: { report: PublicScanReport }) {
+  const ink = useQveInk();
   const { executive, scoreComponents } = report;
   const { focused } = usePanelFocus();
   // The focus view exists to show detail, so it opens with the decomposition visible.
@@ -268,7 +272,7 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
           />
           <p
             className="mt-1 text-xs font-semibold"
-            style={{ color: classicalRating?.color ?? ACCENT.slate }}
+            style={{ color: ink(classicalRating?.color ?? ACCENT.slate) }}
           >
             {classicalRating?.rating ?? 'Not measured'}
           </p>
@@ -305,7 +309,7 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
           />
           <p
             className="mt-1 text-xs font-semibold"
-            style={{ color: scoreColor(executive.postQuantumReadiness) }}
+            style={{ color: ink(scoreColor(executive.postQuantumReadiness)) }}
           >
             {PQ_CASE_SHORT[executive.postQuantumKeyAgreement]}
           </p>
@@ -334,7 +338,7 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
                 'flex items-center gap-1.5 font-mono text-[9.5px] uppercase tracking-[0.14em] transition-opacity',
                 active ? 'opacity-100' : 'opacity-40',
               )}
-              style={{ color: active ? tier.color : ACCENT.slate }}
+              style={{ color: ink(active ? tier.color : ACCENT.slate) }}
             >
               <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: tier.color }} />
               {tier.rating}
@@ -408,7 +412,7 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
               </div>
               <span
                 className="text-right text-sm font-black tabular-nums"
-                style={{ color: component.applicable ? scoreColor(component.score) : ACCENT.slate }}
+                style={{ color: ink(component.applicable ? scoreColor(component.score) : ACCENT.slate) }}
               >
                 {component.applicable ? component.score : '—'}
               </span>
@@ -423,6 +427,7 @@ export function EncryptionScore({ report }: { report: PublicScanReport }) {
 /* ======================================================== attack surface ==== */
 
 export function AttackSurface({ report }: { report: PublicScanReport }) {
+  const ink = useQveInk();
   /* Each row's explanation is a hover tooltip in the column. The focus view has
      the room to print it under the row, so it does — a reason that only lives
      in a tooltip is invisible on touch and to anyone who does not hover. */
@@ -456,7 +461,7 @@ export function AttackSurface({ report }: { report: PublicScanReport }) {
             <span
               className="shrink-0 text-[13px] font-bold"
               style={{
-                color:
+                color: ink(
                   item.status === 'pass'
                     ? ACCENT.emerald
                     : item.status === 'fail'
@@ -466,6 +471,7 @@ export function AttackSurface({ report }: { report: PublicScanReport }) {
                         : item.status === 'info'
                           ? ACCENT.blue
                           : ACCENT.slate,
+                ),
               }}
             >
               {item.value}
@@ -484,6 +490,7 @@ export function AttackSurface({ report }: { report: PublicScanReport }) {
 /* ==================================================== crypto intelligence == */
 
 export function CryptoIntelligencePanel({ report }: { report: PublicScanReport }) {
+  const ink = useQveInk();
   const { intelligence } = report;
   return (
     <Panel className="h-full overflow-hidden" glow>
@@ -500,7 +507,7 @@ export function CryptoIntelligencePanel({ report }: { report: PublicScanReport }
               <li key={`${algorithm.name}-${algorithm.role}`} className="flex items-center gap-2 text-[13px]">
                 <Zap
                   className="h-3.5 w-3.5 shrink-0"
-                  style={{ color: algorithm.quantumVulnerable ? ACCENT.amber : ACCENT.cyan }}
+                  style={{ color: ink(algorithm.quantumVulnerable ? ACCENT.amber : ACCENT.cyan) }}
                 />
                 <span className="font-mono text-slate-200">{algorithm.name}</span>
                 <span className="truncate text-[11px] text-slate-600">{algorithm.role}</span>
@@ -524,7 +531,7 @@ export function CryptoIntelligencePanel({ report }: { report: PublicScanReport }
                 /* Measured-absent is a failure (rose); never-measured is
                    simply unknown (slate). Painting both amber said the same
                    thing about a real gap and about a silent endpoint. */
-                color:
+                color: ink(
                   intelligence.forwardSecrecy === 'Enabled'
                     ? ACCENT.emerald
                     : intelligence.forwardSecrecy === 'Partial'
@@ -532,6 +539,7 @@ export function CryptoIntelligencePanel({ report }: { report: PublicScanReport }
                       : intelligence.forwardSecrecy === 'Not observed'
                         ? ACCENT.rose
                         : ACCENT.slate,
+                ),
               }}
             >
               {intelligence.forwardSecrecy === 'Enabled' ? '✦ Enabled' : intelligence.forwardSecrecy}
@@ -546,7 +554,7 @@ export function CryptoIntelligencePanel({ report }: { report: PublicScanReport }
                 // measured verdict; painting an unmeasured one emerald (the old
                 // fallthrough) would have reported "quantum-safe" colouring for
                 // an endpoint nothing was learned about.
-                color:
+                color: ink(
                   intelligence.quantumVulnerability === 'Vulnerable'
                     ? ACCENT.rose
                     : intelligence.quantumVulnerability === 'Hybrid-protected' ||
@@ -555,6 +563,7 @@ export function CryptoIntelligencePanel({ report }: { report: PublicScanReport }
                       : intelligence.quantumVulnerability === 'Unknown'
                         ? ACCENT.slate
                         : ACCENT.emerald,
+                ),
               }}
             >
               {intelligence.quantumVulnerability === 'Vulnerable' ? '▲ Vulnerable' : intelligence.quantumVulnerability}
@@ -683,6 +692,7 @@ export function PublicFindings({ report }: { report: PublicScanReport }) {
 const TIMELINE_ICONS = [Clock, Database, Cpu, AlertTriangle, TrendingUp, Layers, ShieldCheck];
 
 export function QuantumTimeline({ report }: { report: PublicScanReport }) {
+  const ink = useQveInk();
   return (
     <Panel className="h-full overflow-hidden">
       <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
@@ -709,14 +719,14 @@ export function QuantumTimeline({ report }: { report: PublicScanReport }) {
                 viewport={{ once: true }}
                 transition={{ duration: 0.4, delay: index * 0.07 }}
                 className="relative z-10 grid h-8 w-8 shrink-0 place-items-center rounded-lg border"
-                style={{ borderColor: `${color}40`, backgroundColor: `${color}14`, color }}
+                style={{ borderColor: `${color}40`, backgroundColor: `${color}14`, color: ink(color) }}
               >
                 <Icon className="h-4 w-4" />
               </motion.span>
               <div className="min-w-0 pb-1">
                 <div className="flex flex-wrap items-baseline gap-x-2">
                   <p className="text-[13px] font-bold text-slate-100">{phase.title}</p>
-                  <span className="font-mono text-[9.5px] uppercase tracking-widest" style={{ color }}>
+                  <span className="font-mono text-[9.5px] uppercase tracking-widest" style={{ color: ink(color) }}>
                     {phase.horizon}
                   </span>
                 </div>
@@ -740,6 +750,7 @@ const PRIORITY_COLOR: Record<string, string> = {
 };
 
 export function Recommendations({ report }: { report: PublicScanReport }) {
+  const ink = useQveInk();
   return (
     <Panel className="overflow-hidden">
       <div className="border-b border-white/[0.06] px-5 py-3">
@@ -757,7 +768,7 @@ export function Recommendations({ report }: { report: PublicScanReport }) {
                   <h3 className="text-[13.5px] font-bold leading-snug text-slate-100">{recommendation.title}</h3>
                   <span
                     className="shrink-0 rounded-md px-2 py-0.5 font-mono text-[9.5px] font-black uppercase tracking-wider"
-                    style={{ backgroundColor: `${color}1c`, color }}
+                    style={{ backgroundColor: `${color}1c`, color: ink(color) }}
                   >
                     {recommendation.priority}
                   </span>
@@ -779,7 +790,7 @@ export function Recommendations({ report }: { report: PublicScanReport }) {
                         <>
                           {/* Scaled ×3 for visual range only; the number is the model output. */}
                           <Meter value={recommendation.scoreGain * 3} color={color} className="h-1" />
-                          <span className="shrink-0 text-[11px] font-bold tabular-nums" style={{ color }}>
+                          <span className="shrink-0 text-[11px] font-bold tabular-nums" style={{ color: ink(color) }}>
                             +{recommendation.scoreGain}
                           </span>
                         </>
@@ -816,6 +827,7 @@ export function Recommendations({ report }: { report: PublicScanReport }) {
 const FOOTPRINT_COLORS = [ACCENT.cyan, ACCENT.blue, ACCENT.violet, ACCENT.emerald];
 
 export function FootprintEstimator({ report }: { report: PublicScanReport }) {
+  const ink = useQveInk();
   const { footprint } = report;
 
   return (
@@ -833,7 +845,7 @@ export function FootprintEstimator({ report }: { report: PublicScanReport }) {
             <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">{metric.label}</p>
             <p
               className="mt-2 text-3xl font-black tracking-tight"
-              style={{ color: FOOTPRINT_COLORS[index % FOOTPRINT_COLORS.length] }}
+              style={{ color: ink(FOOTPRINT_COLORS[index % FOOTPRINT_COLORS.length]) }}
             >
               <CountUp value={metric.value} />
               {metric.isLowerBound && <span className="ml-0.5 align-super text-base text-slate-600">+</span>}
@@ -1149,7 +1161,7 @@ export function EnterpriseReportPreview() {
         </p>
         <a
           href="/register"
-          className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-cyan-400 to-violet-500 px-4 py-2 text-xs font-black text-[#04060e] no-underline transition-opacity hover:opacity-90"
+          className="public-scan-primary inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-bold no-underline"
         >
           <Lock className="h-3.5 w-3.5" /> Unlock Enterprise Report
         </a>
@@ -1204,6 +1216,7 @@ export function AssessmentScopePanel({ report }: { report: PublicScanReport }) {
 /* ========================================================= handshake viz === */
 
 export function HandshakeFlow({ report }: { report: PublicScanReport }) {
+  const ink = useQveInk();
   const { timing } = report.evidence;
   return (
     <Panel className="overflow-hidden">
@@ -1254,7 +1267,7 @@ export function HandshakeFlow({ report }: { report: PublicScanReport }) {
               <p className="mt-0.5 text-[12px] font-bold text-slate-100">{step.label}</p>
               <p
                 className="mt-1 truncate font-mono text-[10px]"
-                style={{ color: step.observed ? ACCENT.cyan : ACCENT.slate }}
+                style={{ color: ink(step.observed ? ACCENT.cyan : ACCENT.slate) }}
                 title={step.value}
               >
                 {step.value}

@@ -147,6 +147,7 @@ async function computeModel(token: string, userId: string): Promise<EncryptionMo
       q
         .select('id, encryption_status, encryption_algorithm, signature_status, original_size, encrypted_size, created_at, updated_at')
         .eq('user_id', userId)
+        .eq('is_deleted', false)
         .order('updated_at', { ascending: false })
         .limit(CAP.vaultFiles),
     ),
@@ -179,13 +180,13 @@ async function computeModel(token: string, userId: string): Promise<EncryptionMo
         .limit(CAP.securityEvents),
     ),
     safeRows(client, 'pqc_scan_sessions', (q) =>
-      q.select('id, status, completed_at, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.scanSessions),
+      q.select('id, status, completed_at, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.scanSessions),
     ),
     safeRows(client, 'scanner_agents', (q) =>
-      q.select('id, name, status, hostname, last_seen_at, created_at, updated_at').eq('user_id', userId).limit(CAP.scannerAgents),
+      q.select('id, name, status, hostname, last_seen_at, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).limit(CAP.scannerAgents),
     ),
     safeRows(client, 'connector_accounts', (q) =>
-      q.select('id, provider, status, last_sync_at, created_at, updated_at').eq('user_id', userId).limit(CAP.connectorAccounts),
+      q.select('id, provider, status, last_sync_at, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).limit(CAP.connectorAccounts),
     ),
   ])
 

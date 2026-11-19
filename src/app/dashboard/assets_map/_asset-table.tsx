@@ -292,6 +292,7 @@ export function AssetDetail({ row, now, onReport }: { row: AssetRegisterRow; now
         <Fact label="Criticality">{row.criticality ?? '—'}</Fact>
         <Fact label="Exposure">{row.internetFacing ? 'Internet-facing' : 'Internet exposure not confirmed'}</Fact>
         <Fact label="TLS version">{row.tlsVersion ?? '—'}</Fact>
+        {row.partialAssessment && <Fact label="Scan coverage">Partial assessment · measured components are listed</Fact>}
         <Fact label="Scanner risk"><BandPill band={row.risk} score={row.riskScore} /></Fact>
         <Fact label="Last scanned">
           <span title={absoluteTime(row.lastScanned)}>{relativeAge(row.lastScanned, now) ?? 'No timestamp'}</span>

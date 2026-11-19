@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { openAuthenticatedEventStream } from '@/lib/authenticated-event-stream';
 import { useAuth } from '@/contexts/auth-context';
 
 export type ScannerFinding = {
@@ -60,6 +61,7 @@ export type ScannerIntelligenceSnapshot = {
   assets: {
     mode: string;
     assets: any[];
+    archived?: Array<{ id: string; name: string }>;
   };
   exposure: {
     mode: string;
@@ -275,7 +277,7 @@ function buildSnapshotFromScannerApis(parts: {
         totalInstances: Number(parts.cbom?.stats?.totalInstances ?? cbomEntries.reduce((sum: number, entry: any) => sum + Number(entry.instances || 1), 0)),
       },
     },
-    assets: { mode: parts.assets?.mode || 'scanner-api', assets },
+    assets: { mode: parts.assets?.mode || 'scanner-api', assets, archived: parts.assets?.archived },
     exposure: {
       mode: parts.exposure?.mode || 'scanner-api',
       nodes: exposureNodes,
@@ -390,6 +392,7 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
   const [lastVerifiedAt, setLastVerifiedAt] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const fingerprintRef = useRef<string | null>(null);
+  const snapshotTimeRef = useRef(0);
 
   const authHeaders = useMemo(() => (token ? { Authorization: `Bearer ${token}` } : undefined), [token]);
   const cacheKey = useMemo(() => {
@@ -416,6 +419,9 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
    * 1 MB localStorage rewrite, no dashboard re-derivation.
    */
   const applyNetworkSnapshot = useCallback((snapshot: ScannerIntelligenceSnapshot) => {
+    const timestamp = Date.parse(snapshot.generatedAt);
+    if (Number.isFinite(timestamp) && timestamp < snapshotTimeRef.current) return;
+    if (Number.isFinite(timestamp)) snapshotTimeRef.current = timestamp;
     setSource('network');
     setLastVerifiedAt(snapshot.generatedAt || new Date().toISOString());
     if (snapshot.fingerprint && snapshot.fingerprint === fingerprintRef.current) return;
@@ -436,20 +442,37 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
 
     setLoading(true);
     setError(null);
+    const signal = abortRef.current?.signal;
     try {
-      const snapshot = await fetchScannerIntelligence(authHeaders);
+      const snapshot = await fetchScannerIntelligence(authHeaders, signal);
+      if (signal?.aborted) return;
       applyNetworkSnapshot(snapshot);
       setConnected(true);
     } catch (err) {
+      if (signal?.aborted) return;
       setError(err instanceof Error ? err.message : 'Unable to load scanner intelligence');
       setConnected(false);
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [applyNetworkSnapshot, authHeaders]);
 
+  const changeAssetLifecycle = useCallback(async (action: 'archive' | 'restore' | 'remove', ids: string[]) => {
+    if (!authHeaders) throw new Error('Sign in to manage assets.');
+    const response = await fetch('/api/v1/scanner/assets/lifecycle', {
+      method: 'POST',
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, ids }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error?.message || 'The inventory action could not be saved.');
+    void refresh();
+    return payload.data as { updatedIds: string[]; skipped: number };
+  }, [authHeaders, refresh]);
+
   useEffect(() => {
     abortRef.current?.abort();
+    snapshotTimeRef.current = 0;
     const controller = new AbortController();
     abortRef.current = controller;
 
@@ -467,7 +490,7 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let loadingTimer: ReturnType<typeof setTimeout> | null = null;
     let graceTimer: ReturnType<typeof setTimeout> | null = null;
-    let eventSource: EventSource | null = null;
+    let closeStream: (() => void) | null = null;
     let streamDelivering = false;
     const cachedSnapshot = readCachedSnapshot(cacheKey);
 
@@ -537,8 +560,7 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
         return;
       }
 
-      eventSource?.close();
-      eventSource = new EventSource(`/api/v1/scanner/intelligence/stream?token=${encodeURIComponent(token)}`);
+      closeStream?.();
 
       // The stream's first frame normally lands in well under a second. If it
       // stays silent (a buffering proxy, a stalled build) the page must not sit
@@ -561,52 +583,56 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
         markDelivered();
       };
 
-      eventSource.addEventListener('scanner-intelligence', (event) => {
-        try {
-          const snapshot = normalizeStreamSnapshot(JSON.parse((event as MessageEvent).data));
-          if (!snapshot) throw new Error('Invalid scanner intelligence stream payload');
-          applyNetworkSnapshot(snapshot);
-          onStreamFrame();
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'Unable to parse scanner intelligence stream');
-        }
-      });
-
-      // The server re-checked the estate and nothing changed: record the
-      // confirmation, keep the snapshot on screen untouched.
-      eventSource.addEventListener('scanner-intelligence-unchanged', (event) => {
-        try {
-          const payload = JSON.parse((event as MessageEvent).data) as { generatedAt?: string; checkedAt?: string };
-          setLastVerifiedAt(payload.generatedAt || payload.checkedAt || new Date().toISOString());
-          onStreamFrame();
-        } catch {
-          /* a malformed confirmation carries no data to lose */
-        }
-      });
-
-      eventSource.addEventListener('scanner-error', (event) => {
-        try {
-          const payload = JSON.parse((event as MessageEvent).data);
-          setError(payload?.message || 'Scanner intelligence stream failed');
-        } catch {
-          setError('Scanner intelligence stream failed');
-        }
-      });
-
-      eventSource.onerror = () => {
-        eventSource?.close();
-        eventSource = null;
-        streamDelivering = false;
-        setConnected(false);
-        setTransport('polling');
-        startPolling();
-        if (!retryTimer && !controller.signal.aborted) {
-          retryTimer = setTimeout(() => {
-            retryTimer = null;
-            connectStream();
-          }, 15000);
+      const onFrame = (name: string, raw: string) => {
+        if (controller.signal.aborted) return;
+        if (name === 'scanner-intelligence') {
+          try {
+            const snapshot = normalizeStreamSnapshot(JSON.parse(raw));
+            if (!snapshot) throw new Error('Invalid scanner intelligence stream payload');
+            applyNetworkSnapshot(snapshot);
+            onStreamFrame();
+          } catch (err) {
+            setError(err instanceof Error ? err.message : 'Unable to parse scanner intelligence stream');
+          }
+        } else if (name === 'scanner-intelligence-unchanged') {
+          // The server re-checked the estate and nothing changed: record the
+          // confirmation, keep the snapshot on screen untouched.
+          try {
+            const payload = JSON.parse(raw) as { generatedAt?: string; checkedAt?: string };
+            setLastVerifiedAt(payload.generatedAt || payload.checkedAt || new Date().toISOString());
+            onStreamFrame();
+          } catch {
+            /* a malformed confirmation carries no data to lose */
+          }
+        } else if (name === 'scanner-error') {
+          try {
+            setError(JSON.parse(raw)?.message || 'Scanner intelligence stream failed');
+          } catch {
+            setError('Scanner intelligence stream failed');
+          }
         }
       };
+
+      // Read with fetch() so the access token rides in the Authorization
+      // header. EventSource cannot set headers, which had put the token in the
+      // URL of this stream on every page that shows scanner intelligence.
+      closeStream = openAuthenticatedEventStream('/api/v1/scanner/intelligence/stream', token, {
+        onEvent: onFrame,
+        onError: () => {
+          closeStream = null;
+          if (controller.signal.aborted) return;
+          streamDelivering = false;
+          setConnected(false);
+          setTransport('polling');
+          startPolling();
+          if (!retryTimer) {
+            retryTimer = setTimeout(() => {
+              retryTimer = null;
+              connectStream();
+            }, 15000);
+          }
+        },
+      });
     };
 
     if (live) {
@@ -617,7 +643,7 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
 
     return () => {
       controller.abort();
-      eventSource?.close();
+      closeStream?.();
       clearPollTimer();
       if (retryTimer) clearTimeout(retryTimer);
       if (loadingTimer) clearTimeout(loadingTimer);
@@ -632,6 +658,7 @@ export function useScannerIntelligence(options: { live?: boolean } = {}) {
     error,
     connected,
     refresh,
+    changeAssetLifecycle,
     /** Where the snapshot on screen came from (`cache` is never presented as live). */
     source,
     /** True once the SERVER has answered (a snapshot or an error) — a cache does not count. */

@@ -1,0 +1,291 @@
+.offline-pairing-dialog {
+  position: fixed;
+  inset: 0;
+  width: min(calc(100% - 2rem), 31rem);
+  max-height: calc(100dvh - 2rem);
+  margin: auto;
+  padding: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--app-line);
+  border-radius: 1.125rem;
+  background: var(--app-panel);
+  color: var(--app-ink-950);
+  box-shadow: 0 24px 80px rgb(2 10 26 / .28);
+  --pairing-accent: #215d76;
+  --pairing-confirm: #6240c4;
+  --pairing-confirm-hover: #5131b1;
+  --pairing-success: #087c5a;
+  --pairing-danger: #a42737;
+}
+
+.theme-dark .offline-pairing-dialog {
+  --pairing-accent: #b0ecff;
+  --pairing-confirm: #7251d5;
+  --pairing-confirm-hover: #6444c8;
+  --pairing-success: #72e7b3;
+  --pairing-danger: #fda4af;
+}
+
+.offline-pairing-dialog::backdrop {
+  background: rgb(5 12 29 / .64);
+}
+
+.offline-pairing-dialog[open] {
+  animation: offline-pairing-enter 180ms ease-out;
+}
+
+.offline-pairing-content {
+  display: grid;
+  gap: 1rem;
+  padding: clamp(1rem, 4vw, 1.5rem);
+}
+
+.offline-pairing-heading,
+.offline-pairing-peer-heading {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+}
+
+.offline-pairing-heading > div,
+.offline-pairing-peer-heading > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.offline-pairing-heading h2 {
+  margin-top: .25rem;
+  font-size: clamp(1.125rem, 4vw, 1.375rem);
+  font-weight: 750;
+  letter-spacing: -.025em;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.offline-pairing-heading h2:focus {
+  outline: none;
+}
+
+.offline-pairing-eyebrow {
+  color: var(--pairing-accent);
+  font-size: .75rem;
+  font-weight: 750;
+  letter-spacing: .025em;
+}
+
+.offline-pairing-emblem,
+.offline-pairing-platform {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  border: 1px solid var(--app-line);
+  border-radius: .875rem;
+  background: var(--app-muted-panel);
+  color: var(--pairing-accent);
+}
+
+.offline-pairing-emblem[data-success="true"] {
+  background: color-mix(in srgb, var(--pairing-success) 8%, var(--app-panel));
+  color: var(--pairing-success);
+}
+
+.offline-pairing-spinner {
+  animation: offline-pairing-spin 1s linear infinite;
+}
+
+.offline-pairing-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .375rem .75rem;
+  padding: .625rem;
+  border: 1px solid var(--app-line);
+  border-radius: .75rem;
+  background: var(--app-muted-panel);
+  color: var(--app-ink-600);
+  font-size: .75rem;
+  font-weight: 650;
+}
+
+.offline-pairing-stages li {
+  display: flex;
+  flex: 1 0 auto;
+  align-items: center;
+  gap: .375rem;
+}
+
+.offline-pairing-stages li[aria-current="step"] {
+  color: var(--pairing-accent);
+  font-weight: 750;
+}
+
+.offline-pairing-stages li[data-complete="true"] {
+  color: var(--pairing-success);
+}
+
+.offline-pairing-stages span {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.375rem;
+  min-height: 1.375rem;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+
+.offline-pairing-description,
+.offline-pairing-peer-heading,
+.offline-pairing-metadata {
+  color: var(--app-ink-600);
+  font-size: .875rem;
+  line-height: 1.5;
+}
+
+.offline-pairing-peer {
+  min-width: 0;
+  padding: .875rem;
+  border: 1px solid var(--app-line);
+  border-radius: .875rem;
+}
+
+.offline-pairing-peer-name {
+  color: var(--app-ink-950);
+  font-weight: 750;
+}
+
+.offline-pairing-metadata {
+  display: grid;
+  gap: .625rem;
+  margin-top: .75rem;
+}
+
+.offline-pairing-metadata dt {
+  color: var(--app-ink-950);
+  font-size: .75rem;
+  font-weight: 750;
+}
+
+.offline-pairing-metadata dd {
+  margin: .125rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.offline-pairing-metadata code {
+  font-size: .75rem;
+  user-select: text;
+}
+
+.offline-pairing-code {
+  display: grid;
+  justify-items: center;
+  gap: .25rem;
+  padding: .875rem;
+  border: 1px solid color-mix(in srgb, var(--pairing-accent) 55%, var(--app-line));
+  border-radius: .875rem;
+  background: color-mix(in srgb, var(--pairing-accent) 7%, var(--app-panel));
+  color: var(--pairing-accent);
+  font-size: .8125rem;
+  font-weight: 750;
+  text-align: center;
+}
+
+.offline-pairing-code code {
+  min-width: 0;
+  max-width: 100%;
+  font-size: clamp(1rem, 4.5vw, 1.5rem);
+  letter-spacing: .045em;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.offline-pairing-error {
+  border-inline-start: 3px solid var(--pairing-danger);
+  padding-inline-start: .625rem;
+  color: var(--pairing-danger);
+  font-size: .875rem;
+  overflow-wrap: anywhere;
+}
+
+.offline-pairing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+}
+
+.offline-pairing-actions button {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 3rem;
+  padding: .625rem .875rem;
+  border: 1px solid var(--app-line);
+  border-radius: .625rem;
+  background: var(--app-panel);
+  color: var(--app-ink-950);
+  font-size: .875rem;
+  font-weight: 750;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  transition: background-color 150ms ease-out, border-color 150ms ease-out;
+}
+
+.offline-pairing-actions button[data-primary] {
+  border-color: var(--pairing-confirm);
+  background: var(--pairing-confirm);
+  color: white;
+}
+
+.offline-pairing-actions button:not(:disabled):is(:hover, :active) {
+  border-color: var(--pairing-accent);
+  background: var(--app-muted-panel);
+}
+
+.offline-pairing-actions button[data-primary]:not(:disabled):is(:hover, :active) {
+  border-color: var(--pairing-confirm-hover);
+  background: var(--pairing-confirm-hover);
+}
+
+.offline-pairing-actions button:focus-visible {
+  outline: 2px solid var(--pairing-accent);
+  outline-offset: 2px;
+}
+
+.offline-pairing-actions button:disabled {
+  cursor: wait;
+  opacity: .65;
+}
+
+@media (max-width: 600px) {
+  .offline-pairing-dialog {
+    inset: auto 0 0;
+    width: 100%;
+    max-width: none;
+    max-height: calc(100dvh - max(1rem, env(safe-area-inset-top)));
+    margin: 0;
+    border-radius: 1.125rem 1.125rem 0 0;
+  }
+
+  .offline-pairing-content {
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+}
+
+@keyframes offline-pairing-enter {
+  from { opacity: 0; transform: translateY(.375rem); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes offline-pairing-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .offline-pairing-dialog[open],
+  .offline-pairing-spinner {
+    animation: none;
+  }
+
+  .offline-pairing-actions button {
+    transition: none;
+  }
+}

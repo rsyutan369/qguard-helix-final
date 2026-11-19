@@ -113,7 +113,7 @@ export function resolveLifecycle(input: LifecycleInput): LifecycleVerdict {
   // Anchored on the last rotation when there was one, otherwise on creation.
   // With neither, no due date can be computed and we say so rather than
   // inventing one from "now".
-  const anchor = rotatedMs ?? createdMs
+  const anchor = rotatedMs ?? dateMs(input.activatedAt) ?? createdMs
   const nextRotationMs = anchor === null ? null : anchor + interval * ONE_DAY_MS
   const nextRotationDueAt = nextRotationMs === null ? null : new Date(nextRotationMs).toISOString()
   const daysToRotation = nextRotationMs === null ? null : daysBetween(now, nextRotationMs)
@@ -125,7 +125,7 @@ export function resolveLifecycle(input: LifecycleInput): LifecycleVerdict {
   if (!input.rotationApplicable) {
     rotation = 'not-applicable'
     rotationReason = 'This key class has no rotation obligation; custody and integrity evidence apply instead.'
-  } else if (REVOKED.test(status) || DESTROYED.test(status)) {
+  } else if (REVOKED.test(status) || DESTROYED.test(status) || RETIRED.test(status) || input.decommissionedAt) {
     rotation = 'not-applicable'
     rotationReason = 'The key is revoked or destroyed, so no rotation is outstanding against it.'
   } else if (input.rotationInProgress) {
@@ -137,10 +137,10 @@ export function resolveLifecycle(input: LifecycleInput): LifecycleVerdict {
   } else if (input.deprecated) {
     rotation = 'overdue'
     rotationReason = 'The algorithm is broken against classical attack, so replacement is overdue regardless of schedule.'
-  } else if (expiryMs !== null && expiryMs < now) {
+  } else if (expiryMs !== null && expiryMs <= now) {
     rotation = 'overdue'
     rotationReason = `The key expired ${Math.abs(daysToExpiry ?? 0)} day(s) ago and is past its replacement date.`
-  } else if (daysToRotation !== null && daysToRotation < 0) {
+  } else if (nextRotationMs !== null && nextRotationMs <= now) {
     rotation = 'overdue'
     rotationReason = `Rotation was due ${Math.abs(daysToRotation)} day(s) ago against a ${interval}-day interval.`
   } else if (expiryMs !== null && daysToExpiry !== null && daysToExpiry <= EXPIRY_WARNING_DAYS) {
@@ -181,19 +181,22 @@ export function resolveLifecycle(input: LifecycleInput): LifecycleVerdict {
 
   if (input.decommissionedAt || DESTROYED.test(status)) {
     lifecycle = 'decommissioned'
-    lifecycleReason = 'The key record is decommissioned; its material is recorded as destroyed.'
+    lifecycleReason = 'The registry marks this key decommissioned. Confirm retirement or destruction in the custody provider.'
   } else if (RETIRED.test(status)) {
     lifecycle = 'retired'
     lifecycleReason = 'The key is retired and superseded; it should no longer protect new data.'
   } else if (REVOKED.test(status)) {
     lifecycle = 'revoked'
     lifecycleReason = 'The key is revoked and must not be trusted for any operation.'
-  } else if (expiryMs !== null && expiryMs < now) {
+  } else if (status === 'expired' || (expiryMs !== null && expiryMs <= now)) {
     lifecycle = 'expired'
     lifecycleReason = `The key expired ${Math.abs(daysToExpiry ?? 0)} day(s) ago.`
   } else if (SUSPENDED.test(status)) {
     lifecycle = 'suspended'
     lifecycleReason = 'The key is suspended; usage is withheld pending a governance decision.'
+  } else if (PENDING.test(status)) {
+    lifecycle = 'pending-activation'
+    lifecycleReason = 'The source marks this key pending activation.'
   } else if (rotation === 'overdue') {
     lifecycle = 'rotation-overdue'
     lifecycleReason = rotationReason
@@ -203,9 +206,6 @@ export function resolveLifecycle(input: LifecycleInput): LifecycleVerdict {
   } else if (ROTATED.test(status) || (rotatedMs !== null && rotatedMs > now - 30 * ONE_DAY_MS)) {
     lifecycle = 'rotated'
     lifecycleReason = 'The key was rotated recently and the new version is in service.'
-  } else if (PENDING.test(status)) {
-    lifecycle = 'pending-activation'
-    lifecycleReason = 'The key exists but has not been activated for use.'
   } else if (input.runtimeUsage !== null && input.runtimeUsage > 0) {
     lifecycle = 'in-use'
     lifecycleReason = `${input.runtimeUsage} runtime operation(s) were attributed to this key, so it is actively in use.`

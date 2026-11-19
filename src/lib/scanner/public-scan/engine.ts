@@ -787,9 +787,9 @@ export function buildTimeline(evidence: PublicScanEvidence): TimelinePhase[] {
       key: 'crqc',
       title: 'Quantum Computer Available',
       description:
-        'A cryptographically relevant quantum computer breaks RSA and ECC key exchange. This horizon is an external forecast, not a measurement of this endpoint — NIST IR 8547 plans the transition around it rather than predicting a date.',
+        'A cryptographically relevant quantum computer breaks RSA and ECC key exchange. The arrival date is unknown. NIST IR 8547 provides transition guidance without predicting when such a computer will exist.',
       state: 'future',
-      horizon: 'Forecast · NIST IR 8547',
+      horizon: 'CRQC arrival date unknown',
     },
     {
       key: 'decryption',
@@ -799,7 +799,7 @@ export function buildTimeline(evidence: PublicScanEvidence): TimelinePhase[] {
         : !measured
           ? `Sessions negotiated with ${kex.split(' (')[0]} become readable once it is broken; post-quantum coverage for hybrid-capable clients was not settled on this run.`
           : pqKex
-            ? 'Only traffic captured before the ML-KEM rollout becomes readable.'
+            ? 'The observed post-quantum negotiation reduces exposure for sessions using it. Previously captured classical sessions and current classical fallback sessions may remain exposed.'
             : `Sessions harvested today become readable once ${kex.split(' (')[0]} is broken.`,
       state: 'future',
       horizon: 'Post-CRQC',
@@ -808,16 +808,16 @@ export function buildTimeline(evidence: PublicScanEvidence): TimelinePhase[] {
       key: 'migration',
       title: 'Recommended Migration',
       description: !handshake
-        ? 'Restore reachability on this port, or assess the service from inside the network, before a migration position can be recommended for it. NIST IR 8547 deprecates 112-bit classical key establishment from 2030 regardless.'
+        ? 'Restore reachability on this port, or assess the service from inside the network, before a migration position can be recommended for it. Final NIST IR 8547 deprecates covered quantum-vulnerable key establishment after 2030.'
         : !measured
-          ? 'Re-run the assessment to settle hybrid ML-KEM support before committing to a migration position for this endpoint. NIST IR 8547 deprecates 112-bit classical key establishment from 2030.'
+          ? 'Re-run the assessment to settle hybrid ML-KEM support before committing to a migration position for this endpoint. Final NIST IR 8547 deprecates covered quantum-vulnerable key establishment after 2030.'
           : pqKex
-            ? 'Post-quantum key agreement is live at this edge; extend the same rollout to internal services and machine identities. NIST IR 8547 deprecates 112-bit classical key establishment from 2030.'
+            ? 'Post-quantum key agreement is live at this edge; extend the same rollout to internal services and machine identities. Final NIST IR 8547 deprecates covered quantum-vulnerable key establishment after 2030.'
             : pq.tls13Absent
-              ? 'Enable TLS 1.3 — the prerequisite for any hybrid ML-KEM group — then begin the hybrid PQC rollout. NIST IR 8547 deprecates 112-bit classical key establishment (RSA-2048, ECC P-256) from 2030.'
-              : 'Begin hybrid PQC rollout so long-lived data stops accumulating exposure. NIST IR 8547 deprecates 112-bit classical key establishment (RSA-2048, ECC P-256) from 2030.',
+              ? 'Enable TLS 1.3 — the prerequisite for any hybrid ML-KEM group — then begin the hybrid PQC rollout. Final NIST IR 8547 deprecates covered quantum-vulnerable key establishment after 2030.'
+              : 'Begin hybrid PQC rollout so long-lived data stops accumulating exposure. Final NIST IR 8547 deprecates covered quantum-vulnerable key establishment after 2030.',
       state: pqKex ? 'now' : 'target',
-      horizon: 'Deprecated 2030 · NIST IR 8547',
+      horizon: 'Deprecated after 2030 · NIST IR 8547',
     },
     {
       key: 'hybrid',
@@ -830,14 +830,14 @@ export function buildTimeline(evidence: PublicScanEvidence): TimelinePhase[] {
     },
     {
       key: 'full-pqc',
-      title: 'Full PQC Adoption',
+      title: 'Key establishment and signature coverage',
       description: pq.pqSignatureObserved && pqKex
         ? 'ML-KEM (FIPS 203) key agreement and a post-quantum signature (FIPS 204/205) are both present on this endpoint.'
         : pqKex
-          ? `Key agreement is post-quantum; the remaining gap is the ${certificateAlgorithm ?? 'classical'} certificate signature. NIST IR 8547 disallows 112-bit classical signatures after 2035.`
-          : 'ML-KEM (FIPS 203) and ML-DSA (FIPS 204) across certificates, transport and signing. NIST IR 8547 disallows 112-bit classical algorithms after 2035.',
+          ? `Key agreement is post-quantum; the remaining gap is the ${certificateAlgorithm ?? 'classical'} certificate signature. Final NIST IR 8547 disallows covered quantum-vulnerable signatures after 2035 under NIST guidance.`
+          : 'Plan ML-KEM (FIPS 203) for key establishment and ML-DSA (FIPS 204) or SLH-DSA (FIPS 205) for signatures, where the protocol and clients support them.',
       state: pq.pqSignatureObserved && pqKex ? 'now' : 'target',
-      horizon: 'Disallowed 2035 · NIST IR 8547',
+      horizon: 'Disallowed after 2035 · NIST IR 8547',
     },
   ]
 }

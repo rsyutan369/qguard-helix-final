@@ -3,7 +3,7 @@ import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server
 import { buildOrchestrationSnapshot, type OrchestrationSnapshot, type SourceState } from '@/lib/migration/orchestration-model'
 import { isSimulationJob, jobPlanId } from '@/lib/migration/job-safety'
 import { jobExecutionClass } from './agent-scanner'
-import { isMissingTable, loadAgentFleet, loadPlanApprovals } from './operational-fleet'
+import { loadAgentFleet, loadPlanApprovals } from './operational-fleet'
 import { streamLiveSnapshot } from './live-snapshot-stream'
 
 /**
@@ -57,7 +57,6 @@ async function readRows(client: any, table: string, build: (q: any) => any): Pro
   try {
     const { data, error } = await build(client.from(table))
     if (error) {
-      if (isMissingTable(error)) return { rows: [], state: 'ok' }
       console.warn(`${LOG} ${table} query failed:`, error.message || error)
       return { rows: [], state: 'unavailable' }
     }
@@ -68,41 +67,56 @@ async function readRows(client: any, table: string, build: (q: any) => any): Pro
   }
 }
 
+// Use bounded pages so the database's per-response limit cannot silently
+// shorten the declared window. Read one additional row to detect truncation.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function readCappedRows(client: any, table: string, cap: number, build: (q: any) => any): Promise<{ rows: Row[]; state: SourceState }> {
+  const rows: Row[] = []
+  const pageSize = 400
+  for (let from = 0; from <= cap; from += pageSize) {
+    const count = Math.min(pageSize, cap + 1 - from)
+    const page = await readRows(client, table, (q) => build(q).range(from, from + count - 1))
+    if (page.state === 'unavailable') return { rows: [], state: 'unavailable' }
+    rows.push(...page.rows)
+    if (page.rows.length < count) break
+  }
+  return { rows: rows.slice(0, cap), state: rows.length > cap ? 'truncated' : 'ok' }
+}
+
 async function computeSnapshot(token: string, userId: string): Promise<OrchestrationSnapshot> {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
 
   // Real columns only — `migration_jobs` has no `criticality` column, and one
   // unknown column makes PostgREST reject the whole select.
-  const jobs = await readRows(client, 'migration_jobs', (q) =>
+  const jobs = await readCappedRows(client, 'migration_jobs', JOB_CAP, (q) =>
     q.select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at')
       .eq('user_id', userId)
       .order('updated_at', { ascending: false })
-      .limit(JOB_CAP),
+      .order('id', { ascending: false }),
   )
   const operational = jobs.rows.filter((row) => !isSimulationJob(row))
-  const jobIds = operational.map((row) => String(row.id)).slice(0, 1000)
-  const assetIds = Array.from(new Set(operational.map((row) => String(row.asset_id || '')).filter(Boolean))).slice(0, 1000)
+  const assetIds = Array.from(new Set(operational.map((row) => String(row.asset_id || '')).filter(Boolean)))
   const hasJobs = operational.length > 0
-  const planIds = Array.from(new Set(operational.map((row) => jobPlanId(row)).filter(Boolean))).slice(0, 200)
+  const allPlanIds = Array.from(new Set(operational.map((row) => jobPlanId(row)).filter(Boolean)))
+  const planIds = allPlanIds.slice(0, 200)
+  const assetChunks = Array.from({ length: Math.ceil(assetIds.length / 100) }, (_, i) => assetIds.slice(i * 100, (i + 1) * 100))
 
   const [planApprovals, agents, validations, events, connectors, assets, planDates] = await Promise.all([
     hasJobs ? loadPlanApprovals(client, userId, operational, LOG) : Promise.resolve({ plans: new Map(), queried: new Set<string>() }),
     loadAgentFleet(client, userId, LOG),
     hasJobs
-      ? readRows(client, 'migration_validation_logs', (q) =>
-          q.select('id, migration_id, validation_type, status, created_at').eq('user_id', userId).in('migration_id', jobIds).order('created_at', { ascending: false }).limit(4000),
+      ? readCappedRows(client, 'migration_validation_logs', 4000, (q) =>
+          q.select('id, migration_id, validation_type, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).order('id', { ascending: false }),
         )
       : Promise.resolve({ rows: [], state: 'ok' as SourceState }),
     hasJobs
-      ? readRows(client, 'migration_events', (q) =>
-          q.select('id, migration_id, event_type, severity, message, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(300),
+      ? readCappedRows(client, 'migration_events', 300, (q) =>
+          q.select('id, migration_id, event_type, severity, message, created_at, plan_id:metadata->>planId, plan_id_legacy:metadata->>plan_id, sandbox_mode:metadata->>sandboxMode, dry_run:metadata->>dryRun').eq('user_id', userId).order('created_at', { ascending: false }).order('id', { ascending: false }),
         )
       : Promise.resolve({ rows: [], state: 'ok' as SourceState }),
     readRows(client, 'connector_accounts', (q) => q.select('id, provider, status').eq('user_id', userId).limit(400)),
-    assetIds.length
-      ? readRows(client, 'assets', (q) => q.select('id, name').eq('user_id', userId).in('id', assetIds))
-      : Promise.resolve({ rows: [], state: 'ok' as SourceState }),
+    Promise.all(assetChunks.map((ids) => readRows(client, 'assets', (q) => q.select('id, name').eq('user_id', userId).in('id', ids)))),
     // Recorded plan dates for the Migration Timeline. Real columns only
     // (dashboard-schema.sql; written by persistMigrationPlan): `scheduled_at`
     // is the planner's scheduleAt, `approved_at` is stamped only on approval.
@@ -124,20 +138,20 @@ async function computeSnapshot(token: string, userId: string): Promise<Orchestra
     plansQueried: planApprovals.queried,
     agents,
     validations: validations.rows,
-    events: events.rows,
+    events: events.rows.map((row) => ({ ...row, metadata: { planId: row.plan_id || row.plan_id_legacy, sandboxMode: row.sandbox_mode, dryRun: row.dry_run } })),
     connectors: connectors.rows,
-    assetNames: new Map(assets.rows.map((row) => [String(row.id), String(row.name || '')])),
+    assetNames: new Map(assets.flatMap((read) => read.rows.map((row) => [String(row.id), String(row.name || '')] as const))),
     sources: {
       jobs: jobs.state,
-      plans: plansUnread ? 'unavailable' : 'ok',
+      plans: plansUnread ? 'unavailable' : allPlanIds.length > planIds.length ? 'truncated' : 'ok',
       agents: agents ? 'ok' : 'unavailable',
       validations: validations.state,
       events: events.state,
       connectors: connectors.state,
-      assets: assets.state,
-      schedules: planDates.state,
+      assets: assets.some((read) => read.state === 'unavailable') ? 'unavailable' : 'ok',
+      schedules: planDates.state === 'ok' && allPlanIds.length > planIds.length ? 'truncated' : planDates.state,
     },
-    jobsTruncated: jobs.rows.length >= JOB_CAP,
+    jobsTruncated: jobs.state === 'truncated',
     planRecords: new Map(planDates.rows.map((row) => [String(row.id), row])),
   })
 }
@@ -204,13 +218,14 @@ router.get('/jobs/:id', async (req: Request, res: Response) => {
     if (!client) throw new Error('Database connection failed')
     const [owned, events, validations] = await Promise.all([
       job ? Promise.resolve({ rows: [{ id }], state: 'ok' as SourceState }) : readRows(client, 'migration_jobs', (q) => q.select('id').eq('user_id', user!.id).eq('id', id).limit(1)),
-      readRows(client, 'migration_events', (q) =>
-        q.select('id, event_type, severity, message, metadata, created_at').eq('user_id', user!.id).eq('migration_id', id).order('created_at', { ascending: false }).limit(200),
+      readCappedRows(client, 'migration_events', 200, (q) =>
+        q.select('id, event_type, severity, message, metadata, created_at').eq('user_id', user!.id).eq('migration_id', id).order('created_at', { ascending: false }).order('id', { ascending: false }),
       ),
-      readRows(client, 'migration_validation_logs', (q) =>
-        q.select('id, validation_type, status, agent_id, evidence, created_at').eq('user_id', user!.id).eq('migration_id', id).order('created_at', { ascending: false }).limit(100),
+      readCappedRows(client, 'migration_validation_logs', 100, (q) =>
+        q.select('id, validation_type, status, agent_id, evidence, created_at').eq('user_id', user!.id).eq('migration_id', id).order('created_at', { ascending: false }).order('id', { ascending: false }),
       ),
     ])
+    if (owned.state === 'unavailable') return res.status(503).json({ error: { code: 'JOB_READ_UNAVAILABLE', message: 'Unable to verify migration job ownership' } })
     if (!owned.rows.length) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Migration job not found' } })
     res.json({
       data: {

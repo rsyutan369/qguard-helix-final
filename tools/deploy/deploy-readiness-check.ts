@@ -25,6 +25,7 @@ import { checkProductionConfig } from '../../src/api-server/runtime/config'
 import { trustedClientIp } from '../../src/api-server/runtime/client-ip'
 import { healthProbeRoutes } from '../../src/api-server/runtime/health'
 import { beginDrain } from '../../src/api-server/runtime/lifecycle'
+import { requiredTierForPath } from '../../src/api-server/subscription-guard'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const read = (relative: string) => readFileSync(path.join(root, relative), 'utf8')
@@ -57,6 +58,17 @@ function check(name: string, condition: boolean, detail = '') {
   check('token redacted', !out.includes('eyJ') && out.includes('token=[REDACTED]'), out)
   check('benign params kept', out.includes('range=30d'), out)
   check('path without query unchanged', redactUrl('/api/v1/health') === '/api/v1/health')
+  check('SSE ticket redacted', redactUrl('/api/v1/admin/stream?ticket=fixture') === '/api/v1/admin/stream?ticket=[REDACTED]')
+}
+
+{
+  check('QKMS aliases retain Elite access requirements',
+    requiredTierForPath('/api/v1/dashboard/qkms/keys') === 'elite' && requiredTierForPath('/API/QkMs/') === 'elite')
+  check('legacy dashboard orchestration routes retain their module tiers',
+    requiredTierForPath('/api/v1/dashboard/migration-sandbox/') === 'basic' &&
+    requiredTierForPath('/api/v1/dashboard/harvest-now/defense') === 'basic' &&
+    requiredTierForPath('/api/v1/dashboard/pqc-orchestration/jobs') === 'pro')
+  check('separate dashboard paths retain access policy', requiredTierForPath('/api/v1/dashboard/qkms-other') === null)
 }
 
 // 3. Production configuration preflight ------------------------------------------

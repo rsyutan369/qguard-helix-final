@@ -22,6 +22,15 @@ export type RelayProbe =
   | { kind: "unreachable" }
   | { kind: "not_configured" };
 
+export type RelayAvailability = "available" | "unavailable" | "unknown";
+
+/** A successful health response or a transport failure can change offline routing. */
+export function relayAvailability(probe: RelayProbe): RelayAvailability {
+  if (probe.kind === "ok") return "available";
+  if (probe.kind === "unreachable") return "unavailable";
+  return "unknown";
+}
+
 /** The independent control host: reachable, not reachable, or no such host here. */
 export type ControlProbe = "reachable" | "unreachable" | "unavailable";
 
@@ -53,7 +62,7 @@ export function classifyRelayHealth(input: { online: boolean; relay: RelayProbe;
     return {
       state: "offline",
       title: "You're offline",
-      detail: "This device has no network connection. Messages won't send or arrive until it reconnects.",
+      detail: "Online messages will send and arrive after this device reconnects to the relay.",
     };
   }
   if (relay.kind === "http_error") {
@@ -126,6 +135,7 @@ export async function probeRelay(
 
 /** Event other parts of the app dispatch when the relay just failed them. */
 export const RELAY_TROUBLE_EVENT = "qguard:relay-trouble";
+export const RELAY_RECOVERED_EVENT = "qguard:relay-recovered";
 
 export function reportRelayTrouble(): void {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(RELAY_TROUBLE_EVENT));

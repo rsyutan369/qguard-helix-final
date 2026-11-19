@@ -1,0 +1,93 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Store frame</title>
+<style>
+@font-face{font-family:"Archivo";src:url("../public/fonts/archivo-latin.woff2") format("woff2");font-weight:100 900;font-stretch:62% 125%}
+:root{--ink:#f4f6ff;--sub:#b9c2e6;--violet:#8b5cf6;--blue:#3b82f6}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#070b1f;font-family:"Archivo",system-ui,sans-serif;color:var(--ink)}
+.stage{position:relative;width:1080px;height:1920px;overflow:hidden;
+ background:radial-gradient(900px 700px at 85% 8%,rgba(139,92,246,.42),transparent 60%),radial-gradient(800px 800px at 0% 70%,rgba(59,130,246,.30),transparent 62%),linear-gradient(180deg,#0b1030 0%,#070b1f 100%)}
+.grid{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:54px 54px;mask-image:linear-gradient(180deg,#000 0%,transparent 55%)}
+.copy{position:absolute;left:84px;right:84px;top:118px}
+.brand{display:flex;align-items:center;gap:14px;font-size:26px;font-weight:700;letter-spacing:.02em;color:var(--sub)}
+.brand img{width:46px;height:46px;border-radius:12px}
+h1{margin-top:34px;font-size:84px;line-height:1.02;font-weight:800;letter-spacing:-.02em;font-stretch:96%;white-space:pre-line}
+h1 em{font-style:normal;background:linear-gradient(90deg,#60a5fa,#a78bfa);-webkit-background-clip:text;background-clip:text;color:transparent}
+p.sub{margin-top:24px;font-size:33px;line-height:1.32;color:var(--sub);max-width:860px}
+.phone{position:absolute;left:50%;top:548px;width:642px;height:1350px;transform:translateX(-50%);border-radius:78px;padding:18px;
+ background:linear-gradient(145deg,#2a3150,#0d1124 45%,#232a46);box-shadow:0 0 0 2px rgba(255,255,255,.08),0 60px 120px rgba(0,0,0,.55),0 0 160px rgba(139,92,246,.25)}
+.phone .screen{position:relative;width:100%;height:100%;border-radius:62px;overflow:hidden;background:#000}
+.phone img{width:100%;height:100%;object-fit:cover;object-position:top;display:block}
+.phone .cam{position:absolute;top:16px;left:50%;width:20px;height:20px;margin-left:-10px;border-radius:50%;background:#05070f;box-shadow:inset 0 0 0 4px #141a30;z-index:2}
+/* Feature graphic */
+.feature{position:relative;width:1024px;height:500px;overflow:hidden;
+ background:radial-gradient(520px 380px at 88% 30%,rgba(139,92,246,.5),transparent 65%),radial-gradient(520px 420px at 55% 120%,rgba(59,130,246,.35),transparent 60%),linear-gradient(135deg,#0b1030,#070b1f)}
+.feature .copy{left:64px;top:92px;right:auto;width:470px}
+.feature h1{font-size:58px;margin-top:26px}
+.feature p.sub{font-size:23px;margin-top:18px}
+.feature .mini{position:absolute;width:190px;height:412px;border-radius:30px;padding:7px;background:linear-gradient(145deg,#2a3150,#0d1124);box-shadow:0 30px 60px rgba(0,0,0,.5)}
+.feature .mini div{width:100%;height:100%;border-radius:24px;overflow:hidden}
+.feature .mini img{width:100%;height:100%;object-fit:cover;object-position:top}
+/* Light theme */
+html.light,html.light body{background:#f4f6fd}
+html.light{--ink:#0d1330;--sub:#4a5378}
+html.light .stage{background:radial-gradient(900px 700px at 88% 6%,rgba(139,92,246,.22),transparent 60%),radial-gradient(800px 800px at 0% 72%,rgba(59,130,246,.18),transparent 62%),linear-gradient(180deg,#f7f8ff 0%,#eaeefc 100%)}
+html.light .feature{background:radial-gradient(520px 380px at 88% 30%,rgba(139,92,246,.28),transparent 65%),radial-gradient(520px 420px at 55% 120%,rgba(59,130,246,.2),transparent 60%),linear-gradient(135deg,#f7f8ff,#e8ecfb)}
+html.light .grid{background-image:linear-gradient(rgba(13,19,48,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(13,19,48,.05) 1px,transparent 1px)}
+html.light h1 em{background:linear-gradient(90deg,#2563eb,#7c3aed);-webkit-background-clip:text;background-clip:text}
+html.light .phone,html.light .feature .mini{background:linear-gradient(145deg,#1d2340,#0b0f22 45%,#1a2038);box-shadow:0 0 0 2px rgba(13,19,48,.08),0 50px 100px rgba(40,50,110,.28),0 0 140px rgba(124,58,237,.18)}
+/* Algorithm chips and the summary card */
+.chips{display:flex;flex-wrap:wrap;gap:10px}
+.chips.lead{margin-top:26px}
+.chip{display:inline-flex;align-items:center;gap:8px;font-size:23px;font-weight:650;letter-spacing:.005em;padding:9px 16px;border-radius:999px;color:#dcd3ff;background:rgba(139,92,246,.16);border:1.5px solid rgba(167,139,250,.35)}
+.chip::before{content:"";width:9px;height:9px;border-radius:50%;background:linear-gradient(135deg,#60a5fa,#a78bfa)}
+html.light .chip{color:#3a2a8c;background:rgba(255,255,255,.78);border-color:rgba(124,58,237,.28);box-shadow:0 2px 8px rgba(60,50,140,.08)}
+html.light .chip::before{background:linear-gradient(135deg,#2563eb,#7c3aed)}
+.cards{position:absolute;left:64px;right:64px;top:510px;display:flex;flex-direction:column;gap:24px}
+.card{padding:28px 30px;border-radius:30px;background:rgba(255,255,255,.06);border:1.5px solid rgba(167,139,250,.22)}
+html.light .card{background:rgba(255,255,255,.72);border-color:rgba(124,58,237,.16);box-shadow:0 10px 30px rgba(60,50,140,.08)}
+.card-h{display:flex;align-items:center;gap:14px;font-size:34px;font-weight:800;margin-bottom:14px}
+.card-h .dot{width:16px;height:16px;border-radius:5px;background:linear-gradient(135deg,#2563eb,#7c3aed)}
+.card .chip{font-size:21px;padding:7px 14px}
+.foot{position:absolute;left:84px;right:84px;bottom:46px;font-size:23px;line-height:1.35;color:var(--sub)}
+</style></head>
+<body>
+<script>
+const q=new URLSearchParams(location.search);
+if(q.get("theme")==="light") document.documentElement.classList.add("light");
+const logo="../brand/qguard-messaging-logo.png";
+const esc=s=>s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+// The last line of the headline gets the accent gradient.
+const headline=t=>{const lines=esc(t).split("\n");lines[lines.length-1]=`<em>${lines[lines.length-1]}</em>`;return lines.join("\n");};
+if(q.get("feature")){
+ document.body.innerHTML=`<div class="feature"><div class="grid"></div>
+ <div class="copy"><div class="brand"><img src="${logo}">Qguard Messaging</div>
+ <h1>Private today.\n<em>Quantum-safe</em> tomorrow.</h1>
+ <p class="sub">Encrypted chat, calls, vault and off-grid Mesh in one app.</p></div>
+ <div class="mini" style="left:575px;top:110px;transform:rotate(-6deg)"><div><img src="${q.get("c")}"></div></div>
+ <div class="mini" style="left:800px;top:120px;transform:rotate(6deg)"><div><img src="${q.get("b")}"></div></div>
+ <div class="mini" style="left:688px;top:62px;z-index:2"><div><img src="${q.get("a")}"></div></div></div>`;
+}else if(q.get("summary")){
+ // Feature -> algorithms, each verified against src-tauri / src (see LISTING.md).
+ const rows=JSON.parse(q.get("summary"));
+ document.body.innerHTML=`<div class="stage"><div class="grid"></div>
+ <div class="copy"><div class="brand"><img src="${logo}">Qguard Messaging</div>
+ <h1>${headline(q.get("title")||"")}</h1><p class="sub">${esc(q.get("sub")||"")}</p></div>
+ <div class="cards">${rows.map(([name,algs])=>`<div class="card"><div class="card-h"><span class="dot"></span>${esc(name)}</div><div class="chips">${algs.map(a=>`<span class="chip">${esc(a)}</span>`).join("")}</div></div>`).join("")}</div>
+ <p class="foot">${esc(q.get("foot")||"")}</p></div>`;
+}else{
+ const chips=(q.get("chips")||"").split("|").filter(Boolean);
+ document.body.innerHTML=`<div class="stage"><div class="grid"></div>
+ <div class="copy"><div class="brand"><img src="${logo}">Qguard Messaging</div>
+ <h1>${headline(q.get("title")||"")}</h1><p class="sub">${esc(q.get("sub")||"")}</p>
+ ${chips.length?`<div class="chips lead">${chips.map(c=>`<span class="chip">${esc(c)}</span>`).join("")}</div>`:""}</div>
+ <div class="phone"><div class="screen"><span class="cam"></span><img src="${q.get("img")}"></div></div></div>`;
+ if(chips.length){
+  // Fit the phone into whatever room the copy and chips leave.
+  const copy=document.querySelector(".copy"), phone=document.querySelector(".phone");
+  const top=Math.ceil(copy.getBoundingClientRect().bottom)+40, height=1895-top;
+  Object.assign(phone.style,{top:top+"px",height:height+"px",width:Math.round((height-36)*0.4613+36)+"px",borderRadius:"70px"});
+ }
+}
+</script>
+</body></html>

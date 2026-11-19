@@ -111,6 +111,8 @@ export interface FrameworkDefinition {
   /** External reference for the requirement text. */
   reference: string
   category: 'standard' | 'regulation' | 'certification' | 'directive'
+  /** Related controls are navigation aids. They cannot establish this source's status. */
+  referenceOnly?: boolean
 }
 
 export interface RequirementDefinition {
@@ -221,6 +223,7 @@ export interface ControlException {
 }
 
 export interface RequirementRecord {
+  referenceOnly?: boolean
   id: string
   frameworkId: string
   code: string
@@ -250,6 +253,7 @@ export interface FrameworkRecord {
   scope: string
   reference: string
   category: FrameworkDefinition['category']
+  referenceOnly?: boolean
   status: ControlStatus
   /** Compliance percentage over MEASURED controls in this framework. */
   score: number | null

@@ -15,6 +15,7 @@
  * loads exceljs, and one failing library can never block the other formats.
  */
 import type { InventoryReport } from '../InventoryReport'
+import { csvCell } from '@/lib/csv'
 import type { ReportTable } from '../schemas/ReportSchema'
 import { sanitizeForWinAnsi } from './pdf-text'
 
@@ -425,15 +426,10 @@ tbody tr:nth-child(even){background:#fbfdfe}
 /* CSV / JSON — kept so the existing affordances are not lost          */
 /* ------------------------------------------------------------------ */
 
-function csvCell(value: unknown): string {
-  const s = String(value ?? '')
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-}
-
 function renderCsv(report: InventoryReport): Blob {
   const lines: string[] = []
   for (const table of report.tables) {
-    lines.push(`# ${table.title}`)
+    lines.push(csvCell('# ' + table.title))
     lines.push(table.columns.map(csvCell).join(','))
     for (const row of table.rows) lines.push(row.map(csvCell).join(','))
     lines.push('')

@@ -12,6 +12,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
+  Archive,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -23,6 +24,7 @@ import {
   Layers,
   Loader2,
   Radio,
+  Trash2,
   Search,
   Server,
   ShieldAlert,
@@ -523,15 +525,24 @@ export function RegisterToolbar({
 /* Selection bar + pagination                                          */
 /* ------------------------------------------------------------------ */
 
-export function SelectionBar({ count, vulnerable, critical, onReport, onClear }: { count: number; vulnerable: number; critical: number; onReport: () => void; onClear: () => void }) {
+export function SelectionBar({ count, vulnerable, critical, onReport, onClear, onArchive, onRemove }: {
+  count: number; vulnerable: number; critical: number; onReport: () => void; onClear: () => void;
+  onArchive: () => void; onRemove: () => void;
+}) {
   if (count === 0) return null;
   return (
-    <div className="sticky bottom-4 z-30 mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--qg-amber)]/40 bg-[var(--qg-card-bg)] px-4 py-3 shadow-[0_18px_50px_rgba(0,0,0,0.35)] backdrop-blur-xl" role="region" aria-label="Selection">
+    <div className="sticky bottom-4 z-30 mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--qg-amber)]/40 bg-[var(--qg-card-bg)] px-4 py-3 shadow-[0_18px_50px_rgba(0,0,0,0.35)] backdrop-blur-xl" role="region" aria-label="Selection">
       <div className="text-[12px] text-[var(--qg-dashboard-text)]">
         <span className="font-black">{nf(count)} asset{count === 1 ? '' : 's'} selected</span>
         <span className="ml-2 text-[var(--qg-text-muted)]">{nf(vulnerable)} vulnerable component{vulnerable === 1 ? '' : 's'} · {nf(critical)} critical</span>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" onClick={onArchive} className="inline-flex items-center gap-2 rounded-md border border-[var(--qg-card-border)] px-3 py-2 text-xs font-bold hover:border-[var(--qg-amber)]">
+          <Archive className="size-4" aria-hidden /> Archive
+        </button>
+        <button type="button" onClick={onRemove} className="inline-flex items-center gap-2 rounded-md border border-red-500/30 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-500/10 dark:text-red-300">
+          <Trash2 className="size-4" aria-hidden /> Remove
+        </button>
         <button type="button" onClick={onClear} className="rounded-md px-3 py-2 text-[11px] font-black uppercase tracking-wider text-[var(--qg-text-muted)] hover:text-[var(--qg-dashboard-text)]">Clear</button>
         <button type="button" onClick={onReport} className="inline-flex items-center gap-2 rounded-md bg-[var(--qg-amber)] px-4 py-2 text-[11px] font-black uppercase tracking-wider text-[var(--qg-on-accent)] transition hover:brightness-110">
           <FileText className="h-4 w-4" aria-hidden /> Generate report

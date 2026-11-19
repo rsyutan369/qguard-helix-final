@@ -35,13 +35,20 @@ export interface AppLockStatus {
   duressConfigured: boolean;
   /** Biometric unlock is set up on this device. */
   biometricEnabled: boolean;
+  /** Which pad the lock screen shows (older cores do not report it: a PIN). */
+  method?: AppLockMethod;
 }
+
+/** How the app lock opens: a 6-digit PIN or a drawn 4 × 4 pattern. */
+export type AppLockMethod = "pin" | "pattern";
 
 export type BiometricAvailability = "available" | "none_enrolled" | "no_hardware" | "unavailable" | "unsupported";
 
 export interface BiometricStatus {
   availability: BiometricAvailability;
   enabled: boolean;
+  /** Sensors the device has: "fingerprint", "face", "iris" (Android decides which its prompt uses). */
+  modalities?: string[];
 }
 
 export interface AppLockUnlockResult {
@@ -72,8 +79,8 @@ export function useAppLock(userId: string | null) {
   }, [refresh, userId]);
 
   const setup = useCallback(
-    async (digits: number, pin: string, session: StoredSession, deviceName: string, appVersion: string) => {
-      const result = await safeInvoke<AppLockStatus>("applock_setup", { digits, pin, session, deviceName, appVersion });
+    async (digits: number, pin: string, session: StoredSession, deviceName: string, appVersion: string, method: AppLockMethod = "pin") => {
+      const result = await safeInvoke<AppLockStatus>("applock_setup", { digits, pin, session, deviceName, appVersion, method });
       setStatus(result);
       return result;
     },
@@ -135,9 +142,9 @@ export function useAppLock(userId: string | null) {
     setStatus((s) => (s ? { ...s, locked: true } : s));
   }, [enabled]);
 
-  const changePin = useCallback(async (oldPin: string, newPin: string, digits: number) => {
+  const changePin = useCallback(async (oldPin: string, newPin: string, digits: number, newMethod?: AppLockMethod) => {
     try {
-      const result = await safeInvoke<AppLockStatus>("applock_change_pin", { oldPin, newPin, digits });
+      const result = await safeInvoke<AppLockStatus>("applock_change_pin", { oldPin, newPin, digits, newMethod: newMethod ?? null });
       setStatus(result);
       return result;
     } catch (error) {
@@ -152,8 +159,8 @@ export function useAppLock(userId: string | null) {
   }, [refresh]);
 
   const reset = useCallback(
-    async (digits: number, pin: string, session: StoredSession, deviceName: string, appVersion: string) => {
-      const result = await safeInvoke<AppLockStatus>("applock_reset", { digits, pin, session, deviceName, appVersion });
+    async (digits: number, pin: string, session: StoredSession, deviceName: string, appVersion: string, method: AppLockMethod = "pin") => {
+      const result = await safeInvoke<AppLockStatus>("applock_reset", { digits, pin, session, deviceName, appVersion, method });
       setStatus(result);
       return result;
     },

@@ -646,7 +646,7 @@ export function QkmsProvenance({ telemetry }: { telemetry: QkmsTelemetryHealth |
         <span>Last scan: {relativeTime(telemetry.lastScanAt)}</span>
         <span>Last runtime event: {relativeTime(telemetry.lastRuntimeEventAt)}</span>
         <span>Last key observation: {relativeTime(telemetry.lastKeyEventAt)}</span>
-        <span>Last rotation activity: {relativeTime(telemetry.lastRotationAt)}</span>
+        <span>Last recorded key rotation: {relativeTime(telemetry.lastRotationAt)}</span>
         <span>Last policy evaluation: {relativeTime(telemetry.lastPolicyEvaluationAt)}</span>
       </div>
       {telemetry.absentSources.length ? (
@@ -780,8 +780,14 @@ export function QkmsShell({
 
       <QkmsNav counts={nav} />
 
-      {error && state === 'error' ? <QkmsError message={error} onRetry={onReconnect} /> : null}
-      {!live && state === 'success' ? <QkmsConnectionLost onReconnect={onReconnect} lastSyncedAt={generatedAt} /> : null}
+      {error ? <QkmsError message={error} onRetry={onReconnect} /> : null}
+      {!error && !live && state === 'success' ? <QkmsConnectionLost onReconnect={onReconnect} lastSyncedAt={generatedAt} /> : null}
+      {telemetry?.truncated ? (
+        <div role="status" className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">
+          Partial evidence: figures cover loaded records only.
+          {telemetry.limitedSources?.length ? ` Limited sources: ${telemetry.limitedSources.join(', ')}.` : ''}
+        </div>
+      ) : null}
       {telemetry?.degradedSources?.length ? (
         <div role="status" className="flex items-start gap-2 rounded-lg border border-[var(--qg-notice-border)] bg-[var(--qg-notice-bg)] px-3 py-2 text-[11px] leading-snug text-[var(--qg-notice-text)]">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />

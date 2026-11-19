@@ -1,0 +1,1315 @@
+# QGUARD HELIX
+## Complete Google Play Billing, Supabase & Express Subscription Architecture
+### Revised Implementation Specification — Paid Subscriptions, No Free Trial
+
+**Project:** QGUARD HELIX Messaging and Quantum Security Platform  
+**Application:** Existing Tauri 2 + Rust application  
+**Backend:** Existing Express API server  
+**Database and Identity:** Supabase Auth, PostgreSQL, RLS and Realtime  
+**Billing:** Google Play Billing for Android, with platform-specific billing integrations for other platforms  
+**Architecture principle:** Server-verified purchases and centrally managed entitlements
+
+---
+
+# 1. CONFIRMED COMMERCIAL RULES
+
+Implement the following subscription rules as authoritative business requirements.
+
+| Rule | Confirmed decision |
+|---|---|
+| Subscription model | All four tiers are paid |
+| Free tier | None |
+| Free trial | None |
+| Starter monthly | $1 |
+| Starter annually | $12 |
+| Basic monthly | $8 |
+| Basic annually | $60 |
+| Pro monthly | $30 |
+| Pro annually | $240 |
+| Elite monthly | $199 |
+| Elite annually | $1,800 |
+| Annual pricing | Separate annual charges of $12, $60, $240 and $1,800 |
+| Money-back guarantee | No QGUARD HELIX promotional money-back guarantee |
+| Cancellation | Paid access continues until the verified expiration date |
+| Downgrade | Apply the next eligible subscription entitlement according to the verified active subscription |
+| Subscription verification | Backend only |
+| Entitlement authority | Express backend and Supabase |
+| Client authority | Never authoritative for paid access |
+
+**Important refund-policy qualification:** Removing the QGUARD HELIX money-back guarantee does not override Google Play refund rights, applicable consumer protection laws, or platform refund policies. Do not advertise a blanket no-refund rule that conflicts with those requirements. Process verified refunds and revocations through the subscription lifecycle.
+
+There must be no free trial, introductory trial, trial eligibility, or automatic trial enrollment configured for these products.
+
+# 2. SUBSCRIPTION CATALOG
+
+Create the following eight subscription products in Google Play Console.
+
+| Tier | Product ID | Billing period | Price |
+|---|---|---|---:|
+| Starter | `qh_starter_monthly` | Monthly | $1 |
+| Starter | `qh_starter_yearly` | Yearly | $12 |
+| Basic | `qh_basic_monthly` | Monthly | $8 |
+| Basic | `qh_basic_yearly` | Yearly | $60 |
+| Pro | `qh_pro_monthly` | Monthly | $30 |
+| Pro | `qh_pro_yearly` | Yearly | $240 |
+| Elite | `qh_elite_monthly` | Monthly | $199 |
+| Elite | `qh_elite_yearly` | Yearly | $1,800 |
+
+These are proposed Google Play product IDs. Check the existing Play Console catalog before creating them to avoid duplicate products or conflicting identifiers.
+
+Use a consistent subscription-product and base-plan structure. Retrieve actual localized pricing, currency, formatted price, billing period, and offer details from Google Play `ProductDetails`.
+
+Do not hardcode USD checkout prices into the Android application.
+
+## Pricing rules
+
+- Monthly subscriptions renew monthly.
+- Annual subscriptions renew annually.
+- Set annual base plan prices independently of monthly prices.
+- Do not create free-trial offers.
+- Do not create introductory pricing unless a future business decision explicitly authorizes it.
+- Keep product IDs stable after release.
+- Prices must be configurable through the relevant platform catalog and backend product metadata.
+- Currency conversion and regional pricing must be controlled by the applicable billing provider.
+
+# 3. PRODUCT ENTITLEMENTS AND FEATURE ACCESS
+
+Build a centralized entitlement engine that determines what each authenticated QGUARD HELIX account can access.
+
+## 3.1 Starter — Quantum Messaging, Local Quantum Vault, Hidden Vault, OffGrid Mesh/XFER, 
+
+**Subscription:** $1/month or $12/year.
+
+Included capabilities:
+
+- Desktop and mobile application access.
+- Quantum Messaging.
+- End-to-end encrypted Secure Chat.
+- Encrypted voice and video calling.
+- Disappearing messages.
+- Multi-device trust.
+- One-tap call verification.
+- Strictly on-device Quantum Vault.
+- Local file and folder encryption into sealed, tamper-evident containers.
+- Zero-knowledge local storage.
+- Post-quantum cryptographic capabilities using correctly implemented NIST-standardized algorithms, including ML-KEM-1024 and ML-DSA.
+
+Important storage restriction:
+
+The Starter Quantum Vault is strictly local. Do not silently enable cloud storage, cloud backup, or server-side file retention as part of Starter.
+
+Do not upload vault plaintext, private keys, or locally stored files to Supabase.
+
+## 3.2 Basic — Quantum Readiness and Assessment
+
+**Subscription:** $8/month or $60/year.
+
+Included capabilities:
+
+- Include All from Starter
+- Quantum Readiness & Assessment Engine (QRAE).
+- Risk Analysis.
+- Migration Planner.
+- AI Migration Advisor.
+- AI Executive Advisor.
+- Enterprise-grade Quantum Readiness and Assessment Reports.
+
+Basic is a standalone assessment subscription. Do not automatically grant Starter's Messaging or Vault entitlements to Basic customers unless the customer also has a valid Starter subscription or another applicable higher-tier entitlement.
+
+## 3.3 Pro — Operational PQC Readiness
+
+**Subscription:** $30/month or $240/year.
+
+Included capabilities:
+
+- Include All from Basic
+- Everything in Starter and Basic.
+- Cryptographic asset discovery and monitoring.
+- Assets and CBOM Explorer.
+- Migration Planner, Timeline and Sandbox Analysis.
+- PQC-Auth Identity Migration Engine.
+- PQC orchestration.
+- Live Migration Operations.
+- Rollback functionality.
+- Runtime and Cryptographic Intelligence.
+- Supply Chain Readiness Center.
+- Harvest Now, Decrypt Later Center.
+- Trust Chain Analysis.
+- Crypto Agility Engine.
+- Email Support.
+
+Pro grants the included Starter and Basic capabilities.
+
+## 3.4 Elite — Enterprise Crypto Agility
+
+**Subscription:** $199/month or $1,800/year.
+
+Included capabilities:
+
+- Include All from Pro
+- Everything in Starter, Basic and Pro.
+- Enterprise cryptographic estate discovery and governance.
+- Full QKMS overview.
+- QKMS inventory.
+- QKMS governance.
+- QKMS readiness.
+- Email Support.
+- SOC 2 control mapping.
+- PCI DSS 4.0.1 control mapping.
+- NIST framework control mapping.
+- Custom compliance framework control mapping.
+
+Elite grants all included lower-tier capabilities.
+
+## 3.5 Entitlement matrix
+
+Maintain the Current Entitlement and Access per tier.
+
+Represent these features as explicit backend entitlements, not scattered frontend checks.
+
+# 4. REQUIRED ARCHITECTURE
+
+Preserve the existing QGUARD HELIX application architecture. Do not create a second backend, duplicate authentication system, or disconnected subscription database.
+
+The architecture must follow this flow:
+
+1. The user authenticates through existing Supabase Auth.
+2. The Android application requests the subscription catalog from Express.
+3. The native Android billing bridge retrieves Google Play product details.
+4. The customer purchases a selected subscription.
+5. The Android application submits the purchase token to Express.
+6. Express independently verifies the purchase with Google Play Developer API.
+7. Express updates the subscription records and entitlements in Supabase.
+8. The client retrieves the verified entitlement state.
+9. Features become available according to the backend response.
+10. Google Play RTDN notifications update subscriptions when renewals, cancellations, expirations, refunds, or other lifecycle events occur.
+
+**The backend is the source of truth.**
+
+A successful checkout screen, client-side flag, locally stored subscription value, or Android purchase callback alone must never authorize premium access.
+
+## 4.1 Architecture components
+
+### Android application
+
+- Existing Tauri 2 application.
+- Existing React frontend.
+- Existing shared Rust cryptographic engine.
+- Native Android Kotlin/Java billing bridge.
+- Google Play Billing Library.
+- Secure communication with the existing Express API.
+
+### Express backend
+
+- Existing API server.
+- Supabase JWT authentication middleware.
+- Subscription catalog service.
+- Google Play purchase verification service.
+- Entitlement service.
+- Subscription lifecycle service.
+- Google Play RTDN webhook.
+- Administrative subscription reporting.
+
+### Supabase
+
+- Existing authentication.
+- PostgreSQL subscription records.
+- Entitlement records.
+- Immutable billing audit events.
+- RTDN notification processing records.
+- RLS policies.
+- Realtime subscription-state updates where appropriate.
+
+### Google infrastructure
+
+- Google Play Console.
+- Google Play Billing.
+- Google Play Android Developer API.
+- Google Cloud service account.
+- Google Cloud Pub/Sub.
+- Real-time Developer Notifications (RTDN).
+
+# 5. ANDROID NATIVE BILLING INTEGRATION
+
+Do not attempt to implement the complete Google Play Billing Library directly in Rust.
+
+Use a native Android billing bridge and expose a controlled interface to the existing Tauri application.
+
+## 5.1 Native bridge
+
+Implement a dedicated native billing integration within the existing Tauri Android project.
+
+Suggested structure:
+
+`src-tauri/gen/android/app/src/main/java/.../billing/`
+
+Suggested components:
+
+- `GooglePlayBillingPlugin.kt`
+- `BillingConnectionManager.kt`
+- `BillingProductRepository.kt`
+- `BillingPurchaseManager.kt`
+- `BillingPurchaseListener.kt`
+- `BillingResultMapper.kt`
+
+Adapt the exact location and plugin registration approach to the existing Tauri project version and Android build configuration.
+
+## 5.2 Required native methods
+
+Implement:
+
+- `connectBilling()`
+- `disconnectBilling()`
+- `getSubscriptionProducts()`
+- `launchPurchase(productId, offerToken)`
+- `getExistingPurchases()`
+- `restorePurchases()`
+- `onPurchaseUpdated()`
+- `getBillingConnectionState()`
+
+Return structured responses to the React/Rust layer.
+
+Handle all relevant billing outcomes:
+
+- Purchase successful.
+- Purchase pending.
+- Purchase canceled by user.
+- Billing unavailable.
+- Network failure.
+- Product unavailable.
+- Invalid product.
+- User not eligible for selected offer.
+- Billing service disconnected.
+- Purchase already owned.
+- Verification pending.
+- Verification rejected.
+
+Do not treat a pending purchase as an active subscription.
+
+## 5.3 Purchase association
+
+Associate purchases with the authenticated QGUARD HELIX account using an appropriate obfuscated account identifier.
+
+Do not send raw user email addresses or sensitive personal information as the obfuscated identifier.
+
+Use a stable, privacy-preserving account association strategy. Validate it server-side.
+
+## 5.4 Purchase acknowledgement
+
+Initial purchases that require acknowledgement must be acknowledged within Google's required deadline after successful purchase.
+
+Prefer backend-controlled acknowledgement after successful verification and durable recording.
+
+Do not acknowledge pending purchases.
+
+Renewals do not require the same initial purchase acknowledgement flow.
+
+Ensure retries are idempotent and cannot create duplicate entitlements.
+
+# 6. EXPRESS SUBSCRIPTION API
+
+Integrate into the existing Express server.
+
+Do not create a separate subscription backend.
+
+Suggested module structure:
+
+`src/api-server/modules/subscriptions/`
+
+```text
+subscriptions/
+├── routes/
+│   ├── subscription.routes.ts
+│   └── google-play-webhook.routes.ts
+├── controllers/
+│   ├── subscription.controller.ts
+│   └── google-play-webhook.controller.ts
+├── services/
+│   ├── subscription.service.ts
+│   ├── google-play.service.ts
+│   ├── purchase-verification.service.ts
+│   ├── entitlement.service.ts
+│   ├── subscription-lifecycle.service.ts
+│   └── subscription-catalog.service.ts
+├── repositories/
+│   ├── subscription.repository.ts
+│   ├── entitlement.repository.ts
+│   └── billing-event.repository.ts
+├── validators/
+│   └── subscription.schemas.ts
+├── types/
+│   └── subscription.types.ts
+└── index.ts
+```
+
+Adapt this structure to the existing repository conventions.
+
+## 6.1 Required API endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/v1/subscriptions/catalog` | Retrieve available plans and metadata |
+| GET | `/api/v1/subscriptions/me` | Retrieve authenticated user's subscription |
+| GET | `/api/v1/subscriptions/entitlements` | Retrieve effective feature access |
+| POST | `/api/v1/subscriptions/verify` | Verify a purchase token |
+| POST | `/api/v1/subscriptions/restore` | Restore and reconcile existing purchases |
+| GET | `/api/v1/subscriptions/history` | Retrieve subscription history |
+| POST | `/api/v1/webhooks/google-play/rtdn` | Receive Google Play lifecycle notifications |
+
+All customer endpoints must use existing Supabase JWT authentication middleware.
+
+The backend must derive the user ID from the verified JWT.
+
+Never trust a `user_id` supplied by the client as the identity of the purchasing account.
+
+The RTDN endpoint must use authenticated Pub/Sub delivery or an equivalently verified Google-origin mechanism. It must not rely on a normal user JWT.
+
+## 6.2 Purchase verification
+
+When Android submits a purchase token:
+
+1. Authenticate the requesting QGUARD HELIX user.
+2. Validate the request payload.
+3. Identify the product ID.
+4. Validate the expected Android package name.
+5. Retrieve the purchase from Google Play Developer API.
+6. Use `purchases.subscriptionsv2.get` for subscription verification.
+7. Validate product and subscription state.
+8. Validate purchase timing and expiry information.
+9. Validate account association where available.
+10. Check that the token is not already associated with another account.
+11. Handle linked purchase tokens and subscription replacement.
+12. Persist the verified purchase and audit event.
+13. Recalculate effective entitlements transactionally.
+14. Acknowledge the initial purchase when required and appropriate.
+15. Return the verified subscription state.
+
+Never grant paid access based only on the product ID sent by Android.
+
+Never log raw purchase tokens.
+
+Store an encrypted purchase token when it must be retained for future server-side verification. Also maintain a separate cryptographic fingerprint for deduplication and lookup. A hash alone cannot be used to query Google again.
+
+# 7. SUPABASE DATABASE DESIGN
+
+Use the existing Supabase project and database.
+
+Before making migrations, inspect existing tables, relationships, naming conventions, policies, and indexes. Reuse or safely extend existing structures where appropriate.
+
+Do not create duplicate tables if equivalent subscription or entitlement tables already exist.
+
+## 7.1 `subscription_products`
+
+Purpose: authoritative internal catalog of subscription products.
+
+Suggested columns:
+
+- `id`
+- `product_id`
+- `tier`
+- `billing_period`
+- `platform`
+- `display_name`
+- `description`
+- `price_amount`
+- `currency`
+- `is_active`
+- `metadata`
+- `created_at`
+- `updated_at`
+
+Support the eight confirmed product IDs.
+
+Do not assume the USD display price is the user's localized checkout price. Google Play remains authoritative for its checkout price.
+
+## 7.2 `user_subscriptions`
+
+Purpose: current and historical subscription records.
+
+Suggested columns:
+
+- `id`
+- `user_id`
+- `product_id`
+- `platform`
+- `purchase_token_encrypted`
+- `purchase_token_hash`
+- `google_order_id`
+- `linked_purchase_token_hash`
+- `subscription_status`
+- `purchase_time`
+- `start_time`
+- `expiry_time`
+- `auto_renew_enabled`
+- `cancel_reason`
+- `acknowledgement_state`
+- `verification_state`
+- `last_verified_at`
+- `created_at`
+- `updated_at`
+
+Add appropriate uniqueness constraints and indexes.
+
+A purchase token must not be assigned to multiple unrelated QGUARD HELIX accounts.
+
+## 7.3 `user_entitlements`
+
+Purpose: store the effective access granted to a user.
+
+Suggested columns:
+
+- `id`
+- `user_id`
+- `entitlement_key`
+- `is_enabled`
+- `source_subscription_id`
+- `valid_from`
+- `valid_until`
+- `metadata`
+- `created_at`
+- `updated_at`
+
+Examples of entitlement keys:
+
+```text
+quantum_messaging
+quantum_vault_local
+secure_chat
+encrypted_voice_calls
+encrypted_video_calls
+disappearing_messages
+multi_device_trust
+Offgrid Mesh and XFER
+qrae
+risk_analysis
+migration_planner
+ai_migration_advisor
+ai_executive_advisor
+assessment_reports
+crypto_asset_discovery
+cbom_explorer
+pqc_auth
+pqc_orchestration
+live_migration
+rollback_operations
+runtime_crypto_intelligence
+supply_chain_readiness
+hndl_center
+trust_chain_analysis
+crypto_agility
+qkms
+compliance_control_mapping
+```
+
+Use a deterministic entitlement calculation service rather than relying on the client to combine tier names.
+
+## 7.4 `subscription_events`
+
+Purpose: immutable audit trail.
+
+Record:
+
+- Purchase initiated.
+- Purchase verified.
+- Purchase rejected.
+- Purchase acknowledged.
+- Subscription renewed.
+- Subscription canceled.
+- Subscription expired.
+- Subscription placed on hold.
+- Subscription recovered.
+- Subscription refunded.
+- Subscription revoked.
+- Subscription changed.
+- Entitlement granted.
+- Entitlement removed.
+- Restore initiated.
+- Restore completed.
+- Verification failure.
+
+Include timestamps, user association where known, provider event identifiers, relevant product identifiers, and safe diagnostic metadata.
+
+Do not store raw payment credentials or raw purchase tokens in event metadata.
+
+## 7.5 `billing_notification_inbox`
+
+Purpose: reliable RTDN processing and deduplication.
+
+Suggested columns:
+
+- `id`
+- `provider`
+- `message_id`
+- `notification_type`
+- `purchase_token_hash`
+- `payload_metadata`
+- `processing_status`
+- `attempt_count`
+- `received_at`
+- `processed_at`
+- `last_error`
+
+Create a unique constraint for provider notification message IDs to prevent duplicate processing.
+
+Retain only the information needed for audit, reconciliation, and debugging. Apply an appropriate retention policy.
+
+# 8. SUPABASE SECURITY AND RLS
+
+Security requirements:
+
+1. Enable RLS on exposed subscription and entitlement tables.
+2. Authenticated users may read only their own permitted subscription and entitlement information.
+3. Clients must not insert, update, or delete paid entitlements.
+4. Clients must not directly set subscription status to `active`.
+5. Clients must not modify product pricing or billing status.
+6. Backend privileged operations must use the existing secure server-side Supabase configuration.
+7. Never expose the Supabase service-role key in Tauri, Rust, React, Android, desktop builds, or browser bundles.
+8. Continue using authenticated Supabase user JWTs for user-owned operations that require RLS.
+9. Restrict administrative subscription operations to authorized admin roles.
+10. Record administrative entitlement changes in the audit trail.
+
+Do not weaken existing RLS policies while adding subscription functionality.
+
+# 9. ENTITLEMENT ENGINE AND SUBSCRIPTION PRIORITY
+
+Build one reusable backend entitlement service.
+
+Suggested interface:
+
+```typescript
+getUserEntitlements(userId)
+calculateEffectiveEntitlements(userId)
+reconcileUserSubscription(userId)
+hasEntitlement(userId, entitlementKey)
+```
+
+All feature access decisions must use this service or an equivalent centralized authorization layer.
+
+## 9.1 Tier inheritance
+
+- Starter grants Starter features.
+- Basic grants Basic assessment features only.
+- Pro grants Starter, Basic, and Pro features.
+- Elite grants Starter, Basic, Pro, and Elite features.
+
+## 9.2 Multiple subscriptions
+
+Support multiple independently purchased subscriptions if the business permits them.
+
+Calculate effective entitlements as the union of the capabilities granted by all valid subscriptions, subject to the defined product rules.
+
+Example:
+
+- Active Starter + active Basic = Messaging, Audio/Video Calls, Hidden Vault, Offgrid Mesh and XFER and assessment features.
+- Active Pro = Starter + Basic + Pro features.
+- Active Elite = all tier capabilities.
+
+Do not automatically assume that a customer owns a lower paid tier merely because they previously purchased it.
+
+## 9.3 Critical expiry and downgrade rules
+
+**There is no free Starter entitlement.**
+
+When a paid subscription expires:
+
+- If an active Pro subscription expires and the user has a separate active Starter subscription, retain Starter capabilities.
+- If an active Elite subscription expires and the user has an active Pro subscription, retain Pro capabilities.
+- If a higher subscription expires and another independently valid subscription grants lower-tier features, retain those lower-tier capabilities.
+- If Starter expires and there is no other active subscription granting Starter capabilities, revoke Starter's paid features.
+- If Basic expires and there is no other active subscription granting Basic capabilities, revoke Basic features.
+- If no valid paid subscription remains, grant no paid-tier entitlements.
+
+Keep the QGUARD HELIX account and authentication separate from subscription access. An expired subscriber should not automatically lose their account or historical billing records.
+
+Do not delete a user's local Quantum Vault files when their subscription expires. Subscription expiration must never trigger destructive local data deletion. Handle local data access, export, and retention according to a clearly defined product policy.
+
+# 10. CANCELLATION, RENEWAL AND EXPIRATION
+
+Implement cancellation as a scheduled end of paid access, not immediate revocation.
+
+## 10.1 User cancels renewal
+
+When Google Play confirms cancellation:
+
+- Update `auto_renew_enabled` to false.
+- Record cancellation details.
+- Preserve the verified expiry timestamp.
+- Keep the existing entitlements active until the paid-through expiry date.
+- Display the cancellation state to the user.
+- Display the verified expiration date.
+- Do not immediately downgrade the customer.
+
+## 10.2 Subscription expires
+
+When the provider confirms expiration:
+
+- Mark the subscription expired.
+- Recalculate the user's effective entitlements.
+- Remove entitlements no longer supported by another valid subscription.
+- Preserve any remaining valid subscription entitlements.
+- Notify the frontend of the updated state.
+- Record an immutable lifecycle event.
+
+## 10.3 Renewal succeeds
+
+When a renewal is verified:
+
+- Update the subscription expiry.
+- Update auto-renew state.
+- Record the renewal event.
+- Recalculate entitlements.
+- Keep the user’s access uninterrupted.
+
+## 10.4 Payment failures and grace periods
+
+Respect Google's verified subscription state.
+
+Handle:
+
+- In grace period.
+- On hold.
+- Recovered.
+- Expired.
+- Revoked.
+
+Do not infer access eligibility from a failed client-side payment attempt.
+
+Apply the correct provider-defined access behavior for each state and keep the database synchronized with the latest authoritative Google subscription information.
+
+## 10.5 Refunds and revocations
+
+There is no promotional money-back guarantee.
+
+Nevertheless, implement provider refund and revocation handling:
+
+- Receive the relevant notification.
+- Verify current subscription state with Google.
+- Record the event.
+- Recalculate entitlements.
+- Revoke access when the verified provider state requires it.
+- Maintain a complete audit record.
+
+Never reject a legitimate provider refund event merely because QGUARD HELIX does not offer a money-back guarantee.
+
+# 11. GOOGLE PLAY REAL-TIME DEVELOPER NOTIFICATIONS
+
+Implement Google Play RTDN using Google Cloud Pub/Sub.
+
+Required processing flow:
+
+Google Play → Pub/Sub → Authenticated Express Webhook → Notification Inbox → Google Play Developer API → Supabase → Entitlement Reconciliation.
+
+The webhook must:
+
+1. Verify authenticated Pub/Sub delivery.
+2. Validate the incoming notification structure.
+3. Extract the purchase token securely.
+4. Calculate its token fingerprint.
+5. Deduplicate using the Pub/Sub message ID.
+6. Persist the notification before acknowledging successful processing.
+7. Query Google Play for the authoritative current subscription state.
+8. Update subscription records.
+9. Recalculate effective entitlements.
+10. Record an audit event.
+11. Mark processing complete.
+
+Handle retryable failures and permanent failures separately.
+
+Implement idempotency, retry handling, dead-letter processing, and monitoring for unprocessed notifications.
+
+RTDN messages are triggers to re-query Google, not a replacement for purchase verification.
+
+Support applicable subscription lifecycle events, including:
+
+- Initial purchase.
+- Renewal.
+- Cancellation.
+- Expiration.
+- Grace period.
+- Account hold.
+- Recovery.
+- Revocation.
+- Refund.
+- Subscription replacement or plan change.
+
+# 12. SUBSCRIPTION RESTORE AND MULTI-DEVICE ACCESS
+
+Implement restore functionality.
+
+When a customer signs in on another Android device:
+
+1. Authenticate the existing QGUARD HELIX account.
+2. Query existing Google Play purchases through the native billing bridge.
+3. Submit relevant purchase tokens for backend verification.
+4. Validate the account association and token ownership.
+5. Reconcile existing subscriptions.
+6. Return the effective entitlement state.
+
+Restoring purchases must not create duplicate subscriptions or duplicate entitlement records.
+
+The same QGUARD HELIX account must receive consistent entitlements across supported devices.
+
+A Google Play purchase should be verified through Google. Apple purchases must be verified through Apple's platform verification mechanisms. Other permitted billing channels must have their own verified provider integration.
+
+All verified purchases feed the same centralized QGUARD HELIX entitlement engine.
+
+Do not use a web payment provider as an unauthorized substitute for Google Play Billing inside the Play-distributed Android application.
+
+# 13. FRONTEND SUBSCRIPTION EXPERIENCE
+
+Implement the subscription UI within the existing React application.
+
+Suggested components:
+
+```text
+subscriptions/
+├── SubscriptionPage.tsx
+├── SubscriptionCatalog.tsx
+├── SubscriptionPlanCard.tsx
+├── SubscriptionCheckout.tsx
+├── SubscriptionStatus.tsx
+├── SubscriptionHistory.tsx
+├── RestorePurchases.tsx
+├── SubscriptionManagement.tsx
+├── BillingErrorState.tsx
+└── subscriptionService.ts
+```
+
+Adapt to the existing frontend conventions rather than creating duplicate components.
+
+## 13.1 Subscription plan cards
+
+Display the actual four tiers:
+
+- Starter — $1/month; $12/year.
+- Basic — $8/month; $60/year.
+- Pro — $30/month; $240/year.
+- Elite — $199/month; $1,800/year.
+
+Use the existing QGUARD HELIX visual identity.
+
+Include:
+
+- Monthly/annual selection.
+- Feature comparison.
+- Current subscription status.
+- Selected plan.
+- Localized checkout price.
+- Billing period.
+- Renewal information.
+- Cancellation information.
+- Purchase confirmation.
+- Restore purchases.
+- Subscription management.
+
+Do not display a free trial or 7-day money-back guarantee.
+
+Use the applicable monthly and yearly prices when comparing billing periods. Display the localized Play price on Android when available.
+
+## 13.2 Subscription status screen
+
+Show actual backend-verified data:
+
+- Current plan.
+- Billing period.
+- Subscription provider.
+- Subscription status.
+- Purchase date.
+- Next renewal date, if applicable.
+- Expiration date.
+- Auto-renew status.
+- Cancellation status.
+- Effective entitlements.
+- Restore status.
+
+For a canceled subscription that remains active until expiry, clearly display:
+
+"Your subscription is canceled and will remain active until [verified expiry date]."
+
+Do not display a false expiration or renewal date.
+
+## 13.3 Feature access
+
+Frontend route protection is for user experience only.
+
+The backend must independently enforce access on every protected API operation.
+
+Do not rely on:
+
+- `localStorage` premium flags.
+- Hardcoded plan names.
+- Client-side subscription booleans.
+- Manually editable React state.
+- Unsigned local subscription JSON.
+- Unverified cached subscription data.
+
+A cached entitlement state may support display or offline UX, but it must never authorize a protected server-side operation without an acceptable authorization decision.
+
+# 14. ADMINISTRATION DASHBOARD AND REVENUE MANAGEMENT
+
+Integrate subscription management into the existing QGUARD HELIX administration dashboard.
+
+Suggested route:
+
+`/dashboard/admin/subscriptions`
+
+Audit the existing admin dashboard and reuse its authentication, role checks, API patterns, and UI components.
+
+## 14.1 Required live metrics
+
+Display:
+
+- Total registered customers.
+- Active paid subscribers.
+- Starter subscribers.
+- Basic subscribers.
+- Pro subscribers.
+- Elite subscribers.
+- Monthly subscriptions.
+- Annual subscriptions.
+- Monthly recurring revenue (MRR).
+- Annual recurring revenue (ARR).
+- New subscriptions.
+- Renewals.
+- Cancellations.
+- Expired subscriptions.
+- Refunds.
+- Revocations.
+- Payment issues.
+- Verification failures.
+- RTDN processing status.
+- Pending notifications.
+- Billing reconciliation errors.
+
+## 14.2 Revenue calculations
+
+Implement accurate subscription revenue calculations.
+
+- MRR must normalize annual subscriptions to a monthly equivalent.
+- ARR must normalize monthly subscriptions to a yearly equivalent.
+- Separate gross billed revenue from estimated recurring revenue.
+- Exclude canceled subscriptions from future recurring revenue after their verified paid-through period.
+- Handle refunds and revoked purchases appropriately.
+- Distinguish actual collected revenue from estimated revenue.
+- Account for platform fees, taxes, currency conversion, and payout timing when presenting net revenue.
+
+Do not treat a subscription's full annual payment as monthly revenue.
+
+Do not use hardcoded revenue, mock subscriber counts, fabricated renewals, or simulated payment events.
+
+Clearly label estimates and actual financial records.
+
+## 14.3 Admin actions
+
+Provide secure actions for:
+
+- Viewing a customer's subscription history.
+- Viewing current entitlements.
+- Reviewing purchase verification.
+- Viewing billing events.
+- Investigating RTDN errors.
+- Running a subscription reconciliation.
+- Reviewing refund and revocation events.
+- Performing explicitly authorized administrative corrections.
+
+Require role-based authorization and audit every administrative action.
+
+Do not provide an unrestricted button that lets an administrator silently grant paid access without an auditable reason and authorization.
+
+# 15. REALTIME BACKEND-TO-FRONTEND SYNCHRONIZATION
+
+Use the existing Express, Supabase Realtime, and application event architecture.
+
+When a verified subscription change occurs:
+
+1. Update Supabase transactionally.
+2. Recalculate effective entitlements.
+3. Publish or expose the new verified state through the existing realtime mechanism.
+4. Notify connected devices where appropriate.
+5. Refresh the frontend subscription state.
+6. Re-evaluate feature access.
+
+Use existing hooks, API clients, SSE, WebSocket, or Supabase Realtime patterns where already implemented.
+
+Do not introduce duplicate realtime channels or competing sources of truth.
+
+Do not generate fake subscription events to make the dashboard appear active.
+
+The database must remain the durable source of subscription records and entitlement state.
+
+# 16. SECURITY REQUIREMENTS
+
+Implement the following protections:
+
+- Never embed Google service-account credentials in the Android APK.
+- Never expose private service credentials to React or Rust frontend code.
+- Never accept client-reported subscription status as authoritative.
+- Never allow client writes to paid entitlement records.
+- Never log raw Google Play purchase tokens.
+- Encrypt retained purchase tokens at rest.
+- Use token fingerprints for deduplication.
+- Verify the Android package name.
+- Verify the product ID and provider state.
+- Prevent purchase-token ownership conflicts.
+- Handle linked purchase tokens during plan replacement.
+- Use authenticated Pub/Sub delivery.
+- Apply rate limiting to purchase verification endpoints.
+- Validate and sanitize all API inputs.
+- Protect webhook endpoints against spoofing and replay.
+- Apply strict authorization to administrative endpoints.
+- Record subscription lifecycle events.
+- Use idempotent purchase and webhook processing.
+- Use database transactions for related subscription and entitlement updates.
+- Avoid exposing payment-provider secrets or internal diagnostic details to users.
+
+Use the existing Supabase authentication and authorization architecture.
+
+# 17. GOOGLE PLAY CONSOLE CONFIGURATION
+
+Inspect the current Google Play Console setup before making changes.
+
+Required configuration:
+
+1. Confirm the Android application package name.
+2. Create or verify the four subscription tiers and eight billing products.
+3. Configure monthly and annual base plans.
+4. Configure the exact intended prices.
+5. Do not create free trials.
+6. Do not create introductory offers.
+7. Configure applicable regional pricing.
+8. Enable Google Play Android Developer API.
+9. Create a dedicated Google Cloud service account.
+10. Grant the minimum required Play Console permissions.
+11. Configure secure server-side credentials.
+12. Create a Pub/Sub topic.
+13. Grant the required publishing permission to Google Play.
+14. Configure RTDN in Play Console.
+15. Configure authenticated push delivery to Express.
+16. Configure retry and dead-letter handling.
+17. Add license testers.
+18. Test purchases through internal testing before production.
+
+Do not assume a product is available for production simply because it exists in the source code. Verify its Play Console activation and availability.
+
+# 18. TESTING AND VALIDATION
+
+Implement comprehensive automated and manual tests.
+
+## 18.1 Billing tests
+
+Test all eight products:
+
+- Starter monthly.
+- Starter annual.
+- Basic monthly.
+- Basic annual.
+- Pro monthly.
+- Pro annual.
+- Elite monthly.
+- Elite annual.
+
+Validate:
+
+- Successful purchase.
+- User cancellation of checkout.
+- Pending payment.
+- Failed payment.
+- Duplicate verification.
+- Restore purchases.
+- Invalid purchase token.
+- Wrong package name.
+- Wrong product ID.
+- Purchase token belonging to another account.
+- Initial acknowledgement.
+- Renewal.
+- Subscription cancellation.
+- Expiration.
+- Grace period.
+- Account hold.
+- Recovery.
+- Refund.
+- Revocation.
+- Plan replacement.
+
+## 18.2 Entitlement tests
+
+Test the following cases:
+
+**Starter active**
+
+- Messaging access granted.
+- Local Quantum Vault access granted.
+- Hidden Vault, Offgrid Mesh and XFER
+- Basic, Pro, and Elite features denied.
+
+**Basic active only**
+
+- QRAE access granted.
+- Assessment features granted.
+- Starter Messaging and Vault denied.
+- Pro and Elite capabilities denied.
+
+**Pro active**
+
+- Starter features granted.
+- Basic features granted.
+- Pro features granted.
+- Elite-only QKMS and compliance control mapping denied.
+
+**Elite active**
+
+- All tier capabilities granted.
+
+**Pro canceled but not expired**
+
+- Pro access remains active.
+- Auto-renew is disabled.
+- The verified expiration date is displayed.
+
+**Pro expired with an independently active Starter subscription**
+
+- Pro and Basic-only capabilities are removed unless separately entitled.
+- Starter features remain available.
+
+**Pro expired with no other active subscription**
+
+- All paid entitlements are removed.
+
+**Elite expired with an independently active Pro subscription**
+
+- Elite-only features are removed.
+- Pro and inherited lower-tier features remain available.
+
+**Starter expired with no other qualifying subscription**
+
+- Messaging and paid Vault entitlements are removed.
+- Account identity and billing history remain available.
+- Local user files are not automatically deleted.
+
+## 18.3 Security tests
+
+Validate:
+
+- RLS isolation between users.
+- No client entitlement escalation.
+- No service-role credential leakage.
+- No token leakage in logs.
+- Webhook authentication.
+- Duplicate webhook handling.
+- Replay protection.
+- Purchase-token ownership.
+- Admin authorization.
+- Transactional entitlement consistency.
+
+## 18.4 Frontend tests
+
+Verify every subscription tab, action, button, status label, and billing flow.
+
+Ensure:
+
+- Product cards display actual catalog data.
+- Billing period selection works.
+- Purchase status updates correctly.
+- Errors are visible and actionable.
+- Restore works.
+- Subscription status updates in real time.
+- Expiration and cancellation are correctly represented.
+- Feature access updates after backend verification.
+- Desktop and Android interfaces remain consistent.
+
+# 19. IMPLEMENTATION PHASES
+
+Follow these phases in order.
+
+### Phase 1 — Repository and architecture audit
+
+Inspect the complete existing repository.
+
+Identify:
+
+- Current Tauri version.
+- Rust application architecture.
+- Android native project structure.
+- Existing Express API.
+- Existing Supabase clients.
+- Existing authentication middleware.
+- Existing database schema.
+- Existing admin dashboard.
+- Existing frontend subscription or billing code.
+- Existing realtime infrastructure.
+
+Produce an audit of existing components and reuse opportunities.
+
+Do not start by generating duplicate systems.
+
+### Phase 2 — Supabase subscription foundation
+
+- Create or safely extend subscription tables.
+- Add indexes and constraints.
+- Implement RLS policies.
+- Add product catalog records.
+- Implement subscription repository.
+- Implement entitlement calculation.
+- Add immutable audit events.
+
+### Phase 3 — Express subscription services
+
+- Implement catalog endpoint.
+- Implement authenticated subscription endpoints.
+- Implement Google Play API integration.
+- Implement purchase verification.
+- Implement secure token storage.
+- Implement acknowledgement.
+- Implement entitlement reconciliation.
+
+### Phase 4 — Native Android billing
+
+- Integrate the Google Play Billing Library.
+- Implement the Kotlin billing bridge.
+- Register the bridge in Tauri.
+- Connect React/Rust to the bridge.
+- Implement product retrieval.
+- Implement purchase flow.
+- Implement restore flow.
+- Handle billing errors and pending purchases.
+
+### Phase 5 — RTDN integration
+
+- Configure Pub/Sub.
+- Implement authenticated webhook.
+- Implement notification inbox.
+- Implement deduplication.
+- Implement lifecycle reconciliation.
+- Add retry and dead-letter handling.
+
+### Phase 6 — Subscription frontend
+
+- Implement the four subscription cards.
+- Implement monthly and annual selection.
+- Display localized prices.
+- Implement checkout status.
+- Implement restore.
+- Implement subscription management.
+- Implement entitlement-aware feature access.
+
+### Phase 7 — Admin and revenue dashboard
+
+- Implement live subscription metrics.
+- Implement MRR and ARR.
+- Implement lifecycle reporting.
+- Implement event history.
+- Implement reconciliation monitoring.
+- Implement audited administrative actions.
+
+### Phase 8 — End-to-end verification
+
+- Test all eight products.
+- Test all subscription lifecycle scenarios.
+- Test multiple devices.
+- Test entitlement inheritance.
+- Test cancellation and expiration.
+- Test refund and revocation events.
+- Test RLS and security.
+- Test admin reporting.
+- Test realtime updates.
+
+### Phase 9 — Release preparation
+
+- Verify Play Console configuration.
+- Verify product activation.
+- Verify service-account permissions.
+- Verify RTDN delivery.
+- Verify production environment variables.
+- Verify secure logging.
+- Verify database migrations.
+- Verify Android release build.
+- Verify subscription purchase and restore using the appropriate testing tracks.
+
+Do not deploy incomplete billing functionality to production.
+
+# 20. REQUIRED ENGINEERING RULES
+
+These requirements are mandatory throughout implementation:
+
+1. Preserve the existing QGUARD HELIX codebase and architecture.
+2. Inspect before modifying.
+3. Reuse existing Supabase clients, API clients, authentication, hooks, and realtime mechanisms.
+4. Do not create duplicate backend services.
+5. Do not create duplicate subscription tables.
+6. Do not break existing Secure Chat, Quantum Vault, OFFGRID MESH, XFER, or other existing application capabilities.
+7. Do not replace the shared Rust cryptographic engine.
+8. Do not introduce mock purchases, mock revenue, fake subscriber counts, random telemetry, or fabricated subscription events.
+9. Do not hardcode paid access in the frontend.
+10. Do not grant a free Starter tier.
+11. Do not add a free trial.
+12. Do not advertise a 7-day money-back guarantee.
+13. Do not immediately revoke access when a customer cancels renewal.
+14. Do not grant Starter after expiry unless another valid subscription grants it.
+15. Do not delete local Quantum Vault data due to subscription expiry.
+16. Do not expose service credentials in client builds.
+17. Do not bypass Google Play Billing policies.
+18. Do not mark a task complete without implementation and verification evidence.
+
+# 21. FINAL DELIVERABLES
+
+At completion, provide:
+
+1. Repository architecture audit.
+2. Updated architecture diagram.
+3. Supabase migration files.
+4. RLS policies.
+5. Subscription product catalog implementation.
+6. Entitlement engine.
+7. Express API implementation.
+8. Google Play verification integration.
+9. Secure purchase-token handling.
+10. Native Android Billing bridge.
+11. Tauri integration.
+12. Purchase and restore frontend.
+13. RTDN webhook implementation.
+14. Lifecycle reconciliation implementation.
+15. Subscription status and management UI.
+16. Admin subscription dashboard.
+17. MRR and ARR calculations.
+18. Automated test suite.
+19. End-to-end test results.
+20. Security validation results.
+21. Deployment and Google Play Console configuration instructions.
+22. List of incomplete work, blockers, and required external configuration.
+
+For each completed phase, provide:
+
+- Files created.
+- Files modified.
+- Database migrations applied or prepared.
+- APIs implemented.
+- Tests executed.
+- Actual test results.
+- Outstanding issues.
+
+Do not claim successful Google Play purchases, production RTDN delivery, or live payment processing unless those operations have actually been configured and verified.
+
+---
+
+# FINAL ACCEPTANCE CRITERIA
+
+The implementation is complete only when:
+
+- All four tiers are paid subscriptions.
+- All eight monthly and annual billing products are supported.
+- No free trials are configured.
+- Annual pricing matches the confirmed prices.
+- No QGUARD HELIX money-back guarantee is displayed.
+- Google Play purchases are independently verified by Express.
+- Supabase records accurately reflect provider subscription status.
+- Entitlements are calculated centrally and consistently.
+- Canceled subscriptions remain active until their verified paid-through expiry.
+- Expired subscriptions lose only the entitlements no longer supported by another valid subscription.
+- There is no automatic free Starter access.
+- Local Quantum Vault data is not deleted upon subscription expiration.
+- RTDN updates are authenticated, durable, idempotent, and monitored.
+- The admin dashboard displays actual backend-derived subscription and revenue data.
+- All protected backend features enforce entitlements server-side.
+- Existing QGUARD HELIX functionality remains intact.
+
+**The final objective is a production-grade, secure, auditable, multi-platform subscription system for QGUARD HELIX, with Google Play Billing integrated into the existing Tauri + Rust application, Express backend, and Supabase infrastructure.**

@@ -80,11 +80,11 @@ export default function QkmsGovernance() {
       icon={Gavel}
       title="QKMS"
       accent="Governance"
-      subtitle="The policies in force, every key that violates one, where key material actually lives, and what entropy it was generated from."
+      subtitle="Evaluate configured rules against recorded key metadata, custody reports and entropy evidence."
       live={live}
       state={state}
       error={error}
-      hasData={data?.hasData ?? false}
+      hasData={Boolean(data)}
       generatedAt={data?.generatedAt ?? null}
       verifiedAt={verifiedAt}
       latestEvidenceAt={data?.latestEvidenceAt ?? null}
@@ -189,12 +189,14 @@ export default function QkmsGovernance() {
                     title={policy.compliance === null
                       ? policy.evaluation === 'disabled'
                         ? 'This policy is disabled, so it evaluated no key. That is not 100% compliance.'
-                        : 'No key falls inside this policy\'s scope, so nothing was evaluated. That is not 100% compliance.'
-                      : `${policy.keysInScope - Math.min(policy.keysInScope, policy.violations)} of ${policy.keysInScope} in-scope key(s) satisfy this policy.`}
+                        : policy.evaluation === 'no-keys-in-scope'
+                          ? 'No operational key falls inside this policy’s scope.'
+                          : 'Some keys are missing the evidence needed to evaluate every configured rule.'
+                      : `${policy.compliance}% of ${policy.keysInScope} in-scope keys passed the configured metadata rules.`}
                   >
-                    <div className="text-[9px] font-black uppercase tracking-wider text-white/35">Compliance</div>
+                    <div className="text-[9px] font-black uppercase tracking-wider text-white/35">Policy pass rate</div>
                     {policy.compliance === null ? (
-                      <div className="font-mono text-[11px] font-black uppercase tracking-wide text-white/40">Not evaluated</div>
+                      <div className="font-mono text-[11px] font-black uppercase tracking-wide text-white/40">{policy.evaluation === 'evaluated' ? 'Evidence needed' : 'Not evaluated'}</div>
                     ) : (
                       <div className={`font-mono text-[13px] font-black ${policy.compliance >= 95 ? 'text-emerald-300' : policy.compliance >= 70 ? 'text-amber-300' : 'text-red-300'}`}>{policy.compliance}%</div>
                     )}
@@ -213,7 +215,7 @@ export default function QkmsGovernance() {
                   {policy.requireOwner ? <Pill tone="neutral">Owner required</Pill> : null}
                   {policy.requireHsm ? <Pill tone="neutral">HSM required</Pill> : null}
                   {policy.requirePqc ? <Pill tone="neutral">PQC required</Pill> : null}
-                  {!policy.allowExport ? <Pill tone="neutral">Export blocked</Pill> : null}
+                  {!policy.allowExport ? <Pill tone="neutral">Policy prohibits export</Pill> : null}
                   {policy.rotationIntervalDays ? <Pill tone="neutral">Rotate {policy.rotationIntervalDays}d</Pill> : null}
                   {policy.maxKeyAgeDays ? <Pill tone="neutral">Max age {policy.maxKeyAgeDays}d</Pill> : null}
                 </div>

@@ -239,6 +239,8 @@ export function useMigrationPlan() {
     state: resource.state,
     error: resource.error,
     sseConnected: resource.sseConnected,
+    transport: resource.transport,
+    lastVerifiedAt: resource.lastVerifiedAt,
     refresh: resource.refresh,
   };
 }

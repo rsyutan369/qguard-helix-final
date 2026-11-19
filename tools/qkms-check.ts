@@ -37,7 +37,8 @@
 
 import { buildQkmsIntelligence, type QkmsInputs } from '../src/lib/qkms/intelligence'
 import { classifyKey } from '../src/lib/qkms/classify'
-import { RISK_WEIGHTS } from '../src/lib/qkms/types'
+import { QKMS_MODES, RISK_WEIGHTS } from '../src/lib/qkms/types'
+import { projectQkmsView } from '../src/api-server/qkms-dashboard'
 
 let failures = 0
 function assert(condition: boolean, label: string, extra = '') {
@@ -192,7 +193,7 @@ console.log('1. PQC signature algorithms are not "weak"')
   assert(k1?.posture === 'post-quantum', 'ML-DSA-65 classified post-quantum', `got ${k1?.posture}`)
   assert(k1?.migrationRequirement === 'none', 'ML-DSA-65 requires no migration', `got ${k1?.migrationRequirement}`)
   assert(k1?.rotation !== 'overdue', 'ML-DSA-65 is not forced overdue', `got ${k1?.rotation}`)
-  for (const algorithm of ['ML-DSA-44', 'ML-DSA-87', 'SLH-DSA', 'SLH-DSA-SHA2-128s', 'ML-KEM-768']) {
+  for (const algorithm of ['ML-DSA-44', 'ML-DSA-87', 'SLH-DSA-SHA2-128s', 'ML-KEM-768']) {
     const classified = classifyKey(algorithm)
     assert(classified.posture === 'post-quantum' && !classified.deprecated, `${algorithm} is post-quantum and not deprecated`, classified.posture)
   }
@@ -412,7 +413,7 @@ console.log('\n11. Runtime usage is attributed, never broadcast')
   const ssh = model.keys.find((key) => key.algorithm === 'Ed25519')
   assert(ssh?.runtimeUsage === null || ssh?.runtimeUsage === 0, 'a key on an asset with no matching events is 0 or null, never inflated', `got ${ssh?.runtimeUsage}`)
   const signing = byAlias('payments-signing')
-  assert(signing?.runtimeUsage === 0, 'the ML-DSA key on a1 gets none of the AES events', `got ${signing?.runtimeUsage}`)
+  assert(signing?.runtimeUsage === null, 'runtime usage is withheld when more than one ML-DSA key shares the same asset and parameter set', `got ${signing?.runtimeUsage}`)
   assert(model.keys.every((key) => key.runtimeUsage === null || key.runtimeUsage <= inputs.runtimeEvents.length), 'no key claims more events than exist')
   // "Unused" requires measurement to have happened.
   assert(model.lifecycle.attention.unused.every((id) => model.keys.find((k) => k.id === id)?.runtimeUsage === 0), 'only measured-zero keys are reported unused')
@@ -475,6 +476,42 @@ console.log('\n15. An empty tenant produces an honest zero state')
   assert(empty.readiness.gate.state === 'NOT_READY', 'the gate is NOT_READY, never READY or MIGRATED', empty.readiness.gate.state)
   assert(empty.governance.entropy.status === 'not-available', 'entropy is not-available')
   assert(empty.telemetry.pipelineStatus === 'no-sources', 'the pipeline says it has no sources')
+}
+
+console.log('\nAudit regressions: parameter sets, work-order attestations, and route consistency')
+for (const algorithm of ['SLH-DSA', 'Kyber768', 'Dilithium3', 'SPHINCS+', 'ML-KEM-999', 'ML-DSA-128']) {
+  assert(classifyKey(algorithm).posture === 'unknown', `${algorithm} is not counted as a final FIPS parameter set`)
+}
+assert(classifyKey('ML-KEM-1024').family === 'ML-KEM-1024', 'distinct key establishment parameter sets are retained')
+assert(classifyKey('Ed25519 + ML-DSA-65').keyClass === 'signature', 'a signature hybrid is not a key establishment scheme')
+{
+  const id = '22222222-2222-4222-8222-222222222222'
+  const ref = `key:qkms:${id}`
+  const audited = buildQkmsIntelligence({
+    ...inputs,
+    qkmsKeys: inputs.qkmsKeys.map((row) => row.id === id ? { ...row, version: 9, last_rotated_at: at(-1) } : row),
+    qkmsRotationJobs: [{ id: 'note-only', key_ref: ref, status: 'completed', validation_status: 'passed', validation_detail: 'Operator note', completed_at: at(-1), new_version: 9 }],
+    qkmsKeyVersions: [{ id: 'legacy-v9', key_ref: ref, version: 9, rotation_job_id: 'note-only', created_at: at(-1) }],
+  })
+  const key = audited.keys.find((row) => row.id === ref)
+  const job = audited.rotation.jobs[0]
+  assert(job?.status === 'completed' && job.validationStatus === 'pending' && job.newVersion === null, 'a legacy closed order does not prove a provider version or validation')
+  assert(key && key.version !== 9 && key.lastRotatedAt !== at(-1), 'a work-order note does not advance a key version or restart its cryptoperiod')
+  assert(audited.rotation.posture.successRate === null, 'closed work orders do not count as successful rotations')
+
+  const after = buildQkmsIntelligence({
+    ...inputs,
+    qkmsKeys: inputs.qkmsKeys.map((row) => row.id === id ? { ...row, status: 'revoked' } : row),
+    qkmsRotationJobs: [],
+  })
+  assert(after.keys.find((row) => row.id === ref)?.lifecycle === 'revoked', 'a revoked key remains in inventory with revoked status')
+  assert(!after.rotation.queue.includes(ref), 'the revoked key is absent from the rotation queue')
+  for (const mode of QKMS_MODES) {
+    const view = projectQkmsView(after, mode)
+    assert(view.metrics === after.metrics && view.gate === after.readiness.gate && view.mode === mode, `${mode} uses the same totals and migration decision`)
+  }
+  const limited = buildQkmsIntelligence({ ...inputs, truncated: true, limitedSources: ['qkms_keys'] })
+  assert(limited.readiness.gate.state === 'NOT_READY' && limited.readiness.gate.score === null, 'partial inventory does not produce a positive migration decision or score')
 }
 
 /* 16 — work orders and policies are honest about what they evaluated ------- */

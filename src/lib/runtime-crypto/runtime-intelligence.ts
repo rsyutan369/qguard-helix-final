@@ -63,6 +63,7 @@ import {
 } from '@/lib/migration/asset-intelligence'
 import type { SourceRead } from '@/lib/source-read'
 import { isSimulationRow } from '@/lib/migration/job-safety'
+import { buildEvidenceAssetResolver, isRuntimeOperationObservation, primitiveIdentity } from '@/lib/telemetry/evidence-identity'
 
 /* ================================================================== */
 /* Vocabulary                                                          */
@@ -386,6 +387,7 @@ export interface DiscoveryFallback {
 }
 
 export interface RuntimeCryptoIntelligence {
+  sourceCheckedAt?: string
   /** Read outcome of every evidence source (published by the router; absent in pure fixtures). */
   reads?: SourceRead[]
   generatedAt: string
@@ -766,14 +768,15 @@ export function buildRuntimeCryptoIntelligence(inputs: RuntimeIntelInputs): Runt
   const windowStart = now - window.ms
 
   const assetById = new Map<string, AssetMigrationRecord>()
-  const assetByName = new Map<string, AssetMigrationRecord>()
   for (const asset of inputs.assets) {
     assetById.set(asset.id, asset)
-    if (asset.name) assetByName.set(asset.name.toLowerCase(), asset)
-    if (asset.hostname) assetByName.set(asset.hostname.toLowerCase(), asset)
   }
 
-  const allEvents = inputs.runtimeEvents.filter((event) => ms(event.observed_at || event.created_at) > 0)
+  const resolveAsset = buildEvidenceAssetResolver(inputs.assets)
+  const allEvents = inputs.runtimeEvents.filter((event) => {
+    const observed = ms(event.observed_at || event.created_at)
+    return observed > 0 && observed <= now && isRuntimeOperationObservation(event)
+  })
   const sortedAll = [...allEvents].sort((a, b) => ms(b.observed_at || b.created_at) - ms(a.observed_at || a.created_at))
   const latestEventAt = iso(sortedAll[0]?.observed_at || sortedAll[0]?.created_at)
   const oldestEventAt = iso(sortedAll[sortedAll.length - 1]?.observed_at || sortedAll[sortedAll.length - 1]?.created_at)
@@ -783,12 +786,6 @@ export function buildRuntimeCryptoIntelligence(inputs: RuntimeIntelInputs): Runt
   /* ---- Frequency index: asset + primitive family ------------------- */
   const decompositions = new Map<Row, Decomposition>()
   const frequency = new Map<string, number>()
-  const resolveAsset = (event: Row): AssetMigrationRecord | null => {
-    const byId = str(event.asset_id) ? assetById.get(str(event.asset_id)) : undefined
-    if (byId) return byId
-    const name = str(event.asset_name).toLowerCase() || str(event.host).toLowerCase()
-    return (name ? assetByName.get(name) : undefined) ?? null
-  }
   for (const event of inWindow) {
     const decomposition = decomposeRuntimeEvent(event)
     decompositions.set(event, decomposition)
@@ -995,7 +992,7 @@ export function buildRuntimeCryptoIntelligence(inputs: RuntimeIntelInputs): Runt
   const pqcAdoption = buildPqcAdoption(mix, total, inputs.snapshot, sortedAll, telemetry.truncated, now)
 
   /* ---- Migration verification -------------------------------------- */
-  const migrationVerification = buildMigrationVerification(operationalJobs, sortedAll, assetById, now)
+  const migrationVerification = buildMigrationVerification(operationalJobs, sortedAll, assetById, Boolean(inputs.runtimeEventsTruncated))
 
   /* ---- Quantum risk ------------------------------------------------- */
   const worstByAsset = new Map<string, RiskLevel>()
@@ -1528,7 +1525,7 @@ function buildMigrationVerification(
   migrationJobs: Row[],
   allEvents: Row[],
   assetById: Map<string, AssetMigrationRecord>,
-  now: number,
+  truncated: boolean,
 ): MigrationVerification[] {
   const completed = migrationJobs
     .filter((job) => str(job.status).toLowerCase() === 'completed')
@@ -1538,24 +1535,45 @@ function buildMigrationVerification(
   return completed.map((job) => {
     const assetId = str(job.asset_id)
     const asset = assetId ? assetById.get(assetId) : undefined
-    const completedAt = ms(job.completed_at || job.updated_at) || now
-    const target = str(job.target_algorithm) || 'Post-quantum stack'
+    const completedAt = ms(job.completed_at)
+    const target = str(job.target_algorithm)
+    const targetAnatomy = analyzeCryptoObservation({ algorithm: target })
     const metadata = recordOf(job.metadata)
-    const before = str(metadata.from_algorithm) || str(metadata.source_algorithm) || null
-
-    const assetEvents = allEvents.filter((event) => {
-      if (assetId && str(event.asset_id) === assetId) return true
-      if (asset?.name && str(event.asset_name).toLowerCase() === asset.name.toLowerCase()) return true
-      return false
-    })
-    const post = assetEvents.filter((event) => ms(event.observed_at || event.created_at) >= completedAt)
+    const before = str(metadata.from_algorithm || metadata.source_algorithm || metadata.fromAlgorithm || metadata.sourceAlgorithm) || null
+    const expectedHost = str(metadata.endpointHost || metadata.hostname || metadata.host).toLowerCase()
+    const expectedPort = num(metadata.endpointPort || metadata.port)
+    const scopedTransport = !/tls|transport|listener|ssl/i.test(`${str(job.job_type)} ${str(job.name)}`) || Boolean(expectedHost && expectedPort)
+    const post = allEvents.filter((event) => scopedTransport && assetId && str(event.asset_id) === assetId && completedAt
+      && ms(event.observed_at) > completedAt
+      && (!expectedHost || str(event.host).toLowerCase() === expectedHost)
+      && (!expectedPort || num(event.port) === expectedPort))
+    const oldestLoadedAt = allEvents[allEvents.length - 1]
+    const historyIncomplete = truncated && (!oldestLoadedAt || ms(oldestLoadedAt.observed_at) > completedAt)
 
     let sessionsVerified = 0
     let fallbacks = 0
     for (const event of post) {
       const decomposition = decomposeRuntimeEvent(event)
-      if (decomposition.status === 'safe' || decomposition.status === 'hybrid') sessionsVerified += 1
-      else if (decomposition.status === 'vulnerable') fallbacks += 1
+      const operation = `${str(event.event_type)} ${str(event.operation_type)}`.replace(/[_-]/g, ' ')
+      let primitive: string | null = null
+      if (targetAnatomy.kind === 'key-exchange' && /handshake|key exchange|encapsulat|decapsulat|\bkex\b|\bkem\b/i.test(operation)) {
+        primitive = str(event.key_exchange_algorithm) || decomposition.keyExchange?.keyExchange || null
+      } else if (targetAnatomy.kind === 'signature' && /sign|verify/i.test(operation)) {
+        primitive = str(event.algorithm) || decomposition.signature?.authentication || null
+      } else if (targetAnatomy.kind === 'symmetric' && /encrypt|decrypt|cipher/i.test(operation)) {
+        primitive = str(event.algorithm) || decomposition.bulk?.bulk || null
+      }
+      if (!primitive) continue
+      const observed = analyzeCryptoObservation({ algorithm: primitive })
+      const targetPrimitive = targetAnatomy.keyExchange || targetAnatomy.authentication || targetAnatomy.bulk
+      const observedPrimitive = observed.keyExchange || observed.authentication || observed.bulk
+      if (observed.kind !== targetAnatomy.kind || !observedPrimitive) continue
+      if ((targetAnatomy.quantumClass === 'safe' || targetAnatomy.quantumClass === 'hybrid')
+        && primitiveIdentity(targetPrimitive) === primitiveIdentity(observedPrimitive)) {
+        sessionsVerified += 1
+      } else if (observed.quantumClass === 'vulnerable') {
+        fallbacks += 1
+      }
     }
 
     // Precedence matters. A classical observation AFTER cutover is the strongest
@@ -1563,26 +1581,28 @@ function buildMigrationVerification(
     // post-quantum traffic — reporting it as merely "not verified" would hide a
     // migration that demonstrably failed at runtime.
     const status: MigrationVerification['status'] =
-      fallbacks > 0 ? 'fallback-detected' : sessionsVerified > 0 ? 'confirmed' : 'not-observed'
+      fallbacks > 0 ? 'fallback-detected' : sessionsVerified > 0 && !historyIncomplete ? 'confirmed' : 'not-observed'
 
     const detail =
       status === 'confirmed'
-        ? `${sessionsVerified} post-cutover observation(s), all post-quantum. No classical fallback recorded.`
+        ? `${sessionsVerified} post-cutover observation(s) of the migration target. No classical fallback recorded for the same operation.`
         : status === 'fallback-detected'
           ? sessionsVerified > 0
             ? `${sessionsVerified} post-quantum observation(s) but ${fallbacks} classical fallback(s) since cutover — the migration is not fully effective at runtime.`
-            : `${fallbacks} post-cutover observation(s), all still classical. The migration has not changed runtime behaviour.`
-          : post.length === 0
-            ? 'No runtime observations recorded since cutover, so the change cannot be confirmed at runtime yet.'
-            : `${post.length} post-cutover observation(s) recorded, none of them conclusive.`
+            : `${fallbacks} classical observation(s) for the same operation since cutover. The target was not observed.`
+          : !scopedTransport
+            ? 'The transport job does not identify the changed listener. An endpoint host and port are required for runtime verification.'
+          : historyIncomplete && sessionsVerified > 0
+            ? 'The target was observed, but the retained history does not cover the complete period after cutover.'
+            : 'No conclusive runtime evidence for the migration target and operation after the recorded cutover.'
 
     return {
       jobId: str(job.id),
       assetId: assetId || null,
       assetName: str(job.name) || asset?.name || 'Migration job',
       before: before || (asset ? asset.algorithms.find((row) => row.classification === 'vulnerable')?.algorithm ?? null : null),
-      after: target,
-      completedAt: iso(job.completed_at || job.updated_at),
+      after: target || 'Target not recorded',
+      completedAt: iso(job.completed_at),
       sessionsVerified,
       fallbacks,
       status,

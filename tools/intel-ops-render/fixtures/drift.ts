@@ -23,8 +23,8 @@ const portfolio = buildAssetPortfolio({
 })
 
 const scanSessions: Row[] = [
-  { id: 'session-old', status: 'completed', completed_at: daysAgo(7), created_at: daysAgo(7) },
-  { id: 'session-new', status: 'completed', completed_at: daysAgo(1), created_at: daysAgo(1) },
+  { id: 'session-old', status: 'completed', target_scope: 'payments.example.com, edge.example.com, dev.example.com', completed_at: daysAgo(7), created_at: daysAgo(7) },
+  { id: 'session-new', status: 'completed', target_scope: 'payments.example.com, edge.example.com, dev.example.com', completed_at: daysAgo(1), created_at: daysAgo(1) },
   { id: 'session-running', status: 'running', completed_at: null, created_at: hoursAgo(1) },
 ]
 
@@ -51,13 +51,13 @@ const scanResults: Row[] = [
 ]
 
 const migrationJobs: Row[] = [
-  { id: 'j1', asset_id: 'a-edge', name: 'Edge hybrid TLS cutover', status: 'completed', target_algorithm: 'X25519MLKEM768', completed_at: daysAgo(3), updated_at: daysAgo(3), created_at: daysAgo(10) },
+  { id: 'j1', asset_id: 'a-edge', name: 'Edge hybrid TLS cutover', status: 'completed', metadata: { fromAlgorithm: 'ECDHE-RSA-AES128-SHA' }, target_algorithm: 'X25519MLKEM768', completed_at: daysAgo(3), updated_at: daysAgo(3), created_at: daysAgo(10) },
 ]
 
 const runtimeEvents: Row[] = [
   ...Array.from({ length: 4 }, (_, i) => ({
     id: `d${i}`, asset_id: 'a-pay', asset_name: 'payments.example.com', key_exchange_algorithm: 'X25519',
-    downgrade_detected: true, observed_at: hoursAgo(i + 1), created_at: hoursAgo(i + 1),
+    downgrade_detected: true, metadata: { verifiedPqcFallback: true }, observed_at: hoursAgo(i + 1), created_at: hoursAgo(i + 1),
   })),
   { id: 'not-a-downgrade', asset_id: 'a-pay', asset_name: 'payments.example.com', key_exchange_algorithm: 'X25519MLKEM768', downgrade_detected: false, observed_at: hoursAgo(1), created_at: hoursAgo(1) },
 ]

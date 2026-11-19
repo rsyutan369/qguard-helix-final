@@ -22,7 +22,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { SCAN_SOURCE_LABELS, type ScanSourceKind } from '@/lib/assets/scan-provenance';
-import { AlertTriangle, ExternalLink, FileText, Loader2, Radio, RefreshCw, ScanLine, Shield } from 'lucide-react';
+import { AlertTriangle, Archive, ExternalLink, FileText, Loader2, Radio, RefreshCw, ScanLine, Shield } from 'lucide-react';
 import { useScannerIntelligence } from '@/lib/scanner/use-scanner-intelligence';
 import { useQuantumReadiness } from '@/app/dashboard/quantum-readiness/_shared';
 import { useMigrationWorkflow } from '@/hooks/use-migration-workflow';
@@ -39,11 +39,14 @@ import {
   type FreshnessState,
   type PqcStatus,
   type RegisterBandKey,
+  type RegisterFilter,
   type RegisterQrInput,
   type RegisterSort,
 } from '@/lib/assets/asset-register';
 import { DiscoveryHeader, DiscoveryPage, StaleAssessmentBanner, panelClass } from '../_components/discovery/shell';
 import { AssetTable } from './_asset-table';
+import { LiveAssetFindings } from './_live-findings';
+import { AssetLifecycleDialog, type LifecycleSelection } from './_lifecycle-dialog';
 import { Pagination, PostureOverview, RegisterKpis, RegisterToolbar, SelectionBar, TransportStatus, nf, useNow } from './_register-ui';
 import type { StudioScopeType } from './_report-studio';
 
@@ -56,8 +59,8 @@ export default function AssetsMap() {
   const sourceAgentId = searchParams.get('agentId');
   const sourceKindParam = searchParams.get('source');
   const sourceKind = sourceKindParam && Object.hasOwn(SCAN_SOURCE_LABELS, sourceKindParam) ? sourceKindParam as ScanSourceKind : null;
-  const { user } = useAuth();
-  const { data, error, refresh, loading, connected, source, resolved, transport, lastVerifiedAt } = useScannerIntelligence();
+  const { user, session } = useAuth();
+  const { data, error, refresh, changeAssetLifecycle, loading, connected, source, resolved, transport, lastVerifiedAt } = useScannerIntelligence();
   const qr = useQuantumReadiness();
   const { workflow } = useMigrationWorkflow();
   // Minute clock for freshness ("scanned 8d ago"): cheap, and a register row's
@@ -84,6 +87,7 @@ export default function AssetsMap() {
 
   /* ---------------- filters, sort, paging ---------------- */
   const [query, setQuery] = useState('');
+  const [findingsRefresh, setFindingsRefresh] = useState(0);
   const [statusFilter, setStatusFilter] = useState<PqcStatus | null>(null);
   const [bandFilter, setBandFilter] = useState<RegisterBandKey | null>(null);
   const [freshnessFilter, setFreshnessFilter] = useState<FreshnessState | null>(null);
@@ -91,21 +95,22 @@ export default function AssetsMap() {
   const [page, setPage] = useState(1);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
-  const [studio, setStudio] = useState<{ open: boolean; scope: StudioScopeType; single: AssetRegisterRow | null }>({ open: false, scope: 'all', single: null });
+  const [lifecycleSelection, setLifecycleSelection] = useState<LifecycleSelection | null>(null);
+  const [lifecycleMessage, setLifecycleMessage] = useState('');
+  const archived = data.assets.archived ?? [];
+  const [studio, setStudio] = useState<{ open: boolean; scope: StudioScopeType; singleId: string | null }>({ open: false, scope: 'all', singleId: null });
 
+  const filters = useMemo<RegisterFilter>(() => ({
+    agentId: sourceAgentId,
+    sourceKind,
+    query,
+    statuses: statusFilter ? [statusFilter] : null,
+    bands: bandFilter ? [bandFilter] : null,
+    freshness: freshnessFilter ? [freshnessFilter] : null,
+  }), [query, statusFilter, bandFilter, freshnessFilter, sourceAgentId, sourceKind]);
   const filtered = useMemo(
-    () => sortRows(
-      filterRows(register.rows, {
-        agentId: sourceAgentId,
-        sourceKind,
-        query,
-        statuses: statusFilter ? [statusFilter] : null,
-        bands: bandFilter ? [bandFilter] : null,
-        freshness: freshnessFilter ? [freshnessFilter] : null,
-      }),
-      sort,
-    ),
-    [register.rows, query, statusFilter, bandFilter, freshnessFilter, sort, sourceAgentId, sourceKind],
+    () => sortRows(filterRows(register.rows, filters), sort),
+    [register.rows, filters, sort],
   );
 
   useEffect(() => setPage(1), [query, statusFilter, bandFilter, freshnessFilter, sort, sourceAgentId, sourceKind]);
@@ -151,7 +156,7 @@ export default function AssetsMap() {
     freshnessFilter && `freshness ${freshnessFilter}`,
   ].filter(Boolean).join(' · ');
 
-  const openStudio = (scope: StudioScopeType, single: AssetRegisterRow | null = null) => setStudio({ open: true, scope, single });
+  const openStudio = (scope: StudioScopeType, single: AssetRegisterRow | null = null) => setStudio({ open: true, scope, singleId: single?.id ?? null });
   const openStudioDefault = () => openStudio(selectedRows.length ? 'selection' : filterDescription ? 'filtered' : 'all');
 
   /* ---------------- states ---------------- */
@@ -183,7 +188,7 @@ export default function AssetsMap() {
             <Link to="/dashboard/scanner" className="inline-flex items-center gap-2 rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-4 py-2 text-xs font-bold text-[var(--qg-dashboard-text-soft)] no-underline transition hover:border-[var(--qg-amber)]/45">
               <ScanLine className="h-4 w-4" aria-hidden /> Run scan
             </Link>
-            <button type="button" onClick={() => void refresh()} className="inline-flex items-center gap-2 rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-4 py-2 text-xs font-bold text-[var(--qg-dashboard-text-soft)] transition hover:border-[var(--qg-amber)]/45">
+            <button type="button" onClick={() => { void refresh(); setFindingsRefresh((value) => value + 1); }} className="inline-flex items-center gap-2 rounded-md border border-[var(--qg-card-border)] bg-[var(--qg-card-bg)] px-4 py-2 text-xs font-bold text-[var(--qg-dashboard-text-soft)] transition hover:border-[var(--qg-amber)]/45">
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
             </button>
           </>
@@ -219,6 +224,28 @@ export default function AssetsMap() {
       ) : null}
 
       <StaleAssessmentBanner measuredAt={register.measuredAt} />
+      {lifecycleMessage && <p className={`${panelClass} px-4 py-3 text-sm text-[var(--qg-dashboard-text)]`} role="status">{lifecycleMessage}</p>}
+      {archived.length > 0 && (
+        <details className={`${panelClass} p-4`}>
+          <summary className="cursor-pointer text-sm font-bold text-[var(--qg-dashboard-text)]">
+            <Archive className="mr-2 inline size-4" aria-hidden /> Archived assets ({nf(archived.length)})
+          </summary>
+          <ul className="mt-2 max-h-72 divide-y divide-[var(--qg-card-border)] overflow-auto">
+            {archived.map((asset) => (
+              <li key={asset.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
+                <span className="break-all">{asset.name}</span>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" aria-label={`Restore ${asset.name}`} onClick={() => setLifecycleSelection({ action: 'restore', assets: [asset] })}
+                    className="rounded-md border border-[var(--qg-card-border)] px-3 py-2 text-xs font-bold hover:border-[var(--qg-amber)]">Restore</button>
+                  <button type="button" aria-label={`Remove ${asset.name}`} onClick={() => setLifecycleSelection({ action: 'remove', assets: [asset] })}
+                    className="rounded-md border border-red-500/30 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-500/10 dark:text-red-300">Remove</button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      <LiveAssetFindings refreshVersion={findingsRefresh} />
 
       {error && hasSnapshot ? (
         <div role="alert" className="flex flex-wrap items-center gap-3 rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-200">
@@ -334,20 +361,40 @@ export default function AssetsMap() {
         critical={selectionTotals.vulnerableSeverity.critical}
         onReport={() => openStudio('selection')}
         onClear={() => setSelectedIds(new Set())}
+        onArchive={() => setLifecycleSelection({ action: 'archive', assets: selectedRows })}
+        onRemove={() => setLifecycleSelection({ action: 'remove', assets: selectedRows })}
       />
 
-      {studio.open ? (
+      {lifecycleSelection && <AssetLifecycleDialog selection={lifecycleSelection} onClose={() => setLifecycleSelection(null)}
+        onConfirm={async () => {
+          const { action, assets } = lifecycleSelection;
+          const { updatedIds, skipped } = await changeAssetLifecycle(action, assets.map((asset) => asset.id));
+          if (!updatedIds.length) throw new Error('None of the selected assets could be updated. Refresh the register and try again.');
+          const updated = new Set(updatedIds);
+          setSelectedIds((current) => new Set([...current].filter((id) => !updated.has(id))));
+          setExpandedId((current) => current && updated.has(current) ? null : current);
+          const outcome = action === 'archive' ? 'archived' : action === 'restore' ? 'restored' : 'removed';
+          setLifecycleMessage(`${nf(updated.size)} asset${updated.size === 1 ? '' : 's'} ${outcome}.${skipped ? ` ${nf(skipped)} could not be updated.` : ''}`);
+          setFindingsRefresh((current) => current + 1);
+          setLifecycleSelection(null);
+        }}
+      />}
+
+      {studio.open && session && user ? (
         <Suspense fallback={<div className="fixed inset-0 z-50 grid place-items-center bg-black/40"><Loader2 className="h-6 w-6 animate-spin text-[var(--qg-amber)]" aria-label="Opening Report Studio" /></div>}>
           <ReportStudio
+            key={user.id}
             open={studio.open}
             onClose={() => setStudio((current) => ({ ...current, open: false }))}
             register={register}
             selection={selectedRows}
             filtered={filtered}
-            single={studio.single}
+            singleId={studio.singleId}
             initialScope={studio.scope}
             filterDescription={filterDescription}
-            generatedBy={user?.email || 'QGuard Helix'}
+            filters={filters}
+            ownerId={user.id}
+            token={session.access_token}
           />
         </Suspense>
       ) : null}

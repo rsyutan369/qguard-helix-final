@@ -3,8 +3,12 @@ import {
   canUseFallbackSupabase,
   getSupabaseClient,
   switchToFallbackSupabase,
+  beginGoogleOAuth,
+  finishGoogleOAuth,
 } from '../lib/supabase';
 import type { User, Session } from '@supabase/supabase-js';
+import { SIGNUP_CONFIRMATION_URL } from '../lib/signup-confirmation';
+import { GOOGLE_CALLBACK_PATH } from '../lib/oauth-callback';
 
 const AUTH_TIMEOUT_MS = 12000;
 
@@ -15,6 +19,7 @@ interface AuthContextType {
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signUp: (email: string, password: string) => Promise<{ error: Error | null }>;
   signInWithGoogle: () => Promise<{ error: Error | null }>;
+  completeGoogleSignIn: (code: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
 }
 
@@ -98,7 +103,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         error = toAuthError(err, 'Supabase session check failed.');
       }
 
-      if ((error || !session) && canUseFallbackSupabase()) {
+      if ((error || !session) && canUseFallbackSupabase() && window.location.pathname !== GOOGLE_CALLBACK_PATH) {
         const fallbackClient = switchToFallbackSupabase();
         if (fallbackClient) {
           client = fallbackClient;
@@ -196,9 +201,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // API unreachable — fall through to the client-side flow.
     }
 
+    const credentials = { email, password, options: { emailRedirectTo: SIGNUP_CONFIRMATION_URL } };
     let client = getSupabaseClient();
     let { data, error } = await withAuthTimeout(
-      client.auth.signUp({ email, password }),
+      client.auth.signUp(credentials),
       'Supabase registration',
     ).catch((err) => ({
       data: { user: null, session: null },
@@ -210,7 +216,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (fallbackClient) {
         client = fallbackClient;
         const fallbackResult = await withAuthTimeout(
-          client.auth.signUp({ email, password }),
+          client.auth.signUp(credentials),
           'Fallback Supabase registration',
         ).catch((err) => ({
           data: { user: null, session: null },
@@ -234,36 +240,41 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signInWithGoogle = async () => {
-    const redirectTo = `${window.location.origin}/dashboard`;
-    let client = getSupabaseClient();
-    let { error } = await withAuthTimeout(
-      client.auth.signInWithOAuth({
-        provider: 'google',
-        options: { redirectTo },
-      }),
+    const redirectTo = new URL(GOOGLE_CALLBACK_PATH, window.location.origin).href;
+    let result = await withAuthTimeout(
+      beginGoogleOAuth(redirectTo),
       'Supabase OAuth sign-in',
     ).catch((err) => ({
       data: { provider: null, url: null },
       error: toAuthError(err, 'Supabase OAuth sign-in failed.'),
     }));
-    if (error && canUseFallbackSupabase()) {
+    if (result.error && canUseFallbackSupabase()) {
       const fallbackClient = switchToFallbackSupabase();
       if (fallbackClient) {
-        client = fallbackClient;
-        const fallbackResult = await withAuthTimeout(
-          client.auth.signInWithOAuth({
-            provider: 'google',
-            options: { redirectTo },
-          }),
+        result = await withAuthTimeout(
+          beginGoogleOAuth(redirectTo),
           'Fallback Supabase OAuth sign-in',
         ).catch((err) => ({
           data: { provider: null, url: null },
           error: toAuthError(err, 'Fallback Supabase OAuth sign-in failed.'),
         }));
-        error = fallbackResult.error;
       }
     }
-    return { error };
+    if (!result.error && result.data.url) window.location.assign(result.data.url);
+    return { error: result.error };
+  };
+
+  const completeGoogleSignIn = async (code: string) => {
+    try {
+      const { data, error } = await withAuthTimeout(finishGoogleOAuth(code), 'Google sign-in');
+      if (!error) {
+        setSession(data.session);
+        setUser(data.user);
+      }
+      return { error };
+    } catch {
+      return { error: new Error('Google sign-in could not be completed. Start again from the sign-in page in this browser tab.') };
+    }
   };
 
   const signOut = async () => {
@@ -276,7 +287,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
      every consumer a new context object. Combined with the value-comparison in
      `onAuthStateChange`, an alt-tab now produces no state change at all. */
   const value = useMemo(
-    () => ({ user, session, loading, signIn, signUp, signInWithGoogle, signOut }),
+    () => ({ user, session, loading, signIn, signUp, signInWithGoogle, completeGoogleSignIn, signOut }),
     // The auth actions are stable in behaviour and recreated each render only
     // because they are plain closures; identity churn on them is what the
     // consumers must not see.

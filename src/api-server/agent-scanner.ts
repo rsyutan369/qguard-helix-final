@@ -28,6 +28,7 @@ import {
   type AgentEventName,
 } from '@/lib/agent-installer/agent-release'
 import { publishAgentEvent } from './agent-event-bus'
+import { AGENT_DISCOVERY_EVENT, projectAgentDiscovery } from '@/lib/migration/agent-discovery'
 import { isHttpsRequest } from './runtime/http-baseline'
 import {
   SIGNATURE_FAILURE_MESSAGE,
@@ -1219,13 +1220,16 @@ function runtimeRiskScore(severity: FindingSeverity, flags: { isLegacy: boolean;
   return Math.max(0, Math.min(100, base + boost))
 }
 
-function normalizeRuntimeCryptoEvent(raw: any, sourceType: string, agent?: any, connector?: any): RuntimeCryptoEventRecord | null {
+function normalizeRuntimeCryptoEvent(raw: any, sourceType: string, agent?: any, connector?: any, fromScanEvidence = false): RuntimeCryptoEventRecord | null {
   const eventType = cleanString(raw?.eventType || raw?.event_type || raw?.evidenceType || raw?.evidence_type, 100)
   const assetName = cleanString(raw?.assetName || raw?.asset_name || raw?.host || raw?.target || raw?.packageName || raw?.package_name || raw?.filePath || raw?.file_path, 255)
   if (!eventType || !assetName) return null
 
   const metadata = (sanitizeRuntimeMetadata(raw?.metadata || raw?.rawEvidence || raw?.raw_evidence || {}) || {}) as Record<string, unknown>
   metadata.scanSource = scanSourceFor({ ...raw, sourceType }, agent, connector)
+  const scanEvidence = fromScanEvidence || Boolean(metadata.evidenceType || metadata.evidenceId)
+  const nativeOperation = metadata.evidenceClass === 'crypto-api-call' || /^(?:tls[-_ ]handshake|ssh[-_ ]handshake|crypto[-_ ]operation)$/i.test(eventType)
+  metadata.observationKind = scanEvidence ? 'scan-evidence' : nativeOperation ? 'runtime-observation' : 'reported-evidence'
   const algorithm = cleanString(raw?.algorithm || raw?.observedAlgorithm || raw?.observed_algorithm, 100)
   const keyExchangeAlgorithm = cleanString(raw?.keyExchangeAlgorithm || raw?.key_exchange_algorithm || metadata.keyExchangeAlgorithm || metadata.key_exchange_algorithm, 100)
   const cipherSuite = cleanString(raw?.cipherSuite || raw?.cipher_suite || metadata.cipherSuite || metadata.cipher_suite, 255)
@@ -1251,17 +1255,14 @@ function normalizeRuntimeCryptoEvent(raw: any, sourceType: string, agent?: any, 
   const isPqc = Boolean(raw?.isPqc || raw?.is_pqc) || anatomy.quantumClass === 'safe' || anatomy.quantumClass === 'hybrid'
   const isLegacy = Boolean(raw?.isLegacy || raw?.is_legacy) || anatomy.quantumClass === 'vulnerable'
 
-  // A downgrade needs an OBSERVED weak protocol version. Nothing else can
-  // establish it, so nothing else may assert it.
   const observedProtocol = `${tlsVersion || ''} ${protocol || ''}`.toLowerCase()
-  // A claim still requires the evidence for that claim, even when an agent
-  // asserts it: an uploader that reports `downgradeDetected` without having
-  // observed any protocol version has not observed a downgrade. This also keeps
-  // older agent builds - and any third-party collector - from writing a critical
-  // the control plane cannot substantiate.
   const weakProtocolObserved = /\b(?:sslv?[23]|tls-?1\.[01]|tlsv1(?:\.[01])?)\b/.test(observedProtocol)
-  const downgradeClaimed = Boolean(raw?.downgradeDetected || raw?.downgrade_detected)
-  const downgradeDetected = weakProtocolObserved || (downgradeClaimed && Boolean(observedProtocol.trim()))
+  const offeredGroups = Array.isArray(metadata.offeredGroups) ? metadata.offeredGroups : []
+  const offeredPqc = offeredGroups.some((group) => typeof group === 'string' && /ml[-_ ]?kem|kyber/i.test(group))
+  const negotiated = analyzeCryptoObservation({ algorithm: keyExchangeAlgorithm }, Boolean(keyExchangeAlgorithm))
+  const downgradeDetected = !scanEvidence && nativeOperation && offeredPqc && negotiated.kind === 'key-exchange' && negotiated.quantumClass === 'vulnerable'
+  metadata.legacyProtocolObserved = weakProtocolObserved
+  metadata.verifiedPqcFallback = downgradeDetected
 
   // Shadow crypto means cryptography outside the DECLARED inventory. A host
   // agent has no inventory to compare against, so it cannot establish this and
@@ -1428,11 +1429,12 @@ function runtimeEventToEvidence(event: RuntimeCryptoEventRecord): ScannerEvidenc
   }
 }
 
-function runtimeEventsFromEvidence(evidence: ScannerEvidenceRecord[]) {
+function runtimeEventsFromEvidence(evidence: ScannerEvidenceRecord[], binding: AgentBinding | null) {
   return evidence
     .map((item) => normalizeRuntimeCryptoEvent({
       eventType: item.evidenceType,
       operationType: runtimeOperationType(`${item.evidenceType} ${item.observedAlgorithm || ''} ${item.protocol || ''}`),
+      assetId: binding && (binding.attribution === 'bound' || binding.assetName === item.assetName) ? binding.assetId : null,
       assetName: item.assetName,
       assetType: item.assetType,
       target: item.target,
@@ -1457,7 +1459,7 @@ function runtimeEventsFromEvidence(evidence: ScannerEvidenceRecord[]) {
         filePath: item.filePath,
       },
       observedAt: item.observedAt,
-    }, item.sourceType, { id: item.agentId, user_id: item.userId }, item.connectorAccountId ? { id: item.connectorAccountId, user_id: item.userId } : undefined))
+    }, item.sourceType, { id: item.agentId, user_id: item.userId }, item.connectorAccountId ? { id: item.connectorAccountId, user_id: item.userId } : undefined, true))
     .filter(Boolean) as RuntimeCryptoEventRecord[]
 }
 
@@ -1674,7 +1676,6 @@ async function persistEvidenceFindings(
           type: finding.target.type,
           ip_address: evidenceMatch?.host || null,
           criticality: riskScore >= 80 ? 'critical' : riskScore >= 60 ? 'high' : riskScore >= 40 ? 'medium' : 'low',
-          status: 'active',
           metadata: { ...(existingAsset.metadata || {}), ...assetMetadata, scanSources: mergeScanSources(existingAsset.metadata?.scanSources, assetMetadata.scanSources) },
           updated_at: now,
         }).eq('id', existingAsset.id).eq('user_id', userId).select('id').single()
@@ -1814,7 +1815,6 @@ async function persistEvidenceFindings(
         type: record.assetType || 'endpoint',
         ip_address: record.host || null,
         criticality: existingAsset.criticality || 'low',
-        status: 'active',
         metadata: { ...(existingAsset.metadata || {}), ...assetMetadata, scanSources: mergeScanSources(existingAsset.metadata?.scanSources, assetMetadata.scanSources) },
         updated_at: now,
       }).eq('id', assetId).eq('user_id', userId)
@@ -2020,7 +2020,7 @@ async function refreshBoundAsset(
     ...(binding.attribution === 'grouped' ? { childAssetIds, childAssetCount: childAssetIds.length } : {}),
   }
   const nextMetadata: Record<string, unknown> = { ...metadata, last_scanned_at: batch.now, scannerEvidence: true, agentBinding }
-  const update: Record<string, unknown> = { status: 'active', updated_at: batch.now, metadata: nextMetadata }
+  const update: Record<string, unknown> = { updated_at: batch.now, metadata: nextMetadata }
   if (binding.attribution === 'bound' && worstRisk !== null) {
     nextMetadata.riskScore = worstRisk
     nextMetadata.qScore = Math.max(0, 100 - worstRisk)
@@ -2082,10 +2082,6 @@ async function processEvidenceBatch(
     }
   }
 
-  if (options.persistRuntimeEvents !== false) {
-    await persistRuntimeCryptoEvents(client, userId, runtimeEventsFromEvidence(insertedEvidence))
-  }
-
   const scanId = randomId('evidence-scan')
   const observedFindings = scanEvidenceWithModules(insertedEvidence, scanId)
   const enrichedFindings = matchFingerprints(observedFindings)
@@ -2122,6 +2118,27 @@ async function processEvidenceBatch(
     if (insertedEvidence.length && !links.linkedAssetIds.includes(binding.assetId)) links.linkedAssetIds.push(binding.assetId)
   }
   const certificates = await persistCertificateEvidence(client, userId, insertedEvidence, sourceLabel, binding)
+  if (options.persistRuntimeEvents !== false) {
+    await persistRuntimeCryptoEvents(client, userId, runtimeEventsFromEvidence(insertedEvidence, binding))
+  }
+
+  if (options.agent?.user_id === userId) {
+    const agentId = options.agent.id
+    const findingsByEvidence = new Map(enrichedFindings.map((finding) => [finding.target.id, finding]))
+    const discoveries = insertedEvidence.flatMap((item) => {
+      if (!item.id || item.agentId !== agentId) return []
+      const finding = findingsByEvidence.get(item.id)
+      return projectAgentDiscovery(
+        item,
+        finding,
+        finding ? findingQuantumVerdict(finding, item).vulnerable : false,
+        parseCertificateDate(item.rawEvidence?.validTo),
+      )
+    })
+    for (let offset = 0; offset < discoveries.length; offset += 20) {
+      publishAgentEvent(userId, AGENT_DISCOVERY_EVENT, agentId, { discoveries: discoveries.slice(offset, offset + 20) })
+    }
+  }
 
   return {
     evidenceCount: insertedEvidence.length,
@@ -4317,13 +4334,12 @@ router.get('/remediation/operator-actions', requireUserAuth, async (req: AuthedR
   res.json({ data: { actions } })
 })
 
+// Authorization header ONLY. This stream used to accept `?token=` for an
+// EventSource client, which wrote the bearer token into browser history, proxy
+// logs and server access logs. Both clients (Agents Collector, Overview) now
+// read it with fetch() + the header (src/lib/authenticated-event-stream.ts).
 router.get('/stream', async (req, res) => {
-  const queryToken = typeof req.query.token === 'string'
-    ? req.query.token
-    : Array.isArray(req.query.token)
-      ? String(req.query.token[0] || '')
-      : ''
-  const token = getToken(req) || queryToken
+  const token = getToken(req)
 
   if (!token) {
     return jsonError(res, 401, 'UNAUTHORIZED', 'Authentication required')
@@ -5254,10 +5270,19 @@ router.post('/agent/runtime-events', requireAgentAuth, async (req: AgentRequest,
     return
   }
 
-  const persistence = await persistRuntimeCryptoEvents(client, agent.user_id, policyAllowed)
-  const evidence = policyAllowed.map(runtimeEventToEvidence)
   const runtimeBinding = await verifiedAgentBinding(client, agent)
   if (runtimeBinding.unavailable) return jsonError(res, 503, 'DEVICE_PROFILE_UNAVAILABLE', 'The device profile is unavailable. No new standalone assets were created.')
+  const binding = runtimeBinding.binding
+  const boundEvents = policyAllowed.map((event) => ({
+    ...event,
+    assetId: binding && (binding.attribution === 'bound' || binding.assetName === event.assetName) ? binding.assetId : null,
+  }))
+  const persistence = await persistRuntimeCryptoEvents(client, agent.user_id, boundEvents)
+  if (!persistence.tableAvailable) return jsonError(res, 503, 'RUNTIME_EVIDENCE_UNAVAILABLE', 'Runtime evidence storage is unavailable. Retry once it is restored.')
+  const evidence = boundEvents.filter((event) => event.metadata?.observationKind !== 'scan-evidence').map(runtimeEventToEvidence)
+  if (!evidence.length) {
+    return res.json({ data: { ...persistence, acceptedEventCount: boundEvents.length, rejectedEventCount, outOfPolicy: false, evidence: { evidenceCount: 0, findingCount: 0, links: [] } } })
+  }
   const evidenceResult = await processEvidenceBatch(client, agent.user_id, evidence, `agent-runtime:${agent.name || agent.id}`, {
     agent,
     alertThreshold: policy.alertThreshold,

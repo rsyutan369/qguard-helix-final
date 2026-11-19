@@ -178,7 +178,7 @@ async function offline() {
     now: NOW,
   })
   await check('billing: MRR counts only provider-billed rows (QA seed = $0)', () => {
-    assert.equal(billing.stats.mrrCents, 3000)
+    assert.equal(billing.stats.mrrCents, 2000, "Pro monthly list price $20")
     assert.equal(billing.rows.find((row) => row.id === 's-comp')!.mrrCents, 0)
   })
   await check('billing: complimentary rows are never "upcoming invoices" (next renewal = paid row)', () => {

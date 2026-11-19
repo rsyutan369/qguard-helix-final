@@ -1,4 +1,5 @@
 fn main() {
+    offline_auth_config();
     // Recompile so compile-time hardening markers (option_env!) pick up new values
     // when the release pipeline sets them; otherwise cargo caches stale evidence.
     for var in [
@@ -28,6 +29,63 @@ fn main() {
     wolfcrypt::build();
 
     tauri_build::build();
+}
+
+/// Bundle only the public Auth endpoint and publishable/anon key. The renderer
+/// cannot choose the HTTPS origin used to authorize access to local accounts.
+fn offline_auth_config() {
+    use std::{env, fs, path::Path};
+
+    let vars = [
+        ("QGUARD_OFFLINE_AUTH_URL", "QGUARD_BUNDLED_AUTH_URL", ["VITE_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"]),
+        ("QGUARD_OFFLINE_AUTH_PUBLIC_KEY", "QGUARD_BUNDLED_AUTH_PUBLIC_KEY", ["VITE_SUPABASE_ANON_KEY", "NEXT_PUBLIC_SUPABASE_ANON_KEY"]),
+    ];
+    let files = ["../.env.production.local", "../.env.local", "../.env.production", "../.env"];
+    for file in files {
+        println!("cargo:rerun-if-changed={file}");
+    }
+    for (target, output, keys) in vars {
+        let env_keys = [target, keys[0], keys[1]];
+        for key in env_keys {
+            println!("cargo:rerun-if-env-changed={key}");
+        }
+        let value = env_keys.into_iter().find_map(|name| env::var(name).ok().filter(|v| !v.trim().is_empty()))
+            .or_else(|| files.into_iter().filter_map(|file| fs::read_to_string(Path::new(file)).ok())
+                .find_map(|body| keys.iter().find_map(|key| dotenv_value(&body, key))));
+        let value = value.as_deref().map(str::trim).filter(|value| {
+            if value.contains(['\r', '\n', '\0']) { return false; }
+            if target == "QGUARD_OFFLINE_AUTH_PUBLIC_KEY" { offline_public_key(value) }
+            else { offline_auth_url(value) }
+        }).unwrap_or_default();
+        println!("cargo:rustc-env={output}={value}");
+    }
+}
+
+fn offline_auth_url(value: &str) -> bool {
+    let Ok(url) = url::Url::parse(value) else { return false };
+    url.scheme() == "https" && url.host_str().and_then(|host| host.strip_suffix(".supabase.co"))
+        .is_some_and(|project| !project.is_empty() && project.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit()))
+        && url.username().is_empty() && url.password().is_none() && url.port().is_none()
+        && url.path() == "/" && url.query().is_none() && url.fragment().is_none()
+}
+
+fn offline_public_key(value: &str) -> bool {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    if value.starts_with("sb_publishable_") {
+        return true;
+    }
+    value.split('.').nth(1).and_then(|payload| URL_SAFE_NO_PAD.decode(payload).ok())
+        .and_then(|payload| serde_json::from_slice::<serde_json::Value>(&payload).ok())
+        .is_some_and(|claims| claims.get("role").and_then(serde_json::Value::as_str) == Some("anon"))
+}
+
+fn dotenv_value(body: &str, key: &str) -> Option<String> {
+    body.lines().find_map(|line| {
+        let (name, value) = line.trim_start().trim_start_matches("export ").split_once('=')?;
+        (name.trim() == key).then_some(value.trim())
+            .map(|value| value.trim_matches(['"', '\'']).to_string())
+            .filter(|value| !value.is_empty())
+    })
 }
 
 /// `--features wolfcrypt`: the cryptographic boundary (`crypto::provider`)

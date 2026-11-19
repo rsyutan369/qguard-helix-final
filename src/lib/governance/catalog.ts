@@ -17,6 +17,7 @@
  */
 
 import type { ControlDefinition, FrameworkDefinition, RequirementDefinition } from './types'
+import { PQC_TRANSITION_SOURCES as sources } from '../crypto/pqc-transition-sources'
 
 /* ================================================================== */
 /* Controls — what the platform can actually measure                   */
@@ -552,14 +553,51 @@ export const FRAMEWORK_CATALOG: FrameworkDefinition[] = [
   },
   {
     id: 'nist-ir-8547',
-    name: 'NIST IR 8547 — Transition to Post-Quantum Cryptography',
+    name: 'NIST IR 8547 — Transition to Post-Quantum Cryptography Standards',
     shortName: 'NIST IR 8547',
     authority: 'NIST',
-    version: 'Initial Public Draft',
-    scope: 'Deprecation timeline for classical public-key cryptography and transition to PQC standards.',
+    version: 'Final · October 2026',
+    scope: sources.nist.summary,
     aliases: /8547|post[\s-]?quantum\s*transition|pqc\s*transition/i,
-    reference: 'https://csrc.nist.gov/pubs/ir/8547/ipd',
+    reference: sources.nist.url,
     category: 'standard',
+    referenceOnly: true,
+  },
+  {
+    id: 'nist-nccoe-pqc',
+    name: 'NCCoE Migration to Post-Quantum Cryptography',
+    shortName: 'NIST NCCoE PQC',
+    authority: 'NIST NCCoE',
+    version: 'Project guidance',
+    scope: sources.nccoe.summary,
+    aliases: /nccoe|sp\s*1800-38/i,
+    reference: sources.nccoe.url,
+    category: 'standard',
+    referenceOnly: true,
+  },
+  {
+    id: 'eo-14412',
+    name: 'Executive Order 14412 — Securing the Nation Against Advanced Cryptographic Attacks',
+    shortName: 'EO 14412',
+    authority: 'White House',
+    version: sources.executiveOrder.published,
+    scope: sources.executiveOrder.summary,
+    aliases: /\b14412\b/i,
+    reference: sources.executiveOrder.url,
+    category: 'directive',
+    referenceOnly: true,
+  },
+  {
+    id: 'omb-m-26-15',
+    name: 'OMB M-26-15 — Execution of the Migration to Post-Quantum Cryptography',
+    shortName: 'OMB M-26-15',
+    authority: 'OMB',
+    version: sources.omb.published,
+    scope: sources.omb.summary,
+    aliases: /\bm[-\s]?26[-\s]?15\b/i,
+    reference: sources.omb.url,
+    category: 'directive',
+    referenceOnly: true,
   },
   {
     id: 'cnsa-2',
@@ -569,8 +607,9 @@ export const FRAMEWORK_CATALOG: FrameworkDefinition[] = [
     version: '2.0',
     scope: 'Quantum-resistant algorithm suite and adoption timeline for national security systems.',
     aliases: /cnsa/i,
-    reference: 'https://www.nsa.gov/cybersecurity-guidance/',
+    reference: 'https://www.nsa.gov/Resources/CNSA-Suite/',
     category: 'directive',
+    referenceOnly: true,
   },
   {
     id: 'fips-pqc',
@@ -578,10 +617,11 @@ export const FRAMEWORK_CATALOG: FrameworkDefinition[] = [
     shortName: 'FIPS PQC',
     authority: 'NIST',
     version: '2024',
-    scope: 'Approved post-quantum key establishment (ML-KEM) and digital signature (ML-DSA, SLH-DSA) algorithms.',
+    scope: `${sources.fips.summary} Algorithm observations do not establish implementation conformance or FIPS 140 module validation.`,
     aliases: /fips\s*20[345]|ml[-\s]?kem|ml[-\s]?dsa|slh[-\s]?dsa/i,
-    reference: 'https://csrc.nist.gov/pubs/fips/203/final',
+    reference: sources.fips.url,
     category: 'standard',
+    referenceOnly: true,
   },
   {
     id: 'nist-800-57',
@@ -977,9 +1017,9 @@ export const REQUIREMENT_CATALOG: RequirementDefinition[] = [
     id: 'nist-ir-8547::TRANS-3',
     frameworkId: 'nist-ir-8547',
     code: 'Transition 3',
-    title: 'Deprecate 112-bit classical strength by 2030',
-    summary: 'Move away from cryptography providing only 112-bit classical security within the published deprecation timeline.',
-    controlIds: ['CTL-ALG-02', 'CTL-PQC-03'],
+    title: 'Transition away from quantum-vulnerable public-key cryptography',
+    summary: sources.nist.summary,
+    controlIds: ['CTL-PQC-02', 'CTL-PQC-03'],
   },
   {
     id: 'nist-ir-8547::TRANS-4',
@@ -988,6 +1028,50 @@ export const REQUIREMENT_CATALOG: RequirementDefinition[] = [
     title: 'Maintain cryptographic agility',
     summary: 'Retain the ability to replace cryptographic algorithms without redesigning the systems that use them.',
     controlIds: ['CTL-PQC-05', 'CTL-GOV-01'],
+  },
+
+  /* ---- NCCoE migration guidance and U.S. federal direction ---------- */
+  {
+    id: 'nist-nccoe-pqc::DISCOVERY', frameworkId: 'nist-nccoe-pqc', code: 'Discovery workstream',
+    title: 'Inventory and prioritize cryptographic uses',
+    summary: 'Discover where and how cryptography protects systems and data; use the inventory to prioritize migration by risk.',
+    controlIds: ['CTL-INV-01', 'CTL-INV-02', 'CTL-PQC-02'],
+  },
+  {
+    id: 'nist-nccoe-pqc::INTEROP', frameworkId: 'nist-nccoe-pqc', code: 'Interoperability workstream',
+    title: 'Test interoperability before rollout',
+    summary: 'Exercise supported protocols, implementations and parameters in a controlled non-production environment and record compatibility and performance.',
+    controlIds: [],
+  },
+  {
+    id: 'eo-14412::4a', frameworkId: 'eo-14412', code: '§4(a)', title: 'Designate a PQC migration lead',
+    summary: 'Agency heads identify the migration lead and provide the lead’s name and contact details to OMB and the National Cyber Director within 30 days of the order.',
+    controlIds: [],
+  },
+  {
+    id: 'eo-14412::4b', frameworkId: 'eo-14412', code: '§4(b)', title: 'Accelerate federal high priority migration',
+    summary: sources.executiveOrder.summary,
+    controlIds: ['CTL-INV-01', 'CTL-PQC-02', 'CTL-PQC-03'],
+  },
+  {
+    id: 'omb-m-26-15::3A', frameworkId: 'omb-m-26-15', code: '§3(A), §3(C)', title: 'Govern and execute a risk-prioritized migration',
+    summary: 'Prioritize high value assets, high impact systems and other systems with sensitive data or particular quantum exposure. Address vendor dependencies and prioritize replacement or retirement where PQC and hybrid cryptography cannot be supported.',
+    controlIds: ['CTL-INV-01', 'CTL-PQC-02', 'CTL-PQC-05'],
+  },
+  {
+    id: 'omb-m-26-15::3D', frameworkId: 'omb-m-26-15', code: '§3(B), §3(D)', title: 'Submit the agency migration plan',
+    summary: 'Submit to OMB and ONCD within 120 days of the memo. Schedule discovery (2026–27), pilots (2027–28), priority key establishment (2028–30), priority signatures (2031) and remaining systems (by 2035, based on risk and available products).',
+    controlIds: ['CTL-PQC-02'],
+  },
+  {
+    id: 'omb-m-26-15::APPB', frameworkId: 'omb-m-26-15', code: 'Appendix B §2', title: 'Document the required plan contents',
+    summary: 'Record risk-based system priorities, migration milestones, TLS 1.3 testing and deployment, inventory methods and tools, crypto-agile architecture, third-party coordination, funding and staffing, transition risks and accountable roles.',
+    controlIds: ['CTL-INV-01', 'CTL-INV-03', 'CTL-PQC-02', 'CTL-PQC-05'],
+  },
+  {
+    id: 'omb-m-26-15::TLS', frameworkId: 'omb-m-26-15', code: 'Appendix A §4', title: 'Support TLS 1.3 or a successor by January 2, 2030',
+    summary: 'Federal TLS version support and negotiated PQC key establishment are separate checks; version support alone does not prove PQC.',
+    controlIds: [],
   },
 
   /* ---- CNSA 2.0 ---------------------------------------------------- */

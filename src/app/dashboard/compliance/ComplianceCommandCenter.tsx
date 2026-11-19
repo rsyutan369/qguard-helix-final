@@ -553,7 +553,7 @@ export default function ComplianceCommandCenter() {
           icon={Scale}
           meta={`${data.frameworks.length} frameworks`}
           href="/dashboard/regulatory-mapping"
-          hint="Framework compliance over the controls that could be measured, plus how many of its requirements are assessable at all."
+          hint="Scores summarize measured controls. Reference mappings show source scope and related controls without assigning a compliance result."
         >
           Framework coverage
         </SectionLabel>
@@ -579,7 +579,7 @@ export default function ComplianceCommandCenter() {
                 <Td>
                   <div className="font-semibold text-white/85">{framework.shortName}</div>
                   <div className="text-[10px] text-white/35">
-                    {framework.authority} · {framework.version}
+                    {framework.authority} · {framework.version}{framework.referenceOnly ? " · Reference mapping" : ""}
                   </div>
                 </Td>
                 <Td align="right">{scoreCell(framework.score, framework.measured)}</Td>

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import IncomingShareNotice from "@/components/IncomingShareNotice";
 import MessageAlerts from "@/components/MessageAlerts";
 import { useOptionalChatPreferences } from "@/lib/chat-preferences-context";
@@ -8,7 +9,7 @@ import type { ConversationSummary } from "@/lib/types";
 
 /**
  * The app's in-app notifications, stacked in one place (top right on desktop,
- * under the header on a phone): files shared with you, then new messages.
+ * under the header on a phone): local transfers, Vault shares, and new messages.
  * Rendered inside ChatPreferencesProvider so mutes and alert settings apply.
  */
 export default function NotificationStack({
@@ -18,6 +19,7 @@ export default function NotificationStack({
   showShares,
   showMessages,
   pendingShares,
+  transferNotice,
   onRespondShare,
   onViewShares,
   onOpenConversation,
@@ -29,6 +31,7 @@ export default function NotificationStack({
   showShares: boolean;
   showMessages: boolean;
   pendingShares: PendingShareNotice[];
+  transferNotice?: ReactNode;
   onRespondShare: (shareId: string, accept: boolean) => Promise<void>;
   onViewShares: () => void;
   onOpenConversation: (alert: MessageAlert) => void;
@@ -37,9 +40,10 @@ export default function NotificationStack({
   const { alerts, dismiss } = useMessageAlerts(conversations, userId);
   const visibleAlerts = showMessages ? alerts : [];
 
-  if (!showShares && visibleAlerts.length === 0) return null;
+  if (!transferNotice && !showShares && visibleAlerts.length === 0) return null;
   return (
     <div className="fixed inset-x-3 top-[calc(env(safe-area-inset-top,0px)+104px)] z-[60] flex flex-col gap-2 sm:inset-x-auto sm:right-5 sm:top-[76px] sm:w-[390px]">
+      {transferNotice}
       {showShares && <IncomingShareNotice userId={userId} pending={pendingShares} onRespond={onRespondShare} onView={onViewShares} />}
       <MessageAlerts
         alerts={visibleAlerts}
