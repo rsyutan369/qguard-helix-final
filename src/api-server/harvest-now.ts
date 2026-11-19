@@ -53,9 +53,8 @@ const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n
 const clamp = (n: number, min = 0, max = 100) => Math.max(min, Math.min(max, Math.round(n)))
 
 /**
- * Year a cryptographically-relevant quantum computer (CRQC) is conservatively
- * estimated to threaten RSA-2048 / ECC-256. Aligns with NIST/CNSA 2.0 planning
- * horizons (mandated deprecation of classical asymmetric crypto by 2030-2035).
+ * Illustrative year used to model a cryptographically relevant quantum computer.
+ * Published migration milestones do not predict when such a computer will exist.
  */
 const CRQC_YEAR = 2030
 const NOW_YEAR = new Date().getFullYear()
@@ -584,8 +583,8 @@ function buildBreakTimeline(snapshot: Snapshot) {
     let critical = false
     if (y === NOW_YEAR) milestone = 'Current posture'
     else if (y === completionYear) { milestone = 'Migration completion target'; critical = true }
-    else if (y === CRQC_YEAR) { milestone = 'Estimated CRQC threat horizon'; critical = true }
-    else if (y === CRQC_YEAR - 1) milestone = 'CNSA 2.0 deprecation of classical asymmetric'
+    else if (y === CRQC_YEAR) { milestone = 'Assumed CRQC timeline'; critical = true }
+    else if (y === CRQC_YEAR - 1) milestone = 'Illustrative migration target'
     years.push({ year: y, projectedRisk, milestone, critical })
   }
   return {

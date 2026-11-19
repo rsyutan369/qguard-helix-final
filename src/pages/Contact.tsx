@@ -53,7 +53,7 @@ const TOPICS: Topic[] = [
     id: 'billing',
     label: 'Billing and refunds',
     icon: CreditCard,
-    blurb: `Subscription changes, invoices, cancellations, and refunds under the ${REFUND_POLICY.initialWindowDays}-day window.`,
+    blurb: `Subscription changes, invoices, cancellations, billing errors and refund requests (cancelling keeps access to the ${REFUND_POLICY.cancellationTakesEffect}).`,
     subject: 'Billing',
     prompts: [
       'Account email:',

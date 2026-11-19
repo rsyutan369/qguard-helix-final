@@ -6,6 +6,7 @@
  * server-side agility engine; nothing is computed or invented here.
  */
 
+import { quotedCsvCell as csvCell } from '@/lib/csv'
 import type {
   AgilityAssetRow,
   AgilityDomain,
@@ -286,10 +287,6 @@ export function downloadTextFile(filename: string, content: string, type: string
   anchor.download = filename
   anchor.click()
   URL.revokeObjectURL(url)
-}
-
-function csvCell(value: unknown): string {
-  return `"${String(value ?? '').replaceAll('"', '""')}"`
 }
 
 export function assetsToCsv(rows: AgilityAssetRow[]): string {

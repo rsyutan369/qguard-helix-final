@@ -12,7 +12,7 @@ import { describeMute } from "@/lib/chat-preferences";
 import { setFocusedConversation, takeRequestedConversation, onOpenConversationRequest } from "@/lib/chat-focus";
 import { formatContactCard, parseContactCard, type ContactCard } from "@/lib/contact-card";
 import { formatThreadTime } from "@/lib/thread-time";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type SetStateAction } from "react";
 import { openTelemetryDetails } from "@/lib/account-key";
 import { recordCryptoTelemetry } from "@/lib/crypto-telemetry";
 import { inlineMediaKind } from "@/lib/attachment-media";
@@ -305,6 +305,8 @@ interface ChatMessage {
   can_delete: boolean;
   /** Sealed and kept in the outbox: the relay was unreachable (roadmap 9.1). */
   queued?: boolean;
+  /** Shown the moment Send is pressed, while this device seals and relays it. */
+  sending?: boolean;
 }
 
 interface MessageUserState {
@@ -941,6 +943,13 @@ const SENDER_IDENTITY_PRIME_BUDGET_MS = 2_500;
 // cache, which is what made sends slow before) while bounding how long a send
 // can address a stale device set.
 const DEVICE_LIST_MAX_STALENESS_MS = 20_000;
+// How long a send waits for that re-read when it already knows devices to send
+// to. The re-read normally finished while the user was typing.
+const SEND_DEVICE_REFRESH_DEADLINE_MS = 2_500;
+// How long the desktop and Android apps wait for the relay to take a sealed
+// message before keeping it in the encrypted outbox instead. The request used
+// to run to the 30 s client timeout with the composer stuck on "Sending".
+const SEND_RELAY_DEADLINE_MS = 8_000;
 
 function mapDeviceTrustState(value: string): TrustedDevice["trust_state"] {
   const normalized = value.toLowerCase();
@@ -1343,7 +1352,25 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   const [myQrPayloadCopied, setMyQrPayloadCopied] = useState(false);
   const [showNewChat, setShowNewChat] = useState(false);
   const [newChatBusyId, setNewChatBusyId] = useState<string | null>(null);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatMessages, setChatMessagesState] = useState<ChatMessage[]>([]);
+  // Messages this device is sealing and sending right now, by client message
+  // id. They are painted the moment Send is pressed, before any key operation
+  // or network round trip, and stay on screen through every history reload
+  // until the send settles. Without this overlay a reload that lands mid-send
+  // would replace the thread with server rows and make the message vanish.
+  const pendingEchoesRef = useRef<Map<string, ChatMessage>>(new Map());
+  const setChatMessages = useCallback((update: SetStateAction<ChatMessage[]>) => {
+    setChatMessagesState((current) => {
+      const next = typeof update === "function" ? update(current) : update;
+      const pending = pendingEchoesRef.current;
+      if (pending.size === 0) return next;
+      const active = activeConversationIdRef.current;
+      const missing = [...pending.values()].filter((echo) => echo.conversation_id === active
+        && !next.some((item) => item.client_message_id === echo.client_message_id));
+      if (missing.length === 0) return next;
+      return [...next, ...missing].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    });
+  }, []);
   const [messagesLoading, setMessagesLoading] = useState(false);
   // True once the history render deadline has passed with nothing to show, so
   // the pane can offer recovery instead of an endless spinner.
@@ -1467,6 +1494,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
   // When the send path last read the AUTHORITATIVE recipient-device list from
   // the server, keyed by the recipient set. See DEVICE_LIST_MAX_STALENESS_MS.
   const deviceListFetchedAtRef = useRef<Map<string, number>>(new Map());
+  // The authoritative device list read ahead of a send, while the user types.
+  const deviceRefreshRef = useRef<{ key: string; at: number; pending: boolean; devices: Promise<TrustedDevice[]> } | null>(null);
   // Newest envelope `created_at` the open thread has loaded, used by the idle
   // catch-up probe to avoid reloading when nothing new exists.
   const newestEnvelopeAtRef = useRef<string>("");
@@ -5086,7 +5115,89 @@ export default function SecureChatPage({ userId, conversations, devices, contact
     }
   }
 
-  async function sendEncryptedPayload(
+  /** Re-read the recipients' device list in the background while the user types. */
+  function prewarmRecipientDevices() {
+    if (activeRecipientUserIds.length === 0) return;
+    const key = [...activeRecipientUserIds].sort().join(",");
+    const freshFor = DEVICE_LIST_MAX_STALENESS_MS / 2;
+    if (Date.now() - (deviceListFetchedAtRef.current.get(key) ?? 0) <= freshFor) return;
+    const warmed = deviceRefreshRef.current;
+    if (warmed && warmed.key === key && (warmed.pending || Date.now() - warmed.at <= freshFor)) return;
+    const entry = {
+      key,
+      at: Date.now(),
+      pending: true,
+      devices: loadTrustedDevicesForUsers(activeRecipientUserIds).catch(() => [] as TrustedDevice[]),
+    };
+    deviceRefreshRef.current = entry;
+    void entry.devices.then((devices) => {
+      entry.pending = false;
+      entry.at = Date.now();
+      if (devices.length === 0 && deviceRefreshRef.current === entry) deviceRefreshRef.current = null;
+    });
+  }
+
+  type SendPayloadOptions = Parameters<typeof sealAndRelayPayload>[1];
+
+  /**
+   * Send a message, painting it in the thread the moment Send is pressed.
+   * Sealing (key operations in the Rust core) and the relay round trip then
+   * run behind a message the sender can already see. A failed send removes
+   * it again and the caller restores the composer text.
+   */
+  async function sendEncryptedPayload(plaintext: string, options: SendPayloadOptions = {}): Promise<string> {
+    const conversation = activeConversation;
+    const clientMessageId = options.clientMessageId ?? crypto.randomUUID();
+    // Controls (edits, reactions) change an existing message, and a batched
+    // fan-out reuses one id across calls: neither gets a placeholder.
+    const optimistic = Boolean(conversation && plaintext.trim() && currentDevice && activeRecipientUserIds.length > 0
+      && !options.controlType && !options.onlyDeviceIds && !parseSecureControl(plaintext));
+    if (optimistic && conversation) {
+      const secureMessage = parseSecurePlaintext(plaintext);
+      const isLocked = Boolean(secureMessage.lifecycle.available_at && new Date(secureMessage.lifecycle.available_at).getTime() > Date.now());
+      pendingEchoesRef.current.set(clientMessageId, {
+        id: clientMessageId,
+        client_message_id: clientMessageId,
+        row_ids: [],
+        conversation_id: conversation.id,
+        sender_user_id: userId,
+        recipient_user_id: activeRecipientUserIds[0] ?? userId,
+        kind: toMessageKind(options.messageKind ?? "Text"),
+        plaintext: isLocked ? `Time-locked message unlocks ${new Date(secureMessage.lifecycle.available_at ?? "").toLocaleString()}` : secureMessage.body,
+        attachment: isLocked ? null : secureMessage.attachment,
+        reply_to: secureMessage.reply_to,
+        edited_at: null,
+        reactions: [],
+        expires_at: secureMessage.lifecycle.expires_at,
+        available_at: secureMessage.lifecycle.available_at,
+        read_once: secureMessage.lifecycle.read_once,
+        view_once: secureMessage.lifecycle.view_once,
+        threat: assessThreatLocally(secureMessage.body),
+        status: "decrypted",
+        authenticated: true,
+        replay_protected: true,
+        created_at: new Date().toISOString(),
+        error: null,
+        can_delete: false,
+        sending: true,
+      });
+      // The setter overlays pending messages on whatever the thread holds.
+      setChatMessages((current) => current);
+    }
+    try {
+      return await sealAndRelayPayload(plaintext, { ...options, clientMessageId });
+    } catch (error) {
+      if (optimistic) {
+        pendingEchoesRef.current.delete(clientMessageId);
+        setChatMessages((current) => current.filter((item) => !(item.sending && item.client_message_id === clientMessageId)));
+      }
+      throw error;
+    } finally {
+      pendingEchoesRef.current.delete(clientMessageId);
+    }
+  }
+
+  async function sealAndRelayPayload(
     plaintext: string,
     options: {
       clientMessageId?: string;
@@ -5143,9 +5254,24 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       deliveryRecipientDevices.length === 0 ||
       Date.now() - lastFetchedAt > DEVICE_LIST_MAX_STALENESS_MS
     ) {
+      // The list is normally already fresh: it is re-read in the background as
+      // soon as the user starts typing (see prewarmRecipientDevices). When a
+      // send still has to wait for it and devices are already known, the wait
+      // is bounded: on a slow or dead network the message goes to the devices
+      // this client knows instead of sitting on "Sending".
       let fetched: TrustedDevice[] = [];
       try {
-        fetched = await loadTrustedDevicesForUsers(recipientUserIds);
+        const warmed = deviceRefreshRef.current;
+        const read = warmed && warmed.key === recipientCacheKey
+          && (warmed.pending || Date.now() - warmed.at <= DEVICE_LIST_MAX_STALENESS_MS)
+          ? warmed.devices
+          : loadTrustedDevicesForUsers(recipientUserIds);
+        fetched = deliveryRecipientDevices.length > 0
+          ? await Promise.race([
+            read,
+            new Promise<TrustedDevice[]>((resolve) => window.setTimeout(() => resolve([]), SEND_DEVICE_REFRESH_DEADLINE_MS)),
+          ])
+          : await read;
       } catch {
         fetched = [];
       }
@@ -5256,7 +5382,23 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       },
     }));
 
-    const { error } = await supabase.from("messaging_message_envelopes").insert(envelopeRows);
+    // Where an encrypted outbox exists (the desktop and Android apps), a relay
+    // that is offline or slow must not hold the send: the sealed rows go to the
+    // outbox and are delivered when the relay answers. A row that did land
+    // before its answer was lost is recognised there by its id.
+    const canQueue = isTauriRuntime();
+    let error: unknown = null;
+    if (canQueue && typeof navigator !== "undefined" && navigator.onLine === false) {
+      error = new TypeError("This device is offline");
+    } else {
+      const relayDeadline = new AbortController();
+      const relayTimer = canQueue ? window.setTimeout(() => relayDeadline.abort(), SEND_RELAY_DEADLINE_MS) : null;
+      try {
+        ({ error } = await supabase.from("messaging_message_envelopes").insert(envelopeRows).abortSignal(relayDeadline.signal));
+      } finally {
+        if (relayTimer !== null) window.clearTimeout(relayTimer);
+      }
+    }
     let queued = false;
     if (error) {
       // The relay never answered: keep the sealed rows and send them later
@@ -5278,7 +5420,8 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       metadata: { conversation_id: activeConversation.id, recipients: deliveryRecipientDevices.length, client_message_id: clientMessageId },
     }).catch(() => undefined);
 
-    const cachedAt = new Date().toISOString();
+    // Keep the time the message was first painted, so it does not jump.
+    const cachedAt = pendingEchoesRef.current.get(clientMessageId)?.created_at ?? new Date().toISOString();
     const control = parseSecureControl(plaintext);
     if (control) {
       decryptedControlCacheRef.current.set(clientMessageId, {
@@ -5325,7 +5468,10 @@ export default function SecureChatPage({ userId, conversations, devices, contact
       // into someone else's thread.
       if (activeConversationIdRef.current === activeConversation.id) {
         setChatMessages((current) => {
-          if (current.some((item) => item.client_message_id === clientMessageId)) return current;
+          // Replace the "Sending" placeholder painted when Send was pressed.
+          if (current.some((item) => item.client_message_id === clientMessageId)) {
+            return current.map((item) => (item.client_message_id === clientMessageId && item.sending ? localEcho : item));
+          }
           return [...current, localEcho]
             .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
         });
@@ -6525,6 +6671,9 @@ export default function SecureChatPage({ userId, conversations, devices, contact
                       {!mine && isMultiParty(activeConversation) && (
                         <div className="mb-1 text-[11px] font-bold text-violet-700">{memberName(chatMessage.sender_user_id)}</div>
                       )}
+                      {chatMessage.sending && !chatMessage.queued && (
+                        <div className="mb-1 text-[11px] font-semibold opacity-80">Sending…</div>
+                      )}
                       {chatMessage.queued && (
                         <div className="mb-1 text-[11px] font-semibold opacity-80">Waiting to send — the relay is unreachable. It stays encrypted on this device until then.</div>
                       )}
@@ -6888,6 +7037,7 @@ export default function SecureChatPage({ userId, conversations, devices, contact
               onBlur={() => setComposerFocused(false)}
               onChange={(event) => {
                 setMessage(event.target.value);
+                prewarmRecipientDevices();
                 setShowComposerTools(false);
                 pulseTyping().catch(() => undefined);
               }}

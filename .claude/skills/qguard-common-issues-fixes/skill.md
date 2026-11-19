@@ -3659,6 +3659,94 @@ reads/writes (`.in()` reads, bulk upserts) so it stays well under the agent time
 
 ---
 
+## 72. Real Time Scanning: a scan reopened right after it finished shows fewer events / still "Running"
+
+**Problem**
+
+`tools/live-scan-live-check.ts`: the stored `pqc_scan_sessions.metadata.liveScan`
+held 652 events and status `running` while the live run had 656 and `completed`.
+
+**Root Cause**
+
+Two compounding causes in `src/api-server/live-scan.ts`: (1) flushes were not
+serialized — a debounced flush already in flight could land after the final one and
+overwrite it with an older state; (2) the SSE stream sent `end` 250 ms after the
+terminal event, while the final write (~600 ms RTT from this machine) was still in
+flight, so a client reopening the scan read the last debounced snapshot.
+
+**Solution**
+
+Flushes run on one promise chain per run and snapshot the run when they EXECUTE;
+the worker awaits the terminal flush before `workerAlive = false`, and the stream's
+`end` frame is sent from a done-listener after that. `loadRun` prefers the in-memory
+run (by run id or session id) over the stored row.
+
+**Prevention**
+- [ ] Any "persist then announce done" path must await the write before announcing.
+- [ ] Debounced writers must be serialized, never fire-and-forget in parallel.
+
+---
+
+## 73. Certificate chain entries all read signature algorithm "unknown"
+
+**Problem**
+
+Every CA certificate above the leaf showed `signatureAlgorithm: 'unknown'`.
+
+**Root Cause**
+
+`walkCertificateChain` (web-scanner/certificate-parser.ts) read the algorithm from
+`X509Certificate.toString()`, which is PEM, not OpenSSL text — there is no
+"Signature Algorithm:" line to match. The leaf path already used the DER OID.
+
+**Solution**
+
+Chain entries use `extractSignatureAlgorithmOidFromDer` like the leaf (text match kept
+as fallback). The walker now also records `fingerprint256`, `serialNumber`,
+`validFrom`, and `signatureVerifiedByNext` (`checkIssued` + `verify` under the next
+entry's key) — the only basis on which an issuer link may be drawn as validated.
+
+**Prevention**
+- [ ] Never parse `X509Certificate.toString()` for fields — it is PEM.
+- [ ] `tools/live-scan-check.ts --network` asserts chain signature algorithms are parsed.
+
+---
+
+## 74. Real Time Scanning: canvas goes blank (white) after a scan finishes; "Fit to canvas" jumps to an extreme zoom
+
+**Problem**
+
+User report: nodes are visible while the scan runs, the canvas is empty after it
+completes, and Fit "goes full screen". Not reproducible in a foreground headless tab.
+
+**Root Cause**
+
+Everything depended on React Flow's INTERNAL measurements (pane size, node sizes),
+which are only taken while the tab renders frames. Collapsing the pane during a scan
+(stand-in for a background tab / resized layout) reproduced it: React Flow measured
+0×0, and (1) `onlyRenderVisibleElements` (on above 250 nodes) culls every node
+against a 0×0 pane → blank canvas while all data exists; (2) `fitView` from the
+follow effect / Fit button computes a non-finite viewport from those sizes, and a NaN
+viewport hides everything until something sets a valid one; (3) MiniMap/Background
+logged `Received NaN for the r/x/y attribute`.
+
+**Solution**
+
+`page.tsx fitCanvas()` frames from the layout memory's positions and the canvas
+element's `clientWidth/Height`, refuses to run under 50 px, and only writes a finite
+viewport. It is used by Fit, Follow live, Auto layout and focus/trace; React Flow's
+own `fitView` prop and Controls fit button were removed. `onlyRenderVisibleElements`
+was removed. The finished graph is re-framed on completion and on `visibilitychange`.
+MiniMap/Background render only when a ResizeObserver reports a non-zero pane.
+
+**Prevention**
+- [ ] Never drive layout-critical behaviour from React Flow measurements on a page
+      that streams while the tab may be hidden; derive geometry from your own layout.
+- [ ] Repro recipe: collapse the canvas wrapper (`display:none`) for the whole scan via
+      the render check's `ACTION_JS`, restore after completion, count on-screen nodes.
+
+---
+
 ## 70. Quantum Readiness flips 27 ↔ 62 on unchanged data; a populated estate briefly reads "Not started / 0"
 
 **Problem**
@@ -3739,6 +3827,88 @@ A failed read was indistinguishable from "no data":
       (render harness `LOADING_FORBIDDEN`).
 - [ ] `npx tsx tools/quantum-readiness-pages-check.ts` (57 checks, §8–§11 are this
       entry) and `node tools/qr-pages-render/run.mjs` (27 renders).
+
+---
+
+## 71. Assets / CBOM / Migration Intelligence / Planner / Sandbox disagree: "PQC Readiness 49%" vs 22%, 42 components vs 19, "Blocked 1" over no Blocked row, "Provider 100 · Quantum-Ready" with no provider findings
+
+**Problem**
+
+Cross-page audit of the five discovery → migration pages (2026-11-11), one 2-asset
+tenant, data unchanged:
+
+- Sandbox read **PQC Readiness 49%** and "59 vulnerable"; CBOM, Assets, QR and the
+  Planner hero read **22%** and **25** of 32.
+- Planner listed `expired.badssl.com` with **42/42** vulnerable components and
+  **18 critical**; the Asset Inventory listed the same asset with **19/19**, and
+  the whole estate has **9** critical. Its own reconciliation table showed 25 vs 59
+  and explained the gap away in a footnote.
+- Planner heatmap tile "Blocked 1 / Needs Upgrade 1" sat above two "Needs Upgrade"
+  rows; its workflow strip said "Simulate — In Progress" and "Plan — In Progress"
+  with zero simulations and "No migration plans submitted yet" on the same page.
+- Planner + advisor + reports printed a dependency chain
+  `Users -> CDN -> Load Balancer -> … -> Database -> Encrypted Backup`, blast
+  radius 7, for assets with no recorded relationship.
+- Migration Intelligence, the Planner and QR Reports showed **Provider Readiness
+  100 · Quantum-Ready** for a tenant with zero provider-attributed findings.
+- Sandbox recommended "Migrate EXPIRED CERTIFICATE … Critical quantum
+  vulnerability" with an ML-DSA target.
+- Assets, CBOM and Sandbox live streams carried the access token in the URL.
+
+**Root Cause**
+
+1. `crypto_inventory` holds measured cryptography AND scanner findings, and
+   repeats a component per scan. `sandbox.ts` and `asset-intelligence.ts`
+   counted raw rows; CBOM/Assets/QR count `isCryptographicComponent` rows grouped
+   by `cbomComponentKey` — one rule, implemented twice, and the copies drifted.
+2. Planner per-asset severity summed finding `instances`, i.e. once per scan
+   that saw the finding plus its `crypto_exposures` copy.
+3. `buildHeatmap` set the tile from `blockerCount > 1 ? 1 : 0` and never marked
+   a row; `buildStages` used `ready ? 'In Progress'` where `ready` meant
+   "tenant has scan data".
+4. `buildDependencyAnalysis` substituted a stock topology when no edges existed.
+5. `domainReadiness` returned `{ score: 100, level: 'Quantum-Ready' }` for a
+   domain with `total === 0`, and three pages drew the score without reading
+   `total`.
+6. `EventSource` cannot set headers, so three clients used `?token=`.
+
+**Solution**
+
+- `buildAssetPortfolio` and the sandbox snapshot count components through
+  `partitionAssetInventory(rows, algorithmFamily)` (`src/lib/scanner/asset-components.ts`);
+  the sandbox prefers the scanner-intelligence totals and exposes
+  `summary.cryptoComponents / vulnerableComponents / componentSource`.
+- Planner severity = `dedupeGradedObservations` over the asset's scans + exposures.
+- Heatmap: one state per asset, tiles count those states; "Blocked" only when a
+  high/critical blocker names the asset (certificate blockers carry
+  `affectedAssetIds`, because a common name is not an asset name).
+- Stages: `complete | active | ready | pending`; "In Progress" needs a real
+  record. Simulation jobs (`isSimulationJob`) feed Simulate, never Execute.
+- Dependency chains only from recorded edges; otherwise
+  "(no dependency relationships recorded)", blast radius 0, "Not measured".
+- A domain with no findings has level "Not applicable"; gauges render N/A
+  (`ScoreGauge notApplicable`), never the weight-zero 100.
+- `src/lib/authenticated-event-stream.ts` reads SSE with `fetch()` + the
+  Authorization header; scanner-intelligence and sandbox streams use it, the
+  sandbox router refuses `?token=`, and Migration Intelligence moved onto
+  `streamLiveSnapshot` + `useLiveResource` (it used to re-send ~290 KB every 30 s).
+
+**Prevention Checklist**
+
+- [ ] Any count of "components" goes through `partitionAssetInventory` /
+      `isCryptographicComponent` — never `crypto_inventory.length`.
+- [ ] Any per-severity count goes through `dedupeGradedObservations` — never a
+      sum of `instances`.
+- [ ] A tile that summarises rows is COMPUTED from those rows' states.
+- [ ] "In Progress" requires a record of work; "has data" is "Ready".
+- [ ] `total === 0` for a scored population renders N/A with a reason.
+- [ ] No topology, dependency or provider that the tenant's evidence does not hold.
+- [ ] New SSE client → `openAuthenticatedEventStream` or `useLiveResource`;
+      never `new EventSource(…?token=)`.
+- [ ] `npx tsx tools/discovery-migration-consistency-check.ts` (live, 43 checks)
+      and `npx tsx tools/dashboard-route-render-check.ts <outDir>` (signed-in
+      render, fails on a token in any request URL). They share one QA sign-in, so
+      run them one after the other, not in parallel.
 
 ---
 

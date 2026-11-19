@@ -205,7 +205,7 @@ export default function QkmsOverview() {
             label="Custody coverage"
             value={metrics.custodyCoveragePercent === null ? '—' : `${metrics.custodyCoveragePercent}%`}
             unmeasured={metrics.custodyCoveragePercent === null}
-            detail={`${fmtNumber(metrics.hsmProtectedKeys)} HSM-backed · ${fmtNumber(metrics.unmanagedCustodyKeys)} unmanaged or unknown`}
+            detail={`${fmtNumber(metrics.hsmProtectedKeys)} report HSM custody · ${fmtNumber(metrics.unmanagedCustodyKeys)} unmanaged or unknown`}
             tone={metrics.unmanagedCustodyKeys > 0 ? 'warning' : 'good'}
             href="/dashboard/qkms/governance"
             hint="Share of keys with KNOWN custody that sit in an HSM, managed KMS or vault. Keys whose custody could not be established are excluded from the numerator and named separately."

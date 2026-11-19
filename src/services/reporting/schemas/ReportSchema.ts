@@ -949,6 +949,44 @@ export const integritySchema = z.object({
 });
 export type ReportIntegrity = z.infer<typeof integritySchema>;
 
+export const reportSourceCoverageSchema = z.object({
+  source: z.string(),
+  status: z.enum(['available', 'missing', 'partial']),
+  detail: z.string(),
+});
+export const reportProvenanceSchema = z.object({
+  reportId: z.string().uuid(),
+  workspaceOwnerId: z.string().uuid(),
+  organizationId: z.string().uuid().nullable(),
+  snapshotAt: z.string().datetime(),
+  assetInventoryVersion: z.string().nullable(),
+  cbomVersion: z.string().nullable(),
+  assessmentId: z.string().nullable(),
+  validationStatus: z.enum(['validated', 'incomplete']),
+  dataCompleteness: z.array(reportSourceCoverageSchema),
+});
+export type ReportProvenance = z.infer<typeof reportProvenanceSchema>;
+
+// A captured assessment carries only observed facts and explicitly attributed
+// assessment outputs. Legacy planning reports have a separate schema.
+export const evidenceAssessmentReportSchema = z.object({
+  meta: reportMetaSchema,
+  scope: reportScopeSchema.extend({
+    assets: z.array(reportScopeAssetSchema.extend({ riskScore: z.number().nullable() })),
+  }),
+  branding: brandingSchema,
+  executiveSummary: z.string(),
+  kpis: z.array(kpiSchema),
+  findings: z.array(findingSchema.pick({
+    id: true, title: true, severity: true, evidence: true, affectedAssets: true,
+    recommendation: true, source: true, detectedAt: true,
+  })),
+  tables: z.array(tableSchema),
+  provenance: reportProvenanceSchema,
+  integrity: integritySchema.optional(),
+});
+export type EvidenceAssessmentReport = z.infer<typeof evidenceAssessmentReportSchema>;
+
 export const enterpriseAssessmentReportSchema = z.object({
   meta: reportMetaSchema,
   // Default keeps previously-saved report JSON parseable (pre-scope reports = full scope).

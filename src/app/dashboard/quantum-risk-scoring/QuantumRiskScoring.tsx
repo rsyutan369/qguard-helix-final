@@ -6,6 +6,7 @@ import {
   RefreshCw, ScanLine, Search, Sparkles, Target, TrendingDown, X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { csvCell } from '@/lib/csv';
 import { askSophia } from '@/lib/sophia-bridge';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 import { Panel } from '../_components/executive/primitives';
@@ -66,17 +67,13 @@ export default function QuantumRiskScoring() {
       `# Headline quantum risk: ${data.headline.score}/100 (${data.headline.level}) — source: Quantum Readiness snapshot`,
       `# Filters: environment=${filters.environment}, owner=${filters.owner}, criticality=${filters.criticality}, level=${filters.level}${filters.search.trim() ? `, search="${filters.search.trim()}"` : ''}`,
       `# Rows: ${assets.length} of ${data.assets.length}`,
-    ].join('\n');
+    ].map(csvCell).join('\n');
     const columns = ['Asset', 'Type', 'Environment', 'Owner', 'Criticality', 'Internet Facing', 'State', 'Risk Score', 'Risk Level', 'HNDL', 'Posture', 'Vulnerable Components', 'Blast Radius', 'Migration Status'];
-    const cell = (v: unknown) => {
-      const t = v === null || v === undefined ? '' : String(v);
-      return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
-    };
     const body = assets.map((row) => [
       row.name, row.type, row.environment, row.owner, row.businessCriticality, row.internetFacing ? 'yes' : 'no',
       row.state, row.riskScore ?? 'not assessed', row.riskLevel, row.hndlScore, row.postureLabel,
       row.vulnerableComponentCount, row.blastRadius, row.migrationStatus,
-    ].map(cell).join(','));
+    ].map(csvCell).join(','));
     const blob = new Blob([`${header}\n${columns.join(',')}\n${body.join('\n')}\n`], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -156,7 +153,7 @@ export default function QuantumRiskScoring() {
               what={<>How exposed the estate is to a cryptographically relevant quantum computer — the canonical score from Quantum Readiness, decomposed per asset and per factor so every point is traceable.</>}
               why={<>Risk decides order. The assets with the highest quantum risk and the longest-lived data are the ones a harvest-now, decrypt-later adversary targets first, so they are the ones to migrate first.</>}
               next={{ label: nextStep.label, href: nextStep.href, detail: nextStep.detail, tone: nextStep.tone }}
-              scope={<>{data.coverage.assetsAssessed} asset(s) assessed · {data.coverage.assetsUnassessed} without cryptographic evidence ({data.coverage.coveragePct}% coverage).</>}
+              scope={<>{data.coverage.assetsWithEvidence} asset(s) assessed · {data.coverage.assetsUnassessed} without cryptographic evidence ({data.coverage.coveragePct}% coverage).</>}
             />
           ) : null}
 

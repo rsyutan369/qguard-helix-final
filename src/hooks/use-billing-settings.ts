@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { supabase } from '@/lib/supabase'
+import { openTicketedEventSource } from '@/lib/stream-ticket'
 
 export type BillingPlan = 'Starter' | 'Basic' | 'Pro' | 'Elite'
 export type BillingCycle = 'monthly' | 'annual'
@@ -292,8 +293,11 @@ export function useBillingSettings() {
     if (!token || !billing?.subscription?.id) return
 
     let retryTimer: number | null = null
+    let disposed = false
     const connect = () => {
-      const eventSource = new EventSource(`/api/v1/billing/stream?token=${encodeURIComponent(token)}`)
+      // A single-use ticket per connection: the JWT never enters the URL.
+      void openTicketedEventSource('billing', token).then((eventSource) => {
+      if (disposed) { eventSource.close(); return }
       eventSourceRef.current = eventSource
       eventSource.addEventListener('connected', () => setSseConnected(true))
       eventSource.addEventListener('heartbeat', () => setSseConnected(true))
@@ -311,10 +315,16 @@ export function useBillingSettings() {
         eventSource.close()
         retryTimer = window.setTimeout(connect, 15000)
       }
+      }).catch(() => {
+        if (disposed) return
+        setSseConnected(false)
+        retryTimer = window.setTimeout(connect, 15000)
+      })
     }
 
     connect()
     return () => {
+      disposed = true
       if (retryTimer) window.clearTimeout(retryTimer)
       eventSourceRef.current?.close()
       eventSourceRef.current = null

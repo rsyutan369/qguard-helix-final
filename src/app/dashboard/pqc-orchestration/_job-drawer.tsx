@@ -64,6 +64,8 @@ export function JobDrawer({ jobId, jobs, onClose }: { jobId: string | null; jobs
   const [load, setLoad] = useState<LoadState>({ status: 'idle' });
   const [reloadKey, setReloadKey] = useState(0);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const liveJob = jobs.find((row) => row.id === jobId);
+  const evidenceRevision = liveJob ? `${liveJob.updatedAt}:${liveJob.verification}:${liveJob.validationRecords}` : null;
 
   useEffect(() => {
     if (!jobId) { setLoad({ status: 'idle' }); return; }
@@ -94,7 +96,7 @@ export function JobDrawer({ jobId, jobs, onClose }: { jobId: string | null; jobs
         if (!controller.signal.aborted) setLoad({ status: 'error', message: error instanceof Error ? error.message : 'Request failed' });
       });
     return () => controller.abort();
-  }, [jobId, token, reloadKey]);
+  }, [jobId, token, reloadKey, evidenceRevision]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -107,7 +109,7 @@ export function JobDrawer({ jobId, jobs, onClose }: { jobId: string | null; jobs
   const retry = useCallback(() => setReloadKey((k) => k + 1), []);
 
   if (!jobId) return null;
-  const job = jobs.find((row) => row.id === jobId) ?? (load.status === 'ok' ? load.detail.job : null);
+  const job = liveJob ?? (load.status === 'ok' ? load.detail.job : null);
   const display = job ? jobDisplayStatus(job) : null;
   const titleId = `job-drawer-title-${jobId}`;
 

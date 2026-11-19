@@ -1,0 +1,8 @@
+<h2>Confirm your Qguard Helix email address</h2>
+<p>Confirm your email address to finish creating your account.</p>
+{{ if eq .RedirectTo "https://qguardhelix.com/auth/confirm" }}
+<p><a href="https://qguardhelix.com/auth/confirm#token_hash={{ .TokenHash }}">Confirm email address</a></p>
+{{ else }}
+<p><a href="{{ .ConfirmationURL }}">Confirm email address</a></p>
+{{ end }}
+<p>If you did not request this account, you can ignore this email.</p>

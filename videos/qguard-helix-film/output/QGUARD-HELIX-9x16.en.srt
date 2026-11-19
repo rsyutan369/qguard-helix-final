@@ -1,0 +1,45 @@
+1
+00:00:00,290 --> 00:00:03,256
+What you share today can
+still matter years from now.
+
+2
+00:00:05,140 --> 00:00:09,427
+Encrypted data can be saved today
+and targeted for decryption later.
+
+3
+00:00:10,390 --> 00:00:12,587
+Meet QGuard Helix Messaging.
+
+4
+00:00:15,240 --> 00:00:19,407
+Private messages. End-to-end
+encrypted voice and video calls.
+
+5
+00:00:20,190 --> 00:00:24,029
+Encrypt files in Quantum Vault.
+Keep others in Hidden Vault.
+
+6
+00:00:25,140 --> 00:00:29,306
+Message nearby with Offgrid
+Mesh. Share files with XFER.
+
+7
+00:00:30,190 --> 00:00:34,225
+Built with NIST-standardized
+ML-KEM and ML-DSA.
+
+8
+00:00:36,540 --> 00:00:38,701
+The world is preparing for quantum.
+
+9
+00:00:40,590 --> 00:00:42,182
+Are your communications?
+
+10
+00:00:42,420 --> 00:00:44,528
+Discover QGuard Helix today.

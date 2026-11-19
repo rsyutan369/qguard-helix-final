@@ -8,8 +8,12 @@
  *   - tools/paypal-setup.ts           (one-time plan provisioning)
  *   - tools/paypal-update-pricing.ts  (repricing existing PayPal plans)
  *
- * `yearlyPerMonth` is the discounted monthly-equivalent rate; a yearly plan is
- * billed ONCE per year at `yearlyPerMonth x 12`.
+ * All four tiers are paid, with no free tier or trial. Monthly and annual
+ * prices follow their respective PayPal plans. `yearlyPerMonth` is the
+ * monthly equivalent of the separately priced annual charge.
+ *
+ * Google Play charges the localized price configured in Play Console; these
+ * USD figures are the catalog list prices (PayPal charges them exactly).
  *
  * Landing copy (src/pages/Landing.tsx PRICING_PLANS) and the billing catalog
  * (src/api-server/billing.ts, cents) must match these figures.

@@ -1,11 +1,6 @@
 /**
  * Quantum Simulation Range — theme control and command bar.
  *
- * The choice is the platform's own: it reads and writes `useTheme()` from the
- * app-wide `ThemeProvider`, so it persists under the same key the dashboard
- * uses and a visitor who picked light elsewhere arrives here already in light.
- * There is deliberately no second theme store on this page.
- *
  * Three states, because "follow my OS" is a real preference and not a default
  * to be overwritten the first time someone touches the control:
  *
@@ -18,8 +13,8 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { Monitor, Moon, Sun, type LucideIcon } from 'lucide-react';
-import { useTheme, type ThemeMode } from '@/contexts/theme-context';
-import { QSR, tint } from './_theme';
+import type { ThemeMode } from '@/contexts/theme-context';
+import { QSR, tint, type QsrTheme } from './_theme';
 
 const OPTIONS: Array<{ mode: ThemeMode; label: string; Icon: LucideIcon }> = [
   { mode: 'light', label: 'Light', Icon: Sun },
@@ -27,8 +22,9 @@ const OPTIONS: Array<{ mode: ThemeMode; label: string; Icon: LucideIcon }> = [
   { mode: 'system', label: 'Auto', Icon: Monitor },
 ];
 
-export function ThemeSwitch({ animate = true }: { animate?: boolean }) {
-  const { mode, theme, setMode } = useTheme();
+type ThemeControl = { animate: boolean; mode: ThemeMode; theme: QsrTheme; setMode: (mode: ThemeMode) => void };
+
+function ThemeSwitch({ animate, mode, theme, setMode }: ThemeControl) {
   const buttons = React.useRef<Array<HTMLButtonElement | null>>([]);
 
   const move = (from: number, step: number) => {
@@ -97,27 +93,15 @@ export function ThemeSwitch({ animate = true }: { animate?: boolean }) {
  * The page's command bar. Sticky, so the theme control is one gesture away at
  * any depth of a page that is seven sections long.
  */
-export function CommandBar({ animate }: { animate: boolean }) {
+export function CommandBar(props: ThemeControl) {
   return (
-    <div
-      className="sticky top-0 z-40 border-b backdrop-blur-xl"
-      style={{ borderColor: QSR.hairline, background: tint(QSR.ground, 0.78) }}
-    >
-      <div className="mx-auto flex h-14 max-w-[1500px] items-center justify-between gap-4 px-4 sm:px-6">
-        <a href="/" className="flex min-w-0 items-center gap-2.5 outline-none" aria-label="QGuard Helix home">
-          <span
-            aria-hidden
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-md border font-mono text-[11px] font-black"
-            style={{ color: QSR.live, borderColor: tint(QSR.live, 0.4), background: tint(QSR.live, 0.1) }}
-          >
-            Q
-          </span>
-          <span className="qsr-heading truncate text-[13px] font-extrabold tracking-tight">QGuard Helix</span>
-          <span className="hidden font-mono text-[10px] uppercase tracking-[0.2em] md:inline" style={{ color: QSR.inkMuted }}>
-            / Quantum Simulation Range
-          </span>
+    <div className="qsr-command">
+      <div className="lp-wrap qsr-command__inner">
+        <a href="/" className="qsr-command__brand" aria-label="Qguard Helix home">
+          <img src="/NEW_LOGO.png" alt="" width="38" height="38" />
+          <span>Qguard Helix</span>
         </a>
-        <ThemeSwitch animate={animate} />
+        <ThemeSwitch {...props} />
       </div>
     </div>
   );

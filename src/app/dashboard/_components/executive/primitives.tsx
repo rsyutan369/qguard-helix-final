@@ -86,7 +86,7 @@ export function PanelHeader({
 }) {
   const t = TONE[tone]
   const heading = (
-    <span className={cx('flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.16em] text-white/85', href && 'transition-colors group-hover:text-cyan-300')}>
+    <span className={cx('qh-cc-panel-title flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.16em] text-white/85', href && 'transition-colors group-hover:text-cyan-300')}>
       {Icon && <Icon className={cx('h-3.5 w-3.5', t.text)} />}
       <span className="truncate">{title}</span>
     </span>
@@ -245,14 +245,14 @@ export function TruncationNote({
 
 export function SectionLabel({ children, href, meta }: { children: ReactNode; href?: string; meta?: ReactNode }) {
   const inner = (
-    <span className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.22em] text-white/55">
+    <span className="qh-cc-section__title flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.22em] text-white/55">
       {children}
     </span>
   )
   return (
-    <div className="flex items-center justify-between px-1">
-      {href ? <a href={href} className="no-underline transition-colors hover:text-cyan-300">{inner}</a> : inner}
-      {meta && <span className="text-[9px] font-mono uppercase tracking-widest text-white/25">{meta}</span>}
+    <div className="qh-cc-section flex items-center justify-between px-1">
+      {href ? <a href={href} className="qh-cc-section__link no-underline transition-colors hover:text-cyan-300">{inner}</a> : inner}
+      {meta && <span className="qh-cc-section__meta text-[9px] font-mono uppercase tracking-widest text-white/25">{meta}</span>}
     </div>
   )
 }

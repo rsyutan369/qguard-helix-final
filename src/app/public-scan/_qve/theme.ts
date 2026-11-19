@@ -3,7 +3,7 @@
  *
  * WHY THIS EXISTS
  * ---------------
- * The engine was built for /public-scan, which is dark-only, so its instrument
+ * The engine originally shipped with a dark-only /public-scan, so its instrument
  * layer is painted in literals chosen against a deep-navy ground: a #334768
  * world-dot, a white packet head, an rgba(4,6,14,.55) vignette, additive glow
  * in the 3D core, and cyan/violet accents that measure 1.7-2.2:1 on white.
@@ -26,9 +26,8 @@
  *
  * DEFAULT IS DARK
  * ---------------
- * `useQveTheme()` returns 'dark' with no provider, so /public-scan and every
- * existing embed render exactly as before. Only a consumer that wraps the
- * engine in `QveThemeProvider` opts into anything.
+ * `useQveTheme()` returns 'dark' without a provider. The public scanner and
+ * dashboard opt in with `QveThemeProvider`.
  */
 'use client';
 
@@ -160,6 +159,14 @@ export function useQveTheme(): QveTheme {
 
 export function useQvePalette(): QvePalette {
   return QVE_PALETTE[useQveTheme()];
+}
+
+/** Preserve the semantic hue while making verdict text readable on light cards. */
+export function useQveInk() {
+  const { theme, surface } = useQvePalette();
+  return React.useCallback((hex: string) => (
+    theme === 'light' ? readableOn(hex, surface) : hex
+  ), [theme, surface]);
 }
 
 /**

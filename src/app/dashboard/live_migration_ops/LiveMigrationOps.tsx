@@ -51,6 +51,7 @@ import {
   type WorkflowEvent,
 } from '@/lib/migration/agent-workflow'
 import WorkflowCanvas from './_workflow-canvas'
+import { AGENT_DISCOVERY_EVENT, type AgentDiscovery, type ReportedAgentDiscovery } from '@/lib/migration/agent-discovery'
 import ScanRunPanel from './_scan-run-panel'
 import {
   AgentInsightsPanel,
@@ -90,7 +91,7 @@ type LiveMigrationEvent = {
   metadata: Record<string, unknown>
 }
 
-type LiveMigrationJob = {
+export type LiveMigrationJob = {
   id: string
   asset: string
   assetId: string | null
@@ -292,8 +293,8 @@ const EMPTY_SNAPSHOT: LiveMigrationSnapshot = {
     criticalExposures: 0,
     highExposures: 0,
     lastScanAt: null,
-    complianceMode: 'NIST Compliant',
-    standardLabel: 'NIST SP 800-208 | NIST SP 800-57 Rev. 5',
+    complianceMode: 'PQC migration references',
+    standardLabel: 'NIST IR 8547 | FIPS 203 / 204 / 205',
   },
   jobs: [],
   timeline: [],
@@ -544,10 +545,12 @@ export default function LiveMigrationOperations() {
   const planId = searchParams.get('planId')
   const requestedAgentId = searchParams.get('agentId')
   const requestedCommandId = searchParams.get('commandId')
+  const requestedJobId = searchParams.get('jobId')
   const { session, user } = useAuth()
   const token = session?.access_token
   const [snapshot, setSnapshot] = useState<LiveMigrationSnapshot>(EMPTY_SNAPSHOT)
   const [selectedJobId, setSelectedJobId] = useState<string>('')
+  const openedJobLink = useRef<string | null>(null)
   const [filter, setFilter] = useState<'all' | LiveMigrationStatus>('all')
   const [loading, setLoading] = useState(true)
   const [streamConnected, setStreamConnected] = useState(false)
@@ -568,6 +571,7 @@ export default function LiveMigrationOperations() {
   const [highlightedAgent, setHighlightedAgent] = useState<WorkflowAgentId | null>(null)
   const [latency, setLatency] = useState<{ latest: number | null; series: number[] }>({ latest: null, series: [] })
   const [liveFrames, setLiveFrames] = useState<AgentStreamFrame[]>([])
+  const [discoveryFeed, setDiscoveryFeed] = useState<{ owner: string; items: ReportedAgentDiscovery[] }>({ owner: '', items: [] })
   const [dismissed, setDismissed] = useState<string[]>(() => storedJson('qg.liveMigration.dismissed', [] as string[]))
   const [minSeverity, setMinSeverity] = useState<'warning' | 'error'>(() => storedJson('qg.liveMigration.minSeverity', 'warning' as 'warning' | 'error'))
   const insightsRef = useRef<HTMLDivElement>(null)
@@ -623,7 +627,21 @@ export default function LiveMigrationOperations() {
   }, [])
 
   useEffect(() => {
-    if (!token) return
+    if (!token || !user?.id) return
+    const owner = user.id
+    const pending: ReportedAgentDiscovery[] = []
+    const seen = new Set<string>()
+    let revealTimer: number | undefined
+    function revealNext() {
+      revealTimer = undefined
+      const next = pending.shift()
+      if (!next) return
+      setDiscoveryFeed((current) => ({
+        owner,
+        items: [...(current.owner === owner ? current.items.filter((item) => item.id !== next.id) : []), next].slice(-240),
+      }))
+      if (pending.length) revealTimer = window.setTimeout(revealNext, 280)
+    }
     const streamParams = new URLSearchParams({ token })
     if (planId) streamParams.set('planId', planId)
     const source = new EventSource(`/api/v1/migration/live/stream?${streamParams.toString()}`)
@@ -644,6 +662,24 @@ export default function LiveMigrationOperations() {
       try {
         const frame = JSON.parse((event as MessageEvent).data) as AgentStreamFrame
         if (!frame || typeof frame.id !== 'number') return
+        if (frame.name === AGENT_DISCOVERY_EVENT) {
+          if (planId || !frame.agentId || !Array.isArray(frame.payload?.discoveries)) return
+          for (const item of frame.payload.discoveries as AgentDiscovery[]) {
+            if (!item || typeof item.id !== 'string' || typeof item.label !== 'string' ||
+                !['endpoint', 'certificate', 'algorithm'].includes(item.kind)) continue
+            // The agent can report the same measurement through inventory and runtime ingestion.
+            const key = item.observedAt
+              ? JSON.stringify([frame.agentId, item.observedAt, item.kind, item.evidenceType, item.asset, item.protocol, item.algorithm, item.fingerprint, item.severity])
+              : item.id
+            if (seen.has(key)) continue
+            seen.add(key)
+            if (seen.size > 3000) seen.delete(seen.values().next().value!)
+            pending.push({ ...item, agentId: frame.agentId, receivedAt: frame.at })
+          }
+          if (pending.length > 240) pending.splice(0, pending.length - 240)
+          if (pending.length && revealTimer === undefined) revealTimer = window.setTimeout(revealNext, 280)
+          return
+        }
         // Ids restart at 1 when the API process restarts, so id alone would
         // drop a genuinely new frame that reuses an id still in this buffer.
         setLiveFrames((current) => (current.some((item) => item.id === frame.id && item.at === frame.at) ? current : [frame, ...current].slice(0, 100)))
@@ -653,9 +689,10 @@ export default function LiveMigrationOperations() {
     })
     return () => {
       source.close()
+      window.clearTimeout(revealTimer)
       setStreamConnected(false)
     }
-  }, [applySnapshot, planId, token])
+  }, [applySnapshot, planId, token, user?.id])
 
   useEffect(() => {
     if (!user?.id) return
@@ -690,6 +727,13 @@ export default function LiveMigrationOperations() {
   }, [fetchSnapshot, user?.id])
 
   useEffect(() => {
+    if (!requestedJobId) openedJobLink.current = null
+    if (requestedJobId && openedJobLink.current !== requestedJobId && snapshot.jobs.some((job) => job.id === requestedJobId)) {
+      openedJobLink.current = requestedJobId
+      setSelectedJobId(requestedJobId)
+      jobsRef.current?.scrollIntoView({ block: 'start' })
+      return
+    }
     if (!snapshot.jobs.length) {
       setSelectedJobId('')
       return
@@ -697,7 +741,7 @@ export default function LiveMigrationOperations() {
     if (!snapshot.jobs.some((job) => job.id === selectedJobId)) {
       setSelectedJobId(snapshot.jobs[0].id)
     }
-  }, [selectedJobId, snapshot.jobs])
+  }, [requestedJobId, selectedJobId, snapshot.jobs])
 
   const selectedJob = snapshot.jobs.find((job) => job.id === selectedJobId) || snapshot.jobs[0]
   const selectedJobConfig = uiRecord(selectedJob?.metadata?.configuration)
@@ -1173,6 +1217,9 @@ export default function LiveMigrationOperations() {
                 onOutput={showAgentOutput}
                 liveByAgent={liveByAgent}
                 events={allEvents}
+                discoveries={!planId && discoveryFeed.owner === user?.id ? discoveryFeed.items : undefined}
+                discoveriesPlanScoped={Boolean(planId)}
+                discoveriesConnected={streamConnected}
               />
             </div>
             <NotificationStack

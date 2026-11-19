@@ -3,12 +3,10 @@
  *
  * THE DEFECT THIS PREVENTS
  * ------------------------
- * `src/App.tsx` imports every page EAGERLY. There is no route-level code
- * splitting, so the browser evaluates one module graph containing the whole
- * platform before React renders anything. A single module that throws while
- * evaluating therefore does not break one page — it breaks the site, and it
- * breaks it silently: `createRoot().render()` never runs, `#root` stays empty
- * and every route paints an empty background.
+ * Client modules must be safe to evaluate in the browser, including modules
+ * loaded only when their route is opened. A server-only dependency can break
+ * the route that imports it, or prevent the app from mounting if the dependency
+ * is reached during startup.
  *
  * That is exactly what happened when the scanner dashboard imported a helper
  * from `@/api-server/scanner`. That module opens with `import { Router } from
@@ -161,8 +159,7 @@ if (violations.length === 0) {
 
 console.log(`FAIL  ${violations.length} server-only import(s) reachable from the browser entry.`)
 console.log('')
-console.log('Each of these is evaluated by the browser. Because src/App.tsx imports every')
-console.log('page eagerly, ANY of them throwing leaves #root empty and blanks the whole site.')
+console.log('The browser can evaluate these imports during startup or when opening a route.')
 console.log('')
 
 for (const v of violations) {

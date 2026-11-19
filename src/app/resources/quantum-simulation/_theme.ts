@@ -11,7 +11,7 @@
  * decorative — each one carries a fixed meaning that holds across every panel
  * on the page, so a reader learns the colour language once:
  *
- *   cyan     live, measured in this browser, right now
+ *   blue     live, measured in this browser
  *   violet   post-quantum, lattice-based, the thing that survives
  *   rose     quantum-broken — Shor solves it
  *   amber    a modelled estimate, or a deadline
@@ -22,9 +22,8 @@
  * -----------------------
  * The page ships a dark instrument theme and a light one. The semantic accents
  * keep their meaning in both; what changes is the lightness they are rendered
- * at. `#22d3ee` is a fine "live" cyan on navy and measures 1.7:1 on white, so
- * the light palette carries the same hues one step darker (the 700 shade),
- * chosen to clear 4.5:1 as text on the light panel.
+ * at. Bright accents sit on navy, and deeper shades keep text readable on the
+ * light panel.
  *
  * HOW A THEME REACHES A COLOUR
  * ----------------------------
@@ -41,6 +40,7 @@
 
 import React from 'react';
 import type { Provenance } from '@/lib/quantum-sim';
+import type { ThemeMode } from '@/contexts/theme-context';
 
 export type QsrTheme = 'dark' | 'light';
 
@@ -103,31 +103,31 @@ export interface QsrPalette {
 const DARK: QsrPalette = {
   theme: 'dark',
 
-  ground: '#05070f',
-  groundDeep: '#03040a',
-  panel: 'rgba(10, 14, 28, 0.72)',
-  panelSolid: '#0a0e1c',
-  panelRaised: 'rgba(16, 22, 42, 0.82)',
-  hairline: 'rgba(56, 189, 248, 0.10)',
-  hairlineStrong: 'rgba(56, 189, 248, 0.22)',
-  well: 'rgba(4, 7, 16, 0.5)',
-  wellStrong: 'rgba(4, 7, 16, 0.72)',
-  wellSolid: '#03050d',
-  rule: 'rgba(56, 189, 248, 0.06)',
-  track: 'rgba(148, 163, 184, 0.10)',
+  ground: '#0e1f3d',
+  groundDeep: '#0b1d3a',
+  panel: '#13264a',
+  panelSolid: '#13264a',
+  panelRaised: '#1a2f58',
+  hairline: 'rgba(255, 255, 255, 0.12)',
+  hairlineStrong: 'rgba(255, 255, 255, 0.24)',
+  well: 'rgba(5, 14, 33, 0.32)',
+  wellStrong: '#0b1d3a',
+  wellSolid: '#0e1f3d',
+  rule: 'rgba(255, 255, 255, 0.09)',
+  track: 'rgba(180, 192, 216, 0.17)',
 
-  live: '#22d3ee',
-  quantum: '#a78bfa',
-  broken: '#f43f5e',
-  model: '#f59e0b',
-  safe: '#34d399',
+  live: '#99b5ff',
+  quantum: '#c0aef9',
+  broken: '#fda6a2',
+  model: '#ffd084',
+  safe: '#72d8a7',
   onAccent: '#04060e',
 
-  heading: '#f8fafc',
-  ink: '#e2e8f0',
-  inkSoft: '#94a3b8',
-  inkMuted: '#5b6b85',
-  inkFaint: '#3b4761',
+  heading: '#ffffff',
+  ink: '#edf1fb',
+  inkSoft: '#b4c0d8',
+  inkMuted: '#a4b3cf',
+  inkFaint: '#a4b3cf',
 
   grid: 'rgba(56, 189, 248, 0.035)',
   glowA: 'rgba(34, 211, 238, 0.10)',
@@ -150,31 +150,31 @@ const DARK: QsrPalette = {
 const LIGHT: QsrPalette = {
   theme: 'light',
 
-  ground: '#f3f6fb',
-  groundDeep: '#e8eef7',
-  panel: 'rgba(255, 255, 255, 0.86)',
+  ground: '#ffffff',
+  groundDeep: '#f6f8fd',
+  panel: '#ffffff',
   panelSolid: '#ffffff',
-  panelRaised: 'rgba(255, 255, 255, 0.96)',
-  hairline: 'rgba(15, 23, 42, 0.11)',
-  hairlineStrong: 'rgba(15, 23, 42, 0.22)',
-  well: 'rgba(15, 23, 42, 0.04)',
+  panelRaised: '#edf1fb',
+  hairline: 'rgba(11, 29, 58, 0.1)',
+  hairlineStrong: 'rgba(11, 29, 58, 0.2)',
+  well: '#f6f8fd',
   wellStrong: 'rgba(255, 255, 255, 0.9)',
-  wellSolid: '#eaf0f8',
+  wellSolid: '#edf1fb',
   rule: 'rgba(15, 23, 42, 0.07)',
   track: 'rgba(15, 23, 42, 0.10)',
 
-  live: '#0e7490',
+  live: '#3654c0',
   quantum: '#6d28d9',
   broken: '#be123c',
   model: '#a84c07',
   safe: '#047857',
   onAccent: '#ffffff',
 
-  heading: '#0b1220',
-  ink: '#0f172a',
-  inkSoft: '#334155',
-  inkMuted: '#4b5b70',
-  inkFaint: '#5a697e',
+  heading: '#0b1d3a',
+  ink: '#0b1d3a',
+  inkSoft: '#33435f',
+  inkMuted: '#55637d',
+  inkFaint: '#55637d',
 
   grid: 'rgba(15, 23, 42, 0.045)',
   glowA: 'rgba(14, 116, 144, 0.10)',
@@ -220,6 +220,36 @@ export function qsrThemeVars(theme: QsrTheme): React.CSSProperties {
 const QsrThemeContext = React.createContext<QsrTheme>('dark');
 
 export const QsrThemeProvider = QsrThemeContext.Provider;
+
+const THEME_KEY = 'qguard-simulation-theme';
+
+export function useSimulationTheme() {
+  const [mode, setMode] = React.useState<ThemeMode>(() => {
+    if (typeof window === 'undefined') return 'light';
+    try {
+      const saved = window.localStorage.getItem(THEME_KEY);
+      if (saved === 'light' || saved === 'dark' || saved === 'system') return saved;
+    } catch { /* The theme remains usable when storage is unavailable. */ }
+    return 'light';
+  });
+  const [systemTheme, setSystemTheme] = React.useState<QsrTheme>('light');
+
+  React.useEffect(() => {
+    if (mode !== 'system') return;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const sync = () => setSystemTheme(media.matches ? 'dark' : 'light');
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, [mode]);
+
+  const selectMode = React.useCallback((next: ThemeMode) => {
+    setMode(next);
+    try { window.localStorage.setItem(THEME_KEY, next); } catch { /* In-memory selection still works. */ }
+  }, []);
+
+  return { mode, theme: mode === 'system' ? systemTheme : mode, setMode: selectMode };
+}
 
 export function useQsrTheme(): QsrTheme {
   return React.useContext(QsrThemeContext);

@@ -11,6 +11,7 @@ import { createPortal } from 'react-dom';
 import { AnimatePresence, motion, useInView, useReducedMotion } from 'motion/react';
 import { Lock, X, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useQveInk, useQvePalette } from '@/app/public-scan/_qve/theme';
 
 /* ------------------------------------------------------------------ tokens - */
 
@@ -212,7 +213,7 @@ export const Panel = React.forwardRef<
            modifier like this one is still covered. Keep new fills to a hex the
            layer lists — tools/dashboard-contrast-check.ts enforces it. */
         // min-w-0 so a panel never forces its grid track wider than the viewport.
-        'relative min-w-0 rounded-2xl border border-white/[0.07] bg-[#080d1a]/80 backdrop-blur-xl',
+        'qg-scan-panel relative min-w-0 rounded-2xl border border-white/[0.07] bg-[#080d1a]/80 backdrop-blur-xl',
         'shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset,0_24px_60px_-30px_rgba(0,0,0,0.9)]',
         glow && 'border-cyan-400/20 shadow-[0_0_50px_-20px_rgba(34,211,238,0.4)]',
         inset && 'bg-white/[0.02]',
@@ -234,9 +235,10 @@ export function SectionLabel({
   accent?: string;
   className?: string;
 }) {
+  const ink = useQveInk();
   return (
     <div className={cn('flex items-center gap-2.5', className)}>
-      <span className="h-3.5 w-[3px] rounded-full" style={{ backgroundColor: accent }} />
+      <span className="h-3.5 w-[3px] rounded-full" style={{ backgroundColor: ink(accent) }} />
       <h2 className="font-mono text-[11px] font-bold uppercase tracking-[0.22em] text-slate-300">{children}</h2>
     </div>
   );
@@ -250,7 +252,7 @@ export function Ring({
   size = 62,
   stroke = 5,
   color,
-  track = 'rgba(255,255,255,0.08)',
+  track,
   children,
   className,
 }: {
@@ -262,10 +264,12 @@ export function Ring({
   children?: React.ReactNode;
   className?: string;
 }) {
+  const palette = useQvePalette();
+  const ink = useQveInk();
   const ref = React.useRef<HTMLDivElement>(null);
   const inView = useInView(ref, { once: true, margin: '-30px' });
   const clamped = Math.max(0, Math.min(100, value));
-  const stroked = color ?? scoreColor(clamped);
+  const stroked = ink(color ?? scoreColor(clamped));
   const r = (size - stroke) / 2;
   const circumference = 2 * Math.PI * r;
 
@@ -276,7 +280,7 @@ export function Ring({
       style={{ width: size, height: size }}
     >
       <svg width={size} height={size} className="-rotate-90" aria-hidden>
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={track} strokeWidth={stroke} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={track ?? (palette.theme === 'light' ? palette.track : 'rgba(255,255,255,0.08)')} strokeWidth={stroke} />
         <motion.circle
           cx={size / 2}
           cy={size / 2}
@@ -419,7 +423,8 @@ export function Gauge({
 
   // Cap the pointer short of the arc so tip and track stay visually distinct.
   const needleLength = radius - stroke - 12;
-  const valueColor = unmeasured ? ACCENT.slate : (bandColor ?? scoreColor(clamped));
+  const ink = useQveInk();
+  const valueColor = ink(unmeasured ? ACCENT.slate : (bandColor ?? scoreColor(clamped)));
 
   /** Degrees: 180° = 0 score (left), 0° = 100 score (right). */
   const degFor = (score: number) => 180 - (score / 100) * 180;
@@ -541,7 +546,7 @@ export function Gauge({
             score white-on-parchment. Dark surfaces are unchanged. */}
         <p
           className={cn('font-black leading-none tracking-tighter', !unmeasured && 'text-white')}
-          style={{ fontSize: size * 0.155, color: unmeasured ? ACCENT.slate : undefined }}
+          style={{ fontSize: size * 0.155, color: unmeasured ? valueColor : undefined }}
         >
           <CountUp value={unmeasured ? null : clamped} />
           {!unmeasured && <span className="ml-1 align-super text-[0.42em] font-bold text-slate-500">/100</span>}
@@ -602,11 +607,12 @@ const STATUS_STYLES: Record<string, { bg: string; text: string; ring: string }> 
 };
 
 export function StatusPill({ status, label }: { status: string; label?: string }) {
+  const ink = useQveInk();
   const style = STATUS_STYLES[status.toLowerCase()] ?? STATUS_STYLES.unknown;
   return (
     <span
       className="inline-flex items-center rounded-md px-2 py-[3px] text-[11px] font-bold leading-none ring-1"
-      style={{ backgroundColor: style.bg, color: style.text, boxShadow: `inset 0 0 0 1px ${style.ring}` }}
+      style={{ backgroundColor: style.bg, color: ink(style.text), boxShadow: `inset 0 0 0 1px ${style.ring}` }}
     >
       {label ?? status}
     </span>
@@ -647,7 +653,8 @@ export function LockedPanel({
   className?: string;
   blur?: number;
 }) {
-  const color = TIER_COLOR[tier];
+  const ink = useQveInk();
+  const color = ink(TIER_COLOR[tier]);
   return (
     <Panel className={cn('overflow-hidden', className)}>
       <div className="relative">
@@ -659,7 +666,7 @@ export function LockedPanel({
           {children}
         </div>
 
-        <div className="absolute inset-0 grid place-items-center bg-gradient-to-b from-[#060b16]/50 via-[#060b16]/80 to-[#060b16]/95 px-5 text-center">
+        <div className="qg-scan-locked-overlay absolute inset-0 grid place-items-center bg-gradient-to-b from-[#060b16]/50 via-[#060b16]/80 to-[#060b16]/95 px-5 text-center">
           <div className="max-w-xs">
             <span
               className="mx-auto grid h-11 w-11 place-items-center rounded-xl border"
@@ -743,12 +750,14 @@ export function Modal({
   title,
   children,
   maxWidthClassName = 'max-w-3xl',
+  surfaceClassName,
 }: {
   open: boolean;
   onClose: () => void;
   title?: string;
   children: React.ReactNode;
   maxWidthClassName?: string;
+  surfaceClassName?: string;
 }) {
   React.useEffect(() => {
     if (!open) return;
@@ -777,7 +786,7 @@ export function Modal({
     <AnimatePresence>
       {open && (
         <motion.div
-          className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-8"
+          className={cn('fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-8', surfaceClassName)}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}

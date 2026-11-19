@@ -503,7 +503,7 @@ export function StandardsTimeline({ now }: { now: number }) {
       accent={QSR.live}
       eyebrow="The published clock"
       title="Transition deadlines, in order"
-      subtitle="Not predictions. These are dates in released government publications — CNSA 2.0 and NSM-10 are in force; NIST IR 8547 is still an initial public draft — and they are the dates a compliance programme is measured against."
+      subtitle="Published milestones with different scopes: general NIST transition guidance, accelerated federal milestones and separate NSA milestones for National Security Systems."
       right={<ProvenanceBadge kind="published" />}
     >
       <div className="relative">
@@ -519,7 +519,7 @@ export function StandardsTimeline({ now }: { now: number }) {
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <span className="flex items-center gap-2">
                       <span className="font-mono text-[13px] font-bold" style={{ color: accent }}>
-                        {milestone.date.slice(0, 4)}
+                        {milestone.citation === 'eo14412' || milestone.citation === 'ombM2615' ? milestone.date : milestone.date.slice(0, 4)}
                       </span>
                       <span className="rounded-[3px] border px-1.5 py-[2px] font-mono text-[8.5px] font-bold uppercase tracking-[0.12em]" style={{ color: accent, borderColor: tint(accent, 0.28) }}>
                         {milestone.authority}

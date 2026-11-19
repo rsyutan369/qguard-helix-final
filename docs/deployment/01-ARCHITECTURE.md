@@ -1,5 +1,11 @@
 # 01 — Architecture: current state, MVP target, boundaries
 
+> Updated 2026-11-19: the obsolete DigitalOcean Kubernetes deployment workflow
+> and shared deployment action have been removed at the owner's request.
+> DOKS provisioning, automatic staging/promotion, and automatic rollback described
+> below are historical reference; they are not active GitHub Actions automation.
+> CI still builds and checks the API image.
+
 ## 1. Current-state architecture (as audited)
 
 | Area | Reality in the code |
@@ -160,9 +166,7 @@ was added beside the existing modules:
 ```
 .github/
   workflows/ci.yml                 PR/main gates: tsc, boundary, deploy checks, domain suites, build, secrets, image smoke, manifests
-  workflows/deploy-api.yml         build once (SHA) → staging → approved promotion to production
   workflows/supabase-functions.yml billing Edge Function deploy (--no-verify-jwt)
-  actions/deploy-api/              shared rollout + smoke test + automatic rollback
 deploy/k8s/                        kustomize base / overlays / optional components, secrets.example.env
 docs/deployment/                   this documentation
 src/api-server/runtime/            NEW infrastructure layer (no business logic):

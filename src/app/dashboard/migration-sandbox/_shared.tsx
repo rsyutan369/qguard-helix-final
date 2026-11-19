@@ -91,10 +91,10 @@ export type Recommendation = {
 export type ComplianceItem = {
   framework: string
   control: string
-  /** met | partial | not-met | pending — always derived from `score`. */
+  /** Tenant control evidence status; pending means the source was not assessed. */
   status: string
-  score: number
-  /** The measurement this indicator was decided from. */
+  score: number | null
+  /** Coverage or scope behind the displayed status. */
   basis?: string
 }
 
@@ -129,7 +129,7 @@ export type SimulationHistoryRow = {
   assetType: string
   assets: number
   riskScore: number
-  complianceScore: number
+  complianceScore: number | null
   status: SimulationStatus
   durationMs: number
   duration: string
@@ -192,7 +192,7 @@ export type SandboxSummary = {
   quantumRiskLevel: string
   /** quantum-readiness-engine | sandbox-derived | not-assessed */
   quantumRiskSource: string
-  complianceScore: number
+  complianceScore: number | null
   /** Certificates expiring soon. Distinct from `nonPqcCerts`. */
   expiringCerts: number
   /** Classical (non-quantum-safe) certificates — migration scope, not a fault. */
@@ -392,7 +392,7 @@ export type SophiaPayload = {
 export type ApprovalGateDecision = { jobId: string; jobName: string; decision: string; decidedBy: string | null; decidedAt: string | null; note: string | null }
 
 export type ApprovalGatePayload = {
-  simulationStatus: 'PASS' | 'FAILED' | 'PENDING'
+  simulationStatus: 'MODELED' | 'FAILED' | 'PENDING'
   productionReady: boolean
   aiRecommendation: string
   gates: Array<{ id: string; label: string; value: string; status: 'pass' | 'warn' | 'fail' }>
@@ -437,7 +437,7 @@ export type SandboxSnapshot = {
   riskFactors: RiskFactor[]
   recommendations: Recommendation[]
   complianceItems: ComplianceItem[]
-  complianceScore: number
+  complianceScore: number | null
   workflowPhases: WorkflowPhase[]
   pqcStack: PqcStackItem[]
   recentLogs: LogEntry[]

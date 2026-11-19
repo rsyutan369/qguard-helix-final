@@ -1,0 +1,1320 @@
+# MASTER IMPLEMENTATION PROMPT
+## QGuard Helix — Real-Time Quantum Vulnerability Scanning & Interactive Cryptographic Dependency Canvas
+
+### 1. ROLE AND MAIN OBJECTIVE
+
+Act as a principal cybersecurity architect, senior full-stack engineer, cryptographic engineering specialist, and enterprise UI/UX designer.
+
+Build a complete, production-oriented feature called **Live - Real Time Scanning**.
+
+The feature must provide a visually polished, n8n-inspired, interactive, real-time graph canvas that displays assets and their cryptographic dependencies as they are discovered and analyzed by an actual scanning engine.
+
+**Use the attached QGuard Helix UI mockup as the primary visual design reference.**
+
+This must NOT be a static diagram, simulated dashboard, or hardcoded visualization.
+
+The canvas must reflect actual scanning results coming from backend scanners, analysis workers, and verified inventory integrations.
+
+The main experience must be:
+
+1. The user selects authorized assets to scan.
+2. The user clicks **Start Live Scan**.
+3. The backend initiates actual discovery and cryptographic analysis.
+4. The live canvas initially shows the Helix Scanner/Modules/Engines node and a scanning status.
+5. As assets are discovered, new nodes appear individually or in small batches.
+6. As cryptographic relationships are verified, connecting edges appear.
+7. As vulnerabilities or migration risks are identified, affected nodes change status and findings appear.
+8. The live activity feed and counters update automatically.
+9. Users can zoom, pan, inspect nodes, follow relationships, filter findings, and investigate evidence while scanning continues.
+10. The completed scan remains available for review, reporting, and future comparison.
+
+The experience should feel like an intelligent, continuously evolving security investigation map.
+
+The central product principle is:
+
+**Discover real assets → inspect real cryptography → verify real relationships → identify quantum exposure → produce traceable findings → visualize everything live.**
+
+---
+
+### 2. INTEGRATE WITH THE EXISTING QGUARD HELIX PLATFORM
+
+Before writing implementation code:
+
+Maintain the Current Scanner Engines, Modules , Algorithms etc... Use it here in the new Real Time Workflow.
+
+- Inspect the existing repository, architecture, routes, components, dependencies, database models, authentication, scan services, worker infrastructure, and current vendor ecosystem map.
+- Reuse the existing QGuard Helix design system, navigation, auth, asset inventory, scan records, findings engine, and database whenever possible.
+- Preserve existing platform functionality.
+- Avoid duplicating scanners, database entities, or APIs that already exist.
+- Implement this as a first-class QGuard Helix feature, not as an unrelated demo application.
+- Where the current codebase already provides a suitable equivalent technology, retain it instead of introducing a redundant framework.
+- Document what was reused, what was extended, and what was newly implemented.
+
+If starting from a new codebase, use the following recommended architecture.
+
+### 3. RECOMMENDED TECHNOLOGY STACK
+
+**Frontend**
+- React with TypeScript
+- Next.js where suitable
+- React Flow (`@xyflow/react`) for graph visualization
+- Tailwind CSS for styling
+- shadcn/ui-compatible components
+- Lucide icons
+- Zustand or equivalent for efficient graph state
+- TanStack Query for API data fetching
+- ELK.js or Dagre for automated graph layouts
+- Framer Motion or lightweight CSS animation where appropriate
+
+**Backend**
+maintain our current Backend
+
+**Cryptographic analysis**
+
+Use our current and Maintain the Current Scanner Engines, Modules , Algorithms etc... Use it here in the new Real Time Workflow.
+---
+
+### 4. MAIN PAGE: QGUARD HELIX SCANNING WORKFLOW
+
+Create a new page titled:
+
+**QGuard Helix Scanning Workflow**
+
+Subtitle:
+
+"Live discovery, cryptographic dependency mapping, and quantum vulnerability analysis across your digital ecosystem."
+
+Use the attached screenshot for inspiration.
+
+The page must include:
+
+**A. Main navigation**
+
+Preserve the existing QGuard Helix sidebar and introduce or activate:
+
+- Overview
+- Scan Workflow
+- Assets
+- Quantum Findings
+- Vendor Ecosystem
+- Cryptographic Dependencies
+- Evidence
+- Reports
+- Settings
+
+**B. Live scanning header**
+
+Display:
+
+- Current scan name
+- Scan status: Idle, Starting, Running, Paused, Cancelling, Completed, Failed, or Cancelled
+- Elapsed duration
+- Start time
+- Total discovered assets
+- Total quantum-vulnerable assets
+- Current scan stage
+- Connection and stream health
+
+A prominent live indicator should show:
+
+**LIVE SCAN RUNNING**
+
+Use a subtle red or blue pulse animation only while scanning is genuinely running.
+
+Do not display a running state after the backend scan has stopped.
+
+**C. Scanning control toolbar**
+
+Include functional controls for:
+
+- Start Scan
+- Pause Scan
+- Resume Scan
+- Cancel Scan
+- Rescan Selected Asset
+- Refresh Inventory
+- Fit to Canvas
+- Zoom In / Zoom Out
+- Auto Layout
+- Center on Latest Finding
+- Export Graph
+- Export Findings
+- View Scan History
+
+Pause and resume must control actual worker scheduling, not merely stop frontend animation. Running individual network operations may finish before a pause takes effect.
+
+**D. Search and filtering**
+
+Implement functional filters for:
+
+- All Assets
+- Quantum Vulnerable
+- Certificates
+- Certificate Authorities
+- Trust Anchors
+- Cryptographic Algorithms
+- Relying Applications
+- Vendors
+- Findings
+- Criticality
+- Evidence Availability
+- Verified / Inferred Relationships
+- Newly Discovered
+- Migration Status
+
+Filtering must update the visible canvas without deleting underlying scan data.
+
+---
+
+### 5. FULL INTERACTIVE LIVE CANVAS
+
+This is the most important component.
+
+Use React Flow to create a large, clean, zoomable, pannable graph canvas.
+
+Design characteristics:
+
+- Light blue-gray background
+- Subtle dotted grid
+- Rounded white node cards
+- Minimal borders
+- Soft shadows
+- Enterprise typography
+- Blue highlights for active discovery
+- Green indicators for validated states
+- Orange indicators for migration exposure
+- Red indicators for critical findings
+- Gray indicators for unknown or unverified information
+- Clearly distinguish directly verified and inferred relationships
+
+The graph should be spacious, easy to read, and capable of handling larger inventories.
+
+### 6. ORGANIZE THE CANVAS INTO DISCOVERY LANES
+
+Use six logical stages, displayed left to right.
+
+**Lane 1: Scanning Sources and Discovered Assets**
+
+Examples:
+- Helix Scanner
+- Domain
+- Host
+- IP Address
+- TLS Endpoint
+- Server
+- Service
+- Network Application
+
+**Lane 2: Trust Anchors and Certificate Authorities**
+
+Examples:
+- Root CA
+- Intermediate CA
+- Private PKI
+- Self-signed Certificate
+- Trust Store
+- Certificate Authority Operator
+
+**Lane 3: Certificates and Cryptographic Material**
+
+Examples:
+- TLS Certificate
+- Certificate Chain
+- Public Key
+- Certificate Fingerprint
+- Signature Algorithm
+- Certificate Expiration
+- Certificate Validation Status
+
+**Lane 4: Cryptographic Algorithms**
+
+Examples:
+- RSA-2048
+- RSA-4096
+- ECDSA P-256
+- ECDSA P-384
+- ECDHE key exchange
+- Classical finite-field Diffie-Hellman
+- ML-KEM where observed
+- ML-DSA where observed
+- SLH-DSA where observed
+- Verified hybrid or post-quantum key-establishment mechanisms
+
+Separate public-key algorithms, certificate signature algorithms, and negotiated TLS key-establishment mechanisms.
+
+**Lane 5: Relying Systems and Applications**
+
+Examples:
+- Website
+- API Gateway
+- Load Balancer
+- Reverse Proxy
+- Application Service
+- Connected Internal Application
+- Vendor-Managed Service
+- Business System
+
+**Lane 6: Quantum Findings and Migration Risks**
+
+Examples:
+- Quantum-vulnerable public-key algorithm
+- Classical key-establishment dependency
+- Classical digital signature dependency
+- Certificate expiration
+- Invalid certificate chain
+- Untrusted certificate issuer
+- Unsupported or unknown PQC migration capability
+- Vendor migration dependency
+- Critical business application exposure
+- Policy noncompliance
+
+Maintain accurate relationship semantics even if nodes are visually rearranged to improve readability.
+
+---
+
+### 7. REAL-TIME NODE DISCOVERY AND ANIMATION
+
+Nodes must appear as backend evidence arrives.
+
+When a new asset is discovered:
+
+1. Receive a backend `asset.discovered` event.
+2. Normalize and deduplicate the asset identity.
+3. Persist or update the asset in the database.
+4. Add the corresponding graph node.
+5. Animate the node entering the canvas with a subtle fade or scale effect.
+6. Mark it "Newly Discovered".
+7. Update inventory counters.
+8. Add a timestamped entry to the live activity feed.
+9. Resolve any previously pending relationships referencing that asset.
+10. Run incremental layout for the affected graph region.
+
+When a certificate is analyzed:
+
+1. Add or update its certificate node.
+2. Display certificate metadata obtained from the actual certificate.
+3. Attach the certificate to the observed TLS endpoint.
+4. Add the observed issuer and any verified certificate-chain relationships.
+5. Add algorithm nodes for the parsed cryptographic algorithms.
+6. Evaluate relevant security and quantum-risk policies.
+7. Display findings if a policy is triggered.
+8. Update the related asset and finding counts.
+
+When a connection is established:
+
+- Animate the new edge appearing.
+- Highlight it briefly.
+- Make its actual relationship type available on hover.
+- Preserve evidence provenance.
+
+Do not artificially delay actual backend results merely to make the animation look dramatic.
+
+For bursts of events, buffer visual updates briefly so the canvas remains responsive.
+
+The user must be able to continue investigating existing nodes while new nodes appear.
+
+Never reset the entire canvas whenever a scan event is received.
+
+---
+
+### 8. CUSTOM GRAPH NODE COMPONENTS
+
+Create reusable, typed React Flow custom nodes.
+
+**Scanner Node**
+- Scanner name
+- Current scan stage
+- Running indicator
+- Progress information
+- Number of assets processed
+
+**Asset Node**
+- Domain, hostname, or service name
+- Asset type
+- IP and port where relevant
+- Environment
+- Owner if known
+- Scan status
+- Quantum exposure summary
+- Last observed timestamp
+
+**Certificate Node**
+- Subject and SAN entries
+- Issuer
+- SHA-256 fingerprint
+- Serial number
+- Validity dates
+- Public-key algorithm and size or parameters
+- Certificate signature algorithm
+- Trust/path validation result
+- Expiration status
+- Number of associated findings
+
+**Trust Anchor / CA Node**
+- CA subject
+- Fingerprint or public-key identity
+- CA type
+- Validation status
+- Trust-store identity
+- Known subordinate certificates
+- Evidence count
+
+**Algorithm Node**
+- Algorithm name
+- Cryptographic role
+- Key size or parameter set
+- Classical/PQC/Hybrid classification
+- Quantum migration exposure
+- Policy result
+
+**Relying Application Node**
+- Application or system name
+- Asset owner
+- Environment
+- Verified dependency type
+- Business criticality
+- Quantum exposure summary
+
+**Finding Node**
+- Finding title
+- Severity
+- Finding category
+- Affected assets
+- Evidence count
+- Detection timestamp
+- Recommended remediation
+
+Every node must support click-to-inspect, hover details, related-node highlighting, and keyboard accessibility.
+
+---
+
+### 9. ACCURATE RELATIONSHIP MAPPING
+
+Relationships must come from genuine scanner observations, cryptographic verification, or clearly labeled inventory information.
+
+Implement these relationship types:
+
+- `SCANNED_BY`
+- `RESOLVES_TO`
+- `HOSTS_SERVICE`
+- `PRESENTS_CERTIFICATE`
+- `ISSUED_BY`
+- `SIGNED_BY`
+- `CHAIN_VALIDATED_TO`
+- `TRUSTED_BY_STORE`
+- `USES_PUBLIC_KEY_ALGORITHM`
+- `USES_SIGNATURE_ALGORITHM`
+- `NEGOTIATED_KEY_ESTABLISHMENT`
+- `BACKED_BY`
+- `DEPENDS_ON`
+- `SERVES_APPLICATION`
+- `MANAGED_BY_VENDOR`
+- `AFFECTED_BY_FINDING`
+- `REQUIRES_MIGRATION`
+
+**Critical requirements**
+
+Never connect entities solely because their names look similar.
+
+For certificate chains, use cryptographic signature verification, issuer and subject relationships, AKI/SKI matching where applicable, path constraints, and explicit trust-store policy.
+
+A self-signed certificate is not automatically a trusted root.
+
+A certificate issuer name alone does not prove a valid certificate-chain relationship.
+
+Do not label a CA or trust anchor as valid unless appropriate validation was completed.
+
+A TLS endpoint presenting a certificate is a directly observed relationship.
+
+An application depending on that endpoint may require application configuration, CMDB records, integration data, runtime evidence, or another defensible source before it can be considered verified.
+
+Certificate Transparency observations are useful discovery evidence but do not independently prove current service deployment or trust.
+
+**Edge presentation**
+
+- Solid blue/gray: verified observed relationship
+- Solid green: successfully validated relationship
+- Orange: confirmed relationship associated with migration exposure
+- Red: relationship associated with a critical finding
+- Dashed gray: inferred or unverified relationship
+- Thin muted line: historical or inactive relationship
+
+Every edge should include:
+- Source ID
+- Target ID
+- Relationship type
+- Verification status
+- Source of evidence
+- Observation timestamp
+- Confidence where applicable
+- Associated scan ID
+- Evidence reference
+
+Use directed arrows where direction has clear semantic meaning.
+
+Clicking an edge must open its supporting evidence and verification history.
+
+---
+
+### 10. ACTUAL TLS AND PKI SCANNING ENGINE
+
+Implement or integrate a real scanner.
+
+Support authorized discovery from:
+
+- Domains
+- Hostnames
+- Explicit IP addresses
+- Approved TLS endpoints
+- Uploaded asset inventories
+- Existing QGuard Helix asset records
+- Authorized cloud or infrastructure inventory integrations
+
+**Initial real scanning capabilities**
+
+1. Resolve DNS records.
+2. Connect to approved endpoints.
+3. Perform supported TLS handshakes with appropriate SNI.
+4. Record observed TLS protocol versions.
+5. Collect the presented certificate chain.
+6. Parse X.509 certificate details.
+7. Extract public-key algorithms and key parameters.
+8. Extract certificate signature algorithms.
+9. Extract SAN and issuer information.
+10. Evaluate validity periods and hostname identity.
+11. Evaluate certificate chain validation against the configured trust store.
+12. Identify observable classical cryptography.
+13. Identify negotiated key-establishment mechanisms when the scanning implementation can reliably observe them.
+14. Detect supported PQC or hybrid mechanisms only when reliably observable.
+15. Execute cryptographic risk policies.
+16. Generate evidence-backed findings.
+17. Save observations and emit streaming graph events.
+
+Handle:
+
+- TLS negotiation failures
+- Connection timeouts
+- DNS failures
+- Incomplete certificate chains
+- Unsupported algorithms
+- Untrusted CAs
+- Expired certificates
+- Hostname mismatches
+- Invalid signatures
+- Cross-signed certificates
+- Multiple potential validation paths
+- Different certificates observed for different SNI names
+- Intermittent or inconsistent endpoint responses
+
+Do not invent unavailable handshake details.
+
+A completed network request does not necessarily mean the certificate or trust path was validated successfully.
+
+Display unknown and unsupported observations explicitly.
+
+All active scanning must be limited to assets for which the user or organization has authorization.
+
+Protect scanning workers against SSRF, DNS rebinding, unsafe redirects, unapproved internal targets, and excessive network activity. Use scoped targets, concurrency limits, timeouts, cancellation, egress controls, and audit logs.
+
+An internal-network scan should require appropriately deployed and authorized internal scanning infrastructure or an agent.
+
+---
+
+### 11. POST-QUANTUM CRYPTOGRAPHIC RISK ANALYSIS
+
+Implement a configurable policy engine informed by current NIST post-quantum cryptography standards.
+
+Recognize:
+
+- ML-KEM for post-quantum key establishment
+- ML-DSA for post-quantum digital signatures
+- SLH-DSA for post-quantum digital signatures
+
+Classify quantum exposure separately for:
+
+**A. Public-key certificate authentication**
+- RSA
+- ECDSA
+- Other applicable classical public-key mechanisms
+
+**B. TLS key establishment**
+- Classical finite-field DH
+- ECDHE
+- Relevant RSA key transport where actually observed
+- Supported PQC or hybrid key-establishment mechanisms
+
+**C. Certificate-chain signatures**
+- Leaf certificate signatures
+- Intermediate CA signatures
+- Root or trust-anchor-related policy dependencies
+
+**D. Application and vendor dependencies**
+- Verified relying-system dependencies
+- Migration ownership
+- Cryptographic compatibility
+- Explicit vendor migration readiness evidence
+
+Classical RSA and elliptic-curve public-key systems must be identified as exposed to sufficiently capable future quantum computers, but do not automatically label every observation as an immediately exploitable critical vulnerability.
+
+Distinguish:
+
+- Quantum migration exposure
+- Existing certificate misconfiguration
+- Already-invalid cryptography
+- Unsupported capability
+- Unknown migration status
+
+Do not classify ordinary symmetric algorithms such as AES as equivalent to RSA or ECDSA quantum exposure.
+
+Calculate configurable risk based on:
+
+- Cryptographic exposure
+- Business criticality
+- Internet accessibility
+- Data sensitivity
+- Required confidentiality lifetime
+- Certificate validity
+- Dependency impact
+- Migration readiness
+- Policy or compliance requirements
+- Evidence strength
+
+Maintain separate technical exposure and remediation priority scores.
+
+Do not claim a vendor lacks PQC support simply because the scanner has not observed PQC in one endpoint.
+
+---
+
+### 12. LIVE FINDINGS ENGINE
+
+As analysis completes, findings must appear automatically.
+
+Example finding types:
+
+- `QUANTUM_VULNERABLE_PUBLIC_KEY`
+- `CLASSICAL_KEY_EXCHANGE_OBSERVED`
+- `CLASSICAL_SIGNATURE_DEPENDENCY`
+- `CERTIFICATE_EXPIRED`
+- `CERTIFICATE_EXPIRING`
+- `CERTIFICATE_CHAIN_INVALID`
+- `UNTRUSTED_CERTIFICATE_AUTHORITY`
+- `HOSTNAME_VALIDATION_FAILED`
+- `LEGACY_TLS_CONFIGURATION`
+- `PQC_READINESS_UNKNOWN`
+- `PQC_MIGRATION_REQUIRED`
+- `VENDOR_MIGRATION_DEPENDENCY`
+
+Every finding must include:
+
+- Unique finding ID
+- Rule ID and version
+- Title
+- Description
+- Severity
+- Exposure classification
+- Affected asset IDs
+- Affected certificate IDs
+- Evidence IDs
+- Actual observed values
+- Detection timestamp
+- First seen / last seen
+- Status: Open, Resolved, Suppressed, Accepted, Unknown
+- Recommended remediation
+- Relevant standards or policy references
+
+Severity colors:
+
+- Critical: red
+- High: orange
+- Medium: amber
+- Low: blue
+- Informational: gray
+- Validated/successful: green
+
+Use central severity policy rules rather than scattering hardcoded severity values throughout frontend components.
+
+A finding must not appear without an evidence basis.
+
+Clicking the finding should highlight its connected assets, certificates, algorithms, and relevant systems.
+
+---
+
+### 13. REAL-TIME STREAMING ARCHITECTURE
+
+Implement persistent scan events that feed the live graph.
+
+Recommended architecture:
+
+**Scanner Workers → Observation Processor → Graph & Findings Engine → Database + Event Outbox → Real-Time Event Publisher → Frontend Canvas**
+
+The scanner must not send fabricated graph nodes directly to the browser.
+
+Backend-verified events should be the source of truth.
+
+Use SSE for server-to-browser streaming if it meets the platform's requirements, with standard authenticated HTTP API calls for user commands.
+
+If the existing architecture requires bidirectional streaming, use WebSockets.
+
+Support these event types:
+
+- `scan.started`
+- `scan.progress`
+- `scan.paused`
+- `scan.resumed`
+- `scan.completed`
+- `scan.failed`
+- `scan.cancelled`
+- `asset.discovered`
+- `asset.updated`
+- `certificate.discovered`
+- `certificate.analyzed`
+- `algorithm.detected`
+- `relationship.created`
+- `relationship.updated`
+- `relationship.removed`
+- `finding.created`
+- `finding.updated`
+- `finding.resolved`
+- `evidence.recorded`
+- `scan.heartbeat`
+
+Every event should carry:
+- Event ID
+- Scan ID
+- Tenant ID
+- Monotonic sequence number
+- Event type
+- UTC timestamp
+- Entity ID
+- Version
+- Event payload
+
+Requirements:
+
+- Persist events before publishing them.
+- Support replay after disconnection.
+- Deduplicate repeated events.
+- Handle out-of-order delivery.
+- Support an initial graph snapshot followed by incremental events.
+- Prevent missed updates between snapshot retrieval and stream subscription.
+- Support stream heartbeats.
+- Automatically reconnect with backoff.
+- Use event sequence numbers or SSE event IDs to restore progress.
+- Support idempotent graph updates.
+- Reconcile the frontend with the authoritative backend after connection loss.
+
+Refreshing the browser must not restart or duplicate the scan.
+
+Multiple authorized users viewing the same scan must see a consistent graph.
+
+---
+
+### 14. GRAPH DATABASE AND PERSISTENCE MODEL
+
+Use the existing database where possible.
+
+Recommended logical models:
+
+**Scan**
+- id
+- tenantId
+- configuration
+- authorizedTargetScope
+- status
+- startedAt
+- endedAt
+- progress
+- errorSummary
+
+**Asset**
+- id
+- tenantId
+- assetType
+- stableIdentity
+- hostname
+- address
+- port
+- SNI
+- owner
+- criticality
+- environment
+- firstSeen
+- lastSeen
+
+**Certificate**
+- id
+- fingerprintSHA256
+- DER artifact reference
+- subject
+- issuer
+- serialNumber
+- notBefore
+- notAfter
+- publicKeyAlgorithm
+- publicKeyParameters
+- signatureAlgorithm
+
+**CryptographicAlgorithm**
+- id
+- canonicalName
+- algorithmFamily
+- cryptographicRole
+- parameters
+- quantumClassification
+
+**Relationship**
+- id
+- sourceEntityId
+- targetEntityId
+- relationshipType
+- validationStatus
+- evidenceId
+- observedAt
+
+**Finding**
+- id
+- ruleId
+- severity
+- affectedEntityIds
+- evidenceReferences
+- status
+- timestamps
+
+**Evidence**
+- id
+- sourceType
+- scanId
+- observedAt
+- sourceEndpoint
+- parserVersion
+- validationResult
+- artifactReference
+- contentHash
+
+**ScanEvent**
+- id
+- scanId
+- sequence
+- eventType
+- payload
+- createdAt
+
+**GraphLayout**
+- userId
+- scanId
+- nodePositions
+- zoom
+- viewport
+- collapsedGroups
+
+Use tenant-scoped identifiers and access controls.
+
+Store historical observations and preserve previous scan results for comparison.
+
+Avoid duplicate nodes when the same certificate appears on multiple endpoints. Reuse canonical certificate identity, while separately recording each endpoint observation.
+
+---
+
+### 15. LIVE ACTIVITY FEED
+
+Implement a right-hand activity panel.
+
+Example entries, using actual backend data:
+
+- New TLS endpoint discovered
+- Certificate retrieved from endpoint
+- Certificate chain validation completed
+- RSA public key identified
+- ECDSA signature dependency found
+- Cryptographic relationship verified
+- Quantum migration exposure detected
+- Certificate expiration finding created
+- Scan worker completed target analysis
+
+Each entry should display:
+
+- Event type
+- Entity
+- Timestamp
+- Status
+- Short description
+- Severity where applicable
+- Clickable link to the corresponding graph node
+
+Clicking an activity entry must center the canvas on the relevant node and briefly highlight it.
+
+Provide live, chronological, and severity-filtered views.
+
+Persist activity history with the scan record.
+
+---
+
+### 16. LIVE SCAN SUMMARY
+
+Create a panel displaying:
+
+- Assets Discovered
+- TLS Endpoints Inspected
+- Certificates Analyzed
+- Certificate Chains Validated
+- Cryptographic Algorithms Observed
+- Quantum-Exposed Assets
+- Critical Findings
+- High Findings
+- Unknown / Incomplete Assessments
+- Scanning Progress
+
+All counts must be derived from actual stored state and agree with the relevant filters and scope.
+
+Show small increments when the numbers change.
+
+Avoid hardcoded metrics.
+
+Do not interpret a failed scan, skipped target, or untested endpoint as quantum safe.
+
+---
+
+### 17. INTERACTIVE GRAPH INVESTIGATION
+
+Implement the following interactions:
+
+**Click a node**
+Open a detail inspector containing real metadata, scan results, findings, and evidence.
+
+**Click a connection**
+Show the relationship type, why it exists, how it was validated, when it was observed, and its supporting evidence.
+
+**Hover a node**
+Show a concise tooltip.
+
+**Double-click a node**
+Expand its immediate dependency neighborhood.
+
+**Right-click a node**
+Show appropriate actions such as inspect, focus, filter to related assets, copy identifier, and rescan.
+
+**Drag a node**
+Allow a user to adjust the graph layout without changing actual asset relationships.
+
+**Focus mode**
+Dim unrelated graph elements.
+
+**Dependency tracing**
+Highlight connected chains and allow traversing upstream or downstream dependencies.
+
+**Risk focus**
+Show only nodes and relationships associated with selected finding categories.
+
+**Timeline mode**
+Allow the user to inspect graph state at a selected historical scan time or replay persisted events.
+
+**Evidence mode**
+Highlight only relationships supported by selected evidence types.
+
+**Export**
+Support JSON, SVG/PNG graph snapshots, CSV findings, and printable reports where feasible.
+
+Do not permit a frontend drag-and-connect gesture to silently create a verified security dependency. Any user-authored annotation must be explicitly distinguished from scanner-verified relationships.
+
+---
+
+### 18. DYNAMIC AUTOMATIC GRAPH LAYOUT
+
+Use ELK.js or an equivalent layout engine.
+
+Organize discovered nodes into visually understandable groups.
+
+Requirements:
+
+- Top-level left-to-right layout
+- Stable node positioning
+- Minimal edge crossings
+- Sensible spacing
+- Grouping of shared certificate authorities
+- Grouping of shared algorithm dependencies
+- Prevention of duplicate visual entities
+- Support for expanding and collapsing large groups
+- Incremental layout when new nodes arrive
+
+When a new certificate is discovered, position it near related certificates or endpoints.
+
+When a new algorithm is discovered, place it in the algorithm lane and connect it to all verified entities using it.
+
+When several assets share the same certificate, display that shared relationship instead of duplicating identical certificate nodes unnecessarily.
+
+At larger graph sizes, use grouping, virtualization or visibility-based rendering, and viewport-aware updates.
+
+Avoid animating every edge continuously when doing so would harm performance.
+
+---
+
+### 19. DETAILED EVIDENCE DRAWER
+
+Clicking a node, edge, or finding must open a right-side detail drawer.
+
+Display relevant information such as:
+
+- Source asset
+- Source endpoint
+- Observed certificate metadata
+- Certificate fingerprint
+- Certificate chain
+- Public-key algorithm
+- Signature algorithm
+- TLS negotiation details where available
+- Trust-store validation result
+- Quantum exposure classification
+- Related findings
+- Evidence collection timestamp
+- Scanner and parser version
+- Supporting evidence artifacts
+
+Include tabs:
+
+**Overview | Cryptography | Certificate Chain | Relationships | Findings | Evidence | History**
+
+Support copying identifiers and exporting permitted evidence.
+
+Sensitive fields must be sanitized or redacted appropriately.
+
+Evidence should be tamper-evident where practical and access-controlled.
+
+---
+
+### 20. SCAN CONFIGURATION AND CONTROL
+
+Implement a scan configuration dialog.
+
+Allow users to configure:
+
+- Scan name
+- Authorized target list
+- Target type
+- Selected assets
+- TLS ports
+- Allowed protocols or inspection settings
+- Maximum concurrent connections
+- Connection timeout
+- Overall job timeout
+- Certificate trust-store policy
+- Quantum-risk policy
+- Whether to include approved passive discovery
+- Whether to include authorized internal scanning agents
+
+Validate scan scope server-side.
+
+Display scan progress and errors honestly.
+
+Scans must support cancellation and worker recovery.
+
+Do not allow unrestricted arbitrary URL fetching or network-wide discovery by default.
+
+---
+
+### 21. REQUIRED API ENDPOINTS
+
+Adapt endpoint naming to the existing backend conventions.
+
+Implement authenticated APIs equivalent to:
+
+- `POST /api/scans` — create/start scan
+- `GET /api/scans` — scan history
+- `GET /api/scans/:id` — scan details
+- `POST /api/scans/:id/pause`
+- `POST /api/scans/:id/resume`
+- `POST /api/scans/:id/cancel`
+- `GET /api/scans/:id/graph` — graph snapshot
+- `GET /api/scans/:id/events` — live stream
+- `GET /api/scans/:id/activity`
+- `GET /api/scans/:id/findings`
+- `GET /api/scans/:id/assets`
+- `GET /api/assets/:id`
+- `GET /api/certificates/:id`
+- `GET /api/relationships/:id`
+- `GET /api/findings/:id`
+- `GET /api/evidence/:id`
+- `POST /api/assets/:id/rescan`
+- `GET /api/scans/:id/export`
+
+Use validated request/response schemas and consistent error handling.
+
+Implement role-based authorization for each endpoint.
+
+---
+
+### 22. PERFORMANCE AND SCALABILITY
+
+The system must remain responsive during continuous discovery.
+
+Implement:
+
+- Incremental graph updates
+- Event batching
+- React component memoization
+- Efficient graph-state selectors
+- Indexed database queries
+- Backend pagination
+- Worker concurrency limits
+- Queue backpressure
+- Batched database writes where appropriate
+- Relationship deduplication
+- Stable graph IDs
+- Collapsible graph clusters
+- Background graph-layout computation where appropriate
+
+Ensure live scanning work does not block the browser's rendering thread.
+
+Plan and test performance for hundreds and thousands of graph entities, with explicit limits and graceful degradation for larger inventories.
+
+---
+
+### 23. SECURITY AND MULTI-TENANCY
+
+QGuard Helix is a security platform and must enforce strong security controls.
+
+Implement:
+
+- Organization/tenant isolation
+- Role-based access control
+- Authenticated event subscriptions
+- Server-side target authorization
+- SSRF protection
+- Egress restrictions
+- Secure credential handling
+- Audit logging
+- Evidence retention policies
+- Rate limiting
+- Worker isolation
+- Input validation
+- Safe processing of untrusted certificate metadata
+- Frontend output escaping
+- Scan scope enforcement
+- Appropriate data encryption and transport security
+
+Avoid storing private keys or sensitive secrets obtained from unrelated systems.
+
+Do not turn active scanning into a capability for unauthorized reconnaissance.
+
+---
+
+### 24. DEMONSTRATION MODE AND REAL DATA INTEGRITY
+
+Provide a clearly labeled **Demo Mode** for development and product presentations.
+
+Demo Mode may use seeded assets and replayed scan events to demonstrate animations and graph behavior.
+
+However:
+
+- Demo Mode must be visibly labeled.
+- Demo events must not be presented as production observations.
+- Production Mode must use real scanner and inventory data.
+- No hardcoded screenshot values should appear in production metrics.
+- No random vulnerability flags should be generated.
+- No synthetic certificate chains should be treated as verified real-world relationships.
+
+The visual reference includes illustrative domains and findings. Use those only as layout examples or controlled test fixtures.
+
+A missing observation must display as **Unknown**, not as a successful validation.
+
+---
+
+### 25. USER INTERFACE DESIGN REQUIREMENTS
+
+Match the attached reference image closely in layout and visual quality, while implementing actual interaction.
+
+**Color palette**
+- Primary blue: `#2563EB`
+- Navy text: `#0F2345`
+- Canvas background: `#F5F8FF`
+- Card white: `#FFFFFF`
+- Subtle border: `#DCE4F0`
+- Critical red: `#DC2626`
+- High risk orange: `#EA7600`
+- Warning amber: `#F59E0B`
+- Valid green: `#16A34A`
+- Muted gray: `#64748B`
+
+Support responsive layouts and appropriate dark-mode compatibility if already part of QGuard Helix.
+
+Use rounded node cards, consistent icons, subtle shadows, readable typography, and disciplined spacing.
+
+The workflow should look polished and professional, not like a generic flowchart.
+
+Make the canvas the visual focus of the page.
+
+Maintain clear separation between scanner controls, graph content, summary metrics, findings, and activity events.
+
+Use lightweight animations for:
+
+- Scanner running status
+- Newly discovered nodes
+- Newly verified relationships
+- New findings
+- Counter updates
+- Current scan-stage transitions
+
+Respect reduced-motion preferences.
+
+---
+
+### 26. TESTING AND VALIDATION
+
+Create automated tests for:
+
+- Asset identity normalization
+- Certificate parsing
+- Algorithm classification
+- Chain verification
+- Trust-anchor handling
+- Finding rule evaluation
+- Relationship validation
+- Event ordering
+- Event replay
+- Duplicate-event handling
+- Graph update logic
+- Tenant authorization
+- Target-scope restrictions
+- Scan cancellation and recovery
+
+Create controlled TLS certificate fixtures covering:
+
+- Valid certificate chain
+- Expired certificate
+- Self-signed certificate
+- Untrusted certificate
+- Hostname mismatch
+- RSA public key
+- EC public key
+- Multiple issuer/path possibilities
+- Incomplete certificate chain
+
+Use integration tests with a controlled local TLS server.
+
+Add end-to-end browser tests confirming:
+
+1. A scan can be started.
+2. Real scanner events are received.
+3. New graph nodes appear.
+4. Verified edges appear.
+5. Findings are displayed.
+6. Counters match database records.
+7. Node inspection opens actual details.
+8. Graph filtering works.
+9. A page refresh restores the scan state.
+10. Stream disconnection and reconnection do not lose graph updates.
+11. Completed scans can be reopened without rerunning them.
+
+---
+
+### 27. IMPLEMENTATION PHASES
+
+Implement in logical, independently testable stages.
+
+**Phase 1 — Existing System Audit**
+- Inspect the repository.
+- Identify reusable components.
+- Map current scanning architecture.
+- Identify missing capabilities.
+- Establish implementation structure.
+
+**Phase 2 — Data Model and Scanning Backend**
+- Add database migrations.
+- Integrate real TLS/PKI scanning.
+- Implement asset and certificate normalization.
+- Implement evidence storage.
+- Create cryptographic relationship verification.
+
+**Phase 3 — Findings and Event Infrastructure**
+- Implement quantum-risk policies.
+- Persist findings.
+- Implement scan event publication.
+- Add reliable live streaming.
+
+**Phase 4 — Interactive Graph Canvas**
+- Build the React Flow canvas.
+- Create custom nodes and edges.
+- Implement progressive node appearance.
+- Add incremental graph layout.
+- Add filters, search, and navigation.
+
+**Phase 5 — Investigation Experience**
+- Build evidence drawers.
+- Implement related-asset highlighting.
+- Add dependency tracing.
+- Add activity history and graph replay.
+- Add exports.
+
+**Phase 6 — Security, Testing, and Deployment**
+- Validate access controls.
+- Add integration and end-to-end tests.
+- Test reconnection and failure recovery.
+- Optimize graph performance.
+- Document deployment and operational requirements.
+
+Complete each stage with working code and tests.
+
+Do not stop at generating wireframes, placeholder components, or an architecture plan.
+
+---
+
+### 28. DEFINITION OF DONE
+
+The feature is complete only when all of the following are true:
+
+- A user can initiate an authorized scan from the QGuard Helix interface.
+- The backend performs genuine TLS/PKI inspection.
+- Real discovered assets are persisted in the database.
+- The frontend displays actual scan events as they arrive.
+- Nodes appear progressively without refreshing the page.
+- Connections represent legitimate observed or clearly labeled inferred relationships.
+- Certificate paths and trust anchors are not falsely represented as validated.
+- Quantum-vulnerable algorithms are identified using defensible rules.
+- Findings include evidence and timestamps.
+- Users can inspect nodes, edges, and findings.
+- Search, filters, zoom, pan, focus, and graph layout controls work.
+- The live activity feed reflects actual scanner events.
+- The summary metrics match stored results.
+- Scan pause, resume, and cancellation behave correctly.
+- Reloading the page restores the current graph and scan state.
+- Scan history is available.
+- The system handles scanner failures and stream reconnections.
+- The implementation respects authorization and tenant isolation.
+- Demo or placeholder data is not silently mixed with production results.
+- Tests pass and deployment instructions are provided.
+
+---
+
+### 29. REQUIRED FINAL DELIVERABLES
+
+Provide:
+
+1. Fully implemented QGuard Helix Scanning Workflow page.
+2. Reusable React Flow graph components.
+3. Integrated real scanning service.
+4. Certificate and cryptography analysis services.
+5. Verified relationship graph builder.
+6. Quantum exposure and findings engine.
+7. Real-time event streaming infrastructure.
+8. Database models and migrations.
+9. Live summary and activity feed.
+10. Evidence inspector and dependency tracing.
+11. Scan management APIs.
+12. Test suite and controlled fixtures.
+13. Docker/development configuration where necessary.
+14. Environment variable documentation.
+15. Deployment instructions.
+16. Architecture and integration documentation.
+
+Conclude with an implementation report clearly identifying which capabilities are operational, which depend on configured integrations or deployed agents, and which are not implemented.
+
+**FINAL IMPLEMENTATION DIRECTIVE**
+
+Build QGuard Helix Scanning Workflow as a genuinely operational, real-time quantum cryptographic asset discovery and dependency intelligence platform.
+
+The user must see the ecosystem develop live as scanning happens:
+
+**Scanning starts → Assets appear → Certificates are inspected → Cryptographic relationships are verified → Quantum exposure is detected → Findings appear → Dependencies are highlighted → Evidence becomes inspectable → The scan completes and remains available for investigation.**
+
+Prioritize real scanner data, cryptographic accuracy, source-of-truth persistence, traceable evidence, graph clarity, smooth real-time interaction, and production security.
+
+Do not deliver a static mockup disguised as a functional scanner.

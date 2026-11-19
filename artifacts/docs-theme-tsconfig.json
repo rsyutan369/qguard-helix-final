@@ -1,0 +1,5 @@
+{
+  "extends": "../tsconfig.json",
+  "include": ["../src/app/docs/page.tsx", "../src/pages/landing-motion.ts", "../src/vite-env.d.ts"],
+  "exclude": []
+}

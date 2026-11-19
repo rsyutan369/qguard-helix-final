@@ -10,6 +10,59 @@ auto-update.
 
 ## [Unreleased]
 
+### XFER without a shared network (1.5.3)
+
+- **Offers reach the receiver over Bluetooth.** When no local network
+  connects the two devices, the sender delivers the offer on the encrypted
+  persistent channel (channel protocol 3), so the receiver is notified and can
+  accept at once; the sender sees "Offer delivered" instead of retrying into
+  "Receiver unavailable". Accept and decline travel back the same way.
+- **Direct Wi-Fi link.** After an offer is accepted, the devices set up a
+  private Wi-Fi network over the channel (`src-tauri/src/offline/link.rs`):
+  the Android side (or the smaller fingerprint) hosts a temporary hotspot and
+  sends its name, passphrase and addresses only over the authenticated
+  channel; Windows joins after the user agrees (native WLAN API, temporary
+  profile deleted afterwards) and returns to its previous network when no
+  transfer is pending for 90 seconds; other platforms show the network to join.
+  Every transfer session on the link is still QHCE-authenticated.
+- **Pictures on the radar.** Paired devices show their picture on the radar
+  and in device lists. New opt-in setting "Show my picture to nearby devices"
+  (off by default): the device advertises a picture fingerprint in its
+  Bluetooth discovery record and serves the picture over an authenticated
+  pairing-mode session; nearby pictures are kept in memory only.
+
+### Fixed (1.5.2)
+
+- **Profile pictures now actually sync.** In 1.5.1 the app read the profile
+  picture with `fetch()` on its `blob:` URL, which the app Content-Security-Policy
+  refuses (`connect-src` has no `blob:`), so no device ever stored or sent its
+  picture. The thumbnail is now drawn from an `<img>` element (`img-src`
+  allows `blob:`); `tools/avatar-csp-probe.html` reproduces both under the
+  real policy.
+
+### Mesh and XFER sessions (1.5.1)
+
+- **Profile pictures on both devices.** Paired devices now see each other's
+  picture in Mesh conversations, XFER transfers, the device lists and Trusted
+  devices. Channel protocol 2 exchanges a SHA3-256 digest on the authenticated
+  persistent channel and moves the picture (a small JPEG thumbnail of the
+  profile picture) only when the digest is new; the receiver re-hashes it and
+  stores it under the fingerprint that authenticated the session, never under
+  a display name. Display-name changes travel the same way. Pictures of a
+  removed or blocked device are deleted. A version-1 peer is dialed again with
+  version 1 (no pictures) instead of being treated as a legacy build.
+- **Persistent XFER sessions.** The persistent channel now also exists for
+  XFER-only pairings, so the link state is live on every XFER screen and
+  consecutive transfers reuse the session. XFER screens show the link state and
+  a Disconnect action; after a verified send, **Send more files** opens the
+  file picker for the same device, and the receiver can **Wait for more
+  files**. A receiver that approved a pairing waits on a "Ready to receive"
+  screen, which opens the offer when it arrives, instead of the radar.
+- **Mesh composer clear of the navigation.** The conversation sizes itself to
+  the space actually left between the notices above it and the navigation bar
+  (measured, including the gesture inset), with 12 px clearance, and keeps the
+  composer visible when the keyboard opens.
+
 ### Added
 
 - **Quantum Vault Storage (desktop and Android).** The Quantum Vault now keeps

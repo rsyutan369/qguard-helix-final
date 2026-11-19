@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express'
+import { isPassingValidation, isSimulationJob } from '@/lib/migration/job-safety'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { createSingleFlightCache } from '@/lib/single-flight-cache'
 import { streamLiveSnapshot } from './live-snapshot-stream'
@@ -56,14 +57,15 @@ const clamp = (n: number, min = 0, max = 100) => Math.max(min, Math.min(max, Mat
 const recordOf = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
 const usd = (n: number) => (n ? `$${Math.round(n).toLocaleString()}` : EVIDENCE_UNAVAILABLE)
 
-async function safeRows(client: { from: (t: string) => { select: (c: string) => { eq: (k: string, v: string) => { order?: unknown; limit: (n: number) => Promise<{ data: unknown; error: unknown }> } } } }, table: string, columns: string, userId: string, limit = 500): Promise<Row[]> {
+async function safeRows(client: { from: (t: string) => { select: (c: string) => { eq: (k: string, v: string) => { order?: unknown; limit: (n: number) => Promise<{ data: unknown; error: unknown }> } } } }, table: string, columns: string, userId: string, limit = 500, required = false): Promise<Row[]> {
   try {
     const q = client.from(table).select(columns).eq('user_id', userId)
     const built = (q as unknown as { order: (c: string, o: { ascending: boolean }) => { limit: (n: number) => Promise<{ data: unknown; error: unknown }> } }).order('created_at', { ascending: false }).limit(limit)
     const { data, error } = await built
-    if (error) return []
+    if (error) throw error
     return (data as Row[]) || []
   } catch {
+    if (required) throw new Error(`Could not read ${table} for the migration planner.`)
     return []
   }
 }
@@ -78,28 +80,59 @@ function durationLabel(weeks: number): string {
 }
 
 /* ---- 9-stage migration workflow ---- */
-function buildStages(snapshot: Snapshot, report: ReportModel, jobs: Row[], plans: Row[], validations: Row[]) {
+/**
+ * A stage is "In Progress" only when a real record shows work under way. It
+ * used to be "In Progress · 50%" whenever the tenant merely had scan data, so
+ * the strip read "Simulate — In Progress" with zero simulations and "Plan — In
+ * Progress" beside "No migration plans submitted yet" on the same page (and
+ * against the Sandbox's "0 runs" and the workflow rail's "0 plans"). A stage
+ * whose prerequisites are met but which nobody has started is "Ready".
+ */
+type StageState = 'complete' | 'active' | 'ready' | 'pending'
+const STAGE_STATUS: Record<StageState, string> = { complete: 'Complete', active: 'In Progress', ready: 'Ready', pending: 'Pending' }
+function buildStages(snapshot: Snapshot, report: ReportModel, allJobs: Row[], plans: Row[], validations: Row[]) {
   const inv = snapshot.inventory
-  const activeJobs = jobs.filter((j) => !/completed|done|failed/i.test(str(j.status)))
-  const completedJobs = jobs.filter((j) => /completed|done/i.test(str(j.status)))
+  // Sandbox rehearsals and real migrations are different things: a finished
+  // simulation must not light up "Execute", nor a live job "Simulate".
+  const simulations = allJobs.filter((j) => isSimulationJob(j))
+  const jobs = allJobs.filter((j) => !isSimulationJob(j))
+  const isDone = (j: Row) => /completed|done/i.test(str(j.status))
+  const isOpen = (j: Row) => !/completed|done|failed|cancel/i.test(str(j.status))
+  const activeJobs = jobs.filter(isOpen)
+  const completedJobs = jobs.filter(isDone)
+  const completedJobIds = new Set(completedJobs.map((job) => str(job.id)))
+  const validatedIds = new Set<string>()
+  const seenValidations = new Set<string>()
+  for (const validation of validations) {
+    const jobId = str(validation.migration_id)
+    if (!completedJobIds.has(jobId) || seenValidations.has(jobId)) continue
+    seenValidations.add(jobId)
+    if (isPassingValidation(validation.status)) validatedIds.add(jobId)
+  }
+  const completedSimulations = simulations.filter(isDone)
+  const openSimulations = simulations.filter(isOpen)
+  const approved = plans.some((p) => /approved/i.test(str(p.status)))
   const reduction = report.executiveBlock.expectedRiskReductionPct
-  const stage = (key: string, label: string, done: boolean, ready: boolean, assetCount: number, riskReductionPct: number, dependencies: string[], durationWeeks: number, evidence: string) => ({
+  const stage = (key: string, label: string, state: StageState, assetCount: number, riskReductionPct: number, dependencies: string[], durationWeeks: number, evidence: string) => ({
     key, label,
-    status: done ? 'Complete' : ready ? 'In Progress' : 'Pending',
-    progressPct: done ? 100 : ready ? 50 : 0,
+    status: STAGE_STATUS[state],
+    progressPct: state === 'complete' ? 100 : state === 'active' ? 50 : 0,
     assetCount, riskReductionPct, dependencies, durationWeeks, evidence,
   })
+  const when = (done: boolean, active: boolean, ready: boolean): StageState => (done ? 'complete' : active ? 'active' : ready ? 'ready' : 'pending')
   const wk = (ratio: number) => Math.max(snapshot.estimates.migrationTimelineWeeks ? 1 : 0, Math.round((snapshot.estimates.migrationTimelineWeeks || 0) * ratio))
+  const wavedAssets = report.migrationWaves.reduce((s, w) => s + (w.assets[0] === EVIDENCE_UNAVAILABLE ? 0 : w.assets.length), 0)
   return [
-    stage('discover', 'Discover', inv.assetsAssessed > 0, snapshot.hasData, inv.assetsAssessed, 0, [], wk(0.08), `${inv.assetsAssessed} assets, ${inv.cryptoComponents} crypto components discovered.`),
-    stage('analyze', 'Analyze', snapshot.hasData, snapshot.hasData, inv.vulnerableComponents, 0, ['Discover'], wk(0.08), `Quantum risk ${snapshot.scores.quantumRisk}/100, HNDL ${snapshot.scores.hndlRiskLevel}.`),
-    stage('prioritize', 'Prioritize', report.migrationWaves.length > 0, snapshot.hasData, report.migrationWaves.reduce((s, w) => s + (w.assets[0] === EVIDENCE_UNAVAILABLE ? 0 : w.assets.length), 0), 0, ['Analyze'], wk(0.05), `${report.migrationWaves.length} migration waves prioritised by risk.`),
-    stage('simulate', 'Simulate', false, snapshot.hasData, inv.quantumVulnerableAssets, reduction, ['Prioritize'], wk(0.05), 'Strategy simulator & what-if analysis available.'),
-    stage('plan', 'Plan', plans.length > 0, snapshot.hasData, inv.quantumVulnerableAssets, reduction, ['Simulate'], wk(0.05), plans.length ? `${plans.length} migration plan(s) created.` : 'No migration plan created yet.'),
-    stage('approve', 'Approve', plans.some((p) => /approved/i.test(str(p.status))), plans.length > 0, plans.length, 0, ['Plan'], wk(0.04), plans.some((p) => /approved/i.test(str(p.status))) ? 'Plan approved.' : 'Awaiting executive approval.'),
-    stage('execute', 'Execute', completedJobs.length > 0 && activeJobs.length === 0 && jobs.length > 0, activeJobs.length > 0, jobs.length, 0, ['Approve'], wk(0.45), jobs.length ? `${activeJobs.length} active, ${completedJobs.length} completed migration jobs.` : 'No migration jobs executing.'),
-    stage('validate', 'Validate', validations.length > 0, jobs.length > 0, validations.length, 0, ['Execute'], wk(0.12), validations.length ? `${validations.length} validation record(s).` : 'No validation telemetry yet.'),
-    stage('optimize', 'Optimize', false, completedJobs.length > 0, completedJobs.length, 0, ['Validate'], wk(0.08), 'Decommission classical keys, monitor drift, prove evidence.'),
+    stage('discover', 'Discover', when(inv.assetsAssessed > 0, false, true), inv.assetsAssessed, 0, [], wk(0.08), `${inv.assetsAssessed} assets, ${inv.cryptoComponents} crypto components discovered.`),
+    stage('analyze', 'Analyze', when(snapshot.hasData, false, inv.assetsAssessed > 0), inv.vulnerableComponents, 0, ['Discover'], wk(0.08), snapshot.hasData ? `Quantum risk ${snapshot.scores.quantumRisk}/100, HNDL ${snapshot.scores.hndlRiskLevel}.` : 'No assessment evidence yet.'),
+    stage('prioritize', 'Prioritize', when(report.migrationWaves.length > 0 && wavedAssets > 0, false, snapshot.hasData), wavedAssets, 0, ['Analyze'], wk(0.05), `${report.migrationWaves.length} migration waves prioritised by risk.`),
+    stage('simulate', 'Simulate', when(completedSimulations.length > 0, openSimulations.length > 0, snapshot.hasData), simulations.length, reduction, ['Prioritize'], wk(0.05),
+      simulations.length ? `${completedSimulations.length} completed, ${openSimulations.length} running or queued sandbox simulation(s).` : 'No sandbox simulation has been run yet.'),
+    stage('plan', 'Plan', when(plans.length > 0, false, snapshot.hasData), plans.length, reduction, ['Simulate'], wk(0.05), plans.length ? `${plans.length} migration plan(s) created.` : 'No migration plan created yet.'),
+    stage('approve', 'Approve', when(approved, plans.length > 0, false), plans.length, 0, ['Plan'], wk(0.04), approved ? 'Plan approved.' : plans.length ? 'Awaiting executive approval.' : 'No plan submitted for approval.'),
+    stage('execute', 'Execute', when(completedJobs.length > 0 && activeJobs.length === 0, activeJobs.length > 0, approved), jobs.length, 0, ['Approve'], wk(0.45), jobs.length ? `${activeJobs.length} active, ${completedJobs.length} completed migration jobs.` : 'No migration jobs executing.'),
+    stage('validate', 'Validate', when(completedJobs.length > 0 && validatedIds.size === completedJobs.length && activeJobs.length === 0, validatedIds.size > 0, completedJobs.length > 0), validatedIds.size, 0, ['Execute'], wk(0.12), completedJobs.length ? `${validatedIds.size} of ${completedJobs.length} completed operations have a passing latest check.` : 'No completed migration jobs to validate.'),
+    stage('optimize', 'Optimize', when(false, false, completedJobs.length > 0 && validations.length > 0), completedJobs.length, 0, ['Validate'], wk(0.08), 'Decommission classical keys, monitor drift, prove evidence.'),
   ]
 }
 
@@ -249,10 +282,10 @@ function buildWhatIf(snapshot: Snapshot, report: ReportModel, cryptoInventory: R
 
 /* ---- Migration blockers (from real evidence) ---- */
 function buildBlockers(snapshot: Snapshot, certificates: Row[]) {
-  const blockers: Array<{ id: string; title: string; severity: string; impact: string; resolution: string; affectedAssets: string[] }> = []
+  const blockers: Array<{ id: string; title: string; severity: string; impact: string; resolution: string; affectedAssets: string[]; affectedAssetIds?: string[] }> = []
   const now = Date.now()
   const expiredCerts = certificates.filter((c) => { const t = new Date(str(c.not_after || c.valid_to)).getTime(); return Number.isFinite(t) && t < now })
-  if (expiredCerts.length) blockers.push({ id: 'blk-cert', title: 'Expired certificates', severity: 'high', impact: 'Block hybrid certificate rollout until renewed.', resolution: 'Renew certificates and re-issue with hybrid chains.', affectedAssets: expiredCerts.map((c) => str(c.common_name || c.name)).filter(Boolean).slice(0, 8) })
+  if (expiredCerts.length) blockers.push({ id: 'blk-cert', title: 'Expired certificates', severity: 'high', impact: 'Block hybrid certificate rollout until renewed.', resolution: 'Renew certificates and re-issue with hybrid chains.', affectedAssets: expiredCerts.map((c) => str(c.common_name || c.name)).filter(Boolean).slice(0, 8), affectedAssetIds: [...new Set(expiredCerts.map((c) => str(c.asset_id)).filter(Boolean))] })
 
   const weakAlgos = snapshot.criticalFindings.filter((f) => /rsa-?1024|rsa1024|md5|sha-?1|rc4|des\b|3des|tls\s?1\.0|tls\s?1\.1/i.test(str(f.algorithm)))
   if (weakAlgos.length) blockers.push({ id: 'blk-weak', title: 'Deprecated / weak algorithms in critical path', severity: 'critical', impact: 'Quantum-vulnerable and non-compliant; must be replaced before cutover.', resolution: 'Replace with AES-256-GCM / ML-KEM / ML-DSA hybrid.', affectedAssets: [...new Set(weakAlgos.map((f) => f.asset))].slice(0, 8) })
@@ -267,23 +300,52 @@ function buildBlockers(snapshot: Snapshot, certificates: Row[]) {
 }
 
 /* ---- Readiness heatmap ---- */
-function buildHeatmap(snapshot: Snapshot, blockerCount: number) {
+/**
+ * Each asset gets ONE state and the tiles count those states, so a tile and the
+ * rows under it cannot disagree.
+ *
+ * The tile used to be `blockerCount > 1 ? 1 : 0` — "Blocked: 1" whenever two or
+ * more blockers existed anywhere, with no asset actually marked Blocked in the
+ * table (and "Needs Upgrade: 1" above two Needs Upgrade rows). An asset is
+ * Blocked only when a high or critical blocker names it.
+ */
+type HeatmapState = 'Ready' | 'Needs Validation' | 'Needs Upgrade' | 'Blocked' | 'Unknown'
+function buildHeatmap(snapshot: Snapshot, blockers: Array<{ severity: string; affectedAssets: string[]; affectedAssetIds?: string[] }>) {
   const nodes = snapshot.exposureGraph.nodes
-  let ready = 0, needsValidation = 0, needsUpgrade = 0, blocked = 0, unknown = 0
-  for (const n of nodes) {
-    if (n.posture === 'pqc') ready += 1
-    else if (n.posture === 'hybrid') needsValidation += 1
-    else if (n.posture === 'vulnerable') needsUpgrade += 1
-    else unknown += 1
+  const norm = (value: unknown) => str(value).trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+  const blockingNames = new Set(
+    blockers
+      .filter((b) => b.severity === 'critical' || b.severity === 'high')
+      .flatMap((b) => b.affectedAssets.map(norm))
+      .filter(Boolean),
+  )
+  // A certificate's common name ("*.example.com") is not its asset's name, so
+  // certificate blockers also carry the asset ids they were found on.
+  const blockingIds = new Set(
+    blockers
+      .filter((b) => b.severity === 'critical' || b.severity === 'high')
+      .flatMap((b) => b.affectedAssetIds || []),
+  )
+  const stateOf = (n: (typeof nodes)[number]): HeatmapState => {
+    if (n.posture === 'pqc') return 'Ready'
+    if (n.posture === 'hybrid') return 'Needs Validation'
+    if (n.posture !== 'vulnerable') return 'Unknown'
+    return blockingIds.has(str(n.id)) || blockingNames.has(norm(n.label)) ? 'Blocked' : 'Needs Upgrade'
   }
-  // Reflect blockers as blocked assets (capped at vulnerable count).
-  blocked = Math.min(needsUpgrade, blockerCount > 1 ? 1 : 0)
-  needsUpgrade = Math.max(0, needsUpgrade - blocked)
-  const rows = nodes.slice(0, 30).map((n) => ({
-    asset: n.label, type: n.type, environment: n.environment, riskScore: n.riskScore,
-    state: n.posture === 'pqc' ? 'Ready' : n.posture === 'hybrid' ? 'Needs Validation' : n.posture === 'vulnerable' ? 'Needs Upgrade' : 'Unknown',
+  const counts: Record<HeatmapState, number> = { Ready: 0, 'Needs Validation': 0, 'Needs Upgrade': 0, Blocked: 0, Unknown: 0 }
+  const states = nodes.map(stateOf)
+  for (const state of states) counts[state] += 1
+  const rows = nodes.slice(0, 30).map((n, index) => ({
+    asset: n.label, type: n.type, environment: n.environment, riskScore: n.riskScore, state: states[index],
   }))
-  return { ready, needsValidation, needsUpgrade, blocked, unknown, rows }
+  return {
+    ready: counts.Ready,
+    needsValidation: counts['Needs Validation'],
+    needsUpgrade: counts['Needs Upgrade'],
+    blocked: counts.Blocked,
+    unknown: counts.Unknown,
+    rows,
+  }
 }
 
 /* ---- Migration timeline ---- */
@@ -348,12 +410,12 @@ async function buildPlan(token: string, userId: string) {
   const client = createAuthClient(token)
   const [jobs, plans, validations, events, certificates, cryptoInventory] = client
     ? await Promise.all([
-        safeRows(client as never, 'migration_jobs', 'id, status, progress, asset_id, job_type, created_at, updated_at', userId, 300),
+        safeRows(client as never, 'migration_jobs', 'id, name, status, progress, asset_id, job_type, metadata, created_at, updated_at', userId, 300, true),
         // NOTE: migration_plans has no `name` column (display name lives in
         // metadata) — selecting one makes PostgREST error and safeRows silently
         // return [], which broke the Approve stage before the approval workflow.
-        safeRows(client as never, 'migration_plans', 'id, status, created_at', userId, 100),
-        safeRows(client as never, 'migration_validation_logs', 'id, status, created_at', userId, 200),
+        safeRows(client as never, 'migration_plans', 'id, status, created_at', userId, 100, true),
+        safeRows(client as never, 'migration_validation_logs', 'id, migration_id, status, created_at', userId, 600, true),
         safeRows(client as never, 'migration_events', 'id, event_type, status, created_at', userId, 200),
         safeRows(client as never, 'certificates', 'id, common_name, name, not_after, valid_to, signature_algorithm', userId, 500),
         // What-if scenarios are sized from the FULL vulnerable inventory, not
@@ -370,7 +432,7 @@ async function buildPlan(token: string, userId: string) {
   // never count towards the Plan / Approve workflow stages.
   const planRows = plans.filter((p) => str(p.status) !== QUEUE_PLAN_STATUS)
   const blockers = buildBlockers(snapshot, certificates)
-  const heatmap = buildHeatmap(snapshot, blockers.filter((b) => b.id !== 'blk-none').length)
+  const heatmap = buildHeatmap(snapshot, blockers.filter((b) => b.id !== 'blk-none'))
 
   return {
     generatedAt: new Date().toISOString(),
@@ -464,16 +526,16 @@ const QUEUE_PLAN_STATUS = 'migration_queue'
 const queuePlanId = (userId: string) => `asset-queue-${userId}`
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+const REQUIRED_PORTFOLIO_TABLES = new Set(['assets', 'crypto_inventory', 'pqc_scan_results', 'migration_jobs', 'migration_validation_logs', 'migration_plans'])
+
 async function rows(client: any, table: string, build: (q: any) => any): Promise<Row[]> {
   try {
     const { data, error } = await build(client.from(table))
-    if (error) {
-      console.warn(`[migration-planner] ${table} query skipped:`, error.message || error)
-      return []
-    }
+    if (error) throw error
     return (data as Row[]) || []
   } catch (error) {
     console.warn(`[migration-planner] ${table} query failed:`, (error as Error)?.message || error)
+    if (REQUIRED_PORTFOLIO_TABLES.has(table)) throw new Error(`Could not read ${table} for the migration workspace.`)
     return []
   }
 }
@@ -554,7 +616,7 @@ async function computePortfolio(token: string, userId: string): Promise<AssetPor
     rows(client, 'certificates', (q) => q.select('id, asset_id, name, subject, algorithm, key_size, issuer, not_after, is_quantum_safe, is_expiring_soon, status, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1500)),
     rows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, algorithm, key_exchange_algorithm, cipher_suite, protocol, severity, risk_score, is_pqc, is_legacy, hndl_risk, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(4000)),
     rows(client, 'asset_relationships', (q) => q.select('*').eq('user_id', userId).limit(3000)),
-    rows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, progress, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1200)),
+    rows(client, 'migration_jobs', (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, progress, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1200)),
     // migration_validation_logs is job-scoped, not asset-scoped: its only FK is
     // migration_id -> migration_jobs(id). Selecting asset_id/migration_job_id
     // made PostgREST reject the whole query (42703), so the planner silently
@@ -632,7 +694,7 @@ export type CompactAssetRecord = ReturnType<typeof compactRecord>
 router.get('/assets', async (req: Request, res: Response) => {
   try {
     const { token, user } = req as AuthedRequest
-    const [portfolio, snapshot] = await Promise.all([buildPortfolio(token!, user!.id), buildSnapshot(token!, user!.id)])
+    const [portfolio, snapshot] = await Promise.all([buildPortfolio(token!, user!.id, req.query.refresh === '1'), buildSnapshot(token!, user!.id)])
 
     const search = str(req.query.search).trim().toLowerCase()
     const posture = str(req.query.posture).trim().toLowerCase()
@@ -649,7 +711,8 @@ router.get('/assets', async (req: Request, res: Response) => {
         `${a.name} ${a.hostname} ${a.type} ${a.owner} ${a.environment} ${a.tags.join(' ')}`.toLowerCase().includes(search),
       )
     }
-    if (posture && posture !== 'all') filtered = filtered.filter((a) => a.posture === posture)
+    if (posture === 'needs-migration') filtered = filtered.filter((a) => a.posture === 'vulnerable' || a.vulnerableComponentCount > 0)
+    else if (posture && posture !== 'all') filtered = filtered.filter((a) => a.posture === posture)
     if (environment && environment !== 'all') filtered = filtered.filter((a) => a.environment.toLowerCase() === environment)
     if (priority && priority !== 'all') filtered = filtered.filter((a) => a.priority.toLowerCase() === priority)
     if (status && status !== 'all') filtered = filtered.filter((a) => a.migrationStatus.toLowerCase() === status)
@@ -691,7 +754,7 @@ router.get('/assets', async (req: Request, res: Response) => {
             portfolio.summary.quantumVulnerable === snapshot.inventory.quantumVulnerableAssets &&
             portfolio.summary.pqcReady === snapshot.inventory.pqcReadyAssets &&
             portfolio.summary.hybrid === snapshot.inventory.hybridAssets,
-          note: 'Asset posture and risk are derived by the same engine as the Quantum Readiness snapshot, so every asset reads identically on every page. Component counts are shown on two bases: the tenant headline is the scanner-expanded CBOM view, while the asset column sums the CBOM rows bound to each asset — they can differ by rows the scanner view does not expand, and neither figure is adjusted to hide that.',
+          note: 'Asset posture and risk are derived by the same engine as the Quantum Readiness snapshot, and each asset\'s components are split and grouped by the same rule as the CBOM and the Asset Inventory, so every asset reads identically on every page. The component row can still differ when the CBOM holds components that are not attached to any asset record — those count in the tenant headline but in no asset\'s column, and neither figure is adjusted to hide that.',
         },
       },
     })
@@ -751,6 +814,7 @@ async function respondQueue(req: Request, res: Response) {
         name: record.name,
         type: record.type,
         environment: record.environment,
+        owner: record.owner,
         priority: record.priority,
         priorityScore: record.priorityScore,
         riskScore: record.riskScore,
@@ -768,6 +832,9 @@ async function respondQueue(req: Request, res: Response) {
         successProbabilityPct: record.successProbabilityPct,
         posture: record.posture,
         postureLabel: record.postureLabel,
+        targets: [...new Set(record.algorithms
+          .filter((algorithm) => algorithm.classification === 'vulnerable' && algorithm.category !== 'unknown')
+          .map((algorithm) => algorithm.target))],
       }
     })
     .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
@@ -979,7 +1046,8 @@ router.post('/plans/:planId/context', async (req: Request, res: Response) => {
 /* the plan metadata. The 9-stage 'Approve' stage and the platform     */
 /* WorkflowRail both read these same rows, so status stays consistent. */
 /* ------------------------------------------------------------------ */
-type ApprovalMeta = { name?: string; submittedBy?: string; submittedAt?: string; approval?: { decision: string; decidedBy: string; decidedAt: string; reason: string } }
+type ProposalAsset = Pick<AssetMigrationRecord, 'id' | 'name' | 'type' | 'environment' | 'owner' | 'riskScore' | 'algorithms' | 'priority' | 'lastEvidenceAt' | 'dependencies' | 'rollbackStrategy' | 'compatibility'> & { preferredTarget: string | null }
+type ApprovalMeta = { name?: string; scope?: ProposalAsset[]; submittedBy?: string; submittedAt?: string; approval?: { decision: string; decidedBy: string; decidedAt: string; reason: string } }
 
 function mapPlanRow(row: Row) {
   const metadata = (row.metadata && typeof row.metadata === 'object' ? row.metadata : {}) as ApprovalMeta
@@ -991,6 +1059,8 @@ function mapPlanRow(row: Row) {
     createdAt: str(row.created_at),
     updatedAt: str(row.updated_at) || str(row.created_at),
     submittedBy: str(metadata.submittedBy),
+    assetIds: Array.isArray(row.selected_asset_ids) ? row.selected_asset_ids.map(str) : [],
+    scope: Array.isArray(metadata.scope) ? metadata.scope : [],
     approval: metadata.approval
       ? { decision: str(metadata.approval.decision), decidedBy: str(metadata.approval.decidedBy), decidedAt: str(metadata.approval.decidedAt), reason: str(metadata.approval.reason) }
       : null,
@@ -1002,15 +1072,22 @@ router.get('/plans', async (req: Request, res: Response) => {
     const { token, user } = req as AuthedRequest
     const client = createAuthClient(token!)
     if (!client) return res.status(500).json({ error: { code: 'SUPABASE_UNAVAILABLE', message: 'Data layer unavailable' } })
-    const { data, error } = await client
+    let query = client
       .from('migration_plans')
-      .select('id, status, metadata, created_at, updated_at')
+      .select('id, status, metadata, selected_asset_ids, created_at, updated_at')
       .eq('user_id', user!.id)
       .neq('status', QUEUE_PLAN_STATUS)
+    const assetId = str(req.query.assetId).trim()
+    if (assetId) query = query.contains('selected_asset_ids', [assetId])
+    const { data, error } = await query
       .order('updated_at', { ascending: false })
       .limit(50)
     if (error) return res.status(500).json({ error: { code: 'PLANS_QUERY_FAILED', message: error.message } })
-    res.json({ data: ((data as Row[]) || []).map(mapPlanRow) })
+    const plans = ((data as Row[]) || []).map(mapPlanRow)
+    if (!plans.length) return res.json({ data: plans })
+    const { data: evidence } = await client.from('sandbox_lab_runs').select('id,asset_id,attached_plan_id,attached_at')
+      .eq('user_id', user!.id).in('attached_plan_id', plans.map((plan) => plan.id)).order('attached_at', { ascending: false }).limit(200)
+    return res.json({ data: plans.map((plan) => ({ ...plan, labEvidence: (evidence || []).filter((run) => run.attached_plan_id === plan.id) })) })
   } catch (error) {
     console.error('migration plans list failed:', error)
     res.status(500).json({ error: { code: 'PLANS_ERROR', message: 'Unable to list migration plans' } })
@@ -1023,15 +1100,34 @@ router.post('/plans', async (req: Request, res: Response) => {
     const client = createAuthClient(token!)
     if (!client) return res.status(500).json({ error: { code: 'SUPABASE_UNAVAILABLE', message: 'Data layer unavailable' } })
     const name = str(req.body?.name).trim().slice(0, 160) || `PQC Migration Plan — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+    const requestedIds = req.body?.assetIds
+    const scope: ProposalAsset[] = []
+    if (requestedIds !== undefined) {
+      if (!Array.isArray(requestedIds) || !requestedIds.length || requestedIds.length > 50 || requestedIds.some((id) => typeof id !== 'string' || !id.trim()) || new Set(requestedIds).size !== requestedIds.length) {
+        return res.status(400).json({ error: { code: 'INVALID_SCOPE', message: 'Select between 1 and 50 distinct assets.' } })
+      }
+      const portfolio = await buildPortfolio(token!, user!.id, true)
+      const assets = new Map(portfolio.assets.map((asset) => [asset.id, asset]))
+      for (const id of requestedIds) {
+        const asset = assets.get(id)
+        if (!asset?.hasEvidence) return res.status(422).json({ error: { code: 'INVALID_SCOPE', message: 'Each selected asset must have assessment evidence in your workspace.' } })
+        const preferredTarget = str(req.body?.targets?.[id]).trim()
+        if (preferredTarget && !asset.algorithms.some((algorithm) => algorithm.classification === 'vulnerable' && algorithm.category !== 'unknown' && algorithm.target === preferredTarget)) {
+          return res.status(422).json({ error: { code: 'INVALID_TARGET', message: 'The proposed target is no longer supported by the selected asset evidence. Refresh and review the proposal.' } })
+        }
+        const { name, type, environment, owner, riskScore, algorithms, priority, lastEvidenceAt, dependencies, rollbackStrategy, compatibility } = asset
+        scope.push({ id, name, type, environment, owner, riskScore, algorithms, priority, lastEvidenceAt, dependencies, rollbackStrategy, compatibility, preferredTarget: preferredTarget || null })
+      }
+    }
     const now = new Date().toISOString()
     const row: Record<string, unknown> = {
       id: (globalThis.crypto?.randomUUID?.() as string) || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       user_id: user!.id,
       status: 'pending_approval',
-      selected_asset_ids: [],
-      configuration: { source: 'migration-planner-approval' },
+      selected_asset_ids: scope.map((asset) => asset.id),
+      configuration: { source: 'migration-planner-approval', strategy: 'staged-rollout' },
       risk_data: {},
-      metadata: { name, submittedBy: user!.email || 'planner', submittedAt: now, source: 'migration-planner' },
+      metadata: { name, scope, submittedBy: user!.email || 'planner', submittedAt: now, source: 'migration-planner' },
       created_at: now,
       updated_at: now,
     }
@@ -1055,27 +1151,33 @@ router.post('/plans/:planId/approval', async (req: Request, res: Response) => {
       return res.status(400).json({ error: { code: 'VALIDATION', message: 'decision must be approve or reject' } })
     }
     const reason = str(req.body?.reason).trim().slice(0, 1000)
+    if (decision === 'reject' && !reason) return res.status(400).json({ error: { code: 'VALIDATION', message: 'A rejection reason is required.' } })
     const { data: existing, error: readError } = await client
       .from('migration_plans')
-      .select('id, status, metadata, created_at, updated_at')
+      .select('id, status, metadata, selected_asset_ids, created_at, updated_at')
       .eq('user_id', user!.id)
       .eq('id', planId)
       .limit(1)
     if (readError) return res.status(500).json({ error: { code: 'PLAN_READ_FAILED', message: readError.message } })
     const row = ((existing as Row[]) || [])[0]
     if (!row) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Migration plan not found' } })
+    if (row.status !== 'pending_approval') return res.status(409).json({ error: { code: 'ALREADY_DECIDED', message: 'This plan is no longer awaiting approval.' } })
     const metadata = {
       ...(row.metadata && typeof row.metadata === 'object' ? (row.metadata as Record<string, unknown>) : {}),
       approval: { decision, decidedBy: user!.email || 'owner', decidedAt: new Date().toISOString(), reason },
     }
     const status = decision === 'approve' ? 'approved' : 'rejected'
-    const { error } = await client
+    const { data: updated, error } = await client
       .from('migration_plans')
-      .update({ status, metadata, updated_at: new Date().toISOString() })
+      .update({ status, metadata, updated_at: new Date().toISOString(), approved_at: decision === 'approve' ? new Date().toISOString() : null })
       .eq('user_id', user!.id)
       .eq('id', planId)
+      .eq('status', 'pending_approval')
+      .select('id, status, metadata, selected_asset_ids, created_at, updated_at')
+      .maybeSingle()
     if (error) return res.status(500).json({ error: { code: 'APPROVAL_FAILED', message: error.message } })
-    res.json({ data: mapPlanRow({ ...row, status, metadata }) })
+    if (!updated) return res.status(409).json({ error: { code: 'ALREADY_DECIDED', message: 'This plan is no longer awaiting approval.' } })
+    res.json({ data: mapPlanRow(updated as Row) })
   } catch (error) {
     console.error('migration plan approval failed:', error)
     res.status(500).json({ error: { code: 'APPROVAL_ERROR', message: 'Unable to record approval decision' } })

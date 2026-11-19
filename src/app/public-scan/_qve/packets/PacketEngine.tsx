@@ -18,7 +18,7 @@
 'use client';
 
 import React from 'react';
-import type { Application, Container, Sprite, Texture } from 'pixi.js';
+import type { Application, Container, Sprite } from 'pixi.js';
 import type { BeamPath } from '../beams/beam-geometry';
 import { pointOnPolyline } from '../beams/beam-geometry';
 import type { QvePalette } from '../theme';
@@ -106,7 +106,7 @@ export function PacketEngine({
   handleRef,
   palette,
 }: PacketEngineProps) {
-  const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const hostRef = React.useRef<HTMLDivElement>(null);
   const appRef = React.useRef<Application | null>(null);
   const packetsRef = React.useRef<LivePacket[]>([]);
   const sparksRef = React.useRef<LiveSpark[]>([]);
@@ -129,18 +129,20 @@ export function PacketEngine({
   /* ── Boot / teardown ───────────────────────────────────────────────────── */
 
   React.useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || maxPackets <= 0) return;
+    const host = hostRef.current;
+    if (!host || maxPackets <= 0) return;
 
     let disposed = false;
-    let app: Application | null = null;
-    let texture: Texture | null = null;
+    let initializedApp: Application | null = null;
 
     (async () => {
       const pixi = await import('pixi.js');
       if (disposed) return;
 
-      app = new pixi.Application();
+      // An earlier initialization can still be winding down after a resize
+      // or motion preference change. Give each renderer its own canvas.
+      const canvas = document.createElement('canvas');
+      const app = new pixi.Application();
       await app.init({
         canvas,
         width: Math.max(1, width),
@@ -155,8 +157,10 @@ export function PacketEngine({
         app.destroy(true, { children: true, texture: true });
         return;
       }
+      initializedApp = app;
+      host.appendChild(canvas);
 
-      texture = pixi.Texture.from(createGlowCanvas());
+      const texture = pixi.Texture.from(createGlowCanvas());
       const layer = new pixi.Container();
       // One additive layer: overlapping packets brighten rather than occlude,
       // which is what makes the beams read as light instead of paint. On a light
@@ -166,7 +170,7 @@ export function PacketEngine({
       app.stage.addChild(layer);
 
       const acquire = (): Sprite => {
-        const sprite = new pixi.Sprite(texture!);
+        const sprite = new pixi.Sprite(texture);
         sprite.anchor.set(0.5);
         sprite.blendMode = blendRef.current;
         sprite.visible = false;
@@ -341,11 +345,9 @@ export function PacketEngine({
       handleRef.current = null;
       packetsRef.current = [];
       sparksRef.current = [];
-      const current = app ?? appRef.current;
-      if (current) {
-        current.ticker.stop();
-        current.destroy(true, { children: true, texture: true });
-      }
+      // Pixi installs its ticker only after init resolves. If init is still
+      // pending, the disposed branch above owns teardown.
+      initializedApp?.destroy(true, { children: true, texture: true });
       appRef.current = null;
       layerRef.current = null;
     };
@@ -361,10 +363,8 @@ export function PacketEngine({
    * Walks the live display list instead of rebuilding the renderer.
    *
    * The blend mode is the only thing a theme change alters here (the glow
-   * texture is a white alpha ramp that every sprite tints for itself), and a
-   * rebuild is not an option: `destroy(true, …)` removes the canvas element,
-   * so re-initialising on the same ref runs against a dead node and locks the
-   * tab. One pass over the sprite pool costs nothing and touches no context.
+   * texture is a white alpha ramp that every sprite tints for itself). One
+   * pass over the sprite pool avoids rebuilding a GPU context on each switch.
    */
   React.useEffect(() => {
     const blend = palette.theme === 'dark' ? 'add' : 'normal';
@@ -386,8 +386,8 @@ export function PacketEngine({
   if (maxPackets <= 0) return null;
 
   return (
-    <canvas
-      ref={canvasRef}
+    <div
+      ref={hostRef}
       className="pointer-events-none absolute inset-0 h-full w-full"
       style={{ width, height }}
       aria-hidden

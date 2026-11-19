@@ -98,6 +98,44 @@ enum KeyMaterialStatus {
     Upgraded,
 }
 
+/// One recipient identity whose fingerprint the user has confirmed out of band.
+///
+/// A `.qgpub.json` carries no trust anchor: its self-declared fingerprint only
+/// proves the file is internally consistent, never who it belongs to. Anyone who
+/// can substitute the file in transit can have you seal to them instead, and
+/// nothing in the container would look wrong. Comparing the short fingerprint
+/// over a channel the attacker does not control is the only thing that closes
+/// that, so this record is what the user got by doing it.
+///
+/// The record is bound to the exact fingerprint, which is what makes it safe to
+/// keep: if a bundle is later swapped, its fingerprint differs and no record
+/// matches it, so the swap surfaces as "not verified" rather than inheriting the
+/// trust of the identity it replaced.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifiedRecipient {
+    /// Full SHA3-256 fingerprint over the recipient's four public keys, hex.
+    pub fingerprint: String,
+    /// The label the bundle carried when it was verified. Display only — the
+    /// fingerprint is what the record is keyed on.
+    pub label: Option<String>,
+    pub kem_algorithm: String,
+    pub signature_algorithm: String,
+    pub verified_at: chrono::DateTime<Utc>,
+}
+
+/// Device-local, encrypted-at-rest set of recipient fingerprints the user has
+/// confirmed out of band. Public material only — no secrets — but it is stored
+/// under the same DEK as everything else so it cannot be edited by hand to grant
+/// trust the user never gave.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PersistedRecipientTrust {
+    #[serde(default)]
+    pub version: u8,
+    #[serde(default)]
+    pub entries: Vec<VerifiedRecipient>,
+}
+
 /// Device-local, encrypted-at-rest copy of the vault recovery material. Stores
 /// only the derived AES wrapping key + a verifier — never the recovery root,
 /// which lives solely with the user. Lets this device keep adding the recovery
@@ -221,6 +259,12 @@ impl Drop for VaultRecoverySecrets {
 }
 
 /// AAD for the message-key ledger file (see `crate::message_keys`).
+/// Stable code at the start of the error `ensure_identity` returns when this
+/// device holds key material for the account that cannot be opened (for
+/// example, the OS secure store no longer has the device storage key). The
+/// sign-in screen keys its recovery flow on it; never match the prose.
+pub const DEVICE_KEYS_UNREADABLE: &str = "DEVICE_KEYS_UNREADABLE";
+
 const MESSAGE_KEY_LEDGER_AAD: &[u8] = b"QGuard-Messaging-Message-Key-Ledger-v1";
 /// How long to wait before trying again to open a ledger that would not open.
 const MESSAGE_KEY_LEDGER_RETRY_SECS: i64 = 60;
@@ -419,6 +463,11 @@ pub struct PersistedAppLock {
     /// successful strong-biometric prompt, can unwrap it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub biometric_sek: Option<String>,
+    /// How the lock opens: absent = a PIN of `digits` digits; "pattern" = a
+    /// drawn 4 × 4 pattern (`vault::pattern`), whose canonical text is
+    /// stretched and sealed exactly like a PIN.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -523,6 +572,7 @@ pub struct AppState {
     /// In-memory Session Encryption Key while the app is PIN-unlocked (None =
     /// locked). Zeroized on lock / background / sign-out.
     pub applock_sek: Mutex<Option<[u8; crate::crypto::symmetric::KEY_SIZE]>>,
+    pub(crate) offline_principal: crate::offline::principal::Principal,
     /// Portable Hybrid Identity unlocked for this session (None = locked).
     ///
     /// Held in memory only — the `.qgkey` bundle itself is never copied into the
@@ -565,6 +615,7 @@ impl AppState {
             hidden_vault: Mutex::new(None),
             workspace_unlocked: Mutex::new(HashSet::new()),
             applock_sek: Mutex::new(None),
+            offline_principal: crate::offline::principal::Principal::default(),
             portable_identity: Mutex::new(None),
         })
     }
@@ -747,7 +798,7 @@ impl AppState {
                 // `keys_reset_device_identity`.
                 Err(error) => {
                     return Err(QGuardError::Storage(format!(
-                        "this device already holds encrypted key material for this account, but it could not be opened ({error}). It was NOT replaced -- re-keying would permanently destroy this device's message history. Retry after unlocking the device, or reset this device's identity deliberately if the keys are known to be lost."
+                        "{DEVICE_KEYS_UNREADABLE}: this device already holds encrypted key material for this account, but it could not be opened ({error}). It was NOT replaced -- re-keying would permanently destroy this device's message history. Retry after unlocking the device, or reset this device's identity deliberately if the keys are known to be lost."
                     )));
                 }
             };
@@ -1507,6 +1558,17 @@ impl AppState {
         let _ = std::fs::remove_file(self.user_secret_doc_path(user_id, suffix));
     }
 
+    /// Rename a sealed document out of the way, keeping its bytes, so the next
+    /// read starts fresh. Used only when its storage key is known to be lost.
+    fn set_aside_user_secret_doc(&self, user_id: &str, suffix: &str) {
+        let path = self.user_secret_doc_path(user_id, suffix);
+        if path.exists() {
+            let mut aside = path.clone().into_os_string();
+            aside.push(format!(".lost-{}", Utc::now().timestamp()));
+            let _ = std::fs::rename(&path, PathBuf::from(aside));
+        }
+    }
+
     fn user_secret_doc_path(&self, user_id: &str, suffix: &str) -> PathBuf {
         let safe_user_id = Self::safe_user_key(user_id);
         let safe_suffix: String = suffix.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
@@ -1611,6 +1673,15 @@ impl AppState {
             Ok(mut key) => key.zeroize(),
             Err(_) => {
                 let _ = crate::security::keystore::delete_secret(&account, &self.data_dir);
+                // Offline Mesh/XFER records are local-only and regenerable, but
+                // under a lost key they fail on every read, which would leave
+                // nearby features broken for good. Set them aside (renamed,
+                // never deleted) so a recovered key could still open them.
+                // Workspace locks are deliberately left in place: they report
+                // "unreadable" and offer their own guided re-setup.
+                for doc in crate::offline::sealed_documents() {
+                    self.set_aside_user_secret_doc(user_id, doc);
+                }
             }
         }
         let _ = std::fs::remove_file(self.encrypted_key_material_path(user_id));
@@ -1677,6 +1748,7 @@ impl AppState {
     /// the recovery kit the user holds themselves. Returns how many files were
     /// removed. Irreversible.
     pub fn panic_wipe(&self, user_id: &str) -> Result<usize> {
+        self.offline_principal.clear();
         let account = Self::safe_user_key(user_id);
         let key_error = crate::security::keystore::delete_secret(&account, &self.data_dir).err();
 
@@ -2026,6 +2098,105 @@ impl AppState {
     pub fn delete_vault_recovery(&self, user_id: &str) {
         let _ = std::fs::remove_file(self.vault_recovery_path(user_id));
         let _ = std::fs::remove_file(self.vault_recovery_legacy_path(user_id));
+    }
+
+    fn recipient_trust_path(&self, user_id: &str) -> PathBuf {
+        let safe_user_id = Self::safe_user_key(user_id);
+        self.data_dir
+            .join("keys")
+            .join(format!("{safe_user_id}.recipient-trust.enc"))
+    }
+
+    /// Every recipient fingerprint this user has confirmed out of band.
+    /// A missing or unreadable file means "nothing is verified yet" — never
+    /// "everything is fine", so a wiped store fails closed.
+    pub fn load_recipient_trust(&self, user_id: &str) -> Result<PersistedRecipientTrust> {
+        let path = self.recipient_trust_path(user_id);
+        if !path.exists() {
+            return Ok(PersistedRecipientTrust::default());
+        }
+        let bytes = std::fs::read(&path)
+            .map_err(|e| QGuardError::Storage(format!("read recipient trust: {e}")))?;
+        let file: EncryptedKeyMaterialFile = serde_json::from_slice(&bytes)
+            .map_err(|e| QGuardError::Storage(format!("decode recipient trust: {e}")))?;
+        let key = self.device_storage_key(user_id)?;
+        let mut plaintext = crate::crypto::symmetric::decrypt(
+            &key,
+            &file.envelope,
+            &crate::security::obf::vault_recipient_trust_aad(),
+        )?;
+        let material: PersistedRecipientTrust = serde_json::from_slice(&plaintext)
+            .map_err(|e| QGuardError::Storage(format!("decode recipient trust payload: {e}")))?;
+        plaintext.zeroize();
+        Ok(material)
+    }
+
+    pub fn save_recipient_trust(
+        &self,
+        user_id: &str,
+        material: &PersistedRecipientTrust,
+    ) -> Result<()> {
+        let mut encoded = serde_json::to_vec(material)
+            .map_err(|e| QGuardError::Storage(format!("encode recipient trust: {e}")))?;
+        let key = self.device_storage_key(user_id)?;
+        let envelope = crate::crypto::symmetric::encrypt(
+            &key,
+            &encoded,
+            &crate::security::obf::vault_recipient_trust_aad(),
+        );
+        encoded.zeroize();
+        let file = EncryptedKeyMaterialFile {
+            version: 1,
+            envelope: envelope?,
+        };
+        let serialized = serde_json::to_vec(&file)
+            .map_err(|e| QGuardError::Storage(format!("encode encrypted recipient trust: {e}")))?;
+        std::fs::write(self.recipient_trust_path(user_id), &serialized)
+            .map_err(|e| QGuardError::Storage(format!("write recipient trust: {e}")))?;
+        Ok(())
+    }
+
+    /// Record that the user confirmed this fingerprint out of band. Re-verifying
+    /// an existing fingerprint refreshes its timestamp rather than duplicating it.
+    pub fn mark_recipient_verified(
+        &self,
+        user_id: &str,
+        entry: VerifiedRecipient,
+    ) -> Result<VerifiedRecipient> {
+        let mut trust = self.load_recipient_trust(user_id)?;
+        trust.version = 1;
+        trust
+            .entries
+            .retain(|existing| !existing.fingerprint.eq_ignore_ascii_case(&entry.fingerprint));
+        trust.entries.push(entry.clone());
+        self.save_recipient_trust(user_id, &trust)?;
+        Ok(entry)
+    }
+
+    /// Withdraw trust from a fingerprint. Returns whether anything was removed.
+    pub fn clear_recipient_verification(&self, user_id: &str, fingerprint: &str) -> Result<bool> {
+        let mut trust = self.load_recipient_trust(user_id)?;
+        let before = trust.entries.len();
+        trust
+            .entries
+            .retain(|existing| !existing.fingerprint.eq_ignore_ascii_case(fingerprint));
+        let removed = trust.entries.len() != before;
+        if removed {
+            self.save_recipient_trust(user_id, &trust)?;
+        }
+        Ok(removed)
+    }
+
+    pub fn recipient_verification(
+        &self,
+        user_id: &str,
+        fingerprint: &str,
+    ) -> Result<Option<VerifiedRecipient>> {
+        Ok(self
+            .load_recipient_trust(user_id)?
+            .entries
+            .into_iter()
+            .find(|entry| entry.fingerprint.eq_ignore_ascii_case(fingerprint)))
     }
 
     fn vault_master_path(&self, user_id: &str) -> PathBuf {
@@ -2513,6 +2684,7 @@ impl AppState {
     }
 
     fn clear_volatile_key_state(&self) -> Result<()> {
+        self.offline_principal.clear();
         // Before the keys go: anything opened this session but not yet written
         // to the ledger is saved — ledger first, then the ratchet sessions that
         // depend on it — and both leave memory.
@@ -2647,6 +2819,15 @@ impl AppState {
 
     pub fn user_id(&self) -> Result<String> {
         Ok(self.require_auth()?.user_id)
+    }
+
+    /// The account of the current native session, even if its token expired.
+    /// Used only to keep device-bound offline access on the same account.
+    pub(crate) fn current_auth_user(&self) -> Option<String> {
+        self.auth_session
+            .lock()
+            .ok()
+            .and_then(|session| session.as_ref().map(|session| session.user_id.clone()))
     }
 
     pub fn check_decrypt_rate_limit(
@@ -2876,6 +3057,63 @@ mod tests {
             state.load_workspace_scope(&user_id, "chat").is_err(),
             "a record sealed under the lost key must report as unreadable"
         );
+
+        cleanup(&user_id, &dir);
+    }
+
+    /// The sign-in path: an app start over key material whose storage key is
+    /// gone reports a coded fault (never a silent re-key), and the confirmed
+    /// reset recovers sign-in, sets the lost-key offline records aside without
+    /// deleting them, and leaves them alone when the key still works.
+    #[test]
+    fn lost_storage_key_is_a_coded_sign_in_fault_that_a_confirmed_reset_recovers() {
+        let dir = unique_temp_dir();
+        let user_id = format!("test-user-{}", uuid::Uuid::new_v4());
+        let offline = crate::offline::sealed_documents();
+        let state = AppState::new(dir.clone()).expect("create state");
+        let original = state.ensure_identity(&user_id, "Test Device").expect("ensure").device_id;
+        for doc in offline {
+            state
+                .save_user_secret_doc(&user_id, doc, b"test-aad", b"sealed record", doc)
+                .expect("save offline record");
+        }
+        // A reset while the key still works keeps the offline records.
+        state.reset_device_identity(&user_id, "Test Device").expect("reset with a working key");
+        for doc in offline {
+            assert!(state.load_user_secret_doc(&user_id, doc, b"test-aad", doc).expect("still opens").is_some());
+        }
+        drop(state);
+
+        crate::security::keystore::delete_secret(&AppState::safe_user_key(&user_id), &dir)
+            .expect("lose the storage key");
+        let restarted = AppState::new(dir.clone()).expect("restart");
+        let error = restarted
+            .ensure_identity(&user_id, "Test Device")
+            .expect_err("sign-in must not re-key on its own")
+            .to_string();
+        assert!(error.contains(DEVICE_KEYS_UNREADABLE), "{error}");
+        assert!(dir.join("keys").join(format!("{}.device-key-material.enc", AppState::safe_user_key(&user_id))).exists());
+
+        let reset = restarted
+            .reset_device_identity(&user_id, "Test Device")
+            .expect("the confirmed reset recovers sign-in");
+        assert_ne!(reset.device_id, original);
+        assert_eq!(
+            restarted.ensure_identity(&user_id, "Test Device").expect("sign-in works again").device_id,
+            reset.device_id
+        );
+        let kept: Vec<_> = std::fs::read_dir(dir.join("keys"))
+            .expect("keys dir")
+            .filter_map(|entry| entry.ok().map(|entry| entry.file_name().to_string_lossy().into_owned()))
+            .filter(|name| name.contains(".lost-"))
+            .collect();
+        for doc in offline {
+            assert!(
+                restarted.load_user_secret_doc(&user_id, doc, b"test-aad", doc).expect("starts fresh").is_none(),
+                "{doc} must be set aside"
+            );
+            assert!(kept.iter().any(|name| name.contains(&format!(".{doc}.enc.lost-"))), "{doc} bytes must be kept");
+        }
 
         cleanup(&user_id, &dir);
     }

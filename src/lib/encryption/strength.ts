@@ -68,8 +68,8 @@ function symmetricStrength(label: string): StrengthProfile | null {
       classicalBits: 256,
       quantumBits: 128,
       strength: 'quantum-safe',
-      rationale: 'ChaCha20 uses a 256-bit key. Grover halves the effective search space to ~128 bits, which remains beyond reach — no migration needed.',
-      standard: CNSA2,
+      rationale: 'ChaCha20 uses a 256-bit key and has a large generic search margin. It is outside the CNSA 2.0 suite.',
+      standard: 'RFC 8439',
     })
   }
 
@@ -184,7 +184,7 @@ function hashStrength(label: string): StrengthProfile | null {
       quantumBits: bits / 3,
       strength: 'quantum-safe',
       rationale: `SHA-3 (${bits}) is a Keccak sponge construction with no known practical weakness and adequate margin against quantum collision search.`,
-      standard: CNSA2,
+      standard: 'FIPS 202',
     })
   }
   if (/SHA[-_ ]?(384|512)/.test(value)) {
@@ -474,9 +474,11 @@ export function strengthOf(label: string, layer?: ProtectionLayer): StrengthProf
   return UNKNOWN_STRENGTH
 }
 
-/** Does this primitive meet the CNSA 2.0 bar for symmetric/hash use? */
-export function meetsCnsa2(profileValue: StrengthProfile): boolean {
-  return profileValue.strength === 'quantum-safe' || profileValue.strength === 'post-quantum'
+/** Algorithm-family comparison only. Modes, implementation and NSS scope need separate evidence. */
+export function matchesCnsa2Primitive(label: string, layer: ProtectionLayer): boolean {
+  const name = label.trim().toUpperCase()
+  return (layer === 'symmetric' && /^AES[-_ ]?256(?:[-_ ][A-Z][A-Z0-9]*)?$/.test(name))
+    || (layer === 'hash' && /^SHA[-_ ]?(?:384|512)$/.test(name))
 }
 
 /** Strength verdicts that require operator action. */

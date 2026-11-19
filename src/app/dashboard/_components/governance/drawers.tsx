@@ -401,7 +401,7 @@ function ControlDrawer({
           ) : null}
 
           {detail?.requirements.length ? (
-            <Section title="Requirements satisfied by this control" meta={`${detail.requirements.length}`}>
+            <Section title="Requirements linked to this control" meta={`${detail.requirements.length}`}>
               <div className="space-y-1.5">
                 {detail.requirements.map((requirement) => (
                   <button
@@ -502,7 +502,11 @@ function FrameworkDrawer({
             <Fact label="Stored attestations" value={fmtNumber(framework.attestedEvidenceCount)} mono />
           </dl>
 
-          {framework.attestedEvidenceCount === 0 ? (
+          {framework.referenceOnly ? (
+            <p className="rounded-lg border border-white/10 bg-white/[0.02] p-2.5 text-xs leading-relaxed text-white/60">
+              Reference mapping. Related controls can help you gather evidence, but Qguard Helix does not assess applicability, conformance or compliance for this source.
+            </p>
+          ) : framework.attestedEvidenceCount === 0 ? (
             <p className="rounded-lg border border-white/10 bg-white/[0.02] p-2.5 text-[10.5px] leading-relaxed text-white/45">
               No stored attestation names this framework. Its status rests entirely on derived platform signals — real
               measurements, but not an auditor-facing attestation. Record evidence against its controls to strengthen it.
@@ -536,7 +540,7 @@ function FrameworkDrawer({
             )}
           </Section>
 
-          <Section title="Controls" meta={`${detail?.controls.length ?? 0}`}>
+          <Section title={framework.referenceOnly ? "Related controls" : "Controls"} meta={`${detail?.controls.length ?? 0}`}>
             {detail?.controls.length ? (
               <div className="space-y-1.5">
                 {detail.controls.map((control) => (
@@ -634,14 +638,18 @@ function RequirementDrawer({
             <Fact label="Last validated" value={requirement.lastValidatedAt ? absoluteTime(requirement.lastValidatedAt) : 'Never'} />
           </dl>
 
-          {requirement.unmeasuredControlIds.length ? (
+          {requirement.referenceOnly ? (
+            <p className="rounded-lg border border-white/10 bg-white/[0.02] p-2.5 text-xs leading-relaxed text-white/60">
+              This is a reference mapping. The related controls provide evidence to review; they do not establish whether the requirement applies or has been met.
+            </p>
+          ) : requirement.unmeasuredControlIds.length ? (
             <p className="rounded-lg border border-white/10 bg-white/[0.02] p-2.5 text-[10.5px] leading-relaxed text-white/45">
               {requirement.unmeasuredControlIds.length} of its controls have no evidence yet, so this requirement is scored
               only over the controls that could be assessed. Connecting those sources changes the score.
             </p>
           ) : null}
 
-          <Section title="Controls" meta={`${detail?.controls.length ?? 0}`}>
+          <Section title={requirement.referenceOnly ? "Related controls" : "Controls"} meta={`${detail?.controls.length ?? 0}`}>
             {detail?.controls.length ? (
               <div className="space-y-1.5">
                 {detail.controls.map((control) => (

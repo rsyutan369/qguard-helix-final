@@ -122,6 +122,7 @@ const runtimeEvents: Row[] = [
   ...[10, 12, 14, 16].map((minute, index) => ({
     ...baseEvent, id: `e-legacy-${index}`, asset_id: 'a-legacy', asset_name: 'Legacy API', event_type: 'tls_handshake',
     operation_type: 'key_exchange', protocol: 'TLS', tls_version: 'TLS 1.2', key_exchange_algorithm: 'X25519',
+    host: 'legacy.example.test', port: 443,
     cipher_suite: 'TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA', hndl_risk: true, is_legacy: true,
     observed_at: minutesAgo(minute), created_at: minutesAgo(minute),
   })),
@@ -151,7 +152,7 @@ const runtimeEvents: Row[] = [
 
 const migrationJobs: Row[] = [
   { id: 'j1', asset_id: 'a-pay', name: 'Payment API — ML-DSA cutover', job_type: 'signature', status: 'completed', target_algorithm: 'ML-DSA-65', progress: 100, metadata: { from_algorithm: 'RSA-2048' }, completed_at: minutesAgo(30), updated_at: minutesAgo(30), created_at: daysAgo(5) },
-  { id: 'j2', asset_id: 'a-legacy', name: 'Legacy API — hybrid TLS', job_type: 'transport', status: 'completed', target_algorithm: 'X25519MLKEM768', progress: 100, metadata: {}, completed_at: minutesAgo(60), updated_at: minutesAgo(60), created_at: daysAgo(5) },
+  { id: 'j2', asset_id: 'a-legacy', name: 'Legacy API — hybrid TLS', job_type: 'transport', status: 'completed', target_algorithm: 'X25519MLKEM768', progress: 100, metadata: { endpointHost: 'legacy.example.test', endpointPort: 443 }, completed_at: minutesAgo(60), updated_at: minutesAgo(60), created_at: daysAgo(5) },
 ]
 
 const inputs: RuntimeIntelInputs = {
@@ -301,6 +302,11 @@ console.log('\n8. Migration verification never claims what it cannot show')
   assert(pay.before === 'RSA-2048', 'the "before" algorithm comes from the job record', String(pay.before))
   assert(legacy.status === 'fallback-detected', 'classical traffic after cutover ⇒ fallback detected, not success', legacy.status)
   assert(legacy.fallbacks === 4, 'every post-cutover classical observation is counted', String(legacy.fallbacks))
+  const otherListener = buildRuntimeCryptoIntelligence({
+    ...inputs,
+    runtimeEvents: [{ ...runtimeEvents[0], asset_id: 'a-legacy', host: 'legacy.example.test', port: 8443 }],
+  }).migrationVerification.find((row) => row.assetId === 'a-legacy')
+  assert(otherListener?.status === 'not-observed', 'a matching algorithm on a different listener does not verify a cutover')
   assert(
     !model.migrationVerification.some((row) => row.status === 'confirmed' && row.sessionsVerified === 0),
     'no migration is ever confirmed with zero runtime evidence',

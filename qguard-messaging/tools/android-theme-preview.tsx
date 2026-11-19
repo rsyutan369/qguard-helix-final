@@ -28,6 +28,12 @@ import LoginPage from '../src/pages/LoginPage';
 import { WorkspaceLockGate } from '../src/components/workspace/WorkspaceLockGate';
 import { AppLockScreen } from '../src/components/applock/AppLockScreen';
 import type { Page, MessagingModule } from '../src/lib/types';
+import { RadarConsole } from '../src/components/offline/OfflineDashboard';
+import { MeshNotice } from '../src/components/offline/MeshNotice';
+import '../src/components/offline/offline-guided-flow.css';
+import type { OfflineStatus } from '../src/lib/offline';
+// Empty local fixture: discovery stopped, no devices.
+const stoppedOffline:OfflineStatus={running:false,lanDiscoveryRunning:false,autoStart:false,fingerprint:'0'.repeat(64),port:null,peers:[],networkError:null,platform:'android'};
 const params=new URLSearchParams(location.search);
 if(!params.has('desktop')) document.documentElement.setAttribute('data-qg-skin','modernist');
 const noop=()=>{};
@@ -56,9 +62,11 @@ function Preview(){
  case 'verification':content=<SecurityVerificationPage userId="" devices={[]} telemetry={[]} securityEvents={[]} liveEvents={[]} liveStatus={liveStatus} onRefresh={noop}/>;break;
  case 'audit':content=<AuditLogsPage userId="" devices={[]} events={[]} securityEvents={[]} liveEvents={[]} liveStatus={liveStatus} onRefresh={noop}/>;break;
  case 'settings':content=<SettingsPage theme={theme} profile={null} telemetry={[]} securityEvents={[]} liveEvents={[]} liveStatus={liveStatus} onToggleTheme={toggleTheme} onRefresh={noop} inactivityMinutes={15} onSetInactivityMinutes={noop} workspaceStatus={null} onLockWorkspaces={noop}/>;break;
+ case 'mesh': case 'xfer': content=<div className="offline-guided-flow" data-screen="discovery"><RadarConsole mode={page} status={stoppedOffline} selected={[]} busy={false} onSelect={noop} onToggleDiscovery={noop} onOpenSettings={noop} onOpenDevices={noop}/></div>;break;
  case 'calls':content=<CallsPage conversations={[]} contacts={[]} onCall={noop} onMessage={noop}/>;break;
  default:content=<MobileDashboard data={data} liveStatus={liveStatus} onNavigate={setPage}/>;
  }
- return <MobileShell activePage={(page.startsWith('chat-')||page==='contacts'?'chat':page.startsWith('vault-')?'vault':page) as Page} title={page.startsWith('vault-')?'Quantum Vault':page.startsWith('chat-')?'Secure Chat':modules.find(m=>m.route===page)?.label||'Secure Chat'} modules={modules} unreadMessages={0} liveStatus={liveStatus} theme={theme} onToggleTheme={toggleTheme} onNavigate={setPage} onSignOut={noop}>{content}</MobileShell>;
+ const meshNotice=params.has('meshNotice')?<div style={{position:'fixed',top:72,left:12,right:12,zIndex:60}}><MeshNotice notice={{id:'layout',sender:'0'.repeat(64),senderName:'Layout fixture sender',preview:'Layout fixture message text for the notice preview.',group:null,emergency:params.get('meshNotice')==='emergency',receivedAt:0}} more={1} onOpen={noop} onReply={noop} onDismiss={noop}/></div>:null;
+ return <>{meshNotice}<MobileShell activePage={(page.startsWith('chat-')||page==='contacts'?'chat':page.startsWith('vault-')?'vault':page) as Page} title={page==='xfer'?'Qguard XFER':page==='mesh'?'Qguard Mesh':page.startsWith('vault-')?'Quantum Vault':page.startsWith('chat-')?'Secure Chat':modules.find(m=>m.route===page)?.label||'Secure Chat'} modules={modules} unreadMessages={0} liveStatus={liveStatus} theme={theme} onToggleTheme={toggleTheme} onNavigate={setPage} onSignOut={noop}>{content}</MobileShell></>;
 }
 createRoot(document.getElementById('root')!).render(<AuthProvider><CallProvider userId=""><Preview/></CallProvider></AuthProvider>);

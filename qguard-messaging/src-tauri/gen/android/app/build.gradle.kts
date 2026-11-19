@@ -80,8 +80,10 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
-    // Subscription paywall: Google Play Billing (bridged from Rust via PlayBilling.kt)
-    implementation("com.android.billingclient:billing-ktx:7.1.1")
+    // Subscription paywall: Google Play Billing Library 8 (bridged from Rust via PlayBilling.kt).
+    // Library 7 passed its Play update deadline on 2026-11-01; 8.x is accepted until 2027-11-01.
+    // The plain artifact (no -ktx): the bridge uses callbacks only, and billing-ktx 8.1+ pulls kotlin-stdlib 2.2, which this project's Kotlin 1.9 compiler cannot read.
+    implementation("com.android.billingclient:billing:8.3.0")
     // Biometric unlock of the app-entry PIN (BiometricUnlock.kt)
     implementation("androidx.biometric:biometric:1.1.0")
     // Nearby delivery while the relay is unreachable (NearbyRelay.kt)

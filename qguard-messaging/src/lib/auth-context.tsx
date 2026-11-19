@@ -30,6 +30,66 @@ interface AuthContextValue {
   signOut: () => Promise<void>;
   clearError: () => void;
   currentStoredSession: () => StoredSession | null;
+  /** Set when sign-in succeeded but this device's stored keys cannot be opened. */
+  deviceKeyRecovery: DeviceKeyRecovery | null;
+  retryDeviceKeys: () => Promise<boolean>;
+  resetDeviceKeys: (confirmation: string) => Promise<boolean>;
+  cancelDeviceKeyRecovery: () => Promise<void>;
+  /**
+   * Set while signed in WITHOUT internet through this device's offline
+   * enrollment. Only Mesh, XFER and local records work; `session` is null.
+   */
+  offline: OfflineSessionInfo | null;
+  /**
+   * Android: after a local app-lock unlock while the server is unreachable,
+   * resume offline mode. Rejects with the reason when it cannot.
+   */
+  resumeOfflineAfterUnlock: (stored: StoredSession) => Promise<void>;
+  /** Try to return online now. Resolves true once an online session is live. */
+  reconnectOnline: () => Promise<boolean>;
+  /** Leave offline mode for the online sign-in screen. */
+  exitOffline: () => Promise<void>;
+}
+
+/** Returned by the native offline sign-in and resume commands. */
+export interface OfflineSessionInfo {
+  userId: string;
+  email: string;
+  /** Unix seconds: offline access lapses unless the device is online again by then. */
+  offlineUntil: number;
+  /** The last subscription row seen online (UI paywall verdict only). */
+  entitlement: Record<string, unknown> | null;
+}
+
+/** A minimal user for offline mode; there is no server-issued user object. */
+function offlineUser(info: OfflineSessionInfo): User {
+  return {
+    id: info.userId,
+    email: info.email || undefined,
+    aud: "authenticated",
+    app_metadata: {},
+    user_metadata: {},
+    created_at: "",
+  } as User;
+}
+
+export interface DeviceKeyRecovery {
+  /** Account identifier shown on the recovery screen. */
+  account: string;
+  /** The native reason, for the details disclosure. */
+  detail: string;
+  /** Failure of the last retry or reset, if any. */
+  error: string | null;
+  busy: boolean;
+}
+
+/** Mirrors `DEVICE_KEYS_UNREADABLE` in src-tauri/src/state.rs. */
+export const DEVICE_KEYS_UNREADABLE = "DEVICE_KEYS_UNREADABLE";
+/** Mirrors `RESET_DEVICE_IDENTITY_CONFIRMATION` in src-tauri/src/commands/keys.rs. */
+export const RESET_DEVICE_IDENTITY_CONFIRMATION = "RESET THIS DEVICE IDENTITY";
+
+function isDeviceKeysUnreadable(error: unknown): boolean {
+  return (error instanceof Error ? error.message : String(error ?? "")).includes(DEVICE_KEYS_UNREADABLE);
 }
 
 interface PendingMfaChallenge {
@@ -76,8 +136,13 @@ async function withTimeout<T>(task: PromiseLike<T>, timeoutMs: number, label: st
 // (e.g. a free-tier project that is still waking up). These are safe to retry —
 // unlike an "Invalid login credentials" response, which is returned as data and
 // never thrown, so it is never retried here.
-function isTransientAuthError(error: unknown): boolean {
-  const message = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase();
+export function isTransientAuthError(error: unknown): boolean {
+  // supabase-js reports a request that never reached the server this way.
+  const named = error && typeof error === "object" ? error as { name?: unknown; status?: unknown } : null;
+  if (named?.name === "AuthRetryableFetchError") return true;
+  const message = (error instanceof Error ? error.message
+    : named && typeof (named as { message?: unknown }).message === "string" ? String((named as { message: string }).message)
+    : String(error ?? "")).toLowerCase();
   return /failed to fetch|networkerror|network error|load failed|timed out|timeout|connection|fetch failed|err_/i.test(message);
 }
 
@@ -139,6 +204,16 @@ const missingProviderAuth: AuthContextValue = {
   signOut: async () => undefined,
   clearError: () => undefined,
   currentStoredSession: () => null,
+  deviceKeyRecovery: null,
+  retryDeviceKeys: async () => false,
+  resetDeviceKeys: async () => false,
+  cancelDeviceKeyRecovery: async () => undefined,
+  offline: null,
+  resumeOfflineAfterUnlock: async () => {
+    throw new Error("Offline access is not available.");
+  },
+  reconnectOnline: async () => false,
+  exitOffline: async () => undefined,
 };
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -150,6 +225,48 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const activeSessionTokenRef = useRef<string | null>(null);
+  const [deviceKeyRecovery, setDeviceKeyRecovery] = useState<DeviceKeyRecovery | null>(null);
+  // The authenticated session held while the user decides how to recover.
+  const recoverySessionRef = useRef<Session | null>(null);
+  const [offline, setOfflineState] = useState<OfflineSessionInfo | null>(null);
+  // Mirrors `offline` for the auth-state listener, which outlives renders.
+  const offlineRef = useRef<OfflineSessionInfo | null>(null);
+  const setOffline = useCallback((info: OfflineSessionInfo | null) => {
+    offlineRef.current = info;
+    setOfflineState(info);
+  }, []);
+  // Android offline mode keeps the app-lock session's tokens in memory so it
+  // can return online by itself when the network comes back.
+  const offlineTokensRef = useRef<StoredSession | null>(null);
+  // The password of an online sign-in that is waiting for MFA, held only in
+  // memory until the sign-in completes so the device can enroll offline.
+  const pendingEnrollmentRef = useRef<{ userId: string; password: string } | null>(null);
+
+  const enterOffline = useCallback((info: OfflineSessionInfo) => {
+    activeSessionTokenRef.current = null;
+    setOffline(info);
+    setUser(offlineUser(info));
+    setSession(null);
+    setPendingMfa(null);
+    setError(null);
+    setNotice(null);
+  }, [setOffline]);
+
+  // Ends offline mode natively (stops local networking, drops the offline
+  // grant) and locally. The device enrollment stays for the next time.
+  const leaveOffline = useCallback(async () => {
+    const wasOffline = offlineRef.current !== null;
+    offlineTokensRef.current = null;
+    setOffline(null);
+    if (wasOffline) await safeInvoke("offline_sign_out", undefined, null).catch(() => undefined);
+  }, [setOffline]);
+
+  // Desktop only: after an online password sign-in, enroll this device for
+  // offline sign-in. Failures never affect the online session.
+  const enrollOfflinePassword = useCallback((userId: string, password: string) => {
+    if (!isTauriRuntime() || isAndroidRuntime()) return;
+    void safeInvoke("offline_enroll_password", { userId, password }).catch(() => undefined);
+  }, []);
 
   // freshLogin distinguishes an interactive sign-in (password + optional MFA)
   // from a background token refresh / session restore. Only a fresh login
@@ -247,13 +364,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const completeAuthenticatedSession = useCallback(async (activeSession: Session, freshLogin = false): Promise<boolean> => {
     const mfaSatisfied = await requireMfaIfNeeded(activeSession);
     if (!mfaSatisfied) return false;
-    await syncBackend(activeSession, freshLogin);
+    try {
+      await syncBackend(activeSession, freshLogin);
+    } catch (err) {
+      if (!isDeviceKeysUnreadable(err)) throw err;
+      // The account is authenticated, but this device's stored keys cannot be
+      // opened. Never re-key silently: hold the session and let the user retry,
+      // reset deliberately, or sign out (see DeviceKeyRecoveryScreen).
+      recoverySessionRef.current = activeSession;
+      activeSessionTokenRef.current = null;
+      setUser(null);
+      setSession(null);
+      setPendingMfa(null);
+      setDeviceKeyRecovery({
+        account: accountIdentifierLabel(activeSession.user),
+        detail: err instanceof Error ? err.message : String(err),
+        error: null,
+        busy: false,
+      });
+      return false;
+    }
+    recoverySessionRef.current = null;
+    setDeviceKeyRecovery(null);
+    // A live online session always replaces offline mode. The native offline
+    // grant may stay: an online-verified session takes precedence over it.
+    offlineTokensRef.current = null;
+    setOffline(null);
     activeSessionTokenRef.current = activeSession.access_token;
     setUser(activeSession.user);
     setSession(activeSession);
     setPendingMfa(null);
+    setError(null);
     return true;
-  }, [requireMfaIfNeeded, syncBackend]);
+  }, [requireMfaIfNeeded, setOffline, syncBackend]);
 
   const validateSession = useCallback(async () => {
     setLoading(true);
@@ -286,11 +429,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         "Session validation",
       );
       if (userError || !userData.user) {
-        await supabase.auth.signOut({ scope: "local" });
         activeSessionTokenRef.current = null;
         setUser(null);
         setSession(null);
-        setError("Your session could not be validated. Please sign in again.");
+        if (userError && isTransientAuthError(userError)) {
+          // No internet is not an invalid session: keep it for when the
+          // network returns. Without internet, sign in offline instead.
+          setError(`${AUTH_UNREACHABLE_MESSAGE} You can still sign in to use Mesh and XFER offline.`);
+        } else {
+          await supabase.auth.signOut({ scope: "local" });
+          setError("Your session could not be validated. Please sign in again.");
+        }
         setLoading(false);
         return;
       }
@@ -317,6 +466,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const client = supabase;
     const { data } = client.auth.onAuthStateChange((_event, nextSession) => {
       if (!nextSession) {
+        // Offline mode has no Supabase session to lose.
+        if (offlineRef.current) return;
         activeSessionTokenRef.current = null;
         setSession(null);
         setUser(null);
@@ -347,6 +498,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           .catch((err) => {
             activeSessionTokenRef.current = null;
             setSession(null);
+            const stillOffline = offlineRef.current;
+            if (stillOffline && isTransientAuthError(err)) {
+              // Reconnecting failed half-way: stay in offline mode.
+              setUser(offlineUser(stillOffline));
+              return;
+            }
+            // Any other failure ends offline mode too, for a clean sign-in.
+            if (stillOffline) void leaveOffline();
             setUser(null);
             setError(err instanceof Error ? err.message : String(err));
           })
@@ -358,7 +517,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => data.subscription.unsubscribe();
-  }, [completeAuthenticatedSession, validateSession]);
+  }, [completeAuthenticatedSession, leaveOffline, validateSession]);
 
   const signIn = useCallback(async (email: string, password: string) => {
     setLoading(true);
@@ -382,15 +541,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw signInError ?? new Error("Sign in failed.");
       }
       const completed = await completeAuthenticatedSession(data.session, true);
-      if (!completed) return false;
+      if (!completed) {
+        // MFA pending: enroll once the second factor completes the sign-in.
+        pendingEnrollmentRef.current = { userId: data.session.user.id, password };
+        return false;
+      }
+      enrollOfflinePassword(data.session.user.id, password);
       void auditAuthEvent("login_success", "info", cleanEmail, {}, data.session.user.id);
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      await auditAuthEvent("login_failed", "warning", cleanEmail);
       if (isTransientAuthError(err)) {
+        // The sign-in service is unreachable. On desktop, this device can
+        // still sign in for offline Mesh and XFER with its enrollment.
+        if (isTauriRuntime() && !isAndroidRuntime()) {
+          try {
+            const info = await safeInvoke<OfflineSessionInfo>("offline_sign_in", { email: cleanEmail, password });
+            enterOffline(info);
+            return true;
+          } catch (offlineErr) {
+            setError(`${AUTH_UNREACHABLE_MESSAGE} ${offlineErr instanceof Error ? offlineErr.message : String(offlineErr)}`);
+            return false;
+          }
+        }
         setError(AUTH_UNREACHABLE_MESSAGE);
-      } else if (message.toLowerCase().includes("email not confirmed")) {
+        return false;
+      }
+      await auditAuthEvent("login_failed", "warning", cleanEmail);
+      if (message.toLowerCase().includes("email not confirmed")) {
         const redirectTo = getEmailRedirectTo();
         await requireSupabase().auth.resend({
           type: "signup",
@@ -405,7 +583,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, [auditAuthEvent, checkAuthRateLimit, completeAuthenticatedSession]);
+  }, [auditAuthEvent, checkAuthRateLimit, completeAuthenticatedSession, enrollOfflinePassword, enterOffline]);
 
   const verifyMfaSignIn = useCallback(async (code: string) => {
     if (!pendingMfa) {
@@ -435,9 +613,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (sessionError || !sessionData.session) throw sessionError ?? new Error("MFA session could not be restored.");
       activeSessionTokenRef.current = sessionData.session.access_token;
       await syncBackend(sessionData.session, true);
+      offlineTokensRef.current = null;
+      setOffline(null);
       setUser(sessionData.session.user);
       setSession(sessionData.session);
       setPendingMfa(null);
+      const pending = pendingEnrollmentRef.current;
+      pendingEnrollmentRef.current = null;
+      if (pending?.userId === sessionData.session.user.id) enrollOfflinePassword(pending.userId, pending.password);
       void auditAuthEvent("login_mfa_verified", "info", pendingMfa.email, {}, sessionData.session.user.id);
       return true;
     } catch (err) {
@@ -447,14 +630,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, [auditAuthEvent, checkAuthRateLimit, pendingMfa, syncBackend]);
+  }, [auditAuthEvent, checkAuthRateLimit, enrollOfflinePassword, pendingMfa, setOffline, syncBackend]);
 
   const cancelMfaSignIn = useCallback(async () => {
+    pendingEnrollmentRef.current = null;
+    await leaveOffline();
     await supabase.auth.signOut({ scope: "local" });
     setPendingMfa(null);
     setSession(null);
     setUser(null);
-  }, []);
+  }, [leaveOffline]);
 
   const signUp = useCallback(async (email: string, password: string, name: string) => {
     setLoading(true);
@@ -699,7 +884,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(async () => {
     const userId = user?.id;
     clearChatPlaintextCaches();
-    await supabase.auth.signOut();
+    await leaveOffline();
+    // Without internet the server call fails; the local session still goes.
+    await withTimeout(supabase.auth.signOut(), authRequestTimeoutMs, "Sign out").catch(() =>
+      supabase.auth.signOut({ scope: "local" }).catch(() => undefined));
     await safeInvoke("auth_logout", userId ? { userId } : {}, false);
     if (isAndroidRuntime()) {
       await safeInvoke("applock_wipe", userId ? { userId } : {}, null).catch(() => undefined);
@@ -709,7 +897,128 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession(null);
     setPendingMfa(null);
     setPendingPhone(null);
-  }, [user?.id]);
+  }, [leaveOffline, user?.id]);
+
+  // Android: the app-entry lock was unlocked but the server is unreachable.
+  // The native side re-checks that the lock is open for this same account.
+  const resumeOfflineAfterUnlock = useCallback(async (stored: StoredSession) => {
+    if (!isAndroidRuntime()) throw new Error("Offline access is not available on this device.");
+    const info = await safeInvoke<OfflineSessionInfo>("offline_resume_unlocked", { userId: stored.userId });
+    offlineTokensRef.current = stored;
+    enterOffline({ ...info, email: info.email || stored.email });
+  }, [enterOffline]);
+
+  // One attempt to return online. Android restores the app-lock session's
+  // tokens; desktop reuses a Supabase session only if this window still has
+  // one (otherwise "Sign in online" asks for the password).
+  const reconnectOnline = useCallback(async (): Promise<boolean> => {
+    if (!offlineRef.current) return Boolean(session);
+    const expected = offlineRef.current.userId;
+    try {
+      const tokens = offlineTokensRef.current;
+      if (tokens) {
+        const { data, error: restoreError } = await withTimeout(
+          supabase.auth.setSession({ access_token: tokens.accessToken, refresh_token: tokens.refreshToken }),
+          authRequestTimeoutMs,
+          "Session restore",
+        );
+        if (restoreError) {
+          if (isTransientAuthError(restoreError)) return false;
+          // The server rejected the stored session: a full sign-in is needed.
+          await leaveOffline();
+          activeSessionTokenRef.current = null;
+          setUser(null);
+          setSession(null);
+          setError("Your session expired. Please sign in again.");
+          return false;
+        }
+        // onAuthStateChange completes the session and leaves offline mode.
+        return data.session?.user.id === expected;
+      }
+      const { data } = await withTimeout(supabase.auth.getSession(), authRequestTimeoutMs, "Session restore");
+      if (!data.session || data.session.user.id !== expected) return false;
+      const { error: userError } = await withTimeout(supabase.auth.getUser(), authRequestTimeoutMs, "Session validation");
+      if (userError) return false;
+      return await completeAuthenticatedSession(data.session);
+    } catch {
+      return false;
+    }
+  }, [completeAuthenticatedSession, leaveOffline, session]);
+
+  const exitOffline = useCallback(async () => {
+    await leaveOffline();
+    activeSessionTokenRef.current = null;
+    setUser(null);
+    setSession(null);
+    setError(null);
+  }, [leaveOffline]);
+
+  // Android offline mode returns online by itself once the network is back.
+  useEffect(() => {
+    if (!offline || !isAndroidRuntime()) return undefined;
+    let busy = false;
+    const attempt = () => {
+      if (busy || !offlineTokensRef.current) return;
+      busy = true;
+      void reconnectOnline().finally(() => {
+        busy = false;
+      });
+    };
+    const timer = window.setInterval(attempt, 30_000);
+    window.addEventListener("online", attempt);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("online", attempt);
+    };
+  }, [offline, reconnectOnline]);
+
+  const runDeviceKeyRecovery = useCallback(async (action: (held: Session) => Promise<void>): Promise<boolean> => {
+    const held = recoverySessionRef.current;
+    if (!held) return false;
+    setDeviceKeyRecovery((current) => current && { ...current, busy: true, error: null });
+    try {
+      await action(held);
+      // Supabase may have refreshed the token while the screen was open.
+      const { data } = await supabase.auth.getSession();
+      const completed = await completeAuthenticatedSession(data.session ?? held, true);
+      if (!completed) {
+        // Still unreadable: completeAuthenticatedSession re-armed the screen.
+        setDeviceKeyRecovery((current) => current && {
+          ...current,
+          busy: false,
+          error: "This device's keys still could not be opened.",
+        });
+      }
+      return completed;
+    } catch (err) {
+      setDeviceKeyRecovery((current) => current && {
+        ...current,
+        busy: false,
+        error: isTransientAuthError(err) ? AUTH_UNREACHABLE_MESSAGE : err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }, [completeAuthenticatedSession]);
+
+  // Try again unchanged, for a key store that was only temporarily unavailable.
+  const retryDeviceKeys = useCallback(() => runDeviceKeyRecovery(async () => undefined), [runDeviceKeyRecovery]);
+
+  // The deliberate, irreversible way out when the device storage key is gone.
+  // The native command re-checks the confirmation phrase and rate-limits it.
+  const resetDeviceKeys = useCallback((confirmation: string) => runDeviceKeyRecovery(async (held) => {
+    await safeInvoke("keys_reset_device_identity", { userId: held.user.id, confirmation });
+    void auditAuthEvent("device_identity_reset", "warning", accountAuditIdentifier(held.user), {
+      reason: "device_storage_key_unavailable_at_sign_in",
+    }, held.user.id);
+  }), [auditAuthEvent, runDeviceKeyRecovery]);
+
+  const cancelDeviceKeyRecovery = useCallback(async () => {
+    const held = recoverySessionRef.current;
+    recoverySessionRef.current = null;
+    setDeviceKeyRecovery(null);
+    await supabase.auth.signOut({ scope: "local" }).catch(() => undefined);
+    await safeInvoke("auth_logout", held ? { userId: held.user.id } : {}, false);
+  }, []);
 
   const value = useMemo<AuthContextValue>(() => ({
     user,
@@ -735,7 +1044,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setNotice(null);
     },
     currentStoredSession: () => toStoredSession(session),
-  }), [cancelMfaSignIn, cancelPhoneSignIn, error, loading, notice, pendingMfa, pendingPhone, requestPhoneCode, resendVerification, resetPassword, session, signIn, signInWithLinkCredential, signOut, signUp, user, verifyMfaSignIn, verifyPhoneCode]);
+    deviceKeyRecovery,
+    retryDeviceKeys,
+    resetDeviceKeys,
+    cancelDeviceKeyRecovery,
+    offline,
+    resumeOfflineAfterUnlock,
+    reconnectOnline,
+    exitOffline,
+  }), [cancelDeviceKeyRecovery, cancelMfaSignIn, cancelPhoneSignIn, deviceKeyRecovery, error, exitOffline, loading, notice, offline, pendingMfa, pendingPhone, reconnectOnline, requestPhoneCode, resendVerification, resetDeviceKeys, resetPassword, resumeOfflineAfterUnlock, retryDeviceKeys, session, signIn, signInWithLinkCredential, signOut, signUp, user, verifyMfaSignIn, verifyPhoneCode]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

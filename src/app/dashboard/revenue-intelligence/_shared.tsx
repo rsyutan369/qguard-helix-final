@@ -52,6 +52,7 @@ import {
   Panel,
   SectionTitle,
 } from '@/app/dashboard/quantum-readiness/_shared';
+import { openTicketedEventSource } from '@/lib/stream-ticket';
 
 export type { RevenueSnapshot, TimelineBucket, CustomerRow, SubscriberRow, InvoiceLedgerRow, ActivityEntry, AlertEntry, RevenueClass };
 
@@ -261,7 +262,9 @@ function useRevenueIntelligenceState(onOpenCustomer: (userId: string) => void, e
       if (disposed) return;
       source?.close();
       setStream(attempt === 0 ? 'connecting' : 'reconnecting');
-      const es = new EventSource(`/api/v1/revenue/stream?token=${encodeURIComponent(token!)}`);
+      // A single-use ticket per connection: the JWT never enters the URL.
+      void openTicketedEventSource('revenue', token!).then((es) => {
+      if (disposed) { es.close(); return; }
       source = es;
       es.addEventListener('revenue-connected', () => {
         attempt = 0;
@@ -300,6 +303,12 @@ function useRevenueIntelligenceState(onOpenCustomer: (userId: string) => void, e
         setStream('reconnecting');
         schedule(Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 5)) + Math.round(Math.random() * 500));
       };
+      }).catch(() => {
+        if (disposed) return;
+        attempt += 1;
+        setStream('reconnecting');
+        schedule(Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 5)) + Math.round(Math.random() * 500));
+      });
     }
 
     connect();

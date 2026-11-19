@@ -58,8 +58,8 @@ const portfolio = buildAssetPortfolio({
 })
 
 const scanSessions: Row[] = [
-  { id: 'session-old', status: 'completed', completed_at: daysAgo(7), created_at: daysAgo(7) },
-  { id: 'session-new', status: 'completed', completed_at: daysAgo(1), created_at: daysAgo(1) },
+  { id: 'session-old', status: 'completed', target_scope: 'payments.example.com, edge.example.com, dev.example.com', completed_at: daysAgo(7), created_at: daysAgo(7) },
+  { id: 'session-new', status: 'completed', target_scope: 'payments.example.com, edge.example.com, dev.example.com', completed_at: daysAgo(1), created_at: daysAgo(1) },
   { id: 'session-running', status: 'running', completed_at: null, created_at: hoursAgo(1) },
 ]
 
@@ -86,13 +86,13 @@ const scanResults: Row[] = [
 ]
 
 const migrationJobs: Row[] = [
-  { id: 'j1', asset_id: 'a-edge', name: 'Edge hybrid TLS cutover', status: 'completed', target_algorithm: 'X25519MLKEM768', completed_at: daysAgo(3), updated_at: daysAgo(3), created_at: daysAgo(10) },
+  { id: 'j1', asset_id: 'a-edge', name: 'Edge hybrid TLS cutover', status: 'completed', metadata: { fromAlgorithm: 'ECDHE-RSA-AES128-SHA' }, target_algorithm: 'X25519MLKEM768', completed_at: daysAgo(3), updated_at: daysAgo(3), created_at: daysAgo(10) },
 ]
 
 const runtimeEvents: Row[] = [
   ...Array.from({ length: 4 }, (_, i) => ({
     id: `d${i}`, asset_id: 'a-pay', asset_name: 'payments.example.com', key_exchange_algorithm: 'X25519',
-    downgrade_detected: true, observed_at: hoursAgo(i + 1), created_at: hoursAgo(i + 1),
+    downgrade_detected: true, metadata: { verifiedPqcFallback: true }, observed_at: hoursAgo(i + 1), created_at: hoursAgo(i + 1),
   })),
   { id: 'not-a-downgrade', asset_id: 'a-pay', asset_name: 'payments.example.com', key_exchange_algorithm: 'X25519MLKEM768', downgrade_detected: false, observed_at: hoursAgo(1), created_at: hoursAgo(1) },
 ]
@@ -143,6 +143,18 @@ console.log('\n3. A migration doing its job is not drift')
     `${model.kpis.unplannedChanges}`,
   )
   assert(model.kpis.planned === 2, 'both planned changes are counted separately', String(model.kpis.planned))
+  const future = buildDriftIntelligence({
+    ...base,
+    migrationJobs: [{ ...migrationJobs[0], completed_at: hoursAgo(1) }],
+    runtimeEvents: [],
+  })
+  assert(future.kpis.planned === 0, 'a migration completed after the current scan cannot explain the delta')
+  const incomparable = buildDriftIntelligence({
+    ...base,
+    scanSessions: [scanSessions[0], { ...scanSessions[1], target_scope: 'another.example.test' }],
+    runtimeEvents: [],
+  })
+  assert(!incomparable.hasBaseline && incomparable.kpis.improvements === 0, 'unrelated scan scopes cannot create improvements')
 }
 
 /* ------------------------------------------------------------------ */
@@ -232,7 +244,7 @@ console.log('\n5. A re-scan of unchanged cryptography produces zero drift')
     .map((r, i) => ({ ...r, id: `rescan-${i}`, scan_session_id: 'session-copy', description: `Totally different narrative ${i}`, created_at: daysAgo(1) }))
   const identical = buildDriftIntelligence({
     ...base,
-    scanSessions: [scanSessions[0], { id: 'session-copy', status: 'completed', completed_at: daysAgo(1), created_at: daysAgo(1) }],
+    scanSessions: [scanSessions[0], { id: 'session-copy', status: 'completed', target_scope: 'payments.example.com, edge.example.com, dev.example.com', completed_at: daysAgo(1), created_at: daysAgo(1) }],
     scanResults: [...scanResults.filter((r) => r.scan_session_id === 'session-old'), ...rescan],
     runtimeEvents: [],
     migrationJobs: [],

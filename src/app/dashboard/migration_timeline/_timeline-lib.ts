@@ -355,7 +355,8 @@ export function buildChronology(snapshot: OrchestrationSnapshot, filters: Pick<T
     }
   }
   for (const event of snapshot.events) {
-    if ((filters.planId || q) && (!event.jobId || !jobIds.has(event.jobId))) continue
+    if (filters.planId && event.planId !== filters.planId && (!event.jobId || !jobIds.has(event.jobId))) continue
+    if (q && (!event.jobId || !jobIds.has(event.jobId)) && !`${event.type} ${event.message}`.toLowerCase().includes(q)) continue
     const t = ms(event.at)
     if (t === null) continue
     const severity = event.severity.toLowerCase()

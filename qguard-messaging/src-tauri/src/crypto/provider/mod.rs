@@ -377,6 +377,55 @@ pub fn mlkem1024_decapsulate(secret_key: &[u8], ciphertext: &[u8]) -> Result<Zer
     backend::mlkem1024_decapsulate(secret_key, ciphertext)
 }
 
+pub(crate) const MLKEM768_PUBLIC_KEY_BYTES: usize = 1184;
+pub(crate) const MLKEM768_CIPHERTEXT_BYTES: usize = 1088;
+
+/// The local protocol requires ML-KEM-768 in the active provider boundary.
+/// The existing wolfCrypt backend only routes ML-KEM-1024.
+pub(crate) fn require_offline_suite() -> Result<()> {
+    if cfg!(feature = "wolfcrypt") || approved_mode() {
+        return Err(QGuardError::Crypto("The local networking suite is unavailable in this cryptographic mode.".into()));
+    }
+    operational()
+}
+
+pub(crate) fn mlkem768_generate() -> Result<(Vec<u8>, Zeroizing<Vec<u8>>)> {
+    require_offline_suite()?;
+    use pqcrypto_traits::kem::{PublicKey, SecretKey};
+    let (public, secret) = pqcrypto_mlkem::mlkem768::keypair();
+    Ok((public.as_bytes().to_vec(), Zeroizing::new(secret.as_bytes().to_vec())))
+}
+
+pub(crate) fn mlkem768_encapsulate(public: &[u8]) -> Result<(Vec<u8>, Zeroizing<[u8; 32]>)> {
+    require_offline_suite()?;
+    use pqcrypto_mlkem::mlkem768;
+    use pqcrypto_traits::kem::{Ciphertext, PublicKey, SharedSecret};
+    if public.len() != MLKEM768_PUBLIC_KEY_BYTES || !public[..MLKEM768_PUBLIC_KEY_BYTES - 32].chunks_exact(3).all(|encoded| {
+        let low = u16::from(encoded[0]) | (u16::from(encoded[1] & 0x0f) << 8);
+        let high = u16::from(encoded[1] >> 4) | (u16::from(encoded[2]) << 4);
+        low < 3329 && high < 3329
+    }) {
+        return Err(QGuardError::Crypto("Invalid ML-KEM-768 encapsulation key.".into()));
+    }
+    let public = mlkem768::PublicKey::from_bytes(public).map_err(|_| invalid_mlkem768())?;
+    let (secret, ciphertext) = mlkem768::encapsulate(&public);
+    Ok((ciphertext.as_bytes().to_vec(), Zeroizing::new(secret.as_bytes().try_into().map_err(|_| invalid_mlkem768())?)))
+}
+
+pub(crate) fn mlkem768_decapsulate(secret: &[u8], ciphertext: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
+    require_offline_suite()?;
+    use pqcrypto_mlkem::mlkem768;
+    use pqcrypto_traits::kem::{Ciphertext, SecretKey, SharedSecret};
+    let key = mlkem768::SecretKey::from_bytes(secret).map_err(|_| invalid_mlkem768())?;
+    let ciphertext = mlkem768::Ciphertext::from_bytes(ciphertext).map_err(|_| invalid_mlkem768())?;
+    let shared = mlkem768::decapsulate(&ciphertext, &key);
+    Ok(Zeroizing::new(shared.as_bytes().try_into().map_err(|_| invalid_mlkem768())?))
+}
+
+fn invalid_mlkem768() -> QGuardError {
+    QGuardError::Crypto("Invalid ML-KEM-768 material.".into())
+}
+
 // ---- ML-DSA ---------------------------------------------------------------
 
 /// A fresh keypair: (public key, secret key).

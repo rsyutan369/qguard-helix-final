@@ -29,6 +29,7 @@
  */
 import { PLAN_TIERS, planChargeCents, type PlanTier } from './plan-pricing'
 import { isAccessGrantingStatus } from '../subscription-access'
+import { buildBillingOps, type BillingOps, type InboxRecord } from './billing-ops'
 
 // ---------------------------------------------------------------------------
 // Raw rows (the subset of columns the model reads)
@@ -117,6 +118,8 @@ export interface RevenueModelInput {
   profiles: ProfileRecord[]
   auditEvents: AuditRecord[]
   notifications: NotificationRecord[]
+  /** Google Play RTDN inbox + verification ledger (play_webhook_events); optional for older callers. */
+  billingInbox?: InboxRecord[]
   coverage: SourceCoverage[]
 }
 
@@ -144,6 +147,9 @@ export const PLAN_CHANGE_ACTIONS = {
   upgraded: 'subscription.upgraded',
   downgraded: 'subscription.downgraded',
 } as const
+/** A monthly <-> annual switch: the monthly-equivalent price moves with it. */
+export const CYCLE_CHANGE_ACTION = 'subscription.cycle_changed'
+export const MRR_MOVEMENT_DAYS = 30
 
 
 export function normalizePlanTier(value: unknown): PlanTier | null {
@@ -514,6 +520,38 @@ export interface AlertEntry {
   email: string | null
 }
 
+/**
+ * How MRR moved over the trailing window. The five movements always satisfy
+ *   starting + new + expansion − contraction − churned = ending (= MRR today),
+ * which the reconciliation asserts on every build.
+ */
+export interface MrrMovement {
+  windowDays: number
+  /** MRR of provider-billed subscriptions that were live when the window opened */
+  startingMrrCents: number
+  /** Provider-billed subscriptions created inside the window and still granting access */
+  newMrrCents: number
+  /** Upgrades (and cycle switches that raised the monthly-equivalent price) */
+  expansionMrrCents: number
+  /** Downgrades (and cycle switches that lowered the monthly-equivalent price) */
+  contractionMrrCents: number
+  /** Subscriptions live at the window start that have since stopped granting access */
+  churnedMrrCents: number
+  endingMrrCents: number
+  netNewMrrCents: number
+  /** (starting + expansion − contraction − churned) ÷ starting. Null when starting MRR is 0. */
+  nrrPct: number | null
+  /** (starting − contraction − churned) ÷ starting. Null when starting MRR is 0. */
+  grrPct: number | null
+  revenueChurnPct: number | null
+  newSubscriptions: number
+  churnedSubscriptions: number
+  /** Plan / cycle changes re-priced from the audit trail */
+  pricedChanges: number
+  /** Changes that could not be re-priced (negotiated price, or no from-plan recorded) — counted as no movement */
+  unpricedChanges: number
+}
+
 export interface ReconciliationCheck {
   id: string
   label: string
@@ -589,7 +627,10 @@ export interface RevenueModel {
     churnPct: number | null
     retentionPct: number | null
     mrrAtRiskCents: number
+    /** Net revenue retention over the trailing 30 days (null until there is starting MRR) */
+    nrrPct: number | null
   }
+  mrrMovement: MrrMovement
   windows: {
     todayCents: number
     yesterdayCents: number
@@ -670,6 +711,8 @@ export interface RevenueModel {
   forecast: RevenueForecast
   reconciliation: { ok: boolean; checks: ReconciliationCheck[] }
   dataGaps: Array<{ metric: string; reason: string }>
+  /** Store lifecycle + RTDN pipeline health (billing-ops.ts). */
+  billingOps: BillingOps
 }
 
 // ---------------------------------------------------------------------------
@@ -768,6 +811,92 @@ export function buildRevenueModel(input: RevenueModelInput): RevenueModel {
   const recentAudit = input.auditEvents.filter((event) => (toMs(event.created_at) ?? 0) >= upgradeCutoff)
   const upgrades30d = recentAudit.filter((event) => event.action === PLAN_CHANGE_ACTIONS.upgraded).length
   const downgrades30d = recentAudit.filter((event) => event.action === PLAN_CHANGE_ACTIONS.downgraded).length
+
+  // ---- MRR movement (trailing 30 days) --------------------------------------
+  // Each subscription that was live when the window opened is walked BACK
+  // through its plan / cycle changes (billing_audit_events carry fromPlan and
+  // fromCycle) to the list price it had at the window start. The difference
+  // is expansion or contraction; a row that stopped granting access is churn.
+  const movementStart = nowMs - MRR_MOVEMENT_DAYS * DAY_MS
+  const listMonthlyCents = (plan: unknown, cycle: unknown): number | null => {
+    const tier = normalizePlanTier(plan)
+    if (!tier) return null
+    const annual = isAnnualCycle(cycle)
+    const cents = planChargeCents(tier, annual ? 'yearly' : 'monthly')
+    return annual ? Math.round(cents / 12) : cents
+  }
+  const changesByUser = new Map<string, AuditRecord[]>()
+  for (const event of input.auditEvents) {
+    const at = toMs(event.created_at)
+    if (!event.user_id || at === null || at < movementStart || at > nowMs) continue
+    if (event.action !== PLAN_CHANGE_ACTIONS.upgraded && event.action !== PLAN_CHANGE_ACTIONS.downgraded && event.action !== CYCLE_CHANGE_ACTION) continue
+    const list = changesByUser.get(event.user_id) || []
+    list.push(event)
+    changesByUser.set(event.user_id, list)
+  }
+  const usdBilledLive = billedLive.filter((entry) => subscriptionCurrency(entry.sub) === REPORTING_CURRENCY)
+  const movementBase = usdBilledLive.filter((entry) => entry.createdMs < movementStart && (entry.endedMs === null || entry.endedMs >= movementStart))
+  const movementNew = usdBilledLive.filter((entry) => entry.createdMs >= movementStart && entry.granting)
+  let startingMrrCents = 0
+  let expansionMrrCents = 0
+  let contractionMrrCents = 0
+  let churnedMrrCents = 0
+  let churnedInMovement = 0
+  let pricedChanges = 0
+  let unpricedChanges = 0
+  for (const entry of movementBase) {
+    const endValue = entry.monthlyValueCents
+    let startValue = endValue
+    const changes = (changesByUser.get(entry.sub.user_id) || []).sort((a, b) => (toMs(b.created_at) ?? 0) - (toMs(a.created_at) ?? 0))
+    if (changes.length > 0) {
+      let plan: unknown = entry.sub.plan
+      let cycle: unknown = entry.sub.billing_cycle
+      let priced = entry.priceSource === 'catalog'
+      for (const change of changes) {
+        const details = meta(change)
+        if (change.action === CYCLE_CHANGE_ACTION) {
+          if (details.fromCycle) cycle = details.fromCycle
+          else priced = false
+        } else if (normalizePlanTier(details.fromPlan)) {
+          plan = details.fromPlan
+        } else {
+          priced = false
+        }
+      }
+      const repriced = priced ? listMonthlyCents(plan, cycle) : null
+      if (repriced === null) unpricedChanges += changes.length
+      else {
+        startValue = repriced
+        pricedChanges += changes.length
+      }
+    }
+    startingMrrCents += startValue
+    if (endValue > startValue) expansionMrrCents += endValue - startValue
+    else contractionMrrCents += startValue - endValue
+    if (entry.endedMs !== null) {
+      churnedMrrCents += endValue
+      churnedInMovement += 1
+    }
+  }
+  const newMrrCents = movementNew.reduce((sum, entry) => sum + entry.mrrCents, 0)
+  const retainedMrrCents = startingMrrCents + expansionMrrCents - contractionMrrCents - churnedMrrCents
+  const mrrMovement: MrrMovement = {
+    windowDays: MRR_MOVEMENT_DAYS,
+    startingMrrCents,
+    newMrrCents,
+    expansionMrrCents,
+    contractionMrrCents,
+    churnedMrrCents,
+    endingMrrCents: mrrCents,
+    netNewMrrCents: mrrCents - startingMrrCents,
+    nrrPct: pct(retainedMrrCents, startingMrrCents),
+    grrPct: pct(startingMrrCents - contractionMrrCents - churnedMrrCents, startingMrrCents),
+    revenueChurnPct: pct(churnedMrrCents, startingMrrCents),
+    newSubscriptions: movementNew.length,
+    churnedSubscriptions: churnedInMovement,
+    pricedChanges,
+    unpricedChanges,
+  }
 
   // ---- Invoices -----------------------------------------------------------
   const invoiceRows = input.invoices.map((invoice) => {
@@ -1202,9 +1331,11 @@ export function buildRevenueModel(input: RevenueModelInput): RevenueModel {
     { id: 'subscription-classes', label: 'Billed + manual + complimentary = all subscriptions', expected: subs.length, actual: byClass.provider + byClass.manual + byClass.complimentary },
     { id: 'subscription-statuses', label: 'Status board sums to all subscriptions', expected: subs.length, actual: KNOWN_STATUSES.reduce((total, status) => total + statusCount(status), 0) + subscriptionAnalytics.otherStatus },
     { id: 'paying-customers', label: 'Paying customers match paying subscribers', expected: subscriptionAnalytics.payingActive, actual: payingCustomerIds.size },
+    { id: 'mrr-movement', label: 'Starting MRR + new + expansion − contraction − churned = MRR', expected: mrrCents, actual: startingMrrCents + newMrrCents + expansionMrrCents - contractionMrrCents - churnedMrrCents },
   ].map((check) => ({ ...check, ok: check.expected === check.actual }))
 
   return {
+    billingOps: buildBillingOps({ now: input.now, inbox: input.billingInbox ?? [], auditEvents: input.auditEvents, subscriptions: input.subscriptions }),
     generatedAt: input.now.toISOString(),
     reportingCurrency: REPORTING_CURRENCY,
     timezone: REPORTING_TIMEZONE,
@@ -1232,7 +1363,9 @@ export function buildRevenueModel(input: RevenueModelInput): RevenueModel {
       churnPct,
       retentionPct,
       mrrAtRiskCents,
+      nrrPct: mrrMovement.nrrPct,
     },
+    mrrMovement,
     windows,
     timeline,
     revenueByProvider,

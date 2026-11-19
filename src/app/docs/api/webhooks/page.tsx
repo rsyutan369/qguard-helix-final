@@ -62,8 +62,8 @@ const sseEndpointFields: SchemaField[] = [
     field: '/api/v1/vault/share/events',
     type: 'GET · SSE',
     required: false,
-    description: 'Vault sharing event stream. Notifies connected clients when a shared vault item is accepted, revoked, or updated.',
-    example: '?token=JWT',
+    description: 'Notifies share owners of failed password attempts and destroyed share links.',
+    example: 'Authorization: Bearer JWT',
   },
   {
     field: '/api/v1/scan/stream',

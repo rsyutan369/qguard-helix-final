@@ -1,0 +1,1764 @@
+# MASTER ENGINEERING PROMPT
+# QGUARD MESSAGING — OFFLINE MESH NETWORK, HIGH-SPEED FILE TRANSFER & QUANTUM VAULT OFFLINE
+
+**Project:** Qguard Messaging  
+**Company:** Qguard Helix Corp.  
+**Engineering Architecture:** Tauri 2 + Rust + Native Platform Integrations  
+**Cryptographic Engine:** QHCE — Qguard Hybrid Cryptographic Engine  
+**Target Platforms:** Windows, Android, iOS, macOS, Linux  
+**Development Agents:** Claude Code and OpenAI Codex  
+**Implementation Standard:** Production-grade, security-first, cross-platform, offline-first.
+
+---
+
+# 1. ROLE AND ENGINEERING RESPONSIBILITIES
+
+You are acting as a Principal Software Architect, Senior Rust Engineer, Cryptographic Systems Engineer, Network Protocol Engineer, Mobile Platform Engineer, and Application Security Specialist.
+
+Your assignment is to inspect, architect, implement, integrate, test, and document a new offline communication and high-speed wireless file-transfer ecosystem inside the existing Qguard Messaging application.
+
+This is an extension of an existing application, NOT a request to create a separate application or replace the existing codebase.
+
+You must work directly with the existing repository.
+
+Do not create an isolated prototype that is disconnected from the production application.
+
+Do not replace functioning application components without a documented technical justification.
+
+Do not introduce mock networking, fake transfer progress, simulated Bluetooth connections, random device discovery, hardcoded security statuses, or fabricated telemetry.
+
+Every displayed connection, transfer, encryption, and synchronization status must originate from actual application state and verified platform events.
+
+Your implementation must prioritize:
+
+1. Security.
+2. Cryptographic correctness.
+3. Cross-platform compatibility.
+4. Offline functionality.
+5. Reliability.
+6. Performance.
+7. Maintainability.
+8. Enterprise-grade user experience.
+
+---
+
+# 2. PROJECT OBJECTIVES
+
+Build three integrated subsystems.
+
+## A. QGUARD MESH — OFFLINE COMMUNICATION
+
+Develop a decentralized nearby communication system inspired by the BitChat project.
+
+Required capabilities:
+
+- Bluetooth Low Energy device discovery.
+- Nearby Qguard device identification.
+- Secure peer-to-peer messaging.
+- Offline direct messaging.
+- Offline group messaging.
+- Encrypted message forwarding.
+- Multi-hop mesh routing where supported.
+- Store-and-forward messaging.
+- Message delivery acknowledgments.
+- Duplicate message detection.
+- Offline message queues.
+- Connection recovery.
+- Peer discovery expiration.
+- Network partition handling.
+- Mesh topology monitoring.
+- Message expiration policies.
+- Emergency communication mode.
+
+Users must be able to communicate without conventional internet connectivity.
+
+The system must not require a centralized messaging server for nearby device-to-device communication.
+
+### Mesh networking requirements
+
+Implement a modular transport architecture.
+
+Recommended architecture:
+
+- BLE advertising for discovery.
+- BLE GATT for control messages and small payloads.
+- Wi-Fi Direct or other supported local networking for higher-throughput communication.
+- Encrypted peer-to-peer transport.
+- Store-and-forward message routing.
+- Configurable hop limits.
+- Time-to-live protection.
+- Message identifiers and replay protection.
+
+Do not assume Bluetooth range guarantees a particular communication distance.
+
+Do not assume every platform supports identical background mesh behavior.
+
+Implement platform-specific capabilities and document limitations.
+
+### BitChat technical reference
+
+Study the following resources:
+
+https://github.com/permissionlesstech/bitchat
+
+https://github.com/permissionlesstech/bitchat-android
+
+https://github.com/permissionlesstech/bitchat/blob/main/WHITEPAPER.md
+
+https://bitchat.free/
+
+Review:
+
+- BLE mesh architecture.
+- Device discovery.
+- Peer identification.
+- Message propagation.
+- Message relay.
+- Group messaging.
+- Protocol framing.
+- Network recovery.
+- Security architecture.
+- Licensing and third-party dependencies.
+
+Use BitChat as a technical reference.
+
+Do not blindly copy its implementation or assume its existing cryptographic protocol is post-quantum secure.
+
+Implement Qguard's own authenticated networking and QHCE integration.
+
+---
+
+## B. QGUARD XFER — HIGH-SPEED OFFLINE FILE TRANSFER
+
+Develop a SHAREit-style file-transfer system.
+
+The objective is to transfer large files directly between nearby devices without internet access.
+
+The feature must support:
+
+- Photos.
+- Videos.
+- Documents.
+- PDF files.
+- Archives.
+- ZIP files.
+- Audio files.
+- Application packages where permitted.
+- Multiple-file transfers.
+- Folder transfers.
+- Large multi-gigabyte files.
+- Batch transfers.
+- Transfer queues.
+- Interrupted transfer recovery.
+- Transfer resumption.
+- Transfer history.
+- Transfer verification.
+
+### Core user experience
+
+The user should be able to:
+
+1. Open Qguard XFER.
+2. Select Send or Receive.
+3. Discover nearby devices.
+4. Select a recipient.
+5. Establish a secure connection.
+6. Select files.
+7. Review the transfer details.
+8. Authenticate and authorize the transfer.
+9. Begin high-speed encrypted transfer.
+10. Monitor actual transfer progress.
+11. Verify the received files.
+12. Save files into Quantum Vault or another authorized location.
+
+### Wireless transport architecture
+
+Implement multiple transport adapters.
+
+**Transport 1: Bluetooth LE**
+
+Use for:
+
+- Nearby discovery.
+- Device identification.
+- Pairing.
+- Connection negotiation.
+- Transfer invitations.
+- Small control messages.
+
+Do not use BLE as the primary transport for multi-gigabyte files.
+
+**Transport 2: Wi-Fi Direct**
+
+Use where supported for:
+
+- High-speed local connections.
+- Large-file transfers.
+- Direct device-to-device communication.
+- Offline file sharing.
+
+Prioritize Android Wi-Fi Direct where hardware and operating-system support are available.
+
+**Transport 3: Wi-Fi Aware**
+
+Evaluate Android Wi-Fi Aware support.
+
+Use it when supported and when it provides an appropriate connection model.
+
+**Transport 4: Local Wi-Fi / Hotspot**
+
+Implement a secure local network fallback.
+
+Possible connection mechanisms include:
+
+- Application-managed local hotspot.
+- Existing Wi-Fi LAN.
+- Local peer-to-peer connections.
+- Platform-supported Wi-Fi networking.
+
+The application must never require internet access simply because it uses Wi-Fi.
+
+**Transport 5: Apple networking**
+
+For iOS and macOS, implement supported Apple networking technologies.
+
+Evaluate:
+
+- Network.framework.
+- NWBrowser.
+- NWListener.
+- Bonjour service discovery.
+- Peer-to-peer Wi-Fi capabilities where supported.
+- CoreBluetooth for device discovery and control.
+
+Do not depend on deprecated Apple APIs for the primary architecture.
+
+**Transport 6: Windows networking**
+
+Evaluate:
+
+- Windows Wi-Fi Direct APIs.
+- Windows.Devices.WiFiDirect.
+- Supported native networking interfaces.
+- Local TCP/QUIC connections.
+- Application-managed hotspot fallback where permitted.
+
+**Transport 7: Linux networking**
+
+Evaluate:
+
+- BlueZ.
+- NetworkManager.
+- wpa_supplicant.
+- Supported Wi-Fi P2P functionality.
+- Local TCP/QUIC connections.
+
+### Automatic transport selection
+
+Implement a Transport Selection Engine.
+
+Its responsibilities:
+
+- Detect available wireless capabilities.
+- Evaluate device compatibility.
+- Check connection quality.
+- Determine the best available transport.
+- Establish the connection.
+- Fall back when necessary.
+- Report actual transport information.
+
+Preferred selection:
+
+1. Wi-Fi Direct or suitable high-throughput peer-to-peer transport.
+2. Wi-Fi Aware where appropriate.
+3. Existing local Wi-Fi network.
+4. Application-managed hotspot.
+5. Other supported local networking.
+6. BLE-only fallback for small payloads.
+
+Do not claim a high-speed transfer is possible if the available connection only supports BLE.
+
+Display an accurate explanation when no suitable high-speed transport is available.
+
+### Large-file transfer engine
+
+Implement streaming-based file transfers.
+
+Mandatory requirements:
+
+- Never load an entire multi-gigabyte file into RAM.
+- Use configurable chunk sizes, initially evaluating 4 MiB, 8 MiB, and 16 MiB.
+- Support streaming encryption.
+- Support streaming decryption.
+- Maintain transfer manifests.
+- Verify each authenticated chunk.
+- Maintain chunk completion records.
+- Support interrupted transfers.
+- Resume from the last verified chunk.
+- Detect missing chunks.
+- Detect corrupted chunks.
+- Detect altered transfer manifests.
+- Verify final file integrity.
+- Handle insufficient storage.
+- Support cancellation.
+- Clean up incomplete temporary files securely.
+
+Implement:
+
+- Transfer ID.
+- Source device ID.
+- Destination device ID.
+- File metadata.
+- File size.
+- Chunk count.
+- Chunk size.
+- Completed chunks.
+- Transfer status.
+- Creation timestamp.
+- Expiration timestamp.
+- Integrity verification status.
+
+### Transfer security
+
+Every transfer must be authenticated and encrypted.
+
+Requirements:
+
+- Authenticated peer identity.
+- Secure session establishment.
+- Hybrid key establishment through QHCE.
+- Unique encryption nonce for every encryption operation.
+- Authenticated chunk encryption.
+- Integrity-protected transfer metadata.
+- Replay protection.
+- Chunk ordering verification.
+- Sender authorization.
+- Recipient authorization.
+- Secure temporary storage.
+- Final integrity verification.
+
+Never reuse AES-GCM nonces with the same encryption key.
+
+Use independently derived chunk encryption keys or a rigorously designed nonce allocation scheme.
+
+Do not invent your own cryptographic algorithms.
+
+Use established, reviewed cryptographic libraries.
+
+### Transfer resume
+
+A user must be able to resume an interrupted 10 GB transfer without starting over.
+
+For example:
+
+A 10 GB file is transferred.
+
+The connection disconnects at 65%.
+
+The application must:
+
+1. Preserve the encrypted temporary transfer state.
+2. Validate the existing transfer manifest.
+3. Authenticate the same sender and recipient.
+4. Re-establish the secure session.
+5. Verify already received chunks.
+6. Resume missing chunks.
+7. Complete the transfer.
+8. Verify the final file.
+9. Atomically move it into its destination.
+
+Do not trust client-reported progress without validating persisted chunk records.
+
+---
+
+## C. QUANTUM VAULT — FULL OFFLINE OPERATION
+
+Integrate the existing Quantum Vault with the new offline networking architecture.
+
+Quantum Vault must remain independently usable without internet connectivity.
+
+Required capabilities:
+
+- Local file access.
+- Local encryption.
+- Local decryption.
+- Photos and videos.
+- Confidential documents.
+- Secure file organization.
+- Folder management.
+- Draw Pattern Lock.
+- Local authentication.
+- Secure file sharing.
+- Offline file imports.
+- Offline file exports.
+- Local metadata management.
+- Optional encrypted cloud backup.
+
+### Storage architecture
+
+Preserve the existing hybrid storage design.
+
+Support:
+
+1. Local encrypted storage.
+2. Optional encrypted cloud backup.
+3. Secure device-to-device sharing.
+4. Tiered storage capacity.
+5. Offline-first operation.
+
+Do not make the cloud database or cloud storage a mandatory dependency for opening the local vault.
+
+### Cryptographic requirements
+
+Integrate with QHCE.
+
+Evaluate and use the following algorithms according to their correct cryptographic purposes:
+
+| Purpose | Algorithm |
+|---|---|
+| Hybrid key establishment | X25519 + ML-KEM-768 |
+| Vault key encapsulation | ML-KEM-1024 |
+| Digital signatures | Ed25519 + ML-DSA-65 |
+| File encryption | AES-256-GCM |
+| Key derivation | HKDF-SHA3-256 |
+| Password derivation | Argon2id |
+| Integrity hashing | SHA3-256 |
+
+ML-KEM is for key encapsulation, not digital signatures.
+
+ML-DSA is for digital signatures.
+
+Maintain cryptographic agility and versioned key metadata.
+
+Do not imply that using these algorithms alone makes the entire application FIPS 140-3 validated.
+
+### Draw Pattern Lock
+
+Preserve the existing Draw Pattern Lock functionality.
+
+Important:
+
+- Never use the raw pattern as an encryption key.
+- Derive an appropriate authentication secret through a reviewed key derivation design.
+- Apply Argon2id with unique salts and calibrated parameters.
+- Protect vault encryption keys using a proper key hierarchy.
+- Apply retry limits and security controls.
+- Use secure platform storage for protected key material where available.
+- Never persist plaintext passwords or raw derived secrets in logs.
+
+### Direct file transfer into Quantum Vault
+
+Implement an option:
+
+**Receive into Quantum Vault**
+
+When enabled:
+
+1. Receive the encrypted transfer.
+2. Validate the sender.
+3. Authenticate the transfer.
+4. Verify encrypted chunks.
+5. Verify the final file.
+6. Import the file through the Vault storage API.
+7. Encrypt using the destination vault's storage-key architecture.
+8. Save encrypted metadata.
+9. Confirm successful import.
+
+Do not store received plaintext files in publicly accessible temporary folders.
+
+Use private application storage and platform-appropriate secure temporary-file handling.
+
+---
+
+# 3. QHCE — QGUARD HYBRID CRYPTOGRAPHIC ENGINE INTEGRATION
+
+QHCE must be the cryptographic foundation for all three subsystems.
+
+Do not create a second independent cryptographic engine.
+
+Inspect the existing QHCE implementation before introducing new dependencies or algorithms.
+
+The objective is to reuse the same Rust cryptographic core across:
+
+- Windows.
+- Android.
+- iOS.
+- macOS.
+- Linux.
+
+### QHCE responsibilities
+
+Implement or integrate reviewed APIs for:
+
+1. Device identity.
+2. Public-key management.
+3. Hybrid key establishment.
+4. Session key derivation.
+5. Peer authentication.
+6. Message encryption.
+7. Message decryption.
+8. File encryption.
+9. File decryption.
+10. Digital signatures.
+11. Signature verification.
+12. Key rotation.
+13. Key expiration.
+14. Secure key storage.
+15. Cryptographic error handling.
+16. Security event reporting.
+
+### Session establishment
+
+Design an authenticated hybrid handshake.
+
+It must provide:
+
+- Peer identity verification.
+- X25519 key agreement.
+- ML-KEM-768 encapsulation.
+- Hybrid secret combination using an approved, reviewed construction.
+- HKDF-SHA3-256 key derivation.
+- Session identifier generation.
+- Transcript authentication.
+- Replay protection.
+- Downgrade protection.
+- Negotiated protocol version.
+- Algorithm-suite identification.
+
+The handshake must be formally specified and independently reviewed.
+
+Do not assume concatenating two shared secrets automatically produces a secure hybrid protocol.
+
+### Message encryption
+
+Use authenticated encryption.
+
+Support:
+
+- Confidentiality.
+- Integrity.
+- Authentication.
+- Sequence numbers.
+- Unique nonces.
+- Message identifiers.
+- Replay detection.
+- Key rotation.
+
+For long-lived messaging sessions, evaluate a reviewed ratcheting protocol with appropriate post-quantum protection.
+
+Do not advertise forward secrecy or post-compromise security unless the implementation actually provides and tests those properties.
+
+### Cryptographic testing
+
+Implement:
+
+- Known-answer tests.
+- Test vectors.
+- Negative tests.
+- Invalid ciphertext tests.
+- Invalid signature tests.
+- Key mismatch tests.
+- Nonce uniqueness tests.
+- Replay tests.
+- Downgrade tests.
+- Cross-platform interoperability tests.
+- Cryptographic dependency audits.
+
+Document the exact cryptographic module boundary and distinguish algorithm implementation testing from formal FIPS validation.
+
+---
+
+# 4. RUST SOFTWARE ARCHITECTURE
+
+Build modular Rust components.
+
+First inspect the existing repository structure and adapt these proposed modules to its conventions.
+
+Suggested architecture:
+
+qguard-messaging/
+
+    src-tauri/
+
+        src/
+
+            lib.rs
+            main.rs
+
+            core/
+
+                application_state.rs
+                device_identity.rs
+                platform_capabilities.rs
+                connectivity_manager.rs
+
+            qhce/
+
+                mod.rs
+                identity.rs
+                hybrid_handshake.rs
+                key_management.rs
+                session_crypto.rs
+                message_crypto.rs
+                file_crypto.rs
+                signature.rs
+                integrity.rs
+
+            mesh/
+
+                mod.rs
+                discovery.rs
+                peer_registry.rs
+                peer_authentication.rs
+                message_router.rs
+                message_queue.rs
+                relay_engine.rs
+                group_messaging.rs
+                mesh_topology.rs
+                delivery_receipts.rs
+
+            xfer/
+
+                mod.rs
+                device_discovery.rs
+                transport_manager.rs
+                transfer_session.rs
+                transfer_manifest.rs
+                chunk_engine.rs
+                streaming.rs
+                resume.rs
+                verification.rs
+                transfer_history.rs
+                storage_manager.rs
+
+            vault/
+
+                mod.rs
+                local_storage.rs
+                encryption.rs
+                decryption.rs
+                key_hierarchy.rs
+                pattern_lock.rs
+                import.rs
+                export.rs
+                secure_sharing.rs
+
+            sync/
+
+                mod.rs
+                offline_queue.rs
+                synchronization.rs
+                conflict_resolution.rs
+                delivery_reconciliation.rs
+
+            platforms/
+
+                mod.rs
+                windows/
+                android/
+                ios/
+                macos/
+                linux/
+
+            security/
+
+                permissions.rs
+                audit.rs
+                secure_storage.rs
+                error_handling.rs
+
+            events/
+
+                mod.rs
+                event_bus.rs
+                application_events.rs
+                transfer_events.rs
+                mesh_events.rs
+
+            commands/
+
+                mesh_commands.rs
+                xfer_commands.rs
+                vault_commands.rs
+                connectivity_commands.rs
+
+            services/
+
+                mesh_service.rs
+                transfer_service.rs
+                vault_service.rs
+                connectivity_service.rs
+
+Adapt this layout to existing modules rather than duplicating functionality.
+
+### Architecture principles
+
+- Shared Rust business logic.
+- Shared QHCE integration.
+- Native platform networking adapters.
+- Explicit transport abstraction.
+- Asynchronous processing with Tokio where appropriate.
+- Bounded channels and backpressure.
+- Cancellation support.
+- Structured errors.
+- Resource cleanup.
+- Thread-safe state management.
+- No unsafe Rust without documented justification.
+- No cryptographic implementation using unreviewed custom primitives.
+
+Do not expose internal cryptographic keys or secrets through Tauri commands.
+
+---
+
+# 5. CROSS-PLATFORM NATIVE INTEGRATION
+
+Implement native adapters for each operating system.
+
+## Windows
+
+Support:
+
+- BLE discovery.
+- BLE device communication.
+- Wi-Fi Direct where supported.
+- Local network connections.
+- Secure file streaming.
+- Windows secure credential storage.
+- Application permissions.
+- Device capability detection.
+
+Research current Windows SDK APIs before implementation.
+
+## Android
+
+Support:
+
+- Bluetooth permissions.
+- BLE advertising.
+- BLE scanning.
+- BLE GATT.
+- Wi-Fi Direct.
+- Wi-Fi Aware where available.
+- Local network communication.
+- Android storage permissions.
+- Background execution constraints.
+- Foreground services where necessary.
+- Battery optimization handling.
+- Secure local storage.
+
+Research current Android SDK and Android version requirements.
+
+Ensure compatibility with the existing Tauri Android application.
+
+## iOS
+
+Support:
+
+- CoreBluetooth.
+- BLE scanning.
+- BLE advertising where permitted.
+- BLE GATT.
+- Network.framework.
+- NWBrowser.
+- NWListener.
+- Bonjour discovery.
+- Peer-to-peer Wi-Fi where supported.
+- Secure local storage.
+- Local network privacy permissions.
+- Background execution limitations.
+
+Use Rust for the shared core.
+
+Use Swift for platform-specific functionality.
+
+Bridge Swift and Rust using a well-defined FFI boundary.
+
+Do not promise unrestricted background mesh communication on iOS.
+
+Investigate Apple's current App Store requirements and networking restrictions.
+
+## macOS
+
+Support:
+
+- CoreBluetooth.
+- Network.framework.
+- Bonjour.
+- Local peer-to-peer networking where supported.
+- Secure storage.
+- Rust FFI integration.
+
+## Linux
+
+Support:
+
+- BlueZ.
+- BLE GATT.
+- Bluetooth discovery.
+- NetworkManager.
+- Wi-Fi P2P where supported.
+- Local network communication.
+- Secure local storage.
+
+Document distribution-specific dependencies.
+
+---
+
+# 6. OFFLINE-FIRST APPLICATION STATE
+
+Create a centralized Connectivity Manager.
+
+Possible application states:
+
+- ONLINE.
+- OFFLINE.
+- LOCAL_WIFI_CONNECTED.
+- BLUETOOTH_AVAILABLE.
+- MESH_CONNECTED.
+- MESH_SEARCHING.
+- XFER_READY.
+- XFER_ACTIVE.
+- SYNC_PENDING.
+- SYNCING.
+- CONNECTION_LOST.
+
+These states must be derived from real platform and application events.
+
+Do not use a single internet connectivity flag to determine whether the application can communicate.
+
+The absence of internet does not mean the device has no local network connectivity.
+
+### Offline behavior
+
+When internet disappears:
+
+- Secure Chat remains accessible.
+- Local message history remains accessible.
+- Nearby mesh discovery remains available where permitted.
+- Offline message queues remain active.
+- XFER remains available if a suitable local transport exists.
+- Quantum Vault remains fully accessible.
+- Local authentication continues to work.
+- Cloud-dependent features show unavailable status without disabling local functions.
+
+### Internet recovery
+
+When internet returns:
+
+- Reconnect online services.
+- Synchronize eligible messages.
+- Process queued delivery events.
+- Reconcile delivery receipts.
+- Resume interrupted cloud backup.
+- Resolve synchronization conflicts.
+- Preserve message identifiers.
+- Avoid duplicate messages.
+- Never overwrite newer data with stale data.
+
+Define a deterministic synchronization policy.
+
+Do not synchronize local-only vault files to cloud storage without explicit user authorization.
+
+---
+
+# 7. FRONTEND UI/UX IMPLEMENTATION
+
+Integrate the new functionality into the existing Qguard Messaging UI.
+
+Preserve the existing design system, typography, colors, navigation patterns, and responsive behavior.
+
+Visual direction:
+
+- Premium enterprise cybersecurity.
+- Light and dark theme compatibility.
+- Light blue and purple accent colors.
+- Glassmorphism where appropriate.
+- Subtle 3D elements.
+- Smooth transitions.
+- Professional icons.
+- Clear security indicators.
+- Accessible controls.
+- Mobile-first layouts.
+
+### New navigation
+
+Add:
+
+1. Secure Chat.
+2. Qguard Mesh.
+3. Qguard XFER.
+4. Quantum Vault.
+5. Transfer History.
+6. Offline Settings.
+
+Do not duplicate existing navigation entries.
+
+### Qguard Mesh dashboard
+
+Display:
+
+- Mesh status.
+- Internet status.
+- Bluetooth status.
+- Nearby peers.
+- Connected peers.
+- Peer authentication status.
+- Network hops.
+- Message queue.
+- Pending messages.
+- Delivered messages.
+- Failed deliveries.
+- Last synchronization.
+- Current transport.
+
+### Qguard XFER dashboard
+
+Create the following screens:
+
+**Screen 1: Main Transfer Dashboard**
+
+- Send.
+- Receive.
+- Nearby devices.
+- Active transfers.
+- Recent transfers.
+
+**Screen 2: Device Discovery**
+
+- Nearby device list.
+- Device name.
+- Device identity verification.
+- Supported transport.
+- Connection quality.
+- Secure pairing status.
+
+**Screen 3: File Selection**
+
+- Photos.
+- Videos.
+- Documents.
+- Audio.
+- Archives.
+- Folders.
+- Multiple selection.
+- Total selected size.
+
+**Screen 4: Transfer Confirmation**
+
+- Sender.
+- Recipient.
+- File names.
+- Total size.
+- Destination.
+- Encryption status.
+- Connection type.
+- Accept/reject.
+
+**Screen 5: Active Transfer**
+
+Display real metrics:
+
+- Current file.
+- Total files.
+- Transferred bytes.
+- Total bytes.
+- Actual transfer speed.
+- Estimated remaining time.
+- Chunk verification status.
+- Connection quality.
+- Encryption status.
+- Pause/resume/cancel controls.
+
+**Screen 6: Transfer Complete**
+
+- Verified files.
+- Final integrity status.
+- Destination.
+- Open file.
+- Import into Quantum Vault.
+- View transfer history.
+
+**Screen 7: Transfer History**
+
+- Completed.
+- Failed.
+- Cancelled.
+- Interrupted.
+- Resumable.
+- Search and filter.
+
+### Quantum Vault integration
+
+Add:
+
+- Receive directly into Vault.
+- Share encrypted files.
+- Select authorized recipients.
+- View file encryption status.
+- Offline storage indicator.
+- Cloud backup status.
+- Local storage capacity.
+- Transfer import history.
+
+### UI engineering requirements
+
+Every control must work.
+
+Every progress indicator must reflect real backend state.
+
+Every action must have an actual Rust command or supported application event.
+
+Do not create decorative buttons without functionality.
+
+Use actual event-driven state updates instead of hardcoded UI values.
+
+---
+
+# 8. TRANSFER PROTOCOL AND NETWORK SECURITY
+
+Create a versioned Qguard transfer protocol.
+
+Suggested protocol identifier:
+
+QG-XFER/1
+
+The protocol must define:
+
+- Protocol version.
+- Device identity.
+- Authentication handshake.
+- Algorithm negotiation.
+- Session establishment.
+- Transfer request.
+- Transfer acceptance.
+- File manifest.
+- Chunk framing.
+- Encryption metadata.
+- Chunk sequence.
+- Integrity verification.
+- Acknowledgment.
+- Resume negotiation.
+- Completion.
+- Cancellation.
+- Error handling.
+
+### Security requirements
+
+Protect against:
+
+- Unauthorized devices.
+- Man-in-the-middle attacks.
+- Replay attacks.
+- Downgrade attacks.
+- Malicious file replacement.
+- Chunk manipulation.
+- Message duplication.
+- Malformed protocol frames.
+- Resource exhaustion.
+- Denial of service.
+- Unauthorized file access.
+- Path traversal.
+- Symlink attacks.
+- Temporary-file disclosure.
+- Malicious metadata.
+- Transfer session hijacking.
+
+Implement strict file path validation.
+
+Never trust sender-supplied filenames or paths.
+
+Require explicit recipient consent before accepting files.
+
+Use secure pairing and identity verification.
+
+Provide a mechanism for users to revoke trusted devices.
+
+---
+
+# 9. BITChAT AND SHAREIT TECHNICAL RESEARCH
+
+Before implementing the networking layers, investigate the following references.
+
+### BitChat
+
+https://github.com/permissionlesstech/bitchat
+
+https://github.com/permissionlesstech/bitchat-android
+
+https://github.com/permissionlesstech/bitchat/blob/main/WHITEPAPER.md
+
+### Android networking
+
+https://developer.android.com/develop/connectivity/wifi/wifip2p
+
+https://developer.android.com/develop/connectivity/wifi/wifi-aware
+
+https://developer.android.com/develop/connectivity/bluetooth
+
+### Apple networking
+
+https://developer.apple.com/documentation/network
+
+https://developer.apple.com/documentation/corebluetooth
+
+https://developer.apple.com/documentation/bonjour
+
+### Windows networking
+
+https://learn.microsoft.com/en-us/windows/uwp/networking/wi-fi-direct
+
+https://learn.microsoft.com/en-us/uwp/api/windows.devices.wifidirect
+
+### Linux networking
+
+https://www.bluez.org/
+
+https://networkmanager.dev/
+
+### Rust networking and cryptography
+
+https://www.rust-lang.org/
+
+https://docs.rs/tokio/latest/tokio/
+
+https://docs.rs/chacha20poly1305/
+
+https://docs.rs/aes-gcm/
+
+https://docs.rs/sha3/
+
+https://docs.rs/argon2/
+
+### NIST post-quantum standards
+
+https://csrc.nist.gov/pubs/fips/203/final
+
+https://csrc.nist.gov/pubs/fips/204/final
+
+https://csrc.nist.gov/pubs/fips/205/final
+
+Research current documentation before choosing APIs or dependencies.
+
+Do not assume an API, crate, operating-system permission, or hardware capability exists without verification.
+
+Do not assume SHAREit provides an open-source SDK or reusable implementation. Build the equivalent functionality using documented networking APIs and independently implemented Qguard services.
+
+---
+
+# 10. DATABASE AND LOCAL PERSISTENCE
+
+Inspect the existing Supabase architecture before modifying schemas.
+
+Preserve the existing authentication and database design.
+
+Local offline operations must not depend on Supabase being reachable.
+
+Implement a persistent local database for:
+
+- Peer records.
+- Trusted devices.
+- Mesh messages.
+- Message delivery state.
+- Offline queues.
+- Transfer manifests.
+- Transfer chunks.
+- Transfer history.
+- Vault import records.
+- Synchronization state.
+- Security audit events.
+
+Use transactions and appropriate indexes.
+
+Protect sensitive metadata.
+
+Do not store plaintext encryption keys in the database.
+
+### Synchronization rules
+
+When online:
+
+- Synchronize eligible message records.
+- Synchronize authorized metadata.
+- Synchronize delivery receipts.
+- Synchronize encrypted cloud backups.
+- Preserve message ordering.
+- Detect conflicts.
+- Deduplicate records.
+
+Do not upload local-only messages or files without the user's configured authorization.
+
+Use authenticated user identity and existing RLS policies for cloud-owned records.
+
+---
+
+# 11. PERFORMANCE REQUIREMENTS
+
+Implement performance benchmarks.
+
+### File transfer
+
+Test:
+
+- 100 MB.
+- 500 MB.
+- 1 GB.
+- 5 GB.
+- 10 GB.
+
+Measure:
+
+- Actual throughput.
+- CPU utilization.
+- RAM utilization.
+- Encryption overhead.
+- Decryption overhead.
+- Disk throughput.
+- Connection recovery.
+- Transfer resume time.
+- Integrity verification time.
+
+### Mesh messaging
+
+Test:
+
+- One-to-one messaging.
+- Group messaging.
+- Multiple connected peers.
+- Multi-hop forwarding.
+- Simultaneous messages.
+- Disconnected recipients.
+- Network partition recovery.
+- Duplicate delivery prevention.
+
+### Resource management
+
+Ensure:
+
+- No unbounded memory growth.
+- No unbounded message queues.
+- No unbounded chunk queues.
+- Proper backpressure.
+- Proper cancellation.
+- Proper task cleanup.
+- Battery-aware scanning.
+- Configurable discovery intervals.
+
+Do not fabricate performance benchmarks.
+
+Record measurements from real hardware.
+
+---
+
+# 12. TESTING AND SECURITY VALIDATION
+
+Build automated tests for all new modules.
+
+### Unit tests
+
+- BLE discovery state management.
+- Peer authentication.
+- Mesh routing.
+- Message queue persistence.
+- Message deduplication.
+- Transfer manifests.
+- Chunk processing.
+- Resume functionality.
+- File integrity.
+- Vault imports.
+- Key derivation.
+- Encryption/decryption.
+
+### Integration tests
+
+- Android to Android.
+- Windows to Windows.
+- Windows to Android.
+- Android to iOS.
+- iOS to iOS.
+- macOS to Android.
+- Linux to Android.
+- Cross-platform Vault sharing.
+
+Mark unsupported combinations explicitly rather than pretending they work.
+
+### Network failure tests
+
+- Bluetooth disabled.
+- Wi-Fi disabled.
+- Internet disconnected.
+- Sender shutdown.
+- Receiver shutdown.
+- Application crash.
+- Device reboot.
+- Insufficient storage.
+- Interrupted transfer.
+- Corrupted chunk.
+- Expired transfer.
+- Invalid authentication.
+- Duplicate messages.
+- Unauthorized recipient.
+
+### Security tests
+
+- Replay attack simulation.
+- MITM attack simulation.
+- Downgrade testing.
+- Invalid key testing.
+- Invalid signature testing.
+- Nonce misuse testing.
+- Path traversal testing.
+- Malicious metadata testing.
+- File replacement testing.
+- Unauthorized transfer attempts.
+- Local database exposure testing.
+
+Use established test vectors and reviewed cryptographic implementations.
+
+Arrange independent security review before making production quantum-security claims.
+
+---
+
+# 13. DEVELOPMENT PHASES
+
+Do not implement everything blindly in one pass.
+
+Follow these phases.
+
+## PHASE 0 — EXISTING APPLICATION AUDIT
+
+Inspect the entire repository.
+
+Identify:
+
+- Existing Tauri version.
+- Rust version.
+- Existing Rust modules.
+- Existing QHCE implementation.
+- Existing QHCE cryptographic dependencies.
+- Existing authentication.
+- Existing Secure Chat implementation.
+- Existing Quantum Vault implementation.
+- Existing database.
+- Existing encryption format.
+- Existing Android implementation.
+- Existing iOS implementation.
+- Existing Windows implementation.
+- Existing macOS implementation.
+- Existing Linux implementation.
+- Existing frontend components.
+- Existing application navigation.
+- Existing permissions.
+- Existing build pipeline.
+
+Produce:
+
+1. Repository architecture report.
+2. Existing implementation inventory.
+3. Missing functionality report.
+4. Dependency compatibility report.
+5. Cross-platform capability matrix.
+6. Security gap analysis.
+7. Migration and implementation plan.
+
+Do not modify production code during the initial audit.
+
+## PHASE 1 — FOUNDATION
+
+Implement:
+
+- Connectivity Manager.
+- Platform capability detection.
+- Transport abstraction.
+- Local persistence.
+- Event-driven application state.
+- QHCE integration interfaces.
+- Secure device identity.
+
+## PHASE 2 — QGUARD MESH
+
+Implement:
+
+- BLE discovery.
+- Peer authentication.
+- Direct messaging.
+- Group messaging.
+- Offline queue.
+- Store-and-forward.
+- Message acknowledgments.
+- Mesh topology.
+- Relay support where platform capabilities permit.
+
+## PHASE 3 — QGUARD XFER
+
+Implement:
+
+- Nearby discovery.
+- Device pairing.
+- Transport negotiation.
+- High-speed local networking.
+- Secure transfer sessions.
+- Chunked encryption.
+- Streaming.
+- Resume.
+- Integrity verification.
+- Transfer history.
+
+## PHASE 4 — QUANTUM VAULT OFFLINE
+
+Implement:
+
+- Local-only vault operation.
+- Offline authentication.
+- Encrypted file management.
+- Direct XFER import.
+- Secure file sharing.
+- Optional cloud synchronization.
+- Storage recovery.
+
+## PHASE 5 — FRONTEND AND USER EXPERIENCE
+
+Implement all screens and navigation.
+
+Connect all controls to real backend functionality.
+
+Implement actual connection and transfer status.
+
+## PHASE 6 — CROSS-PLATFORM IMPLEMENTATION
+
+Build and test each operating-system adapter.
+
+Resolve native permissions.
+
+Verify platform restrictions.
+
+Validate cross-platform protocol interoperability.
+
+## PHASE 7 — SECURITY AND PERFORMANCE
+
+Execute:
+
+- Cryptographic tests.
+- Network security tests.
+- Performance benchmarks.
+- Stress testing.
+- Failure recovery testing.
+- Dependency audits.
+- Build verification.
+
+## PHASE 8 — PRODUCTION READINESS
+
+Deliver:
+
+- Production implementation.
+- Updated documentation.
+- Build instructions.
+- Platform permissions.
+- Security architecture.
+- Protocol documentation.
+- Database migrations.
+- Automated tests.
+- Release checklist.
+
+---
+
+# 14. CLAUDE CODE AND CODEX EXECUTION RULES
+
+Both development agents must follow these rules.
+
+### Repository protection
+
+- Work inside the existing repository.
+- Inspect existing implementation before modifying files.
+- Preserve existing working features.
+- Avoid unnecessary architectural rewrites.
+- Do not overwrite working QHCE modules.
+- Do not remove existing authentication.
+- Do not break existing Secure Chat.
+- Do not break existing Quantum Vault.
+- Do not break existing subscriptions or billing.
+- Do not introduce unrelated dependencies.
+
+### Engineering quality
+
+- No TODO-only implementations presented as complete.
+- No mock data presented as real functionality.
+- No fake connection states.
+- No fabricated transfer progress.
+- No hardcoded peer counts.
+- No random cryptographic keys.
+- No hardcoded encryption secrets.
+- No insecure fallback algorithms.
+- No silent downgrade to classical cryptography.
+- No ignored security errors.
+- No plaintext sensitive logging.
+
+### Dependency management
+
+Before adding dependencies:
+
+1. Check current repository dependencies.
+2. Review maintenance status.
+3. Review security advisories.
+4. Verify license compatibility.
+5. Verify platform support.
+6. Check Rust compatibility.
+7. Check Android/iOS compatibility.
+8. Document the reason for inclusion.
+
+### Git workflow
+
+- Create a dedicated feature branch.
+- Make incremental commits.
+- Avoid destructive Git commands.
+- Do not overwrite unrelated user changes.
+- Run tests before committing.
+- Provide a clear change summary.
+
+Suggested branch:
+
+`feature/qguard-offline-mesh-xfer-vault`
+
+### Agent coordination
+
+Use Claude Code and Codex as independent reviewers where appropriate.
+
+Recommended responsibilities:
+
+**Claude Code**
+
+- Architecture discovery.
+- Rust implementation.
+- Native platform integration.
+- Cryptographic integration.
+- Feature implementation.
+
+**OpenAI Codex**
+
+- Independent architecture review.
+- Code review.
+- Security review.
+- Test generation.
+- Build verification.
+- Regression testing.
+
+Both agents must follow the same architecture and repository conventions.
+
+Do not let agents independently implement incompatible versions of the same module.
+
+Maintain a shared implementation plan and decision log.
+
+---
+
+# 15. ACCEPTANCE CRITERIA
+
+The implementation is not complete until the following conditions are demonstrated.
+
+### Qguard Mesh
+
+- [ ] Nearby Qguard devices can discover one another.
+- [ ] Two devices can exchange encrypted messages without internet.
+- [ ] Group messaging works within supported network topology.
+- [ ] Offline messages persist.
+- [ ] Message delivery is verified.
+- [ ] Duplicate messages are handled.
+- [ ] Store-and-forward works where relay support is available.
+- [ ] Network recovery works.
+- [ ] Device authentication works.
+
+### Qguard XFER
+
+- [ ] Nearby devices can discover one another.
+- [ ] Sender and recipient can authenticate.
+- [ ] Large files can transfer without internet.
+- [ ] High-speed transport is used when available.
+- [ ] Files are encrypted during transfer.
+- [ ] Transfers use streaming.
+- [ ] Multi-file transfers work.
+- [ ] Interrupted transfers can resume.
+- [ ] File integrity is verified.
+- [ ] Invalid files are rejected.
+- [ ] Transfer history persists.
+- [ ] Files can be imported directly into Quantum Vault.
+
+### Quantum Vault
+
+- [ ] Vault opens without internet.
+- [ ] Existing files remain accessible offline.
+- [ ] Local encryption works.
+- [ ] Local decryption works.
+- [ ] Pattern authentication works.
+- [ ] Secure file import works.
+- [ ] Secure file export works.
+- [ ] Offline file sharing works.
+- [ ] Cloud synchronization is optional.
+- [ ] No plaintext files are exposed through unsafe temporary storage.
+
+### Cross-platform
+
+- [ ] Windows implementation builds.
+- [ ] Android implementation builds.
+- [ ] iOS implementation builds.
+- [ ] macOS implementation builds.
+- [ ] Linux implementation builds.
+- [ ] Shared Rust core is reused.
+- [ ] QHCE integration is consistent.
+- [ ] Native permissions are documented.
+- [ ] Unsupported hardware capabilities are handled gracefully.
+
+### Production quality
+
+- [ ] Existing functionality remains operational.
+- [ ] All displayed states originate from real events.
+- [ ] No fake telemetry exists.
+- [ ] No unresolved critical security findings.
+- [ ] Automated tests pass.
+- [ ] Build pipeline passes.
+- [ ] Documentation is complete.
+
+---
+
+# 16. FINAL DELIVERABLES
+
+At completion, provide the following documentation and artifacts.
+
+1. Complete architecture documentation.
+2. Updated Rust module structure.
+3. Qguard Mesh implementation.
+4. Qguard XFER implementation.
+5. Quantum Vault offline enhancements.
+6. QHCE integration documentation.
+7. Native Windows networking implementation.
+8. Native Android networking implementation.
+9. Native iOS networking implementation.
+10. Native macOS networking implementation.
+11. Native Linux networking implementation.
+12. Transfer protocol specification.
+13. Mesh networking protocol specification.
+14. Database migration scripts.
+15. Security assessment report.
+16. Performance benchmark report.
+17. Automated test suite.
+18. Platform permission documentation.
+19. Installation and build instructions.
+20. Production deployment checklist.
+
+Include a final feature matrix identifying:
+
+- Fully implemented features.
+- Partially implemented features.
+- Platform-dependent features.
+- Unsupported features.
+- Remaining security risks.
+- Remaining engineering tasks.
+
+Never report an item as completed unless it has been implemented and verified.
+
+---
+
+# 17. FINAL ENGINEERING DIRECTIVE
+
+Your ultimate goal is to transform Qguard Messaging into a complete, Online, offline-capable, quantum-secure communication and storage ecosystem.
+
+The application must deliver three major capabilities:
+
+**QGUARD MESH**
+
+Communicate with nearby devices without conventional internet connectivity.
+
+**QGUARD XFER**
+
+Transfer large files between nearby devices at high speed using supported local wireless networking, with QHCE encryption, integrity verification, and resumable transfers.
+
+**QUANTUM VAULT**
+
+Access, encrypt, decrypt, organize, and share locally stored files without depending on internet connectivity.
+
+All three systems must work together through a shared Rust architecture and QHCE cryptographic foundation.
+
+The system must support Windows, Android, iOS, macOS, and Linux, respecting each platform's actual hardware, API, permission, and background-execution limitations.
+
+Do not sacrifice cryptographic correctness for convenience or performance.
+
+Do not sacrifice application reliability for visual demonstrations.
+
+Do not advertise unsupported functionality.
+
+Build the actual production implementation.
+
+**QGUARD HELIX CORP.**
+
+*Securing the Present. Preparing the Quantum Future.*
+
+
+
+
+Additional tips:
+Transport selection workflow
+1. Internet available
+   Use the normal Qguard messaging transport.
+2. Internet unavailable
+   Automatically activate the offline communication engine.
+3. Nearby Qguard devices discovered
+   Establish authenticated peer connections.
+4. Recipient unavailable
+   Queue the encrypted message for later delivery.
+5. Internet restored
+   Resume synchronization and reconcile message delivery states.
+recommend developing this in five phases.
+1. Phase 1 — Qguard Offline Core
+   - Rust-based offline networking abstraction.
+   - BLE peer discovery.
+   - Device identity management.
+   - Message serialization.
+   - Local encrypted database.
+2. Phase 2 — Quantum-Resistant Offline Chat
+   - QHCE integration.
+   - ML-KEM session establishment.
+   - ML-DSA identity authentication.
+   - End-to-end message encryption.
+   - Multi-hop routing and relay policies.
+3. Phase 3 — Offline Quantum Vault
+   - Full local encrypted storage.
+   - Pattern/PIN authentication.
+   - Encrypted file sharing.
+   - USB backup and recovery.
+   - Offline file indexing.
+4. Phase 4 — Hybrid Synchronization
+   - Internet and offline transport selection.
+   - Message synchronization.
+   - Conflict resolution.
+   - Delivery acknowledgments.
+   - Duplicate prevention.
+5. Phase 5 — Cross-Platform Validation
+   - Android-to-Android.
+   - Android-to-iOS.
+   - iOS-to-Windows.
+   - Windows-to-Windows.
+   - Multi-hop mesh testing.
+   - Internet shutdown simulations.
+   - Cryptographic interoperability testing.
+6. I would also preserve the existing Qguard Messaging interface and add a connectivity indicator:
+   -
+   ONLINE
+      Internet communication available.
+   -
+   OFFGRID MESH
+      Nearby Bluetooth network available.
+   -
+   STORE & FORWARD
+      Messages waiting for delivery.
+   -
+   LOCAL VAULT
+      Encrypted local storage available.
+   8. Useful official development references
+   These are the resources I would give your Claude Code and Codex agents:
+   1. BitChat iOS/macOS source code.
+   2. BitChat Android implementation.
+   3. BitChat Protocol Whitepaper.
+   4. Bluetooth specifications.
+   5. Apple CoreBluetooth documentation.
+   6. Android BLE documentation.
+   7. NIST FIPS 203 — ML-KEM.
+   8. NIST FIPS 204 — ML-DSA.
+
+**END OF MASTER ENGINEERING PROMPT**

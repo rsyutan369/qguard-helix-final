@@ -53,20 +53,20 @@ async function compute(token: string, userId: string, force: boolean): Promise<C
   const [portfolio, scannerEvidence, runtimeEvents, cryptoInventory, scannerAgents, connectorAccounts, scanSessions] = await Promise.all([
     buildPortfolio(token, userId, force),
     ledger.read(client, 'scanner_evidence', 'Scanner evidence', 3000, (q) =>
-      q.select('id, agent_id, connector_account_id, source_type, evidence_type, asset_name, asset_type, target, host, port, protocol, observed_algorithm, key_size, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(3000),
+      q.select('id, agent_id, connector_account_id, source_type, evidence_type, asset_name, asset_type, target, host, port, protocol, observed_algorithm, key_size, raw_evidence, observed_at, created_at', { count: 'exact' }).eq('user_id', userId).order('observed_at', { ascending: false }).limit(3000),
     ),
     ledger.read(client, 'runtime_crypto_events', 'Runtime telemetry', 3000, (q) =>
-      q.select('id, agent_id, connector_account_id, asset_id, asset_name, host, protocol, cipher_suite, key_exchange_algorithm, algorithm, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(3000),
+      q.select('id, agent_id, connector_account_id, asset_id, asset_name, event_type, host, port, protocol, cipher_suite, key_exchange_algorithm, algorithm, metadata, observed_at, created_at', { count: 'exact' }).eq('user_id', userId).order('observed_at', { ascending: false }).limit(3000),
     ),
     ledger.read(client, 'crypto_inventory', 'CBOM components', 3000, (q) =>
-      q.select('id, asset_id, item_type, name, algorithm, protocol, discovered_at, created_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(3000),
+      q.select('id, asset_id, item_type, name, algorithm, protocol, metadata, discovered_at, created_at', { count: 'exact' }).eq('user_id', userId).order('discovered_at', { ascending: false }).limit(3000),
     ),
     ledger.read(client, 'scanner_agents', 'Agent fleet', 250, (q) =>
-      q.select('id, name, status, hostname, platform, last_seen_at, created_at, updated_at').eq('user_id', userId).limit(250),
+      q.select('id, name, status, hostname, platform, last_seen_at, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).limit(250),
     ),
-    ledger.read(client, 'connector_accounts', 'Connectors', 400, (q) => q.select('id, provider, status').eq('user_id', userId).limit(400)),
+    ledger.read(client, 'connector_accounts', 'Connectors', 400, (q) => q.select('id, provider, status', { count: 'exact' }).eq('user_id', userId).limit(400)),
     ledger.read(client, 'pqc_scan_sessions', 'Scan sessions', 60, (q) =>
-      q.select('id, status, completed_at, created_at').eq('user_id', userId).order('completed_at', { ascending: false }).limit(60),
+      q.select('id, status, completed_at, created_at', { count: 'exact' }).eq('user_id', userId).order('completed_at', { ascending: false }).limit(60),
     ),
   ])
 

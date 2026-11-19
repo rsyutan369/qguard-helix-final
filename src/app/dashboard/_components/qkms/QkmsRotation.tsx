@@ -63,7 +63,7 @@ const STAGES: Array<{ status: RotationJobStatus; label: string; detail: string }
   { status: 'approved', label: 'Approved', detail: 'An owner has authorised the change.' },
   { status: 'in-progress', label: 'Executing', detail: 'The rotation is being carried out on the owning system.' },
   { status: 'awaiting-validation', label: 'Validating', detail: 'Rotation reported complete; post-rotation evidence outstanding.' },
-  { status: 'completed', label: 'Completed', detail: 'Validated and closed, with a new key version recorded.' },
+  { status: 'completed', label: 'Closed', detail: 'Work order closed; provider execution and key version remain unverified.' },
 ];
 
 const ROTATION_STATES: RotationState[] = ['healthy', 'due', 'overdue', 'in-progress', 'failed', 'never-rotated', 'not-applicable', 'unknown'];
@@ -117,7 +117,7 @@ export default function QkmsRotation() {
       live={live}
       state={state}
       error={error}
-      hasData={data?.hasData ?? false}
+      hasData={Boolean(data)}
       generatedAt={data?.generatedAt ?? null}
       verifiedAt={verifiedAt}
       latestEvidenceAt={data?.latestEvidenceAt ?? null}
@@ -152,10 +152,10 @@ export default function QkmsRotation() {
             tone={posture.jobsActive > 0 ? 'info' : 'neutral'}
           />
           <Kpi
-            label="Work-order success"
+            label="Verified rotation success"
             value={posture.successRate === null ? '—' : `${posture.successRate}%`}
             unmeasured={posture.successRate === null}
-            detail={posture.successRate === null ? 'No work order has terminated yet' : `of ${fmtNumber(posture.jobsCompleted + posture.jobsFailed)} terminated order(s)`}
+            detail="Requires provider outcomes and validation of dependent services"
             tone={(posture.successRate ?? 100) >= 90 ? 'good' : 'warning'}
           />
         </div>
@@ -287,7 +287,7 @@ export default function QkmsRotation() {
         <SectionLabel
           icon={ShieldCheck}
           meta={<span>{fmtNumber(jobs.length)} shown · {fmtNumber(data?.jobsTotal ?? 0)} total</span>}
-          hint="Transitions are validated on the server. A work order cannot skip execution or validation."
+          hint="The server enforces the work-order sequence. The custody provider performs and verifies the actual rotation."
         >
           Rotation work orders
         </SectionLabel>
@@ -386,7 +386,8 @@ export default function QkmsRotation() {
                         <input
                           value={validationDetail[job.id] || ''}
                           onChange={(event) => setValidationDetail((current) => ({ ...current, [job.id]: event.target.value }))}
-                          placeholder="Post-rotation validation evidence (required to close as validated)"
+                          aria-label="Optional work order note"
+                          placeholder="Optional note about the external rotation"
                           className="h-8 w-full rounded-md border border-white/12 bg-black/30 px-2.5 text-[11px] text-white outline-none placeholder:text-white/30 focus-visible:ring-2 focus-visible:ring-cyan-300/70"
                         />
                       ) : null}
@@ -395,7 +396,7 @@ export default function QkmsRotation() {
                           <ActionButton
                             key={target}
                             label={target.replace(/-/g, ' ')}
-                            tone={target === 'failed' || target === 'cancelled' ? 'critical' : target === 'completed' ? 'good' : 'info'}
+                            tone={target === 'failed' || target === 'cancelled' ? 'critical' : 'info'}
                             busy={actions.pending === `job:${job.id}`}
                             onClick={async () => {
                               const result = await actions.transitionJob(
@@ -424,7 +425,7 @@ export default function QkmsRotation() {
 
         <ExplainBox tone="neutral" title="What a rotation work order is">
           QKMS holds key metadata, not key material. A work order records the rotation obligation, its approval, its execution and
-          its post-rotation validation evidence — and mints a new key version when it closes as validated. It never reports a
+          operator notes about external work. Closing an order does not change the provider key or attest to a
           rotation this platform did not observe.
         </ExplainBox>
       </Panel>

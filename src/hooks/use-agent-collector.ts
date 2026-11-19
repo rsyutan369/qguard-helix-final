@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { useAgentScan } from './use-agent-scan';
+import { openAuthenticatedEventStream } from '@/lib/authenticated-event-stream';
 import type { AgentBindingRequest } from '@/lib/agent-installer/agent-binding';
 
 /**
@@ -273,15 +274,22 @@ export function useAgentCollector(enabled: boolean) {
     void fetchAll();
   }, [enabled, token, fetchAll]);
 
-  // SSE — same agent-scanner-sync snapshot stream the old UI used.
+  // SSE — the agent-scanner-sync snapshot stream. Read with fetch() so the
+  // bearer token travels in the Authorization header: EventSource cannot set
+  // headers, which had put the access token in the URL (`?token=`) — and so
+  // into browser history, proxy logs and server access logs. EventSource also
+  // reconnected on its own; that is now an explicit exponential backoff.
   useEffect(() => {
     if (!enabled || !token) return;
-    const source = new EventSource(`${API}/stream?token=${encodeURIComponent(token)}`);
-    source.onopen = () => setSseConnected(true);
-    source.onerror = () => setSseConnected(false);
-    source.addEventListener('agent-scanner-sync', (message) => {
+    let cancelled = false;
+    let close: (() => void) | null = null;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let attempt = 0;
+
+    const onEvent = (name: string, raw: string) => {
+      if (cancelled || name !== 'agent-scanner-sync') return;
       try {
-        const snapshot = JSON.parse((message as MessageEvent).data || '{}');
+        const snapshot = JSON.parse(raw || '{}');
         if (Array.isArray(snapshot.agents)) setAgents(snapshot.agents);
         if (Array.isArray(snapshot.evidence)) setEvidence(snapshot.evidence);
         if (Array.isArray(snapshot.alerts)) setAlerts(snapshot.alerts);
@@ -290,11 +298,36 @@ export function useAgentCollector(enabled: boolean) {
         if (Array.isArray(snapshot.patchOptions)) setPatchOptions(snapshot.patchOptions);
         setLastSyncAt(snapshot.generatedAt || new Date().toISOString());
         setState('success');
+        attempt = 0;
+        setSseConnected(true);
       } catch {
-        setSseConnected(false);
+        // Malformed frame: keep the current snapshot and the connection.
       }
-    });
-    return () => { source.close(); setSseConnected(false); };
+    };
+
+    const connect = () => {
+      if (cancelled) return;
+      close = openAuthenticatedEventStream(`${API}/stream`, token, {
+        onOpen: () => { if (!cancelled) setSseConnected(true); },
+        onEvent,
+        onError: () => {
+          close = null;
+          if (cancelled) return;
+          setSseConnected(false);
+          attempt += 1;
+          const delay = Math.min(30_000, 2_000 * 2 ** Math.min(attempt - 1, 4));
+          retry = setTimeout(connect, delay);
+        },
+      });
+    };
+
+    connect();
+    return () => {
+      cancelled = true;
+      close?.();
+      if (retry) clearTimeout(retry);
+      setSseConnected(false);
+    };
   }, [enabled, token]);
 
   /* Binding targets load independently: an unreachable inventory must not

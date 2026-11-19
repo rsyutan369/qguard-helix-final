@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUserPreferences } from '@/contexts/user-preferences-context'
 import { supabase } from '@/lib/supabase'
+import { openTicketedEventSource } from '@/lib/stream-ticket'
 
 export type { ProfileTheme, UserPreferences } from '@/lib/preferences'
 
@@ -384,8 +385,11 @@ export function useProfileSettings() {
     if (!token || !profile?.id || !telemetryEnabled) return
 
     let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let disposed = false
     const connect = () => {
-      const es = new EventSource(`/api/v1/profile/stream?token=${encodeURIComponent(token)}`)
+      // A single-use ticket per connection: the JWT never enters the URL.
+      void openTicketedEventSource('profile', token).then((es) => {
+      if (disposed) { es.close(); return }
       eventSourceRef.current = es
       es.addEventListener('connected', () => setSseConnected(true))
       es.addEventListener('heartbeat', () => setSseConnected(true))
@@ -422,10 +426,16 @@ export function useProfileSettings() {
         es.close()
         retryTimer = setTimeout(connect, 15000)
       }
+      }).catch(() => {
+        if (disposed) return
+        setSseConnected(false)
+        retryTimer = setTimeout(connect, 15000)
+      })
     }
 
     connect()
     return () => {
+      disposed = true
       if (retryTimer) clearTimeout(retryTimer)
       eventSourceRef.current?.close()
       eventSourceRef.current = null
@@ -571,10 +581,12 @@ export function useProfileSettings() {
   }), [request, withSaving])
 
   const revokeSession = useCallback((sessionId: string) => withSaving(async () => {
-    await request<{ revoked: boolean }>(`/api/v1/profile/sessions/${sessionId}`, {
+    const data = await request<{ revoked: boolean; authSessionEnded?: boolean; message?: string }>(`/api/v1/profile/sessions/${sessionId}`, {
       method: 'DELETE',
     })
     setSessions((prev) => prev.filter((item) => item.id !== sessionId))
+    setTelemetry((prev) => (prev ? { ...prev, activeSessions: Math.max(0, prev.activeSessions - 1) } : prev))
+    return data
   }), [request, withSaving])
 
   return {

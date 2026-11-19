@@ -1,0 +1,164 @@
+{
+  "landscape": [
+    {
+      "start": 0.66,
+      "end": 5.506,
+      "text": "Quantum computing could one day break\nwidely used public-key cryptography."
+    },
+    {
+      "start": 6.19,
+      "end": 10.884,
+      "text": "Sensitive data can be collected today\nand targeted for decryption later."
+    },
+    {
+      "start": 11.79,
+      "end": 13.48,
+      "text": "The time to plan is now."
+    },
+    {
+      "start": 15.49,
+      "end": 21.125,
+      "text": "Cryptography is woven into applications,\ncloud services and network connections."
+    },
+    {
+      "start": 21.29,
+      "end": 25.187,
+      "text": "It lives in certificates,\nprotocols, code and infrastructure."
+    },
+    {
+      "start": 25.74,
+      "end": 29.793,
+      "text": "Hidden dependencies can\ncomplicate even a routine upgrade."
+    },
+    {
+      "start": 31.04,
+      "end": 35.783,
+      "text": "Introducing QGuard Helix, one platform\nfor the post-quantum transition."
+    },
+    {
+      "start": 37.09,
+      "end": 41.416,
+      "text": "Discover, assess, plan, migrate,\nvalidate, monitor and govern."
+    },
+    {
+      "start": 43.49,
+      "end": 46.468,
+      "text": "Start with the Quantum\nReadiness Assessment Engine."
+    },
+    {
+      "start": 49.34,
+      "end": 53.294,
+      "text": "Map assets and dependencies\nin the Quantum Exposure Graph."
+    },
+    {
+      "start": 55.79,
+      "end": 58.245,
+      "text": "Build a cryptographic bill of materials."
+    },
+    {
+      "start": 59.29,
+      "end": 62.658,
+      "text": "Prioritize long-lived\ndata and report the risk."
+    },
+    {
+      "start": 63.49,
+      "end": 68.175,
+      "text": "Build a roadmap in the Migration\nPlanner, ranked by business criticality."
+    },
+    {
+      "start": 69.64,
+      "end": 74.773,
+      "text": "Map owners, dependencies and blockers.\nEstimate costs before work begins."
+    },
+    {
+      "start": 75.74,
+      "end": 80.337,
+      "text": "Track milestones and progress as your\nmigration moves through each wave."
+    },
+    {
+      "start": 82.49,
+      "end": 88.363,
+      "text": "Rehearse proposed changes against recorded\nconfigurations in the Migration Sandbox."
+    },
+    {
+      "start": 89.24,
+      "end": 94.426,
+      "text": "Use its digital twin to evaluate\ncompatibility, performance and rollback risks."
+    },
+    {
+      "start": 95.64,
+      "end": 101.651,
+      "text": "Approve supported changes before rollout, then\nvalidate outcomes with post-change evidence."
+    },
+    {
+      "start": 103.49,
+      "end": 108.572,
+      "text": "Compare hybrid options in the Crypto\nAgility Engine and Compatibility Lab."
+    },
+    {
+      "start": 109.14,
+      "end": 112.634,
+      "text": "ML-KEM supports post-quantum\nkey establishment."
+    },
+    {
+      "start": 113.74,
+      "end": 117.732,
+      "text": "ML-DSA and SLH-DSA are signature standards."
+    },
+    {
+      "start": 117.84,
+      "end": 122.784,
+      "text": "Track key lifecycle in QKMS and\ncertificates through PKI visibility."
+    },
+    {
+      "start": 123.49,
+      "end": 128.085,
+      "text": "Map certificate chains and service\ntrust from root authority to workload."
+    },
+    {
+      "start": 129.49,
+      "end": 136.203,
+      "text": "PQAuth helps discover identity flows, analyze\ntokens, and plan authentication changes."
+    },
+    {
+      "start": 136.49,
+      "end": 141.225,
+      "text": "Use the identity digital twin to\nreview compatibility before rollout."
+    },
+    {
+      "start": 143.49,
+      "end": 148.153,
+      "text": "Correlate connected runtime telemetry\nand track drift across your estate."
+    },
+    {
+      "start": 149.69,
+      "end": 153.624,
+      "text": "Map controls, collect audit\nevidence, and track vendor readiness."
+    },
+    {
+      "start": 155.69,
+      "end": 160.04,
+      "text": "Sophia adds AI-assisted analysis\nto your security workflow."
+    },
+    {
+      "start": 161.49,
+      "end": 163.528,
+      "text": "The quantum threat is approaching."
+    },
+    {
+      "start": 165.49,
+      "end": 167.73,
+      "text": "Your organization needs a plan."
+    },
+    {
+      "start": 169.34,
+      "end": 172.573,
+      "text": "Securing the present.\nPreparing the quantum future."
+    },
+    {
+      "start": 174.94,
+      "end": 177.958,
+      "text": "Explore QGuard Helix. Request a demo."
+    }
+  ]
+}

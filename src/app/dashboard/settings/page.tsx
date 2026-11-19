@@ -392,7 +392,7 @@ function SecurityTab({
   disableMfa: (code: string, recoveryCode?: string) => Promise<string>
   regenerateRecoveryCodes: () => Promise<string[]>
   setDeviceTrust: (deviceId: string, trusted: boolean) => Promise<UserDevice>
-  revokeSession: (sessionId: string) => Promise<void>
+  revokeSession: (sessionId: string) => Promise<unknown>
 }) {
   const [securityDraft, setSecurityDraft] = useState<UserSecuritySettings>(security)
   const [securityDirty, setSecurityDirty] = useState(false)
@@ -562,7 +562,7 @@ function SecurityTab({
             <h3 className="text-sm font-black uppercase tracking-[0.16em] text-white/70">Security Notifications</h3>
           </div>
           <div className="grid gap-3 lg:grid-cols-3">
-            <ToggleRow id="sec-mfa-enforced" title="MFA enforcement" description="Require MFA for privileged account actions." checked={securityDraft.mfaEnforced} onChange={(value) => updateSecurityDraft({ mfaEnforced: value })} />
+            <ToggleRow id="sec-mfa-enforced" title="MFA required (policy flag)" description="Records that this account must use MFA and reports it in Trust Center. It does not block sign-in by itself — turn on two-factor authentication above to protect sign-in." checked={securityDraft.mfaEnforced} onChange={(value) => updateSecurityDraft({ mfaEnforced: value })} />
             <ToggleRow id="sec-suspicious-login" title="Suspicious login alerts" description="Receive alerts when a new device or location appears." checked={securityDraft.suspiciousLoginAlerts} onChange={(value) => updateSecurityDraft({ suspiciousLoginAlerts: value })} />
             <ToggleRow id="sec-email-notices" title="Security email notices" description="Send account security changes to verified email." checked={securityDraft.securityEmailNotifications} onChange={(value) => updateSecurityDraft({ securityEmailNotifications: value })} />
           </div>
@@ -640,7 +640,7 @@ function MetricCard({ icon: Icon, label, value, tone }: { icon: typeof ShieldChe
   )
 }
 
-function SessionRow({ session, saving, onRevoke }: { session: UserSession; saving: boolean; onRevoke: (id: string) => Promise<void> }) {
+function SessionRow({ session, saving, onRevoke }: { session: UserSession; saving: boolean; onRevoke: (id: string) => Promise<unknown> }) {
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-white/[0.025] p-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0">
@@ -651,7 +651,13 @@ function SessionRow({ session, saving, onRevoke }: { session: UserSession; savin
         </div>
         <div className="mt-1 text-xs text-white/40">{session.ipAddress || 'Unknown IP'} - Last seen {timeAgo(session.lastSeenAt)}</div>
       </div>
-      <button type="button" className={ghostButtonClass} disabled={saving || session.current} onClick={() => onRevoke(session.id)}>
+      <button
+        type="button"
+        className={ghostButtonClass}
+        disabled={saving || session.current}
+        title={session.current ? 'This is the session you are using — sign out to end it' : 'End this sign-in session on that device'}
+        onClick={() => { void onRevoke(session.id).catch(() => undefined) }}
+      >
         <Trash2 className="h-3.5 w-3.5" />
         Revoke
       </button>
@@ -788,15 +794,20 @@ export default function ProfileSettingsPage() {
     setProfileDraft((prev) => ({ ...prev, ...updates }))
   }, [])
 
-  const securityScore = useMemo(() => {
-    if (!profile || !security) return 0
-    let score = 50
-    if (security.twoFactorEnabled) score += 20
-    if (profile.recoveryCodesRemaining > 0) score += 10
-    if (devices.some((device) => device.trusted)) score += 10
-    if (security.suspiciousLoginAlerts) score += 10
-    return Math.min(100, score)
+  // Account protections that are actually in place, each read from the saved
+  // account state. This replaced a "Security Score" that started every account
+  // at 50% before a single control was measured.
+  const protections = useMemo(() => {
+    if (!profile || !security) return []
+    return [
+      { label: 'Email verified', met: Boolean(profile.emailVerifiedAt) },
+      { label: 'Two-factor authentication on', met: Boolean(security.twoFactorEnabled) },
+      { label: 'Recovery codes available', met: profile.recoveryCodesRemaining > 0 },
+      { label: 'Suspicious sign-in alerts on', met: Boolean(security.suspiciousLoginAlerts) },
+      { label: 'A trusted device registered', met: devices.some((device) => device.trusted) },
+    ]
   }, [devices, profile, security])
+  const protectionsMet = protections.filter((item) => item.met).length
 
   function selectTab(tab: SettingsTab) {
     setActiveTab(tab)
@@ -869,8 +880,13 @@ export default function ProfileSettingsPage() {
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="rounded-lg border border-white/10 bg-white/[0.035] px-4 py-3">
-              <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/35">Security Score</div>
-              <div className="mt-1 text-2xl font-black text-gold">{securityScore}%</div>
+              <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/35">Protections On</div>
+              <div
+                className="mt-1 text-2xl font-black text-gold"
+                title={protections.map((item) => `${item.met ? 'On' : 'Off'} — ${item.label}`).join('\n')}
+              >
+                {protectionsMet}<span className="text-sm text-white/40"> of {protections.length}</span>
+              </div>
             </div>
             <div className="rounded-lg border border-white/10 bg-white/[0.035] px-4 py-3">
               <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/35">Realtime</div>
@@ -950,7 +966,7 @@ export default function ProfileSettingsPage() {
           disableMfa={(code, recoveryCode) => showNotice(() => disableMfa(code, recoveryCode), 'Two-factor authentication disabled.')}
           regenerateRecoveryCodes={regenerateRecoveryCodes}
           setDeviceTrust={setDeviceTrust}
-          revokeSession={revokeSession}
+          revokeSession={(sessionId) => showNotice(() => revokeSession(sessionId), 'Session ended on that device.')}
         />
       )}
 

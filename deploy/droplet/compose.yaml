@@ -1,0 +1,25 @@
+services:
+  api:
+    image: ${QGUARD_API_IMAGE:?Set QGUARD_API_IMAGE to the release image tag or digest}
+    restart: unless-stopped
+    env_file:
+      - ${QGUARD_API_ENV_FILE:?Set QGUARD_API_ENV_FILE to the server-side environment file}
+    environment:
+      NODE_ENV: production
+      QGUARD_ENVIRONMENT: production
+      PORT: "8080"
+      SERVE_STATIC: "false"
+      SUBSCRIPTION_ENFORCEMENT: enforce
+      REGISTRATION_AUTO_CONFIRM: "false"
+    ports:
+      - "127.0.0.1:8080:8080"
+    stop_grace_period: 45s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

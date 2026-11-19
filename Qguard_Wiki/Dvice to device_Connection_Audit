@@ -1,0 +1,236 @@
+# Deep Audit, Debugging, and Stabilization of MESH OFFGRID and XFER Device-to-Device Connectivity
+
+I have physically tested both **MESH OFFGRID** and **XFER** using two actual Android devices. Both features have connection stability, synchronization, communication, and real-time event delivery issues.
+
+I need you to perform a comprehensive technical audit, identify the root causes, and implement permanent fixes. Do not simply modify the UI or introduce temporary workarounds.
+
+Both features must provide reliable, continuous, and synchronized device-to-device communication and file transfers.
+
+## 1. MESH OFFGRID – Bluetooth-to-Bluetooth Connectivity and Messaging
+
+### Actual Testing Scenario
+
+I tested MESH OFFGRID using two physical Android devices:
+
+- Device A: Bluetooth enabled.
+- Device B: Bluetooth enabled.
+- Both devices attempted to discover and connect to each other using Bluetooth only.
+- No internet connection or external network infrastructure was intentionally used.
+
+### Current Problems
+
+1. Both devices successfully discovered and connected to each other, but the connection only lasted briefly before disconnecting.
+2. Messaging works for only one message at a time.
+3. After sending one message, the connection becomes unstable or disconnects.
+4. Messages sent from Device A are not consistently displayed on Device B.
+5. Replies from Device B are not properly delivered or displayed on Device A.
+6. The conversation is not synchronized between both devices.
+7. Connection status and messaging events are not consistently reflected in real time on both devices.
+
+### Expected Behavior and Required Fixes
+
+Implement a persistent, bidirectional Bluetooth communication session.
+
+- Once Device A and Device B successfully establish a connection, the connection must remain active until either device explicitly disconnects, Bluetooth becomes unavailable, the connection is lost, or the application is terminated.
+- Do not disconnect or recreate the Bluetooth connection after every message.
+- Both devices must be able to continuously send and receive multiple messages without reconnecting.
+- Messages must be delivered in both directions.
+- Incoming messages must appear immediately in the correct conversation on the receiving device.
+- Replies must automatically synchronize and appear on the sender's device.
+- Both devices must maintain consistent conversation history, message ordering, delivery status, and timestamps.
+- Implement reliable message acknowledgments, delivery tracking, retry handling, duplicate detection, and reconnection recovery.
+- If the connection temporarily drops, automatically attempt reconnection and restore the existing communication session without requiring users to restart the discovery process manually.
+- Display accurate connection states on both devices, including Discovering, Connecting, Pairing, Connected, Reconnecting, and Disconnected.
+- Ensure that the application correctly handles Android Bluetooth permissions, lifecycle changes, background execution restrictions, and connection interruptions.
+
+**Important:** Bluetooth must support continuous communication, not just device discovery or one-time message delivery.
+
+## 2. XFER – Wi-Fi Hotspot-Based Device-to-Device File Transfer
+
+### Actual Testing Scenario
+
+I also tested XFER using the same two physical Android devices.
+
+The connection process was:
+
+1. Device A enabled its mobile Wi-Fi hotspot.
+2. Device B enabled Wi-Fi and connected to Device A's hotspot.
+3. Both devices attempted to discover each other through XFER.
+4. The devices appeared in the radar/discovery interface.
+5. I selected files to transfer.
+
+### Current Problems
+
+1. Both devices can discover each other, but the connection is unstable.
+2. When initiating a file transfer, the connection unexpectedly disconnects.
+3. The application sometimes returns to the scanning or radar discovery screen.
+4. The receiver occasionally detects or displays incoming files much later than expected.
+5. File transfers sometimes begin on the receiving device even while its interface still indicates that it is scanning for nearby devices.
+6. Sender and receiver interfaces are not synchronized.
+7. Transfer progress, connection status, and event notifications are delayed or inconsistent.
+8. The devices appear to process events at different times, resulting in conflicting UI states.
+9. The sender may believe the transfer is still connecting or discovering while the receiver has already started receiving files.
+
+### Expected Behavior and Required Fixes
+
+Implement a stable Wi-Fi-based device-to-device transfer session.
+
+- Once the receiver successfully connects to the sender's hotspot and both devices establish their XFER session, maintain that connection.
+- Device discovery must stop or transition into the connected-device state after a successful connection.
+- Do not restart radar scanning or device discovery while an active transfer session exists.
+- The application must retain the established connection while waiting for the next user action.
+- Both devices must receive immediate notifications when a transfer request is initiated.
+- The receiving device must immediately display the incoming transfer request, including sender identity, device name, filename, file size, and transfer details.
+- Once the receiver accepts the transfer, both devices must transition into the same transfer session.
+- The sender and receiver must display synchronized transfer states and progress.
+- Both devices must accurately reflect when a transfer is Pending, Accepted, Encrypting, Transferring, Paused, Resuming, Completed, Failed, or Cancelled.
+- Maintain the connection throughout the transfer instead of disconnecting and initiating another discovery cycle.
+- Implement transfer acknowledgments, chunk sequencing, integrity verification, retry handling, and interrupted-transfer recovery.
+- After successful completion, display the same final transfer result on both devices.
+- Support multiple sequential transfers without requiring users to rediscover or reconnect to the other device every time.
+
+## 3. Real-Time Synchronization Between Both Devices
+
+This is one of the most important requirements for both MESH OFFGRID and XFER.
+
+**Device A and Device B must always maintain synchronized session states and event information while connected.**
+
+Audit and implement the following:
+
+- Real-time event propagation between both devices.
+- Bidirectional communication and event acknowledgment.
+- Consistent session IDs and device identities.
+- Accurate connection lifecycle management.
+- Reliable message and transfer event delivery.
+- Immediate synchronization of UI state changes.
+- Proper event ordering and duplicate-event prevention.
+- Heartbeat and connection health monitoring.
+- Automatic recovery from temporary connectivity interruptions.
+- Accurate timestamps and delivery acknowledgments.
+- Proper handling of delayed, missing, or out-of-order events.
+
+The frontend must reflect the actual backend and transport-layer state. Do not independently simulate connection status, message delivery, or transfer progress on either device.
+
+## 4. Deep Technical Audit – Investigate the Actual Root Causes
+
+Inspect the entire communication architecture, including:
+
+- Android Bluetooth discovery and connection implementation.
+- Bluetooth socket lifecycle and stream management.
+- Wi-Fi hotspot discovery and local network communication.
+- Device identity and pairing mechanisms.
+- Sender and receiver session management.
+- TCP socket or other transport connection lifecycle, as applicable.
+- Rust backend and native Android integration.
+- Tauri event handling and frontend subscriptions.
+- Background services and Android lifecycle management.
+- Connection timeout and retry mechanisms.
+- Message queues and transfer queues.
+- Event synchronization between sender and receiver.
+- Frontend state management and race conditions.
+- Network interface changes and socket invalidation.
+- File transfer chunking, acknowledgments, and integrity verification.
+
+Pay particular attention to:
+
+1. Connections being unintentionally closed after the first message or event.
+2. Multiple competing connection or discovery processes.
+3. Duplicate event listeners and missing event subscriptions.
+4. Race conditions between discovery, connection establishment, and transfer initialization.
+5. Incorrect socket ownership or premature resource cleanup.
+6. Incorrect session-state transitions.
+7. Delayed event processing or unhandled asynchronous operations.
+8. Missing acknowledgments between sender and receiver.
+9. UI state being updated before the underlying transport operation actually succeeds.
+
+Do not assume the problem is exclusively frontend-related. Trace the actual execution flow from the physical transport layer through the Rust backend and into the frontend on both devices.
+
+## 5. Logging, Diagnostics, and Real-Time Telemetry
+
+Implement or improve diagnostic telemetry for both features.
+
+Each device should provide accurate information about:
+
+- Device discovery.
+- Pairing and authentication.
+- Connection establishment.
+- Active connection health.
+- Connection interruptions.
+- Reconnection attempts.
+- Message transmission and acknowledgment.
+- Incoming message reception.
+- Transfer request delivery.
+- Transfer acceptance.
+- Encryption and decryption operations.
+- File chunk transmission and reception.
+- Transfer progress.
+- Integrity verification.
+- Transfer completion or failure.
+
+Ensure telemetry is generated from actual transport and backend events, not hardcoded, simulated, or randomly generated values.
+
+Include timestamps, session IDs, event IDs, and relevant error details to help identify synchronization problems between the two physical devices.
+
+## 6. Physical Device Testing and Acceptance Criteria
+
+After implementing the fixes, perform actual end-to-end testing using two physical Android devices.
+
+### MESH OFFGRID Test
+
+- [ ] Discover both devices using Bluetooth only.
+- [ ] Successfully establish a connection.
+- [ ] Maintain the connection without repeatedly reconnecting.
+- [ ] Send at least 20 consecutive messages from Device A to Device B.
+- [ ] Send at least 20 consecutive messages from Device B to Device A.
+- [ ] Verify that all messages appear on both devices in the correct order.
+- [ ] Verify real-time incoming replies on both devices.
+- [ ] Verify accurate delivery acknowledgments.
+- [ ] Keep the session active while exchanging messages.
+- [ ] Test temporary Bluetooth disconnection and automatic recovery.
+
+### XFER Test
+
+- [ ] Enable the sender's Wi-Fi hotspot.
+- [ ] Connect the receiver to the sender's hotspot.
+- [ ] Discover and establish the XFER connection.
+- [ ] Verify that both devices transition out of radar scanning.
+- [ ] Send multiple files of different sizes.
+- [ ] Verify immediate incoming transfer notifications.
+- [ ] Verify that both devices display synchronized transfer progress.
+- [ ] Verify filename, file size, and transfer status on both devices.
+- [ ] Test pause, resume, cancel, and retry operations.
+- [ ] Verify file integrity after receiving.
+- [ ] Perform multiple consecutive transfers without reconnecting.
+- [ ] Test temporary Wi-Fi interruption and recovery.
+
+## 7. Critical Development Rules
+
+- Do not introduce mock connections, fake telemetry, simulated messages, or fabricated transfer progress.
+- Do not simply hide the radar screen to make the application appear connected.
+- Do not automatically report a successful connection before the actual transport connection is established.
+- Do not rebuild or recreate active sessions unnecessarily.
+- Do not disconnect a healthy connection after sending or receiving a message or file.
+- Do not implement frontend-only synchronization.
+- Do not remove existing working functionality or compromise the existing encryption architecture.
+- Preserve the existing QGUARD HELIX branding and UI/UX design.
+- Maintain secure device authentication and encrypted communication.
+- Ensure all fixes work on actual Android hardware, not just emulators or desktop simulations.
+
+## 8. Final Expected Outcome
+
+I want MESH OFFGRID and XFER to behave like reliable, production-grade device-to-device communication systems.
+
+**MESH OFFGRID:** Once two Android devices establish a Bluetooth connection, they should be able to continuously exchange messages in both directions, see replies immediately, and maintain a stable communication session.
+
+**XFER:** Once two devices establish a Wi-Fi-based connection, they should remain connected, exchange transfer requests and notifications immediately, and display synchronized file transfer progress and results on both devices.
+
+**Most importantly, both devices must always agree on the actual connection, session, messaging, and transfer status.**
+
+Please perform a complete audit, identify the root causes, implement the necessary backend, transport-layer, Rust, Android, and frontend fixes, and validate the results through actual physical-device testing.
+
+Do not mark this task as completed merely because the code compiles or the application builds successfully. Completion requires verified end-to-end functionality on both physical Android devices.
+
+
+My additional technical recommendation: Pay special attention to the distinction between device discovery, transport connection, and application session. These are three separate lifecycle stages. Your symptoms suggest that the application may be treating discovery and connection as the same state, or recreating transport sessions when new messages or transfer events arrive.
+
+For QGUARD HELIX, the ideal architecture should maintain a persistent session manager for each connected peer, with independent messaging and file-transfer event handling. This will help prevent one operation from accidentally terminating another.

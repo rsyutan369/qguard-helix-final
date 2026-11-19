@@ -1,39 +1,24 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
 
 /**
- * useLiveResource — the ONE client for a dashboard payload that the server
- * keeps live over SSE (src/api-server/live-snapshot-stream.ts).
- *
- * The Quantum Readiness, Exposure Graph, Harvest Now, Remediation and
- * Certification hooks each carried a hand-copied fetch + stream reader, and
- * every one of them downloaded the payload twice on mount (REST and the
- * stream's first frame), applied every frame whether or not it had changed,
- * and retried a dead stream every 10s forever. The readiness hook did not
- * consume a stream of its own at all: it refetched the full snapshot each time
- * an unrelated 8s key-count pulse fired.
- *
- * Contract:
- *  • Stream first. The stream's first frame IS the initial load; REST is the
- *    fallback when no frame arrives within FIRST_FRAME_TIMEOUT_MS or the
- *    stream fails, and the path for explicit refreshes and realtime nudges.
- *  • Fingerprint de-dup. A payload whose `fingerprint` matches what is shown is
- *    not applied — no re-render for news that is not news.
- *  • `-unchanged` frames advance `lastVerifiedAt`: the server re-checked the
- *    estate. Liveness is visible without re-sending the data.
- *  • `loading` until the SERVER answers. An empty payload is never a stand-in
- *    for "not loaded yet".
- *  • Reset on tenant change; exponential reconnect backoff (2s → 30s).
- *  • The bearer token travels in the Authorization header, never the URL.
+ * Dashboard snapshots arrive over SSE, with REST polling while the stream is
+ * unavailable. Transport liveness and the snapshot's evidence timestamp are
+ * independent. Each response belongs to the session that requested it.
  */
 
 export type LiveLoadState = 'loading' | 'success' | 'error';
 export type LiveTransport = 'connecting' | 'stream' | 'polling' | 'offline';
 
-const FIRST_FRAME_TIMEOUT_MS = 4_000;
+const INITIAL_FALLBACK_MS = 4_000;
+const FIRST_FRAME_DEADLINE_MS = 35_000;
+// The slowest caller sends snapshots every 30s. Heartbeats do not reset this.
+const FRAME_DEADLINE_MS = 65_000;
+const POLL_INTERVAL_MS = 15_000;
+const REST_TIMEOUT_MS = 12_000;
 let nextChannelSeq = 0;
 const MAX_BACKOFF_MS = 30_000;
 const REALTIME_DEBOUNCE_MS = 600;
@@ -46,10 +31,19 @@ export interface LiveResourceOptions<T> {
   empty: T;
   /** Merge a raw payload onto the empty shape (defaults to a shallow merge). */
   normalize?: (raw: Record<string, unknown>) => T;
+  /** Verify the endpoint-specific payload before accepting either transport. */
+  validate?: (raw: Record<string, unknown>) => boolean;
   /** Tenant tables whose writes should nudge a refresh. */
   realtimeTables?: readonly string[];
   /** Unique per hook, so two pages on one screen do not share channels. */
   channelPrefix: string;
+  /**
+   * Pull the payload out of the REST body. Defaults to the platform envelope
+   * (`{ data }`); a route that answers with the bare payload passes its own.
+   * Return null for a body that is not a usable payload — it is then an error,
+   * never an empty dashboard.
+   */
+  unwrap?: (body: unknown) => unknown;
 }
 
 export interface LiveResource<T> {
@@ -59,8 +53,10 @@ export interface LiveResource<T> {
   /** True while the server stream is open and has answered. */
   sseConnected: boolean;
   transport: LiveTransport;
-  /** Last time the server confirmed this payload is current (full or unchanged frame, or REST). */
+  /** Server watermark for the displayed model. A cached response does not advance it. */
   lastVerifiedAt: string | null;
+  /** Receipt time for the last usable stream frame or REST response. */
+  lastReceivedAt: string | null;
   /**
    * `refresh({ force: true })` asks the server to bypass its single-flight
    * cache (`?refresh=1`). Typed `unknown` on purpose: pages pass `refresh`
@@ -68,200 +64,286 @@ export interface LiveResource<T> {
    * (it is simply not a force request).
    */
   refresh: (options?: unknown) => Promise<void>;
+  /** Restart the stream immediately and request a fresh REST snapshot. */
+  reconnect: () => void;
 }
 
 function isForceRequest(options: unknown): boolean {
   return Boolean(options && typeof options === 'object' && (options as { force?: unknown }).force === true);
 }
 
+type SnapshotRecord = Record<string, unknown>;
+type SnapshotState<T> = Omit<LiveResource<T>, 'sseConnected' | 'refresh' | 'reconnect'>;
+
+function nonEmptyRecord(value: unknown): value is SnapshotRecord {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length);
+}
+
+function timestamp(value: unknown): string | null {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null;
+}
+
+function watermark(record: SnapshotRecord): string | null {
+  return timestamp(record.sourceCheckedAt) ?? timestamp(record.checkedAt) ?? timestamp(record.generatedAt);
+}
+
+function isOlder(next: string | null, previous: string | null): boolean {
+  return Boolean(next && previous && Date.parse(next) < Date.parse(previous));
+}
+
+function initialState<T>(data: T, authenticated: boolean): SnapshotState<T> {
+  return {
+    data,
+    state: authenticated ? 'loading' : 'success',
+    error: null,
+    transport: authenticated ? 'connecting' : 'offline',
+    lastVerifiedAt: null,
+    lastReceivedAt: null,
+  };
+}
+
 export function useLiveResource<T>(options: LiveResourceOptions<T>): LiveResource<T> {
-  const { url, streamUrl, event, empty, normalize, realtimeTables, channelPrefix } = options;
+  const { url, streamUrl, event, empty, normalize, validate, realtimeTables, channelPrefix, unwrap } = options;
   const { session, user } = useAuth();
-  const token = session?.access_token;
   const userId = user?.id;
+  const token = userId && userId === session?.user.id ? session.access_token : undefined;
+  const authorized = Boolean(token);
+  const scope = useMemo(() => ({}), [userId, authorized, url, streamUrl, event]);
+  const activeScope = useRef<object | null>(null);
+  const optionsRef = useRef({ empty, normalize, validate, unwrap });
+  useLayoutEffect(() => {
+    optionsRef.current = { empty, normalize, validate, unwrap };
+  }, [empty, normalize, validate, unwrap]);
 
-  const [data, setData] = useState<T>(empty);
-  const [state, setState] = useState<LiveLoadState>('loading');
-  const [error, setError] = useState<string | null>(null);
-  const [sseConnected, setSseConnected] = useState(false);
-  const [transport, setTransport] = useState<LiveTransport>('connecting');
-  const [lastVerifiedAt, setLastVerifiedAt] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState(() => ({ scope, ...initialState(empty, authorized) }));
+  const [reconnectSequence, setReconnectSequence] = useState(0);
+  const accepted = useRef<{ fingerprint: string | null; watermark: string | null }>({ fingerprint: null, watermark: null });
+  const inFlight = useRef<{ scope: object; token: string; force: boolean; controller: AbortController; promise: Promise<void> } | null>(null);
 
-  const fingerprintRef = useRef<string | null>(null);
-  const hasDataRef = useRef(false);
-  const scopeKey = `${userId ?? ''}:${url}`;
-  const scopeRef = useRef(scopeKey);
-  scopeRef.current = scopeKey;
-  const refreshInFlight = useRef<{ scope: string; forced: boolean; promise: Promise<void> } | null>(null);
-  // Latest callbacks/options without re-running the connection effects.
-  const normalizeRef = useRef(normalize);
-  normalizeRef.current = normalize;
-  const emptyRef = useRef(empty);
-  emptyRef.current = empty;
+  useLayoutEffect(() => {
+    activeScope.current = scope;
+    accepted.current = { fingerprint: null, watermark: null };
+    return () => {
+      activeScope.current = null;
+      if (inFlight.current?.scope === scope) inFlight.current.controller.abort();
+    };
+  }, [scope]);
 
-  const apply = useCallback((raw: unknown) => {
-    const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
-    const fingerprint = typeof record.fingerprint === 'string' ? record.fingerprint : null;
-    setLastVerifiedAt(new Date().toISOString());
-    hasDataRef.current = true;
-    setState('success');
-    setError(null);
-    if (fingerprint && fingerprint === fingerprintRef.current) return;
-    fingerprintRef.current = fingerprint;
-    const next = normalizeRef.current ? normalizeRef.current(record) : ({ ...(emptyRef.current as object), ...record } as T);
-    setData(next);
+  const update = useCallback((change: (current: SnapshotState<T>) => SnapshotState<T>) => {
+    if (activeScope.current !== scope) return;
+    setSnapshot((current) => ({
+      ...change(current.scope === scope ? current : initialState(optionsRef.current.empty, authorized)),
+      scope,
+    }));
+  }, [scope, authorized]);
+
+  const readRecord = useCallback((raw: unknown): SnapshotRecord | null => {
+    const check = optionsRef.current.validate;
+    return nonEmptyRecord(raw) && (!check || check(raw)) ? raw : null;
   }, []);
 
-  const refresh = useCallback((options?: unknown): Promise<void> => {
-    if (!token) return Promise.resolve();
-    const running = refreshInFlight.current;
-    if (running?.scope === scopeKey) {
-      // A forced recovery after a mutation must not reuse a pre-write read.
-      if (isForceRequest(options) && !running.forced) return running.promise.then(() => refresh(options));
+  const apply = useCallback((record: SnapshotRecord, fromStream: boolean) => {
+    if (activeScope.current !== scope) return;
+    const verifiedAt = watermark(record);
+    const receivedAt = new Date().toISOString();
+    const fingerprint = typeof record.fingerprint === 'string' ? record.fingerprint : null;
+    const previous = accepted.current;
+    const older = isOlder(verifiedAt, previous.watermark);
+    const sameContent = Boolean(fingerprint && fingerprint === previous.fingerprint);
+    const payload = older || sameContent ? null : optionsRef.current.normalize
+      ? optionsRef.current.normalize(record)
+      : ({ ...(optionsRef.current.empty as object), ...record } as T);
+
+    if (!older) {
+      accepted.current = { fingerprint, watermark: verifiedAt };
+    }
+    update((current) => ({
+      ...current,
+      data: older || sameContent ? current.data : payload as T,
+      state: 'success',
+      error: null,
+      transport: fromStream || current.transport === 'stream' ? 'stream' : 'polling',
+      lastVerifiedAt: older ? current.lastVerifiedAt : verifiedAt,
+      lastReceivedAt: receivedAt,
+    }));
+  }, [scope, update]);
+
+  const refresh = useCallback((params?: unknown): Promise<void> => {
+    if (!token || activeScope.current !== scope) return Promise.resolve();
+    const force = isForceRequest(params);
+    const running = inFlight.current;
+    if (running?.scope === scope && running.token === token && !running.controller.signal.aborted) {
+      if (force && !running.force) return running.promise.then(() => refresh(params));
       return running.promise;
     }
-    // REST fallbacks, realtime nudges and refresh clicks share one read.
+    running?.controller.abort();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REST_TIMEOUT_MS);
     const promise = (async () => {
       try {
-        const target = isForceRequest(options) ? `${url}${url.includes('?') ? '&' : '?'}refresh=1` : url;
-        const response = await fetch(target, { headers: { Authorization: `Bearer ${token}` } });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-        if (!payload?.data || typeof payload.data !== 'object') throw new Error('Live response was empty or malformed');
-        if (scopeRef.current !== scopeKey) return;
-        apply(payload.data);
+        const target = force ? url + (url.includes('?') ? '&' : '?') + 'refresh=1' : url;
+        const response = await fetch(target, {
+          headers: { Authorization: 'Bearer ' + token },
+          signal: controller.signal,
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(payload?.error?.message || 'HTTP ' + response.status);
+        const extract = optionsRef.current.unwrap;
+        const body = readRecord(extract ? extract(payload) : payload?.data);
+        if (!body) throw new Error('The dashboard response was empty or malformed');
+        if (!controller.signal.aborted) apply(body, false);
       } catch (err) {
-        if (scopeRef.current !== scopeKey) return;
-        const message = err instanceof Error ? err.message : 'Request failed';
-        console.error(`Live resource ${url} failed:`, err);
-        setError(message);
-        // Keep showing the last good payload; only an empty screen becomes an error screen.
-        if (!hasDataRef.current) setState('error');
+        if (activeScope.current !== scope || (controller.signal.aborted && inFlight.current?.controller !== controller)) return;
+        const message = controller.signal.aborted ? 'Dashboard refresh timed out' : err instanceof Error ? err.message : 'Dashboard refresh failed';
+        update((current) => current.transport === 'stream' ? current : ({
+          ...current,
+          error: message,
+          state: current.state === 'success' ? 'success' : 'error',
+          transport: 'offline',
+        }));
+      } finally {
+        clearTimeout(timeout);
       }
     })();
-    refreshInFlight.current = { scope: scopeKey, forced: isForceRequest(options), promise };
+    inFlight.current = { scope, token, force, controller, promise };
     void promise.finally(() => {
-      if (refreshInFlight.current?.promise === promise) refreshInFlight.current = null;
+      if (inFlight.current?.controller === controller) inFlight.current = null;
     });
     return promise;
-  }, [token, url, scopeKey, apply]);
+  }, [token, scope, url, apply, update, readRecord]);
 
-  // Tenant change ⇒ nothing from the previous tenant may remain on screen.
-  // Keyed on the USER, not the token: the access token rotates hourly, and
-  // resetting on rotation would blank every open dashboard once an hour.
-  useEffect(() => {
-    fingerprintRef.current = null;
-    hasDataRef.current = false;
-    setData(emptyRef.current);
-    setError(null);
-    setLastVerifiedAt(null);
-    setState(userId ? 'loading' : 'success');
-  }, [userId, url]);
+  const reconnect = useCallback(() => {
+    if (activeScope.current !== scope || !token) return;
+    setReconnectSequence((value) => value + 1);
+    void refresh({ force: true });
+  }, [scope, token, refresh]);
 
-  // Stream (primary transport) with REST fallback.
   useEffect(() => {
-    if (!token) {
-      setTransport('offline');
-      setSseConnected(false);
-      return;
-    }
-    const controller = new AbortController();
+    if (!token) return;
     let cancelled = false;
-    let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    let firstFrameTimer: ReturnType<typeof setTimeout> | undefined;
+    let healthy = false;
     let attempt = 0;
+    let connection: AbortController | null = null;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
 
-    const handleFrame = (frame: string) => {
-      if (cancelled || scopeRef.current !== scopeKey) return;
-      let name = 'message';
-      const lines: string[] = [];
-      for (const line of frame.split('\n')) {
-        if (line.startsWith('event:')) name = line.slice(6).trim();
-        else if (line.startsWith('data:')) lines.push(line.slice(5).replace(/^ /, ''));
-      }
-      if (!lines.length) return; // comment / heartbeat
-      if (name === event) {
-        try {
-          apply(JSON.parse(lines.join('\n')));
-          attempt = 0;
-          if (firstFrameTimer) clearTimeout(firstFrameTimer);
-          setSseConnected(true);
-          setTransport('stream');
-        } catch {
-          /* malformed frame — keep the current payload */
-        }
-      } else if (name === `${event}-unchanged`) {
-        // A good re-check after a failed build ends the failure: the shown
-        // payload is current again, so its error banner must not outlive it.
-        setError(null);
-        setLastVerifiedAt(new Date().toISOString());
-        setSseConnected(true);
-        setTransport('stream');
-      } else if (name === `${event}-error`) {
-        try {
-          const detail = JSON.parse(lines.join('\n')) as { message?: string };
-          setError(detail?.message || 'Live update failed');
-        } catch {
-          setError('Live update failed');
-        }
-        if (!hasDataRef.current) void refresh();
-      }
-    };
+    update((current) => ({ ...current, transport: current.lastReceivedAt ? 'polling' : 'connecting' }));
+    const initialFallback = setTimeout(() => {
+      if (!healthy) void refresh();
+    }, INITIAL_FALLBACK_MS);
+    const poll = setInterval(() => {
+      if (!healthy) void refresh();
+    }, POLL_INTERVAL_MS);
 
     const connect = async () => {
-      setTransport('connecting');
-      if (firstFrameTimer) clearTimeout(firstFrameTimer);
-      firstFrameTimer = setTimeout(() => {
-        if (!cancelled && !hasDataRef.current) void refresh();
-      }, FIRST_FRAME_TIMEOUT_MS);
+      const controller = new AbortController();
+      connection = controller;
+      let timeoutMessage = 'The live stream did not send an initial snapshot';
+      let receivedFingerprint: string | null = null;
+      let receivedSnapshot = false;
+      const arm = (time: number, message: string) => {
+        clearTimeout(deadline);
+        timeoutMessage = message;
+        deadline = setTimeout(() => controller.abort(), time);
+      };
+      const markHealthy = () => {
+        healthy = true;
+        attempt = 0;
+        arm(FRAME_DEADLINE_MS, 'The live stream stopped sending snapshots');
+      };
+      const frame = (text: string) => {
+        let name = '';
+        const lines: string[] = [];
+        for (const line of text.split('\n')) {
+          if (line.startsWith('event:')) name = line.slice(6).trim();
+          else if (line.startsWith('data:')) lines.push(line.slice(5).replace(/^ /, ''));
+        }
+        if (!lines.length) return;
+        let json: unknown;
+        try { json = JSON.parse(lines.join('\n')); } catch { return; }
+        if (name === event + '-error') {
+          throw new Error(nonEmptyRecord(json) && typeof json.message === 'string' ? json.message : 'The live stream could not build a snapshot');
+        }
+        if (name === event) {
+          const body = readRecord(json);
+          if (!body) return;
+          apply(body, true);
+          receivedSnapshot = true;
+          receivedFingerprint = typeof body.fingerprint === 'string' ? body.fingerprint : null;
+          markHealthy();
+        } else if (name === event + '-unchanged' && receivedSnapshot && nonEmptyRecord(json)
+          && receivedFingerprint && json.fingerprint === receivedFingerprint) {
+          const verifiedAt = watermark(json);
+          const same = receivedFingerprint === accepted.current.fingerprint;
+          const canAdvance = same && verifiedAt && !isOlder(verifiedAt, accepted.current.watermark);
+          if (canAdvance) accepted.current.watermark = verifiedAt;
+          update((current) => ({
+            ...current,
+            error: null,
+            transport: 'stream',
+            lastReceivedAt: new Date().toISOString(),
+            lastVerifiedAt: canAdvance ? verifiedAt : current.lastVerifiedAt,
+          }));
+          markHealthy();
+        }
+      };
+
+      arm(FIRST_FRAME_DEADLINE_MS, timeoutMessage);
       try {
         const response = await fetch(streamUrl, {
           headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
           signal: controller.signal,
         });
-        if (!response.ok || !response.body) throw new Error(`SSE ${response.status}`);
+        if (!response.ok || !response.body) throw new Error('Live stream HTTP ' + response.status);
+        if (response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'text/event-stream') {
+          throw new Error('The dashboard returned a non-stream response');
+        }
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
         for (;;) {
           const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+          if (cancelled || activeScope.current !== scope) return;
+          if (controller.signal.aborted) throw new Error(timeoutMessage);
+          if (done) throw new Error('The live stream ended');
+          buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, '\n');
           let boundary = buffer.indexOf('\n\n');
           while (boundary !== -1) {
-            handleFrame(buffer.slice(0, boundary));
+            frame(buffer.slice(0, boundary));
             buffer = buffer.slice(boundary + 2);
             boundary = buffer.indexOf('\n\n');
           }
+          if (buffer.length > 8_000_000) throw new Error('The live stream sent an incomplete snapshot');
         }
-        throw new Error('stream ended');
-      } catch {
-        if (cancelled || controller.signal.aborted) return;
-        setSseConnected(false);
-        setTransport('polling');
-        // Keep the page current while the stream is down.
+      } catch (err) {
+        if (cancelled || activeScope.current !== scope) return;
+        const message = controller.signal.aborted ? timeoutMessage : err instanceof Error ? err.message : 'The live stream disconnected';
+        healthy = false;
+        update((current) => ({ ...current, transport: 'polling', error: message }));
         void refresh();
-        attempt += 1;
-        const delay = Math.min(MAX_BACKOFF_MS, 2_000 * 2 ** Math.min(attempt - 1, 4));
-        if (retryTimer) clearTimeout(retryTimer);
-        retryTimer = setTimeout(() => void connect(), delay);
+        const delay = Math.min(MAX_BACKOFF_MS, 2_000 * 2 ** Math.min(attempt++, 4));
+        retry = setTimeout(() => void connect(), delay);
+      } finally {
+        clearTimeout(deadline);
+        controller.abort();
       }
     };
 
     void connect();
     return () => {
       cancelled = true;
-      controller.abort();
-      if (retryTimer) clearTimeout(retryTimer);
-      if (firstFrameTimer) clearTimeout(firstFrameTimer);
-      setSseConnected(false);
+      connection?.abort();
+      clearTimeout(deadline);
+      clearTimeout(retry);
+      clearTimeout(initialFallback);
+      clearInterval(poll);
     };
-  }, [token, streamUrl, event, scopeKey, apply, refresh]);
+  }, [token, scope, event, streamUrl, reconnectSequence, apply, refresh, readRecord, update]);
 
   // Supabase realtime: a tenant write nudges a refresh (de-duplicated by fingerprint).
   const tablesKey = (realtimeTables || []).join(',');
   useEffect(() => {
-    if (!userId || !tablesKey) return;
+    if (!authorized || !userId || !tablesKey) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const nudge = () => {
       if (timer) clearTimeout(timer);
@@ -281,9 +363,15 @@ export function useLiveResource<T>(options: LiveResourceOptions<T>): LiveResourc
       if (timer) clearTimeout(timer);
       for (const channel of channels) supabase.removeChannel(channel);
     };
-  }, [userId, tablesKey, channelPrefix, refresh]);
+  }, [authorized, userId, tablesKey, channelPrefix, refresh]);
 
-  return { data, state, error, sseConnected, transport, lastVerifiedAt, refresh };
+  const current = snapshot.scope === scope ? snapshot : initialState(empty, authorized);
+  return {
+    ...current,
+    sseConnected: current.transport === 'stream',
+    refresh,
+    reconnect,
+  };
 }
 
 /**
@@ -309,7 +397,7 @@ export interface LiveModel<T> {
   refreshing: boolean;
   /** `force` bypasses the server's single-flight cache. */
   refresh: (force?: boolean) => Promise<void>;
-  /** Manual recovery for the connection-lost state: a forced REST read. */
+  /** Manually restart the stream and request a new REST snapshot. */
   reconnect: () => void;
 }
 
@@ -333,7 +421,7 @@ export function useLiveModel<T extends { generatedAt?: string | null }>(
     }
   }, [refreshResource]);
 
-  const reconnect = useCallback(() => { void refresh(true); }, [refresh]);
+  const reconnect = resource.reconnect;
 
   return {
     data: resource.data,

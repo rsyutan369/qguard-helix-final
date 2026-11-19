@@ -301,7 +301,11 @@ const FACTOR_GUIDE: Record<string, { what: string; evidence: string; action: str
 
 export function buildQuantumRiskIntelligence(inputs: QuantumRiskInputs): QuantumRiskIntelligence {
   const now = inputs.now ?? Date.now()
-  const { snapshot } = inputs
+  const inputSnapshot = inputs.snapshot
+  const snapshot = {
+    ...inputSnapshot,
+    hasData: inputSnapshot.hasData && (inputSnapshot.inventory.cryptoComponents > 0 || inputSnapshot.inventory.certificatesAnalyzed > 0),
+  }
   const portfolio = inputs.assets
 
   /* ---- Headline: read, never computed ------------------------------ */

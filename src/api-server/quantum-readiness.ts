@@ -25,6 +25,7 @@ import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
 import { syncScoreHistory } from './quantum-readiness-history'
 import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
 import { isMissingTable } from './operational-fleet'
+import type { ReportProvenance } from '@/services/reporting/schemas/ReportSchema'
 
 // The per-asset risk/posture derivation, algorithm classification and internet
 // exposure heuristic live in the shared migration intelligence engine so the
@@ -142,11 +143,12 @@ async function safeRows(client: any, table: string, build: (query: any) => any):
  * unavailable so callers can fall back to the fetched-row length.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function exactCount(client: any, table: string, userId: string, refine?: (query: any) => any): Promise<number | null> {
+async function exactCount(client: any, table: string, userId: string): Promise<number | null> {
   try {
     let query = client.from(table).select('id', { count: 'exact', head: true }).eq('user_id', userId)
-    if (table === 'assets') query = query.is('metadata->>consolidatedIntoAssetId', null)
-    if (refine) query = refine(query)
+    if (table === 'assets') {
+      query = query.is('metadata->>consolidatedIntoAssetId', null).or('status.is.null,status.not.in.(archived,deleted)')
+    }
     const { count, error } = await query
     if (error) return null
     return typeof count === 'number' ? count : null
@@ -175,13 +177,34 @@ const snapshotCache = createSingleFlightCache<Awaited<ReturnType<typeof computeS
   SNAPSHOT_CACHE_TTL_MS,
 )
 
-export async function buildSnapshot(token: string, userId: string) {
+type ScannerSnapshot = Awaited<ReturnType<typeof buildScannerIntelligence>>
+type ReportReadCoverage = ReportProvenance['dataCompleteness']
+
+export async function buildSnapshot(token: string, userId: string, reportScanner?: ScannerSnapshot) {
+  if (reportScanner) return computeSnapshot(token, userId, reportScanner)
   return snapshotCache.get(userId, () => computeSnapshot(token, userId))
 }
 
-async function computeSnapshot(token: string, userId: string) {
+async function computeSnapshot(token: string, userId: string, reportScanner?: ScannerSnapshot) {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
+  const reportReadCoverage: ReportReadCoverage = []
+  const readRows: typeof safeRows = !reportScanner ? safeRows : (db, source, build) =>
+    safeRows(db, source, async (query) => {
+      // Count and rows come from the same request. A lower PostgREST row limit
+      // must never turn a capped source into an apparently complete one.
+      const request = build(query)
+      const result = await request.setHeader('Prefer', 'count=exact')
+      const status = result.error ? 'missing' : typeof result.count !== 'number'
+        || result.count > (result.data?.length ?? 0) ? 'partial' : 'available'
+      reportReadCoverage.push({
+        source, status,
+        detail: result.error ? 'Source could not be read.' : typeof result.count !== 'number'
+          ? 'Source did not return an exact row count.'
+          : `${result.data?.length ?? 0} of ${result.count} rows read for the assessment.`,
+      })
+      return result
+    })
 
   // Tenant planning assumptions (rate, hours/week, per-asset values, budget).
   // Falls back to published defaults when unset or when the schema is not yet
@@ -206,20 +229,22 @@ async function computeSnapshot(token: string, userId: string) {
     connectorAccounts,
     vaultFiles,
   ] = await Promise.all([
-    safeRows(client, 'assets', (q) => q.select('id, name, type, environment, region, service_owner, criticality, status, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1500)),
-    safeRows(client, 'asset_relationships', (q) => q.select('*').eq('user_id', userId).limit(3000)),
-    safeRows(client, 'pqc_scan_results', (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(2000)),
-    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, started_at, completed_at, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(180)),
-    safeRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(2000)),
-    safeRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, discovered_at, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(2500)),
-    safeRows(client, 'certificates', (q) => q.select('id, asset_id, name, algorithm, key_size, issuer, not_after, is_quantum_safe, is_expiring_soon, status, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1500)),
-    safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, bit_length, quality_score, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1500)),
-    safeRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, algorithm, severity, risk_score, asset_name, asset_type, host, is_pqc, is_legacy, hndl_risk, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(4000)),
-    safeRows(client, 'security_events', (q) => q.select('id, event_type, severity, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1000)),
-    safeRows(client, 'scanner_alerts', (q) => q.select('id, severity, category, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1200)),
-    safeRows(client, 'scanner_evidence', (q) => q.select('id, observed_algorithm, asset_name, asset_type, host, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(1800)),
-    safeRows(client, 'connector_accounts', (q) => q.select('id, provider, status').eq('user_id', userId).limit(400)),
-    safeRows(client, 'vault_files', (q) => q.select('id, encryption_algorithm, created_at').eq('user_id', userId).limit(800)),
+    readRows(client, 'assets', (q) => q.select('id, name, type, environment, region, service_owner, criticality, status, metadata, created_at, updated_at')
+      .eq('user_id', userId).is('metadata->>consolidatedIntoAssetId', null).or('status.is.null,status.not.in.(archived,deleted)')
+      .order('updated_at', { ascending: false }).order('id').limit(1500)),
+    readRows(client, 'asset_relationships', (q) => q.select('*').eq('user_id', userId).limit(3000)),
+    readRows(client, 'pqc_scan_results', (q) => q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(2000)),
+    readRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, progress, total_assets, scanned_assets, findings_count, started_at, completed_at, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(180)),
+    readRows(client, 'crypto_exposures', (q) => q.select('id, asset_id, exposure_type, severity, description, detected_value, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(2000)),
+    readRows(client, 'crypto_inventory', (q) => q.select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, discovered_at, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(2500)),
+    readRows(client, 'certificates', (q) => q.select('id, asset_id, name, algorithm, key_size, issuer, not_after, is_quantum_safe, is_expiring_soon, status, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(1500)),
+    readRows(client, 'generated_keys', (q) => q.select('id, algorithm, bit_length, quality_score, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1500)),
+    readRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, algorithm, severity, risk_score, asset_name, asset_type, host, is_pqc, is_legacy, hndl_risk, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(4000)),
+    readRows(client, 'security_events', (q) => q.select('id, event_type, severity, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1000)),
+    readRows(client, 'scanner_alerts', (q) => q.select('id, severity, category, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(1200)),
+    readRows(client, 'scanner_evidence', (q) => q.select('id, observed_algorithm, asset_name, asset_type, host, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(1800)),
+    readRows(client, 'connector_accounts', (q) => q.select('id, provider, status').eq('user_id', userId).limit(400)),
+    readRows(client, 'vault_files', (q) => q.select('id, encryption_algorithm, created_at').eq('user_id', userId).limit(800)),
   ])
 
   // Exact tenant-wide counts (HEAD-only, cheap) so headline inventory numbers
@@ -233,8 +258,6 @@ async function computeSnapshot(token: string, userId: string) {
     connectorsCount,
     vaultCount,
     inventoryCount,
-    inventoryVulnerableCount,
-    inventoryPqcCount,
   ] = await Promise.all([
     exactCount(client, 'assets', userId),
     exactCount(client, 'certificates', userId),
@@ -243,8 +266,6 @@ async function computeSnapshot(token: string, userId: string) {
     exactCount(client, 'connector_accounts', userId),
     exactCount(client, 'vault_files', userId),
     exactCount(client, 'crypto_inventory', userId),
-    exactCount(client, 'crypto_inventory', userId, (q) => q.eq('is_vulnerable', true)),
-    exactCount(client, 'crypto_inventory', userId, (q) => q.eq('is_quantum_safe', true)),
   ])
 
   /* ---- DEGRADED-STORE FALLBACK, DISCLOSED ------------------------------
@@ -264,7 +285,7 @@ async function computeSnapshot(token: string, userId: string) {
    * estate is not durable rather than presenting it as though it were.
    */
   let persistence: 'database' | 'memory' = 'database'
-  if (assets.length === 0) {
+  if (!reportScanner && assets.length === 0) {
     const memory = readScannerMemoryRows(userId)
     if (memory.assets.length > 0 || memory.inventory.length > 0) {
       persistence = 'memory'
@@ -300,7 +321,7 @@ async function computeSnapshot(token: string, userId: string) {
   // is a degraded read, not a different estate.
   const estateInDatabase = persistence === 'database' && (assets.length > 0 || cryptoInventory.length > 0)
   const readIntel = async (): Promise<IntelSnapshot> => {
-    const view = (await buildScannerIntelligence(token, userId)) as IntelSnapshot & { mode?: string }
+    const view = (reportScanner || await buildScannerIntelligence(token, userId)) as IntelSnapshot & { mode?: string }
     if (estateInDatabase && view?.mode === 'memory') throw new Error('scanner tables partially unreadable (degraded to memory store)')
     return view
   }
@@ -317,7 +338,7 @@ async function computeSnapshot(token: string, userId: string) {
   const intelSummary = intel?.summary
   const intelSeverity = intel?.severityCounts
   const intelFindings = intel?.findings || []
-  const intelHasData = Boolean(intelSummary && ((intelSummary.totalComponents || 0) > 0 || intelFindings.length > 0))
+  const intelHasData = Boolean(intelSummary && (reportScanner || (intelSummary.totalComponents || 0) > 0 || intelFindings.length > 0))
 
   // ---- Inventory --------------------------------------------------------
   // Exact counts floor the fetched-page lengths; identical for small tenants,
@@ -397,42 +418,12 @@ async function computeSnapshot(token: string, userId: string) {
     hybrid = 0
   }
 
-  // Exact-count floor: when the authoritative crypto_inventory table holds more
-  // components than either the scanner view or the capped detail page (large
-  // estates past the row caps), adopt its exact posture counts — headline CBOM
-  // numbers and the vulnerable/PQC shares must reflect the full tenant universe.
   const intelTotal = intelHasData && intelSummary ? num(intelSummary.totalComponents) : 0
-
-  /*
-   * The exact head-counts (`inventoryCount` and friends) are SQL counts over
-   * every crypto_inventory row, so they include the finding rows the JS
-   * classifier just excluded. Applying them raw would reinstate the inflated
-   * total the moment a tenant grew past the detail-row cap.
-   *
-   * The measured crypto share of the fetched page is therefore carried onto
-   * the exact counts. When the page is not truncated — every tenant inside the
-   * 2,500-row cap — that share is computed over the WHOLE table, so the result
-   * is exact, not an estimate. `cbomTruncated` marks the case where it is not.
-   */
-  const cryptoShare = cryptoInventory.length > 0 ? cryptoComponentRows.length / cryptoInventory.length : 1
+  // Raw inventory includes findings and repeated observations. A row count
+  // cannot establish how many distinct components remain beyond the cap.
   const cbomTruncated = inventoryCount !== null && inventoryCount > cryptoInventory.length
-  const exactCryptoTotal = inventoryCount === null ? null : Math.round(inventoryCount * cryptoShare)
-  const exactVulnerable = inventoryVulnerableCount === null ? null : Math.round(inventoryVulnerableCount * cryptoShare)
-  const exactPqc = inventoryPqcCount === null ? null : Math.round(inventoryPqcCount * cryptoShare)
-
-  const cbomExactDominates = exactCryptoTotal !== null && exactCryptoTotal > Math.max(intelTotal, cryptoComponentRows.length, vulnerable + pqcReady + hybrid)
-  if (cbomExactDominates) {
-    vulnerable = Math.max(vulnerable, exactVulnerable ?? 0)
-    pqcReady = Math.max(pqcReady, exactPqc ?? 0)
-    hybrid = 0
-  }
-
-  const totalCrypto = cbomExactDominates
-    ? Math.max(1, exactCryptoTotal ?? 1)
-    : intelHasData && intelSummary ? Math.max(1, intelTotal) : vulnerable + pqcReady + hybrid
-  const cryptoComponents = cbomExactDominates
-    ? (exactCryptoTotal ?? 0)
-    : intelHasData && intelSummary ? intelTotal : (cryptoComponentRows.length || totalCrypto)
+  const totalCrypto = intelHasData ? intelTotal : vulnerable + pqcReady + hybrid
+  const cryptoComponents = intelHasData ? intelTotal : (cryptoComponentRows.length || totalCrypto)
   const vulnerableComponents = vulnerable
   const pqcReadyComponents = pqcReady + hybrid
 
@@ -578,9 +569,10 @@ async function computeSnapshot(token: string, userId: string) {
   const quantumReadiness = hasData ? blendQuantumReadiness({ pqcAdoption, quantumRisk, runtimeMeasured, postureMeasured }) : 0
 
   const hndlEvents = runtimeEvents.filter((e) => e.hndl_risk === true).length
+  const classicalVaultFiles = vaultFiles.filter((f) => classifyAlgorithm(str(f.encryption_algorithm)) === 'vulnerable').length
   const hndlEventShare = runtimeEvents.length > 0 ? (hndlEvents / runtimeEvents.length) * 100 : 0
   const classicalVaultShare = dataRepositories > 0
-    ? (vaultFiles.filter((f) => classifyAlgorithm(str(f.encryption_algorithm)) !== 'pqc').length / dataRepositories) * 100
+    ? (classicalVaultFiles / dataRepositories) * 100
     : 0
   const hndlRisk = hasData
     ? Math.round(clamp(vulnerableShare * 0.4 + hndlEventShare * 0.25 + classicalVaultShare * 0.2 + internetShare * 0.15))
@@ -866,7 +858,9 @@ async function computeSnapshot(token: string, userId: string) {
   // per-session `100 - findings / assets` ratio — a different metric, drawn
   // under the "Readiness" and "Risk" legends beside scores it did not match.
   // In-memory (degraded) reads are not recorded: they are not durable evidence.
-  const scoreHistory = persistence === 'database'
+  const scoreHistory = reportScanner
+    ? { available: false, reason: 'Report capture reads the current assessment.', points: [] }
+    : persistence === 'database'
     ? await syncScoreHistory(
         client,
         userId,
@@ -937,6 +931,25 @@ async function computeSnapshot(token: string, userId: string) {
 
   return {
     generatedAt: new Date().toISOString(),
+    ...(reportScanner ? {
+      reportReadCoverage: reportReadCoverage.sort((a, b) => a.source.localeCompare(b.source)),
+      reportEvidence: {
+        certificates: certificates.map((row) => ({
+          id: str(row.id), assetId: str(row.asset_id), name: str(row.name), algorithm: str(row.algorithm),
+          keySize: typeof row.key_size === 'number' ? row.key_size : null, issuer: str(row.issuer),
+          notAfter: str(row.not_after), status: str(row.status),
+        })),
+        keys: generatedKeys.map((row) => ({
+          id: str(row.id), algorithm: str(row.algorithm),
+          bitLength: typeof row.bit_length === 'number' ? row.bit_length : null, status: str(row.status),
+        })),
+        scanSessionId: str(scanSessions.find((row) => row.status === 'completed' && row.completed_at)?.id) || null,
+        hndlBasis: {
+          runtimeEvents: runtimeEvents.length, hndlEvents, vaultFiles: vaultFiles.length,
+          classicalVaultFiles, internetFacing, assetCount: assetsAssessed,
+        },
+      },
+    } : {}),
     lastAssessmentAt,
     assessmentProgress,
     evidenceSources,
@@ -983,8 +996,7 @@ async function computeSnapshot(token: string, userId: string) {
        * Provenance for the component total, so any surface can explain why it
        * differs from the raw crypto_inventory row count: findings live in the
        * same table and are counted in pqc_scan_results / crypto_exposures
-       * instead. `cbomTruncated` is true only past the detail-row cap, where
-       * the crypto share is carried onto the exact head-count.
+       * instead. `cbomTruncated` discloses when some source rows were omitted.
        */
       cryptoInventoryRows: cryptoInventory.length,
       findingRowsExcluded,

@@ -5,14 +5,14 @@
  * Everything is vector: charts are drawn as shapes from the block's values, the
  * verification QR is drawn module by module, and no table is silently cut —
  * rows paginate with a repeated header, wide registers move to landscape pages,
- * and the one guard against a runaway cell (a single cell taller than a page)
- * says where the full text lives instead of hiding it.
+ * and long cells continue on the following page.
  *
  * pdf-lib's standard fonts encode CP1252 only; EVERY string goes through
  * `sanitizeForWinAnsi` (see exporters/pdf-text.ts for the crash it prevents).
  */
 import { PDFDocument, StandardFonts, degrees, rgb, type PDFFont, type PDFPage } from 'pdf-lib'
-import type { InventoryReport } from '../../InventoryReport'
+import type { DocumentExportInput } from './shared'
+import { validationLabel } from './shared'
 import type { ReportTable } from '../../schemas/ReportSchema'
 import type { AssetDossier, BarItem, DocumentBlock, DocumentFact, DocumentKpi, StackSegment, TableEmphasis } from '../../ReportDocument'
 import { cellTone } from '../../ReportDocument'
@@ -46,9 +46,6 @@ const LANDSCAPE: [number, number] = [841.89, 595.28]
 const MARGIN = 44
 const TOP_RESERVE = 60
 const BOTTOM_RESERVE = 56
-/** A single cell taller than this many lines is capped, with a pointer to the full text. */
-const MAX_CELL_LINES = 16
-
 /**
  * The shared WinAnsi sanitiser turns "·" into "-", which reads as a minus sign
  * inside figures ("13 critical - 16 high"). This writer uses a spaced bar for
@@ -70,7 +67,6 @@ class PdfWriter {
   size: [number, number] = PORTRAIT
   y = 0
   readonly toc: Array<{ id: string; title: string; pageIndex: number }> = []
-  cappedCells = 0
 
   constructor(doc: PDFDocument, font: PDFFont, bold: PDFFont, mono: PDFFont) {
     this.doc = doc
@@ -328,35 +324,41 @@ class PdfWriter {
         const kind = emphasis.get(i)
         const value = String(cell ?? '')
         const marked = Boolean(kind && value.trim() && value !== '—')
-        let lines = this.wrap(value, size, marked ? this.bold : this.font, widths[i] - pad * 2 - (marked ? 8 : 0))
-        if (lines.length > MAX_CELL_LINES) {
-          lines = lines.slice(0, MAX_CELL_LINES)
-          lines[MAX_CELL_LINES - 1] = `${lines[MAX_CELL_LINES - 1]} ... [full text in the Excel / JSON export]`
-          this.cappedCells += 1
-        }
+        const lines = this.wrap(value, size, marked ? this.bold : this.font, widths[i] - pad * 2 - (marked ? 8 : 0))
         return { lines, kind: marked ? kind : undefined, value }
       })
-      const h = Math.max(1, ...cells.map((cell) => cell.lines.length)) * lineH + pad * 2
-      if (this.y - h < BOTTOM_RESERVE) {
-        this.addPage()
-        header()
-      }
-      if (rowIndex % 2 === 1) this.page.drawRectangle({ x: MARGIN, y: this.y - h, width: this.width, height: h, color: color('#F8FAFC') })
-      let x = MARGIN
-      cells.forEach((cell, i) => {
-        let tx = x + pad
-        if (cell.kind) {
-          const tone = cellTone(cell.kind, cell.value)
-          this.page.drawCircle({ x: tx + 2.6, y: this.y - pad - size / 2 + 0.6, size: 2.6, color: color(toneHex(tone)) })
-          tx += 8
+      const lineCount = Math.max(1, ...cells.map((cell) => cell.lines.length))
+      for (let offset = 0; offset < lineCount;) {
+        const remaining = lineCount - offset
+        let capacity = Math.floor((this.y - BOTTOM_RESERVE - pad * 2) / lineH)
+        // Avoid leaving a fragment of a row at the bottom of a page.
+        if (capacity < Math.min(remaining, 3)) {
+          this.addPage()
+          header()
+          capacity = Math.floor((this.y - BOTTOM_RESERVE - pad * 2) / lineH)
         }
-        cell.lines.forEach((line, li) => {
-          this.page.drawText(line, { x: tx, y: this.y - pad - size + 1 - li * lineH, size, font: cell.kind ? this.bold : this.font, color: color(INK_SOFT) })
+        const visible = Math.min(Math.max(1, capacity), remaining)
+        const h = visible * lineH + pad * 2
+        if (rowIndex % 2 === 1) this.page.drawRectangle({ x: MARGIN, y: this.y - h, width: this.width, height: h, color: color('#F8FAFC') })
+        let x = MARGIN
+        cells.forEach((cell, i) => {
+          let tx = x + pad
+          if (cell.kind) {
+            if (offset === 0) {
+              const tone = cellTone(cell.kind, cell.value)
+              this.page.drawCircle({ x: tx + 2.6, y: this.y - pad - size / 2 + 0.6, size: 2.6, color: color(toneHex(tone)) })
+            }
+            tx += 8
+          }
+          cell.lines.slice(offset, offset + visible).forEach((line, li) => {
+            this.page.drawText(line, { x: tx, y: this.y - pad - size + 1 - li * lineH, size, font: cell.kind ? this.bold : this.font, color: color(INK_SOFT) })
+          })
+          x += widths[i]
         })
-        x += widths[i]
-      })
-      this.y -= h
-      this.page.drawLine({ start: { x: MARGIN, y: this.y }, end: { x: MARGIN + this.width, y: this.y }, thickness: 0.4, color: color(LINE) })
+        this.y -= h
+        this.page.drawLine({ start: { x: MARGIN, y: this.y }, end: { x: MARGIN + this.width, y: this.y }, thickness: 0.4, color: color(LINE) })
+        offset += visible
+      }
     })
     this.y -= 8
     if (opts.note) this.paragraph(opts.note, { size: 7.6, hex: MUTED })
@@ -485,7 +487,7 @@ class PdfWriter {
   }
 }
 
-export async function renderDocumentPdf(report: InventoryReport): Promise<Blob> {
+export async function renderDocumentPdf(report: DocumentExportInput): Promise<Blob> {
   const document = report.document!
   const { branding } = document
   const pdf = await PDFDocument.create()
@@ -548,13 +550,13 @@ export async function renderDocumentPdf(report: InventoryReport): Promise<Blob> 
   })
   // Quality + seal summary, bottom of the cover.
   const v = document.validation
-  const qualityText = san(`Report quality ${VALIDATION_LABEL[v.status]} · ${v.score}/100`)
+  const qualityText = san(validationLabel(v))
   const qualityTone = v.status === 'pass' ? '#16A34A' : v.status === 'warn' ? '#D97706' : '#DC2626'
   w.page.drawRectangle({ x: MARGIN, y: 128, width: bold.widthOfTextAtSize(qualityText, 8.5) + 22, height: 20, color: color(tint(qualityTone, 0.85)), borderColor: color(qualityTone), borderWidth: 0.7 })
   w.page.drawCircle({ x: MARGIN + 8, y: 138, size: 2.8, color: color(qualityTone) })
   w.draw(qualityText, MARGIN + 15, 134.5, 8.5, bold, INK)
   if (report.integrity) {
-    w.draw(`Sealed with ${report.integrity.algorithm} · ${report.integrity.hash.slice(0, 24)}... · verify on the closing page`, MARGIN, 108, 7.8, font, MUTED)
+    w.draw(`${report.integrity.algorithm} digest · ${report.integrity.hash.slice(0, 24)}... · full digest on the closing page`, MARGIN, 108, 7.8, font, MUTED)
   }
   w.page.drawLine({ start: { x: MARGIN, y: 92 }, end: { x: pw - MARGIN, y: 92 }, thickness: 2, color: color(BRAND) })
   w.draw(`${branding.companyName} · ${document.template.audience}`, MARGIN, 76, 8, font, MUTED)
@@ -596,12 +598,12 @@ export async function renderDocumentPdf(report: InventoryReport): Promise<Blob> 
   /* ---------------- Validation, reconciliation & integrity ---------------- */
   w.addPage(PORTRAIT)
   w.sectionHeading('validation', 'Validation, Reconciliation & Integrity')
-  w.badges([{ label: `Report quality ${VALIDATION_LABEL[v.status]} · ${v.score}/100`, tone: qualityTone }])
-  w.table(
+  w.badges([{ label: validationLabel(v), tone: qualityTone }])
+  if (v.checks.length) w.table(
     { title: 'Pre-export validation', columns: ['Check', 'Result', 'Detail'], rows: v.checks.map((c) => [c.check, VALIDATION_LABEL[c.status], c.detail]) },
     { widths: [30, 10, 60], emphasis: [{ column: 1, kind: 'status' }] },
   )
-  w.table(
+  if (report.reconciliation.length) w.table(
     {
       title: 'Reconciliation — dashboard vs exported',
       columns: ['Metric', 'Dashboard', 'Exported', 'Result'],
@@ -609,14 +611,12 @@ export async function renderDocumentPdf(report: InventoryReport): Promise<Blob> 
     },
     { widths: [58, 14, 14, 14], emphasis: [{ column: 3, kind: 'status' }] },
   )
-  w.subHeading('Evidence & provenance')
-  w.bullets(document.provenance)
-  if (w.cappedCells > 0) {
-    w.callout('#D97706', 'Long cells shortened in this PDF', `${w.cappedCells} table cell(s) exceeded ${MAX_CELL_LINES} lines and were shortened here. The Excel and JSON exports carry every cell in full.`)
+  if (document.provenance.length) {
+    w.subHeading('Evidence & provenance')
+    w.bullets(document.provenance)
   }
-
-  w.subHeading('Integrity seal')
   if (report.integrity) {
+    w.subHeading('Integrity digest')
     const url = verificationUrl(report)
     w.ensure(150)
     const top = w.y
@@ -625,9 +625,9 @@ export async function renderDocumentPdf(report: InventoryReport): Promise<Blob> 
     const lines: Array<[string, string, PDFFont]> = [
       ['Algorithm', report.integrity.algorithm, font],
       ['Digest', report.integrity.hash, mono],
-      ['Signed at', utc(report.integrity.signedAt), font],
+      ['Recorded at', utc(report.integrity.signedAt), font],
       ['Report ID', report.meta.reportId || '—', font],
-      ['Verify at', url ? `${url.split('?')[0]}?token=...` : 'Verification URL unavailable', font],
+      ...(url ? [['Digest reference', url.split('?')[0], font] as [string, string, PDFFont]] : []),
     ]
     let ly = top
     for (const [label, value, face] of lines) {
@@ -637,12 +637,10 @@ export async function renderDocumentPdf(report: InventoryReport): Promise<Blob> 
       ly -= 16 + valueLines.length * 10.5
     }
     w.y = Math.min(ly, top - 128) - 6
-    w.paragraph('Scan the code or open the verification page: the SHA3-256 digest it decodes must equal the digest printed above. Any alteration of this document changes the digest.', { size: 8, hex: MUTED })
-  } else {
-    w.paragraph('This document was not sealed at generation time.', { size: 8.6, hex: MUTED })
+    w.paragraph('The digest identifies the captured report model. Compare it with the report record held by your organization.', { size: 8, hex: MUTED })
   }
   w.paragraph(
-    `Prepared by ${report.meta.generatedBy || 'QGuard Helix'}${branding.reportOwner ? ` for ${branding.reportOwner}` : ''}${branding.reviewer ? `; reviewer ${branding.reviewer}` : ''}. Generated ${utc(report.meta.generatedAt)} from evidence current to ${utc(report.meta.dataAsOf || null)}.`,
+    `Prepared by ${report.meta.generatedBy || 'QGuard Helix'}${branding.reportOwner ? ` for ${branding.reportOwner}` : ''}${branding.reviewer ? `; reviewer ${branding.reviewer}` : ''}. Generated ${utc(report.meta.generatedAt)}. Latest evidence timestamp: ${utc(report.meta.dataAsOf)}.`,
     { size: 8.6, hex: INK_SOFT },
   )
 

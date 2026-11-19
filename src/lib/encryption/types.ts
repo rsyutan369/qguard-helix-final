@@ -316,7 +316,7 @@ export interface DataProtectionPosture {
   /** Broken by classical cryptanalysis; quantum is irrelevant to the verdict. */
   brokenAlgorithms: number
 
-  /** Share of symmetric/hash observations meeting the CNSA 2.0 bar. */
+  /** Share of identified cipher and hash labels matching CNSA 2.0 algorithm families. */
   cnsa2CompliancePercent: number
   /** Denominator behind the percentage above, stated so it can be checked. */
   cnsa2Assessed: number

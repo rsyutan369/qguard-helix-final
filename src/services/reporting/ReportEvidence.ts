@@ -588,32 +588,28 @@ export function buildDependencyAnalysis(snapshot: QuantumReadinessSnapshot) {
   const { nodes, edges } = snapshot.exposureGraph;
   const labelOf = new Map(nodes.map((n) => [n.id, n.label]));
   const neighbours = (id: string) => edges.filter((e) => e.source === id || e.target === id).map((e) => (e.source === id ? e.target : e.source));
-  // Canonical internet-facing transport blast radius. Every hop that terminates
-  // or forwards TLS is exposed to the same legacy transport cryptography, so a
-  // single public endpoint's compromise propagates through the whole delivery
-  // chain. Used when no explicit dependency edges were discovered (#7).
-  const canonicalChain = (label: string): string =>
-    `Users -> CDN -> Load Balancer -> TLS Certificate (${label}) -> Web Server -> Application -> Database -> Encrypted Backup`;
+  /* Only RECORDED relationships become a chain. This used to print a stock
+     "Users -> CDN -> Load Balancer -> … -> Database -> Encrypted Backup" path
+     with a blast radius of 7 for every asset that had no edges — a CDN, a load
+     balancer and a database nobody had discovered, presented as the asset's
+     dependency chain. An asset with no recorded relationships now says so, and
+     its blast radius is 0 recorded rather than 7 assumed. */
   const seeds = nodes.filter((n) => n.internetFacing || n.riskScore >= 60).slice(0, 6);
   const chains = seeds.map((node) => {
     const deps = neighbours(node.id).map((id) => labelOf.get(id)).filter(Boolean) as string[];
     if (deps.length) {
-      const path = [node.label, ...deps.slice(0, 6)].join(' -> ') + ' -> Users';
+      const path = [node.label, ...deps.slice(0, 6)].join(' -> ');
       return { path, blastRadius: deps.length, complexity: deps.length > 3 ? 'High' : deps.length > 1 ? 'Medium' : 'Low' };
     }
-    // No explicit edges recorded for this public asset → inferred topology.
-    return { path: canonicalChain(node.label), blastRadius: 7, complexity: 'High' };
+    return { path: `${node.label} (no dependency relationships recorded)`, blastRadius: 0, complexity: 'Not measured' };
   });
-  const finalChains = chains.length
-    ? chains
-    : [{ path: canonicalChain(nodes[0]?.label || 'internet-facing endpoint'), blastRadius: 7, complexity: 'High' }];
   const failurePoints = nodes.filter((n) => n.riskScore >= 70).map((n) => n.label).slice(0, 8);
-  const inferred = edges.length === 0;
+  const unmapped = chains.filter((chain) => chain.blastRadius === 0).length;
   return {
-    chains: finalChains,
-    failurePoints: failurePoints.length ? failurePoints : ['TLS Certificate', 'Load Balancer', 'Web Server', 'Application'],
+    chains,
+    failurePoints,
     summary: nodes.length
-      ? `${nodes.length} asset(s) and ${edges.length} explicit dependency relationship(s) analysed.${inferred ? ' No explicit dependency edges were discovered, so a canonical internet-facing transport topology (Users → CDN → Load Balancer → TLS Certificate → Web Server → Application → Database → Backup) is shown as the inferred blast radius: every hop that terminates or forwards TLS inherits the same legacy transport-cryptography exposure.' : ''} ${failurePoints.length || 3} high-risk failure point(s) identified for migration sequencing.`
+      ? `${nodes.length} asset(s) and ${edges.length} recorded dependency relationship(s) analysed.${unmapped ? ` ${unmapped} high-exposure asset(s) have no recorded relationships, so their blast radius is not measured — map upstream and downstream dependencies to size it.` : ''} ${failurePoints.length ? `${failurePoints.length} asset(s) at risk 70+ are the failure points to sequence first.` : 'No asset is at risk 70 or above.'}`
       : `${EVIDENCE_UNAVAILABLE}. No dependency telemetry recorded. Connect asset relationships to map real blast radius.`,
   };
 }

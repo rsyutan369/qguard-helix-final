@@ -251,6 +251,8 @@ async function runtimeChecks() {
           QGUARD_AGENT_ID: 'scope-check',
           QGUARD_AGENT_TOKEN: 'scope-check-token',
           QGUARD_AGENT_ROLE: role,
+          QGUARD_ENVIRONMENT: 'lab',
+          QGUARD_STATE_DIR: path.join(lab, 'state'),
           QGUARD_NATIVE_RUNTIME_ENABLED: 'false',
           QGUARD_ENABLE_REMEDIATION: 'false',
           QGUARD_ENABLE_CONFIG_PATCHES: 'false',

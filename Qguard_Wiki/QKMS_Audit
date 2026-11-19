@@ -1,0 +1,735 @@
+# MASTER AUDIT PROMPT: QGUARD HELIX — QUANTUM KEY MANAGEMENT SYSTEM (QKMS)
+## Deep Technical Audit, NIST Compliance Validation, Backend Integration & Data Accuracy Verification
+
+**Project:** QGUARD HELIX  
+**Module:** Quantum Key Management System (QKMS)  
+**Audit Type:** Comprehensive Technical, Cryptographic, Security, Compliance, Backend, Frontend, and Functional Audit.
+
+### TARGET PAGES
+
+Conduct a comprehensive audit of all seven QKMS pages:
+
+1. QKMS Overview
+   http://localhost:3000/dashboard/qkms/overview
+
+2. QKMS Inventory
+   http://localhost:3000/dashboard/qkms/inventory
+
+3. QKMS Lifecycle
+   http://localhost:3000/dashboard/qkms/lifecycle
+
+4. QKMS Governance
+   http://localhost:3000/dashboard/qkms/governance
+
+5. QKMS Rotation
+   http://localhost:3000/dashboard/qkms/rotation
+
+6. QKMS Readiness
+   http://localhost:3000/dashboard/qkms/readiness
+
+7. QKMS Risk Analysis
+   http://localhost:3000/dashboard/qkms/risk-analysis
+
+---
+
+# 1. PRIMARY OBJECTIVE
+
+Perform a deep, end-to-end engineering audit of the entire QGUARD HELIX Quantum Key Management System.
+
+Determine whether all seven QKMS pages are:
+
+- Properly implemented.
+- Correctly connected to their backend services.
+- Properly wired through frontend hooks and API integrations.
+- Receiving accurate and up-to-date data.
+- Correctly synchronized with the Supabase database.
+- Using legitimate backend calculations rather than fabricated or hardcoded results.
+- Properly integrated with Server-Sent Events (SSE), WebSockets, or other implemented real-time mechanisms.
+- Following appropriate cryptographic key management practices.
+- Aligned with applicable NIST standards and relevant government cybersecurity requirements.
+- Secure, consistent, reliable, and suitable for enterprise use.
+
+**CRITICAL REQUIREMENT:**
+
+Do not limit the audit to the visual interface.
+
+Inspect the actual source code, backend business logic, database schemas, API endpoints, cryptographic implementations, event pipelines, and data persistence mechanisms.
+
+A dashboard displaying a successful status does not prove that the underlying operation actually succeeded.
+
+Every displayed status, metric, calculation, alert, and result must be traceable to a legitimate source of data or an independently verifiable backend operation.
+
+Do not assume that an implementation is compliant simply because it displays NIST terminology or references a FIPS standard.
+
+---
+
+# 2. PHASE ONE — COMPLETE SOURCE CODE AND ARCHITECTURE AUDIT
+
+Before modifying anything, map the complete QKMS implementation.
+
+Inspect:
+
+### Frontend
+- All seven page components.
+- Shared QKMS components.
+- React hooks.
+- Custom data-fetching hooks.
+- State management.
+- API service layers.
+- Loading and error states.
+- Forms and validation.
+- Tables, charts, graphs, and metrics.
+- Modal dialogs and configuration panels.
+- Action buttons and event handlers.
+- Authentication and authorization checks.
+
+### Backend
+- Express API endpoints.
+- QKMS service implementations.
+- Business logic and calculation engines.
+- Cryptographic service integrations.
+- Key generation and management services.
+- Key storage and retrieval.
+- Rotation and lifecycle services.
+- Risk analysis engines.
+- Governance and policy enforcement.
+- Background jobs and scheduled processes.
+- SSE and WebSocket event publishers.
+- Error handling and audit logging.
+
+### Database
+Inspect the actual Supabase implementation:
+
+- QKMS-related tables.
+- Database schemas.
+- Relationships and foreign keys.
+- Row Level Security (RLS) policies.
+- Database functions and triggers.
+- Key metadata persistence.
+- Lifecycle records.
+- Rotation history.
+- Governance records.
+- Risk assessment history.
+- Readiness assessment records.
+- Audit logs.
+
+Verify that frontend requests use the correct authenticated user context and that backend database operations enforce appropriate authorization and RLS policies.
+
+Do not introduce alternative or duplicate data sources without a clear architectural reason.
+
+---
+
+# 3. PHASE TWO — BACKEND-TO-FRONTEND DATA INTEGRITY
+
+This is one of the most important parts of the audit.
+
+Verify that every QKMS page obtains its information from the correct backend service and actual persisted records.
+
+For every displayed data element, trace:
+
+Frontend component → React hook → API request → Backend controller/service → Database or cryptographic engine → Response → Frontend rendering.
+
+Validate:
+
+1. Is the correct API endpoint being called?
+2. Is the frontend using the correct hook?
+3. Does the backend execute the intended business logic?
+4. Is the returned data derived from actual records?
+5. Are calculations performed correctly?
+6. Are database writes persisted successfully?
+7. Are errors handled properly?
+8. Does the frontend refresh after successful operations?
+9. Are stale or cached values being displayed incorrectly?
+10. Are user-specific records properly isolated?
+
+### Real-Time Data and SSE Audit
+
+Inspect all existing SSE and WebSocket implementations.
+
+Verify:
+
+- Correct event subscription.
+- Correct event source.
+- Event authentication and authorization.
+- User and organization scoping.
+- Event payload validation.
+- Event delivery and ordering.
+- Connection lifecycle management.
+- Reconnection behavior.
+- Heartbeat handling.
+- Duplicate event prevention.
+- Frontend state synchronization.
+- Proper cleanup when components unmount.
+
+Where real-time updates are supported, ensure that relevant QKMS changes are reflected in the frontend without requiring a manual page refresh.
+
+Examples:
+
+- New key registration updates inventory.
+- Key rotation updates lifecycle status.
+- Revoked keys are no longer displayed as active.
+- Governance policy changes update compliance indicators.
+- Risk reassessments update risk dashboards.
+- Readiness assessments update readiness metrics.
+
+Do not introduce SSE or WebSockets unnecessarily if an existing architecture already provides reliable updates. Use the appropriate mechanism consistently.
+
+**Never simulate real-time activity using random values, artificial timers, fabricated event streams, or frontend-only state changes.**
+
+---
+
+# 4. PHASE THREE — PAGE-BY-PAGE FUNCTIONAL AUDIT
+
+## A. QKMS Overview
+
+URL: `/dashboard/qkms/overview`
+
+Audit the main QKMS command center.
+
+Verify:
+
+- Total managed keys.
+- Active keys.
+- Pending keys.
+- Expired keys.
+- Revoked keys.
+- Keys approaching expiration.
+- Keys requiring rotation.
+- Cryptographic algorithm distribution.
+- Key lifecycle status.
+- Risk indicators.
+- Governance status.
+- Compliance metrics.
+- Operational alerts.
+- Recent key management activities.
+
+Validate that all summary metrics are calculated from actual underlying records.
+
+Check whether charts and graphs reflect the same data as the inventory, lifecycle, governance, and rotation pages.
+
+Identify and fix inconsistent totals, duplicated records, incorrect aggregations, and misleading status indicators.
+
+## B. QKMS Inventory
+
+URL: `/dashboard/qkms/inventory`
+
+Audit the complete cryptographic key inventory.
+
+Verify:
+
+- Key registration.
+- Key identification.
+- Key type and classification.
+- Cryptographic algorithm.
+- Security strength and parameter sets.
+- Key ownership.
+- Associated assets and applications.
+- Key purpose and usage.
+- Creation date.
+- Activation date.
+- Expiration date.
+- Key status.
+- Storage location or HSM/KMS reference.
+- Key versioning.
+- Access permissions.
+- Export and reporting capabilities.
+
+Verify that the inventory distinguishes:
+
+- Public keys.
+- Private keys.
+- Symmetric keys.
+- Key encryption keys (KEKs).
+- Data encryption keys (DEKs).
+- Key encapsulation mechanisms.
+- Digital signature keys.
+
+Ensure that private and symmetric key material is never exposed through ordinary inventory APIs, logs, frontend responses, or browser storage.
+
+The inventory should contain appropriately protected key metadata and references, not unnecessarily expose sensitive key material.
+
+## C. QKMS Lifecycle
+
+URL: `/dashboard/qkms/lifecycle`
+
+Audit the complete cryptographic key lifecycle.
+
+Verify the implementation of:
+
+- Key generation.
+- Registration.
+- Provisioning.
+- Activation.
+- Distribution.
+- Storage.
+- Usage.
+- Renewal.
+- Rotation.
+- Suspension.
+- Revocation.
+- Expiration.
+- Decommissioning.
+- Destruction.
+
+Validate lifecycle state transitions and enforce legitimate transition rules.
+
+Ensure that expired or revoked keys cannot silently return to active status.
+
+Verify that destruction operations are handled safely and that key destruction events are recorded appropriately.
+
+Confirm that lifecycle history is persistent, traceable, and associated with authorized users or services.
+
+## D. QKMS Governance
+
+URL: `/dashboard/qkms/governance`
+
+Audit all key management governance and policy enforcement capabilities.
+
+Verify:
+
+- Key management policies.
+- Cryptographic algorithm policies.
+- Key usage restrictions.
+- Access control.
+- Role-based permissions.
+- Separation of duties.
+- Approval workflows.
+- Key ownership and accountability.
+- Policy enforcement.
+- Governance exceptions.
+- Audit trails.
+- Compliance reporting.
+- Policy violation alerts.
+
+Check whether governance indicators reflect actual policy evaluation results.
+
+A displayed compliant status must be backed by identifiable controls, evidence, and validation results.
+
+Do not equate the existence of a policy document with actual policy enforcement.
+
+## E. QKMS Rotation
+
+URL: `/dashboard/qkms/rotation`
+
+Perform a detailed audit of cryptographic key rotation functionality.
+
+Verify:
+
+- Rotation schedules.
+- Rotation intervals.
+- Keys approaching rotation.
+- Manual rotation.
+- Automated rotation, where implemented.
+- Rotation authorization.
+- Rotation execution.
+- Key version management.
+- Key replacement.
+- Application dependency updates.
+- Rotation success and failure states.
+- Rollback or recovery procedures.
+- Rotation history.
+- Rotation notifications.
+
+IMPORTANT:
+
+A rotation must not be marked successful merely because a frontend button was clicked.
+
+Verify that the backend actually executes the authorized rotation workflow, securely generates or provisions the replacement key, updates the appropriate key references, and records the operation.
+
+Validate that existing encrypted data and dependent applications remain accessible according to the applicable key versioning and re-encryption strategy.
+
+Never overwrite or destroy an old key before its dependencies and recovery requirements have been safely addressed.
+
+## F. QKMS Readiness
+
+URL: `/dashboard/qkms/readiness`
+
+Audit the complete post-quantum cryptographic readiness assessment.
+
+Verify:
+
+- Cryptographic asset coverage.
+- Legacy algorithm identification.
+- RSA and ECC exposure.
+- Post-quantum algorithm availability.
+- Hybrid cryptographic support.
+- Key management readiness.
+- Migration readiness.
+- Key lifecycle readiness.
+- Governance readiness.
+- Cryptographic agility.
+- Dependency assessment.
+- Unresolved security findings.
+
+Readiness scores must be calculated from real assessment criteria and actual evidence.
+
+Document the scoring methodology, including:
+
+- Assessment criteria.
+- Weighting.
+- Evidence requirements.
+- Pass/fail conditions.
+- Missing data treatment.
+- Assessment timestamp.
+- Assessment version.
+
+Do not generate arbitrary readiness percentages or automatically assign full readiness based solely on the presence of PQC algorithm names.
+
+## G. QKMS Risk Analysis
+
+URL: `/dashboard/qkms/risk-analysis`
+
+Audit the risk assessment and cryptographic threat intelligence engine.
+
+Verify:
+
+- Cryptographic risk identification.
+- Weak or deprecated algorithm detection.
+- Key exposure assessment.
+- Key lifecycle violations.
+- Excessive key lifetime.
+- Rotation failures.
+- Unprotected key material.
+- Weak access controls.
+- Algorithm migration gaps.
+- Quantum-related risk exposure.
+- Harvest Now, Decrypt Later considerations.
+- Risk prioritization.
+- Remediation recommendations.
+- Risk assessment history.
+
+Validate the scoring methodology.
+
+Every risk score must have a documented basis, including severity, likelihood, exposure, asset criticality, and available evidence, where applicable.
+
+Ensure that the system distinguishes theoretical quantum threats from currently demonstrated vulnerabilities.
+
+Do not present speculative quantum timelines as established facts.
+
+Risk findings must be actionable, traceable, and linked to the affected cryptographic assets whenever possible.
+
+---
+
+# 5. PHASE FOUR — NIST AND GOVERNMENT STANDARDS ALIGNMENT
+
+Perform a standards-based technical review of the QKMS architecture and implementation.
+
+Use authoritative NIST publications and applicable government guidance as the primary references.
+
+### A. NIST Cryptographic Key Management
+
+Review relevant guidance, including:
+
+- NIST SP 800-57 Part 1 — Recommendation for Key Management.
+- NIST SP 800-57 Part 2 — Best Practices for Key Management Organizations.
+- NIST SP 800-57 Part 3 — Application-Specific Key Management Guidance.
+- NIST SP 800-130 — Framework for Designing Cryptographic Key Management Systems.
+- NIST SP 800-152 — A Profile for U.S. Federal Cryptographic Key Management Systems.
+
+Evaluate whether QKMS implements appropriate key lifecycle, key protection, key ownership, access management, rotation, revocation, and auditability practices.
+
+### B. Post-Quantum Cryptography Standards
+
+Validate the algorithm definitions and terminology against:
+
+- FIPS 203 — Module-Lattice-Based Key-Encapsulation Mechanism Standard (ML-KEM).
+- FIPS 204 — Module-Lattice-Based Digital Signature Standard (ML-DSA).
+- FIPS 205 — Stateless Hash-Based Digital Signature Standard (SLH-DSA).
+
+Verify:
+
+- Correct algorithm classification.
+- Correct parameter sets.
+- Correct usage.
+- Key generation and storage practices.
+- Key encapsulation and decapsulation workflows.
+- Digital signature generation and verification.
+- Hybrid cryptographic integration.
+- Algorithm lifecycle and migration considerations.
+
+IMPORTANT:
+
+ML-KEM is a key encapsulation mechanism, not a digital signature algorithm.
+
+ML-DSA and SLH-DSA are digital signature algorithms.
+
+Do not classify these algorithms incorrectly.
+
+### C. Additional Security Standards
+
+Where relevant, assess:
+
+- NIST SP 800-131A — Transitioning the Use of Cryptographic Algorithms and Key Lengths.
+- NIST SP 800-53 — Security and Privacy Controls.
+- NIST SP 800-63 — Digital Identity Guidelines, where applicable.
+- NIST SP 800-218 — Secure Software Development Framework.
+- FIPS 140-3 — Security Requirements for Cryptographic Modules.
+- Applicable CISA post-quantum cryptography migration guidance.
+- Applicable NSA CNSA 2.0 requirements, where relevant to the intended deployment.
+
+Do not assume every government requirement applies to every organization. Clearly identify the intended scope and applicability.
+
+### D. Standards Compliance Assessment
+
+For every applicable standard, provide:
+
+1. Standard identifier.
+2. Relevant security requirement.
+3. Expected implementation.
+4. Actual QKMS implementation.
+5. Supporting code or configuration evidence.
+6. Identified gaps.
+7. Recommended remediation.
+8. Verification method.
+
+Classify each control as:
+
+- Implemented and verified.
+- Partially implemented.
+- Not implemented.
+- Not applicable.
+- Unable to verify.
+
+Do not claim NIST certification, FIPS validation, or government approval unless independently established through the appropriate validation process.
+
+Distinguish standards alignment, implementation conformance, cryptographic module validation, and formal certification.
+
+---
+
+# 6. PHASE FIVE — CRYPTOGRAPHIC IMPLEMENTATION AND KEY SECURITY
+
+Perform a deeper technical review of the actual cryptographic implementation.
+
+Inspect:
+
+- Cryptographic libraries.
+- Algorithm providers.
+- Random number generation.
+- Entropy sources.
+- Key generation.
+- Key derivation.
+- Key wrapping.
+- Key storage.
+- Key import and export.
+- Key access authorization.
+- Secure memory handling.
+- Key destruction.
+- Cryptographic error handling.
+
+Evaluate:
+
+- Whether approved and appropriately maintained cryptographic implementations are used.
+- Whether cryptographic operations are performed in the correct security boundaries.
+- Whether secrets are protected against accidental exposure.
+- Whether key material is transmitted securely.
+- Whether algorithm parameters match their intended security levels.
+- Whether key metadata is separated from key material.
+- Whether cryptographic operations are auditable.
+
+If HSM, KMS, TPM, or external key providers are integrated, verify their actual operational connections and capabilities.
+
+Clearly distinguish implemented hardware-backed protection from software-based key storage.
+
+Never claim HSM-backed protection if no actual HSM integration exists.
+
+---
+
+# 7. PHASE SIX — FUNCTIONALITY AND USER INTERACTION AUDIT
+
+Test every feature, tab, button, form, menu, filter, and action across all seven pages.
+
+For every action, verify:
+
+- Correct click handling.
+- Correct input validation.
+- Correct permissions.
+- Correct API invocation.
+- Correct backend execution.
+- Correct database persistence.
+- Correct success and error messages.
+- Correct frontend state updates.
+- Correct audit logging.
+
+Test the complete user workflow rather than isolated UI elements.
+
+Examples:
+
+1. Register a key and verify that it appears in inventory.
+2. Activate a key and verify its lifecycle state.
+3. Schedule a rotation and verify that the schedule persists.
+4. Execute an authorized rotation and verify the actual result.
+5. Revoke a key and verify that all relevant views update.
+6. Update a governance policy and verify policy evaluation.
+7. Run a readiness assessment and verify the underlying calculation.
+8. Generate a risk assessment and verify the supporting findings.
+9. Refresh the page and verify that persisted records remain correct.
+
+Use a controlled test environment and non-production test keys.
+
+Do not perform destructive testing against production keys or customer data.
+
+---
+
+# 8. PHASE SEVEN — SECURITY, RELIABILITY AND DATA CONSISTENCY
+
+Perform an additional security and reliability review.
+
+Check for:
+
+- Broken authentication.
+- Authorization bypass.
+- Missing RLS policies.
+- Cross-tenant data leakage.
+- Insecure API endpoints.
+- Exposed private keys or secrets.
+- Insecure key export.
+- Improper error messages.
+- Missing audit trails.
+- Unauthorized key rotation.
+- Race conditions.
+- Duplicate key records.
+- Inconsistent lifecycle transitions.
+- Stale cached metrics.
+- Invalid risk calculations.
+- Missing event subscriptions.
+- Failed background jobs.
+- Unhandled backend exceptions.
+
+Ensure that privileged QKMS operations require appropriate authorization and approval.
+
+Sensitive operations must be protected through appropriate controls such as role-based access, separation of duties, approval workflows, and tamper-evident audit records, where required by the security design.
+
+---
+
+# 9. PHASE EIGHT — CROSS-PAGE DATA CONSISTENCY
+
+All seven QKMS pages must represent a consistent view of the same underlying system.
+
+Verify that:
+
+- Overview totals match inventory records.
+- Inventory statuses match lifecycle records.
+- Lifecycle history matches rotation and revocation records.
+- Rotation schedules match the actual key metadata.
+- Governance results reflect actual policy evaluations.
+- Readiness scores reflect actual assessment evidence.
+- Risk findings correspond to actual assets and security conditions.
+
+Create cross-page consistency tests.
+
+Example:
+
+If a key is successfully revoked, the system must correctly reflect that change in inventory, lifecycle history, overview metrics, governance checks, and risk analysis wherever relevant.
+
+There must be no conflicting or contradictory key statuses across the QKMS platform.
+
+---
+
+# 10. PHASE NINE — FIX AND VERIFY ALL IDENTIFIED ISSUES
+
+After completing the audit, do not stop at providing observations.
+
+Fix all confirmed issues within the requested scope.
+
+Prioritize:
+
+1. Cryptographic security vulnerabilities.
+2. Incorrect cryptographic implementations.
+3. NIST standards misalignment.
+4. Incorrect key lifecycle behavior.
+5. Backend and frontend integration failures.
+6. Incorrect or fabricated metrics.
+7. Database and RLS issues.
+8. SSE and realtime synchronization failures.
+9. Broken functionality.
+10. UI consistency and usability issues.
+
+Preserve the existing architecture and established application conventions.
+
+Do not unnecessarily rewrite working modules or introduce duplicate services.
+
+Avoid hardcoded fallback values that make broken integrations appear functional.
+
+If an external dependency or infrastructure limitation prevents verification, document the limitation instead of simulating a successful result.
+
+---
+
+# 11. REQUIRED AUDIT REPORT
+
+Provide a detailed technical audit report covering all seven pages.
+
+For each page, report:
+
+| Audit Area | Required Result |
+|---|---|
+| Frontend implementation | Verified findings |
+| Backend integration | Verified findings |
+| React hooks | Verified findings |
+| API connections | Verified findings |
+| SSE / realtime | Verified findings |
+| Database persistence | Verified findings |
+| Data accuracy | Verified findings |
+| Cryptographic correctness | Verified findings |
+| NIST alignment | Verified findings |
+| Functional actions | Verified findings |
+| Security controls | Verified findings |
+
+Also provide:
+
+### A. Executive Summary
+Overall QKMS health, major findings, and remediation priorities.
+
+### B. Standards Compliance Matrix
+Map applicable NIST and government controls against actual implementation evidence.
+
+### C. Backend-to-Frontend Traceability
+Document the actual routes, hooks, API endpoints, services, database tables, and event mechanisms involved.
+
+### D. Data Accuracy Report
+Identify inaccurate metrics, hardcoded values, stale information, incorrect calculations, and inconsistent records.
+
+### E. Security Findings
+Document vulnerabilities, their severity, evidence, and remediation.
+
+### F. Fixes Implemented
+List every issue corrected and the files or modules affected.
+
+### G. Remaining Limitations
+Clearly document anything that cannot yet be verified or requires external infrastructure, certification, hardware, or operational testing.
+
+### H. Test Results
+Provide actual test execution results, including failed tests and unresolved issues.
+
+---
+
+# 12. FINAL ACCEPTANCE CRITERIA
+
+The audit is complete only when:
+
+1. All seven QKMS pages have been individually audited.
+2. Every important frontend component is traced to its actual backend implementation.
+3. Hooks and API integrations work correctly.
+4. Real-time updates operate correctly where implemented.
+5. All displayed metrics are derived from legitimate data.
+6. Key lifecycle transitions follow valid security rules.
+7. Rotation operations execute correctly and securely.
+8. Governance results are supported by actual policy evaluation.
+9. Readiness and risk scores use documented, evidence-based methodologies.
+10. Cryptographic terminology and algorithm implementations are technically correct.
+11. Applicable NIST requirements have been evaluated against actual implementation evidence.
+12. Security vulnerabilities and confirmed functional issues have been remediated.
+13. Cross-page data consistency has been verified.
+14. All tested functionality passes the relevant validation criteria.
+15. No fake telemetry, fabricated success messages, random metrics, or misleading compliance indicators remain.
+
+**FINAL INSTRUCTION:**
+
+Treat this as a real enterprise cryptographic key management system audit, not a frontend UI review.
+
+Be technically rigorous, evidence-driven, and conservative with security and compliance claims.
+
+The objective is to ensure that QGUARD HELIX QKMS operates as a reliable, secure, auditable, and standards-aligned cryptographic key management platform.
+
+**NO MOCK DATA. NO FAKE TELEMETRY. NO FABRICATED COMPLIANCE. NO UNVERIFIED SUCCESS STATUSES.**
+
+Every result must be backed by actual implementation, persisted data, cryptographic operations, or verifiable evidence.

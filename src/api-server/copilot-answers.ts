@@ -1052,19 +1052,19 @@ function composeHndlReduction(d: FocusInput): FocusAnswer {
 /* Compliance                                                          */
 /* ------------------------------------------------------------------ */
 
-const METHODOLOGY_NOTE = 'Derived from your live cryptographic posture (CBOM, scans, certification evidence) — a readiness signal, not a formal audit.'
+const METHODOLOGY_NOTE = 'Review the scope and coverage of your mapped controls. The observations do not establish compliance or module validation.'
 
 function composeCompliance(d: FocusInput): FocusAnswer {
   const status = d.tool('getComplianceStatus')
   if (!status) return unavailable(d, 'compliance_posture', 'getComplianceStatus', 'the Compliance Center', 'compliance', 'your compliance posture')
   const frameworks = arr<{ framework: string; status: string; signal: string }>(status.data.frameworks)
-  const aligned = frameworks.filter((f) => f.status === 'aligned')
+  const aligned = frameworks.filter((f) => f.status === 'mapped checks met')
   const cnsa = d.tool('getCNSACompliance')
   const nist = d.tool('getNISTScore')
   const cert = d.tool('getCertificationStatus')
   const headline =
-    `${aligned.length} of ${frameworks.length} tracked frameworks are aligned: ${list(frameworks.map((f) => `${f.framework.split(' (')[0]} — ${f.status}`), 4)}. ` +
-    `${cnsa && cnsa.data.dataAvailable === true ? `CNSA 2.0: ${num(cnsa.data.met)}/${num(cnsa.data.total)} checks met. ` : ''}` +
+    `Governance evidence: ${list(frameworks.map((f) => `${f.framework.split(' (')[0]} — ${f.status}`), 4)}. ` +
+    `${cnsa && cnsa.data.dataAvailable === true ? `CNSA 2.0: ${num(cnsa.data.met)}/${num(cnsa.data.total)} selected algorithm signals observed. ` : ''}` +
     `${cert ? (cert.data.certified === true ? 'Quantum Trust Certification is active. ' : 'Quantum Trust Certification has not been issued. ') : ''}` +
     METHODOLOGY_NOTE
   return {
@@ -1072,13 +1072,13 @@ function composeCompliance(d: FocusInput): FocusAnswer {
     headline: headline.replace(/\s+/g, ' ').trim(),
     keyFindings: [
       ...(nist ? [`NIST PQC adoption: FIPS 203 ×${num(nist.data.fips203Components)}, FIPS 204 ×${num(nist.data.fips204Components)}, FIPS 205 ×${num(nist.data.fips205Components)} component(s); ${num(nist.data.vulnerableComponents)} quantum-vulnerable component(s) remain.`] : []),
-      ...frameworks.filter((f) => f.status !== 'aligned').map((f) => `${f.framework}: ${f.status} (${f.signal}).`),
+      ...frameworks.filter((f) => f.status !== 'mapped checks met').map((f) => `${f.framework}: ${f.status} (${f.signal}).`),
     ],
     entities: [{
       title: 'Framework posture',
       unit: 'framework',
       columns: [{ key: 'framework', label: 'Framework' }, { key: 'status', label: 'Status' }, { key: 'signal', label: 'Evidence signal' }],
-      rows: frameworks.map((f) => ({ cells: { framework: f.framework, status: f.status, signal: f.signal }, tone: f.status === 'aligned' ? 'good' : /gap/.test(f.status) ? 'high' : 'medium', deepLink: modulePath('compliance') })),
+      rows: frameworks.map((f) => ({ cells: { framework: f.framework, status: f.status, signal: f.signal }, tone: f.status === 'mapped checks met' ? 'good' : /gap/.test(f.status) ? 'high' : 'medium', deepLink: modulePath('compliance') })),
       total: frameworks.length,
       source: 'Compliance Center',
       deepLink: modulePath('compliance'),
@@ -1086,10 +1086,10 @@ function composeCompliance(d: FocusInput): FocusAnswer {
     }],
     recommendations: [],
     nextActions: [{ label: 'Open the Compliance Center', path: modulePath('compliance'), reason: 'Per-control evidence and mappings.' }],
-    risk: { level: aligned.length === frameworks.length ? 'low' : 'medium', drivers: frameworks.filter((f) => f.status !== 'aligned').map((f) => `${f.framework.split(' (')[0]}: ${f.status}`).slice(0, 3) },
+    risk: { level: aligned.length === frameworks.length ? 'low' : 'medium', drivers: frameworks.filter((f) => f.status !== 'mapped checks met').map((f) => `${f.framework.split(' (')[0]}: ${f.status}`).slice(0, 3) },
     figures: [
-      figure('compliance.aligned', 'Aligned frameworks', aligned.length, 'higher', 'Compliance Center'),
-      ...(cnsa && cnsa.data.dataAvailable === true ? [figure('compliance.cnsaMet', 'CNSA 2.0 checks met', num(cnsa.data.met), 'higher', 'Compliance Center')] : []),
+      figure('compliance.aligned', 'Framework mappings with all checks met', aligned.length, 'higher', 'Compliance Center'),
+      ...(cnsa && cnsa.data.dataAvailable === true ? [figure('compliance.cnsaMet', 'CNSA 2.0 algorithm signals observed', num(cnsa.data.met), 'higher', 'Compliance Center')] : []),
     ],
   }
 }
@@ -1105,28 +1105,28 @@ function composeCnsa(d: FocusInput): FocusAnswer {
   return {
     ...base('cnsa'),
     headline: missing.length
-      ? `You meet ${num(r.data.met)} of ${num(r.data.total)} CNSA 2.0 checks. Missing: ${list(missing.map((c) => c.requirement), 5)}. CNSA 2.0 expects ML-KEM-1024 and ML-DSA-87 with AES-256 and SHA-384 or stronger, and no remaining RSA/ECC.`
-      : `All ${num(r.data.total)} CNSA 2.0 checks are met in your algorithm inventory.`,
-    keyFindings: ['A check is met when the algorithm appears in your inventory — adoption breadth is tracked in the CBOM.'],
+      ? `The inventory records ${num(r.data.met)} of ${num(r.data.total)} selected CNSA 2.0 algorithm signals. Not observed: ${list(missing.map((c) => c.requirement), 5)}.`
+      : `All ${num(r.data.total)} selected CNSA 2.0 algorithm signals appeared in the inventory.`,
+    keyFindings: ['CNSA 2.0 applies to National Security Systems. Inventory presence does not show applicable system scope, usage coverage, conformance, or compliance.'],
     entities: [{
-      title: 'CNSA 2.0 checks',
+      title: 'CNSA 2.0 algorithm observations',
       unit: 'check',
       columns: [{ key: 'requirement', label: 'Requirement' }, { key: 'status', label: 'Status' }],
-      rows: checks.map((c) => ({ cells: { requirement: c.requirement, status: c.met ? 'Met' : 'Not met' }, tone: c.met ? 'good' : 'high', deepLink: modulePath('compliance') })),
+      rows: checks.map((c) => ({ cells: { requirement: c.requirement, status: c.met ? 'Observed' : 'Not observed' }, tone: c.met ? 'good' : 'high', deepLink: modulePath('compliance') })),
       total: checks.length,
       source: 'Compliance Center',
       deepLink: modulePath('compliance'),
     }],
     recommendations: missing.length ? [{
-      title: 'Adopt the CNSA 2.0 suite',
-      detail: `Introduce ${list(missing.map((c) => c.requirement), 4)}.`,
+      title: 'Confirm the applicable policy',
+      detail: 'If you operate National Security Systems, verify the applicable profile and schedule with your security authority, then check deployment coverage.',
       priority: 'high',
       standards: [STANDARDS.CNSA_2, STANDARDS.FIPS_203, STANDARDS.FIPS_204],
       deepLink: modulePath('compliance'),
     }] : [],
     nextActions: [{ label: 'Open the Compliance Center', path: modulePath('compliance'), reason: 'Track the CNSA 2.0 transition.' }],
-    risk: { level: missing.length ? 'medium' : 'low', drivers: missing.length ? [`${missing.length} CNSA 2.0 gap(s)`] : [] },
-    figures: [figure('compliance.cnsaMet', 'CNSA 2.0 checks met', num(r.data.met), 'higher', 'Compliance Center')],
+    risk: { level: missing.length ? 'medium' : 'low', drivers: missing.length ? [`${missing.length} selected signals not observed`] : [] },
+    figures: [figure('compliance.cnsaMet', 'CNSA 2.0 algorithm signals observed', num(r.data.met), 'higher', 'Compliance Center')],
   }
 }
 
@@ -1140,8 +1140,8 @@ function composeNist(d: FocusInput): FocusAnswer {
     headline:
       `NIST post-quantum adoption: FIPS 203 (ML-KEM) in ${count(num(data.fips203Components), 'component')}, FIPS 204 (ML-DSA) in ${num(data.fips204Components)}, FIPS 205 (SLH-DSA) in ${num(data.fips205Components)}. ` +
       `${num(data.vulnerableComponents)} quantum-vulnerable component(s) still need replacing; PQC adoption is ${num(data.pqcAdoption)}% and readiness ${num(data.readiness)}/100.` +
-      `${adopted === 0 ? ' No NIST PQC algorithm is in use yet.' : ''}`,
-    keyFindings: ['ML-KEM is for key establishment; ML-DSA and SLH-DSA are for signatures — each replaces a different classical primitive.'],
+      `${adopted === 0 ? ' No standardized PQC algorithm label was found in the queried inventory.' : ''}`,
+    keyFindings: ['ML-KEM is for key establishment; ML-DSA and SLH-DSA are for signatures. An inventory label alone does not establish conformance or FIPS module validation.'],
     entities: [{
       title: 'NIST post-quantum standards — adoption in your inventory',
       unit: 'standard',

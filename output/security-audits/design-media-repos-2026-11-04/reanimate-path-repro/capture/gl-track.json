@@ -1,6 +1,0 @@
-{
-  "kind": "gl-track",
-  "note": "t in ms, 0 = trigger. One sample per rendered frame; v holds every channel that changes during the capture (constants are in gl/gl.json). Fit one with: easing.ts --track gl-track.json --channel <key>",
-  "channels": {},
-  "samples": []
-}

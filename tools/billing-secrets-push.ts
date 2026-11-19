@@ -5,8 +5,7 @@
  * Needs the Supabase CLI to be logged in once (`npx supabase login`), or
  * SUPABASE_ACCESS_TOKEN in the environment.
  *
- *   npx tsx tools/billing-secrets-push.ts            # push
- *   npx tsx tools/billing-secrets-push.ts --dry-run  # list what would be pushed
+ * Set SUPABASE_PROJECT_REF explicitly. Preview by default, or use --apply.
  *
  * Only the keys the function reads are sent. The temporary env file lives in
  * the OS temp directory for the duration of the CLI call and is always deleted.
@@ -17,7 +16,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-const PROJECT_REF = 'xsbdlahuecadzfajlvis'
+const PROJECT_REF = (process.env.SUPABASE_PROJECT_REF ?? '').trim()
 const TIERS = ['STARTER', 'BASIC', 'PRO', 'ELITE']
 const CYCLES = ['MONTHLY', 'YEARLY']
 const REQUIRED = [
@@ -32,6 +31,9 @@ function quoted(value: string): string {
 }
 
 function main() {
+  if (!/^[a-z0-9]{20}$/.test(PROJECT_REF) || process.env.VITE_SUPABASE_URL?.replace(/\/$/, '') !== `https://${PROJECT_REF}.supabase.co`) {
+    throw new Error('Set SUPABASE_PROJECT_REF to the project identified by VITE_SUPABASE_URL before pushing billing secrets')
+  }
   const values: Record<string, string> = {}
   const missing: string[] = []
   for (const key of REQUIRED) {
@@ -51,7 +53,7 @@ function main() {
   values.APP_ORIGIN = (process.env.APP_ORIGIN || 'https://qguardhelix.com').trim()
 
   console.log(`Secrets for ${PROJECT_REF}/billing: ${Object.keys(values).join(', ')}`)
-  if (process.argv.includes('--dry-run')) return
+  if (!process.argv.includes('--apply') || process.argv.includes('--dry-run')) return
 
   const dir = mkdtempSync(path.join(tmpdir(), 'qguard-billing-'))
   const file = path.join(dir, 'billing.env')
@@ -65,7 +67,7 @@ function main() {
       console.error('supabase secrets set failed — is the CLI logged in? (npx supabase login)')
       process.exit(result.status ?? 1)
     }
-    console.log('Billing secrets updated. Check: GET https://xsbdlahuecadzfajlvis.supabase.co/functions/v1/billing/health')
+    console.log(`Billing secrets updated. Check: GET https://${PROJECT_REF}.supabase.co/functions/v1/billing/health`)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

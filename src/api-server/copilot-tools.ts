@@ -24,6 +24,7 @@ import { buildScannerIntelligence } from './scanner'
 import { buildExposureIntelligence } from './exposure-graph'
 import { assembleEvidence, buildRemediationPlan } from './quantum-remediation'
 import { buildCertificationDashboard } from './quantum-certification'
+import { buildGovernanceModel } from './governance'
 import { buildHndlIntelligence } from './harvest-now'
 import { buildWorkflowState } from './migration-workflow'
 import { buildSnapshotDashboard } from './migration-snapshots'
@@ -88,6 +89,7 @@ export type HndlIntelligence = Awaited<ReturnType<typeof buildHndlIntelligence>>
 
 /** Injectable builder seam — production uses the live platform builders. */
 export interface CopilotBuilders {
+  governance(token: string, userId: string): ReturnType<typeof buildGovernanceModel>
   snapshot(token: string, userId: string): Promise<QrSnapshot>
   scannerIntel(token: string, userId: string): Promise<ScannerIntelSnapshot>
   exposure(token: string, userId: string): Promise<ExposureIntelligence>
@@ -99,6 +101,7 @@ export interface CopilotBuilders {
 }
 
 export const liveBuilders: CopilotBuilders = {
+  governance: buildGovernanceModel,
   snapshot: (token, userId) => buildSnapshot(token, userId),
   scannerIntel: (token, userId) => buildScannerIntelligence(token, userId),
   exposure: (token, userId) => buildExposureIntelligence(token, userId),
@@ -1854,26 +1857,20 @@ register({
 register({
   name: 'getComplianceStatus',
   module: 'compliance',
-  description: 'Derived compliance posture across supported frameworks',
+  description: 'Tenant evidence and coverage from the Compliance Command Center',
   capability: 'read',
   async execute(ctx, _args, deps) {
-    const [snapshot, cert] = await Promise.all([
-      deps.snapshot(ctx.token, ctx.userId),
-      deps.certification(ctx.token, ctx.userId, ctx.email).catch(() => ({} as Record<string, unknown>)),
-    ])
-    const scores = rec(snapshot.scores)
-    const inventory = rec(snapshot.inventory)
-    const pqcAdoption = num(scores.pqcAdoption)
-    const vulnerable = num(inventory.vulnerableComponents)
-    const frameworks = [
-      { framework: STANDARDS.NIST_CSF, status: pqcAdoption >= 70 ? 'aligned' : vulnerable > 0 ? 'gaps identified' : 'partially aligned', signal: `PQC adoption ${pqcAdoption}%` },
-      { framework: STANDARDS.SP_800_131A, status: vulnerable > 0 ? 'gaps identified' : 'aligned', signal: `${vulnerable} legacy component(s)` },
-      { framework: STANDARDS.CNSA_2, status: pqcAdoption >= 90 ? 'aligned' : 'transition in progress', signal: `ML-KEM/ML-DSA adoption tracked` },
-      { framework: STANDARDS.ISO_27001, status: rec(cert).certificate ? 'supported by certification evidence' : 'evidence collection ongoing', signal: 'crypto governance evidence' },
-    ]
+    const model = await deps.governance(ctx.token, ctx.userId)
+    const frameworks = model.frameworks.map((framework) => ({
+      framework: framework.shortName,
+      status: framework.referenceOnly ? 'reference only' : !framework.measured ? 'not assessed'
+        : framework.status === 'non-compliant' ? 'gaps identified'
+          : framework.requirementsCompliant === framework.requirementsTotal ? 'mapped checks met' : 'partial evidence or control gaps',
+      signal: framework.referenceOnly ? framework.scope : `${framework.requirementsMeasured}/${framework.requirementsTotal} mapped requirements assessed`,
+    }))
     return ok(
-      { frameworks, methodology: 'Derived from the tenant’s live cryptographic posture (CBOM, scans, certification evidence) — not a formal audit.' },
-      [ev('Compliance Center', 'Framework posture', `${frameworks.filter((f) => f.status === 'aligned').length}/${frameworks.length} aligned`, { detail: `PQC adoption ${pqcAdoption}% · ${vulnerable} vulnerable component(s)`, deepLink: modulePath('compliance') })],
+      { frameworks, methodology: 'Mapped tenant controls and evidence coverage; no independent compliance determination.' },
+      [ev('Compliance Center', 'Governance evidence coverage', `${model.scores.controlCoverage.value ?? 'Not assessed'}`, { deepLink: modulePath('compliance') })],
       frameworks.length,
     )
   },
@@ -1882,7 +1879,7 @@ register({
 register({
   name: 'getNISTScore',
   module: 'compliance',
-  description: 'NIST PQC alignment signals (FIPS 203/204/205)',
+  description: 'Inventory labels for NIST PQC algorithm families (FIPS 203/204/205)',
   capability: 'read',
   async execute(ctx, _args, deps) {
     const snapshot = await deps.snapshot(ctx.token, ctx.userId)
@@ -1890,9 +1887,9 @@ register({
     const inventory = rec(snapshot.inventory)
     const rows = await tenantRows(ctx, 'crypto_inventory', 'algorithm, is_quantum_safe', (q) => q.eq('is_quantum_safe', true), 400)
     const algos = rows.map((r) => str(r.algorithm).toUpperCase())
-    const mlkem = algos.filter((a) => /ML-KEM|KYBER/.test(a)).length
-    const mldsa = algos.filter((a) => /ML-DSA|DILITHIUM/.test(a)).length
-    const slhdsa = algos.filter((a) => /SLH-DSA|SPHINCS/.test(a)).length
+    const mlkem = algos.filter((a) => /ML[-_ ]?KEM/.test(a)).length
+    const mldsa = algos.filter((a) => /ML[-_ ]?DSA/.test(a)).length
+    const slhdsa = algos.filter((a) => /SLH[-_ ]?DSA/.test(a)).length
     return ok(
       {
         readiness: num(scores.quantumReadiness),
@@ -1902,7 +1899,7 @@ register({
         fips205Components: slhdsa,
         vulnerableComponents: num(inventory.vulnerableComponents),
       },
-      [ev('Compliance Center', 'NIST PQC alignment', `readiness ${num(scores.quantumReadiness)}/100`, { detail: `FIPS 203 ×${mlkem} · FIPS 204 ×${mldsa} · FIPS 205 ×${slhdsa}`, deepLink: modulePath('compliance') })],
+      [ev('Compliance Center', 'NIST PQC algorithm observations', `readiness ${num(scores.quantumReadiness)}/100`, { detail: `FIPS 203 ×${mlkem} · FIPS 204 ×${mldsa} · FIPS 205 ×${slhdsa}`, deepLink: modulePath('compliance') })],
       1,
     )
   },
@@ -1911,22 +1908,21 @@ register({
 register({
   name: 'getCNSACompliance',
   module: 'compliance',
-  description: 'CNSA 2.0 transition posture from the live algorithm inventory',
+  description: 'CNSA 2.0 algorithm observations from the live inventory; does not assess National Security Systems compliance',
   capability: 'read',
   async execute(ctx) {
-    const rows = await tenantRows(ctx, 'crypto_inventory', 'algorithm, is_vulnerable, is_quantum_safe', (q) => q, 800)
+    const rows = await tenantRows(ctx, 'crypto_inventory', 'algorithm', (q) => q, 800)
     const algos = rows.map((r) => str(r.algorithm).toUpperCase())
     const checks = [
-      { requirement: 'ML-KEM-1024 key establishment', met: algos.some((a) => /ML-KEM-1024|KYBER-?1024/.test(a)) },
-      { requirement: 'ML-DSA-87 signatures', met: algos.some((a) => /ML-DSA-87|DILITHIUM-?5/.test(a)) },
-      { requirement: 'AES-256 symmetric encryption', met: algos.some((a) => /AES[-_ ]?256/.test(a)) },
-      { requirement: 'SHA-384 / SHA-512 / SHA3 hashing', met: algos.some((a) => /SHA[-_ ]?(384|512|3)/.test(a)) },
-      { requirement: 'Legacy RSA/ECC eliminated', met: rows.length > 0 && !rows.some((r) => r.is_vulnerable === true) },
+      { requirement: 'ML-KEM-1024 key establishment', met: algos.some((a) => /^ML[-_ ]?KEM[-_ ]?1024$/.test(a)) },
+      { requirement: 'ML-DSA-87 signatures', met: algos.some((a) => /^ML[-_ ]?DSA[-_ ]?87$/.test(a)) },
+      { requirement: 'AES-256 symmetric encryption', met: algos.some((a) => /^AES[-_ ]?256(?:[-_ ][A-Z][A-Z0-9]*)?$/.test(a)) },
+      { requirement: 'SHA-384 or SHA-512 hashing', met: algos.some((a) => /^SHA[-_ ]?(384|512)$/.test(a)) },
     ]
     const met = checks.filter((c) => c.met).length
     return ok(
       { checks, met, total: checks.length, dataAvailable: rows.length > 0 },
-      [ev('Compliance Center', 'CNSA 2.0 checks met', `${met}/${checks.length}`, { deepLink: modulePath('compliance') })],
+      [ev('Compliance Center', 'CNSA 2.0 algorithm families observed', `${met}/${checks.length}`, { deepLink: modulePath('compliance') })],
       rows.length,
       rows.length ? undefined : 'No crypto inventory yet — CNSA posture requires a discovery scan.',
     )

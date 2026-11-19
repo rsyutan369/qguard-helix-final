@@ -1,8 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useAuth } from '@/contexts/auth-context';
-import { supabase } from '@/lib/supabase';
+import { useLiveResource, type LiveTransport } from '@/hooks/use-live-resource';
 import type { SharedResponsibilityIntelligence } from '@/lib/shared-responsibility';
 
 export type LoadState = 'loading' | 'success' | 'error';
@@ -59,146 +57,48 @@ export const EMPTY_MIGRATION_INTELLIGENCE: MigrationIntelligence = {
 const REALTIME_TABLES = [
   'assets', 'pqc_scan_results', 'pqc_scan_sessions', 'crypto_inventory', 'crypto_exposures',
   'certificates', 'generated_keys', 'runtime_crypto_events', 'connector_accounts', 'migration_jobs',
-];
+] as const;
+
+const normalize = (raw: Record<string, unknown>): MigrationIntelligence =>
+  ({ ...EMPTY_MIGRATION_INTELLIGENCE, ...raw }) as MigrationIntelligence;
+
+/** The route answers with the bare model; a body without `totals` is not one. */
+const unwrap = (body: unknown) =>
+  body && typeof body === 'object' && 'totals' in body ? body : null;
+
+export interface MigrationIntelligenceResource {
+  data: MigrationIntelligence;
+  state: LoadState;
+  error: string | null;
+  /** True while the server stream is open and has answered. */
+  sseConnected: boolean;
+  transport: LiveTransport;
+  /** Last time the server confirmed the model on screen is current. */
+  lastVerifiedAt: string | null;
+  refresh: (options?: unknown) => Promise<void>;
+}
 
 /**
- * useMigrationIntelligence — fetches the Shared Responsibility Quantum Migration
- * Intelligence model from /api/v1/migration-intelligence, keeps it live via a
- * header-authenticated SSE stream (token never in the URL) and Supabase realtime
- * table subscriptions. Every value is tenant-scoped real data classified into
- * customer / provider / ecosystem ownership domains.
+ * useMigrationIntelligence — the Shared Responsibility Quantum Migration
+ * Intelligence model from /api/v1/migration-intelligence, kept live.
+ *
+ * Runs on the shared live-resource client, so it behaves like every other live
+ * dashboard: the stream's first frame is the initial load (the model is no
+ * longer downloaded twice on mount), unchanged re-checks cost a few bytes and
+ * advance `lastVerifiedAt`, a failed build keeps the last good model on screen,
+ * reconnects back off 2 s → 30 s, and the bearer token never enters a URL.
+ * Every value is tenant-scoped real data classified into customer / provider /
+ * ecosystem ownership domains.
  */
-export function useMigrationIntelligence() {
-  const { session, user } = useAuth();
-  const token = session?.access_token;
-  const [data, setData] = useState<MigrationIntelligence>(EMPTY_MIGRATION_INTELLIGENCE);
-  const [state, setState] = useState<LoadState>('loading');
-  const [error, setError] = useState<string | null>(null);
-  const [sseConnected, setSseConnected] = useState(false);
-  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const apply = useCallback((next: Partial<MigrationIntelligence> | null) => {
-    setData({ ...EMPTY_MIGRATION_INTELLIGENCE, ...(next || {}) });
-  }, []);
-
-  const refresh = useCallback(async () => {
-    if (!token) {
-      apply(EMPTY_MIGRATION_INTELLIGENCE);
-      setState('success');
-      return;
-    }
-    setState((current) => (current === 'success' ? current : 'loading'));
-    try {
-      const response = await fetch('/api/v1/migration-intelligence', {
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-      apply(payload || {});
-      setState('success');
-      setError(null);
-    } catch (err) {
-      console.error('Migration intelligence load failed:', err);
-      setError(err instanceof Error ? err.message : 'Unable to load migration intelligence');
-      setState('error');
-    }
-  }, [token, apply]);
-
-  const queueRefresh = useCallback(() => {
-    if (refreshTimer.current) clearTimeout(refreshTimer.current);
-    refreshTimer.current = setTimeout(() => {
-      refreshTimer.current = null;
-      void refresh();
-    }, 500);
-  }, [refresh]);
-
-  useEffect(() => () => { if (refreshTimer.current) clearTimeout(refreshTimer.current); }, []);
-
-  useEffect(() => {
-    if (!token || !user) {
-      apply(EMPTY_MIGRATION_INTELLIGENCE);
-      setState('success');
-      return;
-    }
-    void refresh();
-  }, [token, user, refresh, apply]);
-
-  // Dedicated SSE stream over fetch() + Authorization header (token never in URL).
-  useEffect(() => {
-    if (!token) return;
-    const controller = new AbortController();
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let cancelled = false;
-
-    const parseFrame = (frame: string) => {
-      let eventName = 'message';
-      const dataLines: string[] = [];
-      for (const line of frame.split('\n')) {
-        if (line.startsWith('event:')) eventName = line.slice(6).trim();
-        else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
-      }
-      if (eventName === 'migration-intelligence' && dataLines.length) {
-        try {
-          apply(JSON.parse(dataLines.join('\n')));
-          setState('success');
-          setError(null);
-        } catch {
-          /* ignore malformed frame */
-        }
-      }
-    };
-
-    const connect = async () => {
-      try {
-        const response = await fetch('/api/v1/migration-intelligence/stream', {
-          headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
-          signal: controller.signal,
-        });
-        if (!response.ok || !response.body) throw new Error(`SSE ${response.status}`);
-        setSseConnected(true);
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let boundary = buffer.indexOf('\n\n');
-          while (boundary !== -1) {
-            parseFrame(buffer.slice(0, boundary));
-            buffer = buffer.slice(boundary + 2);
-            boundary = buffer.indexOf('\n\n');
-          }
-        }
-        throw new Error('stream ended');
-      } catch {
-        if (cancelled || controller.signal.aborted) return;
-        setSseConnected(false);
-        if (retry) clearTimeout(retry);
-        retry = setTimeout(() => void connect(), 10000);
-      }
-    };
-
-    void connect();
-    return () => {
-      cancelled = true;
-      controller.abort();
-      if (retry) clearTimeout(retry);
-      setSseConnected(false);
-    };
-  }, [token, apply]);
-
-  // Supabase realtime — refresh on any tenant scan / crypto / connector mutation.
-  useEffect(() => {
-    if (!user) return;
-    const channels = REALTIME_TABLES.map((table) =>
-      supabase
-        .channel(`migration-intel-${table}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` }, queueRefresh)
-        .subscribe(),
-    );
-    return () => { for (const channel of channels) supabase.removeChannel(channel); };
-  }, [user, queueRefresh]);
-
-  return { data, state, error, sseConnected, refresh };
+export function useMigrationIntelligence(): MigrationIntelligenceResource {
+  return useLiveResource<MigrationIntelligence>({
+    url: '/api/v1/migration-intelligence',
+    streamUrl: '/api/v1/migration-intelligence/stream',
+    event: 'migration-intelligence',
+    empty: EMPTY_MIGRATION_INTELLIGENCE,
+    normalize,
+    unwrap,
+    realtimeTables: REALTIME_TABLES,
+    channelPrefix: 'migration-intel',
+  });
 }

@@ -87,13 +87,14 @@ export const PHASE_LABEL: Record<OrchestrationPhase, string> = {
 }
 
 /** Verification of a job's change, from `migration_validation_logs` (+ the job's own record). */
-export type VerificationState = 'passed' | 'failed' | 'pending' | 'missing'
+export type VerificationState = 'passed' | 'failed' | 'pending' | 'missing' | 'unavailable'
 
 export const VERIFICATION_LABEL: Record<VerificationState, string> = {
   passed: 'Verified',
   failed: 'Validation failed',
   pending: 'Not yet validated',
   missing: 'No validation recorded',
+  unavailable: 'Validation evidence unavailable',
 }
 
 /**
@@ -242,6 +243,7 @@ export interface OrchestrationPlan {
 export interface OrchestrationEvent {
   id: string
   jobId: string | null
+  planId?: string | null
   jobName: string | null
   type: string
   severity: string
@@ -249,7 +251,7 @@ export interface OrchestrationEvent {
   at: string
 }
 
-export type SourceState = 'ok' | 'unavailable'
+export type SourceState = 'ok' | 'unavailable' | 'truncated'
 
 export interface OrchestrationMetrics {
   /** Operational (non-simulation) jobs read. */
@@ -262,6 +264,7 @@ export interface OrchestrationMetrics {
   completedUnverified: number
   /** Completed, but the recorded validation FAILED — needs an operator. */
   completedValidationFailed: number
+  completedValidationUnavailable?: number
   /** completed / (total − cancelled); null when nothing is in scope. */
   completionPct: number | null
   verifiedPct: number | null
@@ -491,6 +494,35 @@ function urgency(job: OrchestrationJob): number {
   return PHASE_URGENCY[job.phase]
 }
 
+type JobValidationIndex = Map<string, { latest: Loose; count: number }>
+
+export function indexJobValidations(rows: Loose[]): JobValidationIndex {
+  const index: JobValidationIndex = new Map()
+  for (const row of rows) {
+    const jobId = str(row.migration_id || row.migration_job_id || row.job_id)
+    if (!jobId) continue
+    const entry = index.get(jobId)
+    const replace = !entry || ms(row.created_at) > ms(entry.latest.created_at) ||
+      (ms(row.created_at) === ms(entry.latest.created_at) && str(row.id) > str(entry.latest.id))
+    index.set(jobId, { latest: replace ? row : entry!.latest, count: (entry?.count ?? 0) + 1 })
+  }
+  return index
+}
+
+export function readJobVerification(job: Loose, index: JobValidationIndex, source: SourceState, completed: boolean) {
+  const records = index.get(str(job.id))
+  const metadata = rec(rec(job.metadata).lastValidation ?? job.last_validation)
+  const latest = records?.latest
+  const status = str(latest?.status) || str(metadata.status) ||
+    (metadata.passed === true ? 'passed' : metadata.passed === false ? 'failed' : '')
+  let state: VerificationState = completed && !status ? 'missing' : 'pending'
+  if (source === 'unavailable' || (source === 'truncated' && !latest)) state = 'unavailable'
+  else if (isPassingValidation(status)) state = 'passed'
+  else if (isFailingValidation(status)) state = 'failed'
+  const at = state === 'passed' ? iso(latest?.created_at) || iso(metadata.at || metadata.validatedAt) : null
+  return { state, at, count: records?.count ?? 0 }
+}
+
 /* ------------------------------------------------------------------ */
 /* Builder                                                             */
 /* ------------------------------------------------------------------ */
@@ -500,19 +532,11 @@ export function buildOrchestrationSnapshot(input: OrchestrationInputs): Orchestr
   const operationalRows = input.jobs.filter((row) => !isSimulationJob(row))
   const simulationsExcluded = input.jobs.length - operationalRows.length
 
-  // Validation records per job, oldest → newest.
-  const validationsByJob = new Map<string, Loose[]>()
-  for (const row of input.validations) {
-    const jobId = str(row.migration_id || row.migration_job_id || row.job_id)
-    if (!jobId) continue
-    const list = validationsByJob.get(jobId) || []
-    list.push(row)
-    validationsByJob.set(jobId, list)
-  }
-  for (const list of validationsByJob.values()) list.sort((a, b) => ms(a.created_at) - ms(b.created_at))
+  const validationsByJob = indexJobValidations(input.validations)
 
   const operationalIds = new Set(operationalRows.map((row) => str(row.id)))
   const eventsSorted = input.events
+    .filter((row) => !isSimulationJob({ job_type: row.event_type, metadata: row.metadata }))
     .filter((row) => !str(row.migration_id) || operationalIds.has(str(row.migration_id)))
     .sort((a, b) => ms(b.created_at) - ms(a.created_at))
   const lastEventByJob = new Map<string, Loose>()
@@ -584,18 +608,9 @@ export function buildOrchestrationSnapshot(input: OrchestrationInputs): Orchestr
     const heldNotReleased = phase === 'ready' && release?.released === false
     if (heldNotReleased) phase = 'blocked'
 
-    // Verification — latest validation record, else the job's own recorded result.
-    const records = validationsByJob.get(id) || []
-    const latest = records[records.length - 1]
-    const lastValidation = rec(meta.lastValidation)
-    const latestStatus = str(latest?.status) || str(lastValidation.status)
-      || (lastValidation.passed === true ? 'passed' : lastValidation.passed === false ? 'failed' : '')
-    let verification: VerificationState
-    if (latestStatus && isPassingValidation(latestStatus)) verification = 'passed'
-    else if (latestStatus && isFailingValidation(latestStatus)) verification = 'failed'
-    else verification = phase === 'completed' && !latestStatus ? 'missing' : 'pending'
+    const { state: verification, at: verifiedAt, count: validationRecords } =
+      readJobVerification(row, validationsByJob, input.sources.validations, phase === 'completed')
     const verified = phase === 'completed' && verification === 'passed'
-    const verifiedAt = verification === 'passed' ? iso(latest?.created_at) || iso(lastValidation.at || lastValidation.validatedAt) : null
 
     const assignedAgentId = str(meta.assignedAgentId || meta.assigned_agent_id) || null
     const assignedAgent = agentById.get(assignedAgentId || '')
@@ -683,7 +698,7 @@ export function buildOrchestrationSnapshot(input: OrchestrationInputs): Orchestr
       executorSilent,
       verification,
       verifiedAt,
-      validationRecords: records.length,
+      validationRecords,
       verified,
       retry: phase === 'failed' ? (operational.approval.approved ? 'eligible' : 'needs-approval') : null,
       failureReason,
@@ -711,6 +726,7 @@ export function buildOrchestrationSnapshot(input: OrchestrationInputs): Orchestr
   const completedJobs = jobs.filter((job) => job.phase === 'completed')
   const verified = completedJobs.filter((job) => job.verified).length
   const completedValidationFailed = completedJobs.filter((job) => job.verification === 'failed').length
+  const completedValidationUnavailable = completedJobs.filter((job) => job.verification === 'unavailable').length
   const inScope = jobs.length - phases.cancelled
 
   const byAsset = new Map<string, OrchestrationJob[]>()
@@ -725,10 +741,10 @@ export function buildOrchestrationSnapshot(input: OrchestrationInputs): Orchestr
   let assetsInFlight = 0
   let assetsAttention = 0
   for (const list of byAsset.values()) {
-    const hasOpen = list.some((job) => OPEN.includes(job.phase) || job.phase === 'failed')
-    if (list.some((job) => job.verified) && !hasOpen) assetsVerified += 1
+    const required = list.filter((job) => job.phase !== 'cancelled')
+    if (required.length && required.every((job) => job.verified)) assetsVerified += 1
     if (list.some((job) => job.phase === 'executing' || job.phase === 'validating')) assetsInFlight += 1
-    if (list.some((job) => job.phase === 'failed' || job.phase === 'blocked' || job.executorSilent || job.verification === 'failed')) assetsAttention += 1
+    if (list.some((job) => job.phase === 'failed' || job.phase === 'blocked' || job.executorSilent || (job.phase === 'completed' && !job.verified))) assetsAttention += 1
   }
 
   const durations = completedJobs
@@ -749,8 +765,9 @@ export function buildOrchestrationSnapshot(input: OrchestrationInputs): Orchestr
     phases,
     completed: completedJobs.length,
     verified,
-    completedUnverified: completedJobs.length - verified - completedValidationFailed,
+    completedUnverified: completedJobs.length - verified - completedValidationFailed - completedValidationUnavailable,
     completedValidationFailed,
+    completedValidationUnavailable,
     completionPct: pct(completedJobs.length, inScope),
     verifiedPct: pct(verified, inScope),
     assets: { total: byAsset.size, verified: assetsVerified, inFlight: assetsInFlight, needsAttention: assetsAttention },
@@ -858,9 +875,11 @@ export function buildOrchestrationSnapshot(input: OrchestrationInputs): Orchestr
   }
 
   const jobNames = new Map(jobs.map((job) => [job.id, job.name]))
+  const jobPlans = new Map(jobs.map((job) => [job.id, job.planId]))
   const events: OrchestrationEvent[] = eventsSorted.slice(0, EVENT_CAP).map((row) => ({
     id: str(row.id),
     jobId: str(row.migration_id) || null,
+    planId: jobPlanId(row) || jobPlans.get(str(row.migration_id)) || null,
     jobName: jobNames.get(str(row.migration_id)) || null,
     type: str(row.event_type) || 'event',
     severity: str(row.severity) || 'info',

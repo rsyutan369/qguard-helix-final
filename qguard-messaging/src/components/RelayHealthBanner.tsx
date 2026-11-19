@@ -3,11 +3,14 @@ import { CloudOff, Loader2, RefreshCcw, ServerCrash, WifiOff } from "lucide-reac
 import { checkForAppUpdate } from "@/lib/app-update";
 import {
   RELAY_TROUBLE_EVENT,
+  RELAY_RECOVERED_EVENT,
   classifyRelayHealth,
   nextRecheckMs,
   probeRelay,
+  relayAvailability,
   type ControlProbe,
   type RelayHealth,
+  type RelayAvailability,
 } from "@/lib/relay-health";
 import { supabaseAnonKey, supabaseUrl } from "@/lib/supabase";
 import { isAndroidRuntime, isTauriRuntime } from "@/lib/tauri";
@@ -30,13 +33,15 @@ async function probeControl(): Promise<ControlProbe> {
  * back to the foreground, and when realtime reports trouble; while unhealthy
  * it rechecks with backoff and disappears on its own once the relay answers.
  */
-export function RelayHealthBanner() {
+export function RelayHealthBanner({ onAvailability }: { onAvailability?: (availability: RelayAvailability) => void }) {
   const [health, setHealth] = useState<RelayHealth | null>(null);
   const [checking, setChecking] = useState(false);
   const failuresRef = useRef(0);
   const timerRef = useRef<number | null>(null);
   const inFlightRef = useRef(false);
   const lastOkAtRef = useRef(0);
+  const unavailableRef = useRef(false);
+  const mountedRef = useRef(false);
 
   // `force` = a real signal (network change, realtime trouble, a tap); a plain
   // return to the foreground re-asks at most every 30 s while things are fine.
@@ -51,9 +56,18 @@ export function RelayHealthBanner() {
     }
     try {
       const relay = await probeRelay(supabaseUrl, supabaseAnonKey);
+      if (!mountedRef.current) return;
+      const availability = relayAvailability(relay);
+      onAvailability?.(availability);
+      if (availability === "unavailable") unavailableRef.current = true;
+      if (availability === "available" && unavailableRef.current) {
+        unavailableRef.current = false;
+        window.dispatchEvent(new Event(RELAY_RECOVERED_EVENT));
+      }
       const healthy = relay.kind === "ok" || (relay.kind === "http_error" && relay.status < 500);
       // Only spend a control probe when the relay itself failed.
       const control = healthy || relay.kind === "not_configured" ? "unavailable" : await probeControl();
+      if (!mountedRef.current) return;
       const next = classifyRelayHealth({ online: navigator.onLine, relay, control });
       setHealth(next);
       if (next.state === "ok") {
@@ -65,11 +79,12 @@ export function RelayHealthBanner() {
       }
     } finally {
       inFlightRef.current = false;
-      setChecking(false);
+      if (mountedRef.current) setChecking(false);
     }
-  }, []);
+  }, [onAvailability]);
 
   useEffect(() => {
+    mountedRef.current = true;
     void check();
     const onChange = () => { void check(); };
     const onVisible = () => { if (document.visibilityState === "visible") void check(false); };
@@ -78,6 +93,7 @@ export function RelayHealthBanner() {
     window.addEventListener(RELAY_TROUBLE_EVENT, onChange);
     document.addEventListener("visibilitychange", onVisible);
     return () => {
+      mountedRef.current = false;
       window.removeEventListener("online", onChange);
       window.removeEventListener("offline", onChange);
       window.removeEventListener(RELAY_TROUBLE_EVENT, onChange);
@@ -91,20 +107,22 @@ export function RelayHealthBanner() {
     ? WifiOff
     : health.state === "relay_failing" ? ServerCrash : CloudOff;
 
+  // A strip in the page flow, under the header. It takes its own row, so it
+  // never covers a button, the composer or the bottom navigation.
   return (
-    <div role="status" className="fixed bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] left-1/2 z-[60] flex w-[min(94vw,620px)] -translate-x-1/2 items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm text-amber-950 shadow-soft md:bottom-4">
-      <Icon size={18} className="mt-0.5 shrink-0 text-amber-700" />
-      <div className="min-w-0 flex-1">
-        <div className="font-bold">{health.title}</div>
-        <div className="text-xs leading-relaxed">{health.detail}</div>
-      </div>
+    <div role="status" data-relay-banner className="relay-banner flex shrink-0 items-center gap-2.5 border-b border-amber-300 bg-amber-50 px-3 py-1.5 text-amber-950 sm:px-5">
+      <Icon size={16} className="shrink-0 text-amber-700" aria-hidden />
+      <p className="min-w-0 flex-1 text-xs leading-snug">
+        <span className="font-bold">{health.title}.</span>{" "}
+        <span>{health.detail}</span>
+      </p>
       <button
         type="button"
         onClick={() => { failuresRef.current = 0; void check(); }}
         disabled={checking}
         className="flex shrink-0 items-center gap-1.5 rounded-md border border-amber-300 bg-white px-2.5 py-1 text-xs font-bold text-amber-900 hover:bg-amber-100 disabled:opacity-60"
       >
-        {checking ? <Loader2 size={13} className="animate-spin" /> : <RefreshCcw size={13} />} Check again
+        {checking ? <Loader2 size={13} className="animate-spin" aria-hidden /> : <RefreshCcw size={13} aria-hidden />} Check again
       </button>
     </div>
   );

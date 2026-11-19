@@ -21,6 +21,18 @@ const ANON = process.env.VITE_SUPABASE_ANON_KEY || ''
 
 type Frame = { event: string; data: any; at: number }
 
+/** Open a stream the way the browser does: header-auth ticket, then ?ticket=. */
+async function ticketUrl(stream: string, token: string): Promise<string> {
+  const minted = await fetch(`${BASE}/api/v1/stream-tickets`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stream }),
+  })
+  const body = await minted.json() as any
+  if (!minted.ok) throw new Error(`stream ticket refused: HTTP ${minted.status} ${JSON.stringify(body)}`)
+  return `${BASE}${body.data.path}?ticket=${encodeURIComponent(body.data.ticket)}`
+}
+
 async function main() {
   const admin = createClient(URL_, SERVICE, { auth: { persistSession: false, autoRefreshToken: false } })
   const { data: link, error } = await admin.auth.admin.generateLink({ type: 'magiclink', email: ADMIN_OWNER_EMAIL })
@@ -32,7 +44,7 @@ async function main() {
 
   const frames: Frame[] = []
   const controller = new AbortController()
-  const response = await fetch(`${BASE}/api/v1/admin/stream?token=${encodeURIComponent(token)}`, { signal: controller.signal })
+  const response = await fetch(await ticketUrl('admin', token), { signal: controller.signal })
   assert.equal(response.status, 200)
   assert.match(String(response.headers.get('content-type')), /text\/event-stream/)
   const reader = response.body!.getReader()

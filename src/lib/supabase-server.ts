@@ -126,6 +126,16 @@ export function getServiceClient(): SupabaseClient | null {
   })
 }
 
+/** Server-only writer in the same project that supplied the user's evidence. */
+export function getWorkspaceServiceClient(token: string): SupabaseClient | null {
+  const config = resolveAuthConfig(token)
+  if (!hasServiceConfig(config) || config.serviceKey === config.anonKey) return null
+  return createClient(config.url, config.serviceKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+    global: { fetch: supabaseFetch },
+  })
+}
+
 /**
  * Create a Supabase client authenticated with the user's JWT token.
  * Respects RLS policies.

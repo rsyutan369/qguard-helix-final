@@ -4,6 +4,7 @@ import {
   hasMessagingAccess,
   msUntilAccessBoundary,
   type BillingInvoice,
+  type EntitlementRow,
   type MessagingSubscription,
 } from "@/lib/subscription";
 
@@ -12,6 +13,8 @@ export interface SubscriptionState {
   subscription: MessagingSubscription | null;
   /** Payment/billing history (billing_invoices, newest first). */
   invoices: BillingInvoice[];
+  /** Effective entitlement keys (public.user_entitlements, computed server-side). */
+  entitlements: string[];
   /** Authoritative-for-UI access verdict (server enforces independently). */
   access: boolean;
   loading: boolean;
@@ -33,6 +36,7 @@ export interface SubscriptionState {
 export function useSubscription(userId: string | null): SubscriptionState {
   const [subscription, setSubscription] = useState<MessagingSubscription | null>(null);
   const [invoices, setInvoices] = useState<BillingInvoice[]>([]);
+  const [entitlementRows, setEntitlementRows] = useState<EntitlementRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Bumped by the boundary timer to force a re-evaluation of `access` when the
@@ -44,16 +48,17 @@ export function useSubscription(userId: string | null): SubscriptionState {
     if (!userId) {
       setSubscription(null);
       setInvoices([]);
+      setEntitlementRows([]);
       setLoading(false);
       return;
     }
     try {
       setError(null);
-      const [subResult, invoicesResult] = await Promise.all([
+      const [subResult, invoicesResult, entitlementResult] = await Promise.all([
         supabase
           .from("billing_subscriptions")
           .select(
-            "id,user_id,subscription_id,provider,provider_subscription_id,plan,status,billing_cycle,auto_renew,cancel_at_period_end,renewal_date,current_period_start,current_period_end,cancelled_at,created_at,updated_at",
+            "id,user_id,subscription_id,provider,provider_subscription_id,plan,status,billing_cycle,auto_renew,cancel_at_period_end,renewal_date,current_period_start,current_period_end,cancelled_at,created_at,updated_at,product_id,acknowledgement_state,verification_state,last_verified_at",
           )
           .eq("user_id", userId)
           .order("updated_at", { ascending: false })
@@ -67,11 +72,19 @@ export function useSubscription(userId: string | null): SubscriptionState {
           .eq("user_id", userId)
           .order("created_at", { ascending: false })
           .limit(24),
+        supabase
+          .from("user_entitlements")
+          .select("entitlement_key,is_enabled,valid_until")
+          .eq("user_id", userId)
+          .eq("is_enabled", true),
       ]);
       if (subResult.error) throw new Error(subResult.error.message);
       setSubscription((subResult.data as MessagingSubscription | null) ?? null);
       // Invoices are decorative history — a missing table must not break the paywall.
       setInvoices(invoicesResult.error ? [] : ((invoicesResult.data as BillingInvoice[]) ?? []));
+      // Entitlements are display data here; access itself is decided by the
+      // subscription row below and enforced by the database.
+      setEntitlementRows(entitlementResult.error ? [] : ((entitlementResult.data as EntitlementRow[]) ?? []));
     } catch (e) {
       // Fail CLOSED for access (no fabricated entitlement), but surface why.
       setError(e instanceof Error ? e.message : "Could not load subscription");
@@ -100,6 +113,11 @@ export function useSubscription(userId: string | null): SubscriptionState {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "billing_invoices", filter: `user_id=eq.${userId}` },
+        () => void load(),
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "user_entitlements", filter: `user_id=eq.${userId}` },
         () => void load(),
       )
       .subscribe();
@@ -139,5 +157,16 @@ export function useSubscription(userId: string | null): SubscriptionState {
     [subscription, evalTick],
   );
 
-  return { subscription, invoices, access, loading, error, refresh: load };
+  const entitlements = useMemo(
+    () => (access
+      ? entitlementRows
+        .filter((row) => row.is_enabled && (!row.valid_until || Date.parse(row.valid_until) > Date.now()))
+        .map((row) => row.entitlement_key)
+        .sort()
+      : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [entitlementRows, access, evalTick],
+  );
+
+  return { subscription, invoices, entitlements, access, loading, error, refresh: load };
 }

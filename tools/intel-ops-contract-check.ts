@@ -94,8 +94,8 @@ async function streamProbe() {
   const res = new FakeRes()
   let calls = 0
   const payloads = [
-    { generatedAt: '2026-10-27T10:00:00Z', total: 3, nested: { generatedAt: 'a' } },
-    { generatedAt: '2026-10-27T10:00:10Z', total: 3, nested: { generatedAt: 'b' } }, // only build stamps differ
+    { generatedAt: '2026-10-27T10:00:00Z', sourceCheckedAt: '2026-10-27T10:00:00Z', total: 3, nested: { generatedAt: 'a' } },
+    { generatedAt: '2026-10-27T10:00:10Z', sourceCheckedAt: '2026-10-27T10:00:00Z', total: 3, nested: { generatedAt: 'b' } }, // only build stamps differ
     { generatedAt: '2026-10-27T10:00:20Z', total: 4, nested: { generatedAt: 'c' } }, // content changed
   ]
   streamLiveSnapshot(req as never, res as never, {
@@ -112,6 +112,8 @@ async function streamProbe() {
   assert(names[1] === 'probe-unchanged', 'a recompute that only moved generatedAt (at any depth) is "-unchanged"')
   assert(names[2] === 'probe', 'a content change sends a full frame again')
   const first = JSON.parse(res.frames[0].split('data: ')[1])
+  const unchanged = JSON.parse(res.frames[1].split('data: ')[1])
+  assert(unchanged.checkedAt === first.sourceCheckedAt, 'a cached source watermark does not move with an unchanged stream frame')
   assert(typeof first.fingerprint === 'string' && first.fingerprint.length === 40, 'full frames carry the fingerprint the client de-dups on')
   assert(payloadFingerprint({ a: 1, generatedAt: 'x' }) === payloadFingerprint({ a: 1, generatedAt: 'y' }), 'fingerprint ignores generatedAt')
   const count = res.frames.length

@@ -16,6 +16,7 @@
 // drift), and tools/admin-users-check.ts asserts its invariants.
 
 import { isOwnerEmail } from '@/lib/admin-access'
+import { csvCell } from '@/lib/csv'
 import { classifySubscription, providerLabel } from '@/lib/billing/revenue-model'
 import {
   TIER_LABEL,
@@ -765,13 +766,6 @@ export function queryUserDirectory(directory: UserDirectory, query: DirectoryQue
 // ---------------------------------------------------------------------------
 // Export (CSV) — full filtered set, formula-injection safe
 // ---------------------------------------------------------------------------
-
-function csvCell(value: unknown): string {
-  let cell = value === null || value === undefined ? '' : String(value)
-  // Neutralise spreadsheet formulas (=, +, -, @, tab, CR) — CSV injection.
-  if (/^[=+\-@\t\r]/.test(cell)) cell = `'${cell}`
-  return /[",\n\r]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell
-}
 
 export const DIRECTORY_CSV_COLUMNS: Array<{ header: string; value: (user: DirectoryUser) => unknown }> = [
   { header: 'User ID', value: (user) => user.id },

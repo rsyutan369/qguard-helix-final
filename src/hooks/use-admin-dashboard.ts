@@ -15,6 +15,7 @@ import type { SecurityPosture } from '@/lib/admin/security-posture'
 import type { GovernanceModel } from '@/lib/admin/governance'
 import type { HistoryEntry } from '@/lib/admin/admin-history'
 import type { IntegrityCheck } from '@/lib/admin/model-utils'
+import { openTicketedEventSource } from '@/lib/stream-ticket'
 
 /** A row of the Users directory — the wire type is the model type (no drift). */
 export type AdminUser = DirectoryUser
@@ -365,9 +366,18 @@ export function useAdminDashboard() {
 
   useEffect(() => {
     if (!token) return undefined
-    streamRef.current?.close()
-    const stream = new EventSource(`/api/v1/admin/stream?token=${encodeURIComponent(token)}`)
-    streamRef.current = stream
+    let disposed = false
+    let retryTimer: number | undefined
+    let attempt = 0
+    // A single-use ticket per connection means the browser's own EventSource
+    // auto-reconnect (same URL) cannot work: reconnect here, with backoff.
+    const scheduleReconnect = () => {
+      if (disposed) return
+      attempt += 1
+      window.clearTimeout(retryTimer)
+      retryTimer = window.setTimeout(connect, Math.min(30_000, 1_000 * 2 ** Math.min(attempt, 5)) + Math.round(Math.random() * 500))
+    }
+    const attach = (stream: EventSource) => {
     const parse = <T,>(event: Event, label: string): T | null => {
       try {
         return JSON.parse((event as MessageEvent).data) as T
@@ -382,7 +392,10 @@ export function useAdminDashboard() {
     }
 
     stream.onopen = () => setSseConnected(true)
-    stream.addEventListener('admin-connected', () => setSseConnected(true))
+    stream.addEventListener('admin-connected', () => {
+      attempt = 0
+      setSseConnected(true)
+    })
     stream.addEventListener('admin-users', (event) => {
       const frame = parse<UsersStreamFrame>(event, 'users')
       if (!frame) return
@@ -438,11 +451,36 @@ export function useAdminDashboard() {
       setSseConnected(false)
       setError(data?.message || 'Owner session expired — sign in again to resume live telemetry.')
     })
-    stream.onerror = () => setSseConnected(false)
-
-    return () => {
+    stream.onerror = () => {
       stream.close()
       if (streamRef.current === stream) streamRef.current = null
+      setSseConnected(false)
+      scheduleReconnect()
+    }
+    }
+
+    function connect() {
+      if (disposed) return
+      streamRef.current?.close()
+      void openTicketedEventSource('admin', token).then((stream) => {
+        if (disposed) {
+          stream.close()
+          return
+        }
+        streamRef.current = stream
+        attach(stream)
+      }).catch(() => {
+        setSseConnected(false)
+        scheduleReconnect()
+      })
+    }
+
+    connect()
+    return () => {
+      disposed = true
+      window.clearTimeout(retryTimer)
+      streamRef.current?.close()
+      streamRef.current = null
     }
   }, [token])
 

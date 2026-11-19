@@ -3,6 +3,7 @@ import {
   Activity,
   CreditCard,
   Gauge,
+  History,
   Info,
   KeyRound,
   LayoutDashboard,
@@ -10,9 +11,12 @@ import {
   MessageSquare,
   Phone,
   MonitorSmartphone,
+  Network,
   QrCode,
   Settings,
   ShieldCheck,
+  SlidersHorizontal,
+  ArrowLeftRight,
 } from "lucide-react";
 import type { DashboardSnapshot, MessagingModule, Page } from "@/lib/types";
 import { APP_VERSION } from "@/lib/app-update";
@@ -23,6 +27,10 @@ const iconMap = {
   chat: MessageSquare,
   calls: Phone,
   vault: LockKeyhole,
+  mesh: Network,
+  xfer: ArrowLeftRight,
+  "transfer-history": History,
+  "offline-settings": SlidersHorizontal,
   keys: KeyRound,
   devices: MonitorSmartphone,
   verification: QrCode,
@@ -55,7 +63,7 @@ export default function Sidebar({ activePage, modules, snapshot, unreadMessages 
           <img src="/brand/qguard-messaging-badge.webp" alt="QGuard Messaging" className="h-full w-full object-contain drop-shadow-[0_4px_10px_rgba(59,130,246,0.45)]" />
         </div>
         <div>
-          <div className="text-sm font-bold tracking-wide text-violet-600">QGUARD</div>
+          <div className="text-sm font-bold tracking-wide text-violet-600">QGUARD HELIX</div>
           <div className="text-[11px] font-medium text-ink-400">Quantum Messaging</div>
         </div>
       </div>
@@ -74,6 +82,7 @@ export default function Sidebar({ activePage, modules, snapshot, unreadMessages 
               <button
                 key={item.module_id}
                 type="button"
+                aria-current={active ? "page" : undefined}
                 data-tour={`nav-${item.route}`}
                 onClick={() => onNavigate(item.route)}
                 className={`focus-ring flex h-10 w-full items-center gap-3 rounded-lg px-3 text-sm font-semibold transition ${

@@ -29,7 +29,7 @@ const portfolio = buildAssetPortfolio({
 
 const scannerEvidence: Row[] = [
   { id: 'se1', asset_name: 'edge.example.com', host: 'edge.example.com', protocol: 'TLS', observed_algorithm: 'X25519MLKEM768', observed_at: minutesAgo(30), created_at: minutesAgo(30) },
-  { id: 'se2', asset_name: 'api.example.com', host: 'api.example.com', protocol: 'TLS', observed_algorithm: 'X25519MLKEM768', observed_at: minutesAgo(30), created_at: minutesAgo(30) },
+  { id: 'se2', asset_name: 'api.example.com', host: 'api.example.com', port: 443, protocol: 'TLS', observed_algorithm: 'X25519MLKEM768', observed_at: minutesAgo(30), created_at: minutesAgo(30) },
   // Same channel, second reading on edge — must NOT count as a second source.
   { id: 'se3', asset_name: 'edge.example.com', host: 'edge.example.com', protocol: 'TLS', observed_algorithm: 'AES-256-GCM', observed_at: minutesAgo(25), created_at: minutesAgo(25) },
 ]
@@ -37,7 +37,7 @@ const scannerEvidence: Row[] = [
 const runtimeEvents: Row[] = [
   { id: 'rt1', asset_id: 'a-edge', asset_name: 'edge.example.com', agent_id: 'agent-1', key_exchange_algorithm: 'X25519MLKEM768', protocol: 'TLS', observed_at: minutesAgo(5), created_at: minutesAgo(5) },
   // Runtime disagrees with discovery on api.example.com.
-  { id: 'rt2', asset_id: 'a-conflict', asset_name: 'api.example.com', agent_id: 'agent-1', key_exchange_algorithm: 'X25519', protocol: 'TLS', observed_at: minutesAgo(5), created_at: minutesAgo(5) },
+  { id: 'rt2', asset_id: 'a-conflict', asset_name: 'api.example.com', host: 'api.example.com', port: 443, agent_id: 'agent-1', key_exchange_algorithm: 'X25519', protocol: 'TLS', observed_at: minutesAgo(5), created_at: minutesAgo(5) },
   // An unclassifiable reading — must never be treated as disagreement.
   { id: 'rt3', asset_id: 'a-edge', asset_name: 'edge.example.com', agent_id: 'agent-1', algorithm: 'proprietary-wrapper', observed_at: minutesAgo(4), created_at: minutesAgo(4) },
 ]

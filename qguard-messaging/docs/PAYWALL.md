@@ -1,198 +1,177 @@
-# QGuard Messaging Subscription Paywall
+# QGuard Subscriptions — Google Play Billing, PayPal, Entitlements
 
-**Spec:** `Qguard_Wiki/Android_Paywall_Guidelines` · **Date:** 2026-07-15
+**Spec:** `Qguard_Wiki/GooglePlay_Billing` (2026-11-12) · supersedes `Qguard_Wiki/Android_Paywall_Guidelines`
+**Last updated:** 2026-11-12
 
-A STARTER (or higher) subscription unlocks QGuard Messaging. The subscription
-belongs to the **account**, not the device: `public.billing_subscriptions` in
-Supabase is the single source of truth, written only by server-verified payment
-flows, and streamed to every logged-in session in real time.
+## Commercial rules (owner decisions 2026-11-12)
 
----
+| Rule | Decision |
+|---|---|
+| Tiers | Starter, Basic, Pro, Elite — **all paid**, strict ladder (each includes every lower tier) |
+| Free tier / free trial / intro offer | None |
+| Prices (USD list) | Starter $1 / $12 · Basic $5 / $60 · Pro $20 / $240 · Elite $150 / $1,800 |
+| Annual pricing | Fixed yearly charges listed below |
+| Money-back guarantee | None (legal and Google Play refund rights still apply; refunds/revocations are processed) |
+| Subscriptions per account | One. Plan changes replace it in place (Play `SubscriptionUpdateParams`, PayPal `revise`) |
+| Cancellation | Access continues to the verified paid-through date |
+| Android purchases | **Google Play Billing only** inside the Play-distributed app — no PayPal fallback |
+| Web / desktop purchases | PayPal (live) |
+| Authority | Backend only: Google Play Developer API / PayPal → `billing_subscriptions` → `user_entitlements` |
 
-> **Billing endpoint (2026-09-21).** The apps used to call `https://api.qguard.dev`,
-> which never existed (NXDOMAIN), and the Express billing router was never
-> deployed publicly — so desktop "Upgrade" failed with *Failed to fetch* and no
-> PayPal webhook was registered. Billing now runs as the **`billing` Supabase
-> Edge Function** (`supabase/functions/billing` in the platform repo) at
-> `https://<project>.supabase.co/functions/v1/billing`, with the same
-> `/api/v1/...` paths. The app derives that origin from `VITE_SUPABASE_URL`
-> (`src/lib/billing-api.ts`); `VITE_BILLING_API_ORIGIN` still overrides it for a
-> self-hosted Express API (add its host to the CSP `connect-src` too).
-> **Google Play verification (2026-10-19)** is implemented in the Edge Function
-> (`/api/v1/play-billing/verify` and `/api/v1/play-billing/rtdn`, a port of
-> `src/api-server/play-billing.ts`; checked by `tools/billing-edge-check.ts`).
-> It answers 503 `PLAY_NOT_CONFIGURED` until the Play service-account secrets
-> below are set and the function is redeployed. Until the function's `/health`
-> reports `"playVerification": true`, the Android app does not launch Google Play
-> purchases at all and uses PayPal checkout instead
-> (`billingSupportsPlayVerification()`), so nobody can be charged by Play for a
-> purchase the service cannot verify.
+Single sources of truth in code: `src/lib/billing/plan-pricing.ts` (prices),
+`supabase/functions/billing/entitlements.ts` (entitlement keys per tier, mirrored
+by `subscription_entitlement_catalog`), `supabase/functions/billing/logic.ts`
+(Play products, state mapping, access rule). `tools/billing-edge-check.ts`
+asserts that the SQL seed, the web route gating, the client catalog and the
+backend agree.
 
 ## Architecture
 
 ```
-Android app ──► Google Play Billing ──► purchase token
-                                          │
-                                          ▼
-                    POST <billing origin>/api/v1/play-billing/verify   (Bearer session)
-                    — Google Play Developer API (subscriptionsv2)
-                    — obfuscatedExternalAccountId == user id  (account binding)
-                    — token-reuse rejection (one token = one account)
-                    — acknowledge                                     │
-Desktop app ──► POST /api/v1/paypal/subscribe ─► PayPal approval URL │
-                then POST /api/v1/paypal/confirm (polled)             │
-                + verified webhook (whichever lands first)            │
-                                          ┌───────────────────────────┘
-                                          ▼
-                     public.billing_subscriptions (+ invoices, audit, notifications)
-                                          │  supabase_realtime
-              ┌───────────────────────────┼───────────────────────────┐
-              ▼                           ▼                           ▼
-     Desktop session unlocks     Android session unlocks     any future session
+Android app (Tauri + React)
+  │ GET /api/v1/subscriptions/me ──► playAccountId = SHA-256(user id)   (no PII to Google)
+  │ PlayBilling.kt (Billing Library 8.3.0): ProductDetails (localized price), base-plan offer only
+  │ launchBillingFlow(obfuscatedAccountId = playAccountId)
+  ▼
+Google Play ──► purchase token
+  │ POST /api/v1/subscriptions/verify   (Supabase JWT; identity from the JWT, never the body)
+  ▼
+billing service (supabase/functions/billing — Edge Function; the same play-service.ts
+                 is mounted by Express at /api/v1/subscriptions for self-hosting)
+  1. purchases.subscriptionsv2.get   (package path = GOOGLE_PLAY_PACKAGE_NAME)
+  2. product must be one of the 8 qh_* products; binding must equal the caller
+  3. token fingerprint (SHA-256) must not belong to another account (DB unique index)
+  4. replaced/linked tokens never overwrite the newer plan
+  5. upsert billing_subscriptions (token sealed with AES-256-GCM) ──trigger──► user_entitlements
+  6. invoice at Google's recurringPrice (test purchases recorded at $0)
+  7. acknowledge AFTER durable recording (retried by reconcile if it fails)
+  ▼
+Supabase Realtime (billing_subscriptions, billing_invoices, user_entitlements)
+  ──► every signed-in device (desktop + Android) unlocks/locks live
+
+Google Play RTDN ──► Pub/Sub push (OIDC) ──► POST /api/v1/webhooks/google-play/rtdn
+  inbox row persisted first (play_webhook_events) ─► re-query Google ─► same apply path
+  failures: 5xx → Pub/Sub retry; reconcile sweep replays; dead_letter after 8 attempts
+
+Desktop/web ──► POST /api/v1/paypal/subscribe ─► PayPal approval ─► confirm + webhook ─► same tables
 ```
 
-Ongoing lifecycle sync:
-- **PayPal** → `/api/v1/paypal/webhook` on the billing Edge Function
-  (signature-verified against `PAYPAL_WEBHOOK_ID`, idempotent via
-  `paypal_webhook_events`, 5xx on failure so PayPal redelivers). Registered with
-  `npx tsx tools/paypal-webhook-setup.ts` (platform repo).
-- **PayPal confirm** → right after checkout the app polls
-  `/api/v1/paypal/confirm`; the function reads the subscription from PayPal and
-  activates it only if PayPal says ACTIVE and `custom_id` is the caller. Same
-  row as the webhook writes, so activation never depends on webhook delivery.
-- **Google Play** → `/api/v1/play-billing/rtdn` (Pub/Sub push): RENEWED /
-  RECOVERED / CANCELED / ON_HOLD / GRACE / PAUSED / REVOKED / EXPIRED. Every
-  RTDN re-fetches the authoritative state from Google before writing.
-- **Reconciliation** → existing `/api/v1/paypal/reconcile` (cron) repairs drift.
+### Enforcement layers
 
-## Enforcement layers (defense in depth)
+1. **Database (authoritative):** `qguard_has_messaging_access(uid)` backs the RESTRICTIVE
+   insert policies on messages, conversations and call signals (migration 030, redefined in
+   `supabase/google-play-billing-v2.sql`). `qguard_has_entitlement(uid, key)` is the
+   server-side gate for any protected operation. Clients cannot write
+   `billing_subscriptions`, `user_entitlements` or the audit trail (RLS + grants; verified live).
+2. **Access rule** (identical in SQL `qguard_subscription_access_until`, `logic.ts rowGrantsAccess`,
+   `qguard-messaging/src/lib/subscription.ts`, `src/lib/subscription-access.ts`):
+   status `active` or `pending_renewal` (Play grace period) and the period end not passed by more
+   than the provider tolerance — **1 h for Google Play** (Google moves `expiryTime` itself; this only
+   covers notification latency), 72 h for PayPal (renewal-webhook lag). `trial` grants nothing.
+3. **Time without events:** `qguard_sweep_expired_entitlements()` (pg_cron, every 5 min) withdraws
+   entitlements whose access ended; `qguard_expire_cancelled_subscriptions()` (every 10 min) ends
+   PayPal cancellations at period end; the reconcile sweep re-queries Google for Play rows near or
+   past expiry, unacknowledged, or not verified for 24 h.
+4. **UI gate:** `PaywallGate` + `useSubscription` (realtime + period-boundary timer). Presentation only.
 
-1. **UI gate** — `src/components/PaywallGate.tsx` mounted from `App.tsx`:
-   without access, premium modules (chat, vault, calls, keys, devices, audit,
-   dashboard) never mount; only Subscription + Settings + sign-out remain.
-2. **Database (authoritative)** — migration
-   `qguard-messaging/supabase/migrations/030_messaging_paywall_enforcement.sql`:
-   `qguard_has_messaging_access(uid)` + RESTRICTIVE INSERT policies on
-   `messaging_message_envelopes`, `messaging_conversations`,
-   `messaging_call_signals`. A tampered client cannot send messages or place
-   calls without an access-granting subscription row.
-3. **Expiry while logged in** — realtime status flips lock the UI instantly; a
-   local boundary timer also re-checks when `current_period_end` (+72 h grace)
-   passes, so expiry engages even with realtime briefly down.
+Subscription expiry never deletes local Quantum Vault data, the account, or billing history.
 
-Access-granting statuses: `active`, `trial`, `pending_renewal` — identical in
-`src/lib/subscription-access.ts` (platform), `src/lib/subscription.ts`
-(messaging client), and migration 030 (database).
+## Google Play products (Play Console)
+
+Eight subscription products, **one base plan each, no offers** (the app only ever buys the
+base-plan offer — `offerId == null` — so a promotional offer created by mistake is never sold):
+
+| Product ID | Base plan | Qguard USD list price |
+|---|---|---:|
+| `qh_starter_monthly` | monthly (P1M, auto-renewing) | $1 |
+| `qh_starter_yearly` | yearly (P1Y, auto-renewing) | $12 |
+| `qh_basic_monthly` | monthly | $8 |
+| `qh_basic_yearly` | yearly | $60 |
+| `qh_pro_monthly` | monthly | $30 |
+| `qh_pro_yearly` | yearly | $240 |
+| `qh_elite_monthly` | monthly | $199 |
+| `qh_elite_yearly` | yearly | $1,800 |
+
+The table shows Qguard list prices. Set and verify actual regional base plan prices in Play Console. Android uses the price returned by Google Play when available.
+
+Product IDs cannot be reused once deleted. If one must change, set
+`PLAY_PRODUCT_<TIER>_<MONTHLY|YEARLY>` on the billing service; the app reads the mapping from
+`/api/v1/subscriptions/catalog` (no app release needed). The previous `qguard_<tier>` convention is
+retired; purchases of unknown products are rejected.
+
+## Operator setup — what must be done outside the code
+
+### Done (2026-11-12, verified)
+- `supabase/google-play-billing-v2.sql` applied to `iqtofyaekpiniswleakt` (16 products, 33 entitlement
+  keys, entitlements backfilled for the 4 comp accounts, cron jobs, realtime publication).
+- `billing` Edge Function **v3** deployed (verify_jwt = false; every user route verifies the JWT itself).
+- Live checks: `npx tsx tools/billing-edge-check.ts --live` (54/54) and
+  `npx tsx tools/billing-e2e-live-check.ts` (14/14: real session, realtime grant + expiry, RLS, cleanup).
+
+### Still required (blocking real Google Play sales)
+1. **Purchase-token encryption key** — a new 32-byte key must be stored as the Edge Function secret
+   `PLAY_TOKEN_ENCRYPTION_KEY` (and in the Express env). Without it purchases still verify, but tokens
+   are not retained, so the reconcile sweep cannot re-query Google. Generate once, never rotate without
+   re-encrypting: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.
+2. **Play Console**: create the 8 products above (no trial, no intro offer), activate them, add
+   license testers, publish an internal-testing build containing Billing Library 8.
+3. **Google Cloud**: enable *Google Play Android Developer API*; create a dedicated service account;
+   in Play Console → Users and permissions, invite it with **View financial data** and **Manage orders
+   and subscriptions** only. Store its JSON as `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` and set
+   `GOOGLE_PLAY_PACKAGE_NAME=com.qguard.messaging`. `/health` then reports `playVerification: true`
+   and the Android app starts offering purchases.
+4. **RTDN**: create Pub/Sub topic; grant `google-play-developer-notifications@system.gserviceaccount.com`
+   *Pub/Sub Publisher* on it; create a **push** subscription to
+   `https://iqtofyaekpiniswleakt.supabase.co/functions/v1/billing/api/v1/webhooks/google-play/rtdn`
+   with **authentication enabled** (a dedicated push service account, audience = that URL), a
+   dead-letter topic, and retry policy. Set `PLAY_RTDN_AUDIENCE` (the audience) and
+   `PLAY_RTDN_SERVICE_ACCOUNT` (the push SA email). Optionally also append `?token=` and set
+   `PLAY_RTDN_TOKEN`. Then Play Console → Monetization setup → topic name → *Send test notification*.
+5. **PayPal**: monthly prices dropped (Basic $8→$5, Pro $30→$20, Elite $199→$150). Yearly prices are
+   unchanged ($60/$240/$1,800). Reprice the three monthly plans with `tools/paypal-update-pricing.ts`
+   (there are no paying PayPal subscribers today — only comp grants).
+6. **Release**: upload the rebuilt AAB (`src-tauri/release/QguardMessaging-release.aab`) — bump the
+   version first if 1.5.0 was already uploaded.
+7. **Legal**: the Refund Policy and Terms no longer offer a money-back guarantee; review, update
+   `SITE.effectiveDate`, and announce per the policy's change clause.
 
 ## Files
 
 | Area | File |
 |---|---|
-| DB enforcement | `qguard-messaging/supabase/migrations/030_messaging_paywall_enforcement.sql` |
-| DB Play ledger | `supabase/play-billing-migration.sql` |
-| Play backend | `src/api-server/play-billing.ts` (+ mount in `index.ts`) |
-| Client model | `qguard-messaging/src/lib/subscription.ts` (+ tests) |
-| Client hook | `qguard-messaging/src/lib/use-subscription.ts` (realtime + boundary timer) |
-| UI | `qguard-messaging/src/pages/SubscriptionPage.tsx`, `src/components/PaywallGate.tsx` |
-| App wiring | `qguard-messaging/src/App.tsx`, `Sidebar.tsx`, `MobileShell.tsx`, `lib/types.ts` |
-| Rust bridge | `qguard-messaging/src-tauri/src/commands/billing.rs` (+ `lib.rs`, `Cargo.toml`) |
-| Android | `gen/android/.../com/qguard/messaging/PlayBilling.kt`, `app/build.gradle.kts` (billing-ktx 7.1.1) |
+| Migration | `supabase/google-play-billing-v2.sql` (after the files listed in its header) |
+| Shared rules | `supabase/functions/billing/logic.ts`, `entitlements.ts` |
+| Service (verify, RTDN, reconcile, subscription API) | `supabase/functions/billing/play-service.ts` |
+| Edge Function routes | `supabase/functions/billing/index.ts` |
+| Express mounts | `src/api-server/subscriptions.ts`, `src/api-server/play-billing.ts` (legacy aliases) |
+| Admin dashboard | Revenue Intelligence → Subscriptions → *Billing operations* (`src/lib/billing/billing-ops.ts`) |
+| Android bridge | `gen/android/.../PlayBilling.kt` (Billing Library 8.3.0, non-ktx), `src-tauri/src/commands/billing.rs` |
+| Client | `src/lib/play-billing.ts`, `billing-api.ts`, `subscription.ts`, `use-subscription.ts`, `pages/SubscriptionPage.tsx` |
+| Checks | `tools/billing-edge-check.ts [--live]`, `tools/billing-e2e-live-check.ts`, `tools/revenue-intelligence-check.ts` |
 
-## Setup (operator)
+## API
 
-### 1. Database (Supabase SQL Editor, in order)
-1. `supabase/billing-subscription-schema.sql` (if not already applied)
-2. `supabase/paypal-subscription-migration.sql` (if not already applied)
-3. `supabase/play-billing-migration.sql`
-4. `qguard-messaging/supabase/migrations/030_messaging_paywall_enforcement.sql`
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/api/v1/subscriptions/catalog?platform=google_play\|paypal` | public | Products, list prices, tier entitlements, Play product map |
+| GET | `/api/v1/subscriptions/me` | JWT | Verified subscription, access, entitlements, `playAccountId` |
+| GET | `/api/v1/subscriptions/entitlements` | JWT | Effective entitlement keys |
+| GET | `/api/v1/subscriptions/history` | JWT | Invoices + lifecycle events |
+| POST | `/api/v1/subscriptions/verify` | JWT | Verify one Play purchase token (rate-limited 20/min/account) |
+| POST | `/api/v1/subscriptions/restore` | JWT | Re-verify up to 10 tokens from this device |
+| POST | `/api/v1/webhooks/google-play/rtdn` | Pub/Sub OIDC and/or shared secret | RTDN |
+| POST | `/api/v1/paypal/subscribe` · `/confirm` · `/webhook` · `/reconcile` | JWT / PayPal sig / secret | PayPal (web/desktop) |
 
-> ⚠️ Step 4 turns the paywall ON for message/conversation/call inserts.
-> Existing accounts without a subscription row lose send/call ability until
-> they subscribe. Manual comp grant (also in the migration header):
-> ```sql
-> INSERT INTO public.billing_subscriptions (user_id, subscription_id, provider, plan, status, billing_cycle)
-> VALUES ('<user-uuid>', 'comp_<user-uuid>', 'manual', 'Starter', 'active', 'monthly')
-> ON CONFLICT (user_id) DO UPDATE SET plan = EXCLUDED.plan, status = 'active', updated_at = now();
-> ```
+`/api/v1/play-billing/verify` and `/rtdn` remain as aliases for older builds.
 
-### 2. Google Play Console
-1. Create subscription products (one per tier you sell on Android):
-   product id `qguard_starter` (and optionally `qguard_basic`, `qguard_pro`,
-   `qguard_elite`) with base plans `monthly` and `yearly`.
-2. Create a Google Cloud service account, grant it **Financial data** +
-   **Manage orders** access in Play Console → API access.
-3. Monetization setup → Real-time developer notifications: create a Pub/Sub
-   topic, add a **push** subscription to
-   `<billing origin>/api/v1/play-billing/rtdn?token=<PLAY_RTDN_TOKEN>` (once
-   Play verification is deployed — see the note at the top).
+## Testing checklist (needs the Play setup above + a test device)
 
-### 3. Billing service configuration
-```
-GOOGLE_PLAY_PACKAGE_NAME=com.qguard.messaging
-GOOGLE_PLAY_SERVICE_ACCOUNT_JSON={"client_email":"...","private_key":"..."}   # or GOOGLE_PLAY_SA_EMAIL + GOOGLE_PLAY_SA_PRIVATE_KEY
-PLAY_RTDN_TOKEN=<long random secret>
-# optional product-id overrides (default qguard_<tier>):
-# PLAY_PRODUCT_STARTER=... PLAY_PRODUCT_BASIC=... PLAY_PRODUCT_PRO=... PLAY_PRODUCT_ELITE=...
-```
-PayPal configuration (`PAYPAL_CLIENT_ID`, `PAYPAL_SECRET_KEY`, `PAYPAL_ENV`,
-`PAYPAL_WEBHOOK_ID`, `PAYPAL_PLAN_*`, `APP_ORIGIN`) lives in the platform `.env`
-and is copied into the Edge Function's secrets with
-`npx tsx tools/billing-secrets-push.ts` (needs `npx supabase login` once; never
-prints a value). Check it with `GET /functions/v1/billing/health` — booleans
-only — and `npx tsx tools/billing-edge-check.ts --live`.
-
-### 4. Messaging app env (optional)
-```
-# Default: ${VITE_SUPABASE_URL}/functions/v1/billing. Override only for a
-# self-hosted Express billing API (and add it to the CSP connect-src):
-VITE_BILLING_API_ORIGIN=https://billing.example.com
-```
-
-## User flows
-
-- **New user**: install → register → login → paywall (plans grid) → pay
-  (Google Play on Android / PayPal browser checkout on desktop) → backend
-  verifies + activates → realtime unlocks → dashboard.
-- **Existing subscriber login**: entitlement loads before the shell renders —
-  no paywall, no re-purchase prompt, on either platform.
-- **Cross-platform**: purchase on Android → desktop session unlocks live (and
-  vice versa). One account, one subscription.
-- **Expiry/cancel/payment-failure while logged in**: realtime status flip →
-  premium modules unmount immediately, expiration banner + Subscription page.
-- **Restore purchases**: Android re-queries Google Play and re-verifies tokens
-  server-side; desktop re-syncs the account subscription. Reinstalls and new
-  devices unlock via login + restore.
-- **Upgrade**: PayPal `revise` (in-place, prorated) or Play
-  `SubscriptionUpdateParams` (CHARGE_PRORATED_PRICE) — never a second
-  subscription.
-
-## Security properties
-
-- No client-side trust: activation happens only after PayPal webhook
-  verification or Google Play Developer API validation.
-- Account binding: Play purchases carry `obfuscatedAccountId` = Supabase user
-  id; the server rejects mismatches (409 `ACCOUNT_MISMATCH`).
-- Replay/duplicate defense: one purchase token activates exactly one account
-  (409 `TOKEN_ALREADY_CLAIMED`); PayPal/RTDN events are idempotent by ledger
-  (`paypal_webhook_events` / `play_webhook_events`); raw Play tokens are never
-  persisted (SHA-256 hashes only).
-- Server-side lockout: RLS RESTRICTIVE policies stop sends/calls regardless of
-  client state; JWT (Supabase session) authenticates every billing API call.
-- Auditability: `billing_audit_events` + webhook ledgers record every
-  activation, sync, and state change.
-
-## Testing checklist (requires deployed API + store setup)
-
-- [ ] New Android user purchase (Play sandbox/license testers) → unlock
-- [ ] Desktop login after Android purchase → unlocked without prompt
-- [ ] New desktop user purchase (PayPal sandbox) → unlock
-- [ ] Android login after desktop purchase → unlocked without prompt
-- [ ] RTDN test notification (Play Console button) → 200
-- [ ] Renewal (Play test renewals are accelerated) → invoice row + dates move
-- [ ] Cancel on Play / in-app PayPal cancel → status syncs, access until period end
-- [ ] Expiry → both sessions lock live, banner shown
-- [ ] Payment failure (Play "decline" test card) → grace then lock
-- [ ] Restore purchases after reinstall
-- [ ] Tampered client: direct INSERT into messaging_message_envelopes without
-      subscription → RLS rejects
-- [ ] /verify with another account's token → 409
+- [ ] Each of the 8 products: purchase → verify → unlock on Android and desktop live
+- [ ] User cancels the purchase sheet → no change; pending payment → "pending", no access
+- [ ] Restore purchases after reinstall / on a second device
+- [ ] Token from another account → 409 `TOKEN_ALREADY_CLAIMED`; wrong product → 400
+- [ ] Upgrade Starter→Pro and downgrade Pro→Basic (in place; old token's EXPIRED does not lock)
+- [ ] Cancel in Play → "canceled and will remain active until …"; expiry → locked live
+- [ ] Grace period, account hold (Play test cards), recovery
+- [ ] Refund / revoke from Play Console → invoice refunded, access revoked
+- [ ] RTDN test notification → 200; forged push → 401

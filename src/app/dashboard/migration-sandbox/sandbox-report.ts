@@ -61,7 +61,7 @@ export function buildSandboxReportDoc(snapshot: SandboxSnapshot, type: SandboxRe
         ['Completed / failed', `${snapshot.summary.completed} / ${snapshot.summary.failed}`],
         ['PQC readiness', pctText(snapshot.summary.pqcReadiness)],
         ['Quantum risk (0-100, lower is better)', snapshot.summary.quantumRiskScore === null ? 'Not assessed' : `${snapshot.summary.quantumRiskScore} (${snapshot.summary.quantumRiskLevel})`],
-        ['Compliance score', pctText(snapshot.complianceScore)],
+        ['Tenant control evidence', snapshot.complianceScore === null ? 'Not assessed' : pctText(snapshot.complianceScore)],
         ['Critical exposures', s(snapshot.summary.criticalExposures)],
       ],
     },
@@ -100,7 +100,7 @@ export function buildSandboxReportDoc(snapshot: SandboxSnapshot, type: SandboxRe
     }
     if (gate) {
       push({
-        title: 'Production Approval Gate',
+        title: 'Analytical Review',
         paragraphs: [`Simulation status: ${gate.simulationStatus}. ${gate.aiRecommendation}`, gate.guarantee],
         table: { headers: ['Gate', 'Value', 'Status'], rows: gate.gates.map((g) => [g.label, g.value, g.status.toUpperCase()]) },
       })
@@ -141,9 +141,9 @@ export function buildSandboxReportDoc(snapshot: SandboxSnapshot, type: SandboxRe
   }
 
   if (type === 'compliance') {
-    push({ title: 'Compliance Posture', paragraphs: [`Overall compliance score: ${snapshot.complianceScore}%.`] })
+    push({ title: 'Tenant control evidence', paragraphs: [snapshot.complianceScore === null ? 'No assessed tenant control score was available.' : `Score across measured tenant controls: ${snapshot.complianceScore}%.`, 'Sandbox results do not establish compliance or module validation.'] })
     push({
-      title: 'Framework Validation',
+      title: 'Framework evidence and coverage',
       table: { headers: ['Control family', 'Indicator', 'Status', 'Score', 'Basis'], rows: snapshot.complianceItems.map((c) => [c.framework, c.control, c.status, s(c.score), c.basis || '']) },
     })
     if (gate) push({ title: 'Approval Evidence', table: { headers: ['Simulation', 'Decision', 'Decided By', 'At'], rows: gate.decisions.map((d) => [d.jobName, d.decision, s(d.decidedBy), s(d.decidedAt)]) } })

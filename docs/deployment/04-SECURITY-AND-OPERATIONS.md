@@ -1,5 +1,11 @@
 # 04 — Security, observability, backup and disaster recovery
 
+> Updated 2026-11-19: the obsolete DigitalOcean Kubernetes deployment workflow
+> and shared deployment action have been removed at the owner's request.
+> DOKS provisioning, automatic staging/promotion, and automatic rollback described
+> below are historical reference; they are not active GitHub Actions automation.
+> CI still builds and checks the API image.
+
 ## 1. Security findings from the production audit
 
 | # | Finding | Severity | Status |

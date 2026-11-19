@@ -4,8 +4,15 @@
  */
 
 import type { ApiSecurityResult, SecurityHeader, ApiSecurityFinding, ThreatLevel } from './types'
+import { requestPublicWebResource } from '../public-scan/public-http'
 
 const FETCH_TIMEOUT = 5_000
+const MAX_BODY_SIZE = 1_000_000
+const INSPECTED_RESPONSE_BODIES = new Set([
+  '/.well-known/jwks.json',
+  '/.well-known/openid-configuration',
+  '/.well-known/security.txt',
+])
 
 // Common API paths to probe
 const API_PATHS = [
@@ -86,39 +93,25 @@ const SECURITY_HEADERS: {
 /**
  * Safe fetch with timeout for API probing
  */
-async function probeFetch(
-  url: string,
-  method: string = 'HEAD'
-): Promise<Response | null> {
-  let timeout: ReturnType<typeof setTimeout> | undefined
+async function probeFetch(url: string, readBody = false) {
   try {
-    const controller = new AbortController()
-    timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT)
-
-    const response = await fetch(url, {
-      method,
-      headers: {
-        'User-Agent': 'QGuard-Scanner/2.4',
-        'Accept': 'application/json, text/html',
-      },
-      signal: controller.signal,
-      redirect: 'follow',
+    return await requestPublicWebResource(url, {
+      method: 'GET',
+      accept: 'application/json, text/html',
+      timeoutMs: FETCH_TIMEOUT,
+      bodyLimit: readBody ? MAX_BODY_SIZE : undefined,
     })
-
-    return response
   } catch {
     return null
-  } finally {
-    if (timeout) clearTimeout(timeout)
   }
 }
 
 /**
  * Analyze security headers from a response
  */
-function analyzeSecurityHeaders(response: Response): SecurityHeader[] {
+function analyzeSecurityHeaders(headers: Headers): SecurityHeader[] {
   return SECURITY_HEADERS.map(header => {
-    const value = response.headers.get(header.name)
+    const value = headers.get(header.name)
     const present = value !== null
     let secure = present
 
@@ -275,7 +268,7 @@ export async function scanApiSecurity(
   const baseUrl = `https://${hostname}`
 
   // Step 1: Probe the main page and collect security headers
-  const mainResponse = await probeFetch(baseUrl, 'GET')
+  const mainResponse = await probeFetch(baseUrl)
   if (!mainResponse && edge?.reachable) {
     // fetch() was blocked by the chain, but the origin demonstrably answered.
     // Report what was actually read rather than an unmeasured blank.
@@ -317,7 +310,7 @@ export async function scanApiSecurity(
   }
   if (mainResponse) {
     endpointsProbed++
-    const headers = analyzeSecurityHeaders(mainResponse)
+    const headers = analyzeSecurityHeaders(mainResponse.headers)
     securityHeaders.push(...headers)
 
     // Check for missing HSTS (critical for quantum security)
@@ -385,7 +378,7 @@ export async function scanApiSecurity(
       .filter((path) => path !== '/')
       .map(async (path) => {
         const url = `${baseUrl}${path}`
-        const response = await probeFetch(url, 'GET')
+        const response = await probeFetch(url, INSPECTED_RESPONSE_BODIES.has(path))
         return { path, url, response }
       })
   )
@@ -398,10 +391,7 @@ export async function scanApiSecurity(
     if (path === '/graphql' && response.status !== 404) {
       // Try introspection query
       try {
-        const gqlResponse = await probeFetch(
-          `${url}?query={__schema{types{name}}}`,
-          'GET'
-        )
+        const gqlResponse = await probeFetch(`${url}?query={__schema{types{name}}}`)
         if (gqlResponse && gqlResponse.ok) {
           apiFindings.push({
             endpoint: path,
@@ -420,7 +410,7 @@ export async function scanApiSecurity(
     // Check JWKS endpoint
     if (path === '/.well-known/jwks.json' && response.ok) {
       try {
-        const jwksData = await response.json()
+        const jwksData = JSON.parse(response.body)
         const jwksFindings = analyzeJwks(jwksData as Record<string, unknown>)
         apiFindings.push(...jwksFindings)
       } catch {
@@ -431,7 +421,7 @@ export async function scanApiSecurity(
     // Check OpenID Configuration
     if (path === '/.well-known/openid-configuration' && response.ok) {
       try {
-        const oidcData = await response.json()
+        const oidcData = JSON.parse(response.body)
         const oidcFindings = analyzeOidcConfig(oidcData as Record<string, unknown>)
         apiFindings.push(...oidcFindings)
       } catch {
@@ -442,7 +432,7 @@ export async function scanApiSecurity(
     // Check security.txt for contact/encryption info
     if (path === '/.well-known/security.txt' && response.ok) {
       try {
-        const secTxt = await response.text()
+        const secTxt = response.body
         if (secTxt.includes('PGP') || secTxt.includes('pgp') || secTxt.includes('gpg')) {
           apiFindings.push({
             endpoint: path,

@@ -13,11 +13,13 @@ import {
   Loader2,
   LockKeyhole,
   Send,
+  ShieldAlert,
   ShieldCheck,
+  Sparkles,
   Trash2,
+  UnlockKeyhole,
   Upload,
   UserPlus,
-  UnlockKeyhole,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -65,6 +67,10 @@ export interface RecipientSummary {
   label: string | null;
   kem_algorithm: string;
   signature_algorithm: string;
+  /** Whether this exact fingerprint has been confirmed out of band. The backend
+   *  refuses to seal without it, so this is the real state, not a UI hint. */
+  verified: boolean;
+  verified_at: string | null;
   bundle: string;
 }
 
@@ -177,16 +183,38 @@ function basename(value: string): string {
   return value.split(/[\\/]/).filter(Boolean).pop() ?? value;
 }
 
-/** Local-only strength read-out. Length dominates for an offline bundle. */
-function passphraseStrength(value: string): { score: 0 | 1 | 2 | 3; label: string; tone: string } {
-  const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/].filter((r) => r.test(value)).length;
-  if (value.length < MIN_PASSPHRASE_LEN) {
-    return { score: 0, label: `Too short — ${MIN_PASSPHRASE_LEN} characters minimum`, tone: "text-rose-600" };
-  }
-  if (value.length >= 20 && classes >= 2) return { score: 3, label: "Strong", tone: "text-emerald-600" };
-  if (value.length >= 16 || classes >= 3) return { score: 2, label: "Good", tone: "text-cyan-700" };
-  return { score: 1, label: "Acceptable — longer is better", tone: "text-amber-600" };
+/** What the backend reports about a passphrase. The estimate is computed there,
+ *  not here: the same function has to gate the bundle, and a second opinion in
+ *  the UI would eventually disagree with the one that actually decides. */
+interface PassphraseStrength {
+  bits: number;
+  fraction: number;
+  verdict: "weak" | "fair" | "strong" | "excellent";
+  acceptable: boolean;
+  issues: string[];
+  suggestion: string | null;
 }
+
+interface PassphrasePolicy {
+  minBits: number;
+  minLength: number;
+  defaultWords: number;
+  defaultWordsBits: number;
+}
+
+const VERDICT_TONE: Record<PassphraseStrength["verdict"], string> = {
+  weak: "text-rose-600",
+  fair: "text-amber-600",
+  strong: "text-emerald-600",
+  excellent: "text-emerald-600",
+};
+
+const VERDICT_BAR: Record<PassphraseStrength["verdict"], string> = {
+  weak: "bg-rose-500",
+  fair: "bg-amber-500",
+  strong: "bg-emerald-500",
+  excellent: "bg-emerald-500",
+};
 
 export default function PortableIdentityPanel({
   userId,
@@ -231,7 +259,18 @@ export default function PortableIdentityPanel({
   const [modalError, setModalError] = useState<string | null>(null);
   const passphraseRef = useRef<HTMLInputElement>(null);
 
-  const strength = passphraseStrength(passphrase);
+  const [strength, setStrength] = useState<PassphraseStrength | null>(null);
+  const [policy, setPolicy] = useState<PassphrasePolicy | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [revealPassphrase, setRevealPassphrase] = useState(false);
+
+  // Out-of-band fingerprint verification. `verifying` is the recipient whose
+  // fingerprint the user is confirming; `confirmation` is what they were told.
+  const [verifying, setVerifying] = useState<RecipientSummary | null>(null);
+  const [confirmation, setConfirmation] = useState("");
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [verifyBusy, setVerifyBusy] = useState(false);
+
   const locked = identity === null;
   const anyBusy = busy !== null || vaultBusy;
   const bodyId = "portable-identity-panel-body";
@@ -243,6 +282,41 @@ export default function PortableIdentityPanel({
       setExpanded(false);
     }
   }, [expandedKey]);
+
+  // The floor comes from the backend so the number the UI shows can never drift
+  // from the one that actually gates the bundle.
+  useEffect(() => {
+    let cancelled = false;
+    void safeInvoke<PassphrasePolicy>("vault_passphrase_policy")
+      .then((value) => {
+        if (!cancelled && value) setPolicy(value);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Score as the user types, but only when creating — scoring a passphrase they
+  // already own tells them nothing they can act on.
+  useEffect(() => {
+    setStrength(null);
+    if (modal?.mode !== "create" || passphrase.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void safeInvoke<PassphraseStrength>("vault_passphrase_strength", { passphraseText: passphrase })
+        .then((value) => {
+          if (!cancelled && value) setStrength(value);
+        })
+        .catch(() => undefined);
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [passphrase, modal?.mode]);
 
   const toggleExpanded = useCallback(() => {
     setExpanded((open) => {
@@ -322,6 +396,45 @@ export default function PortableIdentityPanel({
     setSelected([]);
   }, [recipientsKey]);
 
+  // The address book lives in localStorage, but *verification* lives in the
+  // backend's encrypted store — that is the copy the seal gate reads. Reconcile
+  // on load so the badge can never claim a recipient is verified when the seal
+  // would then be refused. Recipients saved before this feature existed have no
+  // flag at all, which resolves to unverified: the safe direction.
+  useEffect(() => {
+    let cancelled = false;
+    void safeInvoke<Array<{ fingerprint: string; verifiedAt: string }>>("vault_recipient_trust_list")
+      .then((trusted) => {
+        if (cancelled || !trusted) return;
+        const byFingerprint = new Map(
+          trusted.map((entry) => [entry.fingerprint.toLowerCase(), entry.verifiedAt]),
+        );
+        setRecipients((current) => {
+          let changed = false;
+          const next = current.map((recipient) => {
+            const verifiedAt = byFingerprint.get(recipient.fingerprint.toLowerCase()) ?? null;
+            const verified = verifiedAt !== null;
+            if (recipient.verified === verified && recipient.verified_at === verifiedAt) {
+              return recipient;
+            }
+            changed = true;
+            return { ...recipient, verified, verified_at: verifiedAt };
+          });
+          if (!changed) return current;
+          try {
+            window.localStorage.setItem(recipientsKey, JSON.stringify(next));
+          } catch {
+            // A full quota is not a reason to show the wrong badge this session.
+          }
+          return next;
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [recipientsKey]);
+
   const persistRecipients = useCallback(
     (next: RecipientSummary[]) => {
       setRecipients(next);
@@ -338,19 +451,88 @@ export default function PortableIdentityPanel({
   const addRecipient = useCallback(
     (recipient: RecipientSummary) => {
       const existing = recipients.findIndex((r) => r.fingerprint === recipient.fingerprint);
+      // A bundle arriving under a name you already know, but with different keys,
+      // is exactly what a substitution looks like. Say so loudly — this is the
+      // case the whole verification step exists for.
+      const sameLabelDifferentKeys =
+        existing < 0 &&
+        recipient.label !== null &&
+        recipients.some((r) => r.label === recipient.label && r.fingerprint !== recipient.fingerprint);
+
       const next = existing >= 0 ? recipients.map((r, i) => (i === existing ? recipient : r)) : [...recipients, recipient];
       persistRecipients(next);
       setSelected((prev) => (prev.includes(recipient.fingerprint) ? prev : [...prev, recipient.fingerprint]));
+
+      if (sameLabelDifferentKeys) {
+        setNotice({
+          tone: "error",
+          message:
+            `You already have a different identity saved as "${recipient.label}". Two identities with the same name and ` +
+            `different fingerprints means one of them is not who you think. Check with them before verifying either.`,
+        });
+        return;
+      }
       setNotice({
-        tone: "ok",
+        tone: recipient.verified ? "ok" : "info",
         message:
           existing >= 0
             ? `Updated recipient ${recipient.label || recipient.short_fingerprint}.`
-            : `Added recipient ${recipient.label || recipient.short_fingerprint}. Confirm the fingerprint with them over a channel you trust before sending anything sensitive.`,
+            : recipient.verified
+              ? `Added ${recipient.label || recipient.short_fingerprint} — already verified.`
+              : `Added ${recipient.label || recipient.short_fingerprint}. Verify their fingerprint before you can seal anything to them.`,
       });
     },
     [persistRecipients, recipients],
   );
+
+  /** Record that the user compared this fingerprint out of band. The backend
+   *  checks the typed value against the bundle's real fingerprint — a mismatch
+   *  records nothing and says so, because a near-miss here is the exact case the
+   *  step exists to catch. */
+  async function submitVerification() {
+    if (!verifying || verifyBusy) return;
+    setVerifyBusy(true);
+    setVerifyError(null);
+    try {
+      const updated = await safeInvoke<RecipientSummary>("vault_recipient_verify", {
+        bundle: verifying.bundle,
+        confirmation,
+      });
+      if (!updated) return;
+      persistRecipients(recipients.map((r) => (r.fingerprint === updated.fingerprint ? updated : r)));
+      setVerifying(null);
+      setConfirmation("");
+      setNotice({
+        tone: "ok",
+        message: `${updated.label || updated.short_fingerprint} verified. You can now seal files to them.`,
+      });
+      appendLog("success", `Recipient ${updated.short_fingerprint} verified out of band`);
+    } catch (error) {
+      setVerifyError(describeError(error));
+    } finally {
+      setVerifyBusy(false);
+    }
+  }
+
+  /** Withdraw trust — for a contact who re-issued their identity, or a
+   *  verification the user no longer stands behind. */
+  async function unverifyRecipient(recipient: RecipientSummary) {
+    try {
+      await safeInvoke<boolean>("vault_recipient_unverify", { fingerprint: recipient.fingerprint });
+      persistRecipients(
+        recipients.map((r) =>
+          r.fingerprint === recipient.fingerprint ? { ...r, verified: false, verified_at: null } : r,
+        ),
+      );
+      setSelected((prev) => prev.filter((f) => f !== recipient.fingerprint));
+      setNotice({
+        tone: "info",
+        message: `${recipient.label || recipient.short_fingerprint} is no longer verified. Sealing to them is blocked until you confirm their fingerprint again.`,
+      });
+    } catch (error) {
+      setNotice({ tone: "error", message: describeError(error) });
+    }
+  }
 
   async function run(action: Busy, task: () => Promise<void>) {
     if (anyBusy) {
@@ -386,7 +568,7 @@ export default function PortableIdentityPanel({
       title: "Protect your new identity",
       description:
         `This passphrase encrypts the private .qgkey bundle on disk (Argon2id → HKDF-SHA3-256 → AES-256-GCM). ` +
-        `Minimum ${MIN_PASSPHRASE_LEN} characters. There is no recovery — if you lose it, containers sealed to this identity can no longer be opened.`,
+        `This file can be attacked offline, so the passphrase is what protects every container sealed to this identity — tap Generate for one that is strong by construction. There is no recovery: lose it and those containers can no longer be opened.`,
       onSubmit: async (secret) => {
         setModal(null);
         await run("generate", async () => {
@@ -503,6 +685,9 @@ export default function PortableIdentityPanel({
   }
 
   function removeRecipient(fingerprint: string) {
+    // Deliberately leaves the verification record alone: removing someone from
+    // the address book is housekeeping, not a statement about who they are. The
+    // action for "I no longer trust this key" is Unverify.
     persistRecipients(recipients.filter((r) => r.fingerprint !== fingerprint));
     setSelected((prev) => prev.filter((f) => f !== fingerprint));
   }
@@ -513,9 +698,17 @@ export default function PortableIdentityPanel({
     );
   }
 
-  const selectedBundles = useMemo(
-    () => recipients.filter((r) => selected.includes(r.fingerprint)).map((r) => r.bundle),
+  const selectedRecipients = useMemo(
+    () => recipients.filter((r) => selected.includes(r.fingerprint)),
     [recipients, selected],
+  );
+  const selectedBundles = useMemo(() => selectedRecipients.map((r) => r.bundle), [selectedRecipients]);
+  /** Ticked recipients whose fingerprint has not been confirmed. The backend
+   *  refuses these anyway; surfacing them here means the user finds out before
+   *  choosing a destination file rather than after. */
+  const selectedUnverified = useMemo(
+    () => selectedRecipients.filter((r) => !r.verified),
+    [selectedRecipients],
   );
 
   // ── Seal ──────────────────────────────────────────────────────────────────
@@ -524,6 +717,13 @@ export default function PortableIdentityPanel({
     void run("seal-file", async () => {
       if (selectedBundles.length === 0) {
         setNotice({ tone: "error", message: "Select at least one recipient before sealing." });
+        return;
+      }
+      if (selectedUnverified.length > 0) {
+        setNotice({
+          tone: "error",
+          message: `Verify ${selectedUnverified.map((r) => r.label || r.short_fingerprint).join(", ")} before sealing to them.`,
+        });
         return;
       }
       const source = await openDialog({ multiple: false, directory: false, title: "Step 1 of 2 — select a file to seal" });
@@ -568,6 +768,13 @@ export default function PortableIdentityPanel({
       }
       if (selectedBundles.length === 0) {
         setNotice({ tone: "error", message: "Select at least one recipient before sealing." });
+        return;
+      }
+      if (selectedUnverified.length > 0) {
+        setNotice({
+          tone: "error",
+          message: `Verify ${selectedUnverified.map((r) => r.label || r.short_fingerprint).join(", ")} before sealing to them.`,
+        });
         return;
       }
       const source = await openDialog({ multiple: false, directory: true, title: "Step 1 of 2 — select a folder to seal" });
@@ -683,10 +890,40 @@ export default function PortableIdentityPanel({
       .catch(() => setNotice({ tone: "error", message: "Could not copy automatically — select the fingerprint and copy it manually." }));
   }
 
+  /** Fill both fields with a generated passphrase and reveal it, because a
+   *  passphrase the user cannot see is one they cannot write down. */
+  async function generatePassphrase() {
+    if (generating) return;
+    setGenerating(true);
+    setModalError(null);
+    try {
+      const suggested = await safeInvoke<{ passphrase: string; words: number; bits: number }>(
+        "vault_passphrase_suggest",
+      );
+      if (!suggested) return;
+      setPassphrase(suggested.passphrase);
+      setConfirmPassphrase(suggested.passphrase);
+      setRevealPassphrase(true);
+    } catch (error) {
+      setModalError(describeError(error));
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   function submitModal() {
     if (!modal) return;
-    if (passphrase.length < MIN_PASSPHRASE_LEN) {
-      setModalError(`Passphrase must be at least ${MIN_PASSPHRASE_LEN} characters.`);
+    if (modal.mode === "create" && strength && !strength.acceptable) {
+      // The backend refuses this too — catching it here just saves a round trip
+      // and lets the message name the shortfall instead of the failure.
+      setModalError(
+        strength.suggestion ??
+          `This passphrase is too weak (${Math.round(strength.bits)} bits). Generate one instead.`,
+      );
+      return;
+    }
+    if (passphrase.length < (policy?.minLength ?? MIN_PASSPHRASE_LEN)) {
+      setModalError(`Passphrase must be at least ${policy?.minLength ?? MIN_PASSPHRASE_LEN} characters.`);
       return;
     }
     if (modal.mode === "create" && passphrase !== confirmPassphrase) {
@@ -696,6 +933,8 @@ export default function PortableIdentityPanel({
     const secret = passphrase;
     setPassphrase("");
     setConfirmPassphrase("");
+    setStrength(null);
+    setRevealPassphrase(false);
     setModalError(null);
     void modal.onSubmit(secret);
   }
@@ -963,7 +1202,40 @@ export default function PortableIdentityPanel({
                     <div className="font-mono text-[11px] text-ink-600">
                       {recipient.short_fingerprint} · X25519 + {recipient.kem_algorithm} · {recipient.signature_algorithm}
                     </div>
+                    {recipient.verified ? (
+                      <div className="mt-0.5 flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                        <BadgeCheck size={12} /> Fingerprint verified
+                        {recipient.verified_at ? ` · ${new Date(recipient.verified_at).toLocaleDateString()}` : ""}
+                      </div>
+                    ) : (
+                      <div className="mt-0.5 flex items-center gap-1 text-[11px] font-semibold text-amber-700">
+                        <ShieldAlert size={12} /> Not verified — cannot seal to them yet
+                      </div>
+                    )}
                   </div>
+                  {recipient.verified ? (
+                    <button
+                      type="button"
+                      onClick={() => void unverifyRecipient(recipient)}
+                      className="rounded-md border border-line bg-white px-2.5 py-1 text-xs font-semibold text-ink-600 hover:text-ink-950"
+                      title="Withdraw verification — use this if they re-issued their identity"
+                    >
+                      Unverify
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setVerifying(recipient);
+                        setConfirmation("");
+                        setVerifyError(null);
+                      }}
+                      className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-800 hover:bg-amber-100"
+                      title="Confirm their fingerprint out of band"
+                    >
+                      Verify
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => removeRecipient(recipient.fingerprint)}
@@ -991,7 +1263,7 @@ export default function PortableIdentityPanel({
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <button
             type="button"
-            disabled={anyBusy || selected.length === 0}
+            disabled={anyBusy || selected.length === 0 || selectedUnverified.length > 0}
             onClick={sealFile}
             className="flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
@@ -1001,7 +1273,7 @@ export default function PortableIdentityPanel({
           {!IS_ANDROID && (
             <button
               type="button"
-              disabled={anyBusy || selected.length === 0}
+              disabled={anyBusy || selected.length === 0 || selectedUnverified.length > 0}
               onClick={sealFolder}
               className="flex items-center gap-2 rounded-lg border border-cyan-200 bg-white px-4 py-2 text-sm font-bold text-cyan-700 hover:bg-cyan-50 disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -1029,6 +1301,39 @@ export default function PortableIdentityPanel({
         </div>
         {selected.length === 0 && recipients.length > 0 && (
           <div className="mt-2 text-xs font-semibold text-amber-700">Tick at least one recipient above to enable sealing.</div>
+        )}
+        {selectedUnverified.length > 0 && (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <div className="flex items-start gap-2">
+              <ShieldAlert size={15} className="mt-0.5 shrink-0 text-amber-600" />
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-amber-800">
+                  Verify {selectedUnverified.length === 1 ? "this recipient" : "these recipients"} before sealing
+                </div>
+                <p className="mt-1 text-xs text-amber-800">
+                  A recipient bundle proves it is internally consistent, never who it belongs to. Ask them to read
+                  their fingerprint out on a call or in person &mdash; not over the channel that carried the bundle
+                  &mdash; then confirm it here.
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {selectedUnverified.map((recipient) => (
+                    <button
+                      key={recipient.fingerprint}
+                      type="button"
+                      onClick={() => {
+                        setVerifying(recipient);
+                        setConfirmation("");
+                        setVerifyError(null);
+                      }}
+                      className="rounded-md border border-amber-300 bg-white px-2.5 py-1 text-xs font-bold text-amber-800 hover:bg-amber-100"
+                    >
+                      Verify {recipient.label || recipient.short_fingerprint}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         )}
       </div>
 
@@ -1172,6 +1477,112 @@ export default function PortableIdentityPanel({
       </div>
       )}
 
+      {/* Out-of-band fingerprint verification. Deliberately a typed comparison
+          rather than a checkbox: a "yes, I checked" button becomes muscle memory
+          in a week, while transcribing sixteen characters forces the user to
+          actually look at what the other person read out. */}
+      {verifying && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="verify-title">
+          <div className="w-full max-w-md rounded-xl border border-line bg-white p-5 shadow-lg">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 id="verify-title" className="text-base font-bold text-ink-950">
+                  Verify {verifying.label || "this identity"}
+                </h3>
+                <p className="mt-1 text-xs text-ink-600">
+                  Ask them to read their fingerprint out on a call or in person. Do not use the same
+                  channel that carried their bundle &mdash; if that channel is compromised, so is the
+                  fingerprint it delivers.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setVerifying(null);
+                  setConfirmation("");
+                  setVerifyError(null);
+                }}
+                className="icon-button shrink-0"
+                aria-label="Cancel verification"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="mt-4 rounded-lg border border-line bg-canvas p-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-500">
+                This bundle&rsquo;s fingerprint
+              </div>
+              <div className="mt-1 select-all font-mono text-sm font-bold tracking-wide text-ink-950">
+                {verifying.short_fingerprint}
+              </div>
+              <p className="mt-2 text-[11px] text-ink-500">
+                Read this to them and have them confirm it matches what their own app shows &mdash; then
+                type back what they read to you.
+              </p>
+            </div>
+
+            <form
+              className="mt-4 space-y-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitVerification();
+              }}
+            >
+              <div>
+                <label htmlFor="recipient-confirmation" className="text-xs font-semibold text-ink-600">
+                  What they read out
+                </label>
+                <input
+                  id="recipient-confirmation"
+                  autoFocus
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder="XXXX-XXXX-XXXX-XXXX"
+                  value={confirmation}
+                  onChange={(event) => {
+                    setConfirmation(event.target.value);
+                    setVerifyError(null);
+                  }}
+                  className="mt-1 w-full rounded-lg border border-line bg-canvas px-3 py-2 font-mono text-sm tracking-wide text-ink-950 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/40"
+                />
+                <p className="mt-1 text-[11px] text-ink-500">
+                  Dashes, spaces and capitalisation do not matter. All sixteen characters do.
+                </p>
+              </div>
+
+              {verifyError && (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 p-2.5 text-xs font-semibold text-rose-700">
+                  {verifyError}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setVerifying(null);
+                    setConfirmation("");
+                    setVerifyError(null);
+                  }}
+                  className="rounded-lg border border-line bg-white px-4 py-2 text-sm font-semibold text-ink-600 hover:text-ink-950"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={verifyBusy || confirmation.trim().length === 0}
+                  className="flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {verifyBusy ? <Loader2 className="animate-spin" size={16} /> : <BadgeCheck size={16} />}
+                  It matches
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Kept outside the collapsible body: an open passphrase modal must not be
           torn down (losing what the user typed) if the panel is collapsed. */}
       {modal && (
@@ -1201,20 +1612,66 @@ export default function PortableIdentityPanel({
               }}
             >
               <div>
-                <label htmlFor="qgkey-passphrase" className="text-xs font-semibold text-ink-600">
-                  Passphrase
-                </label>
+                <div className="flex items-baseline justify-between gap-2">
+                  <label htmlFor="qgkey-passphrase" className="text-xs font-semibold text-ink-600">
+                    Passphrase
+                  </label>
+                  {modal.mode === "create" && (
+                    <button
+                      type="button"
+                      onClick={() => void generatePassphrase()}
+                      disabled={generating}
+                      className="flex items-center gap-1 text-xs font-bold text-cyan-700 hover:text-cyan-800 disabled:opacity-50"
+                    >
+                      {generating ? <Loader2 className="animate-spin" size={12} /> : <Sparkles size={12} />}
+                      Generate {policy ? `${policy.defaultWords} words` : "a strong one"}
+                    </button>
+                  )}
+                </div>
                 <input
                   id="qgkey-passphrase"
                   ref={passphraseRef}
-                  type="password"
+                  type={revealPassphrase ? "text" : "password"}
                   autoComplete={modal.mode === "create" ? "new-password" : "current-password"}
                   value={passphrase}
                   onChange={(event) => setPassphrase(event.target.value)}
                   className="mt-1 w-full rounded-lg border border-line bg-canvas px-3 py-2 text-sm text-ink-950 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/40"
                 />
                 {modal.mode === "create" && passphrase.length > 0 && (
-                  <div className={`mt-1 text-xs font-semibold ${strength.tone}`}>{strength.label}</div>
+                  <button
+                    type="button"
+                    onClick={() => setRevealPassphrase((value) => !value)}
+                    className="mt-1 text-xs font-semibold text-ink-500 hover:text-ink-800"
+                  >
+                    {revealPassphrase ? "Hide passphrase" : "Show passphrase"}
+                  </button>
+                )}
+                {modal.mode === "create" && strength && passphrase.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
+                      <div
+                        className={`h-full rounded-full transition-all ${VERDICT_BAR[strength.verdict]}`}
+                        style={{ width: `${Math.max(4, Math.round(strength.fraction * 100))}%` }}
+                      />
+                    </div>
+                    <div className={`text-xs font-semibold ${VERDICT_TONE[strength.verdict]}`}>
+                      {strength.verdict === "weak"
+                        ? "Too weak"
+                        : strength.verdict === "fair"
+                          ? "Still too weak"
+                          : "Strong enough"}{" "}
+                      — about {Math.round(strength.bits)} bits
+                      {policy ? ` of the ${Math.round(policy.minBits)} needed` : ""}
+                    </div>
+                    {strength.issues.map((issue) => (
+                      <div key={issue} className="text-xs text-ink-500">
+                        {issue}
+                      </div>
+                    ))}
+                    {strength.suggestion && (
+                      <div className="text-xs text-ink-500">{strength.suggestion}</div>
+                    )}
+                  </div>
                 )}
               </div>
               {modal.mode === "create" && (
@@ -1243,7 +1700,8 @@ export default function PortableIdentityPanel({
                 </button>
                 <button
                   type="submit"
-                  className="flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-700"
+                  disabled={modal.mode === "create" && (!strength || !strength.acceptable)}
+                  className="flex items-center gap-2 rounded-lg bg-cyan-600 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {modal.mode === "create" ? "Create identity" : "Unlock"}
                 </button>

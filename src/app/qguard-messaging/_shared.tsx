@@ -7,6 +7,7 @@
  */
 import React, { useId, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { PLAN_PRICING } from '@/lib/billing/plan-pricing';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   ArrowRight,
@@ -28,7 +29,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { CyberBackground } from '../../components/CyberBackground';
+import { SkyAtmosphere, SkyButtonDot } from '@/components/sky/SkyAtmosphere';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/auth-context';
 import { useSubscription } from '@/hooks/use-subscription';
@@ -77,13 +78,13 @@ export function DarkButton({
   className?: string;
 }) {
   const cls = cn(
-    'group inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-6 py-3 text-sm font-bold uppercase tracking-wide !text-white [&_*]:!text-white no-underline shadow-[0_12px_34px_rgba(37,99,235,0.35)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-blue-700 active:translate-y-0',
-    className,
+    'sky-btn',
+    className?.includes('text-xs') && 'sky-btn--sm',
   );
   const inner = (
     <>
       {children}
-      <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+      <SkyButtonDot />
     </>
   );
   if (to) return <Link to={to} className={cls}>{inner}</Link>;
@@ -102,13 +103,13 @@ export function GoldButton({
   className?: string;
 }) {
   const cls = cn(
-    'group inline-flex items-center justify-center gap-2 rounded-lg bg-gold px-6 py-3 text-sm font-bold uppercase tracking-wide text-slate-950 no-underline shadow-[0_0_28px_rgba(212,175,55,0.35)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_44px_rgba(212,175,55,0.55)] active:translate-y-0',
-    className,
+    'sky-btn',
+    className?.includes('text-xs') && 'sky-btn--sm',
   );
   const inner = (
     <>
       {children}
-      <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
+      <SkyButtonDot />
     </>
   );
   if (to) return <Link to={to} className={cls}>{inner}</Link>;
@@ -127,8 +128,7 @@ export function GhostButton({
   className?: string;
 }) {
   const cls = cn(
-    'inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-6 py-3 text-sm font-bold uppercase tracking-wide text-slate-900 no-underline transition-all duration-200 hover:border-gold hover:text-gold',
-    className,
+    'sky-btn sky-btn--ghost',
   );
   if (to) return <Link to={to} className={cls}>{children}</Link>;
   return <a href={href ?? '#'} className={cls}>{children}</a>;
@@ -158,8 +158,8 @@ export const MESSAGING_INSTALLER = {
    * print "Get-FileHash windows" in the verification command below.
    */
   fileName: 'QGuard-Messaging-Setup.exe',
-  version: '1.5.0',
-  sizeMb: 8,
+  version: '1.5.3',
+  sizeMb: 21,
   requirements: 'Windows 10/11 · 64-bit',
   /**
    * SHA-256 of the exact file served from `href`, shown to users so they can
@@ -170,19 +170,19 @@ export const MESSAGING_INSTALLER = {
    * an honest user their legitimate download was tampered with, which is worse
    * than publishing no hash at all.
    */
-  sha256: 'D153787B0153EF5180ADE9B1121E4CE486A311183D3FF5A8A755FE2CAE1EC64E',
+  sha256: 'B83D51A19622BFA7AE98CB3307171FA992DB1A3D17ED2FFBC52A76847FD32FCC',
 };
 
 /**
- * Plans shown in the download gate modal. Prices mirror the landing pricing
- * section; each choice routes into the existing auth-gated checkout → PayPal
+ * Plans shown in the download gate modal. Prices come from the shared checkout
+ * configuration; each choice routes into the existing auth-gated checkout → PayPal
  * flow (`/checkout?plan=&cycle=`).
  */
 const DOWNLOAD_PLANS = [
-  { name: 'Starter', priceMonthly: 1, priceYearly: 1, tagline: 'QGuard Messaging — Secure Chat & Quantum Vault' },
-  { name: 'Basic', priceMonthly: 8, priceYearly: 5, tagline: '+ Quantum Readiness Assessment Engine, Migration Planner & Sandbox', featured: true },
-  { name: 'Pro', priceMonthly: 30, priceYearly: 20, tagline: '+ Discovery, Operations, Ecosystem, Intelligence, PQAuth, Observability, Trust' },
-  { name: 'Elite', priceMonthly: 199, priceYearly: 150, tagline: 'Everything — all modules' },
+  { name: 'Starter', tagline: 'QGuard Messaging — Secure Chat & Quantum Vault' },
+  { name: 'Basic', tagline: '+ Quantum Readiness Assessment Engine, Migration Planner & Sandbox', featured: true },
+  { name: 'Pro', tagline: '+ Discovery, Operations, Ecosystem, Intelligence, PQAuth, Observability, Trust' },
+  { name: 'Elite', tagline: 'Everything — all modules' },
 ] as const;
 
 /**
@@ -285,7 +285,7 @@ export function PlanGateModal({
   /** Replaces the checkout reassurance line when the caller has a better one. */
   footnote?: string;
 }) {
-  const [cycle, setCycle] = useState<'monthly' | 'annual'>('monthly');
+  const [cycle, setCycle] = useState<'monthly' | 'yearly'>('monthly');
   const choose = (plan: string) => {
     window.location.href = `/checkout?plan=${encodeURIComponent(plan)}&cycle=${cycle}`;
   };
@@ -309,7 +309,7 @@ export function PlanGateModal({
 
         <div className="mt-5 flex justify-center">
           <div className="inline-flex rounded-full border border-slate-200 bg-slate-50 p-1" role="radiogroup" aria-label="Billing cycle">
-            {(['monthly', 'annual'] as const).map((option) => (
+            {(['monthly', 'yearly'] as const).map((option) => (
               <button
                 key={option}
                 type="button"
@@ -321,7 +321,7 @@ export function PlanGateModal({
                   cycle === option ? 'bg-blue-600 text-slate-50 shadow' : 'text-slate-500 hover:text-slate-800',
                 )}
               >
-                {option}{option === 'annual' ? ' · save' : ''}
+                {option}
               </button>
             ))}
           </div>
@@ -329,7 +329,8 @@ export function PlanGateModal({
 
         <div className="mt-6 grid gap-3 sm:grid-cols-2">
           {DOWNLOAD_PLANS.filter((plan) => !plans || plans.includes(plan.name)).map((plan) => {
-            const price = cycle === 'annual' ? plan.priceYearly : plan.priceMonthly;
+            const pricing = PLAN_PRICING[plan.name];
+            const price = cycle === 'yearly' ? pricing.yearlyPerMonth : pricing.monthly;
             const featured = highlight ? plan.name === highlight : 'featured' in plan && plan.featured;
             return (
               <div
@@ -349,7 +350,7 @@ export function PlanGateModal({
                 </div>
                 <div className="mt-2 flex items-end gap-1">
                   <span className="text-3xl font-black text-slate-900">${price}</span>
-                  <span className="pb-1 text-xs font-semibold text-slate-400">/mo{cycle === 'annual' ? ', billed yearly' : ''}</span>
+                  <span className="pb-1 text-xs font-semibold text-slate-600">/mo{cycle === 'yearly' ? ', billed yearly' : ''}</span>
                 </div>
                 <p className="mt-2 flex-1 text-xs leading-relaxed text-slate-500">{plan.tagline}</p>
                 <button
@@ -663,10 +664,7 @@ export function InstallerIntegrity({
 
 export function Kicker({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center gap-2 rounded-full border border-gold/40 bg-gold/10 px-3 py-1 font-mono text-[11px] font-bold uppercase tracking-[0.22em] text-[#b8860b]">
-      <ShieldCheck className="h-3.5 w-3.5 text-gold" />
-      {children}
-    </span>
+    <span className="sky-kicker">{children}</span>
   );
 }
 
@@ -757,31 +755,6 @@ export const StepCard: React.FC<{ index: number; title: string; body: string }> 
   );
 };
 
-export const ALGO_SUITE: Array<{ purpose: string; algo: string; standard: string }> = [
-  { purpose: 'Key encapsulation (hybrid)', algo: 'ML-KEM-1024 + X25519', standard: 'NIST FIPS 203' },
-  { purpose: 'Digital signatures (dual)', algo: 'ML-DSA-65 (chat) · ML-DSA-87 (vault) + Ed25519', standard: 'NIST FIPS 204' },
-  { purpose: 'Symmetric / AEAD', algo: 'AES-256-GCM', standard: 'FIPS 197 · SP 800-38D' },
-  { purpose: 'Key derivation / hashing', algo: 'HKDF-SHA3-256', standard: 'RFC 5869 · FIPS 202' },
-  { purpose: 'Ratchet chain (opt-in)', algo: 'HMAC-SHA3-256', standard: 'FIPS 198-1 · 202' },
-  { purpose: 'Lock & password derivation', algo: 'Argon2id → HKDF-SHA3-256', standard: 'RFC 9106' },
-];
-
-export function AlgoSuiteTable() {
-  return (
-    <GlassCard className="overflow-hidden" hover={false}>
-      <div className="grid grid-cols-1 divide-y divide-slate-200 sm:grid-cols-2 sm:divide-x lg:grid-cols-3 lg:divide-y-0 [&>*]:border-slate-200 lg:[&>*:nth-child(n+4)]:border-t">
-        {ALGO_SUITE.map((row) => (
-          <div key={row.purpose} className="p-5">
-            <div className="font-mono text-[10px] font-bold uppercase tracking-widest text-slate-500">{row.purpose}</div>
-            <div className="mt-2 font-mono text-sm font-bold text-slate-900">{row.algo}</div>
-            <div className="mt-2 inline-flex rounded-full border border-gold/30 bg-gold/10 px-2 py-0.5 font-mono text-[10px] font-bold text-[#b8860b]">{row.standard}</div>
-          </div>
-        ))}
-      </div>
-    </GlassCard>
-  );
-}
-
 /* ---------------------------------------------------------------- chrome ---- */
 
 const NAV_LINKS = [
@@ -841,7 +814,7 @@ function MessagingNav() {
           </a>
         </nav>
 
-        <GoldButton href="/login" className="px-4 py-2 text-xs">Launch App</GoldButton>
+        <a href="#download-messaging" className="inline-flex min-h-11 items-center rounded-lg bg-slate-900 px-4 text-xs font-bold !text-white">Download Messaging</a>
       </div>
     </header>
   );
@@ -885,7 +858,7 @@ function MessagingFooter() {
             </span>
           </Link>
           <p className="max-w-md text-sm leading-relaxed text-slate-600">
-            Post-quantum, end-to-end encrypted messaging and a strictly on-device file vault — built on NIST-standardized cryptography (FIPS 203 &amp; 204).
+            End-to-end encrypted messaging and on-device file encryption, with optional encrypted backup and sharing.
           </p>
           <div className="flex items-center gap-2">
             {[Twitter, Linkedin, Github].map((Icon, i) => (
@@ -908,7 +881,7 @@ function MessagingFooter() {
             { label: 'Dashboard', href: '/dashboard' },
           ]} />
           <FooterCol title="Company" links={[
-            { label: 'Sign in', href: '/login' },
+            { label: 'Helix account sign-in', href: '/login' },
             { label: 'Get started', href: '/register' },
             { label: 'Contact', href: '/docs' },
           ]} />
@@ -932,17 +905,8 @@ export function MessagingLayout({ children }: { children: React.ReactNode }) {
   React.useEffect(() => { window.scrollTo({ top: 0 }); }, [pathname]);
 
   return (
-    <div className="qguard-home qguard-home--light relative min-h-screen overflow-x-hidden bg-white text-slate-900">
-      {/* Subtle light grid wash to match the homepage hero. */}
-      <div
-        className="pointer-events-none fixed inset-0 -z-10 opacity-60"
-        style={{
-          backgroundImage:
-            'radial-gradient(rgba(148,163,184,0.18) 1px, transparent 1px)',
-          backgroundSize: '26px 26px',
-        }}
-      />
-      <CyberBackground variant="light" />
+    <div className="qguard-home qguard-home--light qh-sky relative min-h-screen overflow-x-hidden bg-white text-slate-900">
+      <SkyAtmosphere routeKey={pathname} />
       <ScrollProgress />
       <MessagingNav />
       <main className="relative z-10">{children}</main>
@@ -959,11 +923,11 @@ export function CTASection({
 }: {
   title: string;
   body: string;
-  primary: { label: string; to?: string; href?: string };
+  primary?: { label: string; to?: string; href?: string };
   secondary?: { label: string; to?: string; href?: string };
 }) {
   return (
-    <section className="mx-auto max-w-5xl px-6 py-20">
+    <section id={primary ? undefined : 'download-messaging'} className="mx-auto max-w-5xl scroll-mt-16 px-6 py-20">
       <Reveal>
         <GlassCard className="relative overflow-hidden p-10 text-center sm:p-14" hover={false}>
           <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-gold/20 blur-[80px]" />
@@ -975,7 +939,7 @@ export function CTASection({
             <h2 className="text-3xl font-black tracking-tight text-slate-900 sm:text-4xl">{title}</h2>
             <p className="text-base leading-relaxed text-slate-600">{body}</p>
             <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-              <DarkButton to={primary.to} href={primary.href}>{primary.label}</DarkButton>
+              {primary ? <DarkButton to={primary.to} href={primary.href}>{primary.label}</DarkButton> : <DownloadButton />}
               {secondary && <GhostButton to={secondary.to} href={secondary.href}>{secondary.label}</GhostButton>}
             </div>
           </div>

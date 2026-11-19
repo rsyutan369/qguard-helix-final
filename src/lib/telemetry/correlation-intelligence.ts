@@ -36,12 +36,14 @@
 
 import {
   EVIDENCE_UNAVAILABLE,
+  recordOf,
   str,
   type AssetMigrationRecord,
   type Row,
 } from '@/lib/migration/asset-intelligence'
 import { analyzeCryptoObservation, type QuantumClass } from '@/lib/crypto/suite-anatomy'
 import type { SourceRead } from '@/lib/source-read'
+import { buildEvidenceAssetResolver, isDerivedScanObservation } from './evidence-identity'
 
 /* ================================================================== */
 /* Vocabulary                                                          */
@@ -218,17 +220,7 @@ export function buildCorrelationIntelligence(inputs: CorrelationInputs): Correla
   const now = inputs.now ?? Date.now()
 
   const assetById = new Map(inputs.assets.map((asset) => [asset.id, asset]))
-  const assetByName = new Map<string, AssetMigrationRecord>()
-  for (const asset of inputs.assets) {
-    if (asset.name) assetByName.set(asset.name.toLowerCase(), asset)
-    if (asset.hostname) assetByName.set(asset.hostname.toLowerCase(), asset)
-  }
-  const resolveAsset = (row: Row): AssetMigrationRecord | null => {
-    const byId = str(row.asset_id) ? assetById.get(str(row.asset_id)) : undefined
-    if (byId) return byId
-    const name = str(row.asset_name).toLowerCase() || str(row.host).toLowerCase() || str(row.target).toLowerCase()
-    return (name ? assetByName.get(name) : undefined) ?? null
-  }
+  const resolveAsset = buildEvidenceAssetResolver(inputs.assets)
   const labelFor = (row: Row, asset: AssetMigrationRecord | null): string =>
     asset?.name || str(row.asset_name) || str(row.host) || str(row.target) || ''
 
@@ -240,12 +232,23 @@ export function buildCorrelationIntelligence(inputs: CorrelationInputs): Correla
     algorithm: string
     quantumClass: QuantumClass
     at: number
+    listener: string | null
   }
 
   const readings: Reading[] = []
+  const linkedEvidence = (row: Row) => recordOf(row.raw_evidence)
+  const listener = (row: Row, algorithm: string): string | null => {
+    const anatomy = analyzeCryptoObservation({ algorithm, protocol: str(row.protocol) })
+    const host = str(row.host).trim().toLowerCase().replace(/\.$/, '')
+    const port = Number(row.port)
+    return anatomy.kind === 'key-exchange' && host && Number.isInteger(port) && port > 0 ? `${host}:${port}` : null
+  }
 
   for (const row of inputs.scannerEvidence) {
-    const asset = resolveAsset(row)
+    const metadata = linkedEvidence(row)
+    if (metadata.runtimeEventHash) continue
+    const binding = recordOf(metadata.binding)
+    const asset = resolveAsset(binding.attribution === 'bound' ? { ...row, asset_id: binding.assetId } : row)
     const label = labelFor(row, asset)
     const algorithm = str(row.observed_algorithm) || str(row.protocol)
     if (!label || !algorithm) continue
@@ -256,10 +259,12 @@ export function buildCorrelationIntelligence(inputs: CorrelationInputs): Correla
       algorithm,
       quantumClass: analyzeCryptoObservation({ algorithm, protocol: str(row.protocol) }).quantumClass,
       at: ms(row.observed_at || row.created_at),
+      listener: listener(row, algorithm),
     })
   }
 
   for (const row of inputs.runtimeEvents) {
+    if (isDerivedScanObservation(row)) continue
     const asset = resolveAsset(row)
     const label = labelFor(row, asset)
     // Runtime carries the key exchange in its own column; the suite name alone
@@ -273,10 +278,13 @@ export function buildCorrelationIntelligence(inputs: CorrelationInputs): Correla
       algorithm,
       quantumClass: analyzeCryptoObservation({ algorithm, protocol: str(row.protocol) }).quantumClass,
       at: ms(row.observed_at || row.created_at),
+      listener: listener(row, algorithm),
     })
   }
 
   for (const row of inputs.cryptoInventory) {
+    const metadata = recordOf(row.metadata)
+    if (metadata.evidenceId || metadata.runtimeEventHash) continue
     const asset = resolveAsset(row)
     const label = labelFor(row, asset) || (str(row.asset_id) ? assetById.get(str(row.asset_id))?.name ?? '' : '')
     const algorithm = str(row.algorithm)
@@ -284,17 +292,18 @@ export function buildCorrelationIntelligence(inputs: CorrelationInputs): Correla
     readings.push({
       channel: 'CBOM Inventory',
       assetLabel: label,
-      assetId: asset?.id ?? (str(row.asset_id) || null),
+      assetId: asset?.id ?? null,
       algorithm,
       quantumClass: analyzeCryptoObservation({ algorithm, protocol: str(row.protocol), itemType: str(row.item_type) }).quantumClass,
       at: ms(row.discovered_at || row.created_at),
+      listener: listener(metadata, algorithm),
     })
   }
 
   /* ---- Correlated observations --------------------------------------- */
   const observationIndex = new Map<string, { reading: Reading; channels: Set<string>; count: number; first: number; last: number }>()
   for (const reading of readings) {
-    const key = observationKey(reading.assetLabel, reading.algorithm)
+    const key = observationKey(reading.assetId || `unattributed:${reading.assetLabel}`, reading.algorithm)
     const existing = observationIndex.get(key)
     if (existing) {
       existing.channels.add(reading.channel)
@@ -308,7 +317,7 @@ export function buildCorrelationIntelligence(inputs: CorrelationInputs): Correla
 
   const observations: CorrelatedObservation[] = Array.from(observationIndex.entries())
     .map(([key, entry]) => {
-      const asset = entry.reading.assetId ? assetById.get(entry.reading.assetId) : assetByName.get(entry.reading.assetLabel.toLowerCase())
+      const asset = entry.reading.assetId ? assetById.get(entry.reading.assetId) : undefined
       return {
         id: key,
         assetId: entry.reading.assetId,
@@ -332,8 +341,8 @@ export function buildCorrelationIntelligence(inputs: CorrelationInputs): Correla
     // A conflict is only meaningful for the risk-bearing key agreement, so
     // observations whose class is `unknown` are not treated as disagreement —
     // "we could not classify it" is not the same as "we disagree".
-    if (reading.quantumClass === 'unknown') continue
-    const assetKey = reading.assetLabel.trim().toLowerCase()
+    if (reading.quantumClass === 'unknown' || !reading.assetId || !reading.listener || !reading.at) continue
+    const assetKey = `${reading.assetId}:${reading.listener}`
     const classes = byAssetClass.get(assetKey) ?? new Map<QuantumClass, Reading[]>()
     classes.set(reading.quantumClass, [...(classes.get(reading.quantumClass) ?? []), reading])
     byAssetClass.set(assetKey, classes)
@@ -349,8 +358,11 @@ export function buildCorrelationIntelligence(inputs: CorrelationInputs): Correla
     const hasSafeOrHybrid = classes.has('safe') || classes.has('hybrid')
     if (!hasVulnerable || !hasSafeOrHybrid) continue
 
-    const vulnerableReadings = classes.get('vulnerable') ?? []
-    const safeReadings = [...(classes.get('safe') ?? []), ...(classes.get('hybrid') ?? [])]
+    const vulnerable = classes.get('vulnerable') ?? []
+    const safe = [...(classes.get('safe') ?? []), ...(classes.get('hybrid') ?? [])]
+    const comparable = (a: Reading, b: Reading) => a.channel !== b.channel && Math.abs(a.at - b.at) <= 60 * 60 * 1000
+    const vulnerableReadings = vulnerable.filter((reading) => safe.some((other) => comparable(reading, other)))
+    const safeReadings = safe.filter((reading) => vulnerable.some((other) => comparable(reading, other)))
     const vulnerableChannels = new Set(vulnerableReadings.map((r) => r.channel))
     const safeChannels = new Set(safeReadings.map((r) => r.channel))
     const distinct = [...vulnerableChannels].some((channel) => !safeChannels.has(channel)) &&
@@ -358,7 +370,7 @@ export function buildCorrelationIntelligence(inputs: CorrelationInputs): Correla
     if (!distinct) continue
 
     const sample = vulnerableReadings[0]
-    const asset = sample.assetId ? assetById.get(sample.assetId) : assetByName.get(assetKey)
+    const asset = sample.assetId ? assetById.get(sample.assetId) : undefined
     const readingRows = [...vulnerableReadings.slice(0, 3), ...safeReadings.slice(0, 3)].map((r) => ({
       source: r.channel,
       algorithm: r.algorithm,
@@ -416,7 +428,7 @@ export function buildCorrelationIntelligence(inputs: CorrelationInputs): Correla
       name: str(connector.provider) || 'Cloud connector',
       kind: 'cloud-connector',
       kindLabel: KIND_LABEL['cloud-connector'],
-      health: str(connector.status).toLowerCase() === 'connected' ? healthFor(lastSeen || now, now) : 'silent',
+      health: str(connector.status).toLowerCase() === 'connected' ? healthFor(lastSeen, now) : 'silent',
       lastSeenAt: lastSeen ? new Date(lastSeen).toISOString() : null,
       observations: observed.length,
       assetsObserved: new Set(observed.map((e) => str(e.asset_id) || str(e.asset_name)).filter(Boolean)).size,
@@ -447,18 +459,15 @@ export function buildCorrelationIntelligence(inputs: CorrelationInputs): Correla
   /* ---- Coverage --------------------------------------------------------- */
   const channelsByAsset = new Map<string, Set<string>>()
   for (const reading of readings) {
-    const key = reading.assetLabel.trim().toLowerCase()
+    const key = reading.assetId
+    if (!key) continue
     const set = channelsByAsset.get(key) ?? new Set<string>()
     set.add(reading.channel)
     channelsByAsset.set(key, set)
   }
 
   const blindSpots: BlindSpot[] = inputs.assets
-    .filter((asset) => {
-      const byName = channelsByAsset.get(asset.name.toLowerCase())
-      const byHost = asset.hostname ? channelsByAsset.get(asset.hostname.toLowerCase()) : undefined
-      return !byName?.size && !byHost?.size
-    })
+    .filter((asset) => !channelsByAsset.get(asset.id)?.size)
     .map((asset) => ({
       assetId: asset.id,
       assetName: asset.name,
@@ -473,7 +482,7 @@ export function buildCorrelationIntelligence(inputs: CorrelationInputs): Correla
 
   const totalAssets = inputs.assets.length
   const corroborated = inputs.assets.filter((asset) => {
-    const set = channelsByAsset.get(asset.name.toLowerCase()) ?? (asset.hostname ? channelsByAsset.get(asset.hostname.toLowerCase()) : undefined)
+    const set = channelsByAsset.get(asset.id)
     return (set?.size ?? 0) >= 2
   }).length
   const covered = totalAssets - blindSpots.length

@@ -140,8 +140,9 @@ export function normalizeHost(value: unknown): string {
   text = text.replace(/^[a-z0-9+.-]+:\/\//, '')
   text = text.split('/')[0]
   text = text.split('?')[0]
-  // Strip a trailing port but keep IPv6 brackets intact.
-  if (!text.startsWith('[')) text = text.replace(/:\d+$/, '')
+  // Strip a trailing port but keep the address of an IPv6 listener intact.
+  if (text.startsWith('[')) text = text.replace(/(\]):\d+$/, '$1')
+  else if ((text.match(/:/g) || []).length === 1) text = text.replace(/:\d+$/, '')
   text = text.replace(/\.$/, '')
   return text.trim()
 }
@@ -150,7 +151,8 @@ export function portOf(value: unknown): number | null {
   const direct = Number(value)
   if (Number.isFinite(direct) && direct > 0 && direct < 65536) return Math.round(direct)
   const text = str(value)
-  const match = text.match(/:(\d{2,5})(?:\/|$)/)
+  if ((text.replace(/^[a-z0-9+.-]+:\/\//i, '').split(/[/?#]/, 1)[0].match(/:/g) || []).length > 1 && !text.includes(']')) return null
+  const match = text.match(/:(\d{1,5})(?:[/?#]|$)/)
   if (match) {
     const parsed = Number(match[1])
     if (Number.isFinite(parsed) && parsed > 0 && parsed < 65536) return parsed
@@ -159,11 +161,12 @@ export function portOf(value: unknown): number | null {
 }
 
 /** Canonical endpoint id. Asset binding wins, so scans and runtime agree. */
-export function endpointIdFor(assetId: string | null | undefined, host: string): string {
+export function endpointIdFor(assetId: string | null | undefined, host: string, port: number | null = null): string {
   const asset = str(assetId)
-  if (asset) return `asset:${asset}`
   const normalized = normalizeHost(host)
-  return normalized ? `host:${normalized}` : ''
+  const listener = normalized ? `${encodeURIComponent(normalized)}:${port ?? 'unknown-port'}` : ''
+  if (asset) return listener ? `asset:${asset}:${listener}` : `asset:${asset}`
+  return listener ? `host:${listener}` : ''
 }
 
 /* ------------------------------------------------------------------ */
@@ -434,10 +437,6 @@ export function classifyEndpointPosture(input: EndpointPostureInput): EndpointPo
     return { posture: 'pqc-ready', reason: 'Post-quantum key agreement or signature observed on this endpoint.' }
   }
 
-  if (input.migrationCompleted && input.assetPosture === 'pqc') {
-    return { posture: 'pqc-ready', reason: 'Migration completed and the asset reads post-quantum in the Quantum Readiness snapshot.' }
-  }
-
   if (set.has('quantum-vulnerable')) {
     if (input.assetPosture === 'vulnerable' || !input.assetPosture) {
       return {
@@ -499,14 +498,13 @@ export const POSTURE_TONE: Record<PqcPosture, 'good' | 'warning' | 'critical' | 
 /* ------------------------------------------------------------------ */
 
 export function certificatePosture(algorithm: string, signatureAlgorithm: string | null, keySize: number | null): PqcPosture {
-  const combined = `${algorithm} ${signatureAlgorithm || ''}`
-  if (PQ_SIG_RE.test(combined)) return 'pqc-ready'
-  if (HYBRID_KEX_RE.test(combined)) return 'hybrid-ready'
   const anatomy = analyzeCryptoObservation({ algorithm, itemType: 'certificate' }, true)
-  if (anatomy.quantumClass === 'safe') return 'quantum-safe'
-  if (anatomy.quantumClass === 'vulnerable') return 'quantum-vulnerable'
-  if (keySize && /RSA/i.test(algorithm)) return 'quantum-vulnerable'
-  return 'unknown'
+  const subjectClassical = !PQ_SIG_RE.test(algorithm) && (anatomy.quantumClass === 'vulnerable' || Boolean(keySize && /RSA/i.test(algorithm)))
+  const issuerClassical = signatureAlgorithm !== null && !PQ_SIG_RE.test(signatureAlgorithm) && /RSA|ECDSA|\bDSA\b|ED25519|ED448|SHA-?1|MD5/i.test(signatureAlgorithm)
+  if (subjectClassical || issuerClassical) return 'quantum-vulnerable'
+  return PQ_SIG_RE.test(algorithm) && signatureAlgorithm !== null && PQ_SIG_RE.test(signatureAlgorithm)
+    ? 'pqc-ready'
+    : 'unknown'
 }
 
 /** Weaknesses a certificate's own fields establish. */
@@ -528,6 +526,7 @@ export function certificateWeaknesses(input: {
   if (input.selfSigned) found.push('Self-signed - outside any managed trust hierarchy')
   if (input.lifecycle === 'expired') found.push('Certificate has expired')
   else if (input.lifecycle === 'revoked') found.push('Certificate is revoked but still present in inventory')
+  else if (input.lifecycle === 'not-yet-valid') found.push('Certificate is not yet valid')
   else if (typeof input.daysToExpiry === 'number' && input.daysToExpiry <= 30) {
     found.push(`Expires in ${Math.max(0, input.daysToExpiry)} day(s)`)
   }

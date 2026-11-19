@@ -86,6 +86,9 @@ export function FeaturesBookHero({ modules }: { modules: ModuleEntry[] }) {
     const target = document.getElementById(modules[index].id);
     if (target) {
       event.preventDefault();
+      // Lenis also handles anchor clicks on document. Let this handler own the
+      // jump so it cannot restart scrolling from its pre-navigation position.
+      event.stopPropagation();
       setActive(index);
       navigate({ hash: `#${modules[index].id}` }, { preventScrollReset: true });
       target.setAttribute('tabindex', '-1');

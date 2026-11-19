@@ -182,6 +182,7 @@ export default function CertificateTelemetry() {
       { label: 'Expiring', value: lifecycle.expiring, hex: TONE.warning.hex },
       { label: 'Expired', value: lifecycle.expired, hex: TONE.critical.hex },
       { label: 'Revoked', value: lifecycle.revoked, hex: TONE.critical.hex },
+      { label: 'Not yet valid', value: lifecycle.notYetValid, hex: TONE.warning.hex },
       { label: 'Unknown', value: lifecycle.unknown, hex: TONE.neutral.hex },
     ].filter((row) => row.value > 0);
   }, [data]);
@@ -270,7 +271,7 @@ export default function CertificateTelemetry() {
           value={expiringCount}
           detail="Inside the renewal window"
           tone={expiringCount > 0 ? 'warning' : 'good'}
-          onClick={() => setFilter('band', 'high')}
+          onClick={() => setFilter('band', 'within-30')}
           hint="Combines the critical (7 day) and high-risk (30 day) bands."
         />
         <TrustKpiTile
@@ -438,7 +439,7 @@ export default function CertificateTelemetry() {
             label="Band"
             value={filters.band}
             onChange={(value) => setFilter('band', value)}
-            options={[{ value: 'all', label: 'All' }, ...intel.bands.map((band) => ({ value: band.band, label: `${EXPIRY_BAND_LABEL[band.band]} (${band.count})` }))]}
+            options={[{ value: 'all', label: 'All' }, { value: 'within-30', label: 'Expiring within 30 days' }, ...intel.bands.map((band) => ({ value: band.band, label: `${EXPIRY_BAND_LABEL[band.band]} (${band.count})` }))]}
           />
           <FilterSelect
             label="Posture"
@@ -678,7 +679,7 @@ export default function CertificateTelemetry() {
         </TrustPanel>
       </div>
 
-      <ProvenanceFooter telemetry={data.telemetry} />
+      <ProvenanceFooter telemetry={data.telemetry} reads={data.reads} />
 
       {/* ============ drill-down drawer (section 11) ============ */}
       <Drawer

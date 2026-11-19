@@ -21,6 +21,7 @@ import type {
 } from './types'
 import { parseTarget, analyzeTls } from './tls-analyzer'
 import { collectEdgeIntelligence, type EdgeIntelligence } from './edge-intelligence'
+import type { OrchestratorOptions } from '../public-scan/engines'
 import { hybridProbeSettled, measuredKeyAgreement } from './edge-intelligence-model'
 import { pqcReplacementFor } from './oid-database'
 import { leafRestatedOids } from './certificate-parser'
@@ -80,6 +81,12 @@ const RETRY_DELAY = 500 // 500ms between retries
  * WITH the reason attached — never an unexplained skip.
  */
 export const NOT_APPLICABLE_PREFIX = 'not-applicable:'
+
+/** Structured-evidence taps for live consumers (see `executeWebScan`). */
+export interface WebScanObserver extends Pick<OrchestratorOptions, 'onHttpEvidence' | 'onCertificateEvidence'> {
+  onEdge?: (evidence: { intelligence: EdgeIntelligence | null; handshake: TlsAnalysisResult | null; certificate: CertificateInfo | null; error: string | null }) => void
+  onTls?: (tls: TlsAnalysisResult | null) => void
+}
 
 /** Compose the documented not-applicable signal for `moduleComplete`. */
 function notApplicable(reason: string): string {
@@ -215,7 +222,14 @@ export async function executeWebScan(
    * the run's budget across its targets and passes each one its share, so the
    * total stays predictable however many assets were submitted.
    */
-  edgeBudgetMs: number = EDGE_BUDGET_MS
+  edgeBudgetMs: number = EDGE_BUDGET_MS,
+  /**
+   * Optional structured-evidence taps for the Real Time Scanning workflow.
+   * Called the moment a phase's evidence exists, so a live consumer can draw
+   * certificates and algorithms without waiting for the whole target. Purely
+   * observational: an observer that throws is ignored and cannot alter the scan.
+   */
+  observer?: WebScanObserver
 ): Promise<WebScanCompleteResult> {
   const scanId = crypto.randomUUID()
   const startTime = Date.now()
@@ -537,7 +551,15 @@ export async function executeWebScan(
         moduleStart('edge-infrastructure-analyzer', 'Edge Infrastructure Analyzer', hostname, 12)
 
         const edgeAttempt = await withRetry(
-          () => collectEdgeIntelligence(hostname, port, undefined, edgeBudgetMs),
+          () => collectEdgeIntelligence(hostname, port, undefined, edgeBudgetMs, {
+            onCertificateEvidence: (evidence) => {
+              certInfo ??= evidence.certificate
+              try { observer?.onCertificateEvidence?.(evidence) } catch { /* observational only */ }
+            },
+            onHttpEvidence: (evidence) => {
+              try { observer?.onHttpEvidence?.(evidence) } catch { /* observational only */ }
+            },
+          }),
           'Public Edge Intelligence Engine',
           0, // the engines retry their own transient failures internally
           // Never below the engines' own degrade-by budget, or the outer guard
@@ -546,8 +568,15 @@ export async function executeWebScan(
         )
         edgeIntelligence = edgeAttempt.result?.intelligence ?? null
         const edgeHandshake = edgeAttempt.result?.handshake ?? null
+        const edgeCertificate = edgeAttempt.result?.bundle.certificate.data.certificate ?? null
+        certInfo = edgeCertificate ?? edgeHandshake?.peerCertificate ?? certInfo
         const edgeError = edgeAttempt.error
 
+        try {
+          observer?.onEdge?.({ intelligence: edgeIntelligence, handshake: edgeHandshake, certificate: edgeCertificate, error: edgeError })
+        } catch {
+          // observational only
+        }
         emitEdgeModuleStates(edgeIntelligence, edgeError, hostname, port)
         phaseComplete('edge-intelligence', 'Public Edge Intelligence Complete', 17)
 
@@ -566,8 +595,8 @@ export async function executeWebScan(
             : await withRetry(
                 () => analyzeTls(hostname, port),
                 'TLS Analyzer',
-                TLS_MAX_RETRIES,
-                TLS_MODULE_TIMEOUT
+                certInfo ? 0 : TLS_MAX_RETRIES,
+                certInfo ? Math.min(12_000, edgeBudgetMs) : TLS_MODULE_TIMEOUT
               )
           tlsResult = tlsAttempt.result
 
@@ -601,9 +630,7 @@ export async function executeWebScan(
               threatLevel: getTlsVersionThreat(tlsResult.tlsVersion),
               category: 'Protocol',
               description: getTlsVersionDescription(tlsResult.tlsVersion),
-              recommendation: tlsResult.tlsVersion.includes('1.3')
-                ? 'Enable PQC hybrid cipher suites for TLS 1.3'
-                : 'Upgrade to TLS 1.3 with PQC hybrid cipher suites',
+              recommendation: getTlsVersionRecommendation(tlsResult.tlsVersion),
               quantumBreakTime: 'N/A (protocol level)',
               classicalBreakTime: 'N/A',
             })
@@ -619,9 +646,7 @@ export async function executeWebScan(
                   threatLevel: protocolThreat,
                   category: 'Protocol Support',
                   description: `${protocolProbe.protocol} is supported by the endpoint${protocolProbe.cipherSuite ? ` with ${protocolProbe.cipherSuite}` : ''}`,
-                  recommendation: protocolProbe.protocol.includes('1.3')
-                    ? 'Enable hybrid PQC key exchange for TLS 1.3'
-                    : 'Disable deprecated protocol support and require TLS 1.3',
+                  recommendation: getTlsVersionRecommendation(protocolProbe.protocol),
                   quantumBreakTime: 'N/A (protocol level)',
                   classicalBreakTime: protocolThreat === 'CRITICAL' ? 'Deprecated protocol' : 'N/A',
                 })
@@ -631,7 +656,7 @@ export async function executeWebScan(
             // Certificate info from TLS. The HNDL timeline is derived from the
             // key agreement and the certificate key, so it is produced by — and
             // counted against — the key exchange analyzer below.
-            certInfo = tlsResult.peerCertificate
+            certInfo ??= tlsResult.peerCertificate
           }
           moduleComplete('tls-analyzer', 'TLS Analyzer', `${hostname}:${port}`, 28, findings.length - tlsFindingStart, tlsAttempt.error)
         } catch (err) {
@@ -648,6 +673,11 @@ export async function executeWebScan(
             classicalBreakTime: 'N/A',
           })
           moduleComplete('tls-analyzer', 'TLS Analyzer', `${hostname}:${port}`, 28, findings.length - tlsFindingStart, message)
+        }
+        try {
+          observer?.onTls?.(tlsResult)
+        } catch {
+          // observational only
         }
         phaseComplete('tls-handshake', 'TLS Analysis Complete', 30)
 
@@ -843,7 +873,7 @@ export async function executeWebScan(
               threatLevel: 'CRITICAL',
               category: 'Certificate',
               description: `Certificate expired on ${certInfo.validTo}`,
-              recommendation: 'Renew certificate immediately with PQC-ready CA',
+              recommendation: 'Renew and deploy the certificate immediately. Verify the served certificate, intermediate chain and hostname from a client, then rescan.',
               quantumBreakTime: 'N/A',
               classicalBreakTime: 'N/A',
             })
@@ -1560,9 +1590,15 @@ function getTlsVersionThreat(version: string): ThreatLevel {
 
 function getTlsVersionDescription(version: string): string {
   if (version === 'TLSv1' || version === 'TLSv1.1') return `${version} — deprecated, classically insecure`
-  if (version === 'TLSv1.2') return `${version} — lacks native PQC cipher suite support`
-  if (version === 'TLSv1.3') return `${version} — supports PQC hybrid extensions, recommended protocol`
+  if (version === 'TLSv1.2') return 'TLS 1.2 was observed. This identifies the protocol version only; cipher configuration and key establishment are assessed separately.'
+  if (version === 'TLSv1.3') return 'TLS 1.3 was observed. Hybrid key establishment is assessed separately by named-group probing.'
   return `${version} — evaluate protocol security`
+}
+
+function getTlsVersionRecommendation(version: string): string {
+  if (version === 'TLSv1' || version === 'TLSv1.1') return 'Disable the deprecated protocol and verify that clients can negotiate TLS 1.2 or later.'
+  if (version === 'TLSv1.2') return 'Prefer TLS 1.3 where clients support it. Verify TLS 1.2 cipher settings and test hybrid ML-KEM separately.'
+  return 'Verify which key establishment groups the endpoint negotiates from representative clients.'
 }
 
 function getCertAlgorithmThreat(alg: string): ThreatLevel {

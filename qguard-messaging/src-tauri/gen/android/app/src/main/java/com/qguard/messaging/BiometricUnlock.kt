@@ -1,6 +1,7 @@
 package com.qguard.messaging
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
@@ -47,6 +48,21 @@ object BiometricUnlock {
             else -> "unavailable"
         }
     }.getOrElse { "error:${it.message ?: it.javaClass.simpleName}" }
+
+    /**
+     * The biometric sensors this device has, comma-separated: "fingerprint",
+     * "face", "iris". Hardware only — which of them Android accepts as STRONG
+     * (and so offers in the prompt) is `availability`'s answer.
+     */
+    @JvmStatic
+    fun modalities(context: Context): String = runCatching {
+        val pm = context.packageManager
+        listOfNotNull(
+            "fingerprint".takeIf { pm.hasSystemFeature(PackageManager.FEATURE_FINGERPRINT) },
+            "face".takeIf { Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && pm.hasSystemFeature(PackageManager.FEATURE_FACE) },
+            "iris".takeIf { Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && pm.hasSystemFeature(PackageManager.FEATURE_IRIS) },
+        ).joinToString(",")
+    }.getOrElse { "" }
 
     /** Wrap `sekB64` under a fresh biometric-gated key; returns `iv:ciphertext` (Base64). */
     @JvmStatic

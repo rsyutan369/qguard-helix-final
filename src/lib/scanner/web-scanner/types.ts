@@ -89,6 +89,20 @@ export interface CertificateChainEntry {
   publicKeySize: number
   validTo: string
   isExpired: boolean
+  /** SHA-256 fingerprint of this chain certificate, when its DER was available. */
+  fingerprint256?: string
+  serialNumber?: string
+  validFrom?: string
+  /**
+   * Cryptographic link to the NEXT entry (its presented issuer): `true` when
+   * `X509Certificate.checkIssued` matched AND the signature verified under the
+   * issuer's public key, `false` when that check failed, `null` when either DER
+   * was unavailable or this is the last entry. Issuer NAME equality alone never
+   * sets this — a name does not prove a signature.
+   */
+  signatureVerifiedByNext?: boolean | null
+  /** For a self-issued entry: whether its signature verifies under its own key. */
+  selfSignatureValid?: boolean | null
 }
 
 // ─── OID Classification ──────────────────────────────────────────────────────

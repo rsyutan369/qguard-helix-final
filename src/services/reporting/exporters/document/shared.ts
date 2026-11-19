@@ -4,11 +4,15 @@
  * renderers cannot drift on colours, ordering or wording.
  */
 import type { InventoryReport } from '../../InventoryReport'
-import type { BlockTone, DocumentSection, ReportDocument } from '../../ReportDocument'
+import type { BlockTone, DocumentSection, DocumentValidation, ReportDocument } from '../../ReportDocument'
 import { TONE_HEX } from '../../ReportDocument'
 import { reportVerificationUrl } from '../../ReportQr'
 
 export type DocumentFormat = 'pdf' | 'docx' | 'xlsx' | 'pptx' | 'html' | 'csv' | 'json'
+export type DocumentExportInput = Pick<InventoryReport, 'tables' | 'reconciliation' | 'integrity'> & {
+  meta: Pick<InventoryReport['meta'], 'generatedAt' | 'filenameSlug' | 'reportId' | 'version' | 'generatedBy' | 'dataAsOf'>
+  document?: ReportDocument
+}
 
 export const DOCUMENT_MIME: Record<DocumentFormat, string> = {
   pdf: 'application/pdf',
@@ -108,12 +112,12 @@ export function contentsEntries(doc: ReportDocument): Array<{ id: string; title:
   ]
 }
 
-export function verificationUrl(report: InventoryReport): string | null {
+export function verificationUrl(report: DocumentExportInput): string | null {
   return reportVerificationUrl({ integrity: report.integrity })
 }
 
 /** File name: qguard-<slug>-<scope>-<date>-v<version>.<ext>. */
-export function documentFilename(report: InventoryReport, format: DocumentFormat): string {
+export function documentFilename(report: DocumentExportInput, format: DocumentFormat): string {
   const stamp = new Date(report.meta.generatedAt).toISOString().slice(0, 10)
   const slug = report.meta.filenameSlug || 'report'
   const version = report.meta.version ? `-v${report.meta.version.replace(/[^0-9a-z.]+/gi, '')}` : ''
@@ -138,3 +142,11 @@ export function utc(value: string | null | undefined): string {
 }
 
 export const VALIDATION_LABEL = { pass: 'PASS', warn: 'WARN', fail: 'FAIL' } as const
+
+export function validationLabel(validation: DocumentValidation): string {
+  if (validation.score !== undefined) {
+    return `Report quality ${VALIDATION_LABEL[validation.status]} · ${validation.score}/100`
+  }
+  const status = { pass: 'Validated', warn: 'Incomplete', fail: 'Failed' }[validation.status]
+  return `Snapshot validation: ${status}`
+}

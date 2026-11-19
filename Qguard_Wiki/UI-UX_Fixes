@@ -1,0 +1,385 @@
+# QGUARD HELIX — MESH & XFER UI/UX FIXES, CROSS-DEVICE SYNCHRONIZATION, PERSISTENT SESSIONS & PRODUCTION BUILD
+
+Perform a comprehensive engineering review, debugging, implementation, and validation of **Qguard Mesh (OFFGRID)** and **Qguard XFER (File Transfer)**.
+
+The objective is to resolve the remaining UI/UX issues, improve cross-device synchronization, implement persistent active sessions, and prepare both Android and Windows Desktop applications for production distribution.
+
+Use the attached screenshots as visual references, particularly the highlighted bottom navigation and message composer overlap.
+
+**IMPORTANT:** Do not simply apply visual patches. Investigate the underlying frontend, backend, networking, session management, synchronization, and platform-specific implementations. Implement actual working solutions.
+
+---
+
+## 1. FIX MESSAGE COMPOSER AND BOTTOM NAVIGATION OVERLAP
+
+**Current Issue:**
+
+In Qguard Mesh, the message input/composer area is still slightly overlapping with the bottom navigation menu.
+
+As shown in the attached screenshot, the message input field, emergency button, and send button are too close to the bottom navigation bar.
+
+**Required Fixes:**
+
+- Properly reposition the message composer so it never overlaps the bottom navigation.
+- Maintain sufficient spacing between the message input area and navigation menu.
+- Ensure the entire composer, including:
+  - Emergency message button.
+  - Message input field.
+  - Send button.
+  remains fully visible and accessible.
+- Account for Android system navigation bars, display cutouts, safe areas, and device-specific screen dimensions.
+- Correctly handle keyboard appearance, resizing, and scrolling.
+- Prevent the message composer from being hidden behind the keyboard or navigation elements.
+- Ensure the layout works consistently across different Android screen sizes and Windows Desktop resolutions.
+
+**Design Requirements:**
+
+Maintain the existing premium Qguard Helix interface, including its current branding, colors, typography, glassmorphism, and visual hierarchy.
+
+Do not unnecessarily redesign unrelated components.
+
+---
+
+## 2. FIX CROSS-DEVICE USER AVATAR SYNCHRONIZATION
+
+**Current Issue:**
+
+When two devices connect, each device only displays its own avatar or profile image. The other connected user's actual avatar is not consistently displayed.
+
+This must be corrected.
+
+**Expected Behavior:**
+
+Both connected users must see each other's actual profile images and identities.
+
+For example:
+
+- Android Device A connects to Windows Desktop B.
+- Android Device A must display Windows Desktop B's avatar.
+- Windows Desktop B must display Android Device A's avatar.
+
+The same behavior must work for:
+- Android ↔ Android
+- Windows Desktop ↔ Windows Desktop
+- Android ↔ Windows Desktop
+- Windows Desktop ↔ Android
+
+**Implementation Requirements:**
+
+1. Implement proper peer profile and avatar synchronization.
+2. Exchange and synchronize the correct user profile information during device discovery, pairing, and connection establishment.
+3. Associate each avatar with the correct authenticated user or trusted device identity.
+4. Ensure the correct remote avatar is displayed in conversations, device information, contact details, and other relevant UI components.
+5. Support profile image updates and synchronize changes between connected devices.
+6. Implement appropriate image caching and refresh mechanisms.
+7. Provide a consistent fallback avatar when a user has not uploaded a profile image.
+8. Prevent incorrect avatar assignments, stale cached images, and identity mismatches.
+
+**Security Requirements:**
+
+- Never associate an avatar with a device based solely on its display name.
+- Validate peer identity and profile ownership.
+- Do not expose private profile information unnecessarily.
+- Ensure profile synchronization respects the application's authentication and encryption architecture.
+
+The objective is to establish consistent, accurate, and synchronized user identities across all supported platforms.
+
+---
+
+## 3. ADD A "SEND MORE FILES" BUTTON AFTER SUCCESSFUL TRANSFER
+
+**Current Issue:**
+
+After a successful XFER file transfer, the completion screen displays the transfer result and integrity verification, but there is no convenient option to initiate another transfer.
+
+Users should not need to disconnect and establish another connection just to send additional files.
+
+**Required Implementation:**
+
+Add a prominent and easily accessible button to the successful transfer screen:
+
+**Primary Button: "Send More Files"**
+
+Alternative label: "Transfer More Files".
+
+The button should appear after a successful transfer and integrity verification.
+
+**Expected Workflow:**
+
+1. Sender and receiver establish a connection.
+2. Sender selects files.
+3. Files are transferred.
+4. Receiver receives the files.
+5. The application verifies file integrity.
+6. The successful transfer screen appears.
+7. The sender selects "Send More Files".
+8. The file picker opens again.
+9. Sender selects additional files.
+10. Another transfer starts using the existing active session.
+
+Repeat this process as many times as necessary without requiring users to reconnect.
+
+**Additional Requirements:**
+
+- Maintain the existing connection between sender and receiver.
+- Preserve the established pairing and trusted-device identity.
+- Support multiple consecutive file transfers.
+- Update transfer progress, file count, total size, and verification results for each new transfer.
+- Keep previous transfer history intact.
+- Clearly distinguish completed, pending, failed, and active transfers.
+- Provide appropriate error handling and retry functionality.
+- Prevent duplicate file transfers caused by repeated button clicks or network retries.
+
+---
+
+## 4. IMPLEMENT PERSISTENT CONNECTIONS AND ACTIVE SESSION MANAGEMENT
+
+Apply consistent connection and session-management behavior to both Qguard Mesh and Qguard XFER.
+
+**Current Problem:**
+
+Users should not have to repeatedly disconnect and reconnect whenever they want to continue messaging or transfer additional files.
+
+**Required Behavior:**
+
+Once two devices have successfully established a trusted connection, the application should maintain that active session until:
+
+- A user manually disconnects.
+- A device explicitly terminates the session.
+- A security policy requires termination.
+- The connection becomes unavailable and cannot be recovered.
+
+**Qguard Mesh Requirements:**
+
+- Maintain stable peer connections during active messaging sessions.
+- Support continuous two-way communication.
+- Display incoming and outgoing messages in real time.
+- Maintain message synchronization across both connected devices.
+- Support consecutive messages without requiring rediscovery.
+- Implement automatic reconnection when technically possible after temporary Bluetooth or Wi-Fi interruptions.
+- Preserve encrypted queued messages during temporary disconnections.
+- Resume communication when the peer becomes reachable again.
+
+**Qguard XFER Requirements:**
+
+- Maintain the established sender-receiver session after successful transfers.
+- Allow consecutive file transfers without repeating the pairing process.
+- Support sending multiple files in separate transfer batches.
+- Maintain trusted device information and session state.
+- Provide clear connection status indicators.
+- Allow users to manually disconnect whenever they choose.
+
+**Important Networking Considerations:**
+
+Implement appropriate connection lifecycle management for Bluetooth, Wi-Fi Direct, local networking, and supported transport mechanisms.
+
+Do not assume that an active connection can remain physically uninterrupted when Bluetooth or Wi-Fi becomes unavailable, the operating system terminates the application, or a device moves out of range.
+
+Instead, implement robust session persistence, connection monitoring, reconnection, and recovery mechanisms.
+
+Do not rely on mock connections, simulated device states, or hardcoded connection statuses.
+
+All connection states must reflect actual networking and transport-layer events.
+
+---
+
+## 5. CROSS-PLATFORM COMPATIBILITY AND SYNCHRONIZATION
+
+Perform a complete compatibility review of the following environments:
+
+| Platform | Required Compatibility |
+|---|---|
+| Android | Android ↔ Android |
+| Windows Desktop | Windows ↔ Windows |
+| Android + Windows | Android ↔ Windows |
+| Windows + Android | Windows ↔ Android |
+
+Verify that all platforms correctly synchronize:
+
+- User identities and avatars.
+- Device discovery and pairing.
+- Connection and session status.
+- Incoming and outgoing messages.
+- Message delivery and acknowledgment states.
+- File transfer requests.
+- Transfer progress.
+- Transfer completion notifications.
+- File integrity verification.
+- Connection recovery and reconnection.
+
+Ensure consistent behavior regardless of which platform initiates the connection.
+
+---
+
+## 6. COMPREHENSIVE ENGINEERING AUDIT
+
+Before finalizing, perform a deep technical audit of the relevant codebases.
+
+Inspect:
+
+- Frontend components and UI layout.
+- Backend services and APIs.
+- Rust networking and cryptographic modules.
+- Android-specific networking and lifecycle handling.
+- Windows Desktop networking and session management.
+- Bluetooth discovery and communication.
+- Wi-Fi and local network transports.
+- Peer identity and profile synchronization.
+- File transfer protocols.
+- Session persistence and reconnection.
+- Event handling and real-time synchronization.
+- Error handling, logging, and recovery mechanisms.
+
+**Engineering Standards:**
+
+- Follow the existing architecture and established coding conventions.
+- Reuse shared Rust functionality wherever possible.
+- Avoid unnecessary duplicated platform-specific implementations.
+- Maintain secure communication and authenticated peer identities.
+- Preserve end-to-end encryption and existing cryptographic protections.
+- Do not introduce mock data, simulated events, or placeholder functionality.
+- Do not break existing working features.
+- Ensure all buttons, actions, and workflows perform their actual intended operations.
+
+---
+
+## 7. COMPREHENSIVE TESTING AND VALIDATION
+
+Do not consider the task complete merely because the applications compile successfully.
+
+Perform actual testing using available physical devices and desktop environments.
+
+**UI/UX Testing**
+- Verify that the message composer no longer overlaps the bottom navigation.
+- Test different Android resolutions and display sizes.
+- Test keyboard appearance and dismissal.
+- Verify all buttons remain accessible.
+
+**Avatar Synchronization Testing**
+- Connect two devices.
+- Verify both devices display the correct remote avatar.
+- Update a profile image and verify synchronization.
+- Restart the application and verify the correct identities remain associated.
+
+**Qguard Mesh Testing**
+- Send multiple consecutive messages.
+- Verify two-way real-time communication.
+- Test message delivery acknowledgments.
+- Temporarily interrupt connectivity.
+- Verify reconnection and queued message recovery.
+- Confirm manual disconnection works correctly.
+
+**Qguard XFER Testing**
+- Transfer a file successfully.
+- Verify the integrity result.
+- Confirm the "Send More Files" button appears.
+- Send additional files without disconnecting.
+- Repeat multiple transfer batches.
+- Verify file integrity and transfer history.
+- Test interrupted and failed transfers.
+
+**Cross-Platform Testing**
+- Android ↔ Android.
+- Android ↔ Windows.
+- Windows ↔ Android.
+- Windows ↔ Windows.
+
+Document actual test results. Clearly distinguish successful tests, failed tests, and tests that require physical-device verification.
+
+---
+
+## 8. REBUILD AND PREPARE SIGNED PRODUCTION APPLICATIONS
+
+After implementing the fixes and completing validation, rebuild both Qguard Messaging applications.
+
+### Android Production Build
+
+Generate the production-ready, signed Android App Bundle:
+
+**Required deliverable:**
+- `Qguard-Messaging-Release.aab`
+
+Requirements:
+- Release configuration.
+- Production signing configuration.
+- Correct application ID and version information.
+- Correct Android permissions.
+- Properly configured network and Bluetooth permissions.
+- Production-appropriate security settings.
+- No debug-only configurations or development endpoints.
+- Verify the generated AAB and signing configuration.
+- Ensure the artifact is suitable for Google Play Console upload.
+
+Use the existing authorized production signing keystore and credentials. Never generate replacement signing keys or expose signing credentials.
+
+### Windows Desktop Production Build
+
+Generate the production-ready Windows Desktop application.
+
+Required deliverables:
+- Signed Windows installer.
+- Signed executable, where supported by the existing packaging configuration.
+- Required application resources and dependencies.
+
+Verify that the Windows build includes all necessary networking, cryptographic, and application components.
+
+### Build Integrity
+
+- Build from the latest corrected source code.
+- Run production builds for both platforms.
+- Resolve build errors and dependency conflicts.
+- Verify the resulting artifacts.
+- Generate SHA-256 checksums.
+- Ensure the Android and Windows applications use compatible protocol and cryptographic implementations.
+
+If signing certificates, keystores, credentials, or hardware signing access are unavailable, identify the exact missing requirement. Do not claim an application is signed when it is not.
+
+---
+
+## 9. FINAL DELIVERY REPORT
+
+After completing the work, provide a detailed engineering report containing:
+
+1. Issues identified.
+2. Root causes.
+3. Files and modules modified.
+4. UI/UX improvements implemented.
+5. Avatar synchronization implementation.
+6. Persistent session implementation.
+7. XFER multiple-transfer workflow.
+8. Networking and reconnection improvements.
+9. Cross-platform compatibility results.
+10. Actual testing results.
+11. Build and signing status.
+12. Generated production artifact locations.
+13. SHA-256 checksums.
+14. Remaining limitations or required manual actions.
+
+Clearly identify the final Android `.aab` location and Windows installer location.
+
+---
+
+## FINAL ACCEPTANCE CRITERIA
+
+The task is considered complete only when:
+
+- [ ] Message composer no longer overlaps bottom navigation.
+- [ ] Both connected users see each other's correct avatars.
+- [ ] Avatar synchronization works across Android and Windows.
+- [ ] XFER displays a working "Send More Files" button after successful transfers.
+- [ ] Users can perform consecutive transfers without reconnecting.
+- [ ] Mesh supports continuous two-way messaging.
+- [ ] Active sessions remain established until manually disconnected or legitimately terminated.
+- [ ] Temporary connectivity interruptions are handled gracefully.
+- [ ] No existing working functionality is broken.
+- [ ] Actual cross-platform tests have been performed and documented.
+- [ ] Android production AAB has been successfully generated and its signing verified.
+- [ ] Windows production application has been successfully built and its signing status verified.
+
+**FINAL OBJECTIVE:**
+
+Deliver a stable, secure, polished, and production-ready Qguard Helix ecosystem.
+
+Qguard Mesh and Qguard XFER must provide a seamless, persistent, and reliable cross-platform experience, with professional enterprise-grade UI/UX, synchronized user identities, dependable networking, and continuous communication and file transfer sessions.
+
+**Do not stop at code changes. Implement, build, test, verify, and deliver the actual production artifacts wherever the available environment and credentials permit.**

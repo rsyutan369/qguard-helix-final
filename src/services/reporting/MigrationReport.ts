@@ -364,7 +364,7 @@ export function buildMigrationReport(input: MigrationReportInput): InventoryRepo
   if (filtered) {
     notes.push(`This document covers a FILTERED view: ${jobs.length} of ${totalBefore} job(s).${input.filterDescription ? ` Filter: ${input.filterDescription}.` : ''} Totals in the reconciliation table refer to the full estate.`)
   }
-  notes.push(`Compliance mode: ${text(summary.complianceMode)} · Standard: ${text(summary.standardLabel)}. Last scan: ${dateLabel(summary.lastScanAt)}.`)
+  notes.push(`Migration guidance: ${text(summary.complianceMode)} · References: ${text(summary.standardLabel)}. Last scan: ${dateLabel(summary.lastScanAt)}.`)
 
   return {
     meta: {

@@ -1,0 +1,355 @@
+# QGUARD HELIX — Migration Planner: Complete UX/UI Redesign, Workflow Refactoring & Backend Integration Audit
+
+**Target Page:** http://localhost:3000/dashboard/migration-planner
+
+## Objective
+
+Kindly perform a comprehensive review, refactoring, and redesign of the QGUARD HELIX Migration Planner.
+
+The goal is to transform the existing Migration Planner into an intuitive, professional, enterprise-grade Post-Quantum Cryptography (PQC) Migration Management Platform where users can easily understand:
+
+1. What vulnerable cryptographic assets have been detected in their environment.
+2. Why each asset is considered vulnerable and what security risks it presents.
+3. Which assets should be prioritized for migration.
+4. What cryptographic algorithms or configurations should replace the existing vulnerable implementations.
+5. What actions and technical steps are required to migrate each asset properly.
+6. How users can execute, validate, and monitor their migration progress.
+7. Whether their environment has successfully transitioned to quantum-resistant cryptography.
+
+The experience should guide users from vulnerability discovery to successful PQC migration, even if they do not have extensive cryptographic expertise.
+
+## 1. Complete Migration Planner UX/UI Redesign
+
+Redesign the page with a clean, modern, premium enterprise cybersecurity interface.
+
+The interface should provide a clear visual hierarchy, intuitive navigation, informative dashboards, and actionable recommendations.
+
+Use the existing QGUARD HELIX design language:
+- Premium enterprise-grade interface.
+- Pearl White Light Mode and Midnight Navy Dark Mode.
+- Ice-blue and violet gradient accents.
+- Advanced glassmorphism where appropriate.
+- Professional data visualizations and interactive components.
+- Smooth animations and meaningful micro-interactions.
+- Responsive layouts for different screen sizes.
+
+Avoid unnecessary visual complexity. Prioritize usability, readability, and actionable information.
+
+## 2. Migration Overview Dashboard
+
+Create an informative migration overview that displays actual user environment data.
+
+Include relevant metrics such as:
+
+- Total discovered cryptographic assets.
+- Total vulnerable assets.
+- Quantum-vulnerable assets.
+- Assets requiring immediate attention.
+- Assets already migrated to PQC.
+- Assets currently undergoing migration.
+- Assets pending migration.
+- Migration success rate.
+- Overall quantum readiness score.
+
+Include a visual migration progress indicator and meaningful charts.
+
+**IMPORTANT:** All metrics must come from actual backend data. Do not use hardcoded values, fabricated statistics, random numbers, or mock telemetry.
+
+## 3. Vulnerability Findings & Asset Discovery
+
+Create a dedicated section where users can inspect all detected vulnerable cryptographic assets.
+
+For each asset, display:
+
+- Asset name and unique identifier.
+- Asset type (TLS endpoint, certificate, VPN, SSH, application, database, API, etc.).
+- Hostname, endpoint, or associated system.
+- Currently detected cryptographic algorithm.
+- Key size and relevant cryptographic configuration.
+- Vulnerability classification.
+- Quantum vulnerability status.
+- Harvest Now, Decrypt Later (HNDL) exposure, where applicable.
+- Risk severity and risk explanation.
+- Discovery timestamp and last assessment timestamp.
+- Recommended migration priority.
+- Current migration status.
+
+Allow users to filter, search, sort, and inspect individual assets.
+
+Each finding should explain in understandable terms:
+
+**What was detected?**
+
+**Why is it vulnerable?**
+
+**What could happen if it is not migrated?**
+
+**What should be done to resolve it?**
+
+## 4. Intelligent PQC Migration Recommendations
+
+For every detected vulnerable asset, provide an actionable migration recommendation based on its actual cryptographic configuration, compatibility, and risk profile.
+
+Recommendations should distinguish between:
+
+- Key encapsulation mechanisms (KEM).
+- Digital signature algorithms.
+- Symmetric encryption.
+- Hashing and key derivation.
+- TLS and certificate configurations.
+
+Where appropriate, support recommendations based on NIST-standardized algorithms:
+
+- ML-KEM (FIPS 203).
+- ML-DSA (FIPS 204).
+- SLH-DSA (FIPS 205).
+- AES-256-GCM.
+- SHA-3.
+- Hybrid classical/PQC cryptographic configurations.
+
+For example:
+
+| Existing Configuration | Potential Migration Recommendation |
+|---|---|
+| RSA key exchange | ML-KEM or hybrid KEM |
+| ECDH key exchange | ML-KEM with an appropriate hybrid configuration |
+| RSA signatures | ML-DSA |
+| ECDSA signatures | ML-DSA or SLH-DSA, depending on requirements |
+
+Recommendations must account for actual system compatibility, supported implementations, protocol constraints, and operational requirements.
+
+Do not automatically assume that every asset can use the same algorithm or migration configuration.
+
+For each recommendation, explain:
+- Recommended replacement.
+- Reason for the recommendation.
+- Compatibility requirements.
+- Required dependencies.
+- Implementation considerations.
+- Potential risks or downtime.
+- Validation requirements.
+
+## 5. Guided Step-by-Step Migration Workflow
+
+This is one of the most important parts of the redesign.
+
+Users should be able to select a vulnerable asset and follow a clearly structured migration workflow.
+
+Implement an intuitive workflow such as:
+
+**Step 1 — Discovery & Assessment**
+- Identify the vulnerable cryptographic implementation.
+- Review the asset's cryptographic configuration.
+- Evaluate its risk and migration priority.
+
+**Step 2 — Migration Planning**
+- Select the recommended PQC algorithm.
+- Review the proposed replacement configuration.
+- Identify dependencies and compatibility requirements.
+- Generate a migration plan.
+
+**Step 3 — Pre-Migration Validation**
+- Check system compatibility.
+- Verify required libraries and cryptographic providers.
+- Identify potential configuration conflicts.
+- Establish rollback and recovery procedures.
+
+**Step 4 — Migration Execution**
+- Present the required implementation steps.
+- Execute supported migration operations through the appropriate backend services.
+- Display execution progress and operation results.
+- Record failures and provide actionable troubleshooting guidance.
+
+**Step 5 — Post-Migration Validation**
+- Verify the deployed cryptographic configuration.
+- Confirm that the intended PQC algorithm is actually active.
+- Run appropriate cryptographic and connectivity tests.
+- Verify that the original vulnerability has been resolved.
+
+**Step 6 — Monitoring & Compliance**
+- Monitor the migrated asset.
+- Track configuration changes.
+- Record migration evidence.
+- Update the asset's quantum readiness status.
+- Generate migration reports.
+
+Every step should have a clear status, description, requirements, and next action.
+
+Users must always understand where they are in the workflow and what they need to do next.
+
+## 6. Migration Prioritization & Risk Management
+
+Implement intelligent migration prioritization based on relevant factors, including:
+
+- Cryptographic vulnerability.
+- HNDL exposure.
+- Asset criticality.
+- Data sensitivity and retention period.
+- External exposure.
+- Business impact.
+- Dependency complexity.
+- Migration readiness.
+
+Provide clear priority classifications:
+
+- Critical
+- High
+- Medium
+- Low
+
+Explain why an asset has received its priority classification.
+
+Allow users to identify which assets should be migrated first and understand the reasoning behind the recommended migration sequence.
+
+## 7. Migration Progress & Execution Monitoring
+
+Create a dedicated migration monitoring experience.
+
+Display:
+
+- Pending migrations.
+- Active migrations.
+- Completed migrations.
+- Failed migrations.
+- Migration validation results.
+- Last execution timestamp.
+- Current operation.
+- Execution logs and error details.
+
+Provide meaningful progress indicators and actionable status messages.
+
+Users should be able to inspect individual migration operations and understand exactly what happened.
+
+Ensure migration status updates are reflected accurately throughout the dashboard.
+
+## 8. Real-Time Backend Integration — Critical Requirement
+
+Perform a comprehensive audit of the existing backend architecture before implementing changes.
+
+Ensure the Migration Planner is correctly connected to actual user assets, vulnerability findings, migration plans, and execution records.
+
+Verify all existing:
+
+- React hooks.
+- Custom hooks.
+- API endpoints.
+- Express backend services.
+- Supabase queries.
+- Supabase authentication.
+- Row Level Security (RLS).
+- Realtime subscriptions.
+- Server-Sent Events (SSE).
+- WebSocket connections, where applicable.
+- State management.
+- Loading and error handling.
+- Data synchronization.
+
+Ensure that:
+
+1. Asset information comes from the authenticated user's actual environment.
+2. Vulnerability findings reflect the latest available scan results.
+3. Migration recommendations are generated from actual asset configurations.
+4. Migration progress reflects actual backend execution states.
+5. SSE and realtime subscriptions update the interface without requiring manual page refreshes.
+6. Changes made to migration plans are persisted correctly.
+7. Migration execution results are stored and retrieved accurately.
+8. Users cannot access another user's assets or migration records.
+9. Reconnecting or refreshing the page does not cause inconsistent migration states.
+10. Realtime subscriptions are properly cleaned up to prevent duplicate listeners and memory leaks.
+
+**Do not replace existing functional backend integrations with frontend-only simulations or fabricated data.**
+
+If a required backend capability does not exist, identify the gap and implement it properly using the existing architecture.
+
+## 9. Functional Actions & User Experience
+
+Review and verify every button, tab, dropdown, filter, modal, action menu, and interactive component.
+
+Expected capabilities should include:
+
+- View asset details.
+- Inspect vulnerability findings.
+- Generate migration plans.
+- Review migration recommendations.
+- Approve or reject proposed migration plans.
+- Start supported migration operations.
+- Pause or cancel operations where supported.
+- Retry failed operations.
+- Validate migrated assets.
+- View execution logs.
+- Export migration reports.
+- Track migration history.
+
+Every action must perform its intended backend operation.
+
+Use confirmation dialogs for sensitive or potentially disruptive migration operations.
+
+Never display a successful migration status unless the backend confirms successful execution and post-migration validation.
+
+## 10. Enterprise Reporting & Migration Evidence
+
+Provide meaningful migration reporting capabilities.
+
+Users should be able to generate reports containing:
+
+- Original cryptographic configuration.
+- Identified vulnerability.
+- Risk classification.
+- Recommended PQC replacement.
+- Approved migration plan.
+- Migration execution history.
+- Validation results.
+- Remaining vulnerabilities.
+- Final migration status.
+
+Reports should be suitable for technical teams, security administrators, and executive stakeholders.
+
+## 11. Testing, Verification & Acceptance Criteria
+
+After completing the redesign and backend integration, perform a comprehensive verification.
+
+Test:
+
+- Existing asset discovery functionality.
+- Actual vulnerability findings.
+- Migration recommendation accuracy.
+- Migration plan creation and persistence.
+- Migration workflow transitions.
+- Backend execution integration.
+- Real-time SSE updates.
+- Supabase data synchronization.
+- User authentication and RLS isolation.
+- Error handling and recovery.
+- Loading, empty, and disconnected states.
+- Responsive layouts.
+- Light and Dark Mode.
+- Every interactive button and action.
+
+Verify that the interface remains consistent with actual backend records after refreshing the page, reconnecting, and switching between dashboard sections.
+
+Do not consider a feature complete simply because its UI looks functional.
+
+## Final Deliverables
+
+Upon completion, provide:
+
+1. Summary of the Migration Planner redesign.
+2. List of modified and newly created files.
+3. Backend services, hooks, and API endpoints reviewed or implemented.
+4. SSE and realtime integration verification results.
+5. Database and Supabase changes, if any.
+6. Functional testing results.
+7. Identified issues and remaining limitations.
+8. Confirmation of which migration operations are genuinely executable versus planning-only capabilities.
+
+**Final Objective:**
+
+Transform the QGUARD HELIX Migration Planner into a complete, intelligent, and user-friendly PQC Migration Command Center.
+
+Users should be able to move confidently through the entire process:
+
+**DISCOVER → ASSESS → PRIORITIZE → PLAN → VALIDATE → MIGRATE → VERIFY → MONITOR → REPORT**
+
+The platform must not simply tell users that their cryptographic assets are vulnerable. It must clearly explain the findings, recommend the appropriate remediation, guide users through the migration process, and provide verifiable evidence that the migration was successfully completed.
+
+**NON-NEGOTIABLE:** Preserve all existing working functionality and backend integrations. Audit the current implementation before modifying it. Avoid unnecessary architectural rewrites, mock data, fake telemetry, placeholder actions, and superficial UI-only implementations.

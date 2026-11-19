@@ -256,7 +256,7 @@ export function PatternLab() {
             ))}
           </div>
           <p className="qm-t-mute mt-3" style={{ fontSize: 12, lineHeight: 1.6 }}>
-            Why 4 × 4: all 3 × 3 patterns together are about 389,000 — fewer than the 6-digit PINs. A stroke over an unconnected dot picks it up, as on the app’s pad. Patterns, like PINs, are not offered in FIPS approved mode.
+            Why 4 × 4: all 3 × 3 patterns together are about 389,000 — fewer than the 6-digit PINs. A stroke over an unconnected dot picks it up, as on the app’s pad. Patterns, like PINs, are not available in the restricted build mode.
           </p>
         </div>
       </div>
@@ -353,7 +353,7 @@ export function HiddenVaultLab() {
                   )}
                 </div>
                 <p className="qm-t-mute mt-3" style={{ fontSize: 12, lineHeight: 1.6 }}>
-                  The app has no list, count or setting that names a hidden vault. The pattern pad is offered to every vault user, and nothing about a hidden vault reaches the audit log, telemetry or the vault’s activity.
+                  The app has no list, count or setting that names a hidden vault. The pattern pad is offered to every vault user, and nothing about a hidden vault reaches the audit log, telemetry or the vault’s activity. An optional 12-word recovery phrase can reset its pattern on the files still stored locally.
                 </p>
               </div>
             </div>
@@ -467,7 +467,7 @@ export function StorageLibraryLab() {
                     </li>
                   );
                 })}
-                {live.length === 0 && <li className="qm-t-mute" style={{ fontSize: 12.5 }}>Every example file has been crypto-shredded.</li>}
+                {live.length === 0 && <li className="qm-t-mute" style={{ fontSize: 12.5 }}>All files were removed from this example.</li>}
               </ul>
             </div>
           ) : (

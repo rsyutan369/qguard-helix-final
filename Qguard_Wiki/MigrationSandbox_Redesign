@@ -1,0 +1,597 @@
+# QGUARD HELIX — Migration Sandbox: Complete Redesign, Realistic PQC Simulation, Isolated Testing & Backend Integration
+
+**Target Page:** http://localhost:3001/dashboard/migration-sandbox
+
+## 1. Primary Objective
+
+Kindly perform a comprehensive audit, refactoring, and redesign of the existing QGUARD HELIX Migration Sandbox.
+
+Transform it into a legitimate, enterprise-grade Post-Quantum Cryptography (PQC) Migration Sandbox where authenticated users can safely test, simulate, evaluate, and validate proposed cryptographic migrations against their actual discovered assets before implementing changes in their production environments.
+
+The platform must allow users to understand exactly what could happen if they migrate a particular vulnerable cryptographic asset to a recommended PQC or hybrid cryptographic configuration.
+
+Users should be able to:
+
+- Select actual vulnerable assets discovered in their environment.
+- Inspect their existing cryptographic configurations.
+- Create isolated sandbox environments for testing.
+- Select proposed PQC migration configurations.
+- Execute real cryptographic tests where technically supported.
+- Compare existing and proposed configurations.
+- Identify compatibility issues, errors, and potential performance impacts.
+- Evaluate migration readiness.
+- Review detailed test results and recommendations.
+- Generate a migration readiness report.
+- Send validated migration recommendations to the Migration Planner.
+
+**IMPORTANT:** This must be a functional testing and simulation platform, not merely a visual representation of a sandbox.
+
+Do not fabricate test results, performance measurements, compatibility statuses, or migration success rates.
+
+---
+
+## 2. Complete UX/UI Redesign
+
+Redesign the entire Migration Sandbox experience to make it intuitive and easy to understand, even for users who are not cryptography experts.
+
+Follow the existing QGUARD HELIX enterprise design language:
+
+- Premium Pearl White Light Mode.
+- Premium Midnight Navy Dark Mode.
+- Ice-blue and violet gradient accents.
+- Professional glassmorphism.
+- Clean and structured dashboard layouts.
+- Advanced but readable data visualizations.
+- Interactive testing controls.
+- Smooth animations and meaningful micro-interactions.
+- Responsive desktop and tablet layouts.
+
+The interface should feel like a professional enterprise cryptographic testing laboratory.
+
+Organize the experience into clearly defined sections:
+
+1. Sandbox Overview.
+2. Asset Selection.
+3. Sandbox Environment Configuration.
+4. Cryptographic Migration Testing.
+5. Test Execution & Live Monitoring.
+6. Results & Performance Comparison.
+7. Compatibility & Risk Analysis.
+8. Migration Readiness Assessment.
+9. Test History & Reports.
+
+Avoid overcrowding the interface with unnecessary technical information.
+
+Use contextual explanations, tooltips, status indicators, and guided instructions.
+
+---
+
+## 3. Sandbox Overview Dashboard
+
+Create a dashboard showing the actual status of the user's sandbox environments and testing activities.
+
+Include metrics such as:
+
+- Total sandbox environments.
+- Active sandbox sessions.
+- Completed test sessions.
+- Failed test sessions.
+- Assets currently being evaluated.
+- Assets successfully validated.
+- Assets with compatibility issues.
+- Assets requiring further investigation.
+- Overall sandbox testing activity.
+
+Display recent sandbox activities and testing history.
+
+All displayed metrics must originate from actual backend records.
+
+Never use hardcoded statistics, randomly generated telemetry, or fabricated testing activity.
+
+---
+
+## 4. Actual Asset Discovery & Selection
+
+The Migration Sandbox must be connected to the user's actual discovered cryptographic assets.
+
+Allow users to select an asset from their existing asset inventory and vulnerability findings.
+
+For each asset, display:
+
+- Asset name and identifier.
+- Asset type.
+- Hostname or endpoint.
+- Existing cryptographic algorithm.
+- Key size and configuration.
+- TLS or protocol version, where applicable.
+- Certificate information, where applicable.
+- Detected vulnerability.
+- Risk severity.
+- HNDL exposure, where applicable.
+- Last discovery timestamp.
+- Current asset status.
+- Recommended PQC migration strategy.
+
+Provide search, filtering, sorting, and asset categorization.
+
+When a user selects an asset, automatically retrieve its available configuration and relevant assessment information.
+
+**Critical requirement:** The sandbox must use the actual configuration and assessment data associated with the selected asset.
+
+Do not populate sandbox configurations using generic examples when actual asset information is available.
+
+If configuration information is incomplete, clearly identify missing information and explain what is required before testing can proceed.
+
+---
+
+## 5. Isolated Sandbox Environment Creation
+
+Implement a proper sandbox environment creation workflow.
+
+When users select an asset, allow them to create an isolated testing environment based on the asset's available configuration.
+
+The sandbox should reproduce relevant cryptographic characteristics of the original asset, including:
+
+- Existing algorithms.
+- Key sizes.
+- Cryptographic providers.
+- Protocol configurations.
+- Certificate configurations.
+- Dependencies.
+- Relevant application or service settings.
+
+Users should be able to choose between:
+
+- Creating a sandbox using the detected asset configuration.
+- Creating a sandbox using a recommended PQC configuration.
+- Creating a sandbox using a custom hybrid cryptographic configuration.
+- Comparing multiple supported migration configurations.
+
+Each sandbox environment should have:
+
+- Unique sandbox ID.
+- Associated user ID.
+- Original asset reference.
+- Environment configuration.
+- Selected cryptographic algorithms.
+- Creation timestamp.
+- Current environment status.
+- Test execution history.
+- Cleanup and expiration information.
+
+**Isolation and Security Requirements:**
+
+- Never modify production assets during sandbox testing.
+- Never execute migration operations directly against production systems from the sandbox.
+- Use isolated containers, processes, or dedicated test environments where appropriate.
+- Enforce resource limits and execution timeouts.
+- Securely handle cryptographic keys and sensitive configuration data.
+- Do not reuse production private keys in sandbox environments.
+- Use synthetic or test-only credentials where required.
+- Implement proper cleanup of temporary files, credentials, and test environments.
+- Ensure strict user isolation and Supabase RLS enforcement.
+
+The sandbox must not provide a false impression of isolation if its underlying execution environment is not actually isolated.
+
+---
+
+## 6. PQC Migration Testing & Simulation Engine
+
+This is the core functionality of the Migration Sandbox.
+
+Allow users to test what could happen when migrating an existing vulnerable cryptographic configuration to a PQC or hybrid alternative.
+
+Support applicable NIST-standardized algorithms and cryptographic configurations:
+
+**Key Encapsulation Mechanisms:**
+- ML-KEM-768.
+- ML-KEM-1024.
+- Hybrid X25519 + ML-KEM configurations, where supported.
+
+**Digital Signatures:**
+- ML-DSA-65.
+- ML-DSA-87.
+- SLH-DSA, where appropriate.
+
+**Symmetric Cryptography:**
+- AES-256-GCM.
+
+**Hashing and Key Derivation:**
+- SHA-3.
+- HKDF-SHA3-256.
+
+The testing engine must correctly distinguish between KEMs, digital signatures, symmetric encryption, and hashing algorithms.
+
+For every supported migration scenario, perform appropriate tests such as:
+
+- Cryptographic algorithm availability.
+- Key generation.
+- Encapsulation and decapsulation.
+- Encryption and decryption, where applicable.
+- Digital signature generation and verification.
+- Certificate and protocol compatibility.
+- Cryptographic provider compatibility.
+- Configuration validation.
+- Integration and connectivity testing, where supported.
+- Error handling.
+- Performance benchmarking.
+
+Use actual cryptographic libraries and providers where supported, such as OpenSSL 3.5+, OQS Provider, or other verified implementations.
+
+Do not claim an algorithm is supported simply because it appears in a dropdown.
+
+Verify that the required provider, library, implementation, and version are actually available before enabling the corresponding test.
+
+For unsupported capabilities, clearly explain the limitation.
+
+---
+
+## 7. Before-and-After Cryptographic Comparison
+
+Provide an intuitive comparison between the original asset configuration and the proposed migration configuration.
+
+For example:
+
+**Original Configuration**
+- Existing algorithm: RSA-2048.
+- Existing key exchange: ECDH, if applicable.
+- Existing protocol configuration.
+- Current vulnerability assessment.
+- Existing compatibility characteristics.
+
+**Proposed Migration**
+- Replacement signature: ML-DSA-65, where applicable.
+- Replacement key encapsulation: ML-KEM-768.
+- Hybrid configuration where appropriate.
+- Updated protocol and provider requirements.
+
+Display relevant comparison metrics:
+
+- Cryptographic security characteristics.
+- Key and ciphertext sizes.
+- Signature sizes.
+- Handshake performance.
+- Key generation time.
+- Encapsulation and decapsulation time.
+- Signature generation and verification time.
+- Memory consumption.
+- CPU utilization.
+- Compatibility results.
+- Potential implementation complexity.
+
+Only display metrics that have actually been measured or reliably derived.
+
+Clearly distinguish benchmark measurements from theoretical estimates.
+
+Provide explanations of how these changes may affect the original asset and its dependent systems.
+
+---
+
+## 8. Compatibility & Failure Analysis
+
+The sandbox should identify potential problems before users attempt production migration.
+
+Test and report relevant issues, including:
+
+- Unsupported cryptographic algorithms.
+- Missing cryptographic providers.
+- Incompatible OpenSSL versions.
+- Unsupported TLS configurations.
+- Certificate compatibility issues.
+- Protocol negotiation failures.
+- Application dependency conflicts.
+- Key format incompatibilities.
+- Increased handshake sizes.
+- Performance degradation.
+- Memory or CPU overhead.
+- Configuration errors.
+
+For every detected issue, provide:
+
+1. Issue description.
+2. Severity.
+3. Affected component.
+4. Technical explanation.
+5. Potential operational impact.
+6. Recommended remediation.
+7. Whether the issue blocks migration.
+
+Display clear results such as:
+
+- Passed.
+- Failed.
+- Warning.
+- Unsupported.
+- Not Tested.
+
+Never report an unexecuted test as passed.
+
+---
+
+## 9. Interactive Sandbox Testing Workflow
+
+Create a guided workflow that makes testing straightforward.
+
+**Step 1 — Select Asset**
+
+Choose an actual vulnerable asset from the user's discovered asset inventory.
+
+Display its current cryptographic configuration and vulnerability findings.
+
+**Step 2 — Create Sandbox**
+
+Create an isolated environment using the selected asset's available configuration.
+
+Show the environment creation status and configuration details.
+
+**Step 3 — Select Migration Configuration**
+
+Choose a recommended PQC algorithm, hybrid configuration, or supported custom configuration.
+
+Explain why the selected configuration is appropriate.
+
+**Step 4 — Configure Tests**
+
+Allow users to select the relevant tests to execute.
+
+Provide recommended test profiles based on the asset type.
+
+**Step 5 — Execute Sandbox Tests**
+
+Run the actual supported cryptographic tests inside the isolated environment.
+
+Display live execution progress, current operation, logs, and errors.
+
+**Step 6 — Analyze Results**
+
+Present the original-versus-proposed comparison, test results, performance measurements, compatibility issues, and migration risks.
+
+**Step 7 — Migration Readiness Assessment**
+
+Evaluate whether the proposed configuration is technically ready for further migration planning.
+
+**Step 8 — Generate Report & Continue Migration**
+
+Generate a detailed sandbox report and allow users to transfer validated recommendations to the QGUARD HELIX Migration Planner.
+
+Users should always know:
+
+- What step they are currently performing.
+- What has already been completed.
+- What remains to be done.
+- Whether an action is required from them.
+- Whether the sandbox test succeeded or failed.
+
+---
+
+## 10. Real-Time Test Execution & Monitoring
+
+Implement real-time monitoring of sandbox operations.
+
+Display:
+
+- Environment initialization.
+- Cryptographic provider loading.
+- Test execution status.
+- Current test operation.
+- Execution progress.
+- Test logs.
+- Errors and warnings.
+- Resource consumption.
+- Completion status.
+- Execution timestamps.
+
+Ensure that the frontend receives actual backend execution updates through the existing SSE, WebSocket, or appropriate realtime architecture.
+
+Test results must be persisted in the backend.
+
+If a user refreshes the page or reconnects, the interface should retrieve the latest persisted sandbox state rather than resetting or inventing progress.
+
+Implement proper cancellation, timeout handling, failure recovery, and cleanup.
+
+---
+
+## 11. Migration Readiness Score & Recommendations
+
+After test execution, generate a migration readiness assessment based on actual results.
+
+Evaluate:
+
+- Cryptographic implementation compatibility.
+- Algorithm availability.
+- Provider support.
+- Protocol compatibility.
+- Application dependencies.
+- Performance impact.
+- Test execution results.
+- Unresolved blockers.
+- Operational risks.
+
+Provide a transparent readiness classification:
+
+- Ready for Migration Planning.
+- Ready with Conditions.
+- Requires Remediation.
+- Not Ready.
+- Insufficient Test Evidence.
+
+Explain how the assessment was determined.
+
+Do not generate arbitrary readiness percentages or claim complete production readiness based solely on successful sandbox tests.
+
+Clearly communicate that sandbox success does not guarantee production compatibility.
+
+---
+
+## 12. Sandbox Reports & Test History
+
+Implement a dedicated testing history and reporting section.
+
+Store and display:
+
+- Original asset configuration.
+- Sandbox configuration.
+- Selected migration algorithms.
+- Cryptographic provider and version.
+- Executed tests.
+- Individual test results.
+- Performance measurements.
+- Compatibility findings.
+- Errors and warnings.
+- Migration readiness assessment.
+- Execution timestamps.
+- Environment cleanup status.
+
+Allow users to:
+
+- View previous test sessions.
+- Compare different migration configurations.
+- Re-run failed tests.
+- Export sandbox reports.
+- Review historical test results.
+- Send validated migration recommendations to the Migration Planner.
+
+Maintain an auditable history of sandbox operations.
+
+---
+
+## 13. Migration Planner Integration
+
+Ensure the Migration Sandbox and Migration Planner work together as interconnected components of QGUARD HELIX.
+
+The expected workflow should be:
+
+**Asset Discovery → Vulnerability Assessment → Migration Planner → Migration Sandbox → Test & Validate → Migration Planner → Migration Execution → Post-Migration Verification**
+
+Users should be able to:
+
+- Open an asset directly from the Migration Planner in the Sandbox.
+- Import its original configuration and migration recommendation.
+- Test alternative PQC configurations.
+- Compare multiple supported migration strategies.
+- Return validated recommendations to the Migration Planner.
+- Attach sandbox test evidence to the migration plan.
+
+Do not duplicate asset records or create inconsistent migration states between modules.
+
+Use consistent asset identifiers and shared backend records.
+
+---
+
+## 14. Backend Architecture, Hooks & Real-Time Integration Audit
+
+Before making changes, inspect the existing implementation and identify how the Migration Sandbox currently communicates with the backend.
+
+Audit all relevant:
+
+- React components.
+- Custom hooks.
+- API endpoints.
+- Express backend services.
+- Supabase queries.
+- Authentication mechanisms.
+- Database schemas.
+- Row Level Security policies.
+- SSE subscriptions.
+- WebSocket connections, where applicable.
+- Background execution services.
+- Cryptographic libraries and providers.
+- Environment configuration.
+
+Ensure that:
+
+1. Assets are retrieved from the authenticated user's actual asset inventory.
+2. Sandbox configurations are based on actual asset data.
+3. Sandbox sessions are persisted correctly.
+4. Test execution happens through real backend services.
+5. Cryptographic test results reflect actual execution.
+6. Real-time updates are correctly synchronized.
+7. Test history survives page refreshes and reconnections.
+8. Users cannot access another user's sandbox environments or results.
+9. Failed and interrupted tests are accurately recorded.
+10. Temporary sandbox environments are cleaned up appropriately.
+11. Database writes respect authentication and RLS.
+12. Realtime subscriptions are cleaned up correctly.
+
+If existing backend capabilities are incomplete, implement the missing functionality using the established architecture.
+
+Do not introduce unnecessary architectural rewrites.
+
+---
+
+## 15. Testing & Acceptance Criteria
+
+Perform comprehensive functional and integration testing after implementation.
+
+Verify:
+
+- Actual user asset discovery.
+- Asset selection and configuration retrieval.
+- Sandbox environment creation.
+- Environment isolation.
+- Cryptographic provider availability.
+- Real PQC algorithm execution.
+- Key generation and cryptographic operations.
+- Signature verification.
+- KEM encapsulation and decapsulation.
+- Compatibility testing.
+- Performance benchmarking.
+- Test execution monitoring.
+- SSE/realtime synchronization.
+- Test result persistence.
+- Failure and timeout handling.
+- Environment cleanup.
+- Migration readiness assessment.
+- Migration Planner integration.
+- Report generation and export.
+- Authentication and RLS isolation.
+- Responsive UI and Light/Dark Mode.
+- Every button, tab, modal, and interactive action.
+
+Verify results using actual test executions, backend records, and logs.
+
+Do not consider a feature complete simply because its interface looks functional.
+
+---
+
+## 16. Final Deliverables
+
+After completing the implementation, provide:
+
+1. Summary of the Migration Sandbox redesign.
+2. List of modified and newly created files.
+3. Backend services and API endpoints reviewed or implemented.
+4. Cryptographic libraries and providers actually integrated.
+5. Supported PQC algorithms and tested operations.
+6. Sandbox isolation architecture.
+7. SSE and realtime integration verification.
+8. Database and Supabase changes.
+9. Functional testing results.
+10. Actual test execution evidence.
+11. Known limitations and unsupported capabilities.
+12. Confirmation of which features are fully functional, partially supported, or planning-only.
+
+## FINAL OBJECTIVE
+
+Transform the QGUARD HELIX Migration Sandbox into a legitimate, functional, and enterprise-grade PQC Cryptographic Testing Laboratory.
+
+Users must be able to take their actual vulnerable cryptographic assets, reproduce relevant configurations in isolated environments, test proposed post-quantum replacements, observe real compatibility and performance results, identify migration blockers, and make informed migration decisions before touching production systems.
+
+The entire experience should follow:
+
+**DISCOVER → SELECT ASSET → CREATE SANDBOX → CONFIGURE PQC → EXECUTE TESTS → ANALYZE RESULTS → VALIDATE COMPATIBILITY → ASSESS READINESS → GENERATE EVIDENCE → PLAN MIGRATION**
+
+**NON-NEGOTIABLE REQUIREMENTS:**
+
+- No fake sandbox environments presented as real.
+- No fabricated cryptographic test results.
+- No random performance metrics.
+- No mock telemetry presented as actual execution.
+- No production asset modifications during sandbox testing.
+- No placeholder buttons or simulated backend success.
+- No false claims of algorithm or provider support.
+- Preserve existing working functionality and backend integrations.
+- Use actual user asset data and authenticated backend records.
+- Clearly distinguish real execution, emulation, analytical simulation, and theoretical estimates.
+
+The final product must provide genuine technical value and trustworthy testing evidence suitable for enterprise cybersecurity teams.

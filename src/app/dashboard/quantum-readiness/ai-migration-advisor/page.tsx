@@ -355,6 +355,7 @@ export default function AiMigrationAdvisorPage() {
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[11px] text-white/45">
               <span className="font-bold text-white/60">Failure points:</span>
+              {deps.failurePoints.length === 0 ? <span>none — no asset is at risk 70 or above</span> : null}
               {deps.failurePoints.map((point) => (
                 <span key={point} className="rounded border border-red-400/20 bg-red-500/[0.07] px-1.5 py-0.5 text-[10px] font-semibold text-red-200/80">
                   {point}

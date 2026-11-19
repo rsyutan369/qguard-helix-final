@@ -189,6 +189,22 @@ function main() {
   assert(/cancelled/i.test(a2Cancelled.migrationStatusDetail), 'the cancellation is stated in the status detail', a2Cancelled.migrationStatusDetail)
   assert(a2.validation.records === 2, 'validation logs resolve through the asset job ids via BOTH migration_id and migration_job_id', String(a2.validation.records))
   assert(a2.validation.validated === true, 'a passing validation record marks the asset validated')
+  const outcomes = buildAssetPortfolio({
+    ...inputs,
+    migrationJobs: [
+      ...inputs.migrationJobs,
+      { id: 'sim-a1', asset_id: 'a1', job_type: 'sandbox_tls_migration', status: 'completed', progress: 100 },
+      { id: 'live-a3', asset_id: 'a3', job_type: 'tls_migration', status: 'completed', progress: 100 },
+    ],
+    validationLogs: [
+      ...inputs.validationLogs,
+      { id: 'later-failure', migration_id: 'j1', status: 'invalid', created_at: '2026-08-02T03:00:00Z' },
+      { id: 'verified-a3', migration_id: 'live-a3', status: 'passed', created_at: '2026-08-02T03:00:00Z' },
+    ],
+  })
+  assert(outcomes.assets.find((a) => a.id === 'a1')?.migrationStatus === 'Not Started', 'completed sandbox job does not count as a live migration')
+  assert(outcomes.assets.find((a) => a.id === 'a2')?.validation.validated === false, 'latest invalid result supersedes earlier passing validation')
+  assert(outcomes.summary.verifiedMigrations === 1, 'verified count requires completed execution, passing validation and PQC-ready posture')
   assert(a1.validation.validated === false && a1.validation.cutoverBlocked === false,
     'an asset with no validation record is NOT claimed validated, and is not falsely blocked either',
     `${a1.validation.validated}/${a1.validation.cutoverBlocked}`)

@@ -2,8 +2,11 @@ package com.qguard.messaging
 
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
+import android.app.DownloadManager
 import android.net.Uri
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
 import org.json.JSONObject
@@ -102,6 +105,81 @@ object DownloadsStore {
             "ok"
         } catch (error: Exception) {
             "error:${error.message ?: "could not remove the incomplete file"}"
+        }
+    }
+
+    /** Confirm the exact saved row before Rust reads the file to recheck its digest. */
+    @JvmStatic
+    fun checkXferExport(context: Context, uri: String, display: String): String {
+        return try {
+            if (verifiedExportUri(context, uri, display) != null) "ok"
+            else "error:the saved copy was moved or removed. Save a new copy to open it."
+        } catch (_: Exception) {
+            "error:could not find the saved transfer export"
+        }
+    }
+
+    /** Open a reverified export with the system viewer, or its Downloads location. */
+    @JvmStatic
+    fun openXferExport(context: Context, uri: String, display: String, mime: String): String {
+        if (CurrentActivity.resolve(context) == null) {
+            return "error:reopen Qguard Messaging to view the transfer export"
+        }
+        return try {
+            val target = verifiedExportUri(context, uri, display)
+                ?: return "error:the saved copy was moved or removed. Save a new copy to open it."
+            if (mime.isEmpty()) {
+                val directory = DocumentsContract.buildDocumentUri(
+                    "com.android.externalstorage.documents", "primary:$RELATIVE_DIR",
+                )
+                val folder = Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(directory, DocumentsContract.Document.MIME_TYPE_DIR)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                try {
+                    context.startActivity(folder)
+                } catch (_: Exception) {
+                    context.startActivity(
+                        Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+            } else {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(target, mime)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION),
+                )
+            }
+            "ok"
+        } catch (_: Exception) {
+            if (mime.isEmpty()) "error:the system could not open Downloads"
+            else "error:the system could not open this saved file"
+        }
+    }
+
+    private fun verifiedExportUri(context: Context, raw: String, display: String): Uri? {
+        val uri = Uri.parse(raw)
+        val segments = uri.pathSegments
+        if (uri.scheme != "content" || uri.authority != "media" || uri.query != null || uri.fragment != null ||
+            segments.size != 3 || segments[0] !in listOf("external", "external_primary") ||
+            segments[1] != "downloads" || (segments[2].toLongOrNull() ?: 0) <= 0
+        ) return null
+
+        return context.contentResolver.query(
+            uri,
+            arrayOf(
+                MediaStore.MediaColumns.DISPLAY_NAME,
+                MediaStore.MediaColumns.RELATIVE_PATH,
+                MediaStore.MediaColumns.IS_PENDING,
+            ),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            if (!cursor.moveToFirst() || cursor.getInt(2) != 0) return@use null
+            val path = cursor.getString(1)?.trimEnd('/')
+            val name = cursor.getString(0)
+            if (path == RELATIVE_DIR && !name.isNullOrEmpty() && "$path/$name" == display) uri else null
         }
     }
 

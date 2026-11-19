@@ -4,8 +4,10 @@
 //! Library) over JNI — launch a subscription purchase, refresh/restore owned
 //! purchases, and read the billing state JSON the Kotlin side maintains. The
 //! purchase token this yields is NEVER trusted locally: the frontend submits it
-//! to the backend (`/api/v1/play-billing/verify`), which validates it with the
-//! Google Play Developer API before activating the account's subscription.
+//! to the backend (`/api/v1/subscriptions/verify`), which validates it with the
+//! Google Play Developer API, acknowledges it server-side, and only then
+//! computes the account's entitlements. Only base-plan offers are purchasable
+//! (no trial or introductory offer exists in the catalog).
 //!
 //! Desktop: purchases run through PayPal in the system browser
 //! (`billing_open_checkout`); there is no local billing state.
@@ -84,33 +86,82 @@ pub async fn billing_state() -> Result<Value> {
     }
 }
 
-/// Launch the Google Play purchase flow for a subscription product.
-/// `account_id` (the Supabase user id) becomes the obfuscatedAccountId so the
-/// backend can bind the purchase to this account. `old_purchase_token` turns
-/// the flow into an in-place plan change (prorated) instead of a second,
-/// duplicate subscription.
+/// Product ids sold on Play look like `qh_<tier>_<monthly|yearly>` (remappable
+/// server-side); anything outside this alphabet is refused before JNI.
+fn valid_product_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 100 && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.')
+}
+
+/// The obfuscated account id is issued by the backend: 64 lowercase hex chars
+/// (SHA-256 of the QGuard user id). Never an email or other personal data.
+fn valid_account_id(id: &str) -> bool {
+    id.len() == 64 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Launch the Google Play purchase flow for one product's base plan.
+/// `account_id` becomes the obfuscatedAccountId so the backend can bind the
+/// purchase to this account. `old_purchase_token` turns the flow into an
+/// in-place plan change (`replacement`: "upgrade" | "downgrade") instead of a
+/// second, duplicate subscription.
 #[tauri::command]
 pub async fn billing_launch_purchase(
     product_id: String,
-    base_plan_id: String,
     account_id: String,
     old_purchase_token: Option<String>,
+    replacement: Option<String>,
 ) -> Result<()> {
-    if product_id.is_empty() || base_plan_id.is_empty() || account_id.is_empty() {
-        return Err(QGuardError::InvalidInput(
-            "product, base plan, and account are required".to_string(),
-        ));
+    if !valid_product_id(&product_id) {
+        return Err(QGuardError::InvalidInput("invalid product id".to_string()));
     }
+    if !valid_account_id(&account_id) {
+        return Err(QGuardError::InvalidInput("invalid billing account id".to_string()));
+    }
+    let replacement = match replacement.as_deref() {
+        None | Some("upgrade") => "upgrade",
+        Some("downgrade") => "downgrade",
+        Some(_) => return Err(QGuardError::InvalidInput("invalid replacement mode".to_string())),
+    };
     #[cfg(target_os = "android")]
     {
-        android::launch_purchase(&product_id, &base_plan_id, &account_id, old_purchase_token.as_deref())
+        android::launch_purchase(&product_id, &account_id, old_purchase_token.as_deref(), replacement)
     }
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (product_id, base_plan_id, account_id, old_purchase_token);
+        let _ = (product_id, account_id, old_purchase_token, replacement);
         Err(QGuardError::InvalidInput(
             "Google Play Billing is only available in the Android app".to_string(),
         ))
+    }
+}
+
+/// Load localized product details (price, currency, period) from Google Play.
+/// The result lands in `billing_state().products`.
+#[tauri::command]
+pub async fn billing_query_products(product_ids: Vec<String>) -> Result<()> {
+    if product_ids.is_empty() || product_ids.len() > 16 || !product_ids.iter().all(|id| valid_product_id(id)) {
+        return Err(QGuardError::InvalidInput("invalid product id list".to_string()));
+    }
+    #[cfg(target_os = "android")]
+    {
+        android::call_with_string("queryProducts", &product_ids.join(","))
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = product_ids;
+        Ok(())
+    }
+}
+
+/// End the Google Play connection (sign-out).
+#[tauri::command]
+pub async fn billing_disconnect() -> Result<()> {
+    #[cfg(target_os = "android")]
+    {
+        android::call_void("disconnect")
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(())
     }
 }
 
@@ -221,11 +272,28 @@ mod android {
         })
     }
 
+    /// Calls a static PlayBilling method (Context, String) returning void.
+    pub fn call_with_string(method: &str, arg: &str) -> Result<()> {
+        with_env(|env, activity| {
+            let class = load_class(env, activity)?;
+            let class = jni::objects::JClass::from(class);
+            let jarg = env.new_string(arg).map_err(|e| billing_err("alloc argument", e))?;
+            env.call_static_method(
+                &class,
+                method,
+                "(Landroid/content/Context;Ljava/lang/String;)V",
+                &[JValue::Object(activity), JValue::Object(&jarg)],
+            )
+            .map_err(|e| billing_err(method, e))?;
+            Ok(())
+        })
+    }
+
     pub fn launch_purchase(
         product_id: &str,
-        base_plan_id: &str,
         account_id: &str,
         old_purchase_token: Option<&str>,
+        replacement: &str,
     ) -> Result<()> {
         with_env(|env, activity| {
             let class = load_class(env, activity)?;
@@ -233,9 +301,6 @@ mod android {
             let jproduct = env
                 .new_string(product_id)
                 .map_err(|e| billing_err("alloc product id", e))?;
-            let jbase = env
-                .new_string(base_plan_id)
-                .map_err(|e| billing_err("alloc base plan", e))?;
             let jaccount = env
                 .new_string(account_id)
                 .map_err(|e| billing_err("alloc account id", e))?;
@@ -246,6 +311,9 @@ mod android {
                 ),
                 None => JObject::null(),
             };
+            let jreplacement = env
+                .new_string(replacement)
+                .map_err(|e| billing_err("alloc replacement", e))?;
             env.call_static_method(
                 &class,
                 "launchPurchase",
@@ -253,13 +321,38 @@ mod android {
                 &[
                     JValue::Object(activity),
                     JValue::Object(&jproduct),
-                    JValue::Object(&jbase),
                     JValue::Object(&jaccount),
                     JValue::Object(&jold),
+                    JValue::Object(&jreplacement),
                 ],
             )
             .map_err(|e| billing_err("launchPurchase", e))?;
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod billing_input_tests {
+    use super::{valid_account_id, valid_product_id};
+
+    #[test]
+    fn billing_product_ids_are_restricted_before_jni() {
+        assert!(valid_product_id("qh_starter_monthly"));
+        assert!(valid_product_id("qh_pro_yearly_v2"));
+        assert!(!valid_product_id(""));
+        assert!(!valid_product_id("QH_PRO"));
+        assert!(!valid_product_id("qh pro"));
+        assert!(!valid_product_id("qh_pro;drop"));
+        assert!(!valid_product_id(&"a".repeat(101)));
+    }
+
+    #[test]
+    fn billing_account_id_must_be_the_backend_hash_not_personal_data() {
+        assert!(valid_account_id(&"ab".repeat(32)));
+        assert!(!valid_account_id("someone@example.com"));
+        assert!(!valid_account_id("5b0c6f7e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"));
+        assert!(!valid_account_id(&"AB".repeat(32)));
+        assert!(!valid_account_id(&"ab".repeat(31)));
     }
 }

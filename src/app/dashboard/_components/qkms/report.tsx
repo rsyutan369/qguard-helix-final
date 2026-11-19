@@ -186,7 +186,7 @@ export function buildQkmsReport(model: QkmsIntelligence): InventoryReport {
   ]
 
   const notes: string[] = [
-    `Every figure in this document derives from tenant-scoped records observed up to ${date(model.latestEvidenceAt)}. Nothing is estimated, sampled or generated.`,
+    `This report summarizes tenant records through ${date(model.latestEvidenceAt)}. Scores are QKMS calculations; reported custody and operator activity do not prove provider execution or standards compliance.`,
     'Risk scores use one weighted model (algorithm 22, quantum exposure 20, lifecycle 15, rotation 14, ownership 11, custody 10, blast radius 8). The same score appears on every QKMS page and in this document.',
     'A percentage shown as "Not applicable" had an empty denominator — there was nothing of that kind to measure. It is not zero.',
     `Migration gate: ${readiness.gate.why}`,
@@ -211,7 +211,7 @@ export function buildQkmsReport(model: QkmsIntelligence): InventoryReport {
       companyName: 'QGuard Helix',
       classification: 'Confidential — Cryptographic Key Governance',
       scopeNote: `${metrics.totalKeys} key(s) across ${model.distributions.environments.length} environment(s), assembled from ${Object.keys(model.telemetry.sourceCounts).length} tenant evidence source(s).`,
-      provenance: `QKMS Command Center · model computed ${date(model.generatedAt)} · newest evidence ${date(model.latestEvidenceAt)} · pipeline ${model.telemetry.pipelineStatus}`,
+      provenance: `QKMS Command Center · model computed ${date(model.generatedAt)} · newest evidence ${date(model.latestEvidenceAt)} · pipeline ${model.telemetry.pipelineStatus}${model.telemetry.truncated ? " · partial record coverage" : ""}${model.telemetry.degradedSources?.length ? " · sources unavailable" : ""}`,
       filenameSlug: 'qkms-key-estate',
     },
     kpis,

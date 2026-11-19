@@ -216,14 +216,14 @@ export function KeyDrawer({
                   onClick={() => void runAction(actions.requestRotation(key.id))}
                 />
                 <ActionButton
-                  label="Revoke"
+                  label="Mark revoked"
                   icon={ShieldAlert}
                   tone="critical"
                   busy={actions.pending === `revoke:${key.id}`}
                   disabled={!key.capabilities.revoke}
                   disabledReason={key.capabilities.reason}
                   onClick={() => {
-                    if (window.confirm(`Revoke "${key.label}"? This is a governed, audited action.`)) {
+                    if (window.confirm(`Mark "${key.label}" revoked in QKMS? Confirm revocation separately with the custody provider.`)) {
                       void runAction(actions.revokeKey(key.id));
                     }
                   }}
@@ -236,7 +236,7 @@ export function KeyDrawer({
                   disabled={!key.capabilities.decommission}
                   disabledReason={key.capabilities.reason}
                   onClick={() => {
-                    if (window.confirm(`Decommission "${key.label}"? The key is recorded as permanently out of service.`)) {
+                    if (window.confirm(`Mark "${key.label}" decommissioned in QKMS? This changes the inventory record only.`)) {
                       void runAction(actions.decommissionKey(key.id));
                     }
                   }}
@@ -326,7 +326,7 @@ export function KeyDrawer({
             <SectionLabel icon={Lock}>Custody</SectionLabel>
             <div className="flex flex-wrap gap-1.5">
               <CustodyBadge custody={key.custody} backend={key.backend} />
-              {key.hsmBacked ? <Pill tone="good">HSM-backed</Pill> : null}
+              {key.hsmBacked ? <Pill tone="neutral">HSM reported</Pill> : null}
               {key.exportable === true ? <Pill tone="critical">Exportable</Pill> : key.exportable === false ? <Pill tone="good">Non-exportable</Pill> : <Pill tone="neutral">Export unknown</Pill>}
             </div>
             <div className="mt-2 grid gap-2 sm:grid-cols-2">

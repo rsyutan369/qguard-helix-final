@@ -97,16 +97,16 @@ export function EncryptionPostureStrip({
           hint="Distinct symmetric ciphers, hashes, MACs, KDFs and application-declared algorithms. Transport cipher suites are counted on Protocol Analytics, never twice."
         />
         <Metric
-          label="CNSA 2.0 compliant"
+          label="CNSA 2.0 algorithm match"
           value={fmtPercent(posture.cnsa2CompliancePercent)}
           basis={
             posture.cnsa2Assessed
-              ? `of ${fmtNumber(posture.cnsa2Assessed)} primitive(s) whose parameters were recorded`
+              ? `of ${fmtNumber(posture.cnsa2Assessed)} distinct identified cipher or hash label(s)`
               : 'No primitive had recordable parameters'
           }
           tone={posture.cnsa2CompliancePercent >= 80 ? 'good' : posture.cnsa2CompliancePercent >= 50 ? 'warning' : 'critical'}
           unmeasured={posture.cnsa2Assessed === 0}
-          hint="CNSA 2.0 requires AES-256 and SHA-384 or SHA-512. The denominator counts only primitives whose parameters were actually recorded — an unmeasured algorithm can neither pass nor fail."
+          hint="Counts identified cipher and hash labels matching AES-256, SHA-384 or SHA-512. CNSA 2.0 applies to National Security Systems; this comparison does not evaluate modes, implementation or compliance."
         />
         <Metric
           label="Broken classically"

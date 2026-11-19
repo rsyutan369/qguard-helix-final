@@ -26,14 +26,14 @@ pub struct FolderChoice {
 }
 
 #[cfg(target_os = "android")]
-pub use android::{create_document_in_tree, delete_document, describe_folder, pick_folder};
+pub use android::{create_document_in_tree, delete_document, describe_folder, pick_folder, pick_source_folder};
 
 #[cfg(not(target_os = "android"))]
 pub use stubs::{create_document_in_tree, delete_document, describe_folder, pick_folder};
 
 #[cfg(target_os = "android")]
 mod android {
-    use std::time::{Duration, Instant};
+    use std::{sync::Mutex, time::{Duration, Instant}};
 
     use super::FolderChoice;
     use crate::error::{QGuardError, Result};
@@ -44,6 +44,20 @@ mod android {
     /// never wait forever (a killed picker Activity would leak the worker).
     const PICK_TIMEOUT: Duration = Duration::from_secs(300);
     const POLL_INTERVAL: Duration = Duration::from_millis(150);
+    static PICKER: Mutex<()> = Mutex::new(());
+
+    #[derive(serde::Deserialize)]
+    pub struct SourceFolder {
+        pub name: String,
+        pub files: Vec<SourceFile>,
+    }
+
+    #[derive(serde::Deserialize)]
+    pub struct SourceFile {
+        pub path: String,
+        pub uri: String,
+        pub size: Option<u64>,
+    }
 
     fn picker_err(context: &str, detail: impl std::fmt::Display) -> QGuardError {
         QGuardError::Storage(format!("vault folder picker {context}: {detail}"))
@@ -70,8 +84,24 @@ mod android {
     /// never on the main thread, which is the thread that has to deliver the
     /// Activity result we are waiting for.
     pub fn pick_folder() -> Result<Option<FolderChoice>> {
+        pick_with("launch")
+    }
+
+    pub fn pick_source_folder() -> Result<Option<SourceFolder>> {
+        let Some(folder) = pick_with("launchSource")? else {
+            return Ok(None);
+        };
+        let json = unwrap_result(call_context_args_string("enumerateSource", &[&folder.path])?, "read source")?;
+        if json.len() > 1024 * 1024 {
+            return Err(picker_err("read source", "the folder metadata exceeds the limit"));
+        }
+        serde_json::from_str(&json).map(Some).map_err(|error| picker_err("read source", error))
+    }
+
+    fn pick_with(launch: &str) -> Result<Option<FolderChoice>> {
+        let _picker = PICKER.try_lock().map_err(|_| picker_err("launch", "close the current folder picker first"))?;
         let _ = call_context_string("reset")?;
-        unwrap_result(call_context_string("launch")?, "launch")?;
+        unwrap_result(call_context_string(launch)?, "launch")?;
         let deadline = Instant::now() + PICK_TIMEOUT;
         loop {
             let raw = call_context_string("getStateJson")?;

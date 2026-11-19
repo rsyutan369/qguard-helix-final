@@ -38,7 +38,9 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/base.css'
 import './live-workflow.css'
-import { ArrowRightLeft, CheckCircle2, ExternalLink, Maximize2, Minimize2, Minus, Plus, Scan, ShieldAlert, XCircle } from 'lucide-react'
+import { ArrowRightLeft, CheckCircle2, Crosshair, ExternalLink, Maximize2, Minimize2, Minus, Plus, Radar, Scan, ShieldAlert, XCircle } from 'lucide-react'
+import type { ReportedAgentDiscovery } from '@/lib/migration/agent-discovery'
+import { DiscoveryCard, DiscoveryInspector, type CanvasDiscovery } from './_workflow-discovery'
 import type {
   AgentWorkflowModel,
   AgentWorkflowStatus,
@@ -76,6 +78,8 @@ const CHILD_H = 148
 const CHILD_GAP = 14
 const CHILD_TOP = NODE_H + 46
 const OVERFLOW_H = 40
+const DISCOVERY_H = 82
+const DISCOVERIES_PER_STAGE = 8
 /** Agents drawn per stage. Beyond this, the most urgent are kept and the rest summarised. */
 const MAX_ROWS = 6
 const INLINE_MIN_H = 392
@@ -158,6 +162,7 @@ interface FlowEdgeData extends Record<string, unknown> {
 }
 
 interface BranchEdgeData extends Record<string, unknown> {
+  discovery?: boolean
   state: string
   color: string
 }
@@ -165,7 +170,12 @@ interface BranchEdgeData extends Record<string, unknown> {
 type AgentFlowNode = Node<AgentNodeData, 'agent'>
 type InstanceFlowNode = Node<InstanceNodeData, 'instance'>
 type OverflowFlowNode = Node<OverflowNodeData, 'overflow'>
-type CanvasNode = AgentFlowNode | InstanceFlowNode | OverflowFlowNode
+type DiscoveryFlowNode = Node<{
+  item: CanvasDiscovery
+  selected: boolean
+  onSelect: (id: string) => void
+}, 'discovery'>
+type CanvasNode = AgentFlowNode | InstanceFlowNode | OverflowFlowNode | DiscoveryFlowNode
 type AgentFlowEdge = Edge<FlowEdgeData, 'handoff'>
 type BranchFlowEdge = Edge<BranchEdgeData, 'branch'>
 type CanvasEdge = AgentFlowEdge | BranchFlowEdge
@@ -233,6 +243,15 @@ const OverflowNode = memo(function OverflowNode({ data }: NodeProps<OverflowFlow
         <span className="font-semibold text-[color:var(--lw-ink-muted)]">{data.hiddenOnline} online</span>
         <span className="ml-auto inline-flex items-center gap-1 text-[color:var(--lw-ink-muted)]">Agent Center <ExternalLink className="h-3 w-3" aria-hidden="true" /></span>
       </a>
+    </div>
+  )
+})
+
+const DiscoveryNode = memo(function DiscoveryNode({ data }: NodeProps<DiscoveryFlowNode>) {
+  return (
+    <div className="h-full">
+      <Handle id="in" type="target" position={Position.Left} isConnectable={false} className="qg-lw-handle" />
+      <DiscoveryCard item={data.item} selected={data.selected} onSelect={data.onSelect} />
     </div>
   )
 })
@@ -336,12 +355,13 @@ const BranchEdge = memo(function BranchEdge(props: EdgeProps<BranchFlowEdge>) {
       <BaseEdge id={id} path={stub} interactionWidth={12} style={{ stroke: 'transparent' }} />
       <path d={stub} className="qg-lw-edge qg-lw-edge--glow" data-state={state} style={{ ['--edge-color' as string]: color }} />
       <path d={stub} className="qg-lw-edge qg-lw-edge--branch" data-state={state} style={{ ['--edge-color' as string]: color }} />
+      {data?.discovery && <path d={trunk} pathLength={1} className="qg-lw-discovery-pulse" style={{ stroke: color }} />}
       <circle cx={targetX} cy={targetY} r="3.5" className="qg-lw-branch-joint" data-state={state} style={{ ['--edge-color' as string]: color }} />
     </>
   )
 })
 
-const NODE_TYPES = { agent: AgentNode, instance: InstanceNode, overflow: OverflowNode }
+const NODE_TYPES = { agent: AgentNode, instance: InstanceNode, overflow: OverflowNode, discovery: DiscoveryNode }
 const EDGE_TYPES = { handoff: HandoffEdge, branch: BranchEdge }
 
 export interface WorkflowCanvasProps {
@@ -355,14 +375,23 @@ export interface WorkflowCanvasProps {
   liveByAgent?: Record<string, AgentLiveActivity>
   /** Snapshot events plus live frames — the inspector lists the selected agent's own. */
   events?: WorkflowEvent[]
+  discoveries?: ReportedAgentDiscovery[]
+  discoveriesConnected?: boolean
+  discoveriesPlanScoped?: boolean
 }
 
 interface InnerProps extends WorkflowCanvasProps {
   selectedInstance: WorkflowAgentInstance | null
   onSelectInstance: (instance: WorkflowAgentInstance | null) => void
+  discoveriesByStage: Map<WorkflowAgentId, CanvasDiscovery[]>
+  selectedDiscovery: CanvasDiscovery | null
+  onSelectDiscovery: (id: string | null) => void
 }
 
-function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, onOutput, liveByAgent, events, selectedInstance, onSelectInstance }: InnerProps) {
+function CanvasInner({
+  model, now, selectedAgent, highlightedAgent, onSelect, onOutput, liveByAgent, events, selectedInstance,
+  onSelectInstance, discoveriesByStage, selectedDiscovery, onSelectDiscovery, discoveriesConnected, discoveriesPlanScoped,
+}: InnerProps) {
   const flow = useReactFlow<CanvasNode, CanvasEdge>()
   const handoffSeqs = useRef<Record<string, { at: string | null; seq: number }>>({})
   const played = useRef<Record<string, number>>({})
@@ -391,6 +420,7 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
   const stageRef = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState(false)
   const [stageWidth, setStageWidth] = useState(0)
+  const [followLive, setFollowLive] = useState(false)
 
   const enterFullScreen = useCallback(() => {
     setExpanded(true)
@@ -462,7 +492,6 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
   // While pinned: Esc closes an open agent inspector first, then exits (when
   // the browser did not take it); the dashboard content layer is lifted above
   // the sidebar and the page stops scrolling.
-  const inspectorOpen = Boolean(selectedInstance)
   useEffect(() => {
     if (!expanded) return
     const root = document.documentElement
@@ -470,7 +499,8 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       event.preventDefault()
-      if (inspectorOpen) onSelectInstance(null)
+      if (selectedDiscovery) onSelectDiscovery(null)
+      else if (selectedInstance) onSelectInstance(null)
       else void exitFullScreen()
     }
     document.addEventListener('keydown', onKey)
@@ -478,7 +508,7 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
       root.classList.remove('qg-lw-fullscreen')
       document.removeEventListener('keydown', onKey)
     }
-  }, [exitFullScreen, expanded, inspectorOpen, onSelectInstance])
+  }, [exitFullScreen, expanded, selectedDiscovery, onSelectDiscovery, selectedInstance, onSelectInstance])
 
   // Leaving the page while in full screen must not strand the browser there.
   useEffect(() => () => {
@@ -498,9 +528,48 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
   }, [exitFullScreen, expanded, onOutput])
 
   const selectInstance = useCallback((instance: WorkflowAgentInstance) => {
+    onSelectDiscovery(null)
     onSelectInstance(instance)
     onSelect(instance.role)
-  }, [onSelect, onSelectInstance])
+  }, [onSelect, onSelectDiscovery, onSelectInstance])
+
+  const inspectDiscovery = useCallback((id: string) => {
+    onSelectInstance(null)
+    onSelectDiscovery(id)
+  }, [onSelectDiscovery, onSelectInstance])
+
+  const discoveryNodes = useMemo<DiscoveryFlowNode[]>(() => tree.flatMap(({ node, shown, hidden }, index) => {
+    const x = index * (NODE_W + GAP) + CHILD_INSET
+    const top = CHILD_TOP + shown.length * (CHILD_H + CHILD_GAP) + (hidden.length ? OVERFLOW_H + CHILD_GAP : 0)
+    return (discoveriesByStage.get(node.id) || []).map((item, row) => ({
+      id: `discovery:${item.id}`,
+      type: 'discovery' as const,
+      position: { x, y: top + row * (DISCOVERY_H + CHILD_GAP) },
+      width: CHILD_W,
+      height: DISCOVERY_H,
+      draggable: false,
+      selectable: false,
+      focusable: false,
+      data: { item, selected: item.id === selectedDiscovery?.id, onSelect: inspectDiscovery },
+    }))
+  }), [discoveriesByStage, inspectDiscovery, selectedDiscovery?.id, tree])
+  const latestDiscovery = useMemo(() => discoveryNodes.reduce<DiscoveryFlowNode | null>((latest, node) =>
+    !latest || node.data.item.order > latest.data.item.order ? node : latest, null), [discoveryNodes])
+  const latestId = latestDiscovery?.id
+  const focusLatest = useCallback(() => {
+    if (!latestId) return
+    const node = flow.getNode(latestId)
+    if (!node) return
+    void flow.setCenter(node.position.x + CHILD_W / 2, node.position.y + DISCOVERY_H / 2, {
+      zoom: Math.max(0.8, flow.getZoom()),
+      duration: prefersReducedMotion() ? 0 : 220,
+    })
+  }, [flow, latestId])
+  useEffect(() => {
+    if (!followLive || !latestId || selectedDiscovery || selectedInstance) return
+    const frame = requestAnimationFrame(focusLatest)
+    return () => cancelAnimationFrame(frame)
+  }, [focusLatest, followLive, latestId, selectedDiscovery, selectedInstance])
 
   /* ── graph ─────────────────────────────────────────────────────────── */
 
@@ -574,8 +643,8 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
         })
       }
     })
-    return out
-  }, [highlightedAgent, liveByAgent, now, onSelect, selectInstance, selectedAgent, selectedInstance, showOutput, tree])
+    return [...out, ...discoveryNodes]
+  }, [discoveryNodes, highlightedAgent, liveByAgent, now, onSelect, selectInstance, selectedAgent, selectedInstance, showOutput, tree])
 
   const edges = useMemo<CanvasEdge[]>(() => {
     const out: CanvasEdge[] = model.edges.map((edge) => ({
@@ -591,6 +660,19 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
     }))
     for (const { node, shown, hidden } of tree) {
       const color = AGENT_VISUAL[node.id].color
+      for (const item of discoveriesByStage.get(node.id) || []) {
+        out.push({
+          id: `branch:discovery:${item.id}`,
+          source: node.id,
+          sourceHandle: 'fleet',
+          target: `discovery:${item.id}`,
+          targetHandle: 'in',
+          type: 'branch',
+          selectable: false,
+          focusable: false,
+          data: { state: 'completed', color, discovery: true },
+        })
+      }
       for (const instance of shown) {
         const { online } = agentPresence(instance, liveByAgent?.[instance.id], now)
         out.push({
@@ -620,7 +702,7 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
       }
     }
     return out
-  }, [liveByAgent, model.edges, now, seqFor, tree])
+  }, [discoveriesByStage, liveByAgent, model.edges, now, seqFor, tree])
 
   const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
     for (const change of changes) {
@@ -658,10 +740,11 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
         edgeTypes={EDGE_TYPES}
         onNodesChange={onNodesChange}
         onNodeClick={(_, node) => { if (node.type === 'agent') onSelect(node.id as WorkflowAgentId) }}
-        onPaneClick={() => onSelectInstance(null)}
+        onPaneClick={() => { onSelectInstance(null); onSelectDiscovery(null) }}
+        onMoveStart={(event) => { if (event) setFollowLive(false) }}
         fitView
         fitViewOptions={{ padding: fitPadding(expanded) }}
-        minZoom={0.25}
+        minZoom={0.12}
         maxZoom={1.6}
         nodesDraggable={false}
         nodesConnectable={false}
@@ -674,6 +757,13 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
         preventScrolling={false}
         proOptions={{ hideAttribution: true }}
       />
+      {selectedDiscovery && (
+        <DiscoveryInspector
+          item={selectedDiscovery}
+          onClose={() => onSelectDiscovery(null)}
+          className="absolute bottom-14 right-3 top-3 z-20 w-[340px] max-w-[calc(100%-1.5rem)]"
+        />
+      )}
       {selectedInstance && (
         <AgentInspector
           instance={selectedInstance}
@@ -688,11 +778,28 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
           className="absolute bottom-14 right-3 top-3 z-20 w-[340px] max-w-[calc(100%-1.5rem)]"
         />
       )}
-      <div className="qg-lw-view-controls absolute bottom-3 right-3 flex overflow-hidden rounded-lg border bg-[var(--lw-screen)] backdrop-blur" role="toolbar" aria-label="Canvas view controls">
+      <div className="qg-lw-discovery-dock absolute bottom-3 left-3 z-10 flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[11px]">
+        <Radar size={15} className="shrink-0 text-[color:var(--lw-sky)]" aria-hidden="true" />
+        <div className="min-w-0">
+          <div className="font-bold">{discoveriesPlanScoped ? 'Workspace discoveries · available in fleet view' : discoveriesConnected ? 'Live agent discoveries' : 'Agent discovery stream disconnected'}</div>
+          <div className="truncate text-[color:var(--lw-ink-soft)]" aria-live="polite">
+            {latestDiscovery
+              ? `${latestDiscovery.data.item.label} · ${latestDiscovery.data.item.agentName}`
+              : !discoveriesPlanScoped && discoveriesConnected ? 'Waiting for evidence from agents' : null}
+          </div>
+        </div>
+        {latestDiscovery && (
+          <button type="button" onClick={focusLatest} className="qg-lw-discovery-control shrink-0 rounded-md px-1.5 py-1 font-bold" title="Center the latest discovery">
+            Latest
+          </button>
+        )}
+      </div>
+      <div className="qg-lw-view-controls absolute bottom-3 right-3 z-10 flex overflow-hidden rounded-lg border bg-[var(--lw-screen)] backdrop-blur" role="toolbar" aria-label="Canvas view controls">
         {[
           { label: 'Zoom in', icon: Plus, run: () => flow.zoomIn({ duration: 200 }) },
           { label: 'Zoom out', icon: Minus, run: () => flow.zoomOut({ duration: 200 }) },
-          { label: 'Fit to view', icon: Scan, run: () => flow.fitView({ padding: fitPadding(expanded), duration: 300 }) },
+          { label: 'Fit to screen', icon: Scan, run: () => { setFollowLive(false); fit(prefersReducedMotion() ? 0 : 250) } },
+          { label: 'Follow live discoveries', icon: Crosshair, run: () => setFollowLive((value) => !value), pressed: followLive },
           { label: expanded ? 'Exit full screen' : 'Full screen', icon: expanded ? Minimize2 : Maximize2, run: toggleFullScreen, pressed: expanded },
         ].map((control) => (
           <button
@@ -713,10 +820,30 @@ function CanvasInner({ model, now, selectedAgent, highlightedAgent, onSelect, on
 }
 
 export default function WorkflowCanvas(props: WorkflowCanvasProps) {
-  const { model, now, selectedAgent, highlightedAgent, onSelect, onOutput, liveByAgent, events } = props
+  const { model, now, selectedAgent, highlightedAgent, onSelect, onOutput, liveByAgent, events, discoveries } = props
   const [announcement, setAnnouncement] = useState('')
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null)
+  const [selectedDiscoveryId, setSelectedDiscoveryId] = useState<string | null>(null)
   const previous = useRef<Record<string, string>>({})
+
+  const discoveriesByStage = useMemo(() => {
+    const agents = new Map(model.nodes.flatMap((node) => node.fleet.agents.map((agent) => [agent.id, agent] as const)))
+    const grouped = new Map<WorkflowAgentId, CanvasDiscovery[]>()
+    discoveries?.forEach((item, order) => {
+      const agent = agents.get(item.agentId)
+      if (!agent) return
+      const stage = grouped.get(agent.role) || []
+      stage.push({ ...item, agentName: agent.name, order })
+      grouped.set(agent.role, stage)
+    })
+    for (const [role, items] of grouped) {
+      const recent = items.slice(-DISCOVERIES_PER_STAGE)
+      const inspected = items.find((item) => item.id === selectedDiscoveryId)
+      grouped.set(role, inspected && !recent.includes(inspected) ? [inspected, ...recent.slice(1)] : recent)
+    }
+    return grouped
+  }, [discoveries, model.nodes, selectedDiscoveryId])
+  const selectedDiscovery = Array.from(discoveriesByStage.values()).flat().find((item) => item.id === selectedDiscoveryId) || null
 
   // Resolve against the CURRENT snapshot, so the inspector shows live values
   // and closes by itself if the agent is revoked.
@@ -752,7 +879,14 @@ export default function WorkflowCanvas(props: WorkflowCanvasProps) {
     <div>
       <div className="qg-lw-canvas-host hidden lg:block">
         <ReactFlowProvider>
-          <CanvasInner {...props} selectedInstance={selectedInstance} onSelectInstance={onSelectInstance} />
+          <CanvasInner
+            {...props}
+            selectedInstance={selectedInstance}
+            onSelectInstance={onSelectInstance}
+            discoveriesByStage={discoveriesByStage}
+            selectedDiscovery={selectedDiscovery}
+            onSelectDiscovery={setSelectedDiscoveryId}
+          />
         </ReactFlowProvider>
       </div>
       {/* Narrow screens: the same cards, stacked in workflow order, each stage's agents beneath it. */}
@@ -779,6 +913,7 @@ export default function WorkflowCanvas(props: WorkflowCanvasProps) {
                       now={now}
                       selected={agent.id === selectedInstanceId}
                       onSelect={() => {
+                        setSelectedDiscoveryId(null)
                         setSelectedInstanceId(agent.id === selectedInstanceId ? null : agent.id)
                         onSelect(node.id)
                       }}
@@ -787,8 +922,23 @@ export default function WorkflowCanvas(props: WorkflowCanvasProps) {
                 ))}
               </ul>
             )}
+            {discoveriesByStage.has(node.id) && (
+              <ul className="ml-4 grid gap-2 border-l pl-3" style={{ borderColor: mix(AGENT_VISUAL[node.id].color, 35) }} aria-label={`${node.label} recent discoveries`}>
+                {discoveriesByStage.get(node.id)?.map((item) => (
+                  <li key={item.id} className="h-[82px]">
+                    <DiscoveryCard item={item} selected={item.id === selectedDiscoveryId} onSelect={(id) => {
+                      setSelectedInstanceId(null)
+                      setSelectedDiscoveryId(id)
+                    }} />
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         ))}
+        {selectedDiscovery && (
+          <DiscoveryInspector item={selectedDiscovery} onClose={() => setSelectedDiscoveryId(null)} className="max-h-[560px] sm:col-span-2" />
+        )}
         {selectedInstance && (
           <AgentInspector
             instance={selectedInstance}

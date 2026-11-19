@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { supabase } from '@/lib/supabase'
+import { openAuthenticatedEventStream } from '@/lib/authenticated-event-stream'
 
 export interface DashboardSummary {
   /** Canonical 0–100, LOWER-better — same scale/direction as the executive KPI. */
@@ -289,7 +290,8 @@ export function useDashboard() {
     else channels.delete(id)
     setSseConnected(channels.size > 0)
   }, [])
-  const eventSourcesRef = useRef<EventSource[]>([])
+  /** Closers for the open authenticated SSE streams. */
+  const eventSourcesRef = useRef<Array<() => void>>([])
   const sseReconnectTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
   // Coalesced, single-flight refresh control. Automatic triggers (30s poll,
   // Supabase realtime, SSE signals) all funnel through a throttle so bursts
@@ -537,13 +539,17 @@ export function useDashboard() {
   // the Supabase realtime websocket above. Each remaining stream reconnects on
   // its OWN exponential backoff, so a stream the tenant isn't entitled to backs
   // off alone instead of tearing down the healthy streams every 10s.
+  //
+  // Each stream is read with fetch() so the bearer token travels in the
+  // Authorization header, never in the URL (`?token=` put it into browser
+  // history, proxy logs and server access logs). All three routes accept the
+  // header.
   useEffect(() => {
     if (!token) return
-    const tokenParam = encodeURIComponent(token)
     const specs: Array<{ url: string; events: string[] }> = [
-      { url: `/api/v1/scanner/intelligence/stream?token=${tokenParam}`, events: ['scanner-intelligence'] },
-      { url: `/api/v1/agent-scanner/stream?token=${tokenParam}`, events: ['agent-scanner-sync'] },
-      { url: `/api/v1/vault/share/events?token=${tokenParam}`, events: ['failed_attempt', 'link_destroyed'] },
+      { url: '/api/v1/scanner/intelligence/stream', events: ['scanner-intelligence'] },
+      { url: '/api/v1/agent-scanner/stream', events: ['agent-scanner-sync'] },
+      { url: '/api/v1/vault/share/events', events: ['failed_attempt', 'link_destroyed'] },
     ]
 
     let cancelled = false
@@ -552,26 +558,26 @@ export function useDashboard() {
 
     const connect = (spec: { url: string; events: string[] }, attempt: number) => {
       if (cancelled) return
-      const es = new EventSource(spec.url)
-      eventSourcesRef.current.push(es)
-      es.onopen = () => markChannel(`sse:${spec.url}`, true)
-      for (const ev of spec.events) es.addEventListener(ev, queueRefreshAll)
-      es.onerror = () => {
-        markChannel(`sse:${spec.url}`, false)
-        es.close()
-        eventSourcesRef.current = eventSourcesRef.current.filter((s) => s !== es)
-        if (cancelled) return
-        const delay = Math.min(60000, 5000 * 2 ** Math.min(attempt, 4))
-        const timer = setTimeout(() => connect(spec, attempt + 1), delay)
-        sseReconnectTimersRef.current.push(timer)
-      }
+      const close = openAuthenticatedEventStream(spec.url, token, {
+        onOpen: () => markChannel(`sse:${spec.url}`, true),
+        onEvent: (name) => { if (spec.events.includes(name)) queueRefreshAll() },
+        onError: () => {
+          markChannel(`sse:${spec.url}`, false)
+          eventSourcesRef.current = eventSourcesRef.current.filter((c) => c !== close)
+          if (cancelled) return
+          const delay = Math.min(60000, 5000 * 2 ** Math.min(attempt, 4))
+          const timer = setTimeout(() => connect(spec, attempt + 1), delay)
+          sseReconnectTimersRef.current.push(timer)
+        },
+      })
+      eventSourcesRef.current.push(close)
     }
 
     for (const spec of specs) connect(spec, 0)
 
     return () => {
       cancelled = true
-      for (const stream of eventSourcesRef.current) stream.close()
+      for (const close of eventSourcesRef.current) close()
       eventSourcesRef.current = []
       for (const timer of sseReconnectTimersRef.current) clearTimeout(timer)
       sseReconnectTimersRef.current = []
@@ -582,7 +588,7 @@ export function useDashboard() {
   useEffect(() => () => {
     if (throttleTimerRef.current) clearTimeout(throttleTimerRef.current)
     for (const timer of sseReconnectTimersRef.current) clearTimeout(timer)
-    for (const stream of eventSourcesRef.current) stream.close()
+    for (const close of eventSourcesRef.current) close()
   }, [])
 
   return {

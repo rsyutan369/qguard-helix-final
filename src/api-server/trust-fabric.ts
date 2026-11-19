@@ -166,7 +166,7 @@ async function computeModel(token: string, userId: string): Promise<TrustFabricM
         .limit(CAP.assets),
     ),
     safeRows(client, 'asset_relationships', (q) =>
-      q.select('id, source_asset_id, target_asset_id, relationship_type, metadata, created_at').eq('user_id', userId).limit(CAP.assetRelationships),
+      q.select('id, source_asset_id, target_asset_id, relationship_type, metadata, created_at', { count: 'exact' }).eq('user_id', userId).limit(CAP.assetRelationships),
     ),
     safeRows(client, 'connector_accounts', (q) =>
       q
@@ -196,7 +196,7 @@ async function computeModel(token: string, userId: string): Promise<TrustFabricM
         .limit(CAP.migrationJobs),
     ),
     safeRows(client, 'scanner_agents', (q) =>
-      q.select('id, name, status, hostname, platform, last_seen_at, metadata, created_at, updated_at').eq('user_id', userId).limit(CAP.scannerAgents),
+      q.select('id, name, status, hostname, platform, last_seen_at, metadata, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).limit(CAP.scannerAgents),
     ),
     safeRows(client, 'compliance_evidence', (q) =>
       q
@@ -238,6 +238,7 @@ async function computeModel(token: string, userId: string): Promise<TrustFabricM
     assets: portfolio.assets,
     snapshot: {
       quantumReadiness: snapshot.scores.quantumReadiness,
+      readinessMeasured: snapshot.hasData && (snapshot.inventory.cryptoComponents > 0 || snapshot.inventory.certificatesAnalyzed > 0),
       quantumRisk: snapshot.scores.quantumRisk,
       quantumRiskLevel: snapshot.scores.quantumRiskLevel,
       assetsAssessed: snapshot.inventory.assetsAssessed,
@@ -414,6 +415,7 @@ export function projectView(model: TrustFabricModel, view: TrustView) {
         nodes: model.nodes.slice(0, PAGE.nodes),
         relationships: model.relationships.slice(0, PAGE.relationships),
         chainPaths: model.chainPaths.slice(0, 60),
+        incompleteChains: model.chainPaths.filter((path) => !path.complete).length,
         trustChains: model.trustChains,
         stateDistribution: model.stateDistribution,
         kindDistribution: model.kindDistribution,
@@ -573,7 +575,7 @@ function filterCertificates(rows: CertificateRow[], req: Request): CertificateRo
   const sort = str(req.query.sort) || 'expiry'
 
   const filtered = rows.filter(({ certificate, trust }) => {
-    if (band && trust.band !== band) return false
+    if (band === 'within-30' ? trust.band !== 'high' && trust.band !== 'critical' : band && trust.band !== band) return false
     if (state && trust.state !== state) return false
     if (posture && certificate.posture !== posture) return false
     if (issuer && certificate.issuer.toLowerCase() !== issuer) return false
@@ -779,7 +781,8 @@ function buildRouter(view: TrustView): Router {
           certificates,
           certificateTrust: data.certificateTrust.filter((record) => certificates.some((cert) => cert.id === record.certificateId)),
           findings,
-          events: data.events.filter((event) => event.assetId === node.assetId || event.certificateId === node.certificateId).slice(0, 20),
+          events: data.events.filter((event) => (node.assetId && event.assetId === node.assetId) ||
+            (node.certificateId && event.certificateId === node.certificateId)).slice(0, 20),
         },
       })
     } catch (error) {

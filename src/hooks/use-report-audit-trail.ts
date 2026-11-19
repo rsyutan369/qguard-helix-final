@@ -1,13 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 
 /**
- * Tenant-scoped report / executive-advisory audit trail, persisted to
- * `audit_logs` through /api/v1/reports/history and /api/v1/reports/advisories.
- * Replaces the browser-local history the Report Center and AI Executive
- * Advisor kept (shared by every account on a browser, lost on another device).
+ * Report captures are written by the generation API. Advisory activity
+ * continues to be recorded in the authenticated audit log.
  */
 
 export interface ReportAuditEntry {
@@ -37,54 +35,59 @@ export function useReportAuditTrail(type: 'report' | 'advisory') {
   const [entries, setEntries] = useState<ReportAuditEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const owner = session?.user.id === user?.id ? user?.id : undefined;
+  const activeScope = owner && token ? `${owner}:${type}` : undefined;
+  const scopeRef = useRef(activeScope);
+  scopeRef.current = activeScope;
 
   const load = useCallback(async () => {
-    if (!token) return;
+    if (!token || !activeScope) return;
     try {
       const response = await fetch(`/api/v1/reports/history?type=${type}`, { headers: { Authorization: `Bearer ${token}` } });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
+      if (scopeRef.current !== activeScope) return;
       setEntries(Array.isArray(payload.data) ? payload.data : []);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Audit trail unavailable');
+      if (scopeRef.current === activeScope) setError(err instanceof Error ? err.message : 'Audit trail unavailable');
     } finally {
-      setLoaded(true);
+      if (scopeRef.current === activeScope) setLoaded(true);
     }
-  }, [token, type]);
+  }, [token, type, activeScope]);
 
-  const hasToken = Boolean(token);
   useEffect(() => {
     setEntries([]);
     setLoaded(false);
+    setError(null);
     void load();
     // Reload when the signed-in tenant changes (or first gets a token), not on
     // every hourly token rotation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, type, hasToken]);
+  }, [activeScope]);
 
   const record = useCallback(
     async (body: Record<string, unknown>): Promise<ReportAuditEntry | null> => {
-      if (!token) return null;
-      const path = type === 'report' ? '/api/v1/reports/history' : '/api/v1/reports/advisories';
+      if (!token || !activeScope || type !== 'advisory') return null;
       try {
-        const response = await fetch(path, {
+        const response = await fetch('/api/v1/reports/advisories', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify(body),
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
+        if (scopeRef.current !== activeScope) return null;
         const entry = payload.data as ReportAuditEntry;
         setEntries((current) => [entry, ...current].slice(0, 60));
         setError(null);
         return entry;
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Audit record failed');
+        if (scopeRef.current === activeScope) setError(err instanceof Error ? err.message : 'Audit record failed');
         return null;
       }
     },
-    [token, type],
+    [token, type, activeScope],
   );
 
   return { entries, loaded, error, record, reload: load };

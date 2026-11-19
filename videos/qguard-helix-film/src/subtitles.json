@@ -1,0 +1,161 @@
+{
+  "landscape": [
+    {
+      "start": 0.69,
+      "end": 3.776,
+      "text": "A private message. A financial transaction."
+    },
+    {
+      "start": 4.79,
+      "end": 7.128,
+      "text": "A document meant for just one person."
+    },
+    {
+      "start": 8.94,
+      "end": 12.32,
+      "text": "Every day, cryptography helps\nkeep what we share private."
+    },
+    {
+      "start": 15.39,
+      "end": 21.316,
+      "text": "A sufficiently capable quantum computer could\nbreak RSA and elliptic-curve cryptography."
+    },
+    {
+      "start": 21.54,
+      "end": 24.15,
+      "text": "It's called harvest now, decrypt later."
+    },
+    {
+      "start": 25.19,
+      "end": 29.705,
+      "text": "Someone saves encrypted data today,\nhoping to unlock it years from now."
+    },
+    {
+      "start": 30.64,
+      "end": 32.837,
+      "text": "Meet QGuard Helix Messaging."
+    },
+    {
+      "start": 35.44,
+      "end": 41.078,
+      "text": "Built with post-quantum cryptography for\neveryday communications on Windows and Android."
+    },
+    {
+      "start": 43.49,
+      "end": 47.67,
+      "text": "Send private messages, photos\nand documents in Secure Chat."
+    },
+    {
+      "start": 49.49,
+      "end": 54.378,
+      "text": "Make end-to-end encrypted voice and\nvideo calls on supported devices."
+    },
+    {
+      "start": 55.24,
+      "end": 57.924,
+      "text": "Talk face to face, even miles apart."
+    },
+    {
+      "start": 59.49,
+      "end": 63.741,
+      "text": "With Quantum Vault, encrypt sensitive\ndocuments, photos and videos."
+    },
+    {
+      "start": 65.59,
+      "end": 69.818,
+      "text": "Hidden Vault gives you a separate,\nconcealed storage space on your device."
+    },
+    {
+      "start": 75.49,
+      "end": 80.712,
+      "text": "Offgrid Mesh keeps nearby devices in\ntouch over supported local connections."
+    },
+    {
+      "start": 81.74,
+      "end": 87.178,
+      "text": "With XFER, discover compatible devices\nand transfer files directly between them."
+    },
+    {
+      "start": 91.39,
+      "end": 94.65,
+      "text": "ML-KEM works alongside\nclassical key agreement."
+    },
+    {
+      "start": 96.04,
+      "end": 99.42,
+      "text": "ML-DSA provides post-quantum signatures."
+    },
+    {
+      "start": 100.09,
+      "end": 104.815,
+      "text": "AES-256-GCM provides\nauthenticated encryption."
+    },
+    {
+      "start": 107.09,
+      "end": 109.251,
+      "text": "The world is preparing for quantum."
+    },
+    {
+      "start": 112.24,
+      "end": 113.832,
+      "text": "Are your communications?"
+    },
+    {
+      "start": 115.94,
+      "end": 118.048,
+      "text": "Discover QGuard Helix today."
+    }
+  ],
+  "portrait": [
+    {
+      "start": 0.29,
+      "end": 3.2560000000000002,
+      "text": "What you share today can\nstill matter years from now."
+    },
+    {
+      "start": 5.14,
+      "end": 9.427,
+      "text": "Encrypted data can be saved today\nand targeted for decryption later."
+    },
+    {
+      "start": 10.39,
+      "end": 12.587,
+      "text": "Meet QGuard Helix Messaging."
+    },
+    {
+      "start": 15.24,
+      "end": 19.407,
+      "text": "Private messages. End-to-end\nencrypted voice and video calls."
+    },
+    {
+      "start": 20.19,
+      "end": 24.029,
+      "text": "Encrypt files in Quantum Vault.\nKeep others in Hidden Vault."
+    },
+    {
+      "start": 25.14,
+      "end": 29.306,
+      "text": "Message nearby with Offgrid\nMesh. Share files with XFER."
+    },
+    {
+      "start": 30.19,
+      "end": 34.225,
+      "text": "Built with NIST-standardized\nML-KEM and ML-DSA."
+    },
+    {
+      "start": 36.54,
+      "end": 38.701,
+      "text": "The world is preparing for quantum."
+    },
+    {
+      "start": 40.59,
+      "end": 42.182,
+      "text": "Are your communications?"
+    },
+    {
+      "start": 42.42,
+      "end": 44.528,
+      "text": "Discover QGuard Helix today."
+    }
+  ]
+}

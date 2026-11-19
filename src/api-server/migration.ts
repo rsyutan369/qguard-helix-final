@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express'
+import { csvCell } from '@/lib/csv'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import {
   MANDATORY_PQC_REQUIRED_CAPABILITIES,
@@ -24,6 +25,7 @@ import { resolveWriteAuthority } from '@/lib/agent-installer/agent-scope'
 import { dispatchSnapshotRollback } from './migration-snapshots'
 import { jobExecutionClass } from './agent-scanner'
 import { busStats, eventsSince, subscribe as subscribeAgentEvents } from './agent-event-bus'
+import { AGENT_DISCOVERY_EVENT } from '@/lib/migration/agent-discovery'
 
 type AuthenticatedRequest = Request & {
   user?: { id: string; email?: string | null }
@@ -446,11 +448,6 @@ function buildTimeline(jobs: LiveMigrationJob[]) {
 }
 
 function buildCsv(snapshot: Awaited<ReturnType<typeof buildLiveMigrationSnapshot>>) {
-  const escape = (value: unknown) => {
-    const text = String(value ?? '')
-    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
-  }
-
   const rows = [
     ['type', 'id', 'asset', 'status', 'source_algorithm', 'target_algorithm', 'progress', 'timestamp', 'message'],
     ...snapshot.jobs.map((job) => [
@@ -477,7 +474,7 @@ function buildCsv(snapshot: Awaited<ReturnType<typeof buildLiveMigrationSnapshot
     ])),
   ]
 
-  return rows.map((row) => row.map(escape).join(',')).join('\n')
+  return rows.map((row) => row.map(csvCell).join(',')).join('\n')
 }
 
 async function safeCount(client: any, table: string, userId: string, apply?: (query: any) => any) {
@@ -1117,8 +1114,8 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     criticalExposures,
     highExposures,
     lastScanAt: scanAt,
-    complianceMode: 'NIST Compliant',
-    standardLabel: 'NIST SP 800-208 | NIST SP 800-57 Rev. 5',
+    complianceMode: 'PQC migration references',
+    standardLabel: 'NIST IR 8547 | FIPS 203 / 204 / 205',
   }
 
   // Asset handoff context stamped by the Migration Planner's asset workspace
@@ -1855,10 +1852,6 @@ function buildPlannerHandoffSnapshot(rawRange: unknown, selectedAssets: any[]): 
 }
 
 function buildPlannerCsv(snapshot: Awaited<ReturnType<typeof buildMigrationPlannerSnapshot>>) {
-  const escape = (value: unknown) => {
-    const text = String(value ?? '')
-    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
-  }
   const rows = [
     ['asset', 'type', 'environment', 'owner', 'current_algorithm', 'target_solution', 'risk', 'priority', 'status', 'progress'],
     ...snapshot.topAssets.map((asset: any) => [
@@ -1874,7 +1867,7 @@ function buildPlannerCsv(snapshot: Awaited<ReturnType<typeof buildMigrationPlann
       asset.progress,
     ]),
   ]
-  return rows.map((row) => row.map(escape).join(',')).join('\n')
+  return rows.map((row) => row.map(csvCell).join(',')).join('\n')
 }
 
 function scenarioRecommendation(snapshot: Awaited<ReturnType<typeof buildMigrationPlannerSnapshot>>, targetMode: string, optimization: string) {
@@ -2887,6 +2880,18 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
   const action = plannerAction(req.body?.action)
   const limit = Math.max(1, Math.min(50, Number(req.body?.limit || 25)))
   const selectedIds = Array.isArray(req.body?.assetIds) ? new Set(req.body.assetIds.map((id: unknown) => String(id))) : null
+  const approvalPlanId = action === 'start' ? String(req.body?.approvalPlanId || '').trim() : ''
+  if (approvalPlanId) {
+    const { data: proposal, error } = await client.from('migration_plans')
+      .select('status, selected_asset_ids, metadata')
+      .eq('user_id', req.user!.id).eq('id', approvalPlanId).maybeSingle()
+    if (error) return res.status(503).json({ error: { code: 'PLAN_READ_FAILED', message: 'Unable to verify the approved migration plan.' } })
+    const approvedIds = proposal?.selected_asset_ids
+    if (!proposal || proposal.status !== 'approved' || !planApproval(proposal).approved || !Array.isArray(approvedIds) ||
+      !selectedIds?.size || selectedIds.size !== approvedIds.length || approvedIds.some((id: unknown) => !selectedIds.has(String(id)))) {
+      return res.status(409).json({ error: { code: 'PLAN_NOT_APPROVED', message: 'The requested assets must match the scope of an approved migration plan.' } })
+    }
+  }
   const now = new Date().toISOString()
   const planId = pickString(asRecord(req.body), ['planId', 'id']) || `planner-${Date.now()}`
   const baseConfiguration = normalizePlannerConfiguration(req.body?.configuration)
@@ -2910,11 +2915,15 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
   if (!selectedAssetCandidates.length) {
     return res.status(400).json({ error: { code: 'NO_ASSETS', message: 'Select at least one discovered asset before creating a migration plan.' } })
   }
+  if (approvalPlanId && new Set(selectedAssetCandidates.map((asset: any) => String(asset.assetId))).size !== selectedIds?.size) {
+    return res.status(409).json({ error: { code: 'PLAN_SCOPE_CHANGED', message: 'The approved scope contains assets that are no longer available. Review and resubmit the plan.' } })
+  }
 
   const prepared = preparePlanAssets(selectedAssetCandidates, baseConfiguration)
   const selectedAssets = prepared.assets
   const configuration = {
     ...baseConfiguration,
+    ...(approvalPlanId ? { approvalPlanId } : {}),
     strategyPhases: prepared.phases,
     orchestrationRules: {
       strategy: baseConfiguration.deploymentStrategy,
@@ -3745,6 +3754,7 @@ router.get('/live/stream', requireAuth, async (req: AuthenticatedRequest, res) =
   writeSse(res, 'connected', { timestamp: new Date().toISOString() })
 
   const userId = req.user!.id
+  const planId = typeof req.query.planId === 'string' ? req.query.planId : null
   let closed = false
   let building = false
   let rebuildQueued = false
@@ -3756,7 +3766,6 @@ router.get('/live/stream', requireAuth, async (req: AuthenticatedRequest, res) =
     }
     building = true
     try {
-      const planId = typeof req.query.planId === 'string' ? req.query.planId : null
       const snapshot = await buildLiveMigrationSnapshot(client, userId, planId)
       if (!closed) writeSse(res, 'migration-update', snapshot)
     } finally {
@@ -3790,11 +3799,15 @@ router.get('/live/stream', requireAuth, async (req: AuthenticatedRequest, res) =
     if (closed) return
     const pending = eventsSince(userId, cursor)
     if (!pending.length) return
+    let needsSnapshot = false
     for (const event of pending) {
       cursor = event.id
+      const isDiscovery = event.name === AGENT_DISCOVERY_EVENT
+      if (isDiscovery && planId) continue
+      if (!isDiscovery) needsSnapshot = true
       res.write(`id: ${event.id}\nevent: agent-event\ndata: ${JSON.stringify({ id: event.id, name: event.name, agentId: event.agentId, at: event.at, payload: redactDetail(event.payload) })}\n\n`)
     }
-    if (!snapshotTimer) {
+    if (needsSnapshot && !snapshotTimer) {
       snapshotTimer = setTimeout(() => {
         snapshotTimer = null
         void emitSnapshot().catch(() => undefined)

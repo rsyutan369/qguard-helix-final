@@ -206,7 +206,7 @@ export const POLICY_CATALOG: PolicyRuleDefinition[] = [
     defaultEnforcement: 'monitored',
     defaultSeverity: 'medium',
     parameters: [
-      { key: 'deadlineYear', label: 'Classical deprecation year', type: 'number', value: 2030, hint: 'Reported against the published deprecation timeline for 112-bit classical strength.' },
+      { key: 'deadlineYear', label: 'Classical deprecation year', type: 'number', value: 2030, hint: 'Planning year for the NIST public-key deprecation window. Earlier or different requirements may apply to the system.' },
     ],
     controlIds: ['CTL-PQC-03'],
     evaluator: 'signatureTransition',
@@ -718,7 +718,7 @@ const EVALUATORS: Record<string, Evaluator> = {
           severity,
           observed: subject.algorithm || ALGORITHM_FAMILY_LABEL[subject.family],
           expected: 'ML-DSA (FIPS 204) or SLH-DSA (FIPS 205)',
-          detail: `Classical signature algorithm requires a transition plan before the ${deadlineYear} deprecation date.`,
+          detail: `Classical signature algorithm requires a transition plan for the deprecation window after ${deadlineYear}.`,
         }),
       )
     return {

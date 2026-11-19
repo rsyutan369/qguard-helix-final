@@ -3,7 +3,7 @@
  *
  * PayPal requires a published, reachable refund policy for a recurring-billing
  * merchant, and the Terms link here for the commercial detail. Every number in
- * this document (window length, processing time, whether renewals refund) comes
+ * this document (money-back guarantee, processing time, whether renewals refund) comes
  * from REFUND_POLICY in src/lib/site-identity.ts, and every price from
  * src/lib/billing/plan-pricing.ts, so the policy cannot drift from what the
  * billing code actually does.
@@ -28,38 +28,37 @@ const SECTIONS: LegalSection[] = [
         </P>
         <P>
           It does not cover purchases made through a third party — for example a subscription bought inside the Android
-          app through Google Play. Those are refunded under that store&rsquo;s own policy, and you should raise the
-          request there first.
+          app through Google Play. Those are refunded under Google Play&rsquo;s own refund policy, and you should raise
+          the request there first. When Google Play refunds or revokes a purchase, your subscription is updated
+          automatically.
         </P>
       </>
     ),
   },
   {
     id: 'window',
-    heading: `Your ${REFUND_POLICY.initialWindowDays}-day money-back window`,
+    heading: 'Paid plans, no trial, no money-back guarantee',
     body: (
       <>
         <Notice title="The short version">
-          If the platform is not what you needed, tell us within {REFUND_POLICY.initialWindowDays} days of your{' '}
-          <Term>first payment</Term> for a plan and we refund that payment in full. You do not have to justify the
-          request.
+          Every plan is paid from the first day. There is no free trial and{' '}
+          <Term>{REFUND_POLICY.moneyBackGuarantee ? 'a' : 'no'} promotional money-back guarantee</Term>. Cancel any time
+          to stop the next renewal; you keep access to the {REFUND_POLICY.cancellationTakesEffect}.
         </Notice>
         <UL>
           <LI>
-            <Term>What qualifies.</Term> The first charge on a plan — the initial monthly or yearly payment taken when
-            you subscribe, or when you move up to a higher tier for the first time.
+            <Term>Your legal rights are unaffected.</Term> Not offering a money-back guarantee does not limit any refund
+            right you have under the consumer law of {SITE.jurisdiction} or of the country you live in, or under an app
+            store&rsquo;s refund policy.
           </LI>
           <LI>
-            <Term>How long you have.</Term> {REFUND_POLICY.initialWindowDays} calendar days from the date PayPal took
-            that payment, not from the date you first used the platform.
+            <Term>Errors are always corrected.</Term> Duplicate charges, charges after cancellation and billing errors
+            are refunded whenever they happen — see below.
           </LI>
           <LI>
-            <Term>How much comes back.</Term> The full amount charged. We do not pro-rate the days you used, and we do
-            not deduct a handling fee.
-          </LI>
-          <LI>
-            <Term>What happens to the subscription.</Term> A refund cancels the subscription. Paid features stop, and
-            your tenant drops to the free surface as described below.
+            <Term>What a refund does to the subscription.</Term> A full refund of your first payment for a plan cancels
+            the subscription, because that plan was never paid for. Refunds of a later period correct that charge and
+            leave the subscription running.
           </LI>
         </UL>
       </>
@@ -72,8 +71,8 @@ const SECTIONS: LegalSection[] = [
       <>
         <P>
           Subscriptions renew automatically until you cancel. Renewal charges are{' '}
-          <Term>{REFUND_POLICY.renewalsRefundable ? 'refundable' : 'not refundable'}</Term> — the money-back window
-          applies to your first payment for a plan, not to each period after it.
+          <Term>{REFUND_POLICY.renewalsRefundable ? 'refundable' : 'not refundable'}</Term>, except for the errors
+          listed below or where the law requires a refund.
         </P>
         <P>
           Cancelling is how you stop a renewal, and it is free and immediate to do. Cancel at any time before the
@@ -90,13 +89,10 @@ const SECTIONS: LegalSection[] = [
   },
   {
     id: 'exceptions',
-    heading: 'When we refund outside the window',
+    heading: 'When we refund',
     body: (
       <>
-        <P>
-          The {REFUND_POLICY.initialWindowDays}-day window is a floor, not a ceiling. We will refund a charge outside it
-          in these situations:
-        </P>
+        <P>We refund a charge, whenever it was taken, in these situations:</P>
         <UL>
           <LI>
             <Term>Duplicate charge.</Term> The same subscription was billed twice for the same period.
@@ -114,9 +110,8 @@ const SECTIONS: LegalSection[] = [
           </LI>
         </UL>
         <P>
-          These are handled on request and are not limited by the {REFUND_POLICY.initialWindowDays}-day clock. Nothing
-          in this policy limits rights you have under the consumer law of {SITE.jurisdiction} or of the country you live
-          in.
+          These are handled on request, with no time limit. Nothing in this policy limits rights you have under the
+          consumer law of {SITE.jurisdiction} or of the country you live in.
         </P>
       </>
     ),
@@ -127,6 +122,7 @@ const SECTIONS: LegalSection[] = [
     body: (
       <>
         <UL>
+          <LI>A change of mind after paying — there is no money-back guarantee, so cancel to stop the next renewal.</LI>
           <LI>Renewal charges, except in the situations listed in the section above.</LI>
           <LI>
             A period you used and then cancelled partway through — cancellation stops the next charge rather than
@@ -174,7 +170,7 @@ const SECTIONS: LegalSection[] = [
           <LI>The plan and billing cycle (for example Pro, yearly).</LI>
           <LI>Optionally, what did not work for you — it is not required, but it is how the product improves.</LI>
         </UL>
-        <P>You do not need to cancel first. An approved refund cancels the subscription as part of processing it.</P>
+        <P>You do not need to cancel first. A full refund of a first payment cancels the subscription as part of processing it.</P>
       </>
     ),
   },
@@ -211,8 +207,9 @@ const SECTIONS: LegalSection[] = [
     body: (
       <>
         <P>
-          A refund ends the paid subscription. Your account itself is not deleted: you keep access to the free surface,
-          and your scan history, cryptographic inventory and reports remain in your tenant so you can export them.
+          A refund that cancels the subscription ends paid access. Your account itself is not deleted: you can still
+          sign in, see your billing history and subscribe again, and your scan history, cryptographic inventory and
+          reports remain in your tenant.
         </P>
         <P>
           Paid-tier features stop working immediately — scheduled scans, agent collection, exports and the dashboards
@@ -224,8 +221,8 @@ const SECTIONS: LegalSection[] = [
         </P>
         <Notice title="Zero-knowledge data">
           Quantum Vault files and QGuard Messaging content are encrypted on your device. We cannot read them, and a
-          refund does not give us the ability to recover them. Export anything you need from those apps before you
-          uninstall them.
+          refund does not give us the ability to recover them. A refund or an expired subscription never deletes the
+          files on your device.
         </Notice>
       </>
     ),
@@ -289,7 +286,7 @@ const SECTIONS: LegalSection[] = [
       <>
         <P>
           We may update this policy. The version in force for a given charge is the one published on the date that
-          charge was taken, so a change never shortens the window on a payment you have already made.
+          charge was taken, so a change never removes a refund that applied to a payment you have already made.
         </P>
         <P>
           Material changes are announced by email or in-product notification before they take effect, and the effective
@@ -328,7 +325,7 @@ export default function RefundPage() {
       kicker="Legal // Refund Policy"
       title="Refund Policy"
       summary={[
-        `Full refund on your first payment for a plan if you ask within ${REFUND_POLICY.initialWindowDays} days — no reason required.`,
+        'All plans are paid: no free trial and no promotional money-back guarantee. Your legal and app-store refund rights are unaffected.',
         'Renewal charges are not refundable, so cancel before a renewal date to stop it; access runs to the end of the period you paid for.',
         'Duplicate charges, charges after cancellation and billing errors are refunded whenever they happen, not just inside the window.',
         `Approved refunds are issued through PayPal within ${REFUND_POLICY.processingDays} business days.`,

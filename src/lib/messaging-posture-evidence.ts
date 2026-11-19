@@ -14,7 +14,7 @@
 
 export const MESSAGING_EVIDENCE_TYPE = 'messaging-device-crypto'
 
-/** What the FIPS 203 build writes; its absence means pre-standard Kyber (see the messenger's kem-suite.ts). */
+/** The suite name and marker published by current Messaging builds. */
 const FIPS_203_KEM = 'ML-KEM-1024'
 const FIPS_203_STANDARD = 'FIPS-203'
 
@@ -48,21 +48,20 @@ export function isActiveMessagingDevice(device: MessagingDeviceRow): boolean {
 }
 
 /**
- * The key-establishment algorithm a device's published suite really provides.
- * A device without the FIPS 203 marker runs pre-standard Kyber, which cannot
- * interoperate with current builds: it is graded by its classical half only,
- * never as post-quantum (CLAUDE.md: never mark PQC-ready without validation).
+ * Report the published suite only. Older builds used the ML-KEM-1024 name for
+ * pre-standard Kyber, so the name alone is not evidence of the current KEM.
  */
-export function messagingKeyEstablishment(suite: Record<string, unknown> | null | undefined): { algorithm: string; note: string | null } {
-  const classical = text(suite?.classical_kex) || 'X25519'
+export function messagingKeyEstablishment(suite: Record<string, unknown> | null | undefined): { algorithm: string; note: string | null } | null {
+  const classical = text(suite?.classical_kex)
   const pq = text(suite?.pq_kem)
   if (pq === FIPS_203_KEM && text(suite?.pq_kem_standard) === FIPS_203_STANDARD) {
-    return { algorithm: `${classical} + ${FIPS_203_KEM}`, note: null }
+    return { algorithm: classical ? `${classical} + ${FIPS_203_KEM}` : FIPS_203_KEM, note: null }
   }
+  if (!classical) return null
   if (pq) {
     return {
       algorithm: classical,
-      note: 'The post-quantum half is pre-FIPS-203 Kyber-1024, which current builds cannot interoperate with; graded as classical until the device is re-keyed.',
+      note: 'The published suite does not identify the current FIPS 203 KEM. Only the reported classical component is graded.',
     }
   }
   return { algorithm: classical, note: 'No post-quantum key establishment published.' }
@@ -91,10 +90,10 @@ export function messagingDeviceEvidence(devices: MessagingDeviceRow[], observedA
       observedAt,
     }
     const kex = messagingKeyEstablishment(suite)
-    out.push({
+    if (kex) out.push({
       ...base,
       observedAlgorithm: kex.algorithm,
-      confidence: 'high',
+      confidence: 'medium',
       rawEvidence: {
         component: 'key-establishment',
         source: 'messaging_devices.suite',
@@ -107,15 +106,15 @@ export function messagingDeviceEvidence(devices: MessagingDeviceRow[], observedA
     })
     const signature = messagingSignature(suite)
     if (signature) {
-      out.push({ ...base, observedAlgorithm: signature, confidence: 'high', rawEvidence: { component: 'signature', source: 'messaging_devices.suite', deviceId: device.id } })
+      out.push({ ...base, observedAlgorithm: signature, confidence: 'medium', rawEvidence: { component: 'signature', source: 'messaging_devices.suite', deviceId: device.id } })
     }
     const symmetric = text(suite?.symmetric)
     if (symmetric) {
-      out.push({ ...base, observedAlgorithm: symmetric, confidence: 'high', rawEvidence: { component: 'message-encryption', source: 'messaging_devices.suite', deviceId: device.id } })
+      out.push({ ...base, observedAlgorithm: symmetric, confidence: 'medium', rawEvidence: { component: 'message-encryption', source: 'messaging_devices.suite', deviceId: device.id } })
     }
     const kdf = text(suite?.kdf)
     if (kdf) {
-      out.push({ ...base, observedAlgorithm: kdf, confidence: 'high', rawEvidence: { component: 'key-derivation', source: 'messaging_devices.suite', deviceId: device.id } })
+      out.push({ ...base, observedAlgorithm: kdf, confidence: 'medium', rawEvidence: { component: 'key-derivation', source: 'messaging_devices.suite', deviceId: device.id } })
     }
   }
   return out

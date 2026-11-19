@@ -11,7 +11,7 @@
 --       42501  permission denied for table billing_subscriptions
 --
 --   The service-role key is refused too, so the API server, every dashboard,
---   the subscription gate and tools/seed-test-subscriptions.ts fail together,
+--   and the subscription gate fail together,
 --   and users land on "no subscription" no matter what billing says.
 --
 -- What it grants (idempotent — re-run after applying any new migration):

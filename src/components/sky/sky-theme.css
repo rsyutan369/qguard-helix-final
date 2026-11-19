@@ -1,0 +1,671 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+/*
+ * "Sky" theme for the marketing pages that share the homepage look: navy ink,
+ * one periwinkle accent, a cyan dot, navy panels and the bowl-glow background.
+ *
+ * These pages are written with Tailwind utilities and are re-coloured by the
+ * `.qguard-home--light` override sheet in src/index.css. This file is a second
+ * layer on top of that sheet, switched on by the `qh-sky` class on the page
+ * root. `:not(#_)` only raises specificity so a rule here wins over the
+ * matching rule there; it matches every element.
+ *
+ * Deliberately dark blocks (`.qguard-dark-stage`, product illustrations) keep
+ * their own colours.
+ */
+.qh-sky {
+  --sky-ink: #0b1d3a;
+  --sky-ink-2: #33435f;
+  --sky-ink-3: #55637d;
+  --sky-accent: #5b7cf0;
+  --sky-accent-ink: #3f5fd6;
+  --sky-dot: #2fe0d0;
+  --sky-panel: #0e1f3d;
+  --sky-tint: #f6f8fd;
+  --sky-raised: #edf1fb;
+  --sky-line: rgba(11, 29, 58, 0.1);
+  --sky-line-strong: rgba(11, 29, 58, 0.2);
+  --sky-shadow: 0 1px 2px rgba(11, 29, 58, 0.05), 0 16px 36px -20px rgba(11, 29, 58, 0.22);
+  --sky-ease: cubic-bezier(0.22, 0.7, 0.2, 1);
+  --sky-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --sky-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  font-family: var(--sky-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+.qh-sky:not(#_) {
+  background: #ffffff !important;
+  color: var(--sky-ink);
+}
+
+/* ---------- Atmosphere ---------- */
+
+.sky-atmo {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: #ffffff;
+}
+
+.sky-atmo canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* The opening sections sit on the glow; below them the page settles on a flat tint. */
+.qh-sky:not(#_) main {
+  position: relative;
+  z-index: 1;
+  background: linear-gradient(
+    to bottom,
+    rgba(246, 248, 253, 0) calc(var(--sky-end, 100vh) - 24px),
+    var(--sky-tint) calc(var(--sky-end, 100vh) + 220px)
+  );
+}
+
+.qh-sky:not(#_):not(#_):not(#_):not(#_):not(#_) section:not(.hero-shell):not(.qguard-dark-stage) {
+  background: transparent !important;
+}
+
+.qh-sky:not(#_) section[data-sky="hero"].qguard-dark-stage {
+  background: transparent;
+}
+
+.qh-sky:not(#_) footer {
+  position: relative;
+  z-index: 1;
+  margin-top: 0;
+  background: var(--sky-tint) !important;
+  border-color: var(--sky-line) !important;
+  color: var(--sky-ink);
+}
+
+.qh-sky:not(#_) footer img {
+  filter: none;
+}
+
+/* ---------- Heading reveal (CSS Custom Highlight API) ---------- */
+
+::highlight(sky-l0) {
+  color: transparent;
+}
+
+::highlight(sky-l1) {
+  color: transparent;
+  text-shadow: 0 0 8px rgba(63, 124, 255, 0.5);
+}
+
+::highlight(sky-l2) {
+  color: rgba(63, 124, 255, 0.72);
+  text-shadow: 0 0 3px rgba(63, 124, 255, 0.45);
+}
+
+::highlight(sky-l3) {
+  color: #3f7cff;
+}
+
+::highlight(sky-l4) {
+  color: #254da0;
+}
+
+::highlight(sky-d0) {
+  color: transparent;
+}
+
+::highlight(sky-d1) {
+  color: transparent;
+  text-shadow: 0 0 8px rgba(143, 230, 244, 0.5);
+}
+
+::highlight(sky-d2) {
+  color: rgba(143, 230, 244, 0.72);
+  text-shadow: 0 0 3px rgba(143, 230, 244, 0.45);
+}
+
+::highlight(sky-d3) {
+  color: #8fe6f4;
+}
+
+::highlight(sky-d4) {
+  color: #c7f2f9;
+}
+
+/* ---------- Type ---------- */
+
+.qh-sky .font-mono {
+  font-family: var(--sky-mono);
+}
+
+.qh-sky:not(#_) section:not(.qguard-dark-stage) :is(h1, h2, h3, h4),
+.qh-sky:not(#_) footer :is(h2, h3, h4) {
+  color: var(--sky-ink) !important;
+}
+
+.qh-sky :is(h1, h2, h3, h4) {
+  font-family: var(--sky-sans) !important;
+}
+
+.qh-sky :is(h1, h2) {
+  font-weight: 500;
+  letter-spacing: -0.025em;
+}
+
+.qh-sky :is(h3, h4) {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.qh-sky :is(.font-black, .font-extrabold) {
+  font-weight: 600;
+}
+
+.qh-sky .font-bold {
+  font-weight: 600;
+}
+
+.qh-sky :is(h1, h2):is(.font-black, .font-extrabold, .font-bold) {
+  font-weight: 500;
+}
+
+/* Tracked all-caps labels become quiet sentence-case labels. */
+.qh-sky :is(main, header, footer) .uppercase:not(.qguard-dark-stage *) {
+  text-transform: none;
+  letter-spacing: 0.01em;
+}
+
+.qh-sky:not(#_) section:not(.qguard-dark-stage) :is(p, li) {
+  color: var(--sky-ink-2);
+}
+
+/* Gradient text becomes one solid accent. */
+.qh-sky:not(#_) .bg-clip-text {
+  background-image: none !important;
+  -webkit-text-fill-color: currentColor;
+  color: var(--sky-accent-ink) !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+
+.qh-sky:not(#_) .qguard-dark-stage .bg-clip-text {
+  color: #8fe6f4 !important;
+}
+
+.qh-sky:not(#_) .gold-glow,
+.qh-sky:not(#_) .blue-glow {
+  text-shadow: none !important;
+}
+
+/* ---------- Accent ---------- */
+
+.qh-sky:not(#_) [class*="text-gold"],
+.qh-sky:not(#_) [class*="hover:text-gold"]:hover,
+.qh-sky:not(#_) [class*="text-[#b8860b]"],
+.qh-sky:not(#_) :is(main, header, footer) :is([class*="text-violet-"], [class*="text-cyan-6"], [class*="text-cyan-7"], [class*="text-blue-6"], [class*="text-blue-7"]):not(.qguard-dark-stage *) {
+  color: var(--sky-accent-ink) !important;
+}
+
+.qh-sky:not(#_) [class*="bg-gold/"] {
+  background-color: rgba(91, 124, 240, 0.1) !important;
+  color: var(--sky-accent-ink) !important;
+}
+
+.qh-sky:not(#_) .bg-gold {
+  background-color: var(--sky-ink) !important;
+  color: #ffffff !important;
+}
+
+.qh-sky:not(#_) [class*="border-gold"] {
+  border-color: rgba(91, 124, 240, 0.28) !important;
+}
+
+.qh-sky:not(#_) [class*="hover:border-gold"]:hover {
+  border-color: var(--sky-accent) !important;
+}
+
+/* Soft gradient chips become a flat tint; saturated ones a solid accent. */
+.qh-sky:not(#_) :is(main, footer) :is([class*="from-cyan-50"], [class*="from-violet-50"], [class*="from-blue-50"], [class*="from-cyan-100"]):not([class*="from-cyan-500"]):not([class*="from-violet-500"]):not([class*="from-blue-500"]):not(.qguard-dark-stage *) {
+  background-image: none !important;
+  background-color: var(--sky-raised) !important;
+  border-color: var(--sky-line) !important;
+}
+
+.qh-sky:not(#_) :is(main, footer) :is([class*="from-cyan-400"], [class*="from-cyan-500"], [class*="from-cyan-600"], [class*="from-violet-500"], [class*="from-violet-600"], [class*="from-blue-500"], [class*="from-blue-600"]):not(.bg-clip-text):not(.qguard-dark-stage *) {
+  background-image: none !important;
+  background-color: var(--sky-accent) !important;
+}
+
+.qh-sky:not(#_) :is(main, footer) :is(.bg-cyan-500, .bg-cyan-400, .bg-violet-500, .bg-violet-600):not(.qguard-dark-stage *) {
+  background-color: var(--sky-accent) !important;
+}
+
+/* ---------- Surfaces ---------- */
+
+.qh-sky:not(#_) [class*="bg-white/"]:not(.qguard-dark-stage *) {
+  background: rgba(255, 255, 255, 0.9) !important;
+  border-color: var(--sky-line) !important;
+  box-shadow: none !important;
+}
+
+.qh-sky:not(#_) section:not(.qguard-dark-stage) :is(.glass-panel, .quantum-border, [class*="backdrop-blur"]),
+.qh-sky:not(#_) footer [class*="backdrop-blur"],
+.qh-sky:not(#_) section:not(.qguard-dark-stage) :is(.Card, [class*="shadow-[0_20px_80px"], [class*="shadow-[0_30px_120px"]) {
+  background: #ffffff !important;
+  border-color: var(--sky-line) !important;
+  box-shadow: var(--sky-shadow) !important;
+  backdrop-filter: none;
+}
+
+.qh-sky:not(#_) section:not(.qguard-dark-stage) [class*="border-white/"] {
+  border-color: var(--sky-line) !important;
+}
+
+.qh-sky:not(#_) :is(section:not(.qguard-dark-stage), footer) .rounded-2xl {
+  border-radius: 16px !important;
+}
+
+.qh-sky:not(#_) :is(section:not(.qguard-dark-stage), footer) .rounded-xl {
+  border-radius: 12px !important;
+}
+
+.qh-sky:not(#_) :is(section:not(.qguard-dark-stage), footer) .rounded-lg {
+  border-radius: 8px !important;
+}
+
+/* Coloured glows and hard offset shadows. */
+.qh-sky:not(#_) :is(main, header, footer) :is([class*="shadow-[0_0_"], [class*="shadow-[0_12px_34px"]):not(.qguard-dark-stage *) {
+  box-shadow: none !important;
+}
+
+.qh-sky:not(#_) :is(main, footer) [class*="blur-[80px]"] {
+  display: none;
+}
+
+/* ---------- Header ---------- */
+
+.qh-sky:not(#_) > header,
+.qh-sky:not(#_) .qa-header {
+  background: rgba(255, 255, 255, 0.82) !important;
+  border-color: var(--sky-line) !important;
+  box-shadow: none !important;
+  backdrop-filter: blur(16px);
+}
+
+.qh-sky:not(#_) > header a[class*="bg-gold/"] {
+  background-color: var(--sky-raised) !important;
+  color: var(--sky-ink) !important;
+}
+
+/* ---------- Buttons ---------- */
+
+.sky-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 46px 0 20px;
+  border-radius: 8px;
+  background: #0b1d3a;
+  color: #ffffff !important;
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 160ms var(--sky-ease), transform 160ms var(--sky-ease);
+}
+
+.sky-btn :is(svg, span):not(.sky-btn__dot):not(.sky-btn__dot *) {
+  color: inherit !important;
+}
+
+.sky-btn:hover {
+  background: #14294f;
+}
+
+.sky-btn:active {
+  transform: scale(0.98);
+}
+
+.sky-btn--sm {
+  min-height: 40px;
+  padding: 0 40px 0 16px;
+  font-size: 14px;
+}
+
+.sky-btn--ghost {
+  padding: 0 20px;
+  background: #ffffff;
+  border: 1px solid rgba(11, 29, 58, 0.2);
+  color: #0b1d3a !important;
+}
+
+.sky-btn--ghost:hover {
+  background: #edf1fb;
+}
+
+.sky-btn__dot {
+  position: absolute;
+  top: 50%;
+  right: 18px;
+  display: grid;
+  place-items: center;
+  width: 10px;
+  height: 10px;
+  margin-top: -5px;
+  border-radius: 999px;
+  background: #2fe0d0;
+  box-shadow: 0 0 10px rgba(47, 224, 208, 0.7);
+  color: #0b1d3a !important;
+  transition: width 450ms var(--sky-ease), height 450ms var(--sky-ease), margin 450ms var(--sky-ease), right 450ms var(--sky-ease), box-shadow 450ms var(--sky-ease);
+}
+
+.sky-btn--sm .sky-btn__dot {
+  right: 14px;
+}
+
+.sky-btn__dot svg {
+  width: 12px;
+  height: 12px;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: opacity 300ms var(--sky-ease) 50ms, transform 300ms var(--sky-ease) 50ms;
+}
+
+.sky-btn:hover .sky-btn__dot,
+.sky-btn:focus-visible .sky-btn__dot {
+  right: 6px;
+  width: 34px;
+  height: 34px;
+  margin-top: -17px;
+  box-shadow: none;
+}
+
+.sky-btn--sm:hover .sky-btn__dot,
+.sky-btn--sm:focus-visible .sky-btn__dot {
+  right: 5px;
+  width: 30px;
+  height: 30px;
+  margin-top: -15px;
+}
+
+.sky-btn:hover .sky-btn__dot svg,
+.sky-btn:focus-visible .sky-btn__dot svg {
+  opacity: 1;
+  transform: none;
+}
+
+.qh-sky :is(a, button):focus-visible {
+  outline: 2px solid var(--sky-accent-ink);
+  outline-offset: 2px;
+}
+
+/* Other filled blue buttons on these pages match the primary navy. */
+.qh-sky:not(#_) :is(main, header, footer) :is(.bg-blue-600, .bg-blue-700):not(.qguard-dark-stage *) {
+  background-color: var(--sky-ink) !important;
+}
+
+/* ---------- Kicker ---------- */
+
+.sky-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--sky-mono);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--sky-ink-3);
+}
+
+.sky-kicker::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: none;
+  background: var(--sky-accent);
+}
+
+.qguard-dark-stage .sky-kicker {
+  color: #b4c0d8;
+}
+
+.qguard-dark-stage .sky-kicker::before {
+  background: var(--sky-dot);
+}
+
+/* ---------- Scroll progress (messaging) ---------- */
+
+.qh-sky .qm-progress {
+  background: var(--sky-accent) !important;
+}
+
+/* ---------- Readiness assessment page tokens ---------- */
+
+.qa-page.qh-sky {
+  --qa-ink: #0b1d3a;
+  --qa-muted: #33435f;
+  --qa-line: rgba(11, 29, 58, 0.14);
+  --qa-accent: #3f5fd6;
+  --qa-teal: #3f5fd6;
+  --qa-cyan: #5b7cf0;
+  --qa-stage: #0e1f3d;
+  --qa-stage-cyan: #8fe6f4;
+  --qa-stage-spectrum: linear-gradient(90deg, #5b7cf0, #5b7cf0);
+  --qa-glass: #ffffff;
+  --qa-glass-shadow: 0 1px 2px rgba(11, 29, 58, 0.05), 0 16px 36px -20px rgba(11, 29, 58, 0.22);
+  font-family: var(--sky-sans);
+}
+
+.qa-page.qh-sky:not(#_) main,
+.qa-page.qh-sky:not(#_) footer {
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sky-btn,
+  .sky-btn__dot,
+  .sky-btn__dot svg {
+    transition-duration: 1ms;
+  }
+}
+
+.qa-page.qh-sky .qa-button--primary,
+.qa-page.qh-sky .qa-button--nav,
+.qh-sky .gth-primary,
+.qh-sky .ms-primary {
+  background: var(--sky-ink) !important;
+  border-color: transparent !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+}
+
+.qa-page.qh-sky .qa-button--primary:hover,
+.qa-page.qh-sky .qa-button--nav:hover,
+.qh-sky .gth-primary:hover,
+.qh-sky .ms-primary:hover {
+  background: #14294f !important;
+}
+
+.qa-page.qh-sky .qa-button--secondary {
+  border-color: var(--sky-line-strong);
+  color: var(--sky-ink);
+}
+
+.qa-page.qh-sky .qa-button--secondary:hover {
+  border-color: var(--sky-line-strong);
+  background: var(--sky-raised);
+}
+
+.qa-page.qh-sky .qa-hero h1 span {
+  background-image: none;
+  -webkit-text-fill-color: currentColor;
+  color: var(--sky-accent-ink);
+}
+
+.qa-page.qh-sky .qa-hero .qa-kicker {
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--sky-ink-2);
+  font-family: var(--sky-mono);
+  text-transform: none;
+  letter-spacing: 0.01em;
+}
+
+/* ---------- Top navigation: the floating white pill from the homepage ---------- */
+
+.qh-sky:not(#_):not(#_) > header {
+  inset: 14px 20px auto !important;
+  max-width: 1450px;
+  margin-inline: auto;
+  border: 0 !important;
+  border-radius: 32px !important;
+  background: #ffffff !important;
+  box-shadow: 0 1px 0 rgba(11, 29, 58, 0.04), 0 10px 30px -18px rgba(11, 29, 58, 0.25) !important;
+  backdrop-filter: none !important;
+}
+
+.qh-sky:not(#_) > header > div {
+  height: 60px;
+  padding: 0 10px 0 18px;
+}
+
+.qh-sky:not(#_) > header img {
+  height: 40px;
+  border-radius: 8px;
+}
+
+.qh-sky:not(#_) > header .gold-glow {
+  color: var(--sky-ink) !important;
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.qh-sky:not(#_) > header .bg-clip-text {
+  color: var(--sky-ink-3) !important;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.qh-sky:not(#_):not(#_) > header nav a {
+  padding-inline: 14px;
+  background: transparent !important;
+  color: var(--sky-ink) !important;
+  font-family: var(--sky-sans);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  opacity: 0.92;
+  transition: opacity 200ms var(--sky-ease), background-color 200ms var(--sky-ease);
+}
+
+.qh-sky:not(#_):not(#_) > header nav a:hover {
+  opacity: 0.55;
+}
+
+.qh-sky:not(#_):not(#_) > header nav a[class*="bg-gold/"] {
+  background: var(--sky-raised) !important;
+  opacity: 1;
+}
+
+.qh-sky:not(#_) > header .sky-btn {
+  min-height: 42px;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: var(--sky-ink) !important;
+  color: #ffffff !important;
+  font-size: 13.5px;
+  box-shadow: none !important;
+}
+
+.qh-sky:not(#_) > header .sky-btn *:not(.sky-btn__dot):not(.sky-btn__dot *) {
+  color: #ffffff !important;
+}
+
+.qh-sky:not(#_) > header .sky-btn:hover {
+  background: #14294f !important;
+}
+
+/* Readiness assessment header */
+.qa-page.qh-sky:not(#_) .qa-header {
+  top: 14px;
+  border: 0 !important;
+  background: transparent !important;
+  backdrop-filter: none;
+  pointer-events: none;
+}
+
+.qa-page.qh-sky .qa-nav {
+  min-height: 60px;
+  padding: 0 10px 0 18px;
+  border-radius: 32px;
+  background: #ffffff;
+  box-shadow: 0 1px 0 rgba(11, 29, 58, 0.04), 0 10px 30px -18px rgba(11, 29, 58, 0.25);
+  pointer-events: auto;
+}
+
+.qa-page.qh-sky .qa-brand {
+  color: var(--sky-ink);
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.qa-page.qh-sky .qa-brand small {
+  color: var(--sky-ink-3);
+  font-family: var(--sky-mono);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+}
+
+.qa-page.qh-sky .qa-nav-links {
+  color: var(--sky-ink);
+  font-weight: 500;
+}
+
+.qa-page.qh-sky .qa-nav-links a {
+  opacity: 0.92;
+  transition: opacity 200ms var(--sky-ease);
+}
+
+.qa-page.qh-sky .qa-nav-links a:hover {
+  color: var(--sky-ink);
+  opacity: 0.55;
+}
+
+.qa-page.qh-sky .qa-button--nav {
+  min-height: 42px;
+  border-radius: 999px;
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+@media (max-width: 640px) {
+  .qh-sky:not(#_):not(#_) > header {
+    inset: 10px 12px auto !important;
+  }
+
+  .qa-page.qh-sky .qa-nav {
+    padding: 0 6px 0 10px;
+    gap: 6px;
+  }
+
+  .qa-page.qh-sky .qa-button--nav {
+    margin-left: 0;
+    padding-inline: 12px;
+  }
+
+  .qa-page.qh-sky .qa-brand small {
+    font-size: 10px;
+  }
+}

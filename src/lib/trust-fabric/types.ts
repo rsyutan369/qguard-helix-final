@@ -391,7 +391,7 @@ export interface CertificateTrustRecord {
 }
 
 export interface CertificateIntelligence {
-  lifecycle: { valid: number; expiring: number; expired: number; revoked: number; unknown: number }
+  lifecycle: { valid: number; expiring: number; expired: number; revoked: number; notYetValid: number; unknown: number }
   bands: Array<{ band: ExpiryBand; label: string; count: number; percent: number; certificateIds: string[] }>
   issuers: Array<{
     issuer: string

@@ -185,50 +185,66 @@ export function classifyKey(
 
   const family = anatomy.family
   const upperFamily = family.toUpperCase()
+  const identifier = value.toUpperCase().replace(/ML-?(KEM|DSA)/g, 'ML-$1').replace(/SLH-?DSA/g, 'SLH-DSA')
+  const kem = identifier.match(/(?:\b|X25519|SECP256R1|SECP384R1)ML-KEM-?(512|768|1024)\b/)?.[1]
+  const dsa = identifier.match(/\bML-DSA-?(44|65|87)\b/)?.[1]
+  const slh = identifier.match(/\bSLH-DSA-(SHA2|SHAKE)-(128|192|256)(S|F)\b/)?.[0]
+  const signature = anatomy.kind === 'signature' || anatomy.kind === 'certificate'
+  const isPqcName = /ML-KEM|ML-DSA|SLH-DSA|KYBER|DILITHIUM|SPHINCS|SNTRUP/.test(identifier)
+  if (isPqcName && (/KYBER|DILITHIUM|SPHINCS|SNTRUP/.test(identifier) || !(signature ? dsa || slh : kem))) {
+    return {
+      ...base,
+      family: value,
+      keyClass: signature ? itemType === 'certificate' ? 'certificate' : 'signature' : 'key-establishment',
+      posture: 'unknown',
+      migrationRequirement: 'unknown',
+      reason: 'The observation does not establish a finalized NIST PQC parameter set. Verify the exact algorithm, parameters and implementation with the provider.',
+    }
+  }
 
   /* ---- Post-quantum key establishment --------------------------- */
   if (anatomy.quantumClass === 'hybrid') {
     return {
       ...base,
       family,
-      keyClass: 'key-establishment',
+      keyClass: signature ? itemType === 'certificate' ? 'certificate' : 'signature' : 'key-establishment',
       posture: 'hybrid',
       migrationRequirement: 'monitor',
-      reason: `${family} combines a classical and a post-quantum key agreement, so the shared secret survives a quantum break of either half. Keep the composite until the classical half can be retired.`,
+      reason: `${family} reports a hybrid ${signature ? 'signature' : 'key establishment'} configuration. Verify the protocol profile, component parameters and combiner or verification rules before relying on it.`,
     }
   }
 
-  if (/ML-KEM|KYBER/.test(upperFamily)) {
+  if (kem) {
     return {
       ...base,
-      family,
+      family: `ML-KEM-${kem}`,
       keyClass: 'key-establishment',
       posture: 'post-quantum',
       migrationRequirement: 'none',
-      reason: `${family} is a NIST FIPS 203 key-encapsulation mechanism. No key-establishment migration is required.`,
+      reason: `ML-KEM-${kem} names a FIPS 203 parameter set for key encapsulation. This observation does not validate the implementation.`,
     }
   }
 
   /* ---- Post-quantum signatures ---------------------------------- */
-  if (/ML-DSA|DILITHIUM/.test(upperFamily)) {
+  if (dsa) {
     return {
       ...base,
       family: 'ML-DSA',
       keyClass: itemType === 'certificate' ? 'certificate' : 'signature',
       posture: 'post-quantum',
       migrationRequirement: 'none',
-      reason: 'ML-DSA is a NIST FIPS 204 digital-signature algorithm. No signature migration is required.',
+      reason: `ML-DSA-${dsa} names a FIPS 204 digital signature parameter set. This observation does not validate the implementation.`,
     }
   }
 
-  if (/SLH-DSA|SPHINCS/.test(upperFamily)) {
+  if (slh) {
     return {
       ...base,
       family: 'SLH-DSA',
       keyClass: itemType === 'certificate' ? 'certificate' : 'signature',
       posture: 'post-quantum',
       migrationRequirement: 'none',
-      reason: 'SLH-DSA is a NIST FIPS 205 stateless hash-based signature algorithm. No signature migration is required.',
+      reason: `${slh.toLowerCase().replace(/^slh-dsa-(sha2|shake)/, (_, hash) => `SLH-DSA-${hash.toUpperCase()}`)} names a FIPS 205 stateless hash-based digital signature parameter set. This observation does not validate the implementation.`,
     }
   }
 

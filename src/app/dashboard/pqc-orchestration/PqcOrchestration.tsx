@@ -50,7 +50,7 @@ const FLOW_TONE: Record<FlowTone, { tone: ToneKey; glyph: string; word: string }
  * Migration Timeline is the TIME view over the same snapshot.
  */
 export default function PqcOrchestration() {
-  const { data, state, error, transport, lastVerifiedAt, refresh } = useMigrationOrchestrator();
+  const { data, state, error, transport, lastVerifiedAt, refresh, reconnect } = useMigrationOrchestrator();
   const scanner = useScannerIntelligence();
 
   const [tab, setTab] = useState<TabKey>('jobs');
@@ -181,8 +181,9 @@ export default function PqcOrchestration() {
         : null;
 
   const showSkeleton = state === 'loading' && !answered;
-  const showHardError = state === 'error' && !answered;
-  const empty = answered && !data.hasData;
+  const jobsUnavailable = answered && data.sources.jobs === 'unavailable';
+  const showHardError = (state === 'error' && !answered) || jobsUnavailable;
+  const empty = answered && !jobsUnavailable && !data.hasData;
 
   return (
     <IntelShell name="orch-shell">
@@ -213,7 +214,7 @@ export default function PqcOrchestration() {
         </IntelHeader>
 
         {answered && transport !== 'stream' ? (
-          <ConnectionLostBanner lastGoodAt={data.generatedAt} error={error} onReconnect={() => void doRefresh()} transport={transport} lastVerifiedAt={lastVerifiedAt} />
+          <ConnectionLostBanner lastGoodAt={data.generatedAt} error={error} onReconnect={reconnect} transport={transport} lastVerifiedAt={lastVerifiedAt} />
         ) : null}
 
         {showHardError ? (
@@ -248,7 +249,7 @@ export default function PqcOrchestration() {
           />
         ) : null}
 
-        {answered && data.hasData ? (
+        {answered && !jobsUnavailable && data.hasData ? (
           <>
             <ModuleBrief
               what={<>Your migration lifecycle as a flow. The first two stages count <em>assets</em> from the scanner; the rest count <em>migration jobs</em>, and every job sits in exactly one stage.</>}

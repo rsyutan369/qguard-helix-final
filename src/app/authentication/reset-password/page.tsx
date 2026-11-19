@@ -1,11 +1,8 @@
-import React, { useLayoutEffect, useRef, useState } from "react";
-import "../auth.css";
-import { AlertTriangle, ArrowLeft, ArrowRight, Cpu, KeyRound, Lock, Mail, ShieldCheck } from "lucide-react";
+import React, { useState } from "react";
 import { Link } from "react-router-dom";
+import { Check, Loader2, Lock, Mail, MailCheck, ShieldCheck, X } from "lucide-react";
 import { useAuth } from "@/contexts/auth-context";
-import { useTheme } from "@/contexts/theme-context";
-import ThemeToggle from "@/components/theme/ThemeToggle";
-import { CyberBackground } from "@/components/CyberBackground";
+import { ButtonDot } from "@/pages/landing-chars";
 import { supabase } from "@/lib/supabase";
 import {
   RESET_PASSWORD_PATH,
@@ -13,22 +10,20 @@ import {
   isPasswordRecoveryPending,
   passwordRecoveryLinkError,
 } from "@/lib/password-recovery";
+import { AuthAlert, AuthCard, AuthField, AuthShell } from "../AuthShell";
 
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 128;
 
 /**
  * Password recovery, both halves:
- *  - no recovery session  -> request a reset link by email;
+ *  - no recovery session  -> request a reset link by email ("Forgot password");
  *  - opened from a recovery link (Forgot password, or an administrator's
  *    reset from the Owner Admin Users console) -> set a new password, then
  *    every session is signed out so the old credentials are dead everywhere.
  */
 export default function ResetPasswordPage() {
   const { session, loading } = useAuth();
-  const { mode, theme, setMode } = useTheme();
-  const isLightTheme = theme === "light";
-  const restoreModeRef = useRef(mode);
   const [recovery] = useState(() => isPasswordRecoveryPending());
   const [linkError] = useState(() => passwordRecoveryLinkError());
   const [email, setEmail] = useState("");
@@ -38,14 +33,12 @@ export default function ResetPasswordPage() {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<"requested" | "updated" | null>(null);
 
-  useLayoutEffect(() => {
-    setMode("light");
-    return () => setMode(restoreModeRef.current);
-  }, [setMode]);
-
   const view: "set" | "verifying" | "expired" | "request" = recovery
     ? session ? "set" : loading ? "verifying" : "expired"
     : "request";
+
+  const lengthOk = password.length >= PASSWORD_MIN && password.length <= PASSWORD_MAX;
+  const matchState = confirm.length === 0 ? "idle" : confirm === password ? "match" : "mismatch";
 
   const requestLink = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -68,7 +61,7 @@ export default function ResetPasswordPage() {
   const setNewPassword = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
-    if (password.length < PASSWORD_MIN || password.length > PASSWORD_MAX) {
+    if (!lengthOk) {
       setError(`Use ${PASSWORD_MIN}–${PASSWORD_MAX} characters.`);
       return;
     }
@@ -91,134 +84,166 @@ export default function ResetPasswordPage() {
     setDone("updated");
   };
 
-  return (
-    <div className={`qguard-home qc-page qc-page-gold ${isLightTheme ? "qguard-home--light qc-page-home-light" : ""}`}>
-      <CyberBackground variant={isLightTheme ? "light" : "dark"} />
-      <div className="qc-hex-grid" />
-      <div className="qc-radial-glow" />
+  const submitLabel = (idle: string, working: string) =>
+    busy ? (
+      <>
+        <Loader2 className="lp-auth__spin" aria-hidden="true" />
+        {working}
+      </>
+    ) : (
+      <>
+        {idle}
+        <ButtonDot />
+      </>
+    );
 
-      <header className="qc-auth-nav qc-in-1">
-        <Link to="/" className="qc-auth-brand">
-          <img src="/NEW_LOGO.png" alt="Qguard Helix logo" className="qc-auth-logo-video" />
-          <span className="qc-auth-brand-copy">
-            <span className="qc-auth-brand-title">Qguard Helix</span>
-            <span className="qc-auth-brand-subtitle">Quantum Defense</span>
+  let card: React.ReactNode;
+
+  if (done === "updated") {
+    card = (
+      <AuthCard kicker="Password updated" heading="You're all set" sub="Sign in again with your new password.">
+        <div className="lp-auth__sent">
+          <span className="lp-auth__sent-icon" aria-hidden="true">
+            <ShieldCheck />
           </span>
+          <AuthAlert tone="success">Your new password is set and every previous session was signed out.</AuthAlert>
+        </div>
+        <Link to="/login" viewTransition className="lp-btn lp-btn--primary lp-btn--block lp-btn--dot">
+          Continue to sign in
+          <ButtonDot />
         </Link>
-        <div className="qc-auth-nav-actions">
-          <ThemeToggle compact showSystem={false} />
-          <Link to="/login" className="qc-auth-nav-link">
-            <ArrowLeft size={15} />
+      </AuthCard>
+    );
+  } else if (done === "requested") {
+    card = (
+      <AuthCard kicker="Link requested" heading="Check your inbox" sub="The link expires shortly and works once.">
+        <div className="lp-auth__sent">
+          <span className="lp-auth__sent-icon" aria-hidden="true">
+            <MailCheck />
+          </span>
+          <AuthAlert tone="success">
+            If an account exists for <strong>{email.trim()}</strong>, a reset link is on its way.
+          </AuthAlert>
+        </div>
+        <Link to="/login" viewTransition className="lp-btn lp-btn--primary lp-btn--block lp-btn--dot">
+          Back to sign in
+          <ButtonDot />
+        </Link>
+        <p className="lp-auth__card-foot">
+          Wrong address?{" "}
+          <button type="button" className="lp-link lp-auth__text-btn" onClick={() => setDone(null)}>
+            Use a different email
+          </button>
+        </p>
+      </AuthCard>
+    );
+  } else if (view === "verifying") {
+    card = (
+      <AuthCard kicker="Recovery link" heading="Verifying link…" sub="Validating your single-use recovery link.">
+        <p className="lp-auth__card-sub" role="status">
+          <Loader2 className="lp-auth__spin" aria-hidden="true" /> This only takes a moment.
+        </p>
+      </AuthCard>
+    );
+  } else if (view === "set") {
+    card = (
+      <AuthCard
+        kicker="Set new password"
+        heading="Choose a new password"
+        sub={`For ${session?.user?.email ?? "your account"}. ${PASSWORD_MIN}–${PASSWORD_MAX} characters.`}
+      >
+        {error && <AuthAlert tone="error">{error}</AuthAlert>}
+        <form onSubmit={setNewPassword} className="lp-auth__form" aria-busy={busy}>
+          <AuthField
+            id="reset-new"
+            label="New password"
+            icon={Lock}
+            revealable
+            required
+            minLength={PASSWORD_MIN}
+            maxLength={PASSWORD_MAX}
+            autoComplete="new-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder={`At least ${PASSWORD_MIN} characters`}
+            hint={
+              password.length > 0 ? (
+                <p className={`lp-auth__match lp-auth__match--${lengthOk ? "match" : "mismatch"}`} aria-live="polite">
+                  {lengthOk ? <Check aria-hidden="true" /> : <X aria-hidden="true" />}
+                  {lengthOk ? "Length looks good" : `Use ${PASSWORD_MIN}–${PASSWORD_MAX} characters`}
+                </p>
+              ) : null
+            }
+          />
+          <AuthField
+            id="reset-confirm"
+            label="Confirm password"
+            icon={Lock}
+            revealable
+            required
+            autoComplete="new-password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            placeholder="Re-enter your new password"
+            aria-invalid={matchState === "mismatch"}
+            hint={
+              matchState !== "idle" ? (
+                <p className={`lp-auth__match lp-auth__match--${matchState}`} aria-live="polite">
+                  {matchState === "match" ? <Check aria-hidden="true" /> : <X aria-hidden="true" />}
+                  {matchState === "match" ? "Passwords match" : "Passwords don't match yet"}
+                </p>
+              ) : null
+            }
+          />
+          <button type="submit" disabled={busy} className="lp-btn lp-btn--primary lp-btn--block lp-btn--dot lp-auth__submit">
+            {submitLabel("Update password", "Updating password…")}
+          </button>
+        </form>
+      </AuthCard>
+    );
+  } else {
+    const expired = view === "expired" || Boolean(linkError);
+    const reason = (linkError || "This reset link is invalid, expired or already used.").trim().replace(/([^.!?])$/, "$1.");
+    card = (
+      <AuthCard
+        kicker={expired ? "Link expired" : "Forgot password"}
+        heading={expired ? "Request a new link" : "Reset your password"}
+        sub={
+          expired
+            ? `${reason} Request a new one below.`
+            : "Enter your account email and we'll send you a single-use reset link."
+        }
+      >
+        {error && <AuthAlert tone="error">{error}</AuthAlert>}
+        <form onSubmit={requestLink} className="lp-auth__form" aria-busy={busy}>
+          <AuthField
+            id="reset-email"
+            label="Work email"
+            icon={Mail}
+            type="email"
+            required
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@company.com"
+          />
+          <button type="submit" disabled={busy} className="lp-btn lp-btn--primary lp-btn--block lp-btn--dot lp-auth__submit">
+            {submitLabel("Send reset link", "Sending link…")}
+          </button>
+        </form>
+        <p className="lp-auth__card-foot">
+          Remembered it?{" "}
+          <Link to="/login" viewTransition className="lp-link">
             Sign in
           </Link>
-        </div>
-      </header>
+        </p>
+      </AuthCard>
+    );
+  }
 
-      <main className="qc-login-shell">
-        <section className="qc-login-hero qc-in-2" aria-labelledby="reset-title">
-          <div className="qc-login-kicker">
-            <span className="qc-status-dot" />
-            Credential Recovery
-          </div>
-          <h1 id="reset-title" className="qc-auth-title">
-            Reset <span>Password</span>
-          </h1>
-          <p className="qc-auth-lede">
-            Recovery links are single-use and short-lived. After you set a new password, every session on every device is signed out.
-          </p>
-        </section>
-
-        <section className="qc-login-panel" aria-label="Password reset">
-          <div className="qc-card qc-in-3">
-            <div className="qc-logo-wrap">
-              <div className="qc-logo-icon">
-                <KeyRound size={20} />
-              </div>
-              <span className="qc-logo-text">QGUARD</span>
-            </div>
-
-            {error && (
-              <div className="qc-alert qc-alert-error" role="alert">
-                <AlertTriangle size={14} className="text-[var(--qg-red)] shrink-0" />
-                <span>{error}</span>
-              </div>
-            )}
-
-            {done === "updated" ? (
-              <>
-                <h2 className="qc-heading">Password updated</h2>
-                <div className="qc-alert qc-alert-success">
-                  <ShieldCheck size={14} className="text-[var(--qg-green)] shrink-0" />
-                  <span>Your new password is set and all previous sessions were signed out.</span>
-                </div>
-                <Link to="/login" className="qc-btn qc-btn-cyan">Sign in <ArrowRight size={15} /></Link>
-              </>
-            ) : done === "requested" ? (
-              <>
-                <h2 className="qc-heading">Check your email</h2>
-                <div className="qc-alert qc-alert-success">
-                  <Mail size={14} className="text-[var(--qg-green)] shrink-0" />
-                  <span>If an account exists for {email.trim()}, a reset link is on its way. It expires shortly and works once.</span>
-                </div>
-                <Link to="/login" className="qc-btn qc-btn-ghost">Back to sign in</Link>
-              </>
-            ) : view === "verifying" ? (
-              <>
-                <h2 className="qc-heading">Verifying link…</h2>
-                <p className="qc-subtitle"><Cpu size={14} className="mr-2 inline animate-spin" />Validating your recovery link.</p>
-              </>
-            ) : view === "set" ? (
-              <>
-                <h2 className="qc-heading">Choose a new password</h2>
-                <p className="qc-subtitle">For {session?.user?.email}. {PASSWORD_MIN}–{PASSWORD_MAX} characters.</p>
-                <form onSubmit={setNewPassword} className="qc-form">
-                  <div>
-                    <label className="qc-field-label" htmlFor="reset-new">New password</label>
-                    <div className="qc-field-wrap">
-                      <Lock size={14} className="qc-field-icon" />
-                      <input id="reset-new" type="password" autoComplete="new-password" required minLength={PASSWORD_MIN} maxLength={PASSWORD_MAX} value={password} onChange={(e) => setPassword(e.target.value)} className="qc-input" />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="qc-field-label" htmlFor="reset-confirm">Confirm password</label>
-                    <div className="qc-field-wrap">
-                      <Lock size={14} className="qc-field-icon" />
-                      <input id="reset-confirm" type="password" autoComplete="new-password" required value={confirm} onChange={(e) => setConfirm(e.target.value)} className="qc-input" />
-                    </div>
-                  </div>
-                  <button type="submit" disabled={busy} className="qc-btn qc-btn-cyan qc-btn-shimmer">
-                    {busy ? <Cpu size={16} className="animate-spin" /> : <>Update password <ArrowRight size={15} /></>}
-                  </button>
-                </form>
-              </>
-            ) : (
-              <>
-                <h2 className="qc-heading">{view === "expired" || linkError ? "Link expired" : "Forgot password"}</h2>
-                <p className="qc-subtitle">
-                  {view === "expired" || linkError
-                    ? `${linkError || "This reset link is invalid, expired or already used."} Request a new one below.`
-                    : "Enter your account email and we will send you a single-use reset link."}
-                </p>
-                <form onSubmit={requestLink} className="qc-form">
-                  <div>
-                    <label className="qc-field-label" htmlFor="reset-email">Email address</label>
-                    <div className="qc-field-wrap">
-                      <Mail size={14} className="qc-field-icon" />
-                      <input id="reset-email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Enter your email" className="qc-input" />
-                    </div>
-                  </div>
-                  <button type="submit" disabled={busy} className="qc-btn qc-btn-cyan qc-btn-shimmer">
-                    {busy ? <Cpu size={16} className="animate-spin" /> : <>Send reset link <ArrowRight size={15} /></>}
-                  </button>
-                  <p className="qc-card-footer">
-                    Remembered it? <Link to="/login" className="qc-card-link">Sign in</Link>
-                  </p>
-                </form>
-              </>
-            )}
-          </div>
-        </section>
-      </main>
-    </div>
+  return (
+    <AuthShell mode="reset" nextQuery="">
+      {card}
+    </AuthShell>
   );
 }

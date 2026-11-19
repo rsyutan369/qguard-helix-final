@@ -98,7 +98,7 @@ export interface ValidationEntry {
 export interface DocumentValidation {
   status: 'pass' | 'warn' | 'fail'
   /** 0–100 quality score: every WARN costs 8 points, every FAIL 30. */
-  score: number
+  score?: number
   checks: ValidationEntry[]
 }
 

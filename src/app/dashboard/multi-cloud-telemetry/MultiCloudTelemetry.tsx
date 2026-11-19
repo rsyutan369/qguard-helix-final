@@ -736,7 +736,7 @@ export default function MultiCloudTelemetry() {
         <EventStream events={data.events} limit={10} emptyLabel="No cloud cryptographic events in the last 30 days." />
       </TrustPanel>
 
-      <ProvenanceFooter telemetry={data.telemetry} />
+      <ProvenanceFooter telemetry={data.telemetry} reads={data.reads} />
 
       <Drawer
         open={drawerOpen}

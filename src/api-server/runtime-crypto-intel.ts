@@ -69,7 +69,7 @@ const RUNTIME_EVENT_CAP = 5000
 /* Shared single-flight input cache                                    */
 /* ------------------------------------------------------------------ */
 
-type RuntimeInputBundle = Omit<RuntimeIntelInputs, 'window' | 'eventLimit' | 'now'> & { reads: SourceRead[] }
+type RuntimeInputBundle = Omit<RuntimeIntelInputs, 'window' | 'eventLimit' | 'now'> & { reads: SourceRead[]; sourceCheckedAt: string }
 
 /**
  * Mirrors the platform contract used by buildSnapshot / buildPortfolio: one
@@ -107,9 +107,9 @@ async function loadInputs(token: string, userId: string): Promise<RuntimeInputBu
         .limit(400),
     ),
     ledger.read(client, 'scanner_agents', 'Agent fleet', 250, (q) =>
-      q.select('id, name, status, hostname, platform, last_seen_at, created_at, updated_at').eq('user_id', userId).limit(250),
+      q.select('id, name, status, hostname, platform, last_seen_at, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).limit(250),
     ),
-    ledger.read(client, 'connector_accounts', 'Connectors', 400, (q) => q.select('id, provider, status').eq('user_id', userId).limit(400)),
+    ledger.read(client, 'connector_accounts', 'Connectors', 400, (q) => q.select('id, provider, status', { count: 'exact' }).eq('user_id', userId).limit(400)),
   ])
 
   return {
@@ -136,7 +136,8 @@ async function loadInputs(token: string, userId: string): Promise<RuntimeInputBu
     migrationJobs,
     scannerAgents,
     connectorAccounts,
-    runtimeEventsTruncated: runtimeEvents.length >= RUNTIME_EVENT_CAP,
+    runtimeEventsTruncated: ledger.reads.some((read) => read.key === 'runtime_crypto_events' && read.state === 'truncated'),
+    sourceCheckedAt: new Date().toISOString(),
     reads: ledger.reads,
   }
 }
@@ -159,7 +160,7 @@ export async function buildRuntimeIntel(
   userId: string,
   options: { window?: TimeWindowKey; eventLimit?: number; force?: boolean } = {},
 ): Promise<RuntimeCryptoIntelligence> {
-  const { reads, ...inputs } = await cachedInputs(token, userId, options.force)
+  const { reads, sourceCheckedAt, ...inputs } = await cachedInputs(token, userId, options.force)
   return {
     ...buildRuntimeCryptoIntelligence({
       ...inputs,
@@ -167,6 +168,7 @@ export async function buildRuntimeIntel(
       eventLimit: options.eventLimit,
     }),
     reads,
+    sourceCheckedAt,
   }
 }
 

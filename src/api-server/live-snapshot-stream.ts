@@ -13,8 +13,8 @@ import type { Request, Response } from 'express'
  * (issue #44 in qguard-common-issues-fixes):
  *
  *   • `<event>`            full payload, sent first and whenever CONTENT changes
- *   • `<event>-unchanged`  `{ fingerprint, generatedAt, checkedAt }` — proof the
- *                           server re-checked the estate, at a few bytes a tick
+ *   • `<event>-unchanged`  `{ fingerprint, generatedAt, checkedAt }` — content
+ *                           is unchanged, with the model's original watermark
  *   • `<event>-error`      `{ message }` — the build failed; the stream stays open
  *
  * The fingerprint excludes `generatedAt` / `checkedAt` (they change on every
@@ -23,7 +23,7 @@ import type { Request, Response } from 'express'
  */
 
 const fingerprints = new WeakMap<object, string>()
-const VOLATILE_KEYS = new Set(['generatedAt', 'checkedAt', 'fingerprint'])
+const VOLATILE_KEYS = new Set(['generatedAt', 'checkedAt', 'sourceCheckedAt', 'fingerprint'])
 
 export function payloadFingerprint(data: unknown): string {
   if (data && typeof data === 'object') {
@@ -69,7 +69,7 @@ export function bearerExpiryMs(req: Request): number | null {
 export function streamLiveSnapshot<T extends object>(req: Request, res: Response, options: LiveSnapshotStreamOptions<T>): void {
   res.status(200)
   res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('Cache-Control', 'private, no-store, no-transform')
   res.setHeader('Connection', 'keep-alive')
   res.setHeader('X-Accel-Buffering', 'no')
   res.flushHeaders?.()
@@ -104,9 +104,11 @@ export function streamLiveSnapshot<T extends object>(req: Request, res: Response
       const data = await options.build()
       if (closed) return
       const fingerprint = payloadFingerprint(data)
-      const generatedAt = (data as { generatedAt?: unknown }).generatedAt ?? null
+      const model = data as { generatedAt?: unknown; sourceCheckedAt?: unknown; checkedAt?: unknown }
+      const generatedAt = model.generatedAt ?? null
+      const checkedAt = model.sourceCheckedAt ?? model.checkedAt ?? generatedAt
       if (fingerprint === lastFingerprint) {
-        write(`${options.event}-unchanged`, { fingerprint, generatedAt, checkedAt: new Date().toISOString() })
+        write(`${options.event}-unchanged`, { fingerprint, generatedAt, checkedAt })
         return
       }
       lastFingerprint = fingerprint

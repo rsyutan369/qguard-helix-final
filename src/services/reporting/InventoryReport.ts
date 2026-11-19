@@ -22,7 +22,7 @@
  * carries a Reconciliation table stating dashboard value vs exported row count
  * so a reader can verify the match without trusting us.
  */
-import type { ReportTable } from './schemas/ReportSchema'
+import type { ReportProvenance, ReportTable } from './schemas/ReportSchema'
 import type { ReportDocument } from './ReportDocument'
 import type { IntegritySeal } from './ReportIntegrity'
 import { isCryptographicComponent as isCanonicalCryptographicComponent } from '@/lib/scanner/finding-identity'
@@ -69,6 +69,7 @@ export interface InventoryReport {
     generatedBy?: string
     /** Newest scan evidence the document describes — "data as of". */
     dataAsOf?: string | null
+    snapshot?: ReportProvenance
   }
   kpis: InventoryKpi[]
   tables: ReportTable[]

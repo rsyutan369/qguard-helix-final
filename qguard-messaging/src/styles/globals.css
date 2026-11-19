@@ -668,3 +668,19 @@ button:not(:disabled):hover {
   20%, 60% { transform: translateX(-8px); }
   40%, 80% { transform: translateX(8px); }
 }
+
+/* Relay status strip: its amber-950 text is unreadable on the dark canvas. */
+.theme-dark .relay-banner {
+  color: #fde68a !important;
+  border-color: rgba(245, 158, 11, 0.4) !important;
+}
+
+.theme-dark .relay-banner button {
+  color: #fde68a !important;
+  border-color: rgba(245, 158, 11, 0.45) !important;
+  background-color: rgba(245, 158, 11, 0.12) !important;
+}
+
+.theme-dark .relay-banner button:hover {
+  background-color: rgba(245, 158, 11, 0.24) !important;
+}

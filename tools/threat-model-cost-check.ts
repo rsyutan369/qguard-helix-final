@@ -4,11 +4,8 @@
  * (/api/v1/dashboard/tls-telemetry). Run with the dev server up:
  *   npx tsx tools/threat-model-cost-check.ts
  *
- * NOTE: the subscription gateway blocks Starter-tier accounts from these
- * dashboards (403 = tier RBAC working, not a bug). The test account is seeded
- * as Starter by tools/seed-test-subscriptions.ts, so temporarily raise its
- * billing_subscriptions.plan + profiles.tier to Elite for this check and
- * re-run the seeder afterwards to restore the canonical tier.
+ * Requires an explicitly configured QA account with an active Elite subscription.
+ * No test subscriptions are created or modified by this check.
  */
 import 'dotenv/config'
 import { createClient } from '@supabase/supabase-js'
@@ -25,7 +22,7 @@ const pass = (cond: boolean, msg: string) => {
 
 async function main() {
   const admin = createClient(url, serviceKey, { auth: { persistSession: false } })
-  const { data: link, error: linkError } = await admin.auth.admin.generateLink({ type: 'magiclink', email: 'cybersniper26@gmail.com' })
+  const { data: link, error: linkError } = await admin.auth.admin.generateLink({ type: 'magiclink', email: process.env.PROBE_ELITE_EMAIL || (() => { throw new Error('Set PROBE_ELITE_EMAIL to an authorized QA account') })() })
   if (linkError) throw linkError
   const tokenHash = (link!.properties as { hashed_token?: string }).hashed_token!
   const anon = createClient(url, anonKey, { auth: { persistSession: false } })

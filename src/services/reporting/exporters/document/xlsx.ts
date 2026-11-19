@@ -7,7 +7,8 @@
  * frozen, auto-filtered, status/severity cells tinted, long text wrapped. The
  * workbook is the COMPLETE register: nothing is capped here.
  */
-import type { InventoryReport } from '../../InventoryReport'
+import type { DocumentExportInput } from './shared'
+import { validationLabel } from './shared'
 import type { ReportTable } from '../../schemas/ReportSchema'
 import { cellTone, type TableEmphasis } from '../../ReportDocument'
 import { BRAND, INK, MUTED, VALIDATION_LABEL, noHash, tint, toneHex, utc, verificationUrl } from './shared'
@@ -78,7 +79,7 @@ function sheetName(title: string, used: Set<string>): string {
   return name
 }
 
-export async function renderDocumentXlsx(report: InventoryReport): Promise<Blob> {
+export async function renderDocumentXlsx(report: DocumentExportInput): Promise<Blob> {
   const ExcelJS = (await import('exceljs')).default
   const d = report.document!
   const wb = new ExcelJS.Workbook()
@@ -161,7 +162,7 @@ export async function renderDocumentXlsx(report: InventoryReport): Promise<Blob>
     grid(['Priority', 'Decision', 'Owner', 'Rationale & evidence'], d.decisions.map((x) => [x.priority, x.decision, x.owner, `${x.rationale} Evidence: ${x.evidence}`]), { column: 0, kind: 'priority' })
   }
 
-  section(`Validation — ${VALIDATION_LABEL[d.validation.status]} · quality ${d.validation.score}/100`)
+  section(validationLabel(d.validation))
   grid(['Check', 'Result', '', 'Detail'], d.validation.checks.map((c) => [c.check, VALIDATION_LABEL[c.status], '', c.detail]), { column: 1, kind: 'status' })
 
   section('Reconciliation — dashboard vs exported')

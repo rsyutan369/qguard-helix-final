@@ -1,4 +1,0 @@
-{
-  "note": "per frame: every draw call (p program, m primitive, n vertices, i instances, fb target framebuffer, tx bound textures by unit, st state), clears, three.js render calls",
-  "frames": []
-}

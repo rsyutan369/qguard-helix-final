@@ -98,7 +98,9 @@ export function configurationReport(env: EnvGetter) {
     // The Android app launches Google Play purchases only when this is true
     // (billingSupportsPlayVerification in qguard-messaging/src/lib/billing-api.ts).
     playVerification: isPlayConfigured(env),
-    playRtdn: Boolean((env("PLAY_RTDN_TOKEN") ?? "").trim()),
+    playRtdn: Boolean((env("PLAY_RTDN_TOKEN") ?? "").trim() || (env("PLAY_RTDN_AUDIENCE") ?? "").trim()),
+    playRtdnOidc: Boolean((env("PLAY_RTDN_AUDIENCE") ?? "").trim()),
+    playTokenEncryption: tokenEncryptionKeyBytes(env) !== null,
     env: paypalApiBase(env).includes("sandbox") ? "sandbox" : "live",
     plans,
   };
@@ -264,11 +266,28 @@ export const BILLING_AUDIT = {
   paymentSucceeded: "payment.succeeded",
   paymentFailed: "payment.failed",
   paymentRefunded: "payment.refunded",
+  // Store lifecycle (Google Play RTDN + verification).
+  renewed: "subscription.renewed",
+  recovered: "subscription.recovered",
+  restarted: "subscription.restarted",
+  onHold: "subscription.on_hold",
+  inGracePeriod: "subscription.in_grace_period",
+  revoked: "subscription.revoked",
+  replaced: "subscription.replaced",
+  purchaseVerified: "purchase.verified",
+  purchaseRejected: "purchase.rejected",
+  purchaseAcknowledged: "purchase.acknowledged",
+  verificationFailed: "purchase.verification_failed",
+  restoreInitiated: "restore.initiated",
+  restoreCompleted: "restore.completed",
 } as const;
 
 export type BillingAuditAction = (typeof BILLING_AUDIT)[keyof typeof BILLING_AUDIT];
 
-const ACCESS_GRANTING = new Set(["active", "trial", "pending_renewal"]);
+// No free trial exists in the catalog (Qguard_Wiki/GooglePlay_Billing §1), so
+// 'trial' is not access-granting. Same set as src/lib/subscription-access.ts,
+// qguard-messaging/src/lib/subscription.ts and SQL qguard_subscription_grants_access.
+const ACCESS_GRANTING = new Set(["active", "pending_renewal"]);
 
 export function isAccessGranting(status: unknown): boolean {
   return ACCESS_GRANTING.has(String(status ?? "").toLowerCase());
@@ -400,21 +419,20 @@ export function refundInvoicePatch(
   };
 }
 
-// ---- Money-back refunds cancel the subscription ------------------------------
+// ---- A full refund of the first payment ends the subscription ----------------
 //
-// The Refund Policy (src/pages/Refund.tsx) promises that a money-back refund —
-// the full refund of a subscriber's FIRST payment, requested within the window —
-// cancels the subscription. PayPal does not do that on its own: refunding a sale
-// leaves the subscription billing. Renewal refunds (duplicate charge, charge
-// after cancellation) are goodwill corrections and leave the subscription alone.
+// QGuard offers NO promotional money-back guarantee (owner decision
+// 2026-11-12). Refunds still happen — through PayPal or Google Play, or because
+// consumer law requires them — and the subscription lifecycle must reflect
+// them: a FULL refund of a subscriber's FIRST payment means the plan was never
+// paid for, so the subscription is cancelled and access ends. PayPal does not
+// do that on its own (refunding a sale leaves the subscription billing).
+// Renewal refunds (duplicate charge, charge after cancellation) are
+// corrections and leave the subscription alone.
 
-/** Money-back window in days. MUST equal REFUND_POLICY.initialWindowDays (asserted by tools/billing-edge-check.ts). */
+/** A first-payment refund issued within this many days of the charge cancels the plan. */
 export const REFUND_WINDOW_DAYS = 7;
-/**
- * Calendar-day allowance for issuing an approved refund: the policy promises
- * processing within REFUND_POLICY.processingDays (10) BUSINESS days, so a
- * request made on day 7 can be refunded up to two weeks later.
- */
+/** Allowance for a refund decided inside the window but issued later. */
 export const REFUND_PROCESSING_GRACE_DAYS = 14;
 
 const DAY_MS = 86_400_000;
@@ -458,7 +476,7 @@ export function refundCancellationPatch(row: { cancelled_at?: string | null } | 
 export const RECONCILE_CHECKOUT_LOOKBACK_DAYS = 7;
 /** Payment history window re-read per subscription. */
 export const RECONCILE_PAYMENT_LOOKBACK_DAYS = 35;
-/** Local statuses whose PayPal subscription may still change. */
+/** Local statuses whose provider subscription may still change. */
 export const RECONCILE_STATUSES = ["active", "trial", "past_due", "suspended", "pending_renewal", "incomplete"];
 
 /**
@@ -562,21 +580,36 @@ export function webhookClaimDecision(
   return nowMs - claimedAt > WEBHOOK_CLAIM_STALE_MS ? "run" : "in-progress";
 }
 
-// ---- Google Play Billing (roadmap 4.6) --------------------------------------
+// ---- Google Play Billing ------------------------------------------------------
 //
-// Mirrors src/api-server/play-billing.ts, the Express implementation: the
-// same env names, product-id convention, state mapping and ledger rows, so the
-// two can never disagree about what a Play purchase grants.
+// Four paid tiers with no trials or introductory offers. Each of the eight
+// Play products has one base plan. Its ID identifies the tier and billing period:
+//
+//   qh_starter_monthly  qh_starter_yearly   $1   / $12
+//   qh_basic_monthly    qh_basic_yearly     $8   / $60
+//   qh_pro_monthly      qh_pro_yearly       $30  / $240
+//   qh_elite_monthly    qh_elite_yearly     $199 / $1,800
+//
+// Every rule here is shared by the Edge Function, the Express API
+// (src/api-server/play-billing.ts) and the Node checks, so the three can never
+// disagree about what a Play purchase grants.
 
-/** List prices (USD) for Play invoices — Google does not return the charged
- *  amount. MUST equal src/lib/billing/plan-pricing.ts PLAN_PRICING;
- *  tools/billing-edge-check.ts asserts it. */
+/** List prices (USD). MUST equal src/lib/billing/plan-pricing.ts PLAN_PRICING;
+ *  tools/billing-edge-check.ts asserts it. Google Play's localized price is what the buyer
+ *  is charged — these are catalog figures, used only when Google does not
+ *  report the recurring price. */
 export const PLAY_LIST_PRICING: Record<Tier, { monthly: number; yearlyPerMonth: number }> = {
   Starter: { monthly: 1, yearlyPerMonth: 1 },
   Basic: { monthly: 8, yearlyPerMonth: 5 },
   Pro: { monthly: 30, yearlyPerMonth: 20 },
   Elite: { monthly: 199, yearlyPerMonth: 150 },
 };
+
+/** Catalog charge for one billing period, in cents. */
+export function listPriceCents(tier: Tier, cycle: DbCycle | Cycle): number {
+  const price = PLAY_LIST_PRICING[tier];
+  return Math.round((cycle === "annual" || cycle === "yearly" ? price.yearlyPerMonth * 12 : price.monthly) * 100);
+}
 
 export function playPackageName(env: EnvGetter): string {
   return (env("GOOGLE_PLAY_PACKAGE_NAME") ?? "").trim();
@@ -603,131 +636,460 @@ export function isPlayConfigured(env: EnvGetter): boolean {
   return Boolean(playPackageName(env) && playServiceAccount(env));
 }
 
-/** Play product id for a tier: `qguard_<tier>` unless PLAY_PRODUCT_<TIER> overrides it. */
-export function playProductIdFor(env: EnvGetter, tier: Tier): string {
-  return (env(`PLAY_PRODUCT_${tier.toUpperCase()}`) ?? "").trim() || `qguard_${tier.toLowerCase()}`;
+/**
+ * Play product id for a tier + period: `qh_<tier>_<monthly|yearly>` unless
+ * PLAY_PRODUCT_<TIER>_<CYCLE> overrides it (a product id cannot be reused once
+ * deleted in Play Console, so the mapping must be remappable without a build).
+ */
+export function playProductIdFor(env: EnvGetter, tier: Tier, cycle: Cycle | DbCycle): string {
+  const period: Cycle = cycle === "annual" || cycle === "yearly" ? "yearly" : "monthly";
+  return (env(`PLAY_PRODUCT_${tier.toUpperCase()}_${period.toUpperCase()}`) ?? "").trim()
+    || `qh_${tier.toLowerCase()}_${period}`;
 }
 
-export function tierForPlayProduct(env: EnvGetter, productId: string): Tier | null {
-  return TIERS.find((tier) => playProductIdFor(env, tier) === productId) ?? null;
+/** Every product this service sells on Play, in catalog order. */
+export function playProductCatalog(env: EnvGetter): Array<{ productId: string; tier: Tier; cycle: Cycle }> {
+  const out: Array<{ productId: string; tier: Tier; cycle: Cycle }> = [];
+  for (const tier of TIERS) {
+    for (const cycle of CYCLES) out.push({ productId: playProductIdFor(env, tier, cycle), tier, cycle });
+  }
+  return out;
 }
 
-/** basePlanId → billing cycle. Convention: 'monthly' / 'yearly' (or 'annual'). */
-export function cycleForPlayBasePlan(basePlanId: unknown): DbCycle {
-  const text = String(basePlanId ?? "").toLowerCase();
-  return text.includes("year") || text.includes("annual") ? "annual" : "monthly";
+/** Tier + billing period a Play product id stands for; null for anything we do not sell. */
+export function playProductInfo(env: EnvGetter, productId: unknown): { tier: Tier; cycle: DbCycle } | null {
+  if (typeof productId !== "string" || !productId) return null;
+  const match = playProductCatalog(env).find((entry) => entry.productId === productId);
+  return match ? { tier: match.tier, cycle: toDbCycle(match.cycle) } : null;
 }
+
+export type PlayMapped = {
+  status: DbStatus;
+  /** Google currently grants the subscriber access. */
+  entitled: boolean;
+  autoRenew: boolean;
+  /** A payment problem the customer must fix in Google Play. */
+  paymentIssue: boolean;
+};
 
 /**
- * Google subscriptionState → our status. Per Play policy the user KEEPS the
- * entitlement in a grace period and while CANCELED but not yet expired
- * (cancellation only turns off auto-renew).
+ * Google subscriptionState → our status, per Play policy:
+ *  - IN_GRACE_PERIOD keeps access (Google is retrying the payment);
+ *  - CANCELED only stops renewal — access continues until expiryTime;
+ *  - ON_HOLD (payment failed after grace) and PAUSED lose access;
+ *  - PENDING (a purchase awaiting payment) NEVER grants access.
+ * `expiryTime` matters only for CANCELED: once the paid-through time passes,
+ * a canceled subscription is expired even if Google's state has not moved yet.
  */
-export function mapPlayState(state: unknown): { status: DbStatus; entitled: boolean; autoRenew: boolean } {
+export function mapPlayState(state: unknown, expiryTime?: unknown, nowMs: number = Date.now()): PlayMapped {
   switch (String(state ?? "")) {
     case "SUBSCRIPTION_STATE_ACTIVE":
-      return { status: "active", entitled: true, autoRenew: true };
+      return { status: "active", entitled: true, autoRenew: true, paymentIssue: false };
     case "SUBSCRIPTION_STATE_IN_GRACE_PERIOD":
-      return { status: "pending_renewal", entitled: true, autoRenew: true };
-    case "SUBSCRIPTION_STATE_CANCELED":
-      return { status: "active", entitled: true, autoRenew: false };
+      return { status: "pending_renewal", entitled: true, autoRenew: true, paymentIssue: true };
+    case "SUBSCRIPTION_STATE_CANCELED": {
+      const expiry = Date.parse(String(expiryTime ?? ""));
+      const paidThrough = !Number.isFinite(expiry) || expiry > nowMs;
+      return paidThrough
+        ? { status: "active", entitled: true, autoRenew: false, paymentIssue: false }
+        : { status: "expired", entitled: false, autoRenew: false, paymentIssue: false };
+    }
     case "SUBSCRIPTION_STATE_ON_HOLD":
+      return { status: "past_due", entitled: false, autoRenew: true, paymentIssue: true };
     case "SUBSCRIPTION_STATE_PAUSED":
-      return { status: "suspended", entitled: false, autoRenew: false };
+      return { status: "suspended", entitled: false, autoRenew: true, paymentIssue: false };
     case "SUBSCRIPTION_STATE_EXPIRED":
-      return { status: "expired", entitled: false, autoRenew: false };
+      return { status: "expired", entitled: false, autoRenew: false, paymentIssue: false };
+    case "SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED":
+      return { status: "cancelled", entitled: false, autoRenew: false, paymentIssue: false };
+    case "SUBSCRIPTION_STATE_PENDING":
     default:
-      return { status: "incomplete", entitled: false, autoRenew: false };
+      return { status: "incomplete", entitled: false, autoRenew: false, paymentIssue: false };
   }
 }
 
 export class PlayPurchaseError extends Error {
-  constructor(readonly code: "NOT_BOUND" | "ACCOUNT_MISMATCH" | "UNKNOWN_PRODUCT", message: string) {
+  constructor(
+    readonly code: "NOT_BOUND" | "ACCOUNT_MISMATCH" | "UNKNOWN_PRODUCT" | "NO_LINE_ITEM",
+    message: string,
+  ) {
     super(message);
   }
 }
 
-/**
- * What a verified subscriptionsv2 resource grants, and the rows that record it.
- * `expectedUserId` is the authenticated caller on /verify and must equal the
- * obfuscatedExternalAccountId the app set at checkout (the anti-spoof binding);
- * RTDN passes null and relies on the binding Google recorded.
- */
-export function playSubscriptionRows(
-  env: EnvGetter,
-  resource: Record<string, any>,
-  tokenHash: string,
-  expectedUserId: string | null,
-  nowIso: string,
-): {
-  userId: string;
+/** Google Money ({ currencyCode, units, nanos }) → integer cents; null when absent. */
+export function moneyToCents(money: unknown): { cents: number; currency: string } | null {
+  const value = money as { currencyCode?: unknown; units?: unknown; nanos?: unknown } | null;
+  if (!value || typeof value.currencyCode !== "string" || !value.currencyCode) return null;
+  const units = Number(value.units ?? 0);
+  const nanos = Number(value.nanos ?? 0);
+  if (!Number.isFinite(units) || !Number.isFinite(nanos)) return null;
+  return { cents: Math.round(units * 100 + nanos / 10_000_000), currency: value.currencyCode.toUpperCase() };
+}
+
+/** What one authoritative subscriptionsv2 resource says, independent of any account. */
+export interface PlayFacts {
+  productId: string;
   tier: Tier;
   cycle: DbCycle;
-  mapped: ReturnType<typeof mapPlayState>;
-  productId: string;
+  mapped: PlayMapped;
   expiryTime: string | null;
-  subscription: Record<string, unknown>;
-  invoice: Record<string, unknown> | null;
-} {
-  const boundUserId = String(resource?.externalAccountIdentifiers?.obfuscatedExternalAccountId ?? "");
-  const userId = expectedUserId || boundUserId;
-  if (!userId) throw new PlayPurchaseError("NOT_BOUND", "purchase is not bound to a QGuard account (missing obfuscatedExternalAccountId)");
-  if (expectedUserId && boundUserId && boundUserId !== expectedUserId) {
-    throw new PlayPurchaseError("ACCOUNT_MISMATCH", "purchase belongs to a different QGuard account");
-  }
-  const line = Array.isArray(resource?.lineItems) ? resource.lineItems[0] : null;
+  startTime: string | null;
+  orderId: string | null;
+  linkedPurchaseToken: string | null;
+  boundAccount: string;
+  acknowledged: boolean;
+  testPurchase: boolean;
+  /** Recurring price Google reports for the base plan (taxes excluded), or the catalog list price. */
+  price: { cents: number; currency: string; source: "play_recurring_price" | "catalog_list_price" };
+  cancelReason: string | null;
+}
+
+export function playFacts(env: EnvGetter, resource: Record<string, any>, nowMs: number = Date.now()): PlayFacts {
+  const items: Array<Record<string, any>> = Array.isArray(resource?.lineItems) ? resource.lineItems : [];
+  if (items.length === 0) throw new PlayPurchaseError("NO_LINE_ITEM", "Google Play returned a subscription without line items");
+  // A plan change can leave the outgoing item listed; the item that expires
+  // last is the one the customer holds now.
+  const line = [...items].sort((a, b) => (Date.parse(String(b?.expiryTime ?? "")) || 0) - (Date.parse(String(a?.expiryTime ?? "")) || 0))[0];
   const productId = String(line?.productId ?? "");
-  const tier = tierForPlayProduct(env, productId);
-  if (!tier) throw new PlayPurchaseError("UNKNOWN_PRODUCT", `unrecognized Play product: ${productId || "(none)"}`);
-  const cycle = cycleForPlayBasePlan(line?.offerDetails?.basePlanId);
-  const mapped = mapPlayState(resource?.subscriptionState);
-  const expiryTime: string | null = line?.expiryTime ?? null;
-  const subscription = {
-    user_id: userId,
-    subscription_id: `gp_${tokenHash.slice(0, 48)}`,
+  const info = playProductInfo(env, productId);
+  if (!info) throw new PlayPurchaseError("UNKNOWN_PRODUCT", `unrecognized Play product: ${productId || "(none)"}`);
+  const expiryTime: string | null = typeof line?.expiryTime === "string" ? line.expiryTime : null;
+  const reported = moneyToCents(line?.autoRenewingPlan?.recurringPrice);
+  const cancelContext = resource?.canceledStateContext ?? null;
+  const cancelReason = cancelContext
+    ? cancelContext.userInitiatedCancellation ? "user"
+      : cancelContext.systemInitiatedCancellation ? "system"
+      : cancelContext.developerInitiatedCancellation ? "developer"
+      : cancelContext.replacementCancellation ? "replaced"
+      : "unknown"
+    : null;
+  return {
+    productId,
+    tier: info.tier,
+    cycle: info.cycle,
+    mapped: mapPlayState(resource?.subscriptionState, expiryTime, nowMs),
+    expiryTime,
+    startTime: typeof resource?.startTime === "string" ? resource.startTime : null,
+    orderId: String(line?.latestSuccessfulOrderId ?? resource?.latestOrderId ?? "") || null,
+    linkedPurchaseToken: typeof resource?.linkedPurchaseToken === "string" && resource.linkedPurchaseToken ? resource.linkedPurchaseToken : null,
+    boundAccount: String(resource?.externalAccountIdentifiers?.obfuscatedExternalAccountId ?? ""),
+    acknowledged: String(resource?.acknowledgementState ?? "") === "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+    testPurchase: Boolean(resource?.testPurchase),
+    price: reported
+      ? { ...reported, source: "play_recurring_price" }
+      : { cents: listPriceCents(info.tier, info.cycle), currency: "USD", source: "catalog_list_price" },
+    cancelReason,
+  };
+}
+
+/**
+ * The account id the app passes to Google Play as obfuscatedAccountId: a
+ * SHA-256 of the Supabase user id, so Google never receives our internal
+ * identifier (64 hex chars = Play's maximum length). The server is the only
+ * party that maps it back (billing_play_accounts).
+ */
+export async function playAccountIdFor(userId: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`qguard-play-account:v1:${userId}`)));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Whether the purchase's recorded binding belongs to `userId`. Accepts the
+ * hashed account id the app sends today and the raw user id earlier builds
+ * sent. An empty binding never matches: an unbound token could belong to anyone.
+ */
+export async function playBindingMatches(boundAccount: string, userId: string): Promise<boolean> {
+  if (!boundAccount) return false;
+  if (boundAccount === userId) return true;
+  return timingSafeEqualText(boundAccount, await playAccountIdFor(userId));
+}
+
+/** billing_subscriptions row for a verified Play purchase. */
+export function playSubscriptionRow(
+  facts: PlayFacts,
+  ids: { userId: string; tokenHash: string; tokenEncrypted: string | null; linkedTokenHash: string | null },
+  previous: { cancelled_at?: string | null } | null,
+  nowIso: string,
+): Record<string, unknown> {
+  const { mapped } = facts;
+  return {
+    user_id: ids.userId,
+    subscription_id: `gp_${ids.tokenHash.slice(0, 48)}`,
     provider: "google_play",
-    provider_customer_id: boundUserId || userId,
-    provider_subscription_id: tokenHash,
-    plan: tier,
+    provider_customer_id: facts.boundAccount || null,
+    provider_subscription_id: ids.tokenHash,
+    product_id: facts.productId,
+    plan: facts.tier,
     status: mapped.status,
-    billing_cycle: cycle,
+    billing_cycle: facts.cycle,
     auto_renew: mapped.autoRenew,
-    cancel_at_period_end: !mapped.autoRenew && mapped.entitled,
-    current_period_start: resource?.startTime ?? nowIso,
-    current_period_end: expiryTime,
-    renewal_date: mapped.autoRenew ? expiryTime : null,
-    cancelled_at: mapped.status === "cancelled" ? nowIso : null,
+    cancel_at_period_end: mapped.entitled && !mapped.autoRenew,
+    current_period_start: facts.startTime ?? nowIso,
+    current_period_end: facts.expiryTime,
+    renewal_date: mapped.autoRenew && mapped.entitled ? facts.expiryTime : null,
+    cancelled_at: facts.cancelReason ? previous?.cancelled_at ?? nowIso : null,
+    cancel_reason: facts.cancelReason,
+    purchase_token_encrypted: ids.tokenEncrypted,
+    linked_purchase_token_hash: ids.linkedTokenHash,
+    google_order_id: facts.orderId,
+    acknowledgement_state: facts.acknowledged ? "acknowledged" : "pending",
+    verification_state: "verified",
+    last_verified_at: nowIso,
+    amount_cents: facts.testPurchase ? 0 : facts.price.cents,
+    currency: facts.price.currency,
     metadata: {
-      playProductId: productId,
-      playBasePlanId: line?.offerDetails?.basePlanId ?? null,
-      latestOrderId: resource?.latestOrderId ?? null,
-      subscriptionState: resource?.subscriptionState ?? null,
+      playProductId: facts.productId,
+      latestOrderId: facts.orderId,
+      subscriptionState: mapped.status,
+      priceSource: facts.price.source,
+      ...(facts.testPurchase ? { testPurchase: true, complimentary: true } : {}),
     },
     updated_at: nowIso,
   };
-  const orderId = resource?.latestOrderId ? String(resource.latestOrderId) : null;
-  const price = PLAY_LIST_PRICING[tier];
-  const amountCents = Math.round((cycle === "annual" ? price.yearlyPerMonth * 12 : price.monthly) * 100);
-  const invoice = orderId && mapped.entitled
-    ? {
-      user_id: userId,
-      invoice_id: orderId,
-      provider_invoice_id: orderId,
-      transaction_id: orderId,
-      amount_paid_cents: amountCents,
-      tax_cents: 0,
-      currency: "USD",
-      status: "paid",
-      payment_method_summary: "Google Play",
-      subscription_plan: tier,
-      // subscriptionsv2 carries no per-order charge time; the call that first
-      // sees an order is the closest recorded moment of payment.
-      payment_date: nowIso,
-      metadata: { playOrderId: orderId, purchaseTokenHash: tokenHash, amountSource: "catalog_list_price" },
-    }
-    : null;
-  return { userId, tier, cycle, mapped, productId, expiryTime, subscription, invoice };
 }
+
+/**
+ * Invoice for the order Google reports. Each renewal carries a new order id,
+ * so a renewal becomes its own row and a repeat of the same order is a no-op
+ * (provider_invoice_id is unique). License-tester purchases are free: they are
+ * recorded for history at zero so they can never inflate revenue.
+ */
+export function playInvoiceRow(facts: PlayFacts, userId: string, tokenHash: string, nowIso: string): Record<string, unknown> | null {
+  if (!facts.orderId || !facts.mapped.entitled) return null;
+  return {
+    user_id: userId,
+    invoice_id: facts.orderId,
+    provider_invoice_id: facts.orderId,
+    transaction_id: facts.orderId,
+    amount_paid_cents: facts.testPurchase ? 0 : facts.price.cents,
+    tax_cents: 0,
+    currency: facts.price.currency,
+    status: "paid",
+    payment_method_summary: facts.testPurchase ? "Google Play (test purchase)" : "Google Play",
+    subscription_plan: facts.tier,
+    // subscriptionsv2 carries no per-order charge time; the call that first
+    // sees an order is the closest recorded moment of payment.
+    payment_date: nowIso,
+    metadata: {
+      playOrderId: facts.orderId,
+      purchaseTokenHash: tokenHash,
+      productId: facts.productId,
+      billingCycle: facts.cycle,
+      amountSource: facts.testPurchase ? "test_purchase" : facts.price.source,
+      grossOfStoreFee: true,
+      ...(facts.testPurchase ? { testPurchase: true, listPriceCents: listPriceCents(facts.tier, facts.cycle) } : {}),
+    },
+  };
+}
+
+/**
+ * Whether a Play resource may overwrite the account's current row. The row is
+ * one per account, so a stale token must never clobber a newer subscription:
+ * after an upgrade Google sends EXPIRED for the REPLACED token, which must not
+ * lock the customer out of the plan that replaced it.
+ */
+export function playMayReplaceRow(
+  current: { provider?: string | null; provider_subscription_id?: string | null; linked_purchase_token_hash?: string | null; status?: string | null; current_period_end?: string | null } | null,
+  incoming: { tokenHash: string; entitled: boolean },
+  nowMs: number = Date.now(),
+): boolean {
+  if (!current) return true;
+  if (current.provider === "google_play" && current.provider_subscription_id === incoming.tokenHash) return true;
+  if (current.provider === "google_play" && current.linked_purchase_token_hash === incoming.tokenHash) return false;
+  if (incoming.entitled) return true;
+  // A non-entitled statement about some other token replaces only a row that
+  // grants nothing itself.
+  return !rowGrantsAccess(current, nowMs);
+}
+
+/** Access-granting statuses: no trial exists in the catalog. */
+const ACCESS_STATUS_SET = new Set(["active", "pending_renewal"]);
+
+/** Tolerance after the recorded period end before access is withdrawn without a provider event. */
+export function accessGraceMs(provider: unknown): number {
+  // Google moves expiryTime itself during a grace period; only RTDN delivery
+  // latency needs covering. PayPal renewals can lag the charge by days.
+  return String(provider ?? "") === "google_play" ? 60 * 60 * 1000 : 72 * 60 * 60 * 1000;
+}
+
+/** The same rule as SQL public.qguard_subscription_grants_access (asserted by the checks). */
+export function rowGrantsAccess(
+  row: { provider?: string | null; status?: string | null; current_period_end?: string | null },
+  nowMs: number = Date.now(),
+): boolean {
+  if (!ACCESS_STATUS_SET.has(String(row.status ?? "").toLowerCase())) return false;
+  if (!row.current_period_end) return true;
+  const end = Date.parse(row.current_period_end);
+  return !Number.isFinite(end) || end + accessGraceMs(row.provider) > nowMs;
+}
+
+/** Real-Time Developer Notification types (subscriptionNotification.notificationType). */
+export const PLAY_NOTIFICATION_TYPES: Record<number, string> = {
+  1: "SUBSCRIPTION_RECOVERED",
+  2: "SUBSCRIPTION_RENEWED",
+  3: "SUBSCRIPTION_CANCELED",
+  4: "SUBSCRIPTION_PURCHASED",
+  5: "SUBSCRIPTION_ON_HOLD",
+  6: "SUBSCRIPTION_IN_GRACE_PERIOD",
+  7: "SUBSCRIPTION_RESTARTED",
+  8: "SUBSCRIPTION_PRICE_CHANGE_CONFIRMED",
+  9: "SUBSCRIPTION_DEFERRED",
+  10: "SUBSCRIPTION_PAUSED",
+  11: "SUBSCRIPTION_PAUSE_SCHEDULE_CHANGED",
+  12: "SUBSCRIPTION_REVOKED",
+  13: "SUBSCRIPTION_EXPIRED",
+  19: "SUBSCRIPTION_PRICE_CHANGE_UPDATED",
+  20: "SUBSCRIPTION_PENDING_PURCHASE_CANCELED",
+};
+
+/** Lifecycle audit action an RTDN type stands for (null: re-sync only). */
+export function playNotificationAuditAction(type: unknown): string | null {
+  switch (Number(type)) {
+    case 1: return BILLING_AUDIT.recovered;
+    case 2: return BILLING_AUDIT.renewed;
+    case 3: return BILLING_AUDIT.cancelled;
+    case 4: return BILLING_AUDIT.activated;
+    case 5: return BILLING_AUDIT.onHold;
+    case 6: return BILLING_AUDIT.inGracePeriod;
+    case 7: return BILLING_AUDIT.restarted;
+    case 10: return BILLING_AUDIT.suspended;
+    case 12: return BILLING_AUDIT.revoked;
+    case 13: return BILLING_AUDIT.expired;
+    default: return null;
+  }
+}
+
+/**
+ * The RTDN payload as it may be stored: purchase tokens removed (they are
+ * bearer credentials for the subscription), everything else kept for audit.
+ */
+export function sanitizeRtdnPayload(payload: Record<string, any>): Record<string, unknown> {
+  const clean = JSON.parse(JSON.stringify(payload ?? {}));
+  if (clean?.subscriptionNotification) delete clean.subscriptionNotification.purchaseToken;
+  if (clean?.voidedPurchaseNotification) delete clean.voidedPurchaseNotification.purchaseToken;
+  if (clean?.oneTimeProductNotification) delete clean.oneTimeProductNotification.purchaseToken;
+  return clean;
+}
+
+/** After this many failed attempts an inbox message is parked as dead-letter and stops retrying. */
+export const RTDN_MAX_ATTEMPTS = 8;
+
+/** Inbox claim decision; same contract as webhookClaimDecision plus dead-letter. */
+export function inboxClaimDecision(
+  existing: { status?: string | null; claimed_at?: string | null; attempts?: number | null } | null,
+  nowMs: number,
+): "run" | "duplicate" | "in-progress" | "dead-letter" {
+  if (!existing) return "run";
+  const status = String(existing.status ?? "processed").toLowerCase();
+  if (status === "processed" || status === "ignored") return "duplicate";
+  if (status === "dead_letter") return "dead-letter";
+  if (status === "failed") return Number(existing.attempts ?? 0) >= RTDN_MAX_ATTEMPTS ? "dead-letter" : "run";
+  const claimedAt = Date.parse(String(existing.claimed_at ?? ""));
+  if (!Number.isFinite(claimedAt)) return "run";
+  return nowMs - claimedAt > WEBHOOK_CLAIM_STALE_MS ? "run" : "in-progress";
+}
+
+// ---- Pub/Sub push authentication (OIDC) --------------------------------------
+//
+// Pub/Sub push subscriptions with authentication send
+// `Authorization: Bearer <Google-signed OIDC JWT>`. We verify the RS256
+// signature against Google's published keys, the issuer, the audience we
+// configured on the subscription, the expiry, and the service account that
+// Pub/Sub signs as. A forged or replayed-after-expiry request is refused.
+
+export const GOOGLE_OIDC_ISSUERS = new Set(["https://accounts.google.com", "accounts.google.com"]);
+export const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs";
+
+export function decodeJwt(token: string): { header: Record<string, any>; claims: Record<string, any>; signingInput: string; signature: Uint8Array } | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const text = (part: string) => new TextDecoder().decode(base64ToBytes(part));
+    return {
+      header: JSON.parse(text(parts[0])),
+      claims: JSON.parse(text(parts[1])),
+      signingInput: `${parts[0]}.${parts[1]}`,
+      signature: base64ToBytes(parts[2]),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Claim checks for a Pub/Sub push token; the signature is verified separately. */
+export function pubsubClaimsProblem(
+  claims: Record<string, any>,
+  expected: { audience: string; email: string | null },
+  nowSeconds: number,
+): string | null {
+  if (!GOOGLE_OIDC_ISSUERS.has(String(claims?.iss ?? ""))) return "issuer";
+  const audiences = Array.isArray(claims?.aud) ? claims.aud : [claims?.aud];
+  if (!audiences.includes(expected.audience)) return "audience";
+  const exp = Number(claims?.exp);
+  if (!Number.isFinite(exp) || exp + 60 < nowSeconds) return "expired";
+  const iat = Number(claims?.iat);
+  if (Number.isFinite(iat) && iat - 300 > nowSeconds) return "issued_in_future";
+  if (expected.email) {
+    if (String(claims?.email ?? "").toLowerCase() !== expected.email.toLowerCase()) return "email";
+    if (claims?.email_verified !== true && claims?.email_verified !== "true") return "email_unverified";
+  }
+  return null;
+}
+
+// ---- Purchase-token encryption at rest ----------------------------------------
+//
+// A purchase token is needed again to re-query Google during reconciliation,
+// so it is kept — encrypted with AES-256-GCM under PLAY_TOKEN_ENCRYPTION_KEY
+// (32 random bytes, base64). Lookups and deduplication use the SHA-256
+// fingerprint; the ciphertext is never indexed or logged.
+
+export function tokenEncryptionKeyBytes(env: EnvGetter): Uint8Array | null {
+  const raw = (env("PLAY_TOKEN_ENCRYPTION_KEY") ?? "").trim();
+  if (!raw) return null;
+  try {
+    const bytes = base64ToBytes(raw);
+    return bytes.length === 32 ? bytes : null;
+  } catch {
+    return null;
+  }
+}
+
+async function tokenKey(keyBytes: Uint8Array, usage: "encrypt" | "decrypt"): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", new Uint8Array(keyBytes), { name: "AES-GCM" }, false, [usage]);
+}
+
+export async function encryptPurchaseToken(keyBytes: Uint8Array, token: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const sealed = new Uint8Array(await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: new TextEncoder().encode("qguard-play-token:v1") },
+    await tokenKey(keyBytes, "encrypt"),
+    new TextEncoder().encode(token),
+  ));
+  return `v1.${base64Url(iv)}.${base64Url(sealed)}`;
+}
+
+export async function decryptPurchaseToken(keyBytes: Uint8Array, sealed: string): Promise<string> {
+  const [version, iv, body] = sealed.split(".");
+  if (version !== "v1" || !iv || !body) throw new Error("unsupported purchase-token envelope");
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: new Uint8Array(base64ToBytes(iv)), additionalData: new TextEncoder().encode("qguard-play-token:v1") },
+    await tokenKey(keyBytes, "decrypt"),
+    new Uint8Array(base64ToBytes(body)),
+  );
+  return new TextDecoder().decode(plain);
+}
+
+export async function sha256Hex(value: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Purchase tokens are opaque, URL-safe strings of a few hundred chars. */
+export function isPlausiblePurchaseToken(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 20 && value.length <= 4096 && /^[A-Za-z0-9._\-]+$/.test(value);
+}
+
 
 /** Decode a Pub/Sub push envelope into the RTDN payload; null when malformed. */
 export function parseRtdnMessage(body: unknown): { messageId: string; payload: any } | null {

@@ -17,52 +17,52 @@ type Capability = {
   desc: string;
 };
 
-const capabilities: Capability[] = [
+export const capabilities: Capability[] = [
   {
     num: "01",
-    title: "QUANTUM-NATIVE PLATFORM",
+    title: "Quantum-Native Platform",
     icon: Cpu,
     desc: "Built from the ground up for the quantum era - architected specifically to address emerging quantum threats, cryptographic modernization, and long-term crypto agility across modern enterprise environments.",
   },
   {
     num: "02",
-    title: "RUNTIME CRYPTOGRAPHIC VISIBILITY AND TELEMETRY",
+    title: "Runtime Cryptographic Visibility and Telemetry",
     icon: Activity,
     desc: "Live cryptographic telemetry and intelligence engine that continuously monitors, analyzes, and maps how cryptography is actively being used across applications, APIs, endpoints, cloud workloads, containers, VPNs, databases, messaging systems, CI/CD pipelines, Kubernetes clusters, identities, certificates, and enterprise infrastructure in real time.",
   },
   {
     num: "03",
-    title: "COMPLETE CRYPTO VISIBILITY",
+    title: "Complete Crypto Visibility",
     icon: Target,
     desc: "Deliver complete visibility into cryptographic assets, dependencies, trust relationships, and encryption usage across the entire enterprise ecosystem.",
   },
   {
     num: "04",
-    title: "INTELLIGENT RISK PRIORITIZATION",
+    title: "Intelligent Risk Prioritization",
     icon: Sparkles,
     desc: "AI-powered Q-Score analytics engine intelligently prioritizes cryptographic and quantum risks based on operational impact, exploitability, business criticality, and migration urgency.",
   },
   {
     num: "05",
-    title: "END-TO-END MIGRATION ORCHESTRATION",
+    title: "End-to-End Migration Orchestration",
     icon: Workflow,
     desc: "Enterprise-grade orchestration engine designed to automate and manage the complete post-quantum migration lifecycle from discovery to full operational deployment.",
   },
   {
     num: "06",
-    title: "CRYPTO-AGILITY BY DESIGN",
+    title: "Crypto-Agility by Design",
     icon: Fingerprint,
     desc: "Built with a flexible, policy-driven architecture that enables organizations to rapidly adapt to evolving cryptographic standards, emerging quantum threats, and future regulatory requirements.",
   },
   {
     num: "07",
-    title: "COMPLIANCE & GOVERNANCE BUILT-IN",
+    title: "Compliance & Governance Built-In",
     icon: FileCheck,
     desc: "Integrated governance, audit, and compliance framework designed to support regulatory alignment, cryptographic accountability, and enterprise security governance initiatives.",
   },
   {
     num: "08",
-    title: "READY FOR THE NEXT TRANSITION",
+    title: "Ready for the Next Transition",
     icon: Hourglass,
     desc: "Post-quantum migration will not be the last cryptographic transition. The platform is built so algorithms, libraries, certificates and policies can be changed again as NIST, the IETF and vendors move.",
   },

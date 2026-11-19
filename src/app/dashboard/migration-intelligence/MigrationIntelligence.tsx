@@ -124,13 +124,20 @@ function buildFacets(rows: SharedResponsibilityMatrixRow[]): { companies: Facet[
 }
 
 /** Severity split for an arbitrary row set — used for the filtered subtotal. */
+/**
+ * Severity tally in INSTANCES, the unit "Severity by Responsibility" and every
+ * other page count in. A matrix row can fold several instances of one finding,
+ * so tallying rows printed "C8" here under a panel reading "C9" for the same
+ * estate.
+ */
 function severityOf(rows: SharedResponsibilityMatrixRow[]) {
   const bucket = { critical: 0, high: 0, medium: 0, low: 0 };
   for (const row of rows) {
-    if (row.severity === 'critical') bucket.critical += 1;
-    else if (row.severity === 'high') bucket.high += 1;
-    else if (row.severity === 'medium') bucket.medium += 1;
-    else if (row.severity === 'low') bucket.low += 1;
+    const weight = Math.max(1, row.occurrences ?? 1);
+    if (row.severity === 'critical') bucket.critical += weight;
+    else if (row.severity === 'high') bucket.high += weight;
+    else if (row.severity === 'medium') bucket.medium += weight;
+    else if (row.severity === 'low') bucket.low += weight;
   }
   return bucket;
 }
@@ -327,7 +334,7 @@ function StackedSeverityBar({ bucket }: { bucket: { critical: number; high: numb
 /* ------------------------------------------------------------------ */
 export default function MigrationIntelligence() {
   const navigate = useNavigate();
-  const { data, state, error, sseConnected, refresh } = useMigrationIntelligence();
+  const { data, state, error, sseConnected, transport, lastVerifiedAt, refresh } = useMigrationIntelligence();
   const [domainFilter, setDomainFilter] = useState<'all' | ResponsibilityDomain>('all');
   const [companyFilter, setCompanyFilter] = useState<string | null>(null);
   const [assetFilter, setAssetFilter] = useState<string | null>(null);
@@ -467,22 +474,43 @@ export default function MigrationIntelligence() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/* States what the connection is actually doing. "Reconnecting" used
+              to show for every non-live state, including a healthy REST poll. */}
           <span
+            role="status"
+            title={lastVerifiedAt ? `Server last confirmed this model at ${new Date(lastVerifiedAt).toLocaleTimeString()}` : 'Waiting for the first server answer'}
             className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide ${
-              sseConnected ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-300' : 'border-white/10 bg-black/20 text-white/45'
+              sseConnected
+                ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-300'
+                : transport === 'polling'
+                  ? 'border-amber-400/40 bg-amber-500/10 text-amber-300'
+                  : 'border-white/10 bg-black/20 text-white/45'
             }`}
           >
-            <Radio className="h-3 w-3" /> {sseConnected ? 'Live' : 'Reconnecting'}
+            <Radio className="h-3 w-3" />
+            {sseConnected ? 'Live' : transport === 'polling' ? 'Polling' : transport === 'offline' ? 'Offline' : 'Connecting'}
+            {lastVerifiedAt ? <span className="font-mono normal-case tracking-normal opacity-70">· checked {new Date(lastVerifiedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span> : null}
           </span>
-          <HeaderButton icon={RefreshCw} onClick={() => void refresh()}>Refresh</HeaderButton>
+          <HeaderButton icon={RefreshCw} onClick={() => void refresh({ force: true })}>Refresh</HeaderButton>
           <HeaderButton icon={Route} onClick={() => navigate('/dashboard/migration-planner')}>Planner</HeaderButton>
         </div>
       </div>
 
+      {/* A failed update must not look like a current one: the last good model
+          stays on screen and says that it may be out of date. */}
+      {error && data.hasData ? (
+        <div role="alert" className="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-amber-400/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-200">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span>Live updates interrupted: {error}. Showing the last model received — figures may be out of date.</span>
+          <button type="button" onClick={() => void refresh({ force: true })} className="ml-auto font-bold underline">Retry</button>
+        </div>
+      ) : null}
+
       {error && !data.hasData ? (
         <Panel className="p-5">
-          <div className="flex items-center gap-2 text-sm text-red-300">
-            <AlertTriangle className="h-4 w-4" /> {error}
+          <div className="flex flex-wrap items-center gap-3 text-sm text-red-300" role="alert">
+            <AlertTriangle className="h-4 w-4" /> <span>Migration intelligence could not be loaded: {error}</span>
+            <button type="button" onClick={() => void refresh({ force: true })} className="ml-auto text-xs font-bold underline">Retry</button>
           </div>
         </Panel>
       ) : !data.hasData ? (
@@ -501,9 +529,9 @@ export default function MigrationIntelligence() {
             </SectionTitle>
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
               <ScoreGauge label="Overall Readiness" score={readiness.overall.score} level={readiness.overall.level} color={readinessTone(readiness.overall.score)} />
-              <ScoreGauge label="Customer Readiness" score={readiness.customer.score} level={readiness.customer.level} color={CYAN} />
-              <ScoreGauge label="Provider Readiness" score={readiness.provider.score} level={readiness.provider.level} color={BLUE} />
-              <ScoreGauge label="Ecosystem Readiness" score={readiness.ecosystem.score} level={readiness.ecosystem.level} color={VIOLET} />
+              <ScoreGauge label="Customer Readiness" score={readiness.customer.score} level={readiness.customer.level} color={CYAN} notApplicable={readiness.customer.total === 0 ? 'No findings are owned by your teams.' : undefined} />
+              <ScoreGauge label="Provider Readiness" score={readiness.provider.score} level={readiness.provider.level} color={BLUE} notApplicable={readiness.provider.total === 0 ? 'No finding is attributed to a cloud or SaaS provider.' : undefined} />
+              <ScoreGauge label="Ecosystem Readiness" score={readiness.ecosystem.score} level={readiness.ecosystem.level} color={VIOLET} notApplicable={readiness.ecosystem.total === 0 ? 'No finding depends on browsers, CAs or standards bodies.' : undefined} />
             </div>
             <p className="mt-4 text-[11px] leading-relaxed text-white/45">
               Overall readiness reflects the whole estate. The domain scores show how ready each ownership area is — so executives
@@ -519,9 +547,11 @@ export default function MigrationIntelligence() {
             <MetricCard label="Cloud Dependencies" value={integerFmt(w.cloudDependencies)} detail="Edge / LB / managed" color={BLUE} icon={Server} />
             <MetricCard label="Browser Dependencies" value={integerFmt(w.browserDependencies)} detail="Await browser support" color={VIOLET} icon={Globe} />
             <MetricCard label="Actionable Now" value={integerFmt(w.actionableFindings)} detail="Customer-actionable" color={EMERALD} icon={CheckCircle2} ring={readiness.overall.total ? Math.round((w.actionableFindings / Math.max(1, readiness.overall.total)) * 100) : 0} />
-            <MetricCard label="Migration Blockers" value={integerFmt(w.migrationBlockers)} detail="Gated on a dependency" color={RED} icon={AlertTriangle} />
+            <MetricCard label="Migration Blockers" value={integerFmt(w.migrationBlockers)} detail="Critical/high gated on a dependency" color={RED} icon={AlertTriangle} />
             <MetricCard label="Waiting Dependencies" value={integerFmt(w.waitingDependencies)} detail="Provider / ecosystem" color={AMBER} icon={Clock} />
-            <MetricCard label="Provider Readiness" value={integerFmt(w.providerReadiness)} suffix="/100" detail="PQ roadmap posture" color={BLUE} icon={Gauge} ring={w.providerReadiness} />
+            {readiness.provider.total > 0
+              ? <MetricCard label="Provider Readiness" value={integerFmt(w.providerReadiness)} suffix="/100" detail="PQ roadmap posture" color={BLUE} icon={Gauge} ring={w.providerReadiness} />
+              : <MetricCard label="Provider Readiness" value="N/A" detail="No provider-attributed findings" color={SLATE} icon={Gauge} />}
             <MetricCard label="Migration Progress" value={integerFmt(w.migrationProgress)} suffix="/100" detail="Overall readiness" color={readinessTone(w.migrationProgress)} icon={Workflow} ring={w.migrationProgress} />
           </div>
 
@@ -818,7 +848,10 @@ export default function MigrationIntelligence() {
               <div className="space-y-2">
                 {data.waves.map((wave) => {
                   const meta = wave.domain === 'mixed' ? { color: SLATE } : DOMAIN_META[wave.domain];
-                  const statusColor = wave.status === 'ready' ? EMERALD : wave.status === 'complete' ? GREEN : wave.status === 'blocked' ? RED : AMBER;
+                  // A wave with nothing classified into it has no work to finish:
+                  // "Complete" would claim a migration that never had to happen.
+                  const empty = wave.findingCount === 0;
+                  const statusColor = empty ? SLATE : wave.status === 'ready' ? EMERALD : wave.status === 'complete' ? GREEN : wave.status === 'blocked' ? RED : AMBER;
                   return (
                     <div key={wave.wave} className="flex items-center gap-3 rounded-lg border border-white/8 bg-white/[0.02] p-2.5">
                       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-xs font-black" style={{ backgroundColor: `${meta.color}18`, color: meta.color }}>
@@ -832,8 +865,8 @@ export default function MigrationIntelligence() {
                         <div className="truncate text-[10px] text-white/40">{wave.description}</div>
                       </div>
                       <div className="text-right">
-                        <Badge color={statusColor}>{wave.status}</Badge>
-                        <div className="mt-0.5 text-[9px] text-white/35">{wave.estimatedTimeline}</div>
+                        <Badge color={statusColor}>{empty ? 'No findings' : wave.status}</Badge>
+                        <div className="mt-0.5 text-[9px] text-white/35">{empty ? 'Nothing to migrate' : wave.estimatedTimeline}</div>
                       </div>
                     </div>
                   );

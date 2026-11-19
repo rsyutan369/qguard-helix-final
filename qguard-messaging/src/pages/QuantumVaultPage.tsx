@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ArrowLeftRight,
   ChevronDown,
   ChevronRight,
   CheckCircle2,
@@ -87,6 +88,7 @@ interface QuantumVaultPageProps {
   vaultLock?: VaultLockControls;
   /** Files shared with this account waiting for Accept / Decline. */
   sharedFilesWaiting?: number;
+  onOpenTransfers?: () => void;
 }
 
 /** Device-local, metadata-only record of a sealed `.qvault` container. Never
@@ -313,7 +315,7 @@ async function resolveSourceName(sourcePath: string): Promise<string> {
 }
 
 
-export default function QuantumVaultPage({ userId, telemetry, vaultLock, sharedFilesWaiting = 0 }: QuantumVaultPageProps) {
+export default function QuantumVaultPage({ userId, telemetry, vaultLock, sharedFilesWaiting = 0, onOpenTransfers }: QuantumVaultPageProps) {
   const registryStorageKey = useMemo(() => `qguard.vault.registry.${REGISTRY_VERSION}:${userId}`, [userId]);
   const activityStorageKey = useMemo(() => `qguard.vault.activity.${REGISTRY_VERSION}:${userId}`, [userId]);
   const explorerStorageKey = useMemo(() => `qguard-vault-explorer:${userId}`, [userId]);
@@ -1501,6 +1503,9 @@ export default function QuantumVaultPage({ userId, telemetry, vaultLock, sharedF
           </button>
         ))}
       </div>
+      {onOpenTransfers && <button type="button" className="focus-ring inline-flex min-h-12 items-center gap-2 rounded-lg border border-line bg-white px-3 py-2 text-sm font-semibold text-ink-800 transition-colors hover:bg-canvas" onClick={onOpenTransfers}>
+        <ArrowLeftRight size={16} aria-hidden /> Nearby transfers
+      </button>}
     </div>
   );
 

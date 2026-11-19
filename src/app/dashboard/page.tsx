@@ -22,6 +22,7 @@ import ThreatIntel from './_components/executive/ThreatIntel'
 import AiRecommendations from './_components/executive/AiRecommendations'
 import SharedResponsibilityStrip from './_components/executive/SharedResponsibilityStrip'
 import { SectionLabel, relativeTime } from './_components/executive/primitives'
+import { Chars } from '@/pages/landing-chars'
 
 function firstName(user: ReturnType<typeof useAuth>['user']): string | null {
   const meta = (user?.user_metadata || {}) as Record<string, unknown>
@@ -102,22 +103,28 @@ export default function Dashboard() {
   const estate = estateWorkflow?.estate
 
   return (
-    <div className="p-4 lg:p-7 space-y-6 animate-in fade-in duration-500">
-      {/* Global header */}
-      <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-        <div>
+    <div className="qh-cc-page p-4 lg:p-7 space-y-6 animate-in fade-in duration-500">
+      {/* Global header. The qh-cc-* hooks restyle it in Light mode only (command-center.css). */}
+      <header className="qh-cc-head flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+        <div className="qh-cc-head__copy">
+          <p className="qh-cc-eyebrow" data-lp-reveal>Executive overview</p>
           <div className="mb-1.5 flex items-center gap-3">
-            <div className="rounded-lg border border-cyan-500/25 bg-cyan-500/10 p-2">
+            <div className="qh-cc-head__icon rounded-lg border border-cyan-500/25 bg-cyan-500/10 p-2">
               <Shield className="h-5 w-5 text-cyan-300" />
             </div>
-            <h1 className="text-2xl font-black uppercase leading-none tracking-tight text-white lg:text-[26px]">
-              Quantum Security <span className="text-cyan-300">Command Center</span>
+            <h1
+              className="qh-cc-title text-2xl font-black uppercase leading-none tracking-tight text-white lg:text-[26px]"
+              data-letters="load"
+              aria-label="Quantum Security Command Center"
+            >
+              <Chars text="Quantum Security " />
+              <span className="qh-cc-title__mark text-cyan-300"><Chars text="Command Center" /></span>
             </h1>
           </div>
-          <p className="text-[13px] font-medium text-white/45">Enterprise Post-Quantum Cryptographic Posture · Discover → Migrate → Govern</p>
+          <p className="qh-cc-lede text-[13px] font-medium text-white/45" data-lp-reveal>Enterprise Post-Quantum Cryptographic Posture · Discover → Migrate → Govern</p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="qh-cc-head__status flex flex-wrap items-center gap-2.5" data-lp-reveal>
           <span className="font-mono text-[10px] uppercase tracking-widest text-white/30">Synced {relativeTime(lastSyncAt)}</span>
           <div
             title={syncState === 'live' ? 'Receiving database changes in real time' : syncState === 'polling' ? 'Realtime channel not open — refreshing every 30s' : undefined}
@@ -166,13 +173,17 @@ export default function Dashboard() {
       </header>
 
       {/* Executive AI Summary */}
-      <ExecutiveSummary narrative={executive?.narrative} userName={firstName(user)} loading={execLoading} />
+      <div data-lp-reveal>
+        <ExecutiveSummary narrative={executive?.narrative} userName={firstName(user)} loading={execLoading} />
+      </div>
 
       {/* Enterprise KPI Cards */}
-      <KpiGrid kpis={executive?.kpis} loading={execLoading} />
+      <div data-lp-reveal>
+        <KpiGrid kpis={executive?.kpis} loading={execLoading} />
+      </div>
 
       {/* Shared Responsibility Overview — ownership-classified migration intelligence */}
-      <div>
+      <div data-lp-reveal>
         <SectionLabel href="/dashboard/migration-intelligence">
           <Scale className="h-4 w-4 text-cyan-300" /> Shared Responsibility Migration Intelligence™
         </SectionLabel>
@@ -183,7 +194,7 @@ export default function Dashboard() {
           panels use, projecting the TENANT ESTATE: scan sessions, assets and
           their real relationships, the canonical CBOM, certificates, algorithms,
           the canonical open findings and the actions recorded against them. */}
-      <div>
+      <div data-lp-reveal>
         <SectionLabel
           href="/dashboard/assets"
           meta={estate
@@ -198,7 +209,8 @@ export default function Dashboard() {
         >
           <GitBranch className="h-4 w-4 text-cyan-300" /> Estate Exposure Workflow™
         </SectionLabel>
-        <div className="mt-2">
+        {/* The graph pans and zooms on the wheel, so smooth page scrolling stays out of it. */}
+        <div className="qh-cc-keep mt-2" data-lenis-prevent>
           {workflowLoading ? (
             <div className="grid h-[520px] place-items-center rounded-2xl border border-white/[0.07] bg-[#080d1a]/80">
               <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-slate-500">
@@ -298,13 +310,13 @@ export default function Dashboard() {
 
       {/* AI Recommendations + Threat Timeline */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        <div>
+        <div data-lp-reveal>
           <SectionLabel href="/dashboard/quantum-risk-scoring"><Sparkles className="h-4 w-4 text-violet-300" /> AI Recommendations</SectionLabel>
           <div className="mt-2 h-[460px]">
             <AiRecommendations recommendations={recommendations} total={recommendationsTotal} loading={recsLoading} />
           </div>
         </div>
-        <div>
+        <div data-lp-reveal>
           <SectionLabel href="/dashboard/audit-vault"><History className="h-4 w-4 text-cyan-300" /> Threat Timeline</SectionLabel>
           <div className="mt-2 h-[460px]">
             <ThreatTimeline events={events} loading={eventsLoading} live={sseConnected} pqcConfirmationsOmitted={eventsOmitted} />
@@ -314,11 +326,11 @@ export default function Dashboard() {
 
       {/* Migration Pipeline + Compliance */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        <div>
+        <div data-lp-reveal>
           <SectionLabel href="/dashboard/migration-planner"><GitBranch className="h-4 w-4 text-cyan-300" /> Migration Pipeline</SectionLabel>
           <div className="mt-2"><MigrationPipeline pipeline={executive?.pipeline} loading={execLoading} /></div>
         </div>
-        <div>
+        <div data-lp-reveal>
           <SectionLabel href="/dashboard/compliance"><ScrollText className="h-4 w-4 text-cyan-300" /> Compliance</SectionLabel>
           <div className="mt-2"><ComplianceStrip compliance={executive?.compliance} loading={execLoading} /></div>
         </div>
@@ -331,25 +343,25 @@ export default function Dashboard() {
           <SectionLabel href={isOwnerEmail(user?.email) ? '/dashboard/revenue-intelligence' : undefined}><Briefcase className="h-4 w-4 text-cyan-300" /> Business Impact</SectionLabel>
           <div className="mt-2"><BusinessImpact data={executive?.businessImpact} loading={execLoading} /></div>
         </div>
-        <div>
+        <div data-lp-reveal>
           <SectionLabel href="/dashboard/assets"><Boxes className="h-4 w-4 text-cyan-300" /> Asset Inventory</SectionLabel>
           <div className="mt-2"><AssetInventory inventory={executive?.assetInventory} loading={execLoading} /></div>
         </div>
       </div>
 
       {/* Live Runtime Telemetry */}
-      <div>
+      <div data-lp-reveal>
         <SectionLabel href="/dashboard/runtime-telemetry"><Activity className="h-4 w-4 text-cyan-300" /> Live Runtime Telemetry</SectionLabel>
         <div className="mt-2"><RuntimeTelemetry runtime={executive?.runtime} sseConnected={sseConnected} loading={execLoading} /></div>
       </div>
 
       {/* Threat Intelligence + Security Events */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        <div>
+        <div data-lp-reveal>
           <SectionLabel href="/dashboard/quantum-readiness/risk-analysis"><Radar className="h-4 w-4 text-cyan-300" /> Threat Intelligence</SectionLabel>
           <div className="mt-2"><ThreatIntel intel={executive?.threatIntel} loading={execLoading} runtimeMeasured={executive?.runtime?.measured} /></div>
         </div>
-        <div>
+        <div data-lp-reveal>
           <SectionLabel href="/dashboard/audit-vault"><Bell className="h-4 w-4 text-cyan-300" /> Security Events</SectionLabel>
           <div className="mt-2 h-[440px]">
             <SecurityEventsPanel events={events} loading={eventsLoading} live={sseConnected} />
@@ -360,7 +372,7 @@ export default function Dashboard() {
       {/* Footer — statements about THIS page's data only. Compliance or
           encryption claims about the platform ("FIPS 140-3 aligned",
           "end-to-end PQC encrypted") are not evidenced here and are not made. */}
-      <footer className="flex flex-col items-center justify-between gap-4 border-t border-white/5 pt-6 md:flex-row">
+      <footer className="qh-cc-foot flex flex-col items-center justify-between gap-4 border-t border-white/5 pt-6 md:flex-row" data-lp-reveal>
         <div className="flex items-center gap-2 opacity-30">
           <img src="/NEW_LOGO.png" alt="Logo" className="h-5 w-5 grayscale" />
           <span className="text-[10px] font-black uppercase tracking-widest text-white">QGuard Helix</span>

@@ -303,3 +303,7 @@ html[data-qg-skin="modernist"][data-qg-skin] .workspace-unlock-methods > button 
   html[data-qg-skin="modernist"][data-qg-skin] .qgm-chatsuite-lead { white-space: normal; overflow: visible; }
 }
 html[data-qg-skin="modernist"][data-qg-skin] .mobile-shell :is(.shell-card,.profile-hero) { min-width: 0; max-width: 100%; }
+/* Relay status strip follows the skin's warning tokens in both themes. */
+html[data-qg-skin="modernist"][data-qg-skin] .relay-banner,
+html[data-qg-skin="modernist"][data-qg-skin] .relay-banner button { color: var(--qgp-warning) !important; border-color: color-mix(in srgb,var(--qgp-warning) 35%,transparent) !important; }
+html[data-qg-skin="modernist"][data-qg-skin] .relay-banner button { background: transparent !important; width: auto !important; height: auto !important; min-height: 32px; }

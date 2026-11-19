@@ -29,6 +29,7 @@
  */
 
 import type { AssetMigrationRecord } from '@/lib/migration/asset-intelligence'
+import { isDerivedScanObservation } from '@/lib/telemetry/evidence-identity'
 import { findingIdentityKey, namesCryptography, observationClass, richerText } from '@/lib/scanner/finding-identity'
 import {
   certificatePosture,
@@ -137,9 +138,18 @@ interface EndpointDraft {
   internetFacing: boolean
   assetRecord: AssetMigrationRecord | null
   observations: TlsObservation[]
+  observationBatches: Map<string, { observedAt: string | null; observations: Map<string, TlsObservation> }>
   certificateIds: Set<string>
   findingIds: Set<string>
   sources: Set<EvidenceSource>
+}
+
+interface RuntimeHandshake {
+  endpointId: string
+  count: number | null
+  failed: boolean
+  failureMeasured: boolean
+  downgrade: boolean | null
 }
 
 interface CertificateDraft {
@@ -178,88 +188,59 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
   /* ---------------------------------------------------------------- */
 
   const endpoints = new Map<string, EndpointDraft>()
-  /** host -> endpointId, so a host-only observation binds to its asset. */
-  const hostIndex = new Map<string, string>()
+  const hostAssets = new Map<string, Set<string>>()
   const assetById = new Map<string, AssetMigrationRecord>()
 
-  const registerHost = (host: string, endpointId: string) => {
+  const registerHost = (host: string, assetId: string) => {
     const key = normalizeHost(host)
-    if (key && !hostIndex.has(key)) hostIndex.set(key, endpointId)
+    if (!key) return
+    const matches = hostAssets.get(key) || new Set()
+    matches.add(assetId)
+    hostAssets.set(key, matches)
   }
 
   for (const asset of inputs.assets) {
     assetById.set(asset.id, asset)
-    const host = normalizeHost(asset.hostname) || normalizeHost(asset.name)
-    const id = `asset:${asset.id}`
-    endpoints.set(id, {
-      id,
-      assetId: asset.id,
-      name: asset.name,
-      host: host || asset.name,
-      port: portOf(asset.hostname),
-      assetType: asset.type,
-      environment: asset.environment,
-      owner: asset.owner,
-      internetFacing: asset.internetFacing,
-      assetRecord: asset,
-      observations: [],
-      certificateIds: new Set(),
-      findingIds: new Set(),
-      sources: new Set(),
-    })
-    registerHost(asset.hostname, id)
-    registerHost(asset.name, id)
+    registerHost(asset.hostname, asset.id)
+    registerHost(asset.name, asset.id)
   }
 
-  /**
-   * Resolve an observation to an endpoint.
-   *
-   * Asset id wins; then a known host; then a new host-only endpoint. Creating a
-   * host endpoint for something already bound to an asset is what split one
-   * server into two rows and halved every per-endpoint percentage.
-   */
+  /** Bind ownership independently of listener identity. An asset can serve several hosts and ports. */
   const resolveEndpoint = (
     assetId: unknown,
     host: unknown,
     fallbackName: unknown,
     port?: unknown,
   ): EndpointDraft | null => {
-    const asset = str(assetId)
-    if (asset && endpoints.has(`asset:${asset}`)) {
-      const draft = endpoints.get(`asset:${asset}`)!
-      if (draft.port === null) {
-        const parsed = portOf(port)
-        if (parsed) draft.port = parsed
-      }
-      return draft
-    }
-
-    const normalized = normalizeHost(host) || normalizeHost(fallbackName)
+    const observedHost = normalizeHost(host)
+    const matches = hostAssets.get(observedHost)
+    const explicitAssetId = str(assetId)
+    const bound = explicitAssetId ? assetById.get(explicitAssetId) : matches?.size === 1 ? assetById.get([...matches][0]) : undefined
+    const normalized = observedHost || normalizeHost(bound?.hostname) || normalizeHost(bound?.name) || normalizeHost(fallbackName)
     if (!normalized) return null
-
-    const known = hostIndex.get(normalized)
-    if (known && endpoints.has(known)) return endpoints.get(known)!
-
-    const id = endpointIdFor(null, normalized)
-    if (!id) return null
+    const addr = str(host) || str(bound?.hostname)
+    const listenerPort = portOf(port) ?? portOf(addr) ?? (/^(?:https|wss):\/\//i.test(addr) ? 443 : null)
+    const id = endpointIdFor(bound?.id, normalized, listenerPort)
+    const known = endpoints.get(id)
+    if (known) return known
     const draft: EndpointDraft = {
       id,
-      assetId: null,
-      name: str(fallbackName) || normalized,
+      assetId: bound?.id ?? null,
+      name: bound?.name || str(fallbackName) || normalized,
       host: normalized,
-      port: portOf(port),
-      assetType: 'Unmanaged endpoint',
-      environment: 'unknown',
-      owner: 'Unassigned',
-      internetFacing: false,
-      assetRecord: null,
+      port: listenerPort,
+      assetType: bound?.type ?? 'Unmanaged endpoint',
+      environment: bound?.environment ?? 'unknown',
+      owner: bound?.owner ?? 'Unassigned',
+      internetFacing: bound?.internetFacing ?? false,
+      assetRecord: bound ?? null,
       observations: [],
+      observationBatches: new Map(),
       certificateIds: new Set(),
       findingIds: new Set(),
       sources: new Set(),
     }
     endpoints.set(id, draft)
-    hostIndex.set(normalized, id)
     return draft
   }
 
@@ -270,6 +251,8 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
   const observations: TlsObservation[] = []
   /** (endpoint | kind | value) -> index, so the same fact merges. */
   const observationIndex = new Map<string, number>()
+  const datedObservations = new Map<string, TlsObservation>()
+  const runtimeHandshakes = new Map<string, RuntimeHandshake>()
 
   const addObservation = (input: {
     endpoint: EndpointDraft
@@ -282,7 +265,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
     severity?: unknown
     observedAt: string | null
     evidence: EvidenceRef
-    handshakes?: number | null
+    batchId?: string
     failed?: boolean
     downgrade?: boolean
   }) => {
@@ -298,26 +281,6 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
     const kind = input.kind ?? classified.kind
     const observed = str(input.algorithm)
     const key = `${input.endpoint.id}|${kind}|${observed.toLowerCase()}`
-    const existing = observationIndex.get(key)
-
-    if (existing !== undefined) {
-      const row = observations[existing]
-      row.observedAt = latestIso(row.observedAt, input.observedAt)
-      if (typeof input.handshakes === 'number') {
-        row.handshakes = (row.handshakes ?? 0) + input.handshakes
-      }
-      row.failed = row.failed || Boolean(input.failed)
-      row.downgrade = row.downgrade || Boolean(input.downgrade)
-      const nextSeverity = input.severity ? normalizeSeverity(input.severity) : null
-      if (nextSeverity && severityRank(nextSeverity) > severityRank(row.severity)) row.severity = nextSeverity
-      // Live traffic is the strongest basis: a fact also seen in real connections is "negotiated".
-      if (observationBasisFor(input.evidence.source) === 'live-traffic') {
-        row.basis = 'live-traffic'
-        row.evidence = input.evidence
-      }
-      return
-    }
-
     const row: TlsObservation = {
       id: `obs:${input.endpoint.id}:${kind}:${observed.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60)}`,
       endpointId: input.endpoint.id,
@@ -331,20 +294,37 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
       observedAt: input.observedAt,
       evidence: input.evidence,
       basis: observationBasisFor(input.evidence.source),
-      handshakes: typeof input.handshakes === 'number' ? input.handshakes : null,
+      handshakes: null,
       failed: Boolean(input.failed),
       downgrade: Boolean(input.downgrade),
     }
-    observationIndex.set(key, observations.length)
-    observations.push(row)
-    input.endpoint.observations.push(row)
+    const existing = observationIndex.get(key)
+    if (existing === undefined) {
+      observationIndex.set(key, observations.length)
+      observations.push(row)
+      input.endpoint.observations.push(row)
+    } else if (dateMs(row.observedAt) >= dateMs(observations[existing].observedAt)) {
+      // Keep the displayed timestamp and evidence provenance from the same row.
+      Object.assign(observations[existing], row)
+    }
+
+    const day = row.observedAt ? new Date(row.observedAt) : null
+    if (day) {
+      day.setUTCHours(0, 0, 0, 0)
+      datedObservations.set(`${day.toISOString()}|${key}`, { ...row })
+    }
+    if (!row.failed && ['protocol', 'cipher-suite', 'key-exchange'].includes(kind)) {
+      const batchId = input.batchId ?? `${input.evidence.source}:${input.observedAt ?? 'undated'}`
+      const batches = input.endpoint.observationBatches
+      const batch = batches.get(batchId) ?? { observedAt: null, observations: new Map<string, TlsObservation>() }
+      batch.observedAt = latestIso(batch.observedAt, row.observedAt)
+      batch.observations.set(key, { ...row })
+      batches.set(batchId, batch)
+    }
     input.endpoint.sources.add(input.evidence.source)
   }
 
   /* ---- runtime_crypto_events: the only source of live handshakes --- */
-  let runtimeCanReportFailures = false
-  let runtimeCanReportDowngrade = false
-
   for (const event of inputs.runtimeEvents) {
     // A runtime event only belongs on a TLS console when it describes
     // TRANSPORT. The agent also reports library inventory, key material and
@@ -353,19 +333,30 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
     // phantom TLS endpoint, gave it a quantum-vulnerable verdict, and then sat
     // in the denominator of every percentage on the page. Nine such rows turned
     // a two-asset estate into eleven "TLS endpoints".
-    if (!isTransportEvent(event)) continue
+    if (!isTransportEvent(event) || isDerivedScanObservation(event)) continue
 
     const metadata = recordOf(event.metadata)
-    const host = str(event.host) || pick(metadata, ['sni', 'server_name', 'serverName', 'hostname', 'domain'])
+    const host = pick(metadata, ['sni', 'server_name', 'serverName']) || str(event.host) || pick(metadata, ['hostname', 'domain'])
     const endpoint = resolveEndpoint(event.asset_id, host, event.asset_name, event.port)
     if (!endpoint) continue
 
     const observedAt = isoOrNull(event.observed_at) || isoOrNull(event.created_at)
     const handshakes = pickNumber(metadata, ['connections', 'connection_count', 'connectionCount', 'handshakes', 'handshake_count', 'sessions'])
-    const failed = Boolean(metadata.handshake_failed) || /fail|reject|refused|timeout|alert/i.test(str(event.event_type))
-    const downgrade = Boolean(event.downgrade_detected)
-    if (typeof event.downgrade_detected === 'boolean') runtimeCanReportDowngrade = true
-    runtimeCanReportFailures = true
+    const eventType = str(event.event_type)
+    const hasHandshake = /handshake|negotiat/i.test(eventType) || typeof metadata.handshake_failed === 'boolean'
+    const failed = metadata.handshake_failed === true || (hasHandshake && /fail|reject|refused|timeout|alert/i.test(eventType))
+    const downgrade = metadata.verifiedPqcFallback === true
+    const recordId = str(event.id)
+    if (recordId && (hasHandshake || handshakes !== null || downgrade)) {
+      runtimeHandshakes.set(recordId, {
+        endpointId: endpoint.id,
+        count: handshakes !== null && handshakes >= 0 ? handshakes : hasHandshake ? 1 : null,
+        failed,
+        failureMeasured: hasHandshake,
+        downgrade: typeof metadata.verifiedPqcFallback === 'boolean' ? downgrade : null,
+      })
+    }
+    const batchId = `runtime:${recordId || observedAt}`
 
     const evidence: EvidenceRef = {
       source: 'runtime-telemetry',
@@ -377,15 +368,15 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
 
     const version = str(event.tls_version)
     if (version) {
-      addObservation({ endpoint, kind: 'protocol', algorithm: version, protocolHint: event.protocol, observedAt, evidence, handshakes, failed, downgrade, severity: event.severity })
+      addObservation({ endpoint, kind: 'protocol', algorithm: version, protocolHint: event.protocol, observedAt, evidence, batchId, failed, downgrade, severity: event.severity })
     }
     const suite = str(event.cipher_suite)
     if (suite) {
-      addObservation({ endpoint, kind: 'cipher-suite', algorithm: suite, protocolHint: event.protocol, observedAt, evidence, handshakes, failed, downgrade, severity: event.severity })
+      addObservation({ endpoint, kind: 'cipher-suite', algorithm: suite, protocolHint: event.protocol, observedAt, evidence, batchId, failed, downgrade, severity: event.severity })
     }
     const kex = str(event.key_exchange_algorithm)
     if (kex) {
-      addObservation({ endpoint, kind: 'key-exchange', algorithm: kex, protocolHint: event.protocol, observedAt, evidence, handshakes, failed, downgrade, severity: event.severity })
+      addObservation({ endpoint, kind: 'key-exchange', algorithm: kex, protocolHint: event.protocol, observedAt, evidence, batchId, failed, downgrade, severity: event.severity })
     }
     const algorithm = str(event.algorithm)
     // Only file the generic column when it adds something the specific columns
@@ -399,7 +390,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
         keySize: event.key_size,
         observedAt,
         evidence,
-        handshakes: null,
+        batchId,
         failed,
         downgrade,
         severity: event.severity,
@@ -414,11 +405,14 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
     // code or file location ("TLS Configuration", "package.json"), not a host.
     // Treating it as one turned finding labels into TLS endpoints.
     const host = pick(metadata, ['target', 'host', 'hostname', 'domain', 'sni'])
+    if (!host && !assetById.has(str(item.asset_id))) continue
     const endpoint = resolveEndpoint(item.asset_id, host, item.name, metadata.port)
     if (!endpoint) continue
 
     const observedAt = isoOrNull(item.discovered_at) || isoOrNull(item.created_at)
     const componentName = str(item.name)
+    const scan = pick(metadata, ['scanSessionId', 'scan_session_id', 'scanId'])
+    const batchId = scan ? `scan:${scan}` : undefined
     const evidence: EvidenceRef = {
       source: 'crypto-inventory',
       recordId: str(item.id),
@@ -437,6 +431,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
       keySize: item.key_size,
       severity: item.exposure_level,
       observedAt,
+      batchId,
       evidence,
     })
 
@@ -451,6 +446,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
         algorithm: version,
         componentName: `Protocol: ${version}`,
         observedAt,
+        batchId,
         evidence: { ...evidence, detail: `${version} accepted by ${endpoint.host} when the scanner offered it` },
       })
     }
@@ -467,11 +463,13 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
     // fixtures, each carrying a quantum-vulnerable verdict.
     if (!isTransportEvidence(item, raw)) continue
 
-    const host = str(item.host) || str(item.target) || pick(raw, ['host', 'hostname', 'sni', 'domain'])
-    const endpoint = resolveEndpoint(null, host, item.asset_name, item.port)
+    const host = pick(raw, ['sni', 'server_name']) || str(item.host) || str(item.target) || pick(raw, ['host', 'hostname', 'domain'])
+    const endpoint = resolveEndpoint(raw.asset_id ?? raw.assetId, host, item.asset_name, item.port)
     if (!endpoint) continue
 
     const observedAt = isoOrNull(item.observed_at) || isoOrNull(item.processed_at) || isoOrNull(item.created_at)
+    const scan = pick(raw, ['scanSessionId', 'scan_session_id', 'scanId'])
+    const batchId = scan ? `scan:${scan}` : undefined
     const evidence: EvidenceRef = {
       source: 'agent-scan',
       recordId: str(item.id),
@@ -522,7 +520,10 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
 
   const certificateKey = (serial: string, subject: string, issuer: string, fingerprint: string) => {
     if (fingerprint) return `cert:fp:${fingerprint.toLowerCase().replace(/[^a-z0-9]/g, '')}`
-    if (serial) return `cert:sn:${serial.toLowerCase().replace(/[^a-z0-9]/g, '')}`
+    if (serial && issuer) {
+      const issuerKey = issuer.trim().toLowerCase().replace(/\s*([,=])\s*/g, '$1')
+      return `cert:sn:${encodeURIComponent(issuerKey)}:${serial.toLowerCase().replace(/[^a-z0-9]/g, '')}`
+    }
     // Fall back to the NORMALISED common names. The sources spell a
     // distinguished name three different ways for the same certificate -
     // "CN=www.cloudflare.com", "https://www.cloudflare.com/" and
@@ -715,10 +716,12 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
       if (draft.serialNumber || draft.fingerprint) continue
 
       const host = draft.endpointId ? endpoints.get(draft.endpointId)?.host || '' : ''
-      const candidate = identified.find((other) => {
+      const candidates = identified.filter((other) => {
         if (other.id === draft.id) return false
         if (other.endpointId && draft.endpointId && other.endpointId !== draft.endpointId) return false
         if (!other.endpointId && !draft.endpointId) return false
+        if (draft.issuer && other.issuer && commonNameOf(draft.issuer) !== commonNameOf(other.issuer)) return false
+        if (draft.notAfter && other.notAfter && dateMs(draft.notAfter) !== dateMs(other.notAfter)) return false
 
         const names = [other.subject, other.name, ...other.san]
         const draftNames = [draft.subject, draft.name].filter(Boolean)
@@ -729,8 +732,8 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
           (Boolean(host) && names.some((n) => nameCovers(n, host)) && draftNames.some((n) => nameCovers(n, host) || normalizeHost(n) === normalizeHost(host)))
         )
       })
-
-      if (!candidate) continue
+      if (candidates.length !== 1) continue
+      const candidate = candidates[0]
 
       candidate.sources = new Set([...candidate.sources, ...draft.sources])
       for (const ref of draft.evidence) if (candidate.evidence.length < 12) candidate.evidence.push(ref)
@@ -759,6 +762,8 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
 
     const lifecycle: CertificateLifecycle = draft.revoked || statusLower === 'revoked'
       ? 'revoked'
+      : dateMs(draft.notBefore) > now
+        ? 'not-yet-valid'
       : daysToExpiry === null
         ? 'unknown'
         : daysToExpiry < 0
@@ -782,7 +787,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
 
     let riskScore = 10
     if (lifecycle === 'expired') riskScore = 95
-    else if (lifecycle === 'revoked') riskScore = 88
+    else if (lifecycle === 'revoked' || lifecycle === 'not-yet-valid') riskScore = 88
     else if (daysToExpiry !== null && daysToExpiry <= 7) riskScore = 82
     else if (lifecycle === 'expiring') riskScore = 64
     else if (daysToExpiry !== null && daysToExpiry <= 90) riskScore = 38
@@ -1088,7 +1093,14 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
 
   const finalEndpoints: TlsEndpoint[] = []
   for (const draft of endpoints.values()) {
-    const observationsForEndpoint = draft.observations
+    const batches = [...draft.observationBatches.values()]
+    const latestTransportAt = Math.max(0, ...batches.map((batch) => dateMs(batch.observedAt)))
+    const currentTransport = batches.filter((batch) => dateMs(batch.observedAt) === latestTransportAt)
+      .flatMap((batch) => [...batch.observations.values()])
+    const observationsForEndpoint = [
+      ...draft.observations.filter((row) => !['protocol', 'cipher-suite', 'key-exchange'].includes(row.kind)),
+      ...currentTransport,
+    ]
     const versions = uniq(
       observationsForEndpoint
         .filter((row) => row.kind === 'protocol')
@@ -1116,11 +1128,11 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
     const hasKeyExchangeEvidence = keyExchange.length > 0 || namesKeyAgreement
 
     const posture = classifyEndpointPosture({
-      observationPostures: observationsForEndpoint.map((row) => row.posture),
+      observationPostures: currentTransport.map((row) => row.posture),
       bestVersion,
       observedVersions: versions,
       hasKeyExchangeEvidence,
-      hasAnyEvidence: observationsForEndpoint.length > 0 || draft.certificateIds.size > 0,
+      hasAnyEvidence: currentTransport.length > 0,
       assetPosture: draft.assetRecord?.posture ?? null,
       migrationCompleted: (draft.assetRecord?.migrationStatus || '') === 'completed',
     })
@@ -1164,8 +1176,9 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
     if (daysToExpiry !== null && daysToExpiry <= 30) riskScore += 10
     riskScore = clamp(riskScore)
 
-    const handshakeValues = observationsForEndpoint
-      .map((row) => row.handshakes)
+    const handshakeValues = [...runtimeHandshakes.values()]
+      .filter((row) => row.endpointId === draft.id)
+      .map((row) => row.count)
       .filter((value): value is number => typeof value === 'number')
     const handshakeCount = handshakeValues.length ? handshakeValues.reduce((sum, value) => sum + value, 0) : null
 
@@ -1223,9 +1236,9 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
 
   const protocol = buildProtocolAnalytics({
     observations,
+    datedObservations: [...datedObservations.values()],
     endpoints: finalEndpoints,
-    runtimeCanReportFailures,
-    runtimeCanReportDowngrade,
+    runtimeHandshakes: [...runtimeHandshakes.values()],
     now,
   })
 
@@ -1321,7 +1334,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
   /* 11. Timeline                                                      */
   /* ---------------------------------------------------------------- */
 
-  const timeline = buildTimeline({ observations, certificates, findings, now })
+  const timeline = buildTimeline({ observations: [...datedObservations.values()], certificates, findings, now })
 
   const latestEvidenceAt = latestIso(
     ...observations.slice(0, 200).map((row) => row.observedAt),
@@ -1350,6 +1363,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
         expiring: certificates.filter((cert) => cert.lifecycle === 'expiring').length,
         expired: certificates.filter((cert) => cert.lifecycle === 'expired').length,
         revoked: certificates.filter((cert) => cert.lifecycle === 'revoked').length,
+        notYetValid: certificates.filter((cert) => cert.lifecycle === 'not-yet-valid').length,
         unknown: certificates.filter((cert) => cert.lifecycle === 'unknown').length,
       },
       expiryBuckets: buildExpiryBuckets(certificates),
@@ -1847,9 +1861,9 @@ function buildTrustChains(certificates: PkiCertificate[]): TrustChainNode[] {
 
 function buildProtocolAnalytics(input: {
   observations: TlsObservation[]
+  datedObservations: TlsObservation[]
   endpoints: TlsEndpoint[]
-  runtimeCanReportFailures: boolean
-  runtimeCanReportDowngrade: boolean
+  runtimeHandshakes: Array<{ endpointId: string; failed: boolean; failureMeasured: boolean; downgrade: boolean | null }>
   now: number
 }): ProtocolAnalytics {
   const { observations, endpoints } = input
@@ -1886,8 +1900,8 @@ function buildProtocolAnalytics(input: {
     notApplicable: fsRows.filter((row) => row.forwardSecrecy === null).length,
   }
 
-  const downgradeEndpointIds = uniq(observations.filter((row) => row.downgrade).map((row) => row.endpointId))
-  const handshakeFailures = observations.filter((row) => row.failed).length
+  const downgradeEndpointIds = uniq(input.runtimeHandshakes.filter((row) => row.downgrade === true).map((row) => row.endpointId))
+  const handshakeFailures = input.runtimeHandshakes.filter((row) => row.failed).length
 
   const anomalies: ProtocolAnalytics['anomalies'] = []
   const mixedVersion = endpoints.filter(
@@ -1945,7 +1959,7 @@ function buildProtocolAnalytics(input: {
   for (let index = 13; index >= 0; index -= 1) {
     const dayStart = start.getTime() - index * DAY_MS
     const dayEnd = dayStart + DAY_MS
-    const bucket = observations.filter((row) => {
+    const bucket = input.datedObservations.filter((row) => {
       const ms = dateMs(row.observedAt)
       return ms >= dayStart && ms < dayEnd
     })
@@ -1971,9 +1985,9 @@ function buildProtocolAnalytics(input: {
     // TLS 1.0 endpoint while the tile beside it reported none.
     legacyEndpointIds: endpoints.filter((endpoint) => endpoint.observedVersions.some(isLegacyVersion)).map((endpoint) => endpoint.id),
     handshakeFailures,
-    handshakeFailuresMeasured: input.runtimeCanReportFailures,
+    handshakeFailuresMeasured: input.runtimeHandshakes.some((row) => row.failureMeasured),
     downgradeEndpointIds,
-    downgradeMeasured: input.runtimeCanReportDowngrade,
+    downgradeMeasured: input.runtimeHandshakes.some((row) => row.downgrade !== null),
     anomalies,
     adoptionTrend: trend,
   }
@@ -2016,10 +2030,13 @@ function buildOrchestration(input: {
 }): OrchestrationState {
   const items: OrchestrationItem[] = []
 
-  const jobStatusFor = (assetId: string | null): { status: OrchestrationStatus; detail: string; progress: number; at: string | null } => {
+  const jobStatusFor = (assetId: string | null, endpointId: string, action: OrchestrationActionKind): { status: OrchestrationStatus; detail: string; progress: number; at: string | null } => {
     if (!assetId) return { status: 'not-started', detail: 'Endpoint is not bound to a managed asset.', progress: 0, at: null }
-    const asset = input.assetById.get(assetId)
-    const jobs = input.migrationJobs.filter((job) => str(job.asset_id) === assetId)
+    const jobs = input.migrationJobs.filter((job) => {
+      const metadata = recordOf(job.metadata)
+      return str(job.asset_id) === assetId && str(metadata.endpointId || metadata.endpoint_id) === endpointId &&
+        str(metadata.remediationAction || metadata.action) === action
+    })
     const latest = jobs
       .slice()
       .sort((a, b) => dateMs(b.updated_at ?? b.created_at) - dateMs(a.updated_at ?? a.created_at))[0]
@@ -2028,7 +2045,7 @@ function buildOrchestration(input: {
       const raw = str(latest.status).toLowerCase()
       const at = isoOrNull(latest.updated_at) || isoOrNull(latest.created_at)
       const progress = clamp(num(latest.progress))
-      if (raw === 'completed' || raw === 'succeeded') return { status: 'completed', detail: 'Migration job completed.', progress: 100, at }
+      if (raw === 'completed' || raw === 'succeeded') return { status: 'validating', detail: 'The job completed. Current observations still show this remediation is needed.', progress, at }
       if (raw === 'failed' || raw === 'error') return { status: 'failed', detail: 'Last migration job failed - review the job log.', progress, at }
       if (raw === 'rolled_back' || raw === 'rolledback') return { status: 'rolled-back', detail: 'Change was rolled back.', progress, at }
       if (raw === 'validating' || raw === 'verification') return { status: 'validating', detail: 'Post-change validation in progress.', progress, at }
@@ -2038,9 +2055,6 @@ function buildOrchestration(input: {
 
     if (input.queued.has(assetId)) {
       return { status: 'ready', detail: 'Queued in the Migration Planner and ready for a plan.', progress: 0, at: null }
-    }
-    if (asset && asset.migrationStatus === 'completed') {
-      return { status: 'completed', detail: asset.migrationStatusDetail || 'Asset reports migration complete.', progress: 100, at: asset.lastEvidenceAt }
     }
     return { status: 'not-started', detail: 'No remediation started for this endpoint.', progress: 0, at: null }
   }
@@ -2151,9 +2165,9 @@ function buildOrchestration(input: {
 
     if (!actions.length) continue
 
-    const state = jobStatusFor(endpoint.assetId)
 
     for (const action of actions) {
+      const state = jobStatusFor(endpoint.assetId, endpoint.id, action.kind)
       const severity = action.severity
       const priority =
         severityRank(severity) * 20 +

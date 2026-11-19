@@ -1604,7 +1604,7 @@ END $$;
 -- ───────────────────────────────────────────────────────────────────────────
 
 -- Vault statistics summary
-CREATE OR REPLACE VIEW public.vault_stats AS
+CREATE OR REPLACE VIEW public.vault_stats WITH (security_invoker = true) AS
 SELECT 
   p.user_id,
   p.storage_used,
@@ -1628,7 +1628,7 @@ GROUP BY p.user_id, p.storage_used, p.storage_quota, p.file_count, p.folder_coun
 COMMENT ON VIEW public.vault_stats IS 'Comprehensive vault statistics for dashboard';
 
 -- Recent activity summary
-CREATE OR REPLACE VIEW public.vault_recent_activity AS
+CREATE OR REPLACE VIEW public.vault_recent_activity WITH (security_invoker = true) AS
 SELECT 
   a.id,
   a.event_type,
@@ -1646,7 +1646,7 @@ LIMIT 100;
 COMMENT ON VIEW public.vault_recent_activity IS 'Recent vault activity for dashboard display';
 
 -- Active sessions view
-CREATE OR REPLACE VIEW public.vault_active_sessions AS
+CREATE OR REPLACE VIEW public.vault_active_sessions WITH (security_invoker = true) AS
 SELECT 
   s.id,
   s.device_name,

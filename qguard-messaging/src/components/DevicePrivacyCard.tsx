@@ -33,6 +33,9 @@ export function DevicePrivacyCard({ userId, appLock }: { userId: string; appLock
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<Note>(null);
   const pinConfigured = Boolean(appLock?.status?.configured);
+  // A duress PIN is typed on the PIN keypad; a pattern lock has no keypad, and
+  // the core never checks a duress PIN against a drawn pattern.
+  const patternLock = appLock?.status?.method === "pattern";
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -151,21 +154,33 @@ export function DevicePrivacyCard({ userId, appLock }: { userId: string; appLock
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="font-semibold text-ink-900">Duress PIN</div>
-                <p className="mt-0.5 text-xs">
-                  A second PIN for when you are forced to unlock. Entered at the lock screen, it erases this device&apos;s
-                  keys and shows the sign-in screen, as if the session had expired. Messages already on the relay stay
-                  unreadable without your other devices or recovery kit.
-                </p>
+                {patternLock ? (
+                  <p className="mt-0.5 text-xs">
+                    Not available while this device unlocks with a pattern: a duress PIN is typed on the PIN keypad, and
+                    the pattern screen has none.{" "}
+                    {appLock.status.duressConfigured
+                      ? "Your saved duress PIN does nothing right now. It works again if you switch back to a PIN in Application PIN above, or you can remove it."
+                      : "Switch to a 6-digit PIN in Application PIN above to use one."}
+                  </p>
+                ) : (
+                  <p className="mt-0.5 text-xs">
+                    A second PIN for when you are forced to unlock. Entered at the lock screen, it erases this device&apos;s
+                    keys and shows the sign-in screen, as if the session had expired. Messages already on the relay stay
+                    unreadable without your other devices or recovery kit.
+                  </p>
+                )}
               </div>
               <div className="flex gap-2">
-                <button
-                  type="button"
-                  disabled={busy !== null}
-                  onClick={() => setShowDuress((open) => !open)}
-                  className="rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-bold text-ink-700 hover:bg-canvas disabled:opacity-60"
-                >
-                  {appLock.status.duressConfigured ? "Change" : "Set up"}
-                </button>
+                {!patternLock && (
+                  <button
+                    type="button"
+                    disabled={busy !== null}
+                    onClick={() => setShowDuress((open) => !open)}
+                    className="rounded-lg border border-line bg-white px-3 py-1.5 text-xs font-bold text-ink-700 hover:bg-canvas disabled:opacity-60"
+                  >
+                    {appLock.status.duressConfigured ? "Change" : "Set up"}
+                  </button>
+                )}
                 {appLock.status.duressConfigured && (
                   <button
                     type="button"
@@ -178,7 +193,7 @@ export function DevicePrivacyCard({ userId, appLock }: { userId: string; appLock
                 )}
               </div>
             </div>
-            {showDuress && (
+            {showDuress && !patternLock && (
               <div className="mt-2 flex flex-wrap gap-2">
                 <input value={duressPin} onChange={(e) => setDuressPin(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" type="password" placeholder="6-digit duress PIN" aria-label="Duress PIN" className="w-40 rounded-lg border border-line bg-canvas px-3 py-1.5 text-sm" />
                 <input value={duressConfirm} onChange={(e) => setDuressConfirm(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" type="password" placeholder="Repeat it" aria-label="Repeat the duress PIN" className="w-40 rounded-lg border border-line bg-canvas px-3 py-1.5 text-sm" />

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
 import { getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
 import { isOwnerEmail } from '@/lib/admin-access'
+import { csvCell } from '@/lib/csv'
 import {
   buildRevenueModel,
   toRevenueSnapshot,
@@ -14,7 +15,9 @@ import {
   type SourceCoverage,
   type SubscriptionRecord,
 } from '@/lib/billing/revenue-model'
+import type { InboxRecord } from '@/lib/billing/billing-ops'
 import { trustedClientIp } from './runtime/client-ip'
+import { streamTokenFromRequest } from './runtime/stream-tickets'
 
 /**
  * Revenue Intelligence™ — owner-only financial analytics service.
@@ -48,15 +51,9 @@ function jsonError(res: Response, status: number, code: string, message: string)
   return res.status(status).json({ error: { code, message } })
 }
 
-function readQueryToken(req: Request): string | null {
-  const raw = req.query?.token
-  return typeof raw === 'string' && raw.length > 0 ? raw : null
-}
-
-// The SSE stream is the ONLY route allowed to authenticate via a query-string
-// token, because EventSource cannot send an Authorization header. Every other
-// route must use the header so the session JWT never lands in a URL, access
-// log, browser history entry or Referer header.
+// EventSource cannot send an Authorization header, so /stream authenticates
+// with a short-lived single-use `?ticket=` (runtime/stream-tickets.ts). The
+// session JWT itself is never accepted in a URL.
 function isStreamRequest(req: Request): boolean {
   const path = (req.originalUrl || req.url || '').split('?')[0]
   return path.endsWith('/stream')
@@ -107,7 +104,7 @@ async function recordRevenueAudit(
 }
 
 async function requireOwner(req: OwnerRequest, res: Response, next: NextFunction) {
-  const token = getToken(req) || (isStreamRequest(req) ? readQueryToken(req) : null)
+  const token = isStreamRequest(req) ? streamTokenFromRequest(req) : getToken(req)
   if (!token) return jsonError(res, 401, 'UNAUTHORIZED', 'Owner session token required')
   const user = await getServerUser(token)
   if (!user) return jsonError(res, 401, 'UNAUTHORIZED', 'Invalid or expired owner session')
@@ -211,13 +208,15 @@ const INVOICE_COLUMNS = 'id,user_id,invoice_id,provider_invoice_id,transaction_i
 async function loadRevenueModel(db: SupabaseClient): Promise<RevenueModel> {
   const now = new Date()
   const since90d = new Date(now.getTime() - 90 * 86_400_000).toISOString()
-  const [subscriptions, invoices, profiles, audit, notifications] = await Promise.all([
+  const [subscriptions, invoices, profiles, audit, notifications, inbox] = await Promise.all([
     // Full reads page on the immutable primary key; the model re-sorts.
     readAll<SubscriptionRecord>(db, 'billing_subscriptions', SUBSCRIPTION_COLUMNS, { orderBy: 'id', ascending: true, maxRows: 50_000 }),
     readAll<InvoiceRecord>(db, 'billing_invoices', INVOICE_COLUMNS, { orderBy: 'id', ascending: true, maxRows: 100_000 }),
     readAll<ProfileRecord>(db, 'profiles', 'id,email,name,full_name,tier,created_at', { orderBy: 'id', ascending: true, maxRows: 100_000 }),
     readAll<AuditRecord>(db, 'billing_audit_events', 'id,user_id,action,message,created_at,metadata', { orderBy: 'created_at', maxRows: 5_000, since: { column: 'created_at', iso: since90d } }),
     readAll<NotificationRecord>(db, 'billing_notifications', 'id,user_id,type,severity,title,message,created_at', { orderBy: 'created_at', maxRows: 200 }),
+    // Google Play RTDN inbox (never holds a purchase token): pipeline health for the ops panel.
+    readAll<InboxRecord>(db, 'play_webhook_events', 'id,event_id,notification_type,status,attempts,received_at,claimed_at,processed_at,last_error', { orderBy: 'received_at', maxRows: 5_000, since: { column: 'received_at', iso: since90d } }),
   ])
   // billing_audit_events and billing_notifications are read as a bounded
   // recent window by design (90 days / latest 200); hitting that bound is not
@@ -230,7 +229,8 @@ async function loadRevenueModel(db: SupabaseClient): Promise<RevenueModel> {
     profiles: profiles.rows,
     auditEvents: audit.rows,
     notifications: notifications.rows,
-    coverage: [subscriptions.coverage, invoices.coverage, profiles.coverage, recentWindow(audit.coverage), recentWindow(notifications.coverage)],
+    billingInbox: inbox.rows,
+    coverage: [subscriptions.coverage, invoices.coverage, profiles.coverage, recentWindow(audit.coverage), recentWindow(notifications.coverage), recentWindow(inbox.coverage)],
   })
 }
 
@@ -429,12 +429,7 @@ const FORMATS = ['csv', 'json'] as const
  * user-controlled, and a name like `=HYPERLINK(...)` would otherwise execute
  * as a formula when the owner opens the export in Excel (CSV injection).
  */
-export function csvCell(value: string | number | null | undefined): string {
-  if (value === null || value === undefined) return ''
-  let text = String(value)
-  if (typeof value === 'string' && /^[=+\-@\t\r]/.test(text)) text = `'${text}`
-  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
-}
+export { csvCell }
 
 export function toCsv(headers: string[], rows: Array<Array<string | number | null>>): string {
   return [headers.map(csvCell).join(','), ...rows.map((row) => row.map(csvCell).join(','))].join('\r\n')
@@ -480,6 +475,13 @@ export function buildReportRows(model: RevenueModel, report: ReportKind): { head
           ['Paying Subscribers', model.kpis.payingSubscribers, 'Provider-billed, access-granting'],
           ['Churn % (30d)', model.kpis.churnPct, `${model.subscriptionAnalytics.churnWindow.churned} of ${model.subscriptionAnalytics.churnWindow.base} billed subscriptions`],
           ['Retention % (30d)', model.kpis.retentionPct, '100 − churn'],
+          [`Starting MRR (USD, ${model.mrrMovement.windowDays}d ago)`, usd(model.mrrMovement.startingMrrCents), 'Provider-billed subscriptions live at the window start, at their price then'],
+          ['New MRR (USD)', usd(model.mrrMovement.newMrrCents), `${model.mrrMovement.newSubscriptions} new provider-billed subscription(s) in the window`],
+          ['Expansion MRR (USD)', usd(model.mrrMovement.expansionMrrCents), 'Upgrades, from the billing audit trail at list price'],
+          ['Contraction MRR (USD)', usd(model.mrrMovement.contractionMrrCents), 'Downgrades, from the billing audit trail at list price'],
+          ['Churned MRR (USD)', usd(model.mrrMovement.churnedMrrCents), `${model.mrrMovement.churnedSubscriptions} subscription(s) stopped granting access`],
+          ['Net Revenue Retention %', model.mrrMovement.nrrPct, '(starting + expansion − contraction − churned) ÷ starting'],
+          ['Gross Revenue Retention %', model.mrrMovement.grrPct, '(starting − contraction − churned) ÷ starting'],
           ['Revenue Growth % (last complete month)', model.kpis.revenueGrowthPct, 'vs the month before'],
           ['Subscription Health Score', model.kpis.subscriptionHealthScore, `${model.subscriptionAnalytics.health.measuredWeightPct}% of weight measured`],
           ['Payment Success Rate %', model.paymentAnalytics.successRatePct, `${model.paymentAnalytics.attempted} attempts`],

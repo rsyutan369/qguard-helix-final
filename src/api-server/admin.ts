@@ -53,6 +53,7 @@ import {
 import { ROLE_CAPABILITIES, ROLE_LABELS as COPILOT_ROLE_LABELS, normalizeRole as normalizeCopilotRole } from './copilot-knowledge'
 import { cancelSubscription } from './paypal'
 import { readClientIp } from './runtime/client-ip'
+import { streamTokenFromRequest } from './runtime/stream-tickets'
 
 type AdminRequest = Request & {
   adminUser?: User
@@ -68,11 +69,6 @@ const router = Router()
 const DEFAULT_LIMIT = 25
 const MAX_LIMIT = 100
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-function readQueryToken(req: Request): string | null {
-  const queryToken = req.query.token
-  return typeof queryToken === 'string' && queryToken ? queryToken : null
-}
 
 function recordOf(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -298,8 +294,15 @@ async function recordCustomerBillingEvent(req: AdminRequest, previous: any, next
   }
 }
 
+// EventSource cannot send an Authorization header, so /stream authenticates
+// with a short-lived single-use `?ticket=` (runtime/stream-tickets.ts).
+// The owner's JWT itself is never accepted in a URL.
+function isStreamRequest(req: Request): boolean {
+  return (req.originalUrl || req.url || '').split('?')[0].endsWith('/stream')
+}
+
 async function requireOwner(req: AdminRequest, res: Response, next: NextFunction) {
-  const token = getToken(req) || readQueryToken(req)
+  const token = isStreamRequest(req) ? streamTokenFromRequest(req) : getToken(req)
   if (!token) {
     jsonError(res, 401, 'UNAUTHORIZED', 'Owner session token required')
     return
@@ -362,10 +365,9 @@ function userStatus(profile: any) {
 function groupByDay(rows: any[], dateFields: string[], days = 7) {
   const now = new Date()
   const buckets = Array.from({ length: days }, (_unused, index) => {
-    const date = new Date(now)
-    date.setDate(now.getDate() - (days - index - 1))
+    const date = new Date(now.getTime() - (days - index - 1) * 24 * 60 * 60_000)
     const key = date.toISOString().slice(0, 10)
-    return { key, label: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), count: 0 }
+    return { key, label: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }), count: 0 }
   })
   const indexByKey = new Map(buckets.map((bucket, index) => [bucket.key, index]))
 
@@ -723,7 +725,6 @@ async function buildAdminStats(db: any) {
     profileRows,
     tenantRows,
     subscriptions,
-    invoices,
     scanSessions,
     securityEvents,
     migrationJobs,
@@ -732,12 +733,14 @@ async function buildAdminStats(db: any) {
     auditRows,
     usageRows,
     directory,
+    billing,
   ] = await Promise.all([
     safeCount(ctx, db, 'profiles'),
     safeRows(ctx, db, 'profiles', (q) => q.select('*').order('created_at', { ascending: false }).limit(2000)),
     safeRows(ctx, db, 'organizations', (q) => q.select('*').order('updated_at', { ascending: false }).limit(500)),
-    safeRows(ctx, db, 'billing_subscriptions', (q) => q.select('*').order('updated_at', { ascending: false }).limit(2000)),
-    safeRows(ctx, db, 'billing_invoices', (q) => q.select('*').gte('created_at', since7d).order('created_at', { ascending: false }).limit(2000)),
+    // Only feeds the 7-day "Subscription changes" chart; every subscription
+    // COUNT below comes from the Plans & Billing model (a full, paged read).
+    safeRows(ctx, db, 'billing_subscriptions', (q) => q.select('id,created_at,updated_at').gte('updated_at', since7d).order('updated_at', { ascending: false }).limit(1000)),
     safeRows(ctx, db, 'pqc_scan_sessions', (q) => q.select('*').order('created_at', { ascending: false }).limit(2000)),
     safeRows(ctx, db, 'security_events', (q) => q.select('*').order('created_at', { ascending: false }).limit(1000)),
     safeRows(ctx, db, 'migration_jobs', (q) => q.select('*').order('updated_at', { ascending: false }).limit(2000)),
@@ -751,28 +754,38 @@ async function buildAdminStats(db: any) {
       console.error('[admin] user directory unavailable for stats:', error instanceof Error ? error.message : error)
       return null
     }),
+    // Subscription + payment KPIs come from the Plans & Billing model — the
+    // same computation that tab and Revenue Intelligence publish.
+    loadBillingConsole(db).catch((error) => {
+      console.error('[admin] billing model unavailable for stats:', error instanceof Error ? error.message : error)
+      return null
+    }),
   ])
 
-  const activeSubscriptions = subscriptions.filter((row: any) => ['active', 'trialing', 'approved'].includes(String(row.status || '').toLowerCase()))
-  const expiredPlans = subscriptions.filter((row: any) => {
-    const expiresAt = row.current_period_end || row.expires_at || row.trial_ends_at
-    return expiresAt && new Date(expiresAt).getTime() < Date.now()
-  })
-  const paidInvoices = invoices.filter((row: any) => ['paid', 'succeeded'].includes(String(row.status || '').toLowerCase()))
-  // amount_paid_cents is the column every writer fills (PayPal, Play, Stripe).
-  // The legacy amount_paid/total/amount_due columns are always null, so this
-  // sum used to be 0 whatever had been collected.
-  const revenue = paidInvoices.reduce((sum: number, row: any) => sum + invoiceAmountCents(row), 0)
+  // Cash COLLECTED in the last 7 days: charges the provider collected (a later
+  // refund does not un-collect one), in the reporting currency, by payment
+  // time. Unknown (null) when the billing model could not be read — never $0.
+  const since7dMs = Date.parse(since7d)
+  const collected7dCents = billing
+    ? billing.invoices
+      .filter((invoice) => (invoice.status === 'paid' || invoice.status === 'refunded') && invoice.currency === 'USD')
+      .filter((invoice) => invoice.paidAt !== null && Date.parse(invoice.paidAt) >= since7dMs)
+      .reduce((sum, invoice) => sum + invoice.amountCents, 0)
+    : null
+  const billingByStatus = billing ? billing.stats.byStatus : null
   const completedJobs = migrationJobs.filter((row: any) => ['completed', 'done', 'success'].includes(String(row.status || '').toLowerCase()))
   const runningJobs = migrationJobs.filter((row: any) => ['running', 'in_progress', 'pending', 'queued'].includes(String(row.status || '').toLowerCase()))
   const scansInProgress = scanSessions.filter((row: any) => ['running', 'scanning', 'in_progress', 'queued'].includes(String(row.status || '').toLowerCase())).length
   const completedScans = scanSessions.filter((row: any) => ['completed', 'done', 'success'].includes(String(row.status || '').toLowerCase()))
   const criticalAlerts = securityEvents.filter((row: any) => ['critical', 'high'].includes(String(row.severity || '').toLowerCase())).length
   const failedLogins = securityEvents.filter((row: any) => /failed|denied|suspicious/i.test(`${row.event_type || ''} ${row.message || ''}`)).length
-  const averageProfileScore = profileRows.length
-    ? Math.round(profileRows.reduce((sum: number, row: any) => sum + numberValue(row.q_score, 0), 0) / profileRows.length)
-    : 0
-  const migrationProgress = percent(completedJobs.length, Math.max(1, migrationJobs.length))
+  // Unmeasured is null, never 0: an account with no score is not a 0% account,
+  // and no migration jobs is not "0% migrated".
+  const scoredProfiles = profileRows.filter((row: any) => row.q_score !== null && row.q_score !== undefined && Number.isFinite(Number(row.q_score)))
+  const averageProfileScore = scoredProfiles.length
+    ? Math.round(scoredProfiles.reduce((sum: number, row: any) => sum + Number(row.q_score), 0) / scoredProfiles.length)
+    : null
+  const migrationProgress = migrationJobs.length ? percent(completedJobs.length, migrationJobs.length) : null
   const compliancePassed = complianceEvidence.filter((row: any) => ['passed', 'complete', 'compliant', 'approved'].includes(String(row.status || '').toLowerCase())).length
   const userStats = directory?.stats || null
 
@@ -787,9 +800,23 @@ async function buildAdminStats(db: any) {
       newUsersLast30d: userStats ? userStats.newLast30d : null,
       activeTenants: tenantRows.filter((row: any) => userStatus(row) !== 'disabled').length,
       totalTenants: tenantRows.length,
-      activeSubscriptions: activeSubscriptions.length,
-      subscriptionRevenue: revenue,
-      expiredPlans: expiredPlans.length,
+      // Access-granting subscriptions (active / trial / pending renewal) — the
+      // old filter matched 'trialing' and 'approved', statuses the database
+      // never stores, so trials and pending renewals were not counted.
+      activeSubscriptions: billing ? billing.stats.grantingAccess : null,
+      payingSubscriptions: billing ? billing.plans.reduce((sum, plan) => sum + plan.paying, 0) : null,
+      trialSubscriptions: billingByStatus ? billingByStatus.trial || 0 : null,
+      pastDueSubscriptions: billing ? billing.stats.pastDue : null,
+      mrrCents: billing ? billing.stats.mrrCents : null,
+      subscriptionRevenue: collected7dCents,
+      expiredPlans: billingByStatus ? billingByStatus.expired || 0 : null,
+      activeNowUsers: userStats ? userStats.activity.activeNow : null,
+      dormantUsers: userStats ? userStats.activity.dormant : null,
+      neverSignedInUsers: userStats ? userStats.activity.never : null,
+      suspendedUsers: userStats ? userStats.status.suspended : null,
+      disabledUsers: userStats ? userStats.status.disabled : null,
+      pendingVerificationUsers: userStats ? userStats.status.pending_verification : null,
+      usersWithPlanAccess: userStats ? userStats.access.withAccess : null,
       // Live Supabase Auth sessions (public.user_sessions is only written when a
       // user opens Settings; it is not a session store).
       activeSessions: userStats ? userStats.liveSessions : null,
@@ -799,11 +826,31 @@ async function buildAdminStats(db: any) {
       completedScans: completedScans.length,
       criticalAlerts,
       failedLogins,
-      complianceScore: percent(compliancePassed, Math.max(1, complianceEvidence.length)),
+      complianceScore: complianceEvidence.length ? percent(compliancePassed, complianceEvidence.length) : null,
+      migrationJobs: migrationJobs.length,
       usageEvents: usageRows.length,
     },
     summaries: {
-      subscriptionStatus: countBy(subscriptions, 'status', 'none'),
+      subscriptionStatus: billingByStatus
+        ? (Object.entries(billingByStatus) as Array<[string, number]>).map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count)
+        : [],
+      accountStatus: userStats
+        ? (Object.entries(userStats.status) as Array<[string, number]>).map(([label, count]) => ({ label, count }))
+        : [],
+      planAccess: userStats
+        ? [
+          ...(Object.entries(userStats.access.byTier) as Array<[string, number]>).map(([label, count]) => ({ label, count })),
+          { label: 'no plan access', count: userStats.access.noAccess },
+        ]
+        : [],
+      userActivity: userStats
+        ? [
+          { label: 'active now', count: userStats.activity.activeNow },
+          { label: 'active in 30 days', count: userStats.activity.active30d },
+          { label: 'dormant', count: userStats.activity.dormant },
+          { label: 'never signed in', count: userStats.activity.never },
+        ]
+        : [],
       tenantStatus: countBy(tenantRows, 'status', 'active'),
       vulnerabilitySeverity: countBy(vulnerabilities, 'severity', 'unknown'),
       securitySeverity: countBy(securityEvents, 'severity', 'info'),
@@ -823,11 +870,14 @@ async function buildAdminStats(db: any) {
       securityEvents: securityEvents.slice(0, 8),
       auditEvents: auditRows.slice(0, 8),
       migrationJobs: migrationJobs.slice(0, 8),
-      subscriptions: subscriptions.slice(0, 8),
     },
     realtime: {
       source: 'supabase',
-      unavailableTables: Array.from(ctx.unavailable).sort(),
+      unavailableTables: [
+        ...Array.from(ctx.unavailable),
+        ...(directory ? [] : ['user directory (profiles / Supabase Auth)']),
+        ...(billing ? [] : ['billing model (billing_subscriptions / billing_invoices)']),
+      ].sort(),
       generatedAt: new Date().toISOString(),
       window: { since24h, since7d },
     },
@@ -1051,8 +1101,20 @@ async function applyAdminSubscription(req: AdminRequest, userId: string, body: R
     : planChanged ? planAmountCents(plan, billingCycle) : numberValue(existing?.amount_cents, planAmountCents(plan, billingCycle))
   const existingMetadata = billingMetadata(existing)
   const nowIso = new Date(now).toISOString()
+  // Granting a plan by hand on a row a payment provider used to bill (it has
+  // lapsed — the active case was refused above) makes it a MANUAL grant. Left
+  // as 'paypal' it was classified provider-billed and counted in MRR although
+  // PayPal no longer charges the customer.
+  const takeover = managed && status === 'active'
+    ? {
+      provider: 'manual',
+      provider_subscription_id: null,
+      auto_renew: false,
+    }
+    : {}
   const payload = {
     user_id: userId,
+    ...takeover,
     // NOT NULL + unique. Every writer mints one (paypal_…, gp_…, test-sub-…);
     // an admin grant on a user with no row previously failed on this column.
     subscription_id: textValue(existing?.subscription_id, '') || `admin_${userId}`,
@@ -1073,6 +1135,9 @@ async function applyAdminSubscription(req: AdminRequest, userId: string, body: R
     metadata: {
       ...existingMetadata,
       adminAction: action,
+      ...(managed && status === 'active'
+        ? { previousProvider: existing?.provider ?? null, previousProviderSubscriptionId: existing?.provider_subscription_id ?? null, providerReplacedAt: nowIso }
+        : {}),
       customPlan: body.customPlan || existingMetadata.customPlan || null,
       updatedBy: req.adminUser!.id,
       updatedByEmail: req.adminUser!.email || null,
@@ -2760,10 +2825,22 @@ router.get('/stream', async (req: AdminRequest, res) => {
   res.flushHeaders?.()
 
   let closed = false
+  let interval: ReturnType<typeof setInterval> | undefined
+  let heartbeat: ReturnType<typeof setInterval> | undefined
   const send = (event: string, data: unknown) => {
     if (closed) return
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
   }
+  const cleanup = () => {
+    closed = true
+    consoleChangeListeners.delete(pushNow)
+    if (interval) clearInterval(interval)
+    if (heartbeat) clearInterval(heartbeat)
+  }
+  // Registered BEFORE the first await: a console that disconnects while the
+  // first frames are being computed must still release its timers and its
+  // change listener (it used to leak both for the life of the process).
+  req.on('close', cleanup)
 
   send('admin-connected', {
     owner: req.adminUser!.email,
@@ -2782,10 +2859,7 @@ router.get('/stream', async (req: AdminRequest, res) => {
       const current = await getServerUser(req.adminToken || '')
       if (!current || !isOwnerEmail(current.email)) {
         send('admin-reauth', { message: 'Owner session expired or was revoked — reconnect with a fresh session.' })
-        closed = true
-        consoleChangeListeners.delete(pushNow)
-        clearInterval(interval)
-        clearInterval(heartbeat)
+        cleanup()
         res.end()
         return
       }
@@ -2803,7 +2877,7 @@ router.get('/stream', async (req: AdminRequest, res) => {
   // A write in ANY console pushes fresh frames to every open console now,
   // instead of on the next 10s tick (debounced so a burst pushes once).
   let pushQueued = false
-  const pushNow = () => {
+  function pushNow() {
     if (closed || pushQueued) return
     pushQueued = true
     setTimeout(() => {
@@ -2811,18 +2885,12 @@ router.get('/stream', async (req: AdminRequest, res) => {
       void push()
     }, 250)
   }
-  consoleChangeListeners.add(pushNow)
 
-  const interval = setInterval(() => void push(), 10_000)
-  const heartbeat = setInterval(() => send('admin-heartbeat', { timestamp: new Date().toISOString() }), 30_000)
   await push()
-
-  req.on('close', () => {
-    closed = true
-    consoleChangeListeners.delete(pushNow)
-    clearInterval(interval)
-    clearInterval(heartbeat)
-  })
+  if (closed) return
+  consoleChangeListeners.add(pushNow)
+  interval = setInterval(() => void push(), 10_000)
+  heartbeat = setInterval(() => send('admin-heartbeat', { timestamp: new Date().toISOString() }), 30_000)
 })
 
 export default router

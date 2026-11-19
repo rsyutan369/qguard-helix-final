@@ -54,10 +54,12 @@ export function createSourceLedger(scope: string): SourceLedger {
         return []
       }
       try {
-        const { data, error } = await build(client.from(table))
+        const { data, error, count } = await build(client.from(table))
         if (error) return fail(error.message || String(error))
-        const rows = table === 'assets' ? ((data || []) as Row[]).filter((row) => !(row.metadata as Record<string, unknown> | null)?.consolidatedIntoAssetId) : (data as Row[]) || []
-        const state: SourceReadState = limit !== null && rows.length >= limit ? 'truncated' : rows.length ? 'ok' : 'empty'
+        const rawRows = (data || []) as Row[]
+        const rows = table === 'assets' ? rawRows.filter((row) => !(row.metadata as Record<string, unknown> | null)?.consolidatedIntoAssetId) : rawRows
+        const truncated = typeof count === 'number' ? rawRows.length < count : limit !== null && rawRows.length >= limit
+        const state: SourceReadState = truncated ? 'truncated' : rows.length ? 'ok' : 'empty'
         record({
           key: table,
           label,
@@ -65,7 +67,7 @@ export function createSourceLedger(scope: string): SourceLedger {
           rows: rows.length,
           limit,
           detail: state === 'truncated'
-            ? `Read capped at ${limit} rows (most recent first) — older rows are not included.`
+            ? `Read ${rawRows.length}${typeof count === 'number' ? ` of ${count}` : ''} source rows. Coverage and totals may be incomplete.`
             : state === 'ok' ? `${rows.length} row(s) read.` : 'Read — no rows recorded.',
         })
         return rows

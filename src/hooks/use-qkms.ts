@@ -213,6 +213,7 @@ const REALTIME_TABLES = [
 
 const RETRY_MIN_MS = 3_000;
 const RETRY_MAX_MS = 30_000;
+const STREAM_TIMEOUT_MS = 60_000;
 
 export interface UseQkmsResult<T extends QkmsPayload> {
   data: T | null;
@@ -248,6 +249,10 @@ export function useQkmsView<T extends QkmsPayload>(mode: QkmsMode): UseQkmsResul
   const { session, user } = useAuth();
   const token = session?.access_token;
 
+  const scope = user?.id ?? null;
+  const [dataScope, setDataScope] = useState<string | null>(null);
+  const [streamAttempt, setStreamAttempt] = useState(0);
+  const request = useRef<AbortController | null>(null);
   const [data, setData] = useState<T | null>(null);
   const [state, setState] = useState<LoadState>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -266,12 +271,13 @@ export function useQkmsView<T extends QkmsPayload>(mode: QkmsMode): UseQkmsResul
       if (generated < lastGeneratedRef.current) return;
       lastGeneratedRef.current = generated;
     }
+    setDataScope(scope);
     setData(next);
     setState('success');
     setError(null);
     setVerifiedAt(next.generatedAt);
     setLastSyncedAt(new Date().toISOString());
-  }, []);
+  }, [scope]);
 
   const refresh = useCallback(
     async (force = false) => {
@@ -282,16 +288,22 @@ export function useQkmsView<T extends QkmsPayload>(mode: QkmsMode): UseQkmsResul
         setState('error');
         return;
       }
+      request.current?.abort();
+      const controller = new AbortController();
+      request.current = controller;
       setState((current) => (current === 'success' ? current : 'loading'));
       try {
         const response = await fetch(`${API_BASE}/${mode}${force ? '?refresh=1' : ''}`, {
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+          headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-        if (!payload?.data) throw new Error('QKMS response was empty');
+        if (controller.signal.aborted) return;
+        if (payload?.data?.mode !== mode || !Number.isFinite(Date.parse(payload.data.generatedAt))) throw new Error('Invalid QKMS snapshot');
         apply(payload.data as T);
       } catch (err) {
+        if (controller.signal.aborted) return;
         console.error(`QKMS ${mode} load failed:`, err);
         setError(err instanceof Error ? err.message : 'Unable to load QKMS intelligence');
         // Keep the last good model on screen; the header switches to a
@@ -310,21 +322,28 @@ export function useQkmsView<T extends QkmsPayload>(mode: QkmsMode): UseQkmsResul
     }, 700);
   }, [refresh]);
 
-  useEffect(
-    () => () => {
-      if (refreshTimer.current) clearTimeout(refreshTimer.current);
-    },
-    [],
-  );
+  useEffect(() => {
+    lastGeneratedRef.current = 0;
+    setData(null);
+    setDataScope(null);
+    setVerifiedAt(null);
+    setLastSyncedAt(null);
+    setError(null);
+    setState('loading');
+  }, [scope, mode]);
 
   useEffect(() => {
     void refresh();
-  }, [token, user, refresh]);
+    return () => {
+      request.current?.abort();
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    };
+  }, [refresh]);
 
   /* ---- SSE: header-authenticated, exponential backoff ------------- */
   useEffect(() => {
-    if (!token) return;
-    const controller = new AbortController();
+    if (!token || !scope) return;
+    let controller: AbortController | undefined;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
     let cancelled = false;
@@ -337,28 +356,24 @@ export function useQkmsView<T extends QkmsPayload>(mode: QkmsMode): UseQkmsResul
         else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
         // ':' comment lines are heartbeats — ignored.
       }
-      if (!dataLines.length) return;
+      if (cancelled || !dataLines.length) return;
       const body = dataLines.join('\n');
       if (eventName === 'qkms') {
         try {
           const parsed = JSON.parse(body) as T;
           // Event validation: a frame for another view must never be applied.
-          if (parsed && typeof parsed === 'object' && parsed.mode === mode) apply(parsed);
+          if (parsed?.mode === mode && Number.isFinite(Date.parse(parsed.generatedAt)) && parsed.metrics && parsed.telemetry) {
+            apply(parsed);
+            setLive(true);
+            attempt = 0;
+          }
         } catch {
           /* malformed frame — ignore rather than blank the page */
-        }
-      } else if (eventName === 'qkms-verified') {
-        // The model was rebuilt and nothing on this view changed: record when
-        // it was last confirmed, without replacing data (and re-querying tables).
-        try {
-          const parsed = JSON.parse(body) as { mode?: string; generatedAt?: string };
-          if (parsed.mode === mode && parsed.generatedAt) setVerifiedAt(parsed.generatedAt);
-        } catch {
-          /* ignore */
         }
       } else if (eventName === 'qkms-error') {
         try {
           setError(String(JSON.parse(body)?.message || 'QKMS stream error'));
+          setLive(false);
         } catch {
           /* ignore */
         }
@@ -366,20 +381,28 @@ export function useQkmsView<T extends QkmsPayload>(mode: QkmsMode): UseQkmsResul
     };
 
     const connect = async () => {
+      if (cancelled) return;
+      const connection = new AbortController();
+      controller = connection;
+      let watchdog: ReturnType<typeof setTimeout>;
+      const armWatchdog = () => {
+        clearTimeout(watchdog);
+        watchdog = setTimeout(() => connection.abort(), STREAM_TIMEOUT_MS);
+      };
+      armWatchdog();
       try {
         const response = await fetch(`${API_BASE}/stream?mode=${encodeURIComponent(mode)}`, {
           headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
-          signal: controller.signal,
+          signal: connection.signal,
         });
-        if (!response.ok || !response.body) throw new Error(`SSE ${response.status}`);
-        attempt = 0;
-        setLive(true);
+        if (!response.ok || !response.body || !response.headers.get('content-type')?.startsWith('text/event-stream')) throw new Error(`SSE ${response.status}`);
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
         for (;;) {
           const { value, done } = await reader.read();
-          if (done) break;
+          if (done || cancelled) break;
+          armWatchdog();
           buffer += decoder.decode(value, { stream: true });
           let boundary = buffer.indexOf('\n\n');
           while (boundary !== -1) {
@@ -390,23 +413,26 @@ export function useQkmsView<T extends QkmsPayload>(mode: QkmsMode): UseQkmsResul
         }
         throw new Error('stream ended');
       } catch {
-        if (cancelled || controller.signal.aborted) return;
+        if (cancelled) return;
         setLive(false);
         attempt += 1;
         const delay = Math.min(RETRY_MAX_MS, RETRY_MIN_MS * 2 ** Math.min(attempt - 1, 4));
         if (retry) clearTimeout(retry);
         retry = setTimeout(() => void connect(), delay);
+      } finally {
+        clearTimeout(watchdog);
+        connection.abort();
       }
     };
 
     void connect();
     return () => {
       cancelled = true;
-      controller.abort();
+      controller?.abort();
       if (retry) clearTimeout(retry);
       setLive(false);
     };
-  }, [token, mode, apply]);
+  }, [token, scope, mode, apply, streamAttempt]);
 
   /* ---- Supabase realtime: nudge on the tenant's own writes -------- */
   useEffect(() => {
@@ -435,10 +461,12 @@ export function useQkmsView<T extends QkmsPayload>(mode: QkmsMode): UseQkmsResul
   }, [user, mode, queueRefresh]);
 
   const reconnect = useCallback(() => {
+    setStreamAttempt((current) => current + 1);
     void refresh(true);
   }, [refresh]);
 
-  return { data, state, error, live, lastSyncedAt, verifiedAt, refresh, reconnect };
+  const inScope = Boolean(token && scope && dataScope === scope && data?.mode === mode);
+  return { data: inScope ? data : null, state: inScope || state === 'error' ? state : 'loading', error, live: inScope && live && !error, lastSyncedAt: inScope ? lastSyncedAt : null, verifiedAt: inScope ? verifiedAt : null, refresh, reconnect };
 }
 
 /* ------------------------------------------------------------------ */
@@ -644,11 +672,10 @@ export function useQkmsActions(onChanged?: () => void) {
         if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
         onChanged?.();
         const versionNote = payload?.data?.validationStatus === 'pending'
-          ? ' Closed WITHOUT validation evidence: no new version was minted and the migration gate still requires validation.'
-          : payload?.data?.versionRecorded === false
-            ? ' The new key version could not be recorded; the version chain is unchanged.'
-            : '';
-        return { ok: true, message: `${successMessage}${versionNote}` };
+          ? ' This closes the work order only. Verify the rotation in the custody provider and validate dependent services.'
+          : '';
+        const auditNote = payload?.data?.auditRecorded === false ? ' The change was saved, but the audit event could not be recorded.' : '';
+        return { ok: true, message: `${successMessage}${versionNote}${auditNote}` };
       } catch (err) {
         return { ok: false, message: err instanceof Error ? err.message : 'Action failed' };
       } finally {
@@ -665,9 +692,9 @@ export function useQkmsActions(onChanged?: () => void) {
     requestRotation: (keyId: string, reason?: string, priority?: string) =>
       call(`rotate:${keyId}`, `/keys/${encodeURIComponent(keyId)}/rotation`, { reason, priority }, 'Rotation work order raised.'),
     revokeKey: (keyId: string, reason?: string) =>
-      call(`revoke:${keyId}`, `/keys/${encodeURIComponent(keyId)}/revoke`, { reason }, 'Key marked revoked.'),
+      call(`revoke:${keyId}`, `/keys/${encodeURIComponent(keyId)}/revoke`, { reason }, 'Key marked revoked in inventory. Confirm revocation with the custody provider.'),
     decommissionKey: (keyId: string, reason?: string) =>
-      call(`decommission:${keyId}`, `/keys/${encodeURIComponent(keyId)}/decommission`, { reason }, 'Key decommissioned.'),
+      call(`decommission:${keyId}`, `/keys/${encodeURIComponent(keyId)}/decommission`, { reason }, 'Key marked decommissioned in inventory. Confirm retirement with the custody provider.'),
     transitionJob: (jobId: string, status: RotationJobStatus, extra?: Record<string, unknown>) =>
       call(`job:${jobId}`, `/rotation-jobs/${encodeURIComponent(jobId.replace(/^job:/, ''))}/transition`, { status, ...extra }, `Work order moved to ${status}.`),
     createPolicy: (body: Record<string, unknown>) =>
@@ -687,7 +714,7 @@ export function useQkmsActions(onChanged?: () => void) {
         if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
         onChanged?.();
         const gate = payload.data as MigrationGate;
-        return { ok: true, message: `Migration gate: ${gate.state.replace(/_/g, ' ')}`, gate };
+        return { ok: true, message: `Migration gate: ${gate.state.replace(/_/g, ' ')}${payload.auditRecorded === false ? '. The assessment could not be recorded in the audit trail.' : ''}`, gate };
       } catch (err) {
         return { ok: false, message: err instanceof Error ? err.message : 'Precheck failed' };
       } finally {

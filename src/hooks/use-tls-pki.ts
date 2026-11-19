@@ -3,7 +3,7 @@
 import type { SourceRead } from '@/lib/source-read';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
-import { supabase } from '@/lib/supabase';
+import { useLiveModel } from '@/hooks/use-live-resource';
 import type {
   ConfigurationDrift,
   DistributionRow,
@@ -70,7 +70,7 @@ export interface TelemetryPayload extends CommonPayload {
 export interface PkiPayload extends CommonPayload {
   view: 'pki';
   certificates: PkiCertificate[];
-  lifecycle: { valid: number; expiring: number; expired: number; revoked: number; unknown: number };
+  lifecycle: { valid: number; expiring: number; expired: number; revoked: number; notYetValid: number; unknown: number };
   expiryBuckets: Array<{ label: string; count: number; percent: number; certificateIds: string[] }>;
   issuers: Array<{
     issuer: string;
@@ -96,6 +96,7 @@ export interface ProtocolPayload extends CommonPayload {
 }
 
 export interface OrchestratorPayload extends CommonPayload {
+  queuedAssetIds: string[];
   view: 'orchestrator';
   orchestration: OrchestrationState;
   endpointIndex: EndpointSummary[];
@@ -154,233 +155,28 @@ const REALTIME_TABLES = [
   'scanner_agents',
 ] as const;
 
-/** Distinguishes realtime channel topics between hook instances. */
-let nextRealtimeInstance = 0;
-
-/** Reconnect backoff bounds for the SSE stream, in milliseconds. */
-const RETRY_MIN_MS = 3_000;
-const RETRY_MAX_MS = 30_000;
-
 export interface UseTlsPkiResult<T extends TlsPkiPayload> {
   data: T | null;
   state: LoadState;
   error: string | null;
-  /** True only while the stream is genuinely open. Never "live" on stale data. */
   live: boolean;
   lastSyncedAt: string | null;
   refresh: (force?: boolean) => Promise<void>;
   reconnect: () => void;
 }
 
-/**
- * useTlsPkiView - the shared data contract for the four TLS/PKI dashboards.
- *
- * Three cooperating channels:
- *   1. fetch()            authoritative first paint and every manual refresh.
- *   2. SSE                the live push, over fetch + ReadableStream with an
- *                         Authorization HEADER. EventSource cannot set headers,
- *                         which forces the bearer token into the query string
- *                         where it leaks into access logs and history.
- *   3. Supabase realtime  a debounced nudge when the tenant's own rows change,
- *                         so an agent write lands without waiting for the push.
- *
- * The stream carries the WHOLE view payload and the page swaps state atomically,
- * so the KPI strip, the charts and the tables can never render a half-applied
- * update.
- */
 export function useTlsPkiView<T extends TlsPkiPayload>(view: TlsPkiView): UseTlsPkiResult<T> {
-  const { session, user } = useAuth();
-  const token = session?.access_token;
-
-  const [data, setData] = useState<T | null>(null);
-  const [state, setState] = useState<LoadState>('loading');
-  const [error, setError] = useState<string | null>(null);
-  const [live, setLive] = useState(false);
-  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
-
-  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Guards against an out-of-order frame overwriting newer state. */
-  const lastGeneratedRef = useRef<number>(0);
-
-  const apply = useCallback((next: T) => {
-    const generated = Date.parse(next.generatedAt || '');
-    if (Number.isFinite(generated)) {
-      if (generated < lastGeneratedRef.current) return;
-      lastGeneratedRef.current = generated;
-    }
-    setData(next);
-    setState('success');
-    setError(null);
-    setLastSyncedAt(new Date().toISOString());
-  }, []);
-
-  const refresh = useCallback(
-    async (force = false) => {
-      if (!token) {
-        setState('success');
-        return;
-      }
-      setState((current) => (current === 'success' ? current : 'loading'));
-      try {
-        const response = await fetch(`${API_BASE[view]}${force ? '?refresh=1' : ''}`, {
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-        if (!payload?.data) throw new Error('TLS/PKI intelligence response was empty');
-        apply(payload.data as T);
-      } catch (err) {
-        console.error(`TLS/PKI ${view} load failed:`, err);
-        setError(err instanceof Error ? err.message : 'Unable to load TLS/PKI intelligence');
-        // Keep the last good model on screen; the header switches to a
-        // disconnected state so nothing reads as live.
-        setState((current) => (current === 'success' ? current : 'error'));
-      }
-    },
-    [token, view, apply],
-  );
-
-  const queueRefresh = useCallback(() => {
-    if (refreshTimer.current) clearTimeout(refreshTimer.current);
-    refreshTimer.current = setTimeout(() => {
-      refreshTimer.current = null;
-      void refresh();
-    }, 600);
-  }, [refresh]);
-
-  useEffect(
-    () => () => {
-      if (refreshTimer.current) clearTimeout(refreshTimer.current);
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (!token || !user) {
-      setState('success');
-      return;
-    }
-    void refresh();
-  }, [token, user, refresh]);
-
-  /* ---- SSE: header-authenticated, exponential backoff ------------- */
-  useEffect(() => {
-    if (!token) return;
-    const controller = new AbortController();
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let attempt = 0;
-    let cancelled = false;
-
-    const parseFrame = (frame: string) => {
-      let eventName = 'message';
-      const dataLines: string[] = [];
-      for (const line of frame.split('\n')) {
-        if (line.startsWith('event:')) eventName = line.slice(6).trim();
-        else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
-        // ':' comment lines are heartbeats - ignored.
-      }
-      if (!dataLines.length) return;
-      const body = dataLines.join('\n');
-      if (eventName === 'tls-pki') {
-        try {
-          const parsed = JSON.parse(body) as T;
-          // Event validation: a frame for another view must never be applied.
-          if (parsed && typeof parsed === 'object' && parsed.view === view) apply(parsed);
-        } catch {
-          /* malformed frame - ignore rather than blank the page */
-        }
-      } else if (eventName === 'tls-pki-unchanged') {
-        // The server re-checked the estate and nothing changed: the data on
-        // screen is re-verified, so freshness advances without re-sending it.
-        setLastSyncedAt(new Date().toISOString());
-        setLive(true);
-      } else if (eventName === 'tls-pki-error') {
-        try {
-          setError(String(JSON.parse(body)?.message || 'TLS/PKI stream error'));
-        } catch {
-          /* ignore */
-        }
-      }
-    };
-
-    const connect = async () => {
-      try {
-        const response = await fetch(`${API_BASE[view]}/stream`, {
-          headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
-          signal: controller.signal,
-        });
-        if (!response.ok || !response.body) throw new Error(`SSE ${response.status}`);
-        attempt = 0;
-        setLive(true);
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let boundary = buffer.indexOf('\n\n');
-          while (boundary !== -1) {
-            parseFrame(buffer.slice(0, boundary));
-            buffer = buffer.slice(boundary + 2);
-            boundary = buffer.indexOf('\n\n');
-          }
-        }
-        throw new Error('stream ended');
-      } catch {
-        if (cancelled || controller.signal.aborted) return;
-        setLive(false);
-        attempt += 1;
-        const delay = Math.min(RETRY_MAX_MS, RETRY_MIN_MS * 2 ** Math.min(attempt - 1, 4));
-        if (retry) clearTimeout(retry);
-        retry = setTimeout(() => void connect(), delay);
-      }
-    };
-
-    void connect();
-    return () => {
-      cancelled = true;
-      controller.abort();
-      if (retry) clearTimeout(retry);
-      setLive(false);
-    };
-  }, [token, view, apply]);
-
-  /* ---- Tenant change: nothing from the previous tenant may remain ---- */
-  useEffect(() => {
-    lastGeneratedRef.current = 0;
-    setData(null);
-    setLastSyncedAt(null);
-  }, [user?.id]);
-
-  /* ---- Supabase realtime: nudge on the tenant's own writes -------- */
-  useEffect(() => {
-    if (!user) return;
-    // Topic unique per user AND hook instance: supabase.channel() returns the
-    // existing channel for a duplicate topic, and .on() after .subscribe()
-    // throws — two mounts of one view would blank the page (common-issues #63).
-    const instance = nextRealtimeInstance++;
-    const channels = REALTIME_TABLES.map((table) =>
-      supabase
-        .channel(`tls-pki-${view}-${table}-${user.id}-${instance}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` }, queueRefresh)
-        .subscribe(),
-    );
-    return () => {
-      for (const channel of channels) supabase.removeChannel(channel);
-    };
-  }, [user, view, queueRefresh]);
-
-  const reconnect = useCallback(() => {
-    void refresh(true);
-  }, [refresh]);
-
-  return { data, state, error, live, lastSyncedAt, refresh, reconnect };
+  const url = API_BASE[view];
+  const model = useLiveModel<T>({
+    url,
+    streamUrl: url + '/stream',
+    event: 'tls-pki',
+    realtimeTables: REALTIME_TABLES,
+    channelPrefix: 'tls-pki-' + view,
+    validate: (value) => value.view === view && typeof value.generatedAt === 'string',
+  });
+  return { ...model, lastSyncedAt: model.lastVerifiedAt };
 }
-
-/* ------------------------------------------------------------------ */
-/* Named wrappers - one per page                                       */
-/* ------------------------------------------------------------------ */
 
 export const useTlsTelemetry = () => useTlsPkiView<TelemetryPayload>('telemetry');
 export const usePkiVisibility = () => useTlsPkiView<PkiPayload>('pki');
@@ -400,27 +196,36 @@ export const useTlsOrchestrator = () => useTlsPkiView<OrchestratorPayload>('orch
 export function useTlsPkiDetail(view: TlsPkiView) {
   const { session } = useAuth();
   const token = session?.access_token;
+  const pending = useRef<AbortController | null>(null);
   const [loading, setLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+
+  useEffect(() => () => pending.current?.abort(), [view]);
 
   const load = useCallback(
     async <R,>(path: string): Promise<R | null> => {
       if (!token) return null;
+      pending.current?.abort();
+      const controller = new AbortController();
+      pending.current = controller;
       setLoading(true);
       setDetailError(null);
       try {
         const response = await fetch(`${API_BASE[view]}${path}`, {
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          signal: controller.signal,
         });
         const payload = await response.json().catch(() => ({}));
+        if (controller.signal.aborted) return null;
         if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
         return (payload.data ?? null) as R | null;
       } catch (err) {
+        if (controller.signal.aborted) return null;
         console.error('TLS/PKI detail load failed:', err);
         setDetailError(err instanceof Error ? err.message : 'Unable to load detail');
         return null;
       } finally {
-        setLoading(false);
+        if (pending.current === controller && !controller.signal.aborted) setLoading(false);
       }
     },
     [token, view],
@@ -523,9 +328,9 @@ export function useTlsOrchestratorActions(onChanged?: () => void) {
   );
 
   const submitPlan = useCallback(
-    (name: string) =>
+    (name: string, assetIds: string[]) =>
       run('plan:submit', () =>
-        fetch('/api/v1/migration-planner/plans', { method: 'POST', headers: authHeaders, body: JSON.stringify({ name }) }),
+        fetch('/api/v1/migration-planner/plans', { method: 'POST', headers: authHeaders, body: JSON.stringify({ name, assetIds }) }),
       ),
     [run, authHeaders],
   );
@@ -589,16 +394,17 @@ export function usePagedResource<T>(
           signal: controller.signal,
         });
         const payload = await response.json().catch(() => ({}));
+        if (controller.signal.aborted) return;
         if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
         setRows((payload.data?.[key] ?? []) as T[]);
         setTotal(Number(payload.data?.total ?? 0));
         setError(null);
       } catch (err) {
-        if ((err as Error)?.name === 'AbortError') return;
+        if (controller.signal.aborted) return;
         console.error('TLS/PKI table load failed:', err);
         setError(err instanceof Error ? err.message : 'Unable to load rows');
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
       // Debounced so typing in the search box does not fire a request per keystroke.
     }, 250);

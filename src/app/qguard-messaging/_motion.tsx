@@ -210,7 +210,7 @@ export function StageFrame({
 export type TagKind = 'ready' | 'optin' | 'android' | 'desktop' | 'setup' | 'planned';
 
 const TAG_LABEL: Record<TagKind, string> = {
-  ready: 'Available',
+  ready: 'In reviewed source',
   optin: 'Opt-in',
   android: 'Android',
   desktop: 'Desktop',

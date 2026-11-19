@@ -119,6 +119,20 @@ export default function DriftDetection() {
         />
       ) : null}
 
+      {noBaseline && data ? (
+        <>
+          {data.kpis.runtimeDowngrades > 0 ? (
+            <Panel className="p-5">
+              <SectionHeading title="Observed Runtime Downgrades" icon={GitCompare} />
+              {data.events.filter((event) => event.source === 'runtime-downgrade').map((event) => (
+                <ChangeRow key={event.id} event={event} onSelect={setSelected} />
+              ))}
+            </Panel>
+          ) : null}
+          {data.reads?.length ? <EvidenceSources sources={data.reads} /> : null}
+        </>
+      ) : null}
+
       {data && data.hasBaseline ? (
         <>
           {nextStep ? (

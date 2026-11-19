@@ -35,20 +35,43 @@ import {
   routeOf,
   webhookVerificationBody,
   base64Url,
-  cycleForPlayBasePlan,
+  decodeJwt,
+  decryptPurchaseToken,
+  encryptPurchaseToken,
+  inboxClaimDecision,
+  isAccessGranting,
+  isPlausiblePurchaseToken,
   isPlayConfigured,
+  listPriceCents,
   mapPlayState,
   parseRtdnMessage,
   pemToDer,
   PLAY_LIST_PRICING,
+  PLAY_NOTIFICATION_TYPES,
+  playAccountIdFor,
+  playBindingMatches,
+  playFacts,
+  playInvoiceRow,
   playJwtSigningInput,
+  playMayReplaceRow,
+  playNotificationAuditAction,
   PlayPurchaseError,
+  playProductCatalog,
   playProductIdFor,
+  playProductInfo,
   playServiceAccount,
-  playSubscriptionRows,
-  tierForPlayProduct,
+  playSubscriptionRow,
+  pubsubClaimsProblem,
+  rowGrantsAccess,
+  RTDN_MAX_ATTEMPTS,
+  sanitizeRtdnPayload,
   timingSafeEqualText,
+  tokenEncryptionKeyBytes,
 } from '../supabase/functions/billing/logic'
+import { ENTITLEMENT_CATALOG, entitlementsForTier } from '../supabase/functions/billing/entitlements'
+import { resolveRequiredTier } from '../src/lib/subscription-access'
+import { readFileSync } from 'node:fs'
+import { buildBillingOps } from '../src/lib/billing/billing-ops'
 
 const results: Array<{ name: string; ok: boolean; detail?: string }> = []
 function check(name: string, fn: () => void) {
@@ -181,7 +204,7 @@ const PLAY_ENV: Record<string, string> = {
   GOOGLE_PLAY_PACKAGE_NAME: 'com.qguard.messaging',
   GOOGLE_PLAY_SA_EMAIL: 'play@project.iam.gserviceaccount.com',
   GOOGLE_PLAY_SA_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\\nAAAA\\n-----END PRIVATE KEY-----',
-  PLAY_PRODUCT_PRO: 'qguard_pro_v2',
+  PLAY_PRODUCT_PRO_YEARLY: 'qh_pro_yearly_v2',
 }
 const playEnv = (key: string) => PLAY_ENV[key]
 const TOKEN_HASH = 'ab'.repeat(32)
@@ -190,16 +213,23 @@ function playResource(overrides: Record<string, any> = {}) {
   return {
     subscriptionState: 'SUBSCRIPTION_STATE_ACTIVE',
     startTime: '2026-10-01T00:00:00Z',
-    latestOrderId: 'GPA.1234-5678',
+    latestOrderId: 'GPA.0000-STALE',
     acknowledgementState: 'ACKNOWLEDGEMENT_STATE_PENDING',
     externalAccountIdentifiers: { obfuscatedExternalAccountId: USER },
-    lineItems: [{ productId: 'qguard_starter', expiryTime: '2026-11-01T00:00:00Z', offerDetails: { basePlanId: 'monthly' } }],
+    lineItems: [{
+      productId: 'qh_starter_monthly',
+      expiryTime: '2026-11-01T00:00:00Z',
+      latestSuccessfulOrderId: 'GPA.1234-5678',
+      offerDetails: { basePlanId: 'monthly' },
+      autoRenewingPlan: { autoRenewEnabled: true, recurringPrice: { currencyCode: 'EUR', units: '0', nanos: 990000000 } },
+    }],
     ...overrides,
   }
 }
 
-check('refund window constants match the published Refund Policy', () => {
-  assert.equal(REFUND_WINDOW_DAYS, REFUND_POLICY.initialWindowDays)
+check('no money-back guarantee is published; first-payment refunds still end the plan', () => {
+  assert.equal(REFUND_POLICY.moneyBackGuarantee, false)
+  assert.ok(REFUND_WINDOW_DAYS > 0)
   // 10 business days never spans more than 14 calendar days.
   assert.ok(REFUND_PROCESSING_GRACE_DAYS >= Math.ceil((REFUND_POLICY.processingDays / 5) * 7))
 })
@@ -260,8 +290,14 @@ check('reconciled payments become the same invoice row the webhook writes', () =
   assert.equal(invoiceRowFromTransaction({ ...tx, id: '' }, sub, 'I-ABCDEF123456', '2026-10-05T00:00:00Z'), null)
 })
 
-check('play: list prices are exactly the platform catalog', () => {
+check('play: USD list prices match the monthly and annual catalog', () => {
   assert.deepEqual(PLAY_LIST_PRICING, PLAN_PRICING)
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(PLAN_PRICING).map(([tier, price]) => [tier, [price.monthly, price.yearlyPerMonth * 12]])),
+    { Starter: [1, 12], Basic: [8, 60], Pro: [30, 240], Elite: [199, 1800] },
+  )
+  assert.equal(listPriceCents('Elite', 'annual'), 180_000)
+  assert.equal(listPriceCents('Basic', 'monthly'), 800)
 })
 
 check('play: configured only with a package AND a service account; health shows booleans only', () => {
@@ -272,70 +308,296 @@ check('play: configured only with a package AND a service account; health shows 
   const report = configurationReport(playEnv)
   assert.equal(report.playVerification, true)
   assert.equal(report.playRtdn, false)
+  assert.equal(report.playTokenEncryption, false)
   const text = JSON.stringify(report)
   for (const value of Object.values(PLAY_ENV)) assert.ok(!text.includes(value), `health leaked ${value}`)
   assert.equal(configurationReport(env).playVerification, false)
 })
 
-check('play: products, overrides and base plans map like the Express API', () => {
-  assert.equal(playProductIdFor(playEnv, 'Starter'), 'qguard_starter')
-  assert.equal(playProductIdFor(playEnv, 'Pro'), 'qguard_pro_v2')
-  assert.equal(tierForPlayProduct(playEnv, 'qguard_pro_v2'), 'Pro')
-  assert.equal(tierForPlayProduct(playEnv, 'qguard_pro'), null, 'an overridden id replaces the default')
-  assert.equal(cycleForPlayBasePlan('yearly'), 'annual')
-  assert.equal(cycleForPlayBasePlan('annual-plan'), 'annual')
-  assert.equal(cycleForPlayBasePlan('monthly'), 'monthly')
-  assert.equal(cycleForPlayBasePlan(undefined), 'monthly')
+check('play: the 8 products are qh_<tier>_<period>, remappable per product', () => {
+  assert.deepEqual(playProductCatalog(() => undefined).map((entry) => entry.productId), [
+    'qh_starter_monthly', 'qh_starter_yearly', 'qh_basic_monthly', 'qh_basic_yearly',
+    'qh_pro_monthly', 'qh_pro_yearly', 'qh_elite_monthly', 'qh_elite_yearly',
+  ])
+  assert.equal(playProductIdFor(playEnv, 'Pro', 'yearly'), 'qh_pro_yearly_v2')
+  assert.deepEqual(playProductInfo(playEnv, 'qh_pro_yearly_v2'), { tier: 'Pro', cycle: 'annual' })
+  assert.equal(playProductInfo(playEnv, 'qh_pro_yearly'), null, 'an overridden id replaces the default')
+  assert.deepEqual(playProductInfo(playEnv, 'qh_elite_monthly'), { tier: 'Elite', cycle: 'monthly' })
+  assert.equal(playProductInfo(playEnv, 'qguard_starter'), null, 'retired ids grant nothing')
 })
 
-check('play: subscription states keep entitlement exactly when Play policy says', () => {
-  assert.deepEqual(mapPlayState('SUBSCRIPTION_STATE_ACTIVE'), { status: 'active', entitled: true, autoRenew: true })
-  assert.deepEqual(mapPlayState('SUBSCRIPTION_STATE_IN_GRACE_PERIOD'), { status: 'pending_renewal', entitled: true, autoRenew: true })
-  assert.deepEqual(mapPlayState('SUBSCRIPTION_STATE_CANCELED'), { status: 'active', entitled: true, autoRenew: false })
-  assert.equal(mapPlayState('SUBSCRIPTION_STATE_ON_HOLD').entitled, false)
+check('play: subscription states grant access exactly when Play policy says', () => {
+  const now = Date.parse('2026-11-12T00:00:00Z')
+  assert.equal(mapPlayState('SUBSCRIPTION_STATE_ACTIVE').entitled, true)
+  assert.deepEqual(mapPlayState('SUBSCRIPTION_STATE_IN_GRACE_PERIOD'), { status: 'pending_renewal', entitled: true, autoRenew: true, paymentIssue: true })
+  // Cancelled = renewal off; access continues to the paid-through time, then ends.
+  assert.deepEqual(mapPlayState('SUBSCRIPTION_STATE_CANCELED', '2026-12-01T00:00:00Z', now), { status: 'active', entitled: true, autoRenew: false, paymentIssue: false })
+  assert.equal(mapPlayState('SUBSCRIPTION_STATE_CANCELED', '2026-11-01T00:00:00Z', now).status, 'expired')
+  assert.deepEqual(mapPlayState('SUBSCRIPTION_STATE_ON_HOLD'), { status: 'past_due', entitled: false, autoRenew: true, paymentIssue: true })
   assert.equal(mapPlayState('SUBSCRIPTION_STATE_PAUSED').entitled, false)
-  assert.deepEqual(mapPlayState('SUBSCRIPTION_STATE_EXPIRED'), { status: 'expired', entitled: false, autoRenew: false })
-  assert.deepEqual(mapPlayState('SOMETHING_NEW'), { status: 'incomplete', entitled: false, autoRenew: false })
+  assert.equal(mapPlayState('SUBSCRIPTION_STATE_EXPIRED').status, 'expired')
+  // A pending purchase is NEVER access.
+  assert.deepEqual(mapPlayState('SUBSCRIPTION_STATE_PENDING'), { status: 'incomplete', entitled: false, autoRenew: false, paymentIssue: false })
+  assert.equal(mapPlayState('SUBSCRIPTION_STATE_PENDING_PURCHASE_CANCELED').entitled, false)
+  assert.equal(mapPlayState('SOMETHING_NEW').entitled, false)
 })
 
-check('play: a verified purchase becomes the account row and a list-price invoice', () => {
-  const applied = playSubscriptionRows(playEnv, playResource(), TOKEN_HASH, USER, '2026-10-19T00:00:00Z')
-  assert.equal(applied.userId, USER)
-  assert.equal(applied.tier, 'Starter')
-  assert.equal(applied.subscription.provider, 'google_play')
-  assert.equal(applied.subscription.provider_subscription_id, TOKEN_HASH)
-  assert.equal(applied.subscription.current_period_end, '2026-11-01T00:00:00Z')
-  assert.equal(applied.invoice?.amount_paid_cents, 100)
-  assert.equal(applied.invoice?.provider_invoice_id, 'GPA.1234-5678')
-  const yearly = playSubscriptionRows(playEnv, playResource({ lineItems: [{ productId: 'qguard_pro_v2', offerDetails: { basePlanId: 'yearly' } }] }), TOKEN_HASH, USER, 'now')
-  assert.equal(yearly.invoice?.amount_paid_cents, 20 * 12 * 100, 'a yearly plan is billed once at 12x the monthly-equivalent')
-  const expired = playSubscriptionRows(playEnv, playResource({ subscriptionState: 'SUBSCRIPTION_STATE_EXPIRED' }), TOKEN_HASH, USER, 'now')
-  assert.equal(expired.invoice, null, 'no payment is recorded for a purchase that grants nothing')
-  assert.equal(expired.subscription.status, 'expired')
+check('play: a verified purchase becomes the account row and an invoice at Google\'s recurring price', () => {
+  const now = Date.parse('2026-10-19T00:00:00Z')
+  const facts = playFacts(playEnv, playResource(), now)
+  assert.equal(facts.tier, 'Starter')
+  assert.equal(facts.cycle, 'monthly')
+  assert.equal(facts.orderId, 'GPA.1234-5678')
+  assert.deepEqual(facts.price, { cents: 99, currency: 'EUR', source: 'play_recurring_price' })
+  const row = playSubscriptionRow(facts, { userId: USER, tokenHash: TOKEN_HASH, tokenEncrypted: 'v1.x.y', linkedTokenHash: null }, null, '2026-10-19T00:00:00Z')
+  assert.equal(row.provider, 'google_play')
+  assert.equal(row.provider_subscription_id, TOKEN_HASH)
+  assert.equal(row.product_id, 'qh_starter_monthly')
+  assert.equal(row.current_period_end, '2026-11-01T00:00:00Z')
+  assert.equal(row.renewal_date, '2026-11-01T00:00:00Z')
+  assert.equal(row.cancel_at_period_end, false)
+  assert.equal(row.acknowledgement_state, 'pending')
+  assert.equal(row.purchase_token_encrypted, 'v1.x.y')
+  const invoice = playInvoiceRow(facts, USER, TOKEN_HASH, '2026-10-19T00:00:00Z')
+  assert.equal(invoice?.amount_paid_cents, 99)
+  assert.equal(invoice?.currency, 'EUR')
+  assert.equal(invoice?.provider_invoice_id, 'GPA.1234-5678')
+  // Without a reported price the catalog list price is used and labelled.
+  const listed = playFacts(playEnv, playResource({ lineItems: [{ productId: 'qh_elite_yearly', expiryTime: '2027-10-01T00:00:00Z', latestSuccessfulOrderId: 'GPA.9' }] }), now)
+  assert.deepEqual(listed.price, { cents: 180_000, currency: 'USD', source: 'catalog_list_price' })
+  assert.equal(listed.orderId, 'GPA.9', 'line-item order id wins over the deprecated top-level one')
+  const pending = playFacts(playEnv, playResource({ subscriptionState: 'SUBSCRIPTION_STATE_PENDING' }), now)
+  assert.equal(playInvoiceRow(pending, USER, TOKEN_HASH, 'now'), null, 'no payment is recorded for a pending purchase')
 })
 
-check('play: purchases bound to another account, to nobody, or for an unknown product are refused', () => {
+check('play: license-tester purchases are recorded at zero and flagged complimentary', () => {
+  const facts = playFacts(playEnv, playResource({ testPurchase: {} }), Date.parse('2026-10-19T00:00:00Z'))
+  assert.equal(facts.testPurchase, true)
+  const row = playSubscriptionRow(facts, { userId: USER, tokenHash: TOKEN_HASH, tokenEncrypted: null, linkedTokenHash: null }, null, 'now')
+  assert.equal(row.amount_cents, 0)
+  assert.equal((row.metadata as Record<string, unknown>).complimentary, true)
+  assert.equal(playInvoiceRow(facts, USER, TOKEN_HASH, 'now')?.amount_paid_cents, 0)
+})
+
+check('play: cancellation keeps access until expiry and records why', () => {
+  const facts = playFacts(playEnv, playResource({
+    subscriptionState: 'SUBSCRIPTION_STATE_CANCELED',
+    canceledStateContext: { userInitiatedCancellation: {} },
+  }), Date.parse('2026-10-19T00:00:00Z'))
+  const row = playSubscriptionRow(facts, { userId: USER, tokenHash: TOKEN_HASH, tokenEncrypted: null, linkedTokenHash: null }, { cancelled_at: '2026-10-10T00:00:00Z' }, '2026-10-19T00:00:00Z')
+  assert.equal(row.status, 'active')
+  assert.equal(row.cancel_at_period_end, true)
+  assert.equal(row.auto_renew, false)
+  assert.equal(row.renewal_date, null, 'no renewal date is shown for a cancelled plan')
+  assert.equal(row.cancel_reason, 'user')
+  assert.equal(row.cancelled_at, '2026-10-10T00:00:00Z', 'the first cancel time is kept')
+})
+
+check('play: unknown products and empty resources are refused', () => {
   const code = (fn: () => unknown) => {
     try { fn(); return null } catch (error) { return error instanceof PlayPurchaseError ? error.code : String(error) }
   }
-  const other = '00000000-0000-4000-8000-000000000000'
-  assert.equal(code(() => playSubscriptionRows(playEnv, playResource(), TOKEN_HASH, other, 'now')), 'ACCOUNT_MISMATCH')
-  assert.equal(code(() => playSubscriptionRows(playEnv, playResource({ externalAccountIdentifiers: {} }), TOKEN_HASH, null, 'now')), 'NOT_BOUND')
-  assert.equal(code(() => playSubscriptionRows(playEnv, playResource({ lineItems: [{ productId: 'other_app_sub' }] }), TOKEN_HASH, USER, 'now')), 'UNKNOWN_PRODUCT')
-  // RTDN (no caller) trusts the binding Google recorded.
-  assert.equal(playSubscriptionRows(playEnv, playResource(), TOKEN_HASH, null, 'now').userId, USER)
+  assert.equal(code(() => playFacts(playEnv, playResource({ lineItems: [{ productId: 'other_app_sub' }] }))), 'UNKNOWN_PRODUCT')
+  assert.equal(code(() => playFacts(playEnv, playResource({ lineItems: [] }))), 'NO_LINE_ITEM')
 })
 
-check('play: RTDN envelopes decode, junk is ignored, the secret compares in constant time', () => {
+async function playAsyncChecks() {
+  const hashed = await playAccountIdFor(USER)
+  check('play: the obfuscated account id is a 64-hex hash, never the raw user id', () => {
+    assert.match(hashed, /^[0-9a-f]{64}$/)
+    assert.notEqual(hashed, USER)
+  })
+  const matches = {
+    hashed: await playBindingMatches(hashed, USER),
+    legacy: await playBindingMatches(USER, USER),
+    other: await playBindingMatches(await playAccountIdFor('00000000-0000-4000-8000-000000000000'), USER),
+    empty: await playBindingMatches('', USER),
+  }
+  check('play: a purchase binds only to the account that made it', () => {
+    assert.deepEqual(matches, { hashed: true, legacy: true, other: false, empty: false })
+  })
+
+  const key = crypto.getRandomValues(new Uint8Array(32))
+  const sealed = await encryptPurchaseToken(key, 'opaque.purchase-token_123')
+  const opened = await decryptPurchaseToken(key, sealed)
+  let tampered = 'opened'
+  try {
+    const parts = sealed.split('.')
+    await decryptPurchaseToken(key, `${parts[0]}.${parts[1]}.${parts[2].slice(0, -2)}AA`)
+  } catch {
+    tampered = 'rejected'
+  }
+  let wrongKey = 'opened'
+  try {
+    await decryptPurchaseToken(crypto.getRandomValues(new Uint8Array(32)), sealed)
+  } catch {
+    wrongKey = 'rejected'
+  }
+  check('play: purchase tokens are sealed with AES-256-GCM and tamper-evident', () => {
+    assert.equal(opened, 'opaque.purchase-token_123')
+    assert.ok(!sealed.includes('purchase-token'))
+    assert.equal(tampered, 'rejected')
+    assert.equal(wrongKey, 'rejected')
+    const keyEnv = (name: string) => (name === 'PLAY_TOKEN_ENCRYPTION_KEY' ? Buffer.from(key).toString('base64') : undefined)
+    assert.equal(tokenEncryptionKeyBytes(keyEnv)?.length, 32)
+    assert.equal(tokenEncryptionKeyBytes((name) => (name === 'PLAY_TOKEN_ENCRYPTION_KEY' ? 'c2hvcnQ=' : undefined)), null, 'a short key is refused')
+  })
+}
+
+check('play: a replaced or stale token never overwrites the current plan', () => {
+  const now = Date.parse('2026-11-12T00:00:00Z')
+  const current = { provider: 'google_play', provider_subscription_id: 'new', linked_purchase_token_hash: 'old', status: 'active', current_period_end: '2026-12-01T00:00:00Z' }
+  assert.equal(playMayReplaceRow(current, { tokenHash: 'new', entitled: false }, now), true, 'same token always applies')
+  assert.equal(playMayReplaceRow(current, { tokenHash: 'old', entitled: false }, now), false, 'EXPIRED for the replaced token is ignored')
+  assert.equal(playMayReplaceRow(current, { tokenHash: 'old', entitled: true }, now), false)
+  assert.equal(playMayReplaceRow(current, { tokenHash: 'other', entitled: true }, now), true, 'a new entitled purchase replaces')
+  assert.equal(playMayReplaceRow(current, { tokenHash: 'other', entitled: false }, now), false, 'a lapsed foreign token cannot lock the account')
+  assert.equal(playMayReplaceRow({ ...current, status: 'expired' }, { tokenHash: 'other', entitled: false }, now), true)
+  assert.equal(playMayReplaceRow(null, { tokenHash: 'x', entitled: false }, now), true)
+})
+
+check('access rule: no trial, provider-aware grace (mirrors SQL qguard_subscription_access_until)', () => {
+  const now = Date.parse('2026-11-12T12:00:00Z')
+  assert.equal(rowGrantsAccess({ provider: 'manual', status: 'trial', current_period_end: null }, now), false)
+  assert.equal(rowGrantsAccess({ provider: 'manual', status: 'active', current_period_end: null }, now), true)
+  assert.equal(rowGrantsAccess({ provider: 'google_play', status: 'active', current_period_end: '2026-11-12T11:30:00Z' }, now), true, '30 min tolerance for RTDN latency')
+  assert.equal(rowGrantsAccess({ provider: 'google_play', status: 'active', current_period_end: '2026-11-12T10:00:00Z' }, now), false)
+  assert.equal(rowGrantsAccess({ provider: 'paypal', status: 'active', current_period_end: '2026-11-10T12:00:00Z' }, now), true, 'PayPal renewal lag')
+  assert.equal(rowGrantsAccess({ provider: 'paypal', status: 'past_due', current_period_end: '2026-12-10T12:00:00Z' }, now), false)
+  assert.equal(isAccessGranting('trial'), false)
+  const sql = readFileSync(new URL('../supabase/google-play-billing-v2.sql', import.meta.url), 'utf8')
+  assert.match(sql, /WHEN p_provider = 'google_play' THEN p_period_end \+ INTERVAL '1 hour'/)
+  assert.match(sql, /ELSE p_period_end \+ INTERVAL '72 hours'/)
+  assert.match(sql, /NOT IN \('active', 'pending_renewal'\) THEN NULL/)
+})
+
+check('entitlements: strict ladder, every tier includes the ones below', () => {
+  assert.equal(entitlementsForTier('Starter').length, 10)
+  assert.equal(entitlementsForTier('Basic').length, 20)
+  assert.equal(entitlementsForTier('Pro').length, 30)
+  assert.equal(entitlementsForTier('Elite').length, ENTITLEMENT_CATALOG.length)
+  assert.ok(entitlementsForTier('Basic').includes('quantum_messaging'), 'Basic includes Starter messaging (owner decision 2026-11-12)')
+  assert.ok(!entitlementsForTier('Pro').includes('qkms'))
+  assert.ok(!entitlementsForTier('Pro').includes('compliance_control_mapping'))
+  assert.ok(entitlementsForTier('Elite').includes('qkms'))
+  assert.deepEqual(entitlementsForTier('free'), [], 'there is no free tier')
+  assert.deepEqual(entitlementsForTier(null), [])
+})
+
+check('entitlements: the SQL seed matches entitlements.ts key for key', () => {
+  const sql = readFileSync(new URL('../supabase/google-play-billing-v2.sql', import.meta.url), 'utf8')
+  const seeded = [...sql.matchAll(/\('([a-z_0-9]+)', '(Starter|Basic|Pro|Elite)', '[^']+', \d+\)/g)].map((m) => `${m[1]}:${m[2]}`).sort()
+  const catalog = ENTITLEMENT_CATALOG.map((entry) => `${entry.key}:${entry.minTier}`).sort()
+  assert.deepEqual(seeded, catalog)
+})
+
+check('entitlements: web route gating agrees with the catalog (maintain current access)', () => {
+  for (const entry of ENTITLEMENT_CATALOG) {
+    for (const route of entry.routes ?? []) {
+      assert.equal(resolveRequiredTier(route), entry.minTier.toLowerCase(), `${entry.key} ${route}`)
+    }
+  }
+})
+
+check('entitlements: SQL product seed = 8 Play + 8 PayPal at the catalog prices', () => {
+  const sql = readFileSync(new URL('../supabase/google-play-billing-v2.sql', import.meta.url), 'utf8')
+  const rows = [...sql.matchAll(/\('((?:qh|paypal)_[a-z]+_(?:monthly|yearly))',\s+'(google_play|paypal)',\s+'(\w+)',\s+'(monthly|yearly)',\s+([\d.]+),/g)]
+  assert.equal(rows.length, 16)
+  for (const [, productId, platform, tier, period, price] of rows) {
+    const expected = listPriceCents(tier as 'Starter', period as 'monthly') / 100
+    assert.equal(Number(price), expected, productId)
+    if (platform === 'google_play') assert.equal(productId, playProductIdFor(() => undefined, tier as 'Starter', period as 'monthly'))
+  }
+})
+
+check('play: RTDN envelopes decode; tokens never reach storage; types map to lifecycle events', () => {
   const payload = { packageName: 'com.qguard.messaging', subscriptionNotification: { notificationType: 2, purchaseToken: 'tok' } }
   const body = { message: { messageId: 'm-1', data: Buffer.from(JSON.stringify(payload)).toString('base64') } }
   assert.deepEqual(parseRtdnMessage(body), { messageId: 'm-1', payload })
   assert.equal(parseRtdnMessage({ message: { data: '%%%' } }), null)
   assert.equal(parseRtdnMessage({}), null)
+  const clean = sanitizeRtdnPayload({ ...payload, voidedPurchaseNotification: { purchaseToken: 'tok2', orderId: 'GPA.1' } })
+  assert.ok(!JSON.stringify(clean).includes('tok'), 'no token in the stored payload')
+  assert.equal((clean.voidedPurchaseNotification as Record<string, unknown>).orderId, 'GPA.1')
+  assert.equal(payload.subscriptionNotification.purchaseToken, 'tok', 'the live payload is not mutated')
+  assert.equal(playNotificationAuditAction(2), 'subscription.renewed')
+  assert.equal(playNotificationAuditAction(12), 'subscription.revoked')
+  assert.equal(playNotificationAuditAction(13), 'subscription.expired')
+  assert.equal(playNotificationAuditAction(5), 'subscription.on_hold')
+  assert.equal(playNotificationAuditAction(19), null, 'price-change notices only re-sync')
+  assert.equal(PLAY_NOTIFICATION_TYPES[20], 'SUBSCRIPTION_PENDING_PURCHASE_CANCELED')
   assert.equal(timingSafeEqualText('secret', 'secret'), true)
   assert.equal(timingSafeEqualText('secret', 'secreT'), false)
-  assert.equal(timingSafeEqualText('secret', 'secret!'), false)
 })
+
+check('play: the RTDN inbox claims, retries, then dead-letters', () => {
+  const now = Date.parse('2026-11-12T00:00:00Z')
+  assert.equal(inboxClaimDecision(null, now), 'run')
+  assert.equal(inboxClaimDecision({ status: 'processed' }, now), 'duplicate')
+  assert.equal(inboxClaimDecision({ status: 'failed', attempts: 3 }, now), 'run')
+  assert.equal(inboxClaimDecision({ status: 'failed', attempts: RTDN_MAX_ATTEMPTS }, now), 'dead-letter')
+  assert.equal(inboxClaimDecision({ status: 'dead_letter' }, now), 'dead-letter')
+  assert.equal(inboxClaimDecision({ status: 'processing', claimed_at: new Date(now - 10_000).toISOString() }, now), 'in-progress')
+  assert.equal(inboxClaimDecision({ status: 'processing', claimed_at: new Date(now - 10 * 60_000).toISOString() }, now), 'run', 'a crashed claim goes stale')
+})
+
+check('play: Pub/Sub OIDC claims are checked for issuer, audience, expiry and signer', () => {
+  const now = 1_800_000_000
+  const good = { iss: 'https://accounts.google.com', aud: 'https://billing.example/rtdn', exp: now + 600, iat: now - 5, email: 'push@proj.iam.gserviceaccount.com', email_verified: true }
+  const expected = { audience: 'https://billing.example/rtdn', email: 'push@proj.iam.gserviceaccount.com' }
+  assert.equal(pubsubClaimsProblem(good, expected, now), null)
+  assert.equal(pubsubClaimsProblem({ ...good, iss: 'https://evil.example' }, expected, now), 'issuer')
+  assert.equal(pubsubClaimsProblem({ ...good, aud: 'https://other' }, expected, now), 'audience')
+  assert.equal(pubsubClaimsProblem({ ...good, exp: now - 3600 }, expected, now), 'expired', 'a replayed old token is refused')
+  assert.equal(pubsubClaimsProblem({ ...good, email: 'someone@else.com' }, expected, now), 'email')
+  assert.equal(pubsubClaimsProblem({ ...good, email_verified: false }, expected, now), 'email_unverified')
+  assert.equal(pubsubClaimsProblem({ ...good, email: 'x' }, { ...expected, email: null }, now), null, 'signer check is optional')
+  const jwt = `${base64Url(JSON.stringify({ alg: 'RS256', kid: 'k1' }))}.${base64Url(JSON.stringify(good))}.${base64Url('sig')}`
+  assert.equal(decodeJwt(jwt)?.header.kid, 'k1')
+  assert.equal(decodeJwt('not.a.jwt.at.all'), null)
+})
+
+check('billing ops: inbox health and lifecycle counts come only from real rows', () => {
+  const now = new Date('2026-11-12T12:00:00Z')
+  const empty = buildBillingOps({ now, inbox: [], auditEvents: [], subscriptions: [] })
+  assert.equal(empty.inbox.rtdnSeen, false, 'an empty inbox is reported as never seen, not as healthy')
+  const row = (id: string, status: string, received: string, error: string | null = null) => ({ id, event_id: id, notification_type: 'SUBSCRIPTION_RENEWED', status, attempts: 1, received_at: received, claimed_at: received, processed_at: null, last_error: error })
+  const ops = buildBillingOps({
+    now,
+    inbox: [
+      row('rtdn_1', 'processed', '2026-11-11T00:00:00Z'),
+      row('rtdn_2', 'failed', '2026-11-10T00:00:00Z', 'Google Play API 503'),
+      row('rtdn_3', 'dead_letter', '2026-09-01T00:00:00Z', 'UNBOUND'),
+      row('verify_abc', 'processed', '2026-11-11T00:00:00Z'),
+    ],
+    auditEvents: [
+      { action: 'subscription.renewed', created_at: '2026-11-01T00:00:00Z' },
+      { action: 'subscription.renewed', created_at: '2026-08-01T00:00:00Z' },
+      { action: 'subscription.revoked', created_at: '2026-11-02T00:00:00Z' },
+      { action: 'purchase.rejected', created_at: '2026-11-03T00:00:00Z' },
+      { action: null, created_at: '2026-11-03T00:00:00Z' },
+    ],
+    subscriptions: [{ provider: 'google_play', status: 'past_due' }, { provider: 'paypal', status: 'pending_renewal' }, { provider: 'paypal', status: 'active' }],
+  })
+  assert.deepEqual(
+    { seen: ops.inbox.rtdnSeen, received: ops.inbox.received, processed: ops.inbox.processed, failed: ops.inbox.failed, dead: ops.inbox.deadLetter, oldest: ops.inbox.oldestUnprocessedAt },
+    { seen: true, received: 2, processed: 1, failed: 1, dead: 1, oldest: '2026-11-10T00:00:00Z' },
+    'verification ledger rows are not RTDN messages; only the 30-day window counts as received',
+  )
+  assert.equal(ops.inbox.lastError, 'Google Play API 503')
+  assert.equal(ops.lifecycle.renewals, 1, 'outside the window is not counted')
+  assert.equal(ops.lifecycle.revocations, 1)
+  assert.equal(ops.verification.rejected, 1)
+  assert.deepEqual(ops.paymentIssues, { googlePlay: 1, paypal: 1, other: 0 })
+})
+
+check('play: purchase tokens are validated before use', () => {
+  assert.equal(isPlausiblePurchaseToken('a'.repeat(40)), true)
+  assert.equal(isPlausiblePurchaseToken('short'), false)
+  assert.equal(isPlausiblePurchaseToken('a'.repeat(30) + ' <script>'), false)
+  assert.equal(isPlausiblePurchaseToken(42), false)
+})
+
 
 async function playJwtRoundTrip() {
   // A real RSA key in the PEM form Google issues; signed the way index.ts
@@ -359,7 +621,11 @@ async function playJwtRoundTrip() {
 }
 
 async function live() {
-  const base = 'https://xsbdlahuecadzfajlvis.supabase.co/functions/v1/billing'
+  // The project the apps are built against (root .env), never a hard-coded ref.
+  const supabaseUrl = process.env.VITE_SUPABASE_URL
+    || readFileSync(new URL('../.env', import.meta.url), 'utf8').match(/^VITE_SUPABASE_URL=["']?([^"'\r\n]+)/m)?.[1]
+  if (!supabaseUrl) throw new Error('VITE_SUPABASE_URL is not set')
+  const base = `${supabaseUrl.replace(/\/+$/, '')}/functions/v1/billing`
   const origin = 'http://tauri.localhost'
 
   const preflight = await fetch(`${base}/api/v1/paypal/subscribe`, {
@@ -410,12 +676,38 @@ async function live() {
     assert.equal(webhookBody?.verified, false)
   })
 
+  const catalog = await fetch(`${base}/api/v1/subscriptions/catalog?platform=google_play`)
+  const catalogBody = await catalog.json().catch(() => ({}))
+  check('live: public catalog lists the 8 Play products at the confirmed prices, no trial', () => {
+    assert.equal(catalog.status, 200)
+    const products = catalogBody?.data?.products ?? []
+    assert.equal(products.length, 8)
+    for (const product of products) {
+      assert.equal(product.listPrice.amount * 100, listPriceCents(product.tier, product.billingPeriod), product.productId)
+      assert.equal(product.productId, playProductIdFor(() => undefined, product.tier, product.billingPeriod))
+    }
+    assert.deepEqual(catalogBody.data.rules, { freeTier: false, freeTrial: false, annualDiscount: true, moneyBackGuarantee: false })
+    assert.equal(catalogBody.data.tiers.length, 4)
+  })
+
+  for (const [method, path] of [['GET', '/api/v1/subscriptions/me'], ['GET', '/api/v1/subscriptions/entitlements'], ['GET', '/api/v1/subscriptions/history'], ['POST', '/api/v1/subscriptions/verify'], ['POST', '/api/v1/subscriptions/restore']]) {
+    const response = await fetch(`${base}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: method === 'POST' ? '{}' : undefined })
+    check(`live: ${method} ${path} without a session is refused (401)`, () => assert.equal(response.status, 401))
+  }
+
+  const rtdnBody = JSON.stringify({ message: { messageId: 'forged-1', data: Buffer.from(JSON.stringify({ packageName: 'com.qguard.messaging', subscriptionNotification: { notificationType: 4, purchaseToken: 'x'.repeat(40) } })).toString('base64') } })
+  for (const path of ['/api/v1/webhooks/google-play/rtdn', '/api/v1/play-billing/rtdn']) {
+    const forgedRtdn = await fetch(`${base}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer forged.jwt.token' }, body: rtdnBody })
+    check(`live: an unauthenticated RTDN push to ${path} changes nothing`, () => assert.ok([401, 503].includes(forgedRtdn.status), `status ${forgedRtdn.status}`))
+  }
+
   const unknown = await fetch(`${base}/api/v1/nope`, { method: 'POST' })
   check('live: unknown routes are 404, not a crash', () => assert.equal(unknown.status, 404))
 }
 
 async function main() {
   await playJwtRoundTrip()
+  await playAsyncChecks()
   if (process.argv.includes('--live')) await live()
   let failed = 0
   for (const result of results) {

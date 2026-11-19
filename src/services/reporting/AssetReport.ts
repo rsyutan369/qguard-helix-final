@@ -27,7 +27,7 @@ import {
   type SeverityOrUnrated,
 } from '@/lib/assets/asset-register'
 import type { InventoryKpi, InventoryReport, ReconciliationRow } from './InventoryReport'
-import type { ReportBranding, ReportTable } from './schemas/ReportSchema'
+import type { ReportBranding, ReportProvenance, ReportTable } from './schemas/ReportSchema'
 import {
   TONE_HEX,
   toneForLabel,
@@ -103,6 +103,7 @@ export interface BuildAssetReportInput {
   branding: ReportBranding
   generatedBy: string
   generatedAt?: string
+  provenance?: Omit<ReportProvenance, 'validationStatus'>
 }
 
 /* ================================================================== */
@@ -561,7 +562,9 @@ function executiveSummary(scopeRows: AssetRegisterRow[], t: RegisterTotals, regi
       `Start with the ${plural(criticalHigh, 'critical and high-severity component')}${internetFacingVulnerable ? ` on the ${plural(internetFacingVulnerable, 'internet-facing asset')} in scope` : ''}, beginning with ${exposures[0]?.riskBearing ?? 'the leading root cause'}. Every exposure in this report lists its PQC target and the platform module that executes the change.`,
     )
   } else if (c.vulnerable > 0) {
-    paragraphs.push(`All vulnerable components are medium or low severity; schedule them through the standard migration cadence, beginning with ${exposures[0]?.riskBearing ?? 'the leading root cause'}.`)
+    paragraphs.push(t.vulnerableSeverity.unrated
+      ? 'Some vulnerable components have no severity rating. Confirm their priority before scheduling remediation.'
+      : `The recorded vulnerable components are medium or low severity. Begin with ${exposures[0]?.riskBearing ?? 'the leading root cause'}.`)
   }
 
   const stale = t.freshness.stale
@@ -572,7 +575,7 @@ function executiveSummary(scopeRows: AssetRegisterRow[], t: RegisterTotals, regi
       : `All in-scope evidence is less than ${STALE_AFTER_HOURS} hours old.`
   const owners = t.owners.unassigned ? ` ${t.owners.unassigned} of ${plural(t.assets, 'asset')} have no recorded owner.` : ''
   paragraphs.push(`${freshness}${owners}`)
-  paragraphs.push('Migration cost, sequencing and timeline are modelled by the Quantum Readiness Engine and are deliberately not estimated in this register; generate the Migration Program report in Report Center for the same assets.')
+  paragraphs.push('Use Quantum Readiness Reports to review assessment and migration evidence for these assets.')
 
   return { headline, paragraphs, highlights: highlights(t) }
 }
@@ -587,7 +590,7 @@ function decisionRegister(rows: AssetRegisterRow[], t: RegisterTotals, exposures
     decisions.push({
       priority: t.vulnerableSeverity.critical + t.vulnerableSeverity.high > 0 ? 'P1' : 'P2',
       decision: `Approve PQC remediation of ${plural(t.components.vulnerable, 'quantum-vulnerable component')} across ${plural(vulnerableAssets.length, 'asset')}.`,
-      rationale: `${t.vulnerableSeverity.critical} critical and ${t.vulnerableSeverity.high} high-severity components rely on legacy public-key cryptography.${transport ? ` ${transport} of them protect data in transit, which is exposed to harvest-now, decrypt-later capture today.` : ''}`,
+      rationale: `${t.vulnerableSeverity.critical} critical and ${t.vulnerableSeverity.high} high-severity components were recorded.${transport ? ` ${transport} vulnerable components relate to transport cryptography. Evaluate data sensitivity, retention and transmission exposure before rating HNDL risk.` : ''}`,
       evidence: `${exposures.length} consolidated root cause(s); leading: ${exposures[0]?.riskBearing ?? '—'}.`,
       owner: ownerLine,
     })
@@ -692,7 +695,7 @@ function dossierFor(row: AssetRegisterRow, mode: 'technical' | 'remediation'): A
     { label: 'Components', value: `${row.components.total} (${row.components.vulnerable} vulnerable · ${row.components.pqcReady} PQC-ready · ${row.components.unclassified} unclassified)` },
     { label: 'Worst component', value: row.worstComponentSeverity ? SEVERITY_LABEL[row.worstComponentSeverity] : '—' },
     { label: 'Last scanned', value: `${utcStamp(row.lastScanned)} (${row.freshness.label})` },
-    { label: 'Lifecycle', value: row.lifecycle ? `${row.lifecycle.label} · ${row.lifecycle.openActions} open action(s) · validation ${row.lifecycle.validationStatus}` : 'Not tracked by the migration workflow' },
+    { label: 'Lifecycle', value: row.lifecycle ? `${row.lifecycle.label} · ${row.lifecycle.openActions} open action(s) · validation ${row.lifecycle.validationStatus}` : 'Workflow status unavailable in this snapshot' },
     { label: 'Configuration findings', value: `${row.posture.total} (${row.posture.flagged} flagged)` },
     { label: 'Detection signals', value: `${row.detectionSignals} raw scanner rows behind these components` },
   ]
@@ -817,7 +820,7 @@ function validate(rows: AssetRegisterRow[], t: RegisterTotals, register: AssetRe
   add(
     'No contradictory posture flags',
     t.contradictoryFlags === 0,
-    t.contradictoryFlags ? `${plural(t.contradictoryFlags, 'component')} flagged both vulnerable and quantum-safe; counted as PQC-ready.` : 'No component is flagged both vulnerable and quantum-safe.',
+    t.contradictoryFlags ? `${plural(t.contradictoryFlags, 'component')} carry conflicting flags and are counted as unclassified.` : 'No component carries conflicting posture flags.',
     true,
   )
   return checks
@@ -836,7 +839,7 @@ export function buildAssetReport(input: BuildAssetReportInput): InventoryReport 
   const summary = executiveSummary(rows, t, register, scope, exposures)
   const decisions = decisionRegister(rows, t, exposures)
   const byRisk = [...rows].sort((a, b) => (b.riskScore ?? -1) - (a.riskScore ?? -1) || b.components.vulnerable - a.components.vulnerable || a.name.localeCompare(b.name))
-  const reportId = `AR-${generatedAt.slice(0, 10).replace(/-/g, '')}-${sha3Hex(`${generatedAt}|${template}|${rows.map((r) => r.id).join(',')}`).slice(0, 8).toUpperCase()}`
+  const reportId = input.provenance?.reportId ?? `AR-${generatedAt.slice(0, 10).replace(/-/g, '')}-${sha3Hex(`${generatedAt}|${template}|${rows.map((r) => r.id).join(',')}`).slice(0, 8).toUpperCase()}`
 
   const methodologyBlocks: DocumentBlock[] = [
     {
@@ -898,14 +901,14 @@ export function buildAssetReport(input: BuildAssetReportInput): InventoryReport 
             emphasis: [{ column: 3, kind: 'severity' }],
             note: exposures.length > 10 ? `Top 10 of ${exposures.length} root causes. The complete list is in the Technical register and the Excel export.` : undefined,
           }]
-        : [{ type: 'callout', tone: 'good', title: 'No quantum-vulnerable components in scope', text: 'No exposure requires consolidation.' }],
+        : [{ type: 'callout', tone: 'neutral', title: 'No recorded quantum-vulnerable components', text: 'Review the source coverage and classification checks for evidence gaps.' }],
     })
     const actions = recommendedActions(exposures, 8)
     sections.push({
       id: 'actions',
       title: 'Recommended Actions',
       intro: 'Derived from the consolidated exposures above — each action names its evidence, its PQC target and the module that executes it.',
-      blocks: exposures.length ? [actions] : [{ type: 'paragraph', text: 'No remediation actions are required for the assets in scope.', tone: 'muted' }],
+      blocks: exposures.length ? [actions] : [{ type: 'paragraph', text: 'No component-level remediation was derived from the classified evidence in this snapshot.', tone: 'muted' }],
     })
     sections.push({ id: 'methodology', title: 'Methodology & Evidence', blocks: methodologyBlocks })
   } else if (template === 'technical') {
@@ -959,7 +962,7 @@ export function buildAssetReport(input: BuildAssetReportInput): InventoryReport 
       intro: 'Root causes in execution order: severity first, then how many assets share them.',
       blocks: exposures.length
         ? [{ type: 'table', table: exposuresTable(exposures, 'Remediation priorities'), widths: [7, 17, 11, 9, 8, 7, 12, 15, 8, 6], emphasis: [{ column: 3, kind: 'severity' }] }]
-        : [{ type: 'callout', tone: 'good', title: 'Nothing to remediate', text: 'No quantum-vulnerable components in scope.' }],
+        : [{ type: 'callout', tone: 'neutral', title: 'No recorded remediation priorities', text: 'Review assets without measurements and components requiring classification.' }],
     })
     const workRows = byRisk.filter((row) => row.components.vulnerable + row.components.unclassified > 0)
     sections.push({
@@ -997,7 +1000,35 @@ export function buildAssetReport(input: BuildAssetReportInput): InventoryReport 
   }
 
   const checks = validate(rows, t, register, exposures, sections, scope)
+  if (input.provenance) {
+    for (const { source, status, detail } of input.provenance.dataCompleteness) {
+      checks.push({ check: source, status: status === 'available' ? 'pass' : 'warn', detail })
+    }
+  }
   const validation = validationScore(checks)
+  const snapshot: ReportProvenance | undefined = input.provenance && {
+    ...input.provenance,
+    validationStatus: validation.status === 'pass' ? 'validated' : 'incomplete',
+  }
+  const snapshotFacts = snapshot ? [
+    { label: 'Report ID', value: reportId },
+    { label: 'Organization ID', value: snapshot.organizationId ?? 'Unavailable' },
+    { label: 'Workspace owner ID', value: snapshot.workspaceOwnerId },
+    { label: 'Snapshot timestamp', value: snapshot.snapshotAt },
+    { label: 'Asset inventory version (SHA3-256)', value: snapshot.assetInventoryVersion ?? 'Unavailable' },
+    { label: 'CBOM version (SHA3-256)', value: snapshot.cbomVersion ?? 'Unavailable' },
+    { label: 'Assessment ID', value: snapshot.assessmentId ?? 'Unavailable' },
+    { label: 'Validation status', value: snapshot.validationStatus === 'validated' ? 'Validated' : 'Incomplete' },
+  ] : []
+  const snapshotTables: ReportTable[] = snapshot ? [
+    { title: 'Snapshot provenance', columns: ['Field', 'Value'], rows: snapshotFacts.map(({ label, value }) => [label, value]) },
+    { title: 'Source completeness', columns: ['Source', 'Status', 'Detail'], rows: snapshot.dataCompleteness.map(({ source, status, detail }) => [source, status, detail]) },
+  ] : []
+  if (snapshot) sections.push({
+    id: 'snapshot-provenance', title: 'Snapshot Provenance',
+    intro: 'Source versions identify the authenticated workspace inventory that was read when the report was generated.',
+    blocks: snapshotTables.map((table) => ({ type: 'table', table })),
+  })
 
   const scopeLine = scope.type === 'all'
     ? `Full estate — all ${plural(t.assets, 'asset')}`
@@ -1056,6 +1087,7 @@ export function buildAssetReport(input: BuildAssetReportInput): InventoryReport 
   }
 
   const tables: ReportTable[] = [
+    ...snapshotTables,
     registerRows,
     cbomRows,
     postureFindingsTable(byRisk),
@@ -1079,6 +1111,7 @@ export function buildAssetReport(input: BuildAssetReportInput): InventoryReport 
       version: branding.reportVersion || '1.0',
       generatedBy,
       dataAsOf: t.latestScan,
+      snapshot,
     },
     kpis,
     tables,
@@ -1090,14 +1123,21 @@ export function buildAssetReport(input: BuildAssetReportInput): InventoryReport 
   // Seal last, over everything a reader can see. The seal is excluded wherever
   // it appears (top level AND the document copy), so the digest can be
   // recomputed from the exported JSON by anyone: see `canonicalAssetReport`.
-  report.integrity = sealDocument(canonicalAssetReport(report), { reportId, kind: 'asset-inventory' })
+  const canonical = canonicalAssetReport(report)
+  report.integrity = input.provenance
+    ? { algorithm: 'SHA3-256', hash: sha3Hex(canonical), signedAt: generatedAt, verificationToken: '' }
+    : sealDocument(canonical, { reportId, kind: 'asset-inventory' })
   report.document!.integrity = report.integrity
   return report
 }
 
 /** The exact string the integrity digest is computed over. */
 export function canonicalAssetReport(report: InventoryReport): string {
-  return JSON.stringify(report, (key, value) => (key === 'integrity' ? undefined : value))
+  return JSON.stringify(report, (key, value) => {
+    if (key === 'integrity') return undefined
+    if (!report.meta.snapshot || value === null || typeof value !== 'object' || Array.isArray(value)) return value
+    return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0))
+  })
 }
 
 /** Tone helper for renderers that colour a PQC status or severity word. */

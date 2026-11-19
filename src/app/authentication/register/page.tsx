@@ -1,31 +1,25 @@
 "use client";
 
-import React, { useLayoutEffect, useRef, useState } from "react";
-import "../auth.css";
-import {
-  Activity,
-  AlertTriangle,
-  ArrowRight,
-  Cpu,
-  GitBranch,
-  Home,
-  Lock,
-  Mail,
-  Shield,
-  ShieldCheck,
-  UserPlus
-} from "lucide-react";
-import { useAuth } from "@/contexts/auth-context";
-import { useTheme } from "@/contexts/theme-context";
-import ThemeToggle from "@/components/theme/ThemeToggle";
+import React, { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { CyberBackground } from "@/components/CyberBackground";
+import { Check, Loader2, Lock, Mail, MailCheck, X } from "lucide-react";
+import { useAuth } from "@/contexts/auth-context";
+import { ButtonDot } from "@/pages/landing-chars";
+import { AuthAlert, AuthCard, AuthDivider, AuthField, AuthShell, GoogleButton } from "../AuthShell";
 
-const REGISTER_SIGNALS = [
-  { icon: ShieldCheck, label: "PQC Generation", value: "ML-KEM Keypair" },
-  { icon: GitBranch, label: "PQC Migration", value: "Crypto-Agile" },
-  { icon: Activity, label: "Identity Sync", value: "Real-Time" }
-];
+const MIN_LENGTH = 6;
+const STRENGTH_LABELS = ["Too short", "Weak", "Fair", "Good", "Strong"] as const;
+
+/** 0–4, from what was actually typed: length plus character variety. */
+function passwordStrength(value: string) {
+  if (value.length < MIN_LENGTH) return 0;
+  let score = 1;
+  if (value.length >= 10) score += 1;
+  const classes = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter((re) => re.test(value)).length;
+  if (classes >= 2) score += 1;
+  if (classes >= 3 && value.length >= 12) score += 1;
+  return Math.min(4, score);
+}
 
 export default function RegisterPage() {
   const [email, setEmail] = useState("");
@@ -33,40 +27,29 @@ export default function RegisterPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [sentTo, setSentTo] = useState<string | null>(null);
   const { signUp, signInWithGoogle } = useAuth();
-  const { mode, theme, setMode } = useTheme();
-  const isLightTheme = theme === "light";
-  const restoreModeRef = useRef(mode);
-
-  // Present the registration experience in light mode by default while
-  // preserving whatever global theme the user had set for the rest of the app.
-  // useLayoutEffect (not useEffect) so the switch to light is committed
-  // *before* the browser paints the first frame — otherwise the page paints
-  // once in the global (dark) theme and the user sees a dark→light flash.
-  useLayoutEffect(() => {
-    setMode("light");
-    return () => setMode(restoreModeRef.current);
-  }, [setMode]);
   const [searchParams] = useSearchParams();
   const nextParam = searchParams.get("next");
   // Preserve a checkout target across register -> verify email -> sign in.
   const nextQuery = nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//") ? `?next=${encodeURIComponent(nextParam)}` : "";
 
+  const strength = useMemo(() => passwordStrength(password), [password]);
+  const matchState = confirmPassword.length === 0 ? "idle" : confirmPassword === password ? "match" : "mismatch";
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setError(null);
-    setSuccessMsg(null);
 
-    if (password.length < 6) {
+    if (password.length < MIN_LENGTH) {
       setIsLoading(false);
-      setError("Access key must be at least 6 characters.");
+      setError(`Your password must be at least ${MIN_LENGTH} characters.`);
       return;
     }
     if (password !== confirmPassword) {
       setIsLoading(false);
-      setError("Access keys do not match.");
+      setError("The two passwords don't match.");
       return;
     }
 
@@ -74,16 +57,16 @@ export default function RegisterPage() {
       const { error } = await signUp(email, password);
       if (error) {
         setIsLoading(false);
-        let msg = error.message || "Registration failed.";
-        if (msg.includes("already registered")) msg = "This identity is already deployed.";
+        let msg = error.message || "Registration failed. Please try again.";
+        if (msg.includes("already registered")) msg = "An account with this email already exists. Try signing in instead.";
         setError(msg);
         return;
       }
       setIsLoading(false);
-      setSuccessMsg("Identity deployed. Check your email to verify before signing in.");
+      setSentTo(email);
     } catch (err: any) {
       setIsLoading(false);
-      setError(err.message || "System error. Try again.");
+      setError(err.message || "Something went wrong. Please try again.");
     }
   };
 
@@ -94,210 +77,137 @@ export default function RegisterPage() {
       const { error } = await signInWithGoogle();
       if (error) {
         setIsLoading(false);
-        setError("OAuth Error: " + error.message);
+        setError("Google sign-up failed: " + error.message);
         return;
       }
       setIsLoading(false);
     } catch (err: any) {
       setIsLoading(false);
-      setError("OAuth Error: " + err.message);
+      setError("Google sign-up failed: " + err.message);
     }
   };
 
-  return (
-    <div className={`qguard-home qc-page qc-page-gold ${isLightTheme ? "qguard-home--light qc-page-home-light" : ""}`}>
-      <CyberBackground variant={isLightTheme ? "light" : "dark"} />
-      <div className="qc-hex-grid" />
-      <div className="qc-radial-glow" />
-
-      <header className="qc-auth-nav qc-in-1">
-        <Link to="/" className="qc-auth-brand">
-          <img
-            src="/NEW_LOGO.png"
-            alt="Qguard Helix logo"
-            className="qc-auth-logo-video"
-          />
-          <span className="qc-auth-brand-copy">
-            <span className="qc-auth-brand-title">Qguard Helix</span>
-            <span className="qc-auth-brand-subtitle">Quantum Defense</span>
-          </span>
-        </Link>
-
-        <div className="qc-auth-nav-actions">
-          <ThemeToggle compact showSystem={false} />
-          <Link to="/" className="qc-auth-nav-link">
-            <Home size={15} />
-            Home
-          </Link>
-          <Link to={`/login${nextQuery}`} className="qc-auth-nav-cta">
-            Login
-          </Link>
-        </div>
-      </header>
-
-      <main className="qc-login-shell">
-        <section className="qc-login-hero qc-in-2" aria-labelledby="register-title">
-          <div className="qc-login-kicker">
-            <span className="qc-status-dot" />
-            Identity Provisioning
+  if (sentTo) {
+    return (
+      <AuthShell mode="register" nextQuery={nextQuery}>
+        <AuthCard kicker="Account created" heading="Check your inbox" sub="One last step before you can sign in.">
+          <div className="lp-auth__sent">
+            <span className="lp-auth__sent-icon" aria-hidden="true">
+              <MailCheck />
+            </span>
+            <AuthAlert tone="success">
+              We sent a verification link to <strong>{sentTo}</strong>. Open it to activate your account, then sign in.
+            </AuthAlert>
           </div>
-          <h1 id="register-title" className="qc-auth-title">
-            Deploy New <span>Identity</span>
-          </h1>
-          <p className="qc-auth-lede">
-            Initialize your quantum credentials to establish a secure node.
+          <Link to={`/login${nextQuery}`} viewTransition className="lp-btn lp-btn--primary lp-btn--block lp-btn--dot">
+            Continue to sign in
+            <ButtonDot />
+          </Link>
+          <p className="lp-auth__card-foot">
+            Wrong address?{" "}
+            <button type="button" className="lp-link lp-auth__text-btn" onClick={() => setSentTo(null)}>
+              Use a different email
+            </button>
           </p>
+        </AuthCard>
+      </AuthShell>
+    );
+  }
 
-          <div className="qc-signal-grid" aria-label="Identity provisioning security checks">
-            {REGISTER_SIGNALS.map((signal) => {
-              const SignalIcon = signal.icon;
+  return (
+    <AuthShell mode="register" nextQuery={nextQuery}>
+      <AuthCard kicker="Create account" heading="Set up your access" sub="It takes a minute. We'll verify your email before your first sign-in.">
+        {error && <AuthAlert tone="error">{error}</AuthAlert>}
 
-              return (
-                <div key={signal.label} className="qc-signal-card">
-                  <SignalIcon size={18} />
-                  <span>{signal.label}</span>
-                  <strong>{signal.value}</strong>
-                </div>
-              );
-            })}
-          </div>
-        </section>
+        <form onSubmit={handleSubmit} className="lp-auth__form" aria-busy={isLoading}>
+          <AuthField
+            id="register-email"
+            label="Work email"
+            icon={Mail}
+            type="email"
+            required
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@company.com"
+          />
 
-        <section className="qc-login-panel" aria-label="Registration form">
-          <div className="qc-card qc-in-3">
-            <div className="qc-logo-wrap">
-              <div className="qc-logo-icon">
-                <Shield size={20} />
-              </div>
-              <span className="qc-logo-text">QGUARD</span>
-            </div>
-
-            <p className="qc-protocol-tag">QUANTUM PROTOCOL</p>
-            <h2 className="qc-heading">Identity Provisioning</h2>
-            <p className="qc-subtitle">
-              Initialize quantum credentials for this node.
-            </p>
-
-            {error && (
-              <div className="qc-alert qc-alert-error">
-                <AlertTriangle size={14} className="text-[var(--qg-red)] shrink-0" />
-                <span>{error}</span>
-              </div>
-            )}
-            {successMsg && (
-              <div className="qc-alert qc-alert-success">
-                <ShieldCheck size={14} className="text-[var(--qg-green)] shrink-0" />
-                <span>{successMsg}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleSubmit} className="qc-form">
-              <div>
-                <label className="qc-field-label">Email Address</label>
-                <div className="qc-field-wrap">
-                  <Mail size={14} className="qc-field-icon" />
-                  <input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="Enter your email"
-                    className="qc-input"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="qc-field-label">Password</label>
-                <div className="qc-field-wrap">
-                  <Lock size={14} className="qc-field-icon" />
-                  <input
-                    type="password"
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="MIN. 6 CHARACTERS"
-                    className="qc-input"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="qc-field-label">Confirm Password</label>
-                <div className="qc-field-wrap">
-                  <Lock size={14} className="qc-field-icon" />
-                  <input
-                    type="password"
-                    required
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    placeholder="RE-ENTER ACCESS KEY"
-                    className="qc-input"
-                  />
-                </div>
-              </div>
-
-              <div className="qc-remember-row" style={{ marginTop: '1rem' }}>
-                <span className="text-xs text-muted-foreground">Keys are secured by ML-KEM post-quantum cryptography</span>
-              </div>
-
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="qc-btn qc-btn-cyan qc-btn-shimmer"
+          <AuthField
+            id="register-password"
+            label="Password"
+            icon={Lock}
+            revealable
+            required
+            minLength={MIN_LENGTH}
+            autoComplete="new-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder={`At least ${MIN_LENGTH} characters`}
+            aria-describedby="register-strength"
+            hint={
+              <div
+                id="register-strength"
+                className="lp-auth__strength"
+                data-level={password.length === 0 ? "none" : strength}
+                aria-live="polite"
               >
-                {isLoading ? (
-                  <Cpu size={16} className="animate-spin" />
-                ) : (
-                  <>Register Credentials <UserPlus size={15} /></>
-                )}
-              </button>
-
-              <div className="qc-divider">
-                <div className="qc-divider-line" />
-                <span className="qc-divider-text">or</span>
-                <div className="qc-divider-line" />
+                <div className="lp-auth__strength-bars" aria-hidden="true">
+                  {[1, 2, 3, 4].map((step) => (
+                    <i key={step} data-on={strength >= step ? "" : undefined} />
+                  ))}
+                </div>
+                <span>{password.length === 0 ? "Use 10+ characters with a mix of letters, numbers and symbols." : STRENGTH_LABELS[strength]}</span>
               </div>
+            }
+          />
 
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                disabled={isLoading}
-                className="qc-btn qc-btn-ghost"
-              >
-                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
-                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
-                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.84z" fill="#FBBC05" />
-                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335" />
-                </svg>
-                Continue with Google
-              </button>
+          <AuthField
+            id="register-confirm"
+            label="Confirm password"
+            icon={Lock}
+            revealable
+            required
+            autoComplete="new-password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            placeholder="Re-enter your password"
+            aria-invalid={matchState === "mismatch"}
+            hint={
+              matchState !== "idle" ? (
+                <p className={`lp-auth__match lp-auth__match--${matchState}`} aria-live="polite">
+                  {matchState === "match" ? <Check aria-hidden="true" /> : <X aria-hidden="true" />}
+                  {matchState === "match" ? "Passwords match" : "Passwords don't match yet"}
+                </p>
+              ) : null
+            }
+          />
 
-              <p className="qc-card-footer">
-                Existing node?{" "}
-                <Link to={`/login${nextQuery}`} className="qc-card-link">
-                  Login here
-                </Link>
-              </p>
-            </form>
-          </div>
+          <button type="submit" disabled={isLoading} className="lp-btn lp-btn--primary lp-btn--block lp-btn--dot lp-auth__submit">
+            {isLoading ? (
+              <>
+                <Loader2 className="lp-auth__spin" aria-hidden="true" />
+                Creating account…
+              </>
+            ) : (
+              <>
+                Create account
+                <ButtonDot />
+              </>
+            )}
+          </button>
 
-          <div className="qc-status-bar qc-in-4">
-            <div className="qc-status-header">
-              <span className="qc-status-label">Quantum Sync Status</span>
-              <span className="qc-status-percent">100%</span>
-            </div>
-            <div className="qc-status-track">
-              <div className="qc-status-fill-bar" />
-            </div>
-            <div className="qc-status-indicator">
-              <span className="qc-status-dot" />
-              <span className="qc-status-text">Encrypted Connection Established</span>
-            </div>
-          </div>
-        </section>
-      </main>
-    </div>
+          <AuthDivider />
+
+          <GoogleButton label="Sign up with Google" disabled={isLoading} onClick={handleGoogleSignIn} />
+        </form>
+
+        <p className="lp-auth__card-foot">
+          Already have an account?{" "}
+          <Link to={`/login${nextQuery}`} viewTransition className="lp-link">
+            Sign in
+          </Link>
+        </p>
+      </AuthCard>
+    </AuthShell>
   );
 }

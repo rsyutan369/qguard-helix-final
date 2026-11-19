@@ -33,7 +33,7 @@ import type {
   StorageBackendPosture,
 } from './types'
 import { POLICY_RULE_LABEL } from './types'
-import { LONG_LIVED_DAYS } from './lifecycle'
+import { dateMs, LONG_LIVED_DAYS, ONE_DAY_MS } from './lifecycle'
 
 /* ------------------------------------------------------------------ */
 /* Custody                                                             */
@@ -242,6 +242,16 @@ export function policyCoversKey(policy: Pick<QkmsPolicy, 'environmentScope'>, ke
   return inScope(policy as QkmsPolicy, key as ManagedKey)
 }
 
+export function needsPolicyEvidence(policy: QkmsPolicy, key: ManagedKey): boolean {
+  return (policy.environmentScope !== 'all' && key.environment === 'unknown')
+    || ((policy.allowedAlgorithms.length > 0 || policy.blockedAlgorithms.length > 0) && key.posture === 'unknown')
+    || (!policy.allowExport && key.exportable === null)
+    || (policy.requireHsm && key.hsmBacked) // only declared custody is available today
+    || (policy.maxKeyAgeDays !== null && key.ageDays === null)
+    || (policy.rotationIntervalDays !== null && key.rotation !== 'not-applicable' && !(key.lastRotatedAt || key.activatedAt || key.createdAt))
+    || (policy.requirePqc && (key.posture === 'unknown' || key.postureEvidence === 'declared'))
+}
+
 function inScope(policy: QkmsPolicy, key: ManagedKey): boolean {
   const scope = String(policy.environmentScope || 'all').toLowerCase()
   if (!scope || scope === 'all') return true
@@ -257,7 +267,7 @@ function algorithmMatches(list: string[], key: ManagedKey): boolean {
     if (!needle) return false
     // Whole-token comparison: `DSA` in a blocklist must not match `ML-DSA-65`.
     // This is the same trap that made every PQC signature key "weak".
-    const boundary = new RegExp(`(^|-)${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(-|$)`)
+    const boundary = new RegExp(`^${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(-|$)`)
     return algorithm === needle || family === needle || boundary.test(algorithm) || boundary.test(family)
   })
 }
@@ -310,7 +320,8 @@ export function evaluateGovernance(
       continue
     }
 
-    const scoped = keys.filter((key) => inScope(policy, key))
+    const scoped = keys.filter((key) => inScope(policy, key)
+      && !['revoked', 'decommissioned', 'retired'].includes(key.lifecycle))
     const offenders = new Set<string>()
 
     for (const key of scoped) {
@@ -393,22 +404,25 @@ export function evaluateGovernance(
         ))
       }
 
-      if (policy.rotationIntervalDays !== null && (key.rotation === 'overdue' || key.rotation === 'never-rotated') && !terminal) {
+      const anchor = dateMs(key.lastRotatedAt ?? key.activatedAt ?? key.createdAt)
+      const policyOverdue = policy.rotationIntervalDays !== null && anchor !== null
+        && Date.parse(nowIso) >= anchor + policy.rotationIntervalDays * ONE_DAY_MS
+      if (policyOverdue && key.rotation !== 'not-applicable' && !terminal) {
         offenders.add(key.id)
         violations.push(violation(
           'rotation-interval-exceeded', policy, key,
-          key.rotation === 'overdue' ? 'high' : 'medium',
-          key.rotationReason,
+          'high',
+          `The recorded key exceeds this policy's ${policy.rotationIntervalDays}-day interval.`,
           'Raise a rotation work order, execute it and attach the post-rotation validation evidence.',
           keyEvidence, nowIso,
         ))
       }
 
-      if (key.lifecycle === 'expired' && key.runtimeUsage !== null && key.runtimeUsage > 0 && policy.id === 'baseline-rotation-sla') {
+      if (key.lifecycle === 'expired' && key.lastUsedAt && key.expiresAt && Date.parse(key.lastUsedAt) > Date.parse(key.expiresAt) && policy.id === 'baseline-rotation-sla') {
         offenders.add(key.id)
         violations.push(violation(
           'expired-key-in-use', policy, key, 'critical',
-          `The key expired but ${key.runtimeUsage} runtime operation(s) were still attributed to it.`,
+          'A recorded last-use timestamp falls after expiry.',
           'Replace the key immediately and confirm no service still references the expired material.',
           keyEvidence, nowIso,
         ))
@@ -434,7 +448,8 @@ export function evaluateGovernance(
       keysInScope: scoped.length,
       violations: violationsForPolicy,
       // No key in scope means nothing was evaluated — not 100% compliance.
-      compliance: scoped.length ? Math.round(((scoped.length - offenders.size) / scoped.length) * 100) : null,
+      compliance: scoped.length && !scoped.some((key) => !offenders.has(key.id) && needsPolicyEvidence(policy, key))
+        ? Math.round(((scoped.length - offenders.size) / scoped.length) * 100) : null,
       evaluation: scoped.length ? 'evaluated' : 'no-keys-in-scope',
     })
   }

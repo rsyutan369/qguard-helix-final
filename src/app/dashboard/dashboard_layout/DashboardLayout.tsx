@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { Outlet, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -8,7 +8,7 @@ import {
   ChevronRight, Menu, X, ScanSearch, ChevronDown,
   Cpu, Lock, Fingerprint, Award, Coins, MessageSquareLock, Cloud, Sparkles, Database, UserCog,
   Activity, EyeOff, Zap, Network, Box, Microscope, LineChart, Target, Shield, CheckCircle, PieChart, ShieldCheck, Scale, FileText, Key, FileWarning, Ghost, Workflow, Crown,
-  BadgeDollarSign, BarChart3, CreditCard, TrendingUp, Users, Wrench, Server
+  BadgeDollarSign, BarChart3, CreditCard, TrendingUp, Users, Wrench, Server, Radar
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/auth-context';
@@ -21,6 +21,9 @@ import { canAccessPath, resolveRequiredTier, type AccessTier } from '@/lib/subsc
 import { StarterDashboard } from '@/app/dashboard/_components/StarterDashboard';
 import { UpgradeRequired } from '@/components/subscription/UpgradeRequired';
 import { SophiaCopilot } from '@/components/copilot/SophiaCopilot';
+import { useTheme } from '@/contexts/theme-context';
+import { useScrollerMotion } from '@/pages/landing-motion';
+import '../command-center.css';
 
 const NAV_SECTIONS = [
   {
@@ -31,6 +34,7 @@ const NAV_SECTIONS = [
       { name: 'Sophia AI Security Copilot™', path: '/dashboard/sophia', icon: Sparkles },
       { name: 'Quantum Readiness Assessment Engine™', path: '/dashboard/quantum-readiness', icon: Sparkles },
       { name: 'Migration Intelligence™', path: '/dashboard/migration-intelligence', icon: Scale },
+      { name: 'Estate Remediation Intelligence', path: '/dashboard/estate-intelligence', icon: Target },
       { name: 'Migration Planner', path: '/dashboard/migration-planner', icon: Route },
       { name: 'Migration Sandbox', path: '/dashboard/migration-sandbox', icon: Box },
       { name: 'Live Migration Ops', path: '/dashboard/live-migration', icon: Rocket },
@@ -42,6 +46,7 @@ const NAV_SECTIONS = [
     items: [
       { name: 'PQC Scanner', path: '/dashboard/scanner', icon: ScanSearch },
       // Nested under PQC Scanner: agents are the scanner's on-host collection arm.
+      { name: 'Real Time Scanning', path: '/dashboard/scanner/real-time', icon: Radar, child: true },
       { name: 'Agents Collector', path: '/dashboard/agents', icon: Server, child: true },
       { name: 'Assets & CBOM', path: '/dashboard/assets', icon: MapIcon },
       { name: 'CBOM Explorer', path: '/dashboard/cbom', icon: Layers },
@@ -299,6 +304,35 @@ export default function DashboardLayout() {
     }));
   };
 
+  // Every dashboard page wears the homepage look in Light mode: the `qh-cc`
+  // layer (command-center.css) plus the homepage's glow, letter reveal,
+  // fade-ups, scroll progress and smooth scrolling, scoped to <main>. The
+  // motion re-arms on each page change so the new page's reveals are found.
+  // Dark mode is untouched (every qh-cc rule is gated on the light theme).
+  const { theme } = useTheme();
+  const routeKey = location.pathname.replace(/\/+$/, '') || '/';
+  const commandCenterMotion = theme === 'light';
+  const [mainEl, setMainEl] = useState<HTMLElement | null>(null);
+  const [glowEl, setGlowEl] = useState<HTMLCanvasElement | null>(null);
+  const [scopeEl, setScopeEl] = useState<HTMLDivElement | null>(null);
+  useScrollerMotion({ enabled: commandCenterMotion, scroller: mainEl, canvas: glowEl, routeKey });
+
+  // Page change: start the new page at the top and let it rise in (Light
+  // mode; the animation is CSS-only, so reduced motion simply skips it).
+  useEffect(() => {
+    if (!scopeEl || !commandCenterMotion) return;
+    mainEl?.scrollTo({ top: 0 });
+    scopeEl.removeAttribute('data-route-enter');
+    void scopeEl.offsetWidth; // restart the animation on the same element
+    scopeEl.setAttribute('data-route-enter', '');
+    // animationend bubbles from children; only the container's own ends it.
+    const clear = (event: AnimationEvent) => {
+      if (event.target === scopeEl) scopeEl.removeAttribute('data-route-enter');
+    };
+    scopeEl.addEventListener('animationend', clear);
+    return () => scopeEl.removeEventListener('animationend', clear);
+  }, [routeKey, scopeEl, mainEl, commandCenterMotion]);
+
   const sidebarWidth = collapsed ? 'w-[72px]' : 'w-[260px]';
   const isOwner = isOwnerEmail(user?.email);
   // Owner/admin bypasses subscription gating (treated as full Elite access);
@@ -382,7 +416,7 @@ export default function DashboardLayout() {
   const pageAllowed = !adminForbidden && (isOwner || canAccessPath(effectiveTier, location.pathname));
 
   return (
-    <div className="qg-dashboard-shell flex h-screen bg-[var(--qg-dashboard-bg)] text-[var(--qg-dashboard-text)] font-sans overflow-hidden">
+    <div className={`qg-dashboard-shell flex h-screen bg-[var(--qg-dashboard-bg)] text-[var(--qg-dashboard-text)] font-sans overflow-hidden qh-cc`}>
       {/* Mobile overlay */}
       <AnimatePresence>
         {mobileOpen && (
@@ -528,7 +562,16 @@ export default function DashboardLayout() {
       </aside>
 
       {/* Main Content Area */}
-      <main className="qg-dashboard-main flex-1 overflow-y-auto relative" style={{ background: 'var(--qg-dashboard-bg)' }}>
+      <main ref={setMainEl} className="qg-dashboard-main flex-1 overflow-y-auto relative" style={{ background: 'var(--qg-dashboard-bg)' }}>
+        {commandCenterMotion && (
+          <>
+            {/* Homepage bowl glow, pinned to the visible part of <main>. */}
+            <div className="qh-cc-atmo" aria-hidden="true">
+              <canvas ref={setGlowEl} width={96} height={60} />
+            </div>
+            <div className="qh-cc-progress" aria-hidden="true" />
+          </>
+        )}
         {/* Atmospheric Background Layers */}
         <div className="qg-dashboard-bg-layers pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
           {/* Deep navy base */}
@@ -554,11 +597,13 @@ export default function DashboardLayout() {
           <ThemeToggle compact showSystem={false} className="ml-auto" />
         </div>
 
-        <div className="dashboard-theme-scope relative z-10 min-h-full">
+        <div ref={setScopeEl} className="dashboard-theme-scope relative z-10 min-h-full">
           {adminForbidden ? (
             <Navigate to="/dashboard" replace />
           ) : pageAllowed ? (
-            <Outlet />
+            <Suspense fallback={<p className="p-6 text-sm text-[var(--qg-dashboard-text)]" role="status">Loading page…</p>}>
+              <Outlet key={user.id} />
+            </Suspense>
           ) : (
             <UpgradeRequired requiredTier={resolveRequiredTier(location.pathname)} currentTier={effectiveTier} />
           )}

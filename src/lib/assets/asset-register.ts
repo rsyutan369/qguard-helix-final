@@ -217,6 +217,7 @@ export interface AssetRegisterRow {
   lifecycle: { stageId: string; label: string; openActions: number; validationStatus: string; certificationImpactPct: number } | null
   contradictoryFlags: number
   evidenceOnly: boolean
+  partialAssessment?: boolean
 }
 
 export interface RegisterTotals {
@@ -525,7 +526,8 @@ function deriveRow(
   // Risk: the scanner's per-asset score, banded by the CANONICAL table. An asset
   // with no evidence at all is "Not Assessed" — never a green Minimal band.
   const evidenceExists = components.total + postureList.length + detectionSignals > 0 || finite(metadata.riskScore) !== null
-  const riskScore = evidenceExists ? finite(asset.riskScore) : null
+  const partialAssessment = metadata.partialAssessment === true
+  const riskScore = evidenceExists && !partialAssessment ? finite(asset.riskScore) : null
   const band = riskScore === null ? UNASSESSED_BAND : riskBandFor(riskScore)
 
   const { status: pqcStatus, reason: pqcStatusReason } = pqcStatusFor(components, worst, postureList.length)
@@ -590,6 +592,7 @@ function deriveRow(
     lifecycle,
     contradictoryFlags: componentList.filter((c) => c.contradictory).length,
     evidenceOnly: Boolean(metadata.generatedFromScannerEvidence),
+    partialAssessment,
   }
 }
 
@@ -781,7 +784,7 @@ export function buildAssetRegister(input: RegisterInput): AssetRegister {
     headline.vulnerableComponents,
     totals.components.vulnerable + unattributed.vulnerable,
     totals.contradictoryFlags > 0
-      ? `${totals.contradictoryFlags} component(s) carry contradictory vulnerable + quantum-safe flags and are counted as PQC-ready here.`
+      ? `${totals.contradictoryFlags} component(s) carry conflicting vulnerable and quantum-safe flags and require review.`
       : 'Counted at the component level — the unit the CBOM Explorer and QR Engine use.',
   )
   addCheck('pqc-ready', 'Σ per-asset PQC-ready = CBOM PQC-ready', headline.pqcReadyComponents, totals.components.pqcReady + unattributed.pqcReady, 'Only components the scanner classified quantum-safe are counted.')

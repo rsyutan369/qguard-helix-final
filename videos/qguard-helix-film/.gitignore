@@ -1,0 +1,4 @@
+node_modules/
+.remotion/
+output/*.mp4
+output/qa/

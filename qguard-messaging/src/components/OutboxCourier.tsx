@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { NEARBY_ROWS_EVENT, nearbyStatus } from "@/lib/nearby";
 import { OUTBOX_FLUSHED_EVENT, OUTBOX_QUEUED_EVENT, flushOutbox, listOutbox, removeFromOutbox } from "@/lib/outbox";
-import { reportRelayTrouble } from "@/lib/relay-health";
+import { RELAY_RECOVERED_EVENT, reportRelayTrouble } from "@/lib/relay-health";
 import { supabase } from "@/lib/supabase";
 import { isTauriRuntime, safeInvoke } from "@/lib/tauri";
 
@@ -14,17 +14,20 @@ const NEARBY_POLL_MS = 3_000;
  * Android with nearby delivery on — offers the waiting rows to phones in range
  * and passes on rows they hand over. Renders nothing.
  */
-export function OutboxCourier() {
+export function OutboxCourier({ onQueueCount }: { onQueueCount?: (count: number) => void }) {
   const flushingRef = useRef(false);
   const offeredRef = useRef(new Set<string>());
 
   useEffect(() => {
     if (!isTauriRuntime()) return undefined;
     let cancelled = false;
+    let queueVersion = 0;
+    let flushAgain = false;
 
     const flush = async () => {
       if (flushingRef.current) return;
       flushingRef.current = true;
+      const observedVersion = queueVersion;
       try {
         const result = await flushOutbox({
           list: listOutbox,
@@ -35,6 +38,7 @@ export function OutboxCourier() {
           },
         });
         if (cancelled) return;
+        if (observedVersion === queueVersion) onQueueCount?.(result.remaining);
         if (result.blocked) {
           reportRelayTrouble();
           await offerNearby();
@@ -50,6 +54,10 @@ export function OutboxCourier() {
         // Nothing queued, or the core is not ready yet; the next tick retries.
       } finally {
         flushingRef.current = false;
+        if (!cancelled && flushAgain) {
+          flushAgain = false;
+          void flush();
+        }
       }
     };
 
@@ -80,18 +88,29 @@ export function OutboxCourier() {
     void flush();
     const flushTimer = window.setInterval(() => { void flush(); }, FLUSH_EVERY_MS);
     const nearbyTimer = window.setInterval(() => { void pollNearby(); }, NEARBY_POLL_MS);
-    const onQueued = () => { void offerNearby(); };
+    const onQueued = (event: Event) => {
+      queueVersion += 1;
+      const count = (event as CustomEvent<number>).detail;
+      if (Number.isSafeInteger(count) && count >= 0) onQueueCount?.(count);
+      void offerNearby();
+    };
     const onOnline = () => { void flush(); };
+    const onRelayRecovered = () => {
+      if (flushingRef.current) flushAgain = true;
+      else void flush();
+    };
     window.addEventListener(OUTBOX_QUEUED_EVENT, onQueued);
     window.addEventListener("online", onOnline);
+    window.addEventListener(RELAY_RECOVERED_EVENT, onRelayRecovered);
     return () => {
       cancelled = true;
       window.clearInterval(flushTimer);
       window.clearInterval(nearbyTimer);
       window.removeEventListener(OUTBOX_QUEUED_EVENT, onQueued);
       window.removeEventListener("online", onOnline);
+      window.removeEventListener(RELAY_RECOVERED_EVENT, onRelayRecovered);
     };
-  }, []);
+  }, [onQueueCount]);
 
   return null;
 }

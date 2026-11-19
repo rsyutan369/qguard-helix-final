@@ -26,6 +26,7 @@
  * story.
  */
 
+import { createHash } from 'node:crypto'
 import { Router, Request, Response, NextFunction } from 'express'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { buildQkmsIntelligence, normaliseJobStatus, toIndexEntry } from '@/lib/qkms/intelligence'
@@ -78,11 +79,6 @@ function carriesSecretMaterial(body: Row): boolean {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** Work-order states that close an order; anything else is open. */
 const TERMINAL_JOB_STATUSES: RotationJobStatus[] = ['completed', 'failed', 'cancelled']
-/** "ok" is not validation evidence; a sentence describing the check is. */
-const MIN_VALIDATION_EVIDENCE = 12
-/** An algorithm name such as `ML-DSA-65`, `RSA-3072` or `X25519+ML-KEM-768`. */
-const ALGORITHM_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9 +_\-/.]{1,63}$/
-
 function isMissingTable(error: unknown): boolean {
   const text = `${(error as { code?: string })?.code || ''} ${(error as { message?: string })?.message || ''}`.toLowerCase()
   return text.includes('42p01') || text.includes('pgrst205') || text.includes('does not exist') || text.includes('could not find the table')
@@ -105,21 +101,23 @@ const CORE_TABLES = new Set([
 ])
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function safeRows(client: any, table: string, build: (query: any) => any, failures: string[]): Promise<Row[]> {
+async function safeRows(client: any, table: string, build: (query: any) => any, failures: string[], limited: string[], cap: number): Promise<Row[]> {
   try {
-    const { data, error } = await build(client.from(table))
-    if (error) {
-      // A missing optional table is expected before the schema is applied, and
-      // is reported as an absent source. A real query error — an expired token,
-      // an RLS denial, a network fault — is NOT an empty table: it is recorded so
-      // it can be surfaced rather than rendered as "no keys".
-      if (!isMissingTable(error)) {
-        console.warn(`[qkms] ${table} query failed:`, error.message || error)
-        failures.push(table)
+    const rows: Row[] = []
+    // A project may enforce a lower limit than the one requested by QKMS.
+    while (rows.length < cap) {
+      const { data, error, count } = await build(client.from(table)).order('id')
+        .range(rows.length, Math.min(cap, rows.length + 500) - 1)
+      if (error) throw error
+      const page = (data as Row[]) || []
+      rows.push(...page)
+      if (count != null && rows.length >= count) return rows
+      if (!page.length || rows.length >= cap || count == null) {
+        limited.push(table)
+        return rows
       }
-      return []
     }
-    return (data as Row[]) || []
+    return rows
   } catch (error) {
     console.warn(`[qkms] ${table} query failed:`, (error as Error)?.message || error)
     failures.push(table)
@@ -204,6 +202,7 @@ async function computeModel(token: string, userId: string): Promise<QkmsIntellig
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
   const failures: string[] = []
+  const limited: string[] = []
 
   /*
    * Every query is tenant-scoped in the query itself, on top of RLS. The
@@ -232,44 +231,38 @@ async function computeModel(token: string, userId: string): Promise<QkmsIntellig
     agentHeartbeats,
     scanSessions,
   ] = await Promise.all([
-    safeRows(client, 'assets', (q) => q.select('id, name, type, environment, region, service_owner, criticality, status, metadata, updated_at, created_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.assets), failures),
+    safeRows(client, 'assets', (q) => q.select('id, name, type, environment, region, service_owner, criticality, status, metadata, updated_at, created_at', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }), failures, limited, CAP.assets),
     /* qkms_* rows are read, and written, only where the caller is BOTH tenant and
        user. The deployed RLS predicate is "tenant OR user", which lets another
        signed-in user insert a row carrying this tenant's id under their own
        user_id; matching on user_id too keeps such a planted row out of this
        tenant's model whatever the database policy says. */
-    safeRows(client, 'qkms_keys', (q) => q.select('*').eq('tenant_id', userId).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsKeys), failures),
-    safeRows(client, 'qkms_key_versions', (q) => q.select('*').eq('tenant_id', userId).eq('user_id', userId).order('version', { ascending: true }).limit(CAP.qkmsKeyVersions), failures),
-    safeRows(client, 'qkms_policies', (q) => q.select('*').eq('tenant_id', userId).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsPolicies), failures),
-    safeRows(client, 'qkms_rotation_jobs', (q) => q.select('*').eq('tenant_id', userId).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.qkmsRotationJobs), failures),
-    safeRows(client, 'qkms_audit_events', (q) => q.select('*').eq('tenant_id', userId).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.qkmsAuditEvents), failures),
-    safeRows(client, 'qkms_storage_backends', (q) => q.select('*').eq('tenant_id', userId).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.qkmsStorageBackends), failures),
-    safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, bit_length, entropy_source, quality_score, fingerprint, status, expires_at, revoked_at, rotated_from, label, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.generatedKeys), failures),
-    safeRows(client, 'crypto_inventory', (q) => q.select('*').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(CAP.cryptoInventory), failures),
-    safeRows(client, 'certificates', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.certificates), failures),
-    safeRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, algorithm, key_exchange_algorithm, cipher_suite, operation_type, observed_at, created_at, is_pqc, is_legacy').eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.runtimeEvents), failures),
-    safeRows(client, 'scanner_evidence', (q) => q.select('*').eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.scannerEvidence), failures),
-    safeRows(client, 'migration_jobs', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.migrationJobs), failures),
-    safeRows(client, 'compliance_evidence', (q) => q.select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.complianceEvidence), failures),
-    safeRows(client, 'vault_audit_logs', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.vaultAuditLogs), failures),
-    safeRows(client, 'qrng_events', (q) => q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.qrngEvents), failures),
-    safeRows(client, 'scanner_agents', (q) => q.select('id, status, updated_at, last_seen_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.scannerAgents), failures),
-    safeRows(client, 'connector_accounts', (q) => q.select('id, status, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.connectorAccounts), failures),
-    safeRows(client, 'agent_heartbeats', (q) => q.select('id, observed_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.agentHeartbeats), failures),
-    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, completed_at, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.scanSessions), failures),
+    safeRows(client, 'qkms_keys', (q) => q.select('*', { count: 'exact' }).eq('tenant_id', userId).eq('user_id', userId).order('updated_at', { ascending: false }), failures, limited, CAP.qkmsKeys),
+    safeRows(client, 'qkms_key_versions', (q) => q.select('*', { count: 'exact' }).eq('tenant_id', userId).eq('user_id', userId).order('version', { ascending: false }), failures, limited, CAP.qkmsKeyVersions),
+    safeRows(client, 'qkms_policies', (q) => q.select('*', { count: 'exact' }).eq('tenant_id', userId).eq('user_id', userId).order('updated_at', { ascending: false }), failures, limited, CAP.qkmsPolicies),
+    safeRows(client, 'qkms_rotation_jobs', (q) => q.select('*', { count: 'exact' }).eq('tenant_id', userId).eq('user_id', userId).order('created_at', { ascending: false }), failures, limited, CAP.qkmsRotationJobs),
+    safeRows(client, 'qkms_audit_events', (q) => q.select('*', { count: 'exact' }).eq('tenant_id', userId).eq('user_id', userId).order('created_at', { ascending: false }), failures, limited, CAP.qkmsAuditEvents),
+    safeRows(client, 'qkms_storage_backends', (q) => q.select('*', { count: 'exact' }).eq('tenant_id', userId).eq('user_id', userId).order('updated_at', { ascending: false }), failures, limited, CAP.qkmsStorageBackends),
+    safeRows(client, 'generated_keys', (q) => q.select('id, algorithm, bit_length, entropy_source, quality_score, fingerprint, status, expires_at, revoked_at, rotated_from, label, metadata, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }), failures, limited, CAP.generatedKeys),
+    safeRows(client, 'crypto_inventory', (q) => q.select('*', { count: 'exact' }).eq('user_id', userId).order('discovered_at', { ascending: false }), failures, limited, CAP.cryptoInventory),
+    safeRows(client, 'certificates', (q) => q.select('*', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }), failures, limited, CAP.certificates),
+    safeRows(client, 'runtime_crypto_events', (q) => q.select('id, asset_id, algorithm, key_exchange_algorithm, cipher_suite, operation_type, observed_at, created_at, is_pqc, is_legacy', { count: 'exact' }).eq('user_id', userId).order('observed_at', { ascending: false }), failures, limited, CAP.runtimeEvents),
+    safeRows(client, 'scanner_evidence', (q) => q.select('*', { count: 'exact' }).eq('user_id', userId).order('observed_at', { ascending: false }), failures, limited, CAP.scannerEvidence),
+    safeRows(client, 'migration_jobs', (q) => q.select('*', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }), failures, limited, CAP.migrationJobs),
+    safeRows(client, 'compliance_evidence', (q) => q.select('*', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }), failures, limited, CAP.complianceEvidence),
+    safeRows(client, 'vault_audit_logs', (q) => q.select('*', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }), failures, limited, CAP.vaultAuditLogs),
+    safeRows(client, 'qrng_events', (q) => q.select('*', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }), failures, limited, CAP.qrngEvents),
+    safeRows(client, 'scanner_agents', (q) => q.select('id, status, updated_at, last_seen_at', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }), failures, limited, CAP.scannerAgents),
+    safeRows(client, 'connector_accounts', (q) => q.select('id, status, updated_at', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }), failures, limited, CAP.connectorAccounts),
+    safeRows(client, 'agent_heartbeats', (q) => q.select('id, observed_at', { count: 'exact' }).eq('user_id', userId).order('observed_at', { ascending: false }), failures, limited, CAP.agentHeartbeats),
+    safeRows(client, 'pqc_scan_sessions', (q) => q.select('id, status, completed_at, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }), failures, limited, CAP.scanSessions),
   ])
 
-  const coreFailures = failures.filter((table) => CORE_TABLES.has(table))
+  const coreFailures = failures.filter((table) => CORE_TABLES.has(table)).sort()
   if (coreFailures.length) {
     // Thrown, so it is never cached and the client keeps its last good view.
     throw new Error(`Key evidence could not be read from ${coreFailures.join(', ')}. Figures are withheld rather than computed from a partial estate.`)
   }
-
-  const truncated = qkmsKeys.length >= CAP.qkmsKeys
-    || generatedKeys.length >= CAP.generatedKeys
-    || cryptoInventory.length >= CAP.cryptoInventory
-    || certificates.length >= CAP.certificates
-    || runtimeEvents.length >= CAP.runtimeEvents
 
   return buildQkmsIntelligence({
     assets,
@@ -292,24 +285,31 @@ async function computeModel(token: string, userId: string): Promise<QkmsIntellig
     connectorAccounts,
     agentHeartbeats,
     scanSessions,
-    truncated,
-    degradedSources: failures,
+    truncated: limited.length > 0,
+    degradedSources: failures.sort(),
+    limitedSources: limited.sort(),
   })
 }
 
 function buildModel(token: string, userId: string, force = false): Promise<QkmsIntelligence> {
-  const cached = modelCache.get(userId)
-  if (!force && cached && Date.now() - cached.at < MODEL_TTL_MS) return cached.promise
-
-  const promise = computeModel(token, userId)
-  modelCache.set(userId, { at: Date.now(), promise })
-  // Never cache a failure: the next read must retry rather than serve an error
-  // for the rest of the window.
-  promise.catch(() => modelCache.delete(userId))
-
+  // Supabase supports two projects; the same subject is not a project or claim boundary.
+  const cacheKey = `${userId}:${createHash('sha256').update(token).digest('hex')}`
+  const cached = modelCache.get(cacheKey)
+  if (cached && (cached.at === 0 || (!force && Date.now() - cached.at < MODEL_TTL_MS))) return cached.promise
+  const promise: Promise<QkmsIntelligence> = computeModel(token, userId).then((data) => {
+    const current = modelCache.get(cacheKey)
+    // A write may invalidate while the queries are still in flight.
+    if (current?.promise !== promise) return buildModel(token, userId)
+    return data
+  })
+  const entry = { at: 0, promise }
+  modelCache.set(cacheKey, entry)
+  void promise.then(() => { entry.at = Date.now() }, () => {
+    if (modelCache.get(cacheKey) === entry) modelCache.delete(cacheKey)
+  })
   if (modelCache.size > 500) {
     const now = Date.now()
-    for (const [key, value] of modelCache) if (now - value.at > MODEL_TTL_MS) modelCache.delete(key)
+    for (const [key, value] of modelCache) if (value.at && now - value.at > MODEL_TTL_MS) modelCache.delete(key)
   }
   return promise
 }
@@ -323,7 +323,7 @@ const streamWakers = new Map<string, Set<() => void>>()
  * write at once instead of on the next 10s tick.
  */
 function invalidate(userId: string) {
-  modelCache.delete(userId)
+  for (const key of modelCache.keys()) if (key.startsWith(`${userId}:`)) modelCache.delete(key)
   for (const wake of streamWakers.get(userId) || []) wake()
 }
 
@@ -666,7 +666,7 @@ async function writeAudit(
   }
 
   const { error } = await client.from('qkms_audit_events').insert(payload)
-  if (!error) return
+  if (!error) return true
 
   if (isMissingColumn(error)) {
     // Schema extension not applied yet: fall back to the original shape so the
@@ -676,9 +676,10 @@ async function writeAudit(
     if (retry.error && !isMissingTable(retry.error)) {
       console.warn('[qkms] audit persist failed:', retry.error.message || retry.error)
     }
-    return
+    return !retry.error
   }
   if (!isMissingTable(error)) console.warn('[qkms] audit persist failed:', error.message || error)
+  return false
 }
 
 /**
@@ -773,6 +774,19 @@ function notChanged(res: Response, message: string) {
 const router = Router()
 router.use(requireAuth)
 
+router.use((_req, res, next) => {
+  res.setHeader('Cache-Control', 'private, no-store')
+  next()
+})
+
+router.use((req, res, next) => {
+  if (['POST', 'PATCH'].includes(req.method) && req.body &&
+      (carriesSecretMaterial(req.body) || /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/i.test(JSON.stringify(req.body)))) {
+    return res.status(400).json({ error: { code: 'RAW_KEY_REJECTED', message: 'QKMS accepts key metadata only. Do not submit key material.' } })
+  }
+  next()
+})
+
 const model = (req: AuthedRequest, force = false) => buildModel(req.token!, req.user!.id, force)
 
 /** Re-resolve a client-supplied id against the tenant's own model. */
@@ -789,8 +803,8 @@ async function resolveKey(req: AuthedRequest, id: string): Promise<{ data: QkmsI
  *
  * The client replaces state atomically rather than patching, which is what
  * stops the KPI strip, the charts and the tables from disagreeing mid-update.
- * Frames are suppressed when the model has not changed, so an idle tenant costs
- * one heartbeat every 25s instead of a full rebuild every 8s.
+ * Streams send a whole snapshot on each new model and a heartbeat every 25s.
+ * In each process, streams with the same auth scope share their model reads.
  */
 router.get('/stream', async (req: AuthedRequest, res: Response) => {
   const mode = (str(req.query.mode) || 'overview') as QkmsMode
@@ -800,7 +814,7 @@ router.get('/stream', async (req: AuthedRequest, res: Response) => {
 
   res.status(200)
   res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('Cache-Control', 'private, no-store, no-transform')
   res.setHeader('Connection', 'keep-alive')
   res.setHeader('X-Accel-Buffering', 'no')
   res.flushHeaders?.()
@@ -822,38 +836,41 @@ router.get('/stream', async (req: AuthedRequest, res: Response) => {
    */
   const expiresAt = tokenExpiryMs(req.token!)
   let lastGeneratedAt = ''
-  let lastSignature = ''
+  let pushing = false
+  let pending = false
   const push = async () => {
     if (closed) return
+    if (pushing) {
+      pending = true
+      return
+    }
     if (expiresAt !== null && Date.now() >= expiresAt - 5_000) {
-      send('qkms-error', { code: 'TOKEN_EXPIRED', message: 'Session token expired; reconnecting with a fresh session.' })
+      if (!res.writableNeedDrain) send('qkms-error', { code: 'TOKEN_EXPIRED', message: 'Session token expired; reconnecting with a fresh session.' })
       end()
       return
     }
+    if (res.writableNeedDrain) return
+    pushing = true
     try {
       const data = await model(req)
-      if (data.generatedAt === lastGeneratedAt) return
+      if (closed || pending || res.writableNeedDrain || data.generatedAt === lastGeneratedAt) return
       lastGeneratedAt = data.generatedAt
-      /* `generatedAt` moves on every cache rebuild even when nothing changed.
-         The view is compared WITHOUT it: a changed view is pushed whole; an
-         unchanged one sends only the time it was re-verified, so an idle
-         tenant's tables and drawers are not re-queried every rebuild. */
-      const view = projectView(data, mode)
-      const signature = JSON.stringify({ ...view, generatedAt: null })
-      if (signature === lastSignature) {
-        send('qkms-verified', { mode, generatedAt: data.generatedAt })
-        return
-      }
-      lastSignature = signature
-      send('qkms', view)
+      // The filtered table or open drawer can change even when its summary does not.
+      send('qkms', projectView(data, mode))
     } catch (error) {
-      send('qkms-error', { message: error instanceof Error ? error.message : 'QKMS telemetry unavailable' })
+      if (!res.writableNeedDrain) send('qkms-error', { message: error instanceof Error ? error.message : 'QKMS telemetry unavailable' })
+    } finally {
+      pushing = false
+      if (pending) {
+        pending = false
+        void push()
+      }
     }
   }
 
   const interval = setInterval(() => void push(), 10_000)
   const heartbeat = setInterval(() => {
-    if (!closed) res.write(': heartbeat\n\n')
+    if (!closed && !res.writableNeedDrain) res.write(': heartbeat\n\n')
   }, 25_000)
 
   // A write invalidates the tenant's model; push shortly after (coalescing a
@@ -886,7 +903,7 @@ router.get('/stream', async (req: AuthedRequest, res: Response) => {
   }
   void push()
 
-  req.on('close', release)
+  res.once('close', release)
 })
 
 /* ---- Drill-down: keys ------------------------------------------- */
@@ -1052,9 +1069,9 @@ router.post('/keys/:id/assign-owner', async (req: AuthedRequest, res: Response) 
     // not "Owner set".
     if (!updated?.length) return notChanged(res, 'The owner was not recorded: the registry row could not be updated for this tenant.')
 
-    await writeAudit(client, req.user!.id, key.id, 'owner_assigned', `Owner of "${key.label}" set to ${owner}`, { owner: key.owner }, { owner })
+    const auditRecorded = await writeAudit(client, req.user!.id, key.id, 'owner_assigned', `Owner of "${key.label}" set to ${owner}`, { owner: key.owner }, { owner })
     invalidate(req.user!.id)
-    res.json({ data: { keyId: key.id, owner, registryId } })
+    res.json({ data: { auditRecorded, keyId: key.id, owner, registryId } })
   } catch (error) {
     console.error('[qkms] assign owner failed:', error)
     res.status(500).json({ error: { code: 'QKMS_ERROR', message: error instanceof Error ? error.message : 'Failed to assign owner' } })
@@ -1095,9 +1112,9 @@ router.post('/keys/:id/revoke', async (req: AuthedRequest, res: Response) => {
     }
     if (!changed) return notChanged(res, 'The key was not revoked: none of its records could be updated for this tenant.')
 
-    await writeAudit(client, req.user!.id, key.id, 'key_revoked', `${key.label} revoked: ${reason}`, { status: key.lifecycle }, { status: 'revoked', revokedAt })
+    const auditRecorded = await writeAudit(client, req.user!.id, key.id, 'key_revoked', `${key.label} revoked: ${reason}`, { status: key.lifecycle }, { status: 'revoked', revokedAt })
     invalidate(req.user!.id)
-    res.json({ data: { keyId: key.id, status: 'revoked', revokedAt } })
+    res.json({ data: { auditRecorded, keyId: key.id, status: 'revoked', revokedAt } })
   } catch (error) {
     console.error('[qkms] revoke failed:', error)
     res.status(500).json({ error: { code: 'QKMS_ERROR', message: error instanceof Error ? error.message : 'Failed to revoke key' } })
@@ -1138,9 +1155,9 @@ router.post('/keys/:id/decommission', async (req: AuthedRequest, res: Response) 
     if (result.error) throw result.error
     if (!result.data?.length) return notChanged(res, 'The key was not decommissioned: its registry row could not be updated for this tenant.')
 
-    await writeAudit(client, req.user!.id, key.id, 'key_decommissioned', `${key.label} decommissioned: ${reason}`, { status: key.lifecycle }, { status: 'decommissioned', at })
+    const auditRecorded = await writeAudit(client, req.user!.id, key.id, 'key_decommissioned', `${key.label} decommissioned: ${reason}`, { status: key.lifecycle }, { status: 'decommissioned', at })
     invalidate(req.user!.id)
-    res.json({ data: { keyId: key.id, status: 'decommissioned', decommissionedAt: at } })
+    res.json({ data: { auditRecorded, keyId: key.id, status: 'decommissioned', decommissionedAt: at } })
   } catch (error) {
     console.error('[qkms] decommission failed:', error)
     res.status(500).json({ error: { code: 'QKMS_ERROR', message: error instanceof Error ? error.message : 'Failed to decommission key' } })
@@ -1224,6 +1241,7 @@ router.post('/keys/:id/rotation', async (req: AuthedRequest, res: Response) => {
       ;({ data, error } = await client.from('qkms_rotation_jobs').insert(payload).select('id, created_at').single())
     }
     if (error) {
+      if (error.code === '23505') return notChanged(res, 'A rotation work order is already open for this key.')
       if (isMissingTable(error)) {
         return res.status(503).json({
           error: {
@@ -1235,9 +1253,9 @@ router.post('/keys/:id/rotation', async (req: AuthedRequest, res: Response) => {
       throw error
     }
 
-    await writeAudit(client, req.user!.id, key.id, 'rotation_requested', `Rotation work order raised for ${key.label}: ${reason}`, null, { jobId: data?.id, priority })
+    const auditRecorded = await writeAudit(client, req.user!.id, key.id, 'rotation_requested', `Rotation work order raised for ${key.label}: ${reason}`, null, { jobId: data?.id, priority })
     invalidate(req.user!.id)
-    res.status(201).json({ data: { jobId: `job:${data?.id}`, keyId: key.id, status: 'requested', createdAt: data?.created_at } })
+    res.status(201).json({ data: { auditRecorded, jobId: `job:${data?.id}`, keyId: key.id, status: 'requested', createdAt: data?.created_at } })
   } catch (error) {
     console.error('[qkms] rotation request failed:', error)
     res.status(500).json({ error: { code: 'QKMS_ERROR', message: error instanceof Error ? error.message : 'Failed to raise rotation work order' } })
@@ -1269,11 +1287,6 @@ router.post('/rotation-jobs/:id/transition', async (req: AuthedRequest, res: Res
     if (!UUID_PATTERN.test(jobId)) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Rotation work order not found in this tenant' } })
 
     const validationDetail = str(req.body?.validationDetail).slice(0, 2000)
-    if (target === 'completed' && validationDetail && validationDetail.length < MIN_VALIDATION_EVIDENCE) {
-      return res.status(400).json({
-        error: { code: 'VALIDATION_EVIDENCE_TOO_SHORT', message: `Validation evidence must describe what was checked (at least ${MIN_VALIDATION_EVIDENCE} characters), or be left empty to close the order as unvalidated.` },
-      })
-    }
 
     const client = createAuthClient(req.token!)
     if (!client) throw new Error('Database connection failed')
@@ -1319,21 +1332,6 @@ router.post('/rotation-jobs/:id/transition', async (req: AuthedRequest, res: Res
     }
 
     const at = new Date().toISOString()
-    // Only a VALIDATED completion is a rotation the platform can stand behind:
-    // it alone mints a version and moves the key's last-rotated date.
-    const validated = target === 'completed' && Boolean(validationDetail)
-
-    /* The next version comes from the version chain itself, not from a cached
-       model up to 15 seconds old. */
-    let nextVersion: number | null = null
-    if (validated && keyRef) {
-      const versions = await client.from('qkms_key_versions').select('version').eq('tenant_id', req.user!.id).eq('user_id', req.user!.id).eq('key_ref', keyRef)
-        .order('version', { ascending: false }).limit(1)
-      if (versions.error && !isMissingTable(versions.error)) throw versions.error
-      const chainMax = Number((versions.data || [])[0]?.version) || 0
-      nextVersion = Math.max(chainMax, key?.version ?? 0, Number(row.previous_version) || 0) + 1
-    }
-
     const updates: Row = { status: target }
     if (target === 'requested') {
       // A re-opened order starts over: approval and validation do not carry across.
@@ -1344,10 +1342,9 @@ router.post('/rotation-jobs/:id/transition', async (req: AuthedRequest, res: Res
     if (target === 'awaiting-validation') updates.validation_status = 'pending'
     if (target === 'completed') {
       updates.completed_at = at
-      // Without evidence the order closes as done but UNVALIDATED, and the
-      // migration gate reads VALIDATION_REQUIRED rather than MIGRATED.
-      updates.validation_status = validated ? 'passed' : 'pending'
-      updates.validation_detail = validationDetail || 'Completed without post-rotation validation evidence.'
+      // An operator note does not prove provider execution or dependent service validation.
+      updates.validation_status = 'pending'
+      updates.validation_detail = validationDetail || null
     }
     if (target === 'failed') {
       updates.failure_reason = str(req.body?.failureReason).slice(0, 1000) || 'Rotation failed'
@@ -1365,6 +1362,7 @@ router.post('/rotation-jobs/:id/transition', async (req: AuthedRequest, res: Res
       if (target === 'in-progress') minimal.started_at = at
       result = await conditional(minimal)
     }
+    if (result.error?.code === '23505') return notChanged(res, 'Another rotation work order is already open for this key.')
     if (result.error) throw result.error
     if (!result.data?.length) {
       return res.status(409).json({
@@ -1372,60 +1370,11 @@ router.post('/rotation-jobs/:id/transition', async (req: AuthedRequest, res: Res
       })
     }
 
-    /*
-     * A validated completion mints a new version record — real state this
-     * platform owns. It is the only place `qkms_key_versions` grows, so a
-     * version chain always corresponds to a governed, validated operation.
-     */
-    let versionRecorded: boolean | null = null
-    if (validated && keyRef && nextVersion !== null) {
-      const algorithm = str(req.body?.algorithm)
-      const versionInsert = await client.from('qkms_key_versions').insert({
-        tenant_id: req.user!.id,
-        user_id: req.user!.id,
-        key_ref: keyRef,
-        version: nextVersion,
-        status: 'active',
-        // A free-text algorithm from the client is only recorded when it is a
-        // plausible algorithm identifier; otherwise the key's known algorithm stands.
-        algorithm: algorithm && ALGORITHM_IDENTIFIER.test(algorithm) ? algorithm : key?.algorithm || null,
-        created_at: at,
-        activated_at: at,
-        rotation_job_id: jobId,
-      })
-      versionRecorded = !versionInsert.error
-      if (versionInsert.error && !isMissingTable(versionInsert.error)) {
-        console.warn('[qkms] version record failed:', versionInsert.error.message || versionInsert.error)
-      }
-      if (versionRecorded) {
-        // The order names its version only once that version exists.
-        await client.from('qkms_rotation_jobs').update({ new_version: nextVersion }).eq('id', jobId).eq('tenant_id', req.user!.id).eq('user_id', req.user!.id)
-        await client.from('qkms_key_versions').update({ status: 'superseded', superseded_at: at })
-          .eq('tenant_id', req.user!.id).eq('user_id', req.user!.id).eq('key_ref', keyRef).lt('version', nextVersion).is('superseded_at', null)
-      }
-      const registryId = key?.records.find((record) => record.table === 'qkms_keys')?.recordId
-      if (registryId) {
-        const registry = await client.from('qkms_keys')
-          .update({ last_rotated_at: at, version: nextVersion, updated_at: at })
-          .eq('id', registryId).eq('tenant_id', req.user!.id).eq('user_id', req.user!.id)
-        if (registry.error) console.warn('[qkms] registry rotation stamp failed:', registry.error.message || registry.error)
-      }
-    }
-
-    await writeAudit(client, req.user!.id, keyRef, `rotation_${target.replace(/-/g, '_')}`,
-      `Rotation work order for ${keyLabel} moved ${current} → ${target}${target === 'completed' ? (validated ? ' (validated)' : ' (unvalidated)') : ''}`,
-      { status: current }, { status: target, at, ...(nextVersion !== null ? { version: nextVersion, versionRecorded } : {}) })
+    const auditRecorded = await writeAudit(client, req.user!.id, keyRef, `rotation_${target.replace(/-/g, '_')}`,
+      `Rotation work order for ${keyLabel} moved ${current} → ${target}`,
+      { status: current }, { status: target, at, ...(target === 'completed' ? { validationStatus: 'pending' } : {}) })
     invalidate(req.user!.id)
-    res.json({
-      data: {
-        jobId: `job:${jobId}`,
-        status: target,
-        at,
-        validationStatus: target === 'completed' ? (validated ? 'passed' : 'pending') : undefined,
-        newVersion: versionRecorded ? nextVersion : null,
-        versionRecorded,
-      },
-    })
+    res.json({ data: { auditRecorded, jobId: `job:${jobId}`, status: target, at, validationStatus: target === 'completed' ? 'pending' : undefined } })
   } catch (error) {
     console.error('[qkms] rotation transition failed:', error)
     res.status(500).json({ error: { code: 'QKMS_ERROR', message: error instanceof Error ? error.message : 'Failed to advance work order' } })
@@ -1476,10 +1425,6 @@ router.post('/policies', async (req: AuthedRequest, res: Response) => {
     }
 
     let { data, error } = await client.from('qkms_policies').insert(payload).select('id, created_at').single()
-    if (error && isMissingColumn(error)) {
-      delete payload.require_pqc
-      ;({ data, error } = await client.from('qkms_policies').insert(payload).select('id, created_at').single())
-    }
     if (error) {
       if (isMissingTable(error)) {
         return res.status(503).json({
@@ -1489,9 +1434,9 @@ router.post('/policies', async (req: AuthedRequest, res: Response) => {
       throw error
     }
 
-    await writeAudit(client, req.user!.id, null, 'policy_created', `Policy "${name}" created`, null, payload)
+    const auditRecorded = await writeAudit(client, req.user!.id, null, 'policy_created', `Policy "${name}" created`, null, payload)
     invalidate(req.user!.id)
-    res.status(201).json({ data: { id: `policy:${data?.id}`, createdAt: data?.created_at } })
+    res.status(201).json({ data: { auditRecorded, id: `policy:${data?.id}`, createdAt: data?.created_at } })
   } catch (error) {
     console.error('[qkms] policy create failed:', error)
     res.status(500).json({ error: { code: 'QKMS_ERROR', message: error instanceof Error ? error.message : 'Failed to create policy' } })
@@ -1521,16 +1466,25 @@ router.patch('/policies/:id', async (req: AuthedRequest, res: Response) => {
     if ('requireHsm' in body) updates.require_hsm = Boolean(body.requireHsm)
     if ('requireOwner' in body) updates.require_owner = Boolean(body.requireOwner)
     if ('allowExport' in body) updates.allow_export = Boolean(body.allowExport)
-    if ('rotationIntervalDays' in body) updates.rotation_interval_days = num(body.rotationIntervalDays, 180)
-    if ('maxKeyAgeDays' in body) updates.max_key_age_days = num(body.maxKeyAgeDays, 365)
+    if ('requirePqc' in body) updates.require_pqc = Boolean(body.requirePqc)
+    for (const [field, column] of [['rotationIntervalDays', 'rotation_interval_days'], ['maxKeyAgeDays', 'max_key_age_days']]) {
+      if (!(field in body)) continue
+      const value = body[field]
+      if (value !== null && (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0 || value > 36500)) {
+        return res.status(400).json({ error: { code: 'INVALID_POLICY', message: `${field} must be null or a whole number of days from 1 to 36500.` } })
+      }
+      updates[column] = value
+    }
     if ('environmentScope' in body) updates.environment_scope = str(body.environmentScope) || 'all'
 
-    const { error } = await client.from('qkms_policies').update(updates).eq('id', policyId).eq('tenant_id', req.user!.id).eq('user_id', req.user!.id)
-    if (error && !isMissingTable(error)) throw error
+    if (!UUID_PATTERN.test(policyId)) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Policy not found in this tenant' } })
+    const { data: updated, error } = await client.from('qkms_policies').update(updates).eq('id', policyId).eq('tenant_id', req.user!.id).eq('user_id', req.user!.id).select('id')
+    if (error) throw error
+    if (!updated?.length) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Policy not found in this tenant' } })
 
-    await writeAudit(client, req.user!.id, null, 'policy_updated', `Policy ${policyId} updated`, null, updates)
+    const auditRecorded = await writeAudit(client, req.user!.id, null, 'policy_updated', `Policy ${policyId} updated`, null, updates)
     invalidate(req.user!.id)
-    res.json({ data: { id: `policy:${policyId}`, updated: true } })
+    res.json({ data: { auditRecorded, id: `policy:${policyId}`, updated: true } })
   } catch (error) {
     console.error('[qkms] policy update failed:', error)
     res.status(500).json({ error: { code: 'QKMS_ERROR', message: error instanceof Error ? error.message : 'Failed to update policy' } })
@@ -1549,12 +1503,13 @@ router.post('/precheck', async (req: AuthedRequest, res: Response) => {
   try {
     const data = await model(req, true)
     const client = createAuthClient(req.token!)
-    if (client) {
-      await writeAudit(client, req.user!.id, null, 'migration_precheck',
+    const auditRecorded = client
+      ? await writeAudit(client, req.user!.id, null, 'migration_precheck',
         `Migration gate evaluated: ${data.readiness.gate.state}`, null,
         { state: data.readiness.gate.state, score: data.readiness.gate.score, blockers: data.readiness.gate.blockers })
-    }
-    res.json({ data: data.readiness.gate })
+      : false
+    if (auditRecorded) invalidate(req.user!.id)
+    res.json({ data: data.readiness.gate, auditRecorded })
   } catch (error) {
     console.error('[qkms] precheck failed:', error)
     res.status(500).json({ error: { code: 'QKMS_ERROR', message: error instanceof Error ? error.message : 'Failed to evaluate the migration gate' } })
@@ -1580,4 +1535,4 @@ router.get('/:mode', async (req: AuthedRequest, res: Response) => {
 })
 
 export default router
-export { buildModel as buildQkmsModel, invalidate as invalidateQkmsModel }
+export { buildModel as buildQkmsModel, invalidate as invalidateQkmsModel, projectView as projectQkmsView }

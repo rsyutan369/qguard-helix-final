@@ -18,6 +18,8 @@
  * `pqc-live.ts`. The UI badges the three apart.
  */
 
+import { PQC_TRANSITION_SOURCES as sources } from '../crypto/pqc-transition-sources'
+
 /** Where a displayed number came from. The UI must badge every number. */
 export type Provenance =
   /** A standards document, registry, or published paper states this exactly. */
@@ -68,10 +70,16 @@ export const CITATIONS = {
     url: 'https://www.nist.gov/news-events/news/2025/03/nist-selects-hqc-fifth-algorithm-post-quantum-encryption',
   },
   ir8547: {
-    label: 'NIST IR 8547 ipd',
-    title: 'Transition to Post-Quantum Cryptography Standards (initial public draft)',
-    published: '2024-11-12',
-    url: 'https://doi.org/10.6028/NIST.IR.8547.ipd',
+    ...sources.nist,
+    title: 'Transition to Post-Quantum Cryptography Standards',
+  },
+  eo14412: {
+    ...sources.executiveOrder,
+    title: 'Securing the Nation Against Advanced Cryptographic Attacks',
+  },
+  ombM2615: {
+    ...sources.omb,
+    title: 'Execution of the Migration to Post-Quantum Cryptography',
   },
   sp800131a: {
     label: 'SP 800-131A Rev. 2',
@@ -476,11 +484,10 @@ export const TRANSITION_MILESTONES: TransitionMilestone[] = [
   },
   {
     id: 'ir8547-deprecate',
-    date: '2031-01-01',
+    date: sources.nist.deprecationStarts,
     authority: 'NIST',
-    title: '112-bit-strength RSA, ECDSA, ECDH and finite-field DH deprecated',
-    detail:
-      'NIST IR 8547 ipd deprecates public-key algorithms at the 112-bit classical security strength after 2030 — RSA-2048, finite-field DH/MQV-2048, and ECDH/ECDSA on 224-bit curves. Deprecated means: still permitted, but the user must accept the associated security risk (SP 800-131A definition). Algorithms at 128-bit strength and above (RSA-3072 and larger, P-256, P-384, X25519, Ed25519) get no deprecation step — they are disallowed outright after 2035.',
+    title: 'NIST deprecation of quantum-vulnerable public-key cryptography',
+    detail: `${sources.nist.summary} This applies across key sizes for the covered schemes; earlier federal requirements take precedence where applicable.`,
     severity: 'deadline',
     citation: 'ir8547',
   },
@@ -504,13 +511,28 @@ export const TRANSITION_MILESTONES: TransitionMilestone[] = [
   },
   {
     id: 'ir8547-disallow',
-    date: '2036-01-01',
+    date: sources.nist.disallowanceStarts,
     authority: 'NIST',
     title: 'Quantum-vulnerable public-key cryptography disallowed',
-    detail:
-      'NIST IR 8547 ipd disallows RSA, ECDSA, EdDSA, DH and ECDH at every key size after 2035. Disallowed means the algorithm may no longer be used to apply cryptographic protection under NIST guidance. IR 8547 is still an initial public draft, so these dates are proposed rather than final.',
+    detail: 'After 2035, covered quantum-vulnerable public-key algorithms are disallowed under NIST standards and guidelines. Earlier federal milestones still apply to priority systems in scope.',
     severity: 'hard-stop',
     citation: 'ir8547',
+  },
+  {
+    id: 'eo14412-key-establishment', date: '2030-12-31', authority: 'White House',
+    title: 'Federal priority systems: PQC key establishment',
+    detail: sources.executiveOrder.summary, severity: 'deadline', citation: 'eo14412',
+  },
+  {
+    id: 'eo14412-signatures', date: '2031-12-31', authority: 'White House',
+    title: 'Federal priority systems: PQC digital signatures',
+    detail: sources.executiveOrder.summary, severity: 'deadline', citation: 'eo14412',
+  },
+  {
+    id: 'omb-m-26-15-tls', date: '2030-01-02', authority: 'OMB',
+    title: 'Federal systems: support TLS 1.3 or a successor',
+    detail: 'OMB M-26-15 calls for TLS 1.3 or successor support by January 2, 2030. TLS 1.3 by itself does not establish that a post-quantum key exchange was negotiated.',
+    severity: 'deadline', citation: 'ombM2615',
   },
   {
     id: 'nsm10-2035',

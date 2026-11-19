@@ -1,15 +1,20 @@
 import { Router, type NextFunction, type Request, type Response } from 'express'
+import { csvCell } from '@/lib/csv'
 import { createAuthClient, getServerUser, getServiceClient, getToken } from '@/lib/supabase-server'
 import { createSingleFlightCache } from '@/lib/single-flight-cache'
 import { streamLiveSnapshot } from './live-snapshot-stream'
 import { buildScannerIntelligence } from './scanner'
+import { buildGovernanceModel } from './governance'
 import { buildSnapshot as buildQuantumReadinessSnapshot } from './quantum-readiness'
 import { dedupeGradedObservations, namesCryptography, observationClass } from '@/lib/scanner/finding-identity'
 import { riskBandFor, riskScoreFromLoad } from '@/lib/migration/asset-intelligence'
+import { componentPosture, partitionAssetInventory } from '@/lib/scanner/asset-components'
+import { algorithmFamily } from '@/lib/governance/subjects'
 import { isSimulationJob, jobPlanId } from '@/lib/migration/job-safety'
 import { describeOperationalWorkflow } from '@/lib/migration/operational-workflow'
 import { jobExecutionClass } from './agent-scanner'
 import { loadAgentFleet as loadAgentFleetShared, loadPlanApprovals as loadPlanApprovalsShared } from './operational-fleet'
+import sandboxLabRoutes, { startSandboxLabScheduler } from './sandbox-lab'
 import {
   ENGINE_PIPELINE_STAGES,
   SIMULATION_TYPES,
@@ -39,16 +44,21 @@ const DELETABLE_SIMULATION_STATUSES = ['completed', 'failed', 'stopped', 'rolled
 const ENGINE_PHASES = [
   { id: 'preparation', label: 'Preparation', detail: 'Environment snapshot, dependency inventory, and rollback checkpoint.', at: 0 },
   { id: 'assessment', label: 'Risk Assessment', detail: 'Crypto exposure scoring, compatibility checks, and policy validation.', at: 22 },
-  { id: 'execution', label: 'Sandbox Execution', detail: 'PQC replacement plan is exercised against sandbox controls.', at: 48 },
-  { id: 'verification', label: 'Verification', detail: 'Handshake, key material, certificate, and application behavior validation.', at: 74 },
-  { id: 'finalization', label: 'Finalization', detail: 'Evidence collection, readiness scoring, and report finalization.', at: 94 },
+  { id: 'execution', label: 'Model scenario', detail: 'The modeled scenario evaluates recorded cryptography and declared controls.', at: 48 },
+  { id: 'verification', label: 'Assess coverage', detail: 'The analytical review identifies areas for provider, protocol and application tests.', at: 74 },
+  { id: 'finalization', label: 'Finalization', detail: 'Analytical review and report finalization.', at: 94 },
 ]
 
+/**
+ * Bearer token from the Authorization header ONLY.
+ *
+ * This router used to accept `?token=` as well, for an EventSource client that
+ * could not set headers. A token in a URL is written to browser history, proxy
+ * logs and access logs, and the sandbox can start and approve simulations — so
+ * the client now reads the stream with fetch() and the query form is refused.
+ */
 function tokenFromRequest(req: Request): string | null {
-  const header = getToken(req)
-  if (header) return header
-  const q = req.query.token
-  return typeof q === 'string' && q.length > 0 ? q : null
+  return getToken(req)
 }
 
 async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
@@ -64,6 +74,8 @@ async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextF
 function clientFor(req: AuthenticatedRequest) {
   return req.token ? createAuthClient(req.token) : null
 }
+
+router.use('/lab', requireAuth, sandboxLabRoutes)
 
 function isMissingTable(error: any) {
   const text = `${error?.code || ''} ${error?.message || ''}`.toLowerCase()
@@ -497,9 +509,9 @@ async function advanceSandboxJobs(client: any, userId?: string) {
         }
         event = {
           type: 'sandbox-simulation-completed',
-          severity: 'success',
-          message: `${modeLabel(classifyJobMode(job))} completed validation: ${job.name || job.id}.`,
-          metadata: { phase: 'finalization', progress: 100 },
+          severity: 'info',
+          message: `Analytical simulation finished: ${job.name || job.id}. Cryptographic execution and protocol validation were not performed.`,
+          metadata: { phase: 'finalization', progress: 100, evidenceLevel: 'analysis' },
         }
       } else if (nextProgress > progress || phase.id !== previousPhase) {
         // Enterprise pipeline jobs accumulate an auditable per-stage history
@@ -542,7 +554,7 @@ async function advanceSandboxJobs(client: any, userId?: string) {
           metadata: {
             ...updateMeta,
             phase: 'rollback',
-            phaseDetail: 'Rollback completed and previous cryptographic posture restored.',
+            phaseDetail: 'Modeled rollback reached the saved configuration checkpoint.',
             lastRollbackSnapshotId: snapshotId,
             snapshots,
           },
@@ -550,7 +562,7 @@ async function advanceSandboxJobs(client: any, userId?: string) {
         event = {
           type: 'sandbox-rollback-completed',
           severity: 'warning',
-          message: `${modeLabel(classifyJobMode(job))} rollback completed: ${job.name || job.id}.`,
+          message: `Modeled rollback checkpoint reached: ${job.name || job.id}.`,
           metadata: { phase: 'rollback', progress: 100, snapshotId },
         }
       } else {
@@ -620,7 +632,7 @@ function buildSnapshotState(job: any, meta: Record<string, unknown>, context?: a
       runtimeSignals: Number((context?.riskFactors || []).find((f: any) => f?.label === 'Runtime Crypto Risk Signals')?.count || 0),
     },
     complianceState: {
-      score: Number(context?.complianceScore ?? summary.complianceScore ?? meta.complianceScore ?? 0),
+      score: context?.complianceScore ?? null,
       controls: complianceItems.slice(0, 12).map((item: any) => ({
         framework: item.framework,
         control: item.control,
@@ -683,10 +695,8 @@ function snapshotEntry(job: any, action: string, now: string, meta: Record<strin
  * posture validated" although nothing ran on the asset. Operational jobs are
  * executed, paused and rolled back through Live Migration Operations.
  */
-const SANDBOX_ENGINE_ONLY_ACTIONS = ['pause', 'resume', 'retry', 'stop', 'restore_snapshot']
-
-function sandboxEngineActionRefusal(job: any, action: string): string | null {
-  if (!SANDBOX_ENGINE_ONLY_ACTIONS.includes(action) || isSandboxSimulationJob(job)) return null
+function sandboxEngineActionRefusal(job: any): string | null {
+  if (isSandboxSimulationJob(job)) return null
   return `"${job?.name || 'This job'}" is an operational migration job, not a sandbox simulation. Its execution, approval and rollback are managed in Live Migration Operations; the sandbox engine never changes it.`
 }
 
@@ -1013,12 +1023,13 @@ async function buildSandboxPayload(client: any, userId: string, token?: string |
     ]).finally(() => { if (timer) clearTimeout(timer) })
   }
 
-  const [scannerIntel, qrResult] = token
+  const [scannerIntel, qrResult, governanceResult] = token
     ? await Promise.all([
         (buildScannerIntelligence(token, userId) as Promise<any>).catch(() => null),
         withDeadline(buildQuantumReadinessSnapshot(token, userId) as Promise<any>, QR_SNAPSHOT_DEADLINE_MS),
+        withDeadline(buildGovernanceModel(token, userId), QR_SNAPSHOT_DEADLINE_MS),
       ])
-    : [null, null]
+    : [null, null, null]
   const qrPending = qrResult === 'deadline'
   const qrSnapshot = qrPending ? null : (qrResult as any)
 
@@ -1194,8 +1205,25 @@ async function buildSandboxPayload(client: any, userId: string, token?: string |
   const criticalExposures = gradedObservations.critical
   const highExposures = gradedObservations.high
 
-  const vulnerableInventory = (inventory || []).filter((i: any) => i.is_vulnerable || i.is_quantum_safe === false).length
-  const totalInventory = (inventory || []).length
+  /* Inventory is counted in CBOM COMPONENTS — the unit the CBOM Explorer, the
+     Asset Inventory, the Quantum Readiness Engine and the Migration Planner all
+     use. `crypto_inventory` also stores scanner findings about the estate and
+     repeats a component once per scan that saw it, so counting raw rows made
+     this page read "PQC Readiness 49%" and "59 vulnerable" for a tenant whose
+     CBOM holds 32 components, 25 of them vulnerable (22% quantum-safe).
+
+     Prefer the scanner-intelligence totals (the figure those pages render);
+     otherwise apply the same component rule to the rows loaded here, so the two
+     branches describe the same population. */
+  const localComponents = partitionAssetInventory(inventory || [], algorithmFamily).components
+  const intelComponents = scannerIntel?.summary
+  const intelComponentTotal = Number(intelComponents?.totalComponents)
+  const intelAnswered = Boolean(intelComponents) && Number.isFinite(intelComponentTotal) && (intelComponentTotal > 0 || localComponents.length === 0)
+  const totalInventory = intelAnswered ? intelComponentTotal : localComponents.length
+  const vulnerableInventory = intelAnswered
+    ? Math.max(0, Number(intelComponents?.vulnerableComponents) || 0)
+    : localComponents.filter((row) => componentPosture(row) === 'vulnerable').length
+  const inventorySource = intelAnswered ? 'scanner-intelligence' : 'sandbox-local-components'
   // Two different facts that were being added together and then reported under
   // the single label "Expiring Certificates" — which contradicted the failure
   // prediction on the same page reading "0 expiring and 2 non-PQC certificate(s)".
@@ -1278,7 +1306,7 @@ async function buildSandboxPayload(client: any, userId: string, token?: string |
   const riskFactors = [
     { label: 'Critical Crypto Exposures', count: criticalExposures, severity: 'critical' as const, impact: 'high' as const },
     { label: 'High-Risk Exposures', count: highExposures, severity: 'high' as const, impact: 'high' as const },
-    { label: 'Vulnerable Inventory Items', count: vulnerableInventory, severity: 'high' as const, impact: 'medium' as const },
+    { label: 'Quantum-Vulnerable Components', count: vulnerableInventory, severity: 'high' as const, impact: 'medium' as const },
     { label: 'Certificates Needing Rotation', count: certsNeedingRotation, severity: 'medium' as const, impact: 'medium' as const },
     { label: 'Open Vulnerabilities', count: openVulns, severity: 'medium' as const, impact: 'medium' as const },
     { label: 'Failed Migration Jobs', count: failedJobs, severity: 'high' as const, impact: 'high' as const },
@@ -1293,13 +1321,22 @@ async function buildSandboxPayload(client: any, userId: string, token?: string |
     for (const exp of critExps) {
       const asset = assetMap.get(exp.asset_id) || {}
       const from = exp.detected_value || exp.exposure_type || 'legacy algorithm'
+      // Only a finding that names an algorithm is a quantum vulnerability with a
+      // PQC replacement. "Expired certificate" or "deprecated TLS version" are
+      // critical too, but they are hygiene faults: calling them a quantum
+      // vulnerability with an ML-DSA target told the operator the wrong fix.
+      const namesAlgorithm = algorithmFamily(String(from)) !== 'unknown'
       recommendations.push({
         id: `rec-critical-${exp.id}`,
         priority: 1,
-        type: 'algorithm_migration',
-        title: `Migrate ${from.toUpperCase()} on ${asset.name || 'asset'} immediately`,
-        description: `Critical quantum vulnerability detected. This asset is at immediate risk from "Harvest Now, Decrypt Later" attacks.`,
-        algorithm: pqcAlgoRec(from),
+        type: namesAlgorithm ? 'algorithm_migration' : 'exposure_remediation',
+        title: namesAlgorithm
+          ? `Migrate ${from} on ${asset.name || 'asset'}`
+          : `Resolve "${from}" on ${asset.name || 'asset'}`,
+        description: namesAlgorithm
+          ? 'Critical quantum-vulnerable algorithm in use. Data protected by it today can be recorded now and decrypted later ("Harvest Now, Decrypt Later").'
+          : 'Critical cryptographic exposure recorded by the scanner. It is a configuration or lifecycle fault rather than an algorithm weakness, and it must be cleared before this asset can be migrated.',
+        algorithm: namesAlgorithm ? pqcAlgoRec(from) : 'N/A',
         asset: asset.name || 'Unknown',
         effort: 'high',
         timeEstimate: '2-4 weeks',
@@ -1380,8 +1417,8 @@ async function buildSandboxPayload(client: any, userId: string, token?: string |
       id: 'rec-inventory',
       priority: 3,
       type: 'hybrid_deployment',
-      title: `Deploy hybrid cryptography for ${vulnerableInventory} vulnerable assets`,
-      description: 'Transition vulnerable crypto assets to hybrid classical+PQC mode to maintain backward compatibility while gaining quantum resistance.',
+      title: `Deploy hybrid cryptography for ${vulnerableInventory} quantum-vulnerable component${vulnerableInventory === 1 ? '' : 's'}`,
+      description: 'Transition quantum-vulnerable components to hybrid classical+PQC mode to maintain backward compatibility while gaining quantum resistance.',
       algorithm: 'X25519 + ML-KEM-768',
       asset: 'Crypto Inventory',
       effort: 'medium',
@@ -1405,80 +1442,17 @@ async function buildSandboxPayload(client: any, userId: string, token?: string |
     })
   }
 
-  // ── Cryptographic posture indicators per control family ─────────────────────
-  //
-  // These are SCREENING INDICATORS derived from the tenant's cryptographic
-  // evidence, not compliance verdicts. The platform's Compliance dashboard owns
-  // control evidence and attestation; a formula over exposure counts cannot
-  // decide whether an organisation meets HIPAA or PCI DSS.
-  //
-  // Two faults are fixed here. Each row now carries the `basis` it was decided
-  // from, so no number is unexplained. And `status` DERIVES from `score` through
-  // one shared threshold, so the panel can no longer show "PCI DSS · partial"
-  // beside a score of 0, or "SOC 2 · compliant" from a formula with a floor.
-  const agileReady = totalInventory > 0
-  const auditAvailable = (events || []).length > 0 || (securityEvents || []).length > 0 || (auditLogs || []).length > 0
-  const hasPostureEvidence = totalInventory > 0 || gradedObservations.total > 0 || (certificates || []).length > 0
-
-  const indicator = (framework: string, control: string, score: number, basis: string, evidence = hasPostureEvidence) => {
-    const value = Math.max(0, Math.min(100, Math.round(score)))
-    return {
-      framework,
-      control,
-      score: value,
-      basis,
-      // One threshold for every row — status can never contradict the score.
-      status: !evidence ? 'pending' : value >= 85 ? 'met' : value >= 50 ? 'partial' : 'not-met',
-    }
-  }
-
-  const complianceItems = [
-    indicator('NIST PQC Standards', 'FIPS 203/204/205 readiness',
-      (pqcReadiness + (criticalExposures === 0 ? 100 : 35)) / 2,
-      `${pqcReadiness}% PQC-ready inventory · ${criticalExposures} critical exposure(s)`),
-    indicator('NIST Migration Guidance', 'Inventory, prioritization, validation, and evidence',
-      totalInventory > 0 ? (totalJobs > 0 ? 88 : 55) : 0,
-      `${totalInventory} inventory record(s) · ${totalJobs} migration job(s)`),
-    indicator('NIST SP 800-208', 'PQC Algorithm Adoption', pqcReadiness,
-      `${pqcReadiness}% of inventory is quantum-safe`, hasReadinessBaseline),
-    indicator('NIST SP 800-57 Rev.5', 'Key Management Practices',
-      100 - certsNeedingRotation * 15 - failedJobs * 20,
-      `${certsNeedingRotation} certificate(s) needing rotation · ${failedJobs} failed job(s)`),
-    indicator('NSA CNSA 2.0', 'NSS Algorithm Suite',
-      100 - criticalExposures * 20 - highExposures * 10,
-      `${criticalExposures} critical · ${highExposures} high exposure(s)`),
-    indicator('FIPS 140-3 / 203-205', 'Validated module + approved PQC algorithm usage',
-      pqcReadiness * 0.7 + (criticalExposures === 0 ? 30 : 0),
-      `${pqcReadiness}% PQC-ready · ${vulnerableInventory} vulnerable record(s)`),
-    indicator('ISO 27001', 'Cryptographic controls and change management',
-      auditAvailable ? (totalInventory > 0 ? 86 : 62) : 0,
-      auditAvailable ? `Audit trail present · ${totalInventory} inventory record(s)` : 'No audit or security events recorded',
-      auditAvailable),
-    indicator('PCI DSS', 'Strong cryptography, TLS, and key lifecycle evidence',
-      100 - certsNeedingRotation * 18 - criticalExposures * 25 - highExposures * 8,
-      `${criticalExposures} critical · ${highExposures} high · ${certsNeedingRotation} cert(s) needing rotation`),
-    indicator('SOC 2', 'Change auditability and runtime monitoring',
-      auditAvailable ? 95 - runtimeRiskEvents * 8 - failedJobs * 12 : 0,
-      auditAvailable ? `${runtimeRiskEvents} runtime risk signal(s) · ${failedJobs} failed job(s)` : 'No audit or security events recorded',
-      auditAvailable),
-    indicator('HIPAA', 'ePHI encryption strength and transmission security',
-      100 - criticalExposures * 22 - highExposures * 8 - certsNeedingRotation * 10,
-      `${criticalExposures} critical · ${highExposures} high · ${certsNeedingRotation} cert(s) needing rotation`),
-    indicator('GDPR', 'Art. 32 state-of-the-art encryption of personal data',
-      100 - vulnerableInventory * 4 - criticalExposures * 18,
-      `${vulnerableInventory} vulnerable inventory record(s) · ${criticalExposures} critical exposure(s)`),
-    indicator('CISA PQC Guidance', 'Quantum-readiness roadmap: inventory, prioritization, migration rehearsal',
-      totalInventory > 0 ? (totalJobs > 0 ? 90 : 58) : 0,
-      `${totalInventory} inventory record(s) · ${totalJobs} migration job(s)`),
-    indicator('Crypto Agility', 'Algorithm Replaceability', agileReady ? 85 : 0,
-      agileReady ? `${totalInventory} inventory record(s) available to re-target` : 'No crypto inventory discovered'),
-    indicator('Audit Trail', 'Migration Evidence Collection', auditAvailable ? 100 : 0,
-      auditAvailable ? `${(events || []).length} migration · ${(auditLogs || []).length} audit event(s)` : 'No migration or audit events recorded',
-      auditAvailable),
-    indicator('HNDL Posture', 'Harvest-Now-Decrypt-Later', 100 - criticalExposures * 25,
-      `${criticalExposures} critical exposure(s) with long-lived confidentiality risk`),
-  ]
-  const complianceScore = Math.round(complianceItems.reduce((sum, c) => sum + c.score, 0) / complianceItems.length)
+  // Reuse the tenant governance assessment. Sandbox progress and exposure
+  // totals are not evidence for regulatory or cryptographic conformance.
+  const governance = governanceResult === 'deadline' ? null : governanceResult
+  const complianceItems = (governance?.frameworks ?? []).map((framework) => ({
+    framework: framework.shortName,
+    control: framework.referenceOnly ? 'Reference mapping' : 'Measured governance controls',
+    score: framework.score,
+    status: !framework.measured ? 'pending' : framework.status === 'compliant' ? 'met' : framework.status === 'non-compliant' ? 'not-met' : 'partial',
+    basis: framework.referenceOnly ? framework.scope : `${framework.requirementsMeasured} of ${framework.requirementsTotal} mapped requirements assessed`,
+  }))
+  const complianceScore = governance?.scores.compliance.value ?? null
 
   // Workflow phases summarize the live tenant migration pipeline, not just
   // sandbox runs. This keeps queue size, execution, and blockers honest.
@@ -1564,13 +1538,13 @@ async function buildSandboxPayload(client: any, userId: string, token?: string |
       id: 'finalization',
       label: 'Finalization',
       description: 'Readiness score, compliance posture, audit report, and executive export.',
-      complete: pqcReadiness >= 90 && complianceScore >= 80,
-      active: pqcReadiness >= 70 || complianceScore >= 60,
-      progress: clamp(Math.round((pqcReadiness + complianceScore) / 2)),
+      complete: pqcReadiness >= 90 && complianceScore !== null && complianceScore >= 80,
+      active: pqcReadiness >= 70 || (complianceScore !== null && complianceScore >= 60),
+      progress: complianceScore === null ? 0 : clamp(Math.round((pqcReadiness + complianceScore) / 2)),
       count: (auditLogs || []).length + (securityEvents || []).length,
       running: 0,
       queued: 0,
-      blocked: complianceScore < 70 ? 1 : 0,
+      blocked: complianceScore === null || complianceScore < 70 ? 1 : 0,
       source: 'compliance + audit_logs + security_events',
       updatedAt: (auditLogs || [])[0]?.created_at || latestEventAt,
     },
@@ -1628,6 +1602,9 @@ async function buildSandboxPayload(client: any, userId: string, token?: string |
     openVulnerabilities: openVulns,
     pqcReadiness,
     hasReadinessBaseline,
+    cryptoComponents: totalInventory,
+    vulnerableComponents: vulnerableInventory,
+    componentSource: inventorySource,
     // 0–100, LOWER IS BETTER, banded by the shared RISK_BANDS table — the same
     // scale and direction as the QR Engine and /dashboard/summary. `null` means
     // not assessed and must never render as 0.
@@ -1673,7 +1650,6 @@ async function buildSandboxPayload(client: any, userId: string, token?: string |
   const history = simulations.map((sim) => {
     const duration = historyDuration(sim.startedAt || sim.createdAt, sim.completedAt, sim.updatedAt)
     const simRiskScore = riskScoreForSimulation(sim)
-    const simComplianceScore = clamp(Math.round((complianceScore + (sim.status === 'completed' ? 100 : sim.progress || 0)) / 2))
     return {
       id: sim.id,
       name: sim.name,
@@ -1683,7 +1659,7 @@ async function buildSandboxPayload(client: any, userId: string, token?: string |
       assetType: sim.assetType,
       assets: sim.assetName && sim.assetName !== 'Unknown Asset' ? 1 : 0,
       riskScore: simRiskScore,
-      complianceScore: simComplianceScore,
+      complianceScore: null,
       status: sim.status,
       durationMs: duration.durationMs,
       duration: duration.duration,
@@ -1880,7 +1856,7 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
     return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Simulation job not found' } })
   }
 
-  const refusal = sandboxEngineActionRefusal(job, action)
+  const refusal = sandboxEngineActionRefusal(job)
   if (refusal) {
     return res.status(409).json({ error: { code: 'OPERATIONAL_JOB', message: refusal } })
   }
@@ -1939,10 +1915,8 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
 })
 
 // ── POST /api/v1/sandbox/jobs/:id/approval ───────────────────────────────────
-// Production Approval Gate. Records a governed human decision (approve /
-// reject / request_review) with full audit evidence. This NEVER migrates or
-// mutates production — approval is an evidence artifact consumed by the
-// operational migration workflow.
+// Revision and acceptance of analytical evidence. Production decisions and
+// operations are handled by their own migration endpoints.
 router.post('/jobs/:id/approval', requireAuth, async (req: AuthenticatedRequest, res) => {
   const client = clientFor(req)
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
@@ -1968,7 +1942,7 @@ router.post('/jobs/:id/approval', requireAuth, async (req: AuthenticatedRequest,
   }
   const status = normalizeStatus(job.status)
   if (decision === 'approve' && status !== 'completed') {
-    return res.status(400).json({ error: { code: 'NOT_COMPLETED', message: 'Only completed simulations can be approved for production planning.' } })
+    return res.status(400).json({ error: { code: 'NOT_COMPLETED', message: 'Review decisions require a completed analytical run.' } })
   }
 
   const now = new Date().toISOString()
@@ -1992,14 +1966,14 @@ router.post('/jobs/:id/approval', requireAuth, async (req: AuthenticatedRequest,
     return res.status(500).json({ error: { code: 'UPDATE_FAILED', message: 'Failed to record approval decision' } })
   }
 
-  const decisionLabel = decision === 'approve' ? 'approved for production planning' : decision === 'reject' ? 'rejected' : 'sent back for review'
+  const decisionLabel = decision === 'approve' ? 'accepted for analysis review' : decision === 'reject' ? 'rejected' : 'sent back for review'
   await insertEngineEvent(client, job, `sandbox-approval-${decision}`, `Simulation "${job.name || job.id}" ${decisionLabel} by ${approval.decidedBy}.`, decision === 'reject' ? 'warning' : 'info', { decision, note: note || null })
 
   const { error: securityError } = await client.from('security_events').insert({
     user_id: req.user!.id,
     event_type: `sandbox-approval-${decision}`,
     severity: decision === 'reject' ? 'warning' : 'info',
-    message: `Production approval gate: simulation "${job.name || job.id}" ${decisionLabel}.`,
+    message: `Analytical review: simulation "${job.name || job.id}" ${decisionLabel}.`,
     asset_id: job.asset_id || null,
     resource_name: job.name || job.id,
     resource_type: 'migration-sandbox',
@@ -2323,8 +2297,7 @@ router.post('/bulk-action', requireAuth, async (req: AuthenticatedRequest, res) 
   const now = new Date().toISOString()
   let affected = 0
   const affectedJobs: any[] = []
-  const eligibleJobs = (jobs || []).filter((job: any) =>
-    (scope === 'all' || isSandboxSimulationJob(job)) && !sandboxEngineActionRefusal(job, action))
+  const eligibleJobs = (jobs || []).filter(isSandboxSimulationJob)
   for (const job of eligibleJobs) {
     const update = actionUpdate(job, action, now)
 
@@ -2453,10 +2426,6 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
       : `qguard-sandbox${reportType ? `-${reportType}` : ''}-${new Date().toISOString().slice(0, 10)}`
 
     if (format === 'csv') {
-      const escape = (v: unknown) => {
-        const t = String(v ?? '')
-        return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t
-      }
       // Report-type-specific tabular exports; default remains the workflow table.
       let rows: unknown[][]
       if (!selectedSimulation && reportType === 'performance') {
@@ -2510,7 +2479,7 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
       }
       res.setHeader('Content-Type', 'text/csv')
       res.setHeader('Content-Disposition', `attachment; filename="${baseName}.csv"`)
-      return res.send(rows.map((r) => r.map(escape).join(',')).join('\n'))
+      return res.send(rows.map((r) => r.map(csvCell).join(',')).join('\n'))
     }
 
     res.setHeader('Content-Type', 'application/json')
@@ -2522,6 +2491,7 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
 })
 
 export function startSandboxScheduler() {
+  startSandboxLabScheduler()
   if (sandboxSchedulerStarted) return
   sandboxSchedulerStarted = true
 

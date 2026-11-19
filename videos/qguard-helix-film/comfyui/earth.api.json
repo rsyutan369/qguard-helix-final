@@ -1,0 +1,107 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "sd_xl_base_1.0.safetensors"
+    },
+    "_meta": {
+      "title": "SDXL base"
+    }
+  },
+  "2": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "text": "Photoreal large-format orbital photograph, Earth's night side horizon arcs across the lower half, a slender ice-blue dawn rim, restrained amber city lights, black upper sky clean for editorial typography, almost no stars, centered horizon for a tall crop, grounded aerospace cinematography, no visible satellite"
+    },
+    "_meta": {
+      "title": "Cinematic plate direction"
+    }
+  },
+  "3": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "text": "lettering, text, logo, watermark, screen UI, labels, icon, typography, infographic, fake HUD, identifiable people, oversaturated neon, chromatic fringing, crushed blacks, heavy fog, flare obscuring subject, ringing, illustration, cartoon"
+    },
+    "_meta": {
+      "title": "Clean compositing requirements"
+    }
+  },
+  "4": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 1344,
+      "height": 768,
+      "batch_size": 1
+    },
+    "_meta": {
+      "title": "Landscape plate"
+    }
+  },
+  "5": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "seed": 2840896,
+      "steps": 32,
+      "cfg": 5.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "3",
+        0
+      ],
+      "latent_image": [
+        "4",
+        0
+      ],
+      "denoise": 1.0
+    },
+    "_meta": {
+      "title": "Fixed-seed diffusion"
+    }
+  },
+  "6": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "5",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    },
+    "_meta": {
+      "title": "SDXL VAE decode"
+    }
+  },
+  "7": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "6",
+        0
+      ],
+      "filename_prefix": "qguard-helix-plates/earth"
+    },
+    "_meta": {
+      "title": "Write local PNG"
+    }
+  }
+}

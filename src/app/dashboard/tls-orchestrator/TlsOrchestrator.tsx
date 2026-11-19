@@ -369,12 +369,12 @@ export default function TlsOrchestrator() {
               </button>
               <button
                 type="button"
-                onClick={() => void submitPlan(`TLS/PKI remediation — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`)}
-                disabled={actionState === 'busy' || orchestration.queueDepth === 0}
-                title="Submits a real migration plan for approval through the Migration Planner API."
+                onClick={() => void submitPlan(`TLS/PKI remediation — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`, data.queuedAssetIds)}
+                disabled={actionState === 'busy' || !data.queuedAssetIds.length || data.queuedAssetIds.length > 50}
+                title="Submits the queued TLS assets to the Migration Planner. Each plan accepts up to 50 assets."
                 className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/40 bg-cyan-500/15 px-3 py-2 text-[9.5px] font-black uppercase tracking-wider text-cyan-200 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-35"
               >
-                <ClipboardList className="h-3.5 w-3.5" aria-hidden="true" /> Submit plan for approval
+                <ClipboardList className="h-3.5 w-3.5" aria-hidden="true" /> Submit {data.queuedAssetIds.length} assets for approval
               </button>
             </div>
 

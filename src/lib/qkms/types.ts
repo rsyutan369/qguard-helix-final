@@ -796,6 +796,7 @@ export interface QkmsTelemetryHealth {
   sources: Array<{ id: string; label: string; table: string; count: number; latestAt: string | null; status: 'live' | 'stale' | 'waiting' }>
   /** true when a row cap was hit and the model is a bounded sample. */
   truncated: boolean
+  limitedSources?: string[]
   absentSources: string[]
   /** Auxiliary sources whose query FAILED (not empty) — figures that use them are incomplete. */
   degradedSources: string[]

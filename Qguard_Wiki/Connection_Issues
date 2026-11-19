@@ -1,0 +1,375 @@
+# MASTER ENGINEERING PROMPT: QGUARD HELIX MESH OFFGRID
+## Cross-Platform Bluetooth Discovery, Device Pairing, Secure Communication & Quantum-Encrypted File Transfer
+
+### PROJECT OBJECTIVE
+
+Perform a comprehensive technical investigation, debugging, and implementation of the QGUARD HELIX MESH OFFGRID functionality across both the Android and Windows Desktop applications.
+
+I have already attempted to connect my Android device and Windows Desktop device, with Bluetooth enabled on both devices. However, they cannot discover, pair, establish a connection, or communicate with each other.
+
+There are also missing incoming connection notifications, pairing approval prompts, and incoming message notifications.
+
+**Your objective is to identify and fix the actual underlying issues, implement reliable cross-platform Bluetooth communication, thoroughly test the entire workflow, and rebuild both applications after all fixes have been applied.**
+
+Do not simply modify the UI or simulate successful connections. All functionality must work with real devices and actual Bluetooth communication.
+
+---
+
+### 1. COMPREHENSIVE BLUETOOTH DISCOVERY
+
+Investigate and implement reliable Bluetooth device discovery between:
+
+- QGUARD HELIX MESH OFFGRID Android application.
+- QGUARD HELIX MESH OFFGRID Windows Desktop application.
+
+Requirements:
+
+1. Both applications must be able to discover nearby compatible QGUARD HELIX devices.
+2. Discovery must work when both devices have Bluetooth enabled, without requiring internet access, Wi-Fi, or an external server.
+3. Implement the appropriate Bluetooth discovery and transport mechanisms for each platform.
+4. Ensure Android and Windows use compatible discovery protocols and device identification.
+5. Display discovered devices with:
+   - Device name.
+   - Device type (Android or Windows Desktop).
+   - Device identifier.
+   - Connection status.
+   - Bluetooth signal strength (RSSI), where available.
+6. Implement automatic discovery refresh and recovery when Bluetooth becomes temporarily unavailable.
+7. Prevent duplicate device entries and stale discovery records.
+8. Allow users to manually refresh device discovery.
+
+**Important:** Investigate actual Bluetooth transport compatibility. Do not assume Android BLE GATT and Windows Bluetooth Classic RFCOMM are interchangeable. Select a compatible architecture, such as BLE GATT with appropriate Windows GATT support, or a properly implemented cross-platform Bluetooth transport.
+
+If the selected transport requires advertising, scanning, GATT services, characteristics, or connection management, implement all necessary components on both platforms.
+
+---
+
+### 2. SECURE DEVICE PAIRING & CONNECTION APPROVAL
+
+Implement a complete incoming pairing request and approval system.
+
+When another QGUARD HELIX device attempts to connect, the receiving device must immediately display a notification or an in-app pairing dialog.
+
+Example:
+
+**INCOMING DEVICE CONNECTION**
+
+A QGUARD HELIX device wants to connect to your device.
+
+- Device Name: QGUARD Windows Desktop
+- Device Type: Windows
+- Connection Method: Bluetooth
+- Connection Status: Awaiting Approval
+
+Actions:
+- APPROVE CONNECTION
+- DECLINE CONNECTION
+
+Requirements:
+
+1. Display the pairing request on both Android and Windows.
+2. Provide clear notification indicators for incoming connection requests.
+3. Allow the receiving user to approve or decline.
+4. Establish the connection only after the required approval process.
+5. Implement secure mutual device authentication.
+6. Prevent unauthorized devices from connecting.
+7. Implement pairing timeouts and connection cancellation.
+8. Display successful pairing notifications on both devices.
+9. Persist trusted device identities securely.
+10. Allow users to remove previously trusted devices.
+11. Prevent duplicate pairing sessions and unauthorized reconnections.
+
+Do not rely solely on the operating system's Bluetooth pairing dialog. Implement the QGUARD HELIX application-level trust and approval workflow.
+
+---
+
+### 3. REAL-TIME OFFGRID MESH MESSAGING
+
+Once devices have successfully connected, they must be able to exchange messages through Bluetooth without internet access.
+
+Requirements:
+
+- Send messages from Android to Windows.
+- Send messages from Windows to Android.
+- Display incoming messages immediately.
+- Implement incoming message notifications on both platforms.
+- Display sender identity, timestamp, and message status.
+- Implement delivery acknowledgements.
+- Maintain message ordering.
+- Handle temporary disconnections and reconnections.
+- Prevent message duplication.
+- Provide clear sending, delivered, and failed states.
+- Preserve locally stored message history.
+
+**Incoming notification example:**
+
+QGUARD MESH OFFGRID
+
+New encrypted message received.
+
+From: QGUARD Android Device
+
+Preview: You have received a new secure message.
+
+Ensure notifications work even when the receiving application is running in the background, subject to Android and Windows operating-system notification and background-execution restrictions.
+
+---
+
+### 4. FIX THE OFFLINE STATUS UI POSITION
+
+There is currently an issue with the Offline message/banner placement.
+
+The Offline status message is covering buttons and other important interface elements.
+
+Fix the layout as follows:
+
+1. Move the Offline status indicator to the top section of the interface.
+2. Ensure it does not overlap buttons, navigation controls, device information, or other UI components.
+3. Use a compact, professional status banner.
+4. Make the layout responsive across different screen sizes.
+5. Ensure the status indicator dynamically updates when:
+   - Bluetooth is disabled.
+   - Bluetooth is enabled.
+   - Device discovery is active.
+   - A pairing request is received.
+   - A connection is established.
+   - A connection is lost.
+   - The device is operating in offline mesh mode.
+
+Use the existing QGUARD HELIX visual identity and design system.
+
+---
+
+### 5. QUANTUM-RESISTANT ENCRYPTION FOR ALL COMMUNICATIONS
+
+This is a critical security requirement.
+
+All MESH OFFGRID communications and file transfers must use the actual QGUARD HELIX cryptographic implementation.
+
+Implement and verify the following cryptographic architecture:
+
+**Key Encapsulation**
+- ML-KEM-768 for establishing shared session secrets.
+- Support ML-KEM-1024 where the security policy requires it.
+
+**Digital Signatures**
+- ML-DSA-65 for device authentication and digital signatures.
+- Use ML-DSA correctly for authentication, not key encapsulation.
+
+**Symmetric Encryption**
+- AES-256-GCM for message and file encryption.
+- Unique nonces for every encryption operation.
+- Authentication tag verification.
+- Secure key derivation and session-key separation.
+
+**Key Derivation**
+- HKDF-SHA3-256 where supported by the existing cryptographic architecture.
+- Cryptographically secure random-number generation.
+
+Requirements:
+
+1. Perform authenticated key establishment before exchanging application messages.
+2. Use the existing QGUARD HELIX Rust cryptographic engine wherever possible.
+3. Implement cryptographic domain separation.
+4. Protect against replay attacks.
+5. Prevent nonce reuse.
+6. Implement secure session establishment, rekeying, and termination.
+7. Never transmit plaintext cryptographic keys.
+8. Never store private keys in plaintext.
+9. Securely handle cryptographic errors and authentication failures.
+10. Ensure all encrypted payloads are authenticated before being accepted.
+
+**Important security distinction:**
+
+ML-KEM is a key-encapsulation mechanism, ML-DSA is a digital-signature algorithm, and AES-256-GCM provides authenticated symmetric encryption.
+
+Do not claim that communications are quantum-safe merely because these algorithms are listed in the configuration. Verify that the actual protocol correctly integrates them.
+
+---
+
+### 6. QUANTUM-ENCRYPTED FILE & DOCUMENT TRANSFERS
+
+Implement secure file and document transfers between Android and Windows Desktop.
+
+Requirements:
+
+- Transfer individual files.
+- Transfer multiple files.
+- Transfer folders where supported.
+- Display transfer progress on both devices.
+- Show filename and file size.
+- Show transfer percentage.
+- Show estimated remaining time.
+- Support pause, resume, and cancel where the transport permits.
+- Verify file integrity after transfer.
+- Detect incomplete or corrupted transfers.
+- Prevent unauthorized file access.
+- Encrypt file contents before transmission using AES-256-GCM.
+- Protect the file-encryption keys using the established ML-KEM-based cryptographic architecture.
+
+All file transfers must remain functional without internet access.
+
+Ensure large files are transferred efficiently using encrypted chunking, authenticated chunk metadata, and safe temporary-file handling.
+
+Do not load entire large files into memory unnecessarily.
+
+---
+
+### 7. CROSS-PLATFORM CONNECTION STATE MANAGEMENT
+
+Implement a reliable connection state machine shared across both platforms.
+
+Required states:
+
+- Bluetooth Disabled
+- Bluetooth Enabled
+- Discovering Devices
+- Device Discovered
+- Incoming Pairing Request
+- Pairing Approved
+- Pairing Declined
+- Establishing Secure Connection
+- Quantum Authentication
+- Connected
+- Disconnected
+- Reconnecting
+- Connection Failed
+
+Ensure the Android and Windows applications correctly synchronize their connection states.
+
+Implement proper connection cleanup, resource management, timeout handling, and automatic recovery.
+
+---
+
+### 8. COMPREHENSIVE TESTING & VALIDATION
+
+Before rebuilding, perform a comprehensive investigation and testing process.
+
+Test the following scenarios using actual Android and Windows devices:
+
+| Test | Expected Result |
+|---|---|
+| Android Bluetooth ON | Device discoverable |
+| Windows Bluetooth ON | Device discoverable |
+| Android discovers Windows | Successful discovery |
+| Windows discovers Android | Successful discovery |
+| Android requests connection | Windows receives notification |
+| Windows requests connection | Android receives notification |
+| User approves pairing | Secure connection established |
+| User declines pairing | Connection rejected |
+| Android sends message | Windows receives message |
+| Windows sends message | Android receives message |
+| Incoming message | Notification displayed |
+| Android sends file | Windows receives encrypted file |
+| Windows sends file | Android receives encrypted file |
+| Bluetooth disconnects | Connection state updated |
+| Bluetooth reconnects | Recovery handled correctly |
+| Internet disabled | Local communication continues |
+| Invalid authentication | Connection rejected |
+| Corrupted encrypted payload | Payload rejected |
+
+Also verify:
+
+- No mocked device discovery.
+- No fake connection statuses.
+- No simulated message delivery.
+- No plaintext message transmission.
+- No plaintext file transmission.
+- No hardcoded pairing success.
+- No bypassed cryptographic validation.
+
+If hardware limitations prevent a particular test, document the limitation rather than reporting an unverified success.
+
+---
+
+### 9. REBUILD BOTH APPLICATIONS
+
+After completing all implementation and testing fixes:
+
+**Android**
+- Rebuild the Android application.
+- Resolve compilation errors.
+- Verify Bluetooth permissions and runtime permission handling.
+- Verify background notification behavior.
+- Generate a new installable Android build, preferably AAB and APK as appropriate.
+
+**Windows Desktop**
+- Rebuild the Windows Desktop application.
+- Resolve Rust and Tauri compilation errors.
+- Verify Windows Bluetooth permissions and capabilities.
+- Verify native Bluetooth integration.
+- Generate the updated Windows installer or executable.
+
+Ensure both applications use compatible protocol versions, cryptographic configurations, and message formats.
+
+---
+
+### 10. FINAL ENGINEERING REPORT
+
+When finished, provide a detailed implementation report containing:
+
+1. Root causes of the Android-to-Windows connectivity failure.
+2. Bluetooth architecture and transport selected.
+3. Discovery implementation details.
+4. Pairing and authentication implementation.
+5. Notification implementation.
+6. Offline messaging implementation.
+7. Post-quantum encryption implementation.
+8. File transfer implementation.
+9. Files modified and newly created.
+10. Build results for Android and Windows.
+11. Actual device-to-device test results.
+12. Remaining limitations or unresolved issues.
+
+Clearly distinguish between implemented, compiled, tested, and successfully validated functionality.
+
+---
+
+## FINAL INSTRUCTION
+
+Treat this as a critical cross-platform networking and cryptographic engineering task.
+
+Do not perform superficial fixes. Inspect the existing repository, identify the real root causes, understand the Android and Windows Bluetooth APIs, and implement the necessary changes in the existing architecture.
+
+Preserve existing QGUARD HELIX MESH OFFGRID functionality and integrate the fixes without breaking other QGUARD HELIX MESSAGING features.
+
+**The final objective is simple:**
+
+An Android QGUARD HELIX device and a Windows QGUARD HELIX Desktop device must be able to discover each other, request and approve pairing, establish an authenticated encrypted connection, exchange messages, receive notifications, and transfer quantum-encrypted files using Bluetooth alone—without internet access.
+
+Once all fixes are implemented, rebuild BOTH applications and provide the final engineering report.
+
+No fake functionality. No simulated success. Real device-to-device communication only.
+
+
+Important technical consideration
+One critical point I strengthened in the prompt: Bluetooth ON does not automatically mean two different operating systems can communicate with each other.
+
+For your Android + Windows implementation, the engineering team must verify the actual transport compatibility.
+Recommended architecture
+Android
+
+Bluetooth LE GATT Client / Server
+
+Bluetooth LE transport
+
+Discovery · GATT services · Encrypted payloads
+
+Windows Desktop
+
+Windows Bluetooth LE GATT Client / Server
+
+
+Shared QGUARD HELIX Rust Engine
+- Device discovery and connection coordination
+- ML-KEM-768 key establishment
+- ML-DSA-65 authentication
+- AES-256-GCM message and file encryption
+- Secure session and message management
+
+
+My recommendation: Keep the Bluetooth transport separate from your Rust cryptographic engine. BLE should handle connectivity and data transport, while your shared Rust engine handles cryptography, authentication, and secure messaging.
+
+Also, BLE has practical throughput limitations. The implementation should support chunking, flow control, and resumable transfers rather than assuming Bluetooth will transfer large files at Wi-Fi speeds.
+
+This will give QGUARD HELIX a much stronger foundation for genuine Android-to-Windows OFFGRID communication.

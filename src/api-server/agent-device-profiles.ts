@@ -93,7 +93,9 @@ export async function consolidateAgentDeviceProfile(client: SupabaseClient, agen
   const binding = await ensureAgentDeviceProfile(client, agent)
   const assets = await allRows(client, 'assets', agent.user_id)
   const profile = assets.find((asset) => asset.id === binding.assetId)!
-  const children = assets.filter((asset) => asset.id !== binding.assetId && exclusivelyObservedByAgent(asset, agent))
+  const children = assets.filter((asset) => asset.id !== binding.assetId && asset.status !== 'deleted' &&
+    (asset.status !== 'archived' || asset.metadata?.consolidatedIntoAssetId === binding.assetId) &&
+    exclusivelyObservedByAgent(asset, agent))
   const ids = children.map((asset) => asset.id)
   const counts: Record<string, number> = {}
   // Keep row IDs, evidence metadata, timestamps and history intact; only their

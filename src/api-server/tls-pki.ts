@@ -223,13 +223,13 @@ async function computeModel(token: string, userId: string): Promise<TlsPkiModel>
         .limit(CAP.scanSessions),
     ),
     safeRows(client, 'scanner_agents', (q) =>
-      q.select('id, name, status, hostname, platform, last_seen_at, metadata, created_at, updated_at').eq('user_id', userId).limit(CAP.scannerAgents),
+      q.select('id, name, status, hostname, platform, last_seen_at, metadata, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).limit(CAP.scannerAgents),
     ),
     safeRows(client, 'connector_accounts', (q) =>
-      q.select('id, provider, display_name, status, last_sync_at, created_at, updated_at').eq('user_id', userId).limit(CAP.connectorAccounts),
+      q.select('id, provider, display_name, status, last_sync_at, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).limit(CAP.connectorAccounts),
     ),
     safeRows(client, 'agent_heartbeats', (q) =>
-      q.select('id, agent_id, status, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.agentHeartbeats),
+      q.select('id, agent_id, status, observed_at, created_at', { count: 'exact' }).eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.agentHeartbeats),
     ),
     // migration_validation_logs is JOB-scoped: its only FK is
     // migration_id -> migration_jobs(id). Asking for asset_id here made
@@ -237,7 +237,7 @@ async function computeModel(token: string, userId: string): Promise<TlsPkiModel>
     // which is the trap documented in migration-planner.ts. Resolve the asset
     // through the job below instead.
     safeRows(client, 'migration_validation_logs', (q) =>
-      q.select('id, migration_id, status, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.validationLogs),
+      q.select('id, migration_id, status, created_at', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.validationLogs),
     ),
   ])
 
@@ -417,6 +417,7 @@ export function projectView(model: TlsPkiModel, view: TlsPkiView) {
       return {
         ...base,
         view: 'orchestrator' as const,
+        queuedAssetIds: [...new Set(model.orchestration.items.flatMap((item) => item.queued && item.assetId ? [item.assetId] : []))],
         orchestration: {
           ...model.orchestration,
           items: model.orchestration.items.slice(0, PAGE.items),

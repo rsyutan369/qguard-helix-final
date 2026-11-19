@@ -378,7 +378,7 @@ export function exportHtml(report: EnterpriseAssessmentReport): Blob {
   <h2>Migration Dependency Analysis</h2>
   <p class="muted">${esc(report.dependencyAnalysis.summary)}</p>
   ${gridTable(['Dependency Chain', 'Blast Radius', 'Complexity'], report.dependencyAnalysis.chains.map((c) => [c.path, c.blastRadius, c.complexity]))}
-  <p class="muted"><b>Potential Failure Points:</b> ${esc(report.dependencyAnalysis.failurePoints.join(', '))}</p>
+  <p class="muted"><b>Potential Failure Points:</b> ${esc(report.dependencyAnalysis.failurePoints.join(', ') || 'None — no asset is at risk 70 or above')}</p>
 
   <h2>Quantum Risk Analysis</h2>
   <p class="muted">Per-domain current and target risk. Domain values are the calibrated risk-domain model (see Risk Scoring Methodology), and the targets use the same reduction engine as the executive summary — the weighted blend of the targets below reproduces the programme target risk of ${esc(report.executiveBlock.targetRisk)}/100 (verified in Report Validation).</p>

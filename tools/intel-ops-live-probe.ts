@@ -4,10 +4,8 @@
  *   npx tsx tools/intel-ops-live-probe.ts [baseUrl]
  *
  * Needs the dev server (default http://localhost:3000) and service-role creds in
- * .env. Sessions are minted with admin magic links for two SEEDED QA accounts
- * (tools/seed-test-subscriptions.ts) and signed out at the end:
- *   PRO      teslagreat101@gmail.com   (override: PROBE_PRO_EMAIL)
- *   STARTER  cybersniper26@gmail.com   (override: PROBE_STARTER_EMAIL)
+ * .env. Use explicitly configured QA accounts with real subscriptions:
+ *   PROBE_PRO_EMAIL and PROBE_STARTER_EMAIL. Sessions are signed out at the end.
  *
  * For every endpoint it proves, against the running server and real database:
  *   • no credentials                → 401
@@ -30,11 +28,11 @@ const BASE = process.argv[2] || 'http://localhost:3000'
 const URL = process.env.VITE_SUPABASE_URL || ''
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 const ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY || ''
-const PRO_EMAIL = process.env.PROBE_PRO_EMAIL || 'teslagreat101@gmail.com'
-const STARTER_EMAIL = process.env.PROBE_STARTER_EMAIL || 'cybersniper26@gmail.com'
+const PRO_EMAIL = process.env.PROBE_PRO_EMAIL || ''
+const STARTER_EMAIL = process.env.PROBE_STARTER_EMAIL || ''
 
-if (!URL || !SERVICE_KEY || !ANON_KEY) {
-  console.error('Missing VITE_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / VITE_SUPABASE_ANON_KEY in .env')
+if (!URL || !SERVICE_KEY || !ANON_KEY || !PRO_EMAIL || !STARTER_EMAIL) {
+  console.error('Set Supabase credentials and PROBE_PRO_EMAIL / PROBE_STARTER_EMAIL for authorized QA accounts')
   process.exit(1)
 }
 

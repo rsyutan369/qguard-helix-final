@@ -20,6 +20,7 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  Download,
   Eye,
   FileBarChart,
   FileCode2,
@@ -30,23 +31,20 @@ import {
   ImagePlus,
   Loader2,
   Presentation,
-  RefreshCw,
   ShieldCheck,
   Wrench,
   X,
   XCircle,
   type LucideIcon,
 } from 'lucide-react';
-import type { AssetRegister, AssetRegisterRow } from '@/lib/assets/asset-register';
-import { summarizeRows } from '@/lib/assets/asset-register';
-import { ASSET_REPORT_TEMPLATES, buildAssetReport, type AssetReportScope, type AssetReportTemplate } from '@/services/reporting/AssetReport';
+import { summarizeRows, type AssetRegister, type AssetRegisterRow, type RegisterFilter } from '@/lib/assets/asset-register';
+import { ASSET_REPORT_TEMPLATES, type AssetReportTemplate } from '@/services/reporting/AssetReport';
+import type { InventoryReport } from '@/services/reporting/InventoryReport';
 import { brandingSchema, type ReportBranding } from '@/services/reporting/schemas/ReportSchema';
 import type { DocumentFormat } from '@/services/reporting/exporters/DocumentExporters';
 import { nf } from './_register-ui';
 
-/** Shared with the Quantum Readiness Report Center, so branding is set once. */
-const BRANDING_STORAGE_KEY = 'qg-report-branding';
-const HISTORY_STORAGE_KEY = 'qg-asset-report-history';
+const BRANDING_STORAGE_KEY = 'qg-asset-report-branding';
 
 export type StudioScopeType = 'selection' | 'filtered' | 'all' | 'single';
 
@@ -57,10 +55,7 @@ export type StudioScopeType = 'selection' | 'filtered' | 'all' | 'single';
 interface HistoryEntry {
   id: string;
   name: string;
-  template: AssetReportTemplate;
-  scopeType: StudioScopeType;
-  scopeLabel: string;
-  formats: DocumentFormat[];
+  assetCount: number;
   generatedAt: string;
   hash: string;
   quality: string;
@@ -88,26 +83,14 @@ const TEMPLATE_ICON: Record<AssetReportTemplate, LucideIcon> = {
   remediation: Wrench,
 };
 
-function loadBranding(): ReportBranding {
+function loadBranding(key: string): ReportBranding {
   try {
-    const raw = window.localStorage.getItem(BRANDING_STORAGE_KEY);
+    const raw = window.localStorage.getItem(key);
     if (raw) return brandingSchema.parse(JSON.parse(raw));
   } catch {
     /* unreadable or blocked storage — defaults below */
   }
   return brandingSchema.parse({});
-}
-
-function loadHistory(): HistoryEntry[] {
-  try {
-    const raw = window.localStorage.getItem(HISTORY_STORAGE_KEY);
-    const parsed = raw ? (JSON.parse(raw) as Array<HistoryEntry & { format?: DocumentFormat }>) : [];
-    if (!Array.isArray(parsed)) return [];
-    // Entries written before formats were grouped carried a single `format`.
-    return parsed.map((entry) => ({ ...entry, formats: Array.isArray(entry.formats) ? entry.formats : entry.format ? [entry.format] : [] }));
-  } catch {
-    return [];
-  }
 }
 
 function saveJson(key: string, value: unknown) {
@@ -124,23 +107,29 @@ export interface ReportStudioProps {
   register: AssetRegister;
   selection: AssetRegisterRow[];
   filtered: AssetRegisterRow[];
-  single: AssetRegisterRow | null;
+  singleId: string | null;
   initialScope: StudioScopeType;
   filterDescription: string;
-  generatedBy: string;
+  filters: RegisterFilter;
+  ownerId: string;
+  token: string;
 }
 
-export default function ReportStudio({ open, onClose, register, selection, filtered, single, initialScope, filterDescription, generatedBy }: ReportStudioProps) {
+export default function ReportStudio({ open, onClose, register, selection, filtered, singleId, initialScope, filterDescription, filters, ownerId, token }: ReportStudioProps) {
+  const brandingKey = `${BRANDING_STORAGE_KEY}:${ownerId}`;
   const [scopeType, setScopeType] = useState<StudioScopeType>(initialScope);
   const [template, setTemplate] = useState<AssetReportTemplate>('executive');
-  const [branding, setBranding] = useState<ReportBranding>(() => loadBranding());
+  const [branding, setBranding] = useState<ReportBranding>(() => loadBranding(brandingKey));
   const [brandingOpen, setBrandingOpen] = useState(false);
-  const [busy, setBusy] = useState<DocumentFormat | 'preview' | null>(null);
+  const [busy, setBusy] = useState<DocumentFormat | 'preview' | 'capture' | null>(null);
   const [done, setDone] = useState<DocumentFormat | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [captured, setCaptured] = useState<{ configuration: string; report: InventoryReport; assetCount: number } | null>(null);
   const [showPassed, setShowPassed] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  const operationRef = useRef<AbortController | null>(null);
+  useEffect(() => () => operationRef.current?.abort(), [ownerId]);
 
   useEffect(() => setScopeType(initialScope), [initialScope, open]);
 
@@ -154,125 +143,182 @@ export default function ReportStudio({ open, onClose, register, selection, filte
     return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    void fetch('/api/v1/reports/asset-snapshots', {
+      headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error('Saved asset report history is unavailable.');
+      const payload = await response.json();
+      if (!controller.signal.aborted) setHistory(payload.data);
+    }).catch((cause) => {
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'History unavailable.');
+    });
+    return () => controller.abort();
+  }, [open, token]);
+
   const updateBranding = useCallback(<K extends keyof ReportBranding>(key: K, value: ReportBranding[K]) => {
     setBranding((current) => {
       const next = { ...current, [key]: value };
-      saveJson(BRANDING_STORAGE_KEY, next);
+      saveJson(brandingKey, next);
       return next;
     });
-  }, []);
+  }, [brandingKey]);
 
   const scopeOptions = useMemo(() => {
     const options: Array<{ type: StudioScopeType; label: string; detail: string; rows: AssetRegisterRow[]; description: string }> = [];
-    if (single) options.push({ type: 'single', label: single.name, detail: 'This asset only', rows: [single], description: `the asset ${single.name}` });
+    const single = register.rows.find((row) => row.id === singleId);
+    if (singleId) options.push({ type: 'single', label: single?.name ?? 'Original asset', detail: 'This asset only', rows: single ? [single] : [], description: single ? `the asset ${single.name}` : 'the original asset' });
     options.push({ type: 'selection', label: 'Selected assets', detail: selection.length ? `${nf(selection.length)} selected in the table` : 'Select rows in the table', rows: selection, description: `${nf(selection.length)} selected asset${selection.length === 1 ? '' : 's'}` });
     options.push({ type: 'filtered', label: 'Current view', detail: filterDescription || 'All assets — no filter applied', rows: filtered, description: filterDescription ? `the filtered view (${filterDescription})` : 'the current view' });
     options.push({ type: 'all', label: 'Entire estate', detail: `Every asset the scanner reports`, rows: register.rows, description: 'the full estate' });
     return options;
-  }, [single, selection, filtered, register.rows, filterDescription]);
+  }, [singleId, selection, filtered, register.rows, filterDescription]);
 
-  const activeScope = scopeOptions.find((option) => option.type === scopeType) || scopeOptions.find((option) => option.rows.length) || scopeOptions[scopeOptions.length - 1];
+  const activeScope = scopeOptions.find((option) => option.type === scopeType) ?? scopeOptions[scopeOptions.length - 1];
   const scopeRows = activeScope.rows;
-  const scope: AssetReportScope = useMemo(
-    () => ({ type: activeScope.type === 'all' ? 'all' : activeScope.type === 'filtered' ? 'filtered' : 'selection', description: activeScope.description }),
-    [activeScope.type, activeScope.description],
-  );
 
-  // The pre-export model: the SAME builder the export runs, so the validation
-  // shown here is the validation printed in the document.
-  const preview = useMemo(() => {
-    if (!open || scopeRows.length === 0) return null;
-    return buildAssetReport({ register, rows: scopeRows, scope, template, branding, generatedBy });
-  }, [open, register, scopeRows, scope, template, branding, generatedBy]);
+  const scopedIds = activeScope.type === 'selection' || activeScope.type === 'single'
+    ? scopeRows.map((row) => row.id).sort()
+    : [];
+  const configuration = JSON.stringify([scopeType, template, branding, scopedIds, scopeType === 'filtered' ? filters : null]);
+  const preview = captured?.configuration === configuration ? captured.report : null;
 
   const scopeTotals = useMemo(() => summarizeRows(scopeRows), [scopeRows]);
   const validation = preview?.document?.validation;
   const reconciliation = preview?.reconciliation || [];
   const reconMatches = reconciliation.filter((row) => row.matches).length;
 
+  const capture = async (nextTemplate = template, nextScope = scopeType) => {
+    if (operationRef.current) return;
+    const controller = new AbortController();
+    operationRef.current = controller;
+    setBusy('capture');
+    setError(null);
+    try {
+      const response = await fetch('/api/v1/reports/asset-snapshots', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          template: nextTemplate, scope: nextScope, branding,
+          assetIds: nextScope === 'selection' || nextScope === 'single' ? scopedIds : [],
+          filters: nextScope === 'filtered' ? filters : {},
+        }),
+        cache: 'no-store',
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(90_000)]),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error?.message || 'Unable to save the latest asset snapshot.');
+      const report = payload.data as InventoryReport;
+      if (report.meta.snapshot?.workspaceOwnerId !== ownerId) throw new Error('Invalid asset snapshot owner.');
+      if (controller.signal.aborted) return;
+      setScopeType(nextScope);
+      setTemplate(nextTemplate);
+      setHistory((current) => [payload.meta, ...current.filter((entry) => entry.id !== payload.meta.id)].slice(0, 20));
+      setCaptured({
+        configuration: JSON.stringify([nextScope, nextTemplate, branding, nextScope === 'all' ? [] : scopedIds, nextScope === 'filtered' ? filters : null]),
+        report,
+        assetCount: payload.meta.assetCount,
+      });
+    } catch (cause) {
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Snapshot capture failed');
+    } finally {
+      if (operationRef.current === controller) operationRef.current = null;
+      if (!controller.signal.aborted) setBusy(null);
+    }
+  };
+
   const run = useCallback(
-    async (format: DocumentFormat, regenerate?: { template: AssetReportTemplate; scopeType: StudioScopeType }) => {
-      // "Regenerate" rebuilds from TODAY'S evidence with the entry's own template
-      // and scope — passed explicitly, never read back from state set in the same tick.
-      const option = regenerate ? scopeOptions.find((o) => o.type === regenerate.scopeType && o.rows.length) || activeScope : activeScope;
-      const runRows = option.rows;
-      const runTemplate = regenerate?.template ?? template;
-      const runScope: AssetReportScope = regenerate
-        ? { type: option.type === 'all' ? 'all' : option.type === 'filtered' ? 'filtered' : 'selection', description: option.description }
-        : scope;
-      if (!runRows.length) {
-        setError('The chosen scope contains no assets. Select assets in the table or pick another scope.');
-        return;
-      }
+    async (format: DocumentFormat) => {
+      if (!preview || !captured || operationRef.current) return;
+      const controller = new AbortController();
+      operationRef.current = controller;
       setBusy(format);
       setError(null);
       try {
         // The validated, sealed report shown above IS the report exported, so
         // every format exported from one configuration shares one report id
-        // and one SHA3-256 digest. It is rebuilt whenever the scope, template,
-        // branding or the live register changes.
-        const report = !regenerate && preview ? preview : buildAssetReport({ register, rows: runRows, scope: runScope, template: runTemplate, branding, generatedBy });
+        // and one SHA3-256 digest. Capture a new snapshot to refresh its evidence.
+        const report = preview;
         const { exportDocument, downloadDocument } = await import('@/services/reporting/exporters/DocumentExporters');
         const result = await exportDocument(report, format);
+        if (controller.signal.aborted) return;
         downloadDocument(result);
-        const id = report.meta.reportId || String(Date.now());
-        setHistory((current) => {
-          const existing = current.find((entry) => entry.id === id);
-          const entry: HistoryEntry = existing
-            ? { ...existing, formats: existing.formats.includes(format) ? existing.formats : [...existing.formats, format] }
-            : {
-                id,
-                name: report.meta.title,
-                template: runTemplate,
-                scopeType: option.type,
-                scopeLabel: `${nf(runRows.length)} asset${runRows.length === 1 ? '' : 's'} · ${option.label}`,
-                formats: [format],
-                generatedAt: report.meta.generatedAt,
-                hash: report.integrity?.hash || '',
-                quality: report.document ? `${report.document.validation.status.toUpperCase()} ${report.document.validation.score}` : '—',
-              };
-          const next = [entry, ...current.filter((item) => item.id !== id)].slice(0, 20);
-          saveJson(HISTORY_STORAGE_KEY, next);
-          return next;
-        });
         setDone(format);
         window.setTimeout(() => setDone(null), 2400);
       } catch (cause) {
-        console.error('Asset report export failed:', cause);
-        setError(cause instanceof Error ? cause.message : 'Export failed');
+        if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Export failed');
       } finally {
-        setBusy(null);
+        if (operationRef.current === controller) operationRef.current = null;
+        if (!controller.signal.aborted) setBusy(null);
       }
     },
-    [preview, register, scopeOptions, activeScope, scope, template, branding, generatedBy],
+    [preview, captured],
   );
 
   const previewHtml = useCallback(async () => {
-    if (!scopeRows.length) return;
+    if (!preview || operationRef.current) return;
     // Open the tab inside the click so pop-up blockers allow it, then fill it.
     const tab = window.open('', '_blank');
+    if (!tab) {
+      setError('Allow pop-ups to preview the report, or export HTML.');
+      return;
+    }
+    tab.opener = null;
+    const controller = new AbortController();
+    operationRef.current = controller;
     setBusy('preview');
     setError(null);
     try {
-      const report = preview ?? buildAssetReport({ register, rows: scopeRows, scope, template, branding, generatedBy });
       const { renderDocumentHtml } = await import('@/services/reporting/exporters/document/html');
-      const url = URL.createObjectURL(renderDocumentHtml(report));
-      if (tab) tab.location.href = url;
-      else window.open(url, '_blank', 'noopener');
+      if (controller.signal.aborted) {
+        tab.close();
+        return;
+      }
+      const url = URL.createObjectURL(renderDocumentHtml(preview));
+      tab.location.href = url;
       window.setTimeout(() => URL.revokeObjectURL(url), 120_000);
     } catch (cause) {
-      tab?.close();
-      setError(cause instanceof Error ? cause.message : 'Preview failed');
+      tab.close();
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Preview failed');
     } finally {
-      setBusy(null);
+      if (operationRef.current === controller) operationRef.current = null;
+      if (!controller.signal.aborted) setBusy(null);
     }
-  }, [preview, register, scopeRows, scope, template, branding, generatedBy]);
+  }, [preview]);
+
+  const downloadSaved = async (entry: HistoryEntry) => {
+    if (operationRef.current) return;
+    const controller = new AbortController();
+    operationRef.current = controller;
+    const format = 'pdf';
+    setBusy(format);
+    setError(null);
+    try {
+      const response = await fetch(`/api/v1/reports/asset-snapshots/${encodeURIComponent(entry.id)}`, {
+        headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: controller.signal,
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error?.message || 'Saved report is unavailable.');
+      const report = payload.data as InventoryReport;
+      if (report.meta.snapshot?.workspaceOwnerId !== ownerId) throw new Error('Invalid asset snapshot owner.');
+      const { exportDocument, downloadDocument } = await import('@/services/reporting/exporters/DocumentExporters');
+      const result = await exportDocument(report, format);
+      if (!controller.signal.aborted) downloadDocument(result);
+    } catch (cause) {
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Saved report download failed.');
+    } finally {
+      if (operationRef.current === controller) operationRef.current = null;
+      if (!controller.signal.aborted) setBusy(null);
+    }
+  };
 
   const onLogo = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    if (!/^image\/(png|jpeg)$/.test(file.type)) {
-      setError('Upload the logo as PNG or JPEG — those embed in every format (PDF, Word, PowerPoint, HTML).');
+    if (!/^image\/(png|jpeg)$/.test(file.type) || file.size > 384 * 1024) {
+      setError('Upload the logo as PNG or JPEG, up to 384 KiB.');
       return;
     }
     const reader = new FileReader();
@@ -445,11 +491,16 @@ export default function ReportStudio({ open, onClose, register, selection, filte
           {/* 5 — Export */}
           <section>
             <div className="mb-2 flex items-center justify-between gap-2">
-              <h3 className="text-[10px] font-black uppercase tracking-[0.18em] text-[var(--qg-text-muted)]">5 · Generate</h3>
-              <button type="button" onClick={() => void previewHtml()} disabled={!scopeRows.length || busy !== null} className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-[var(--qg-amber)] disabled:opacity-40">
+              <h3 className="text-[10px] font-black uppercase tracking-[0.18em] text-[var(--qg-text-muted)]">Capture and export</h3>
+              <button type="button" onClick={() => void capture()} disabled={!scopeRows.length || busy !== null} className="inline-flex items-center gap-1.5 rounded border border-[var(--qg-amber)]/45 px-3 py-2 text-[11px] font-black text-[var(--qg-amber)] disabled:opacity-40">
+                {busy === 'capture' ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : null}
+                {preview ? 'Capture new snapshot' : 'Capture snapshot'}
+              </button>
+              <button type="button" onClick={() => void previewHtml()} disabled={!preview || busy !== null} className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-[var(--qg-amber)] disabled:opacity-40">
                 {busy === 'preview' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />} Preview
               </button>
             </div>
+            {preview ? <p className="mb-2 break-words text-[11px] text-[var(--qg-text-muted)]">Saved {new Date(preview.meta.generatedAt).toLocaleString()} · {preview.meta.reportId}</p> : null}
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {FORMATS.map((spec) => {
                 const Icon = spec.icon;
@@ -458,7 +509,7 @@ export default function ReportStudio({ open, onClose, register, selection, filte
                   <button
                     key={spec.format}
                     type="button"
-                    disabled={!scopeRows.length || busy !== null}
+                    disabled={!preview || busy !== null}
                     onClick={() => void run(spec.format)}
                     className={`relative rounded-lg border p-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-45 ${recommended ? 'border-[var(--qg-amber)]/45 bg-[var(--qg-amber)]/5' : 'border-[var(--qg-card-border)] bg-[var(--qg-card-bg)]'} hover:border-[var(--qg-amber)]/70`}
                   >
@@ -483,17 +534,17 @@ export default function ReportStudio({ open, onClose, register, selection, filte
                 {history.slice(0, 8).map((entry) => (
                   <li key={entry.id} className="flex items-center justify-between gap-2 px-3 py-2">
                     <div className="min-w-0">
-                      <div className="truncate text-[11.5px] font-black">{entry.name} {entry.formats.map((f) => <span key={f} className="ml-1 rounded bg-[var(--qg-muted-panel)] px-1 text-[9.5px] uppercase">{f}</span>)}</div>
-                      <div className="truncate text-[10px] text-[var(--qg-text-muted)]">{new Date(entry.generatedAt).toLocaleString()} · {entry.scopeLabel} · {entry.quality} · <span className="font-mono">{entry.hash.slice(0, 12)}…</span></div>
+                      <div className="truncate text-[11.5px] font-black">{entry.name} </div>
+                      <div className="truncate text-[10px] text-[var(--qg-text-muted)]">{new Date(entry.generatedAt).toLocaleString()} · {nf(entry.assetCount)} assets · {entry.quality} · <span className="font-mono">{entry.hash.slice(0, 12)}…</span></div>
                     </div>
                     <button
                       type="button"
                       disabled={busy !== null}
-                      onClick={() => { setTemplate(entry.template); if (scopeOptions.some((o) => o.type === entry.scopeType && o.rows.length)) setScopeType(entry.scopeType); void run(entry.formats[0] || 'pdf', { template: entry.template, scopeType: entry.scopeType }); }}
-                      title="Regenerate with today's evidence"
+                      onClick={() => void downloadSaved(entry)}
+                      title="Download the saved snapshot"
                       className="inline-flex shrink-0 items-center gap-1 rounded border border-[var(--qg-card-border)] px-2 py-1 text-[9.5px] font-black uppercase text-[var(--qg-dashboard-text-soft)] hover:border-[var(--qg-amber)]/45 disabled:opacity-40"
                     >
-                      <RefreshCw className="h-3 w-3" aria-hidden /> Regenerate
+                      <Download className="h-3 w-3" aria-hidden /> Saved report
                     </button>
                   </li>
                 ))}
@@ -501,7 +552,7 @@ export default function ReportStudio({ open, onClose, register, selection, filte
             ) : (
               <p className="text-[11px] text-[var(--qg-text-muted)]">No reports generated from this page yet.</p>
             )}
-            {history.length > 8 ? <p className="mt-1.5 text-[10px] text-[var(--qg-text-muted)]">Showing the 8 most recent of {history.length} reports kept in this browser.</p> : null}
+            {history.length > 8 ? <p className="mt-1.5 text-[10px] text-[var(--qg-text-muted)]">Showing the 8 most recent of {history.length} saved reports.</p> : null}
           </section>
         </div>
 

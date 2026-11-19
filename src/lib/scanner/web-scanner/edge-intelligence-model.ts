@@ -94,6 +94,7 @@ export interface EdgeTransport {
 
 export interface EdgeCertificateSurface {
   probed: boolean
+  fingerprintSha256?: string | null
   ocspStapled: boolean
   ocspResponderState: string
   ocspResponderDetail: string | null
@@ -149,6 +150,7 @@ export interface EdgeHttpHeader {
 export interface EdgeHttpSurface {
   probed: boolean
   reachable: boolean
+  finalUrl?: string | null
   statusCode: number | null
   httpVersion: string | null
   hsts: {

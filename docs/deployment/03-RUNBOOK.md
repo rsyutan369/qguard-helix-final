@@ -1,5 +1,11 @@
 # 03 — Deployment runbook
 
+> Updated 2026-11-19: the obsolete DigitalOcean Kubernetes deployment workflow
+> and shared deployment action have been removed at the owner's request.
+> DOKS provisioning, automatic staging/promotion, and automatic rollback described
+> below are historical reference; they are not active GitHub Actions automation.
+> CI still builds and checks the API image.
+
 Do the steps in order. Every step that is not automated by the pipelines is
 marked **(manual)**. Region: keep everything in **Singapore (SGP1)**, next to the
 Supabase project (ap-southeast-1). Each PostgREST round trip multiplies with a
@@ -38,8 +44,32 @@ dashboard's 12–54 queries.
 - **Auth → URL Configuration**
   - Site URL: `https://qguardhelix.com`.
   - Redirect URLs: `https://qguardhelix.com/dashboard`,
-    `https://qguardhelix.com/reset-password`, and the `www.` variants if served.
+    `https://qguardhelix.com/reset-password`, `https://qguardhelix.com/auth/confirm`,
+    `https://qguardhelix.com/auth/callback`,
+    and the `www.` variants if served.
   - Keep existing entries used by the messaging app.
+- **Google sign-in:** the web app uses PKCE and returns to `/auth/callback`
+  on the origin where sign-in began. For local development, allow the exact
+  callback on the port being used (for example,
+  `http://localhost:3001/auth/callback`). Complete the login in the same
+  browser tab so its session-stored verifier is available. Google Cloud's
+  authorized redirect URI remains the Supabase project's
+  `https://<project-ref>.supabase.co/auth/v1/callback`. Configure the public
+  name, logo, homepage, privacy policy, and terms under Google Auth Platform
+  Branding and submit brand verification as required. A Supabase custom auth
+  domain requires its paid custom-domain add-on and a matching callback URI
+  in Google Cloud before activation.
+- **Auth → Email Templates → Confirm sign up:** deploy the full platform app
+  with `/auth/confirm` first. Then paste
+  [the signup template](../../supabase/templates/confirm-signup.html)
+  into the Supabase project used by the web deployment. Compare that project's
+  reference with the hostname in the deployed `VITE_SUPABASE_URL` before
+  saving. The template selects the branded link for the exact web callback and
+  uses the standard confirmation link for other clients. If a separate
+  fallback Auth project issues web signup emails, configure it with the same
+  allowlist and add `&amp;source=fallback` after the token in its branded link.
+  Keep SMTP click tracking off for Auth mail. Test with a fresh signup after
+  saving, since messages already sent still contain their original URL.
 - **Auth → SMTP:** custom SMTP (Resend / Postmark / SES) with SPF, DKIM and
   DMARC records in Cloudflare DNS. Raise the email rate limit above the default.
 - **Auth settings**

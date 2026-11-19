@@ -528,6 +528,40 @@ The proof that each role does what the Agent Center and Downloads page promise:
   `ROUTES=/dashboard/agents,/downloads node .report-smoke/route-shot.mjs <dir> <email>
   http://localhost:3000` (API calls, console problems, overflow, screenshot).
 
+### Discovery → migration pages agree (Assets, CBOM, Migration Intelligence, Planner, Sandbox)
+
+```bash
+npx tsx tools/discovery-migration-consistency-check.ts [email] [origin]   # 43 LIVE: every figure two pages share, stream first frames, ?token= refused
+npx tsx tools/dashboard-route-render-check.ts <outDir> [email] [origin] [route …]   # signed-in headless Chrome: exceptions, failed /api/, error boundary, token in a URL, screenshot + text
+```
+
+- Both sign in with a magic link for the same QA user, and a second link
+  invalidates the first (`otp_expired`). Run them in sequence.
+- The render check is what found the token in the Assets/CBOM stream URL — no
+  payload comparison could. Pass an existing `outDir`.
+- After editing `src/api-server` or `src/lib`, the first page load can sit on
+  its loading state past the settle time (Vite re-imports the API). Re-run, or
+  raise `SETTLE_MS`, before reading that as a failure.
+- The sandbox withholds its risk score (`quantumRiskSource:
+  'awaiting-quantum-readiness'`) while QR is cold; the consistency check waits.
+
+### Real Time Scanning (/dashboard/scanner/real-time)
+
+```bash
+npx tsx tools/live-scan-check.ts             # 43 pure: reducer replay/dup/out-of-order, relationship rules, grouping, policy
+npx tsx tools/live-scan-check.ts --network   # + real executeWebScan against badssl.com fixtures (expired, self-signed, wrong host, untrusted root, RSA/EC)
+npx tsx tools/live-scan-live-check.ts [email] [origin]   # 34 LIVE: API + SSE reconnect, pause/resume, tenant 404, stored log == live, cleanup
+ACTION_JS="$(cat click.js)" npx tsx tools/dashboard-route-render-check.ts <outDir> zachmatthew369@gmail.com http://localhost:3000 "/dashboard/scanner/real-time?run=<id>"
+```
+
+- badssl.com is the controlled TLS fixture set; localhost TLS fixtures are refused by
+  the SSRF guard by design, so integration runs use public fixture hosts.
+- The live check caught the stored-vs-live race (common-issues #72) that every pure
+  check passed. A 7-target run takes ~4.5 min here (engine + ~600 ms Supabase RTT).
+- `ACTION_JS` (render check) evaluates an async expression after settle — use it to
+  click nodes / tabs; the QA profiles render Light, so force dark by toggling
+  `qg-theme-light` off in the same expression.
+
 ## Evidence ladder
 
 Pick the weakest rung that actually proves the claim:

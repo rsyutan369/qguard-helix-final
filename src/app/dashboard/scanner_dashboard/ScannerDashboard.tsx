@@ -21,6 +21,7 @@
  * placeholder, and anything unmeasured renders as Unknown rather than zero.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { csvCell, csvText } from '@/lib/csv';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSearchParams, Link } from 'react-router-dom';
 import {
@@ -679,11 +680,6 @@ function filterHistoryByTimeframe(entries: HistoryEntry[], timeframe: HistoryTim
 
 
 
-
-function csvCell(value: unknown) {
-  const text = String(value ?? '').replace(/\r?\n/g, ' ');
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
 
 function downloadTextFile(filename: string, content: string, type: string) {
   const blob = new Blob([content], { type });
@@ -1698,7 +1694,9 @@ export default function ScannerDashboard() {
         entry.message,
       ]),
     ];
-    const csv = rows.map((row) => row.map(csvCell).join(',')).join('\n');
+    const csv = rows.map((row) => row.map((value) =>
+      csvCell(typeof value === 'string' ? csvText(value).replace(/\r?\n/g, ' ') : value)
+    ).join(',')).join('\n');
     const stamp = generatedAt.replace(/[:.]/g, '-');
     downloadTextFile(`qguard-scanner-report-${stamp}.csv`, csv, 'text/csv;charset=utf-8');
     showToast(`Exported ${findingRows.length} finding(s) and ${scopedHistory.length} scan record(s).`);
@@ -3838,10 +3836,7 @@ function ScanModuleRail({
               </span>
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline justify-between gap-2">
-                  <p
-                    className="truncate text-[13px] font-bold"
-                    style={{ color: stage.state === 'waiting' ? '#94a3b8' : '#e2e8f0' }}
-                  >
+                  <p className={`truncate text-[13px] font-bold ${stage.state === 'waiting' ? 'text-slate-400' : 'text-slate-200'}`}>
                     {stage.label}
                   </p>
                   <span className="shrink-0 font-mono text-[9px] uppercase tracking-widest" style={{ color: style.color }}>

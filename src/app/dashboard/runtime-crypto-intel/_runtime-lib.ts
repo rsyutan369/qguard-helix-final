@@ -6,6 +6,7 @@
  * engine; nothing is computed or invented here.
  */
 
+import { csvCell } from '@/lib/csv';
 import type {
   QuantumStatus,
   RiskLevel,
@@ -218,11 +219,6 @@ export function filterIssues(issues: RuntimeIssue[], filters: RuntimeFilters): R
 /* Export                                                             */
 /* ------------------------------------------------------------------ */
 
-function csvCell(value: unknown): string {
-  const text = value === null || value === undefined ? '' : String(value);
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
 /**
  * Exports exactly what is on screen, and says so in the header row — an export
  * that silently widens or narrows the filtered view is a reconciliation bug
@@ -234,7 +230,7 @@ export function eventsToCsv(events: RuntimeEvent[], filters: RuntimeFilters, win
     `# Window: ${windowLabel}`,
     `# Filters: environment=${filters.environment}, risk=${filters.risk}, quantum status=${filters.status}${filters.search.trim() ? `, search="${filters.search.trim()}"` : ''}`,
     `# Rows: ${events.length}`,
-  ].join('\n');
+  ].map(csvCell).join('\n');
   const columns = ['Observed At', 'Application', 'Environment', 'Operation', 'Algorithm', 'Observed Value', 'Quantum Status', 'Risk', 'Priority', 'Recommended Action'];
   const rows = events.map((event) =>
     [

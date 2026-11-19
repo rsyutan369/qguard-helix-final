@@ -24,6 +24,7 @@ import type { CollectorRecord, CoverageRecord, HealthState, PipelineFinding, Sou
 import {
   ConnectionLost,
   ErrorState,
+  EvidenceReads,
   FilterSelect,
   Kpi,
   ModuleNav,
@@ -72,6 +73,7 @@ const HEALTH_TONE: Record<HealthState, Tone> = {
   stale: 'warning',
   silent: 'critical',
   absent: 'neutral',
+  unavailable: 'warning',
 };
 
 const HEALTH_LABEL: Record<HealthState, string> = {
@@ -80,6 +82,7 @@ const HEALTH_LABEL: Record<HealthState, string> = {
   stale: 'Stale',
   silent: 'Silent',
   absent: 'No data',
+  unavailable: 'Unavailable',
 };
 
 const SERIES_PALETTE = [TONE.neutral.hex, TONE.info.hex, TONE.ai.hex, TONE.good.hex, TONE.warning.hex, '#f472b6'];
@@ -177,6 +180,7 @@ export default function RuntimeTelemetry() {
       <ModuleNav />
 
       {connectionLost ? <ConnectionLost onReconnect={reconnect} lastSyncedAt={lastSyncedAt} /> : null}
+      {data ? <EvidenceReads reads={data.reads} /> : null}
       {error && data ? (
         <p className="rounded-lg border border-red-500/25 bg-red-500/5 px-3 py-2 text-[11px] text-red-200/85">{error}</p>
       ) : null}

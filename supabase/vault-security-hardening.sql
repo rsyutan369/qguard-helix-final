@@ -168,13 +168,13 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.verify_share_link_access(UUID, TEXT) FROM public;
-GRANT EXECUTE ON FUNCTION public.verify_share_link_access(UUID, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.verify_share_link_access(UUID, TEXT) TO anon;
+-- Public share redemption goes through the API. Keep the legacy function's
+-- lockout and audit writes off the client-facing Data API.
+REVOKE ALL ON FUNCTION public.verify_share_link_access(UUID, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.verify_share_link_access(UUID, TEXT) TO service_role;
 
 COMMENT ON FUNCTION public.verify_share_link_access(UUID, TEXT) IS
-  'Verifies share link access. Accepts pre-hashed password (bcrypt on client). '
-  'Never accepts plaintext passwords. Enforces rate limiting and link validity.';
+  'Legacy share verification for trusted server callers. Public redemption uses the application API.';
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- 3. SECURE AUDIT LOG INSERTION — Prevent client-side injection
@@ -258,7 +258,7 @@ BEGIN
   IF to_regclass('public.vault_shared_links') IS NOT NULL THEN
     BEGIN
       EXECUTE $view$
-        CREATE OR REPLACE VIEW public.vault_shared_links_safe AS
+        CREATE OR REPLACE VIEW public.vault_shared_links_safe WITH (security_invoker = true) AS
         SELECT
           id, user_id, file_id, folder_id, token,
           permissions, is_password_protected,
@@ -579,7 +579,7 @@ BEGIN
   IF to_regclass('public.vault_keys') IS NOT NULL THEN
     BEGIN
       EXECUTE $view$
-        CREATE OR REPLACE VIEW public.vault_keys_safe AS
+        CREATE OR REPLACE VIEW public.vault_keys_safe WITH (security_invoker = true) AS
         SELECT
           id, user_id, key_type, algorithm, fingerprint,
           public_key_hex,
@@ -613,7 +613,7 @@ BEGIN
   IF to_regclass('public.vault_files') IS NOT NULL THEN
     BEGIN
       EXECUTE $view$
-        CREATE OR REPLACE VIEW public.vault_files_listing AS
+        CREATE OR REPLACE VIEW public.vault_files_listing WITH (security_invoker = true) AS
         SELECT
           id, user_id, folder_id,
           original_filename, encrypted_filename,
@@ -658,7 +658,7 @@ COMMIT;
 --   ✅ Removed vault_keys, vault_unlock_sessions, vault_user_profiles from Realtime
 --   ✅ Column-filtered vault_files in Realtime (non-crypto columns only)
 --   ✅ Dropped plaintext hash_password/verify_password_hash functions
---   ✅ Added verify_share_link_access() with rate limiting
+--   ✅ Restricted legacy verify_share_link_access() to server callers
 --   ✅ Replaced audit INSERT policy with validated SECURITY DEFINER function
 --   ✅ Created vault_shared_links_safe view when vault_shared_links exists
 --   ✅ Created vault_keys_safe view when vault_keys exists

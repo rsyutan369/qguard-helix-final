@@ -6,10 +6,11 @@ use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
 
+use crate::crypto::passphrase::{self, PassphraseStrength};
 use crate::crypto::portable_identity::{self, PortableIdentity, RecipientPublicKeys};
 use crate::error::{QGuardError, Result};
 use crate::security::content_uri;
-use crate::state::AppState;
+use crate::state::{AppState, VerifiedRecipient};
 use crate::vault_stream::{self, FolderReader, FolderWriter, SharingOptions};
 
 use super::vault::{
@@ -72,9 +73,119 @@ pub struct RecipientSummary {
     pub label: Option<String>,
     pub kem_algorithm: String,
     pub signature_algorithm: String,
+    /// Whether the user has confirmed this exact fingerprint out of band. Until
+    /// they have, sealing to this recipient is refused — a `.qgpub.json` proves
+    /// only that it is internally consistent, never who it belongs to.
+    pub verified: bool,
+    /// When the confirmation happened, for the UI to show.
+    pub verified_at: Option<String>,
     /// The canonical bundle text, so the UI can keep exactly what was validated
     /// rather than re-serialising the user's paste.
     pub bundle: String,
+}
+
+/// Build the UI-facing summary for a parsed recipient, including whether this
+/// user has confirmed that exact fingerprint out of band.
+fn recipient_summary(
+    state: &AppState,
+    recipient: RecipientPublicKeys,
+    bundle: &str,
+) -> Result<RecipientSummary> {
+    let user_id = state.user_id()?;
+    let verification = state.recipient_verification(&user_id, &recipient.fingerprint)?;
+    Ok(RecipientSummary {
+        short_fingerprint: portable_identity::short_fingerprint(&recipient.fingerprint),
+        fingerprint: recipient.fingerprint,
+        label: recipient.label,
+        kem_algorithm: recipient.kem_algorithm,
+        signature_algorithm: recipient.signature_algorithm,
+        verified: verification.is_some(),
+        verified_at: verification.map(|entry| entry.verified_at.to_rfc3339()),
+        bundle: bundle.trim().to_string(),
+    })
+}
+
+/// Confirm a recipient's fingerprint after comparing it out of band.
+///
+/// `confirmation` is what the recipient read out. It is checked against the
+/// bundle's real fingerprint here rather than in the UI, and only a genuine
+/// match records anything — so a user who mistypes, or who was given a
+/// fingerprint from a substituted bundle, is told plainly instead of being
+/// quietly trusted.
+///
+/// What this records is the user's own attestation that they compared the value
+/// over a channel an attacker does not control. The app cannot check *that* part
+/// for them; what it can do is make the step deliberate, bind it to the exact
+/// fingerprint, and refuse to seal without it.
+#[tauri::command]
+pub fn vault_recipient_verify(
+    state: State<'_, AppState>,
+    bundle: String,
+    confirmation: String,
+) -> Result<RecipientSummary> {
+    state.require_auth()?;
+    let user_id = state.user_id()?;
+    let recipient = portable_identity::parse_recipient_public(&bundle)?;
+
+    if !portable_identity::confirmation_matches(&confirmation, &recipient.fingerprint) {
+        state.audit_warn(
+            "vault_recipient_verify_failed",
+            "A recipient fingerprint confirmation did not match the bundle",
+        );
+        return Err(QGuardError::Trust(format!(
+            "That does not match this bundle's fingerprint ({}). If you read it back correctly, \
+             the bundle you were given is not the one they sent — do not seal anything to it.",
+            portable_identity::short_fingerprint(&recipient.fingerprint),
+        )));
+    }
+
+    state.mark_recipient_verified(
+        &user_id,
+        VerifiedRecipient {
+            fingerprint: recipient.fingerprint.clone(),
+            label: recipient.label.clone(),
+            kem_algorithm: recipient.kem_algorithm.clone(),
+            signature_algorithm: recipient.signature_algorithm.clone(),
+            verified_at: chrono::Utc::now(),
+        },
+    )?;
+    state.audit_info(
+        "vault_recipient_verified",
+        &format!(
+            "Recipient fingerprint {} confirmed out of band",
+            portable_identity::short_fingerprint(&recipient.fingerprint)
+        ),
+    );
+    recipient_summary(&state, recipient, &bundle)
+}
+
+/// Withdraw trust from a recipient, so sealing to them is refused again.
+///
+/// The path back if someone realises they confirmed against the wrong channel,
+/// or a contact re-issues their identity.
+#[tauri::command]
+pub fn vault_recipient_unverify(state: State<'_, AppState>, fingerprint: String) -> Result<bool> {
+    state.require_auth()?;
+    let user_id = state.user_id()?;
+    let removed = state.clear_recipient_verification(&user_id, &fingerprint)?;
+    if removed {
+        state.audit_warn(
+            "vault_recipient_unverified",
+            &format!(
+                "Recipient fingerprint {} is no longer trusted",
+                portable_identity::short_fingerprint(&fingerprint)
+            ),
+        );
+    }
+    Ok(removed)
+}
+
+/// Every recipient fingerprint this user has confirmed out of band.
+#[tauri::command]
+pub fn vault_recipient_trust_list(state: State<'_, AppState>) -> Result<Vec<VerifiedRecipient>> {
+    state.require_auth()?;
+    let user_id = state.user_id()?;
+    Ok(state.load_recipient_trust(&user_id)?.entries)
 }
 
 /// Read a text file the user picked, through the same source resolver the vault
@@ -109,6 +220,75 @@ fn write_text_dest(dest_path: &str, body: &str) -> Result<()> {
             Err(QGuardError::Storage(format!("write identity file: {e}")))
         }
     }
+}
+
+/// A generated passphrase plus the entropy it provably carries.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuggestedPassphrase {
+    pub passphrase: String,
+    pub words: usize,
+    /// Counted, not estimated: words are drawn uniformly without replacement
+    /// from a 2048-word list.
+    pub bits: f64,
+}
+
+/// Suggest a passphrase strong enough to protect an identity bundle.
+///
+/// This is the path the UI should lead with. A `.qgkey` is attacked offline, so
+/// the passphrase is the only thing protecting every file sealed to that
+/// identity — and a phrase generated here carries entropy that is counted rather
+/// than estimated, which no human-chosen passphrase can claim.
+#[tauri::command]
+pub fn vault_passphrase_suggest(
+    state: State<'_, AppState>,
+    words: Option<usize>,
+) -> Result<SuggestedPassphrase> {
+    state.require_auth()?;
+    let words = words
+        .unwrap_or(passphrase::DEFAULT_GENERATED_WORDS)
+        .clamp(passphrase::MIN_GENERATED_WORDS, passphrase::MAX_GENERATED_WORDS);
+    Ok(SuggestedPassphrase {
+        passphrase: passphrase::generate(words)?,
+        words,
+        bits: passphrase::generated_bits(words),
+    })
+}
+
+/// Score a passphrase so the UI can show a live meter and say what is wrong
+/// *before* the user commits to it.
+///
+/// Reports only — the authoritative check runs inside `export_bundle`, so a
+/// frontend that skipped this could never write a weak bundle anyway.
+#[tauri::command]
+pub fn vault_passphrase_strength(
+    state: State<'_, AppState>,
+    passphrase_text: String,
+) -> Result<PassphraseStrength> {
+    state.require_auth()?;
+    Ok(passphrase::estimate(&passphrase_text))
+}
+
+/// The entropy floor a new identity bundle must clear, so the UI can render the
+/// target without hardcoding a number that could drift from the backend.
+#[tauri::command]
+pub fn vault_passphrase_policy(state: State<'_, AppState>) -> Result<PassphrasePolicy> {
+    state.require_auth()?;
+    Ok(PassphrasePolicy {
+        min_bits: passphrase::MIN_PASSPHRASE_BITS,
+        min_length: passphrase::MIN_PASSPHRASE_LEN,
+        default_words: passphrase::DEFAULT_GENERATED_WORDS,
+        default_words_bits: passphrase::generated_bits(passphrase::DEFAULT_GENERATED_WORDS),
+    })
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PassphrasePolicy {
+    pub min_bits: f64,
+    pub min_length: usize,
+    pub default_words: usize,
+    pub default_words_bits: f64,
 }
 
 /// Generate a fresh Portable Hybrid Identity, write its passphrase-protected
@@ -226,14 +406,7 @@ pub async fn vault_identity_export_public(
 pub fn vault_parse_recipient(state: State<'_, AppState>, bundle: String) -> Result<RecipientSummary> {
     state.require_auth()?;
     let recipient = portable_identity::parse_recipient_public(&bundle)?;
-    Ok(RecipientSummary {
-        short_fingerprint: portable_identity::short_fingerprint(&recipient.fingerprint),
-        fingerprint: recipient.fingerprint,
-        label: recipient.label,
-        kem_algorithm: recipient.kem_algorithm,
-        signature_algorithm: recipient.signature_algorithm,
-        bundle: bundle.trim().to_string(),
-    })
+    recipient_summary(&state, recipient, &bundle)
 }
 
 /// Load a recipient bundle from a file the user picked.
@@ -248,18 +421,38 @@ pub async fn vault_load_recipient_file(
     })
     .await?;
     let recipient = portable_identity::parse_recipient_public(&bundle)?;
-    Ok(RecipientSummary {
-        short_fingerprint: portable_identity::short_fingerprint(&recipient.fingerprint),
-        fingerprint: recipient.fingerprint,
-        label: recipient.label,
-        kem_algorithm: recipient.kem_algorithm,
-        signature_algorithm: recipient.signature_algorithm,
-        bundle: bundle.trim().to_string(),
-    })
+    recipient_summary(&state, recipient, &bundle)
 }
 
-/// Parse + de-duplicate the recipient bundles a seal call was given.
-fn resolve_recipients(bundles: &[String]) -> Result<Vec<RecipientPublicKeys>> {
+/// Parse + de-duplicate the recipient bundles a seal call was given, and refuse
+/// any whose fingerprint the user has not confirmed out of band.
+///
+/// This is the one control that closes the key-distribution gap. A
+/// `.qgpub.json` carries no trust anchor — its self-declared fingerprint proves
+/// only that the file is internally consistent, never whose identity it is. If
+/// someone substitutes the bundle in transit you seal to them instead, and
+/// nothing about the resulting container looks wrong: it verifies, it opens, it
+/// just opens for the wrong person. Comparing the short fingerprint over a
+/// channel the attacker does not control is the only thing that catches it.
+///
+/// The check lives here, in the single choke point both seal commands go
+/// through, rather than in the UI — a frontend check is a prompt, not a control.
+fn resolve_recipients(
+    state: &AppState,
+    user_id: &str,
+    bundles: &[String],
+) -> Result<Vec<RecipientPublicKeys>> {
+    let resolved = parse_recipient_bundles(bundles)?;
+    let trusted = state.load_recipient_trust(user_id)?.entries;
+    let unverified = unverified_recipients(&resolved, &trusted);
+    if !unverified.is_empty() {
+        return Err(QGuardError::Trust(unverified_message(&unverified)));
+    }
+    Ok(resolved)
+}
+
+/// Parse and de-duplicate the bundles, with no opinion about trust.
+fn parse_recipient_bundles(bundles: &[String]) -> Result<Vec<RecipientPublicKeys>> {
     if bundles.is_empty() {
         return Err(QGuardError::InvalidInput(
             "add at least one recipient before sealing".to_string(),
@@ -276,6 +469,50 @@ fn resolve_recipients(bundles: &[String]) -> Result<Vec<RecipientPublicKeys>> {
         }
     }
     Ok(resolved)
+}
+
+/// Which recipients have no out-of-band confirmation, as labels for the message.
+///
+/// Kept pure and separate from the store so the decision itself is testable
+/// without a keychain — this is the security check, and it should not only be
+/// exercised through I/O.
+fn unverified_recipients(
+    recipients: &[RecipientPublicKeys],
+    trusted: &[VerifiedRecipient],
+) -> Vec<String> {
+    recipients
+        .iter()
+        .filter(|recipient| {
+            !trusted
+                .iter()
+                .any(|entry| entry.fingerprint.eq_ignore_ascii_case(&recipient.fingerprint))
+        })
+        .map(|recipient| {
+            format!(
+                "{} ({})",
+                recipient
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| "unlabelled".to_string()),
+                portable_identity::short_fingerprint(&recipient.fingerprint),
+            )
+        })
+        .collect()
+}
+
+fn unverified_message(unverified: &[String]) -> String {
+    let subject = if unverified.len() == 1 {
+        "this recipient"
+    } else {
+        "these recipients"
+    };
+    format!(
+        "Verify {subject} before sealing: {}. Ask them to read out their fingerprint on a call or \
+         in person — not over the channel that carried the bundle — and confirm it matches. A \
+         recipient bundle proves nothing about who sent it, so this is what stops you sealing a \
+         file to whoever swapped it.",
+        unverified.join(", "),
+    )
 }
 
 /// Encrypt a file into a `.qvault` container sealed to one or more Portable
@@ -296,7 +533,7 @@ pub async fn vault_seal_path(
     on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
     let ctx = local_vault_context(&state, VaultNeed::Seal)?;
-    let resolved = resolve_recipients(&recipients)?;
+    let resolved = resolve_recipients(&state, &ctx.user_id, &recipients)?;
     let sender = if attest {
         let identity = state.unlocked_portable_identity()?;
         if !identity.can_attest() {
@@ -406,7 +643,7 @@ pub async fn vault_seal_folder_path(
     on_progress: Channel<vault_stream::VaultProgress>,
 ) -> Result<VaultLocalStreamSummary> {
     let ctx = local_vault_context(&state, VaultNeed::Seal)?;
-    let resolved = resolve_recipients(&recipients)?;
+    let resolved = resolve_recipients(&state, &ctx.user_id, &recipients)?;
     let sender = if attest {
         let identity = state.unlocked_portable_identity()?;
         if !identity.can_attest() {
@@ -604,6 +841,13 @@ pub async fn vault_open_sealed_folder_path(
 
 #[cfg(test)]
 mod tests {
+    /// Passphrases strong enough to clear the identity-bundle entropy gate, so
+    /// these tests exercise the seal/open flow rather than the gate. Each is the
+    /// shape `crypto::passphrase::generate` produces.
+    const BOB_PASSPHRASE: &str = "harbor cinder maple quiver tundra ledger walnut";
+    const FIRST_PASSPHRASE: &str = "granite willow cobalt ember thicket sable orchard";
+    const SECOND_PASSPHRASE: &str = "meadow flint amber trellis pumice saffron lantern";
+
     use super::*;
 
     #[test]
@@ -613,7 +857,7 @@ mod tests {
         let bob_json = bob.public_recipient_json().unwrap();
         let carol_json = carol.public_recipient_json().unwrap();
 
-        let resolved = resolve_recipients(&[
+        let resolved = parse_recipient_bundles(&[
             bob_json.clone(),
             carol_json,
             bob_json.clone(),
@@ -624,8 +868,84 @@ mod tests {
 
         // Empty and malformed lists are refused rather than silently producing a
         // container nobody can open.
-        assert!(resolve_recipients(&[]).is_err());
-        assert!(resolve_recipients(&["{}".to_string()]).is_err());
+        assert!(parse_recipient_bundles(&[]).is_err());
+        assert!(parse_recipient_bundles(&["{}".to_string()]).is_err());
+    }
+
+    /// Sealing is refused until the user has confirmed a recipient's fingerprint
+    /// out of band, and trust is bound to that exact fingerprint.
+    #[test]
+    fn sealing_is_refused_until_a_recipient_is_verified() {
+        let bob = PortableIdentity::generate(Some("Bob".to_string()));
+        let carol = PortableIdentity::generate(Some("Carol".to_string()));
+        let resolved = parse_recipient_bundles(&[
+            bob.public_recipient_json().unwrap(),
+            carol.public_recipient_json().unwrap(),
+        ])
+        .unwrap();
+
+        let verified = |identity: &PortableIdentity| VerifiedRecipient {
+            fingerprint: identity.fingerprint(),
+            label: identity.label.clone(),
+            kem_algorithm: identity.kem_algorithm().to_string(),
+            signature_algorithm: identity.signature_algorithm().to_string(),
+            verified_at: chrono::Utc::now(),
+        };
+
+        // Nothing verified yet: both are refused, and both are named so the user
+        // knows who to call.
+        let blocked = unverified_recipients(&resolved, &[]);
+        assert_eq!(blocked.len(), 2);
+        assert!(blocked.iter().any(|entry| entry.contains("Bob")));
+        assert!(blocked.iter().any(|entry| entry.contains("Carol")));
+
+        // Verifying one does not vouch for the other.
+        let blocked = unverified_recipients(&resolved, &[verified(&bob)]);
+        assert_eq!(blocked.len(), 1);
+        assert!(blocked[0].contains("Carol"));
+
+        // Both verified: nothing blocks the seal.
+        assert!(unverified_recipients(&resolved, &[verified(&bob), verified(&carol)]).is_empty());
+    }
+
+    /// Trust is keyed on the fingerprint, so a substituted bundle cannot inherit
+    /// the trust of the identity it replaced — which is the whole point.
+    #[test]
+    fn a_swapped_bundle_does_not_inherit_trust_from_the_identity_it_replaces() {
+        let real = PortableIdentity::generate(Some("Dana".to_string()));
+        // An attacker's identity, presented under the same friendly label.
+        let impostor = PortableIdentity::generate(Some("Dana".to_string()));
+        assert_ne!(real.fingerprint(), impostor.fingerprint());
+
+        let trusted = vec![VerifiedRecipient {
+            fingerprint: real.fingerprint(),
+            label: real.label.clone(),
+            kem_algorithm: real.kem_algorithm().to_string(),
+            signature_algorithm: real.signature_algorithm().to_string(),
+            verified_at: chrono::Utc::now(),
+        }];
+
+        let swapped = parse_recipient_bundles(&[impostor.public_recipient_json().unwrap()]).unwrap();
+        let blocked = unverified_recipients(&swapped, &trusted);
+        assert_eq!(blocked.len(), 1, "a swapped bundle must not be treated as verified");
+        assert!(blocked[0].contains(&portable_identity::short_fingerprint(&impostor.fingerprint())));
+
+        // And the real one still passes, so the check is not simply refusing
+        // everything.
+        let genuine = parse_recipient_bundles(&[real.public_recipient_json().unwrap()]).unwrap();
+        assert!(unverified_recipients(&genuine, &trusted).is_empty());
+    }
+
+    /// The message has to name who is blocking the seal, or the user cannot act
+    /// on it.
+    #[test]
+    fn the_refusal_names_who_needs_verifying() {
+        let message = unverified_message(&["Bob (DE80-CA7A-2F55-4A48)".to_string()]);
+        assert!(message.contains("Bob (DE80-CA7A-2F55-4A48)"));
+        assert!(message.contains("this recipient"));
+        let plural = unverified_message(&["Bob (A)".to_string(), "Carol (B)".to_string()]);
+        assert!(plural.contains("these recipients"));
+        assert!(plural.contains("Carol (B)"));
     }
 
     /// Full round trip through the REAL artefacts on disk, in the same order the
@@ -650,7 +970,7 @@ mod tests {
 
         // --- Bob creates an identity and publishes his public bundle ---------
         let bob = PortableIdentity::generate(Some("Bob - workstation".to_string()));
-        let passphrase = "bob correct horse battery";
+        let passphrase = BOB_PASSPHRASE;
         write_text_dest(&path("bob.qgkey"), &bob.export_bundle(passphrase).unwrap()).unwrap();
         write_text_dest(&path("bob.qgpub.json"), &bob.public_recipient_json().unwrap()).unwrap();
         assert!(dir.join("bob.qgkey").is_file());
@@ -670,7 +990,10 @@ mod tests {
         // --- Alice loads Bob's public bundle and seals a file for him --------
         let bob_bundle =
             read_text_source(&path("bob.qgpub.json"), "read recipient bundle", 1 << 20).unwrap();
-        let recipients = resolve_recipients(&[bob_bundle]).unwrap();
+        // The end-to-end test covers the crypto, not the trust gate — that is
+        // exercised directly by `sealing_is_refused_until_a_recipient_is_verified`,
+        // which needs no keychain to run.
+        let recipients = parse_recipient_bundles(&[bob_bundle]).unwrap();
         assert_eq!(recipients.len(), 1);
         assert_eq!(recipients[0].fingerprint, bob.fingerprint());
         assert_eq!(recipients[0].label.as_deref(), Some("Bob - workstation"));
@@ -761,14 +1084,14 @@ mod tests {
         let target = dir.join("identity.qgkey").to_string_lossy().to_string();
 
         let first = PortableIdentity::generate(Some("first".to_string()));
-        write_text_dest(&target, &first.export_bundle("passphrase one!!").unwrap()).unwrap();
+        write_text_dest(&target, &first.export_bundle(FIRST_PASSPHRASE).unwrap()).unwrap();
         let second = PortableIdentity::generate(Some("second".to_string()));
-        write_text_dest(&target, &second.export_bundle("passphrase two!!").unwrap()).unwrap();
+        write_text_dest(&target, &second.export_bundle(SECOND_PASSPHRASE).unwrap()).unwrap();
 
         // The second write fully replaced the first, and no temp file survived.
         let restored = PortableIdentity::import_bundle(
             &std::fs::read_to_string(&target).unwrap(),
-            "passphrase two!!",
+            SECOND_PASSPHRASE,
         )
         .unwrap();
         assert_eq!(restored.fingerprint(), second.fingerprint());

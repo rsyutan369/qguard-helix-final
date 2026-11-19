@@ -7,6 +7,7 @@ import * as tls from 'node:tls'
 import * as net from 'node:net'
 import * as dns from 'node:dns'
 import { promisify } from 'node:util'
+import { checkHostSyntax, isPrivateAddress } from '../public-scan/safe-dns'
 import type { TlsAnalysisResult, CipherSuiteDetail, TlsProtocolProbe } from './types'
 import { parseCertificateFromPeer } from './certificate-parser'
 import { classifyCipherSuite } from './cipher-suite-analyzer'
@@ -26,27 +27,6 @@ const TLS12_CIPHER_PROBES: { standardName: string; opensslName: string }[] = [
   { standardName: 'TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256', opensslName: 'ECDHE-ECDSA-AES128-GCM-SHA256' },
   { standardName: 'TLS_DHE_RSA_WITH_AES_128_GCM_SHA256', opensslName: 'DHE-RSA-AES128-GCM-SHA256' },
 ]
-const PRIVATE_IP_RANGES = [
-  /^10\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-  /^192\.168\./,
-  /^127\./,
-  /^0\./,
-  /^169\.254\./,
-  /^::1$/,
-  /^fc00:/i,
-  /^fd00:/i,
-  /^fe80:/i,
-  /^localhost$/i,
-]
-
-/**
- * Validate that a target is not a private/internal IP address (SSRF protection)
- */
-function isPrivateIp(ip: string): boolean {
-  return PRIVATE_IP_RANGES.some(pattern => pattern.test(ip))
-}
-
 function lookupAll(hostname: string): Promise<string[]> {
   return new Promise((resolve, reject) => {
     dns.lookup(hostname, { all: true, verbatim: false }, (err, addresses) => {
@@ -98,13 +78,11 @@ export function parseTarget(target: string, targetType: string): { hostname: str
  * Resolve hostname to IP and validate it's not private
  */
 async function resolveAndValidate(hostname: string): Promise<string[]> {
-  // If it's already an IP, validate directly
-  if (net.isIP(hostname)) {
-    if (isPrivateIp(hostname)) {
-      throw new Error(`SSRF protection: scanning private IP addresses is not allowed`)
-    }
-    return [hostname]
+  const verdict = checkHostSyntax(hostname.replace(/\.$/, ''))
+  if (!verdict.ok) {
+    throw new Error(`SSRF protection: ${verdict.message}`)
   }
+  if (net.isIP(hostname)) return [hostname]
 
   // Resolve hostname. Prefer authoritative A records, but fall back to OS
   // lookup because some local Windows DNS/proxy setups reject queryA while
@@ -134,7 +112,7 @@ async function resolveAndValidate(hostname: string): Promise<string[]> {
 
   // Validate resolved IPs
   for (const ip of addresses) {
-    if (isPrivateIp(ip)) {
+    if (isPrivateAddress(ip)) {
       throw new Error(`SSRF protection: ${hostname} resolves to private IP`)
     }
   }
@@ -638,6 +616,7 @@ export async function analyzeTls(
   port: number = 443,
   options: TlsAnalysisOptions = {}
 ): Promise<TlsAnalysisResult> {
+  hostname = hostname.replace(/^\[|\]$/g, '')
   // Resolve and validate target
   const connectHosts = await resolveAndValidate(hostname)
 

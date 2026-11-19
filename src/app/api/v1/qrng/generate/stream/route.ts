@@ -1,3 +1,4 @@
+import { ISSUANCE_UNAVAILABLE, isIssuanceAction } from '@/lib/crypto/issuance-evidence'
 import { NextRequest } from 'next/server'
 import { randomBytes, createHash, createHmac } from 'crypto'
 import { createRequire } from 'module'
@@ -151,97 +152,6 @@ function generateOTPResult(params: Record<string, unknown>) {
     generation_time_ms: Math.round(genTimeMs * 100) / 100,
     timestamp: now.toISOString(),
     purpose: params.purpose || 'login',
-  }
-}
-
-function generateKeyResult(params: Record<string, unknown>) {
-  const algorithm  = String(params.algorithm || 'ML-KEM')
-  const bitLength  = Number(params.bit_length || 256)
-  const purpose    = String(params.purpose || 'encryption')
-  const now        = new Date()
-  const expires    = new Date(now); expires.setFullYear(expires.getFullYear() + 2)
-
-  const lib = loadPQC()
-  let pubKeyHex: string
-  let pqcMeta: Record<string, string>
-
-  if (lib) {
-    // Use the appropriate PQC keygen based on user-selected algorithm
-    if (algorithm === 'ML-DSA' || algorithm === 'SPHINCS+') {
-      const kp = lib.ml_dsa65.keygen()
-      pubKeyHex = toHex(kp.publicKey)
-      pqcMeta = { signature: 'ML-DSA-65', security_level: 'NIST-Level-3' }
-    } else {
-      // ML-KEM, HYBRID, or any KEM-based algorithm
-      const kp = lib.ml_kem768_x25519.keygen()
-      pubKeyHex = toHex(kp.publicKey)
-      pqcMeta = { kem: 'ML-KEM-768+X25519', security_level: 'NIST-Level-3' }
-    }
-  } else {
-    // Fallback: generate random bytes proportional to the requested bit length
-    const byteLength = Math.max(32, Math.ceil(bitLength / 8) * 4)
-    pubKeyHex = randHex(byteLength)
-    pqcMeta = { kem: 'CSPRNG-fallback' }
-  }
-
-  const fingerprint = createHash('sha256').update(Buffer.from(pubKeyHex, 'hex')).digest('hex')
-    .match(/.{4}/g)!.slice(0, 10).join(':').toUpperCase()
-
-  return {
-    id: crypto.randomUUID(),
-    publicKey: pubKeyHex, algorithm, bitLength,
-    fingerprint, entropySource: 'CSPRNG', qualityScore: shannonEntropy(Buffer.from(pubKeyHex.slice(0, 64), 'hex')),
-    status: 'active', createdAt: now.toISOString(), expiresAt: expires.toISOString(),
-    exportable: true, label: params.label || null, purpose, pqc: pqcMeta,
-  }
-}
-
-function generatePKIResult(params: Record<string, unknown>) {
-  const cn   = String(params.common_name || 'qguard.local')
-  const algo = String(params.key_algorithm || 'ML-DSA-65')
-  const days = Number(params.validity_days || 365)
-  const now  = new Date()
-  const lib  = loadPQC()
-
-  let pubKeyHex: string, privKeyHex: string, kemPubHex: string
-  let pqcMeta: Record<string, string>
-
-  if (lib) {
-    const dkp = lib.ml_dsa65.keygen()
-    const kkp = lib.ml_kem768_x25519.keygen()
-    const salt = randomBytes(16)
-    const derived = hkdfDerive(Buffer.from(dkp.secretKey.slice(0, 32)), salt, `qguard-pki-v1-${cn}`, 64)
-    pubKeyHex  = toHex(dkp.publicKey)
-    privKeyHex = toHex(derived)
-    kemPubHex  = toHex(kkp.publicKey)
-    pqcMeta = { signature: 'ML-DSA-65', kem: 'ML-KEM-768+X25519', kdf: 'HKDF-SHA3-256' }
-  } else {
-    pubKeyHex  = randHex(1952)
-    privKeyHex = randHex(64)
-    kemPubHex  = randHex(1216)
-    pqcMeta = { signature: 'CSPRNG-fallback' }
-  }
-
-  const serial = randomBytes(20).toString('hex').match(/.{2}/g)!.join(':').toUpperCase()
-  const fp     = createHash('sha256').update(Buffer.from(pubKeyHex, 'hex')).digest('hex')
-                   .match(/.{2}/g)!.join(':').toUpperCase()
-
-  return {
-    certificate: {
-      serial_number: serial, common_name: cn,
-      organization: params.organization || null,
-      organizational_unit: params.organizational_unit || null,
-      country: params.country || null, state: params.state || null, city: params.city || null,
-      key_algorithm: algo,
-      not_before: now.toISOString(),
-      not_after: new Date(now.getTime() + days * 86400000).toISOString(),
-      fingerprint_sha256: fp, public_key_hex: pubKeyHex, kem_public_key_hex: kemPubHex,
-      sans: params.sans || [], key_usage: params.key_usage || [],
-      extended_key_usage: params.extended_key_usage || [],
-    },
-    private_key: { algorithm: algo, key_hex: privKeyHex, bit_length: ({ 'ML-DSA': 2528, 'ML-DSA-65': 2528, 'SPHINCS+': 1088, 'RSA-4096': 4096, 'HYBRID': 3744 } as Record<string, number>)[algo] || 2528 },
-    pqc: pqcMeta, quality_score: shannonEntropy(Buffer.from(pubKeyHex.slice(0, 64), 'hex')), entropy_source: 'CSPRNG',
-    generation_time_ms: 5 + Math.random() * 5,
   }
 }
 
@@ -409,10 +319,6 @@ async function streamFallback(
       }
       break
     }
-    case 'key':
-    case 'generate-key':   result = generateKeyResult(params);        break
-    case 'pki':
-    case 'generate-pki':   result = generatePKIResult(params);        break
     case 'token':
     case 'tokenize': {
       const isFP = params.format_preserving ?? params.formatPreserving ?? false
@@ -597,7 +503,7 @@ async function tryProxyQRNG(
 // Actions that the QRNG Python service handles natively and returns correct
 // structured output for. All other actions use the local structured generators,
 // which may still call the QRNG service internally for raw entropy.
-const QRNG_PROXY_ACTIONS = new Set(['otp', 'key', 'generate-key', 'pki', 'generate-pki', 'seed', 'cloud-seeds'])
+const QRNG_PROXY_ACTIONS = new Set(['otp', 'seed', 'cloud-seeds'])
 
 export async function POST(request: NextRequest) {
   let body: Record<string, unknown>
@@ -606,6 +512,7 @@ export async function POST(request: NextRequest) {
 
   const { action, ...params } = body
   const actionStr = String(action || '')
+  if (isIssuanceAction(actionStr)) return Response.json({ error: ISSUANCE_UNAVAILABLE }, { status: 503 })
 
   // Extract user security settings from the request
   const autoFallback         = params.auto_fallback !== false           // default: true

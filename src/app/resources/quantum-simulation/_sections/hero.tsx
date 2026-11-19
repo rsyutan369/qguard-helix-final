@@ -10,11 +10,10 @@
  */
 
 import React from 'react';
-import { motion } from 'framer-motion';
-import { ShieldAlert, Radio } from 'lucide-react';
-import CybercoreBackground from '@/components/ui/cyberscore-section-hero';
+import { ArrowUpRight, ShieldAlert } from 'lucide-react';
+import { ButtonDot, Chars } from '@/pages/landing-chars';
 import { TRANSITION_MILESTONES, milestoneClock, type MilestoneSeverity } from '@/lib/quantum-sim';
-import { PROVENANCE, QSR, tint } from '../_theme';
+import { PROVENANCE, QSR, qsrThemeVars } from '../_theme';
 import { Cite, ProvenanceBadge } from '../_ui';
 
 const SEVERITY_COLOR: Record<MilestoneSeverity, string> = {
@@ -34,8 +33,8 @@ function CountdownCell({ milestoneId, now }: { milestoneId: string; now: number 
 
   return (
     <div
-      className="min-w-0 flex-1 rounded-xl border px-4 py-3.5 backdrop-blur-sm"
-      style={{ borderColor: tint(accent, 0.22), background: QSR.well }}
+      className="qsr-deadline"
+      style={{ borderColor: QSR.hairline }}
       title={milestone.detail}
     >
       <div className="flex items-center justify-between gap-2">
@@ -62,113 +61,55 @@ function CountdownCell({ milestoneId, now }: { milestoneId: string; now: number 
   );
 }
 
-export interface HeroProps {
-  now: number;
-  animate: boolean;
-  /**
-   * Beam density for the backdrop, from the Performance Manager's tier. Each
-   * beam is an independently animated compositor layer with a box-shadow, so
-   * the count is a real budget rather than a taste decision.
-   */
-  beamCount: number;
-  onEnterRange: () => void;
-}
+const HERO_TITLE = 'Quantum Attack Simulation Range';
+const CONSOLE_THEME = qsrThemeVars('dark');
 
-export default function Hero({ now, animate, beamCount, onEnterRange }: HeroProps) {
+export default function Hero({ now, onEnterRange }: { now: number; onEnterRange: () => void }) {
   return (
-    <header className="qs-cybercore-hero relative overflow-hidden border-b" style={{ borderColor: QSR.hairline }}>
-      {animate && beamCount > 0 && <CybercoreBackground beamCount={beamCount} />}
-
-      <div className="relative z-10 mx-auto max-w-[1500px] px-4 py-14 sm:px-6 md:py-20">
-        <motion.div
-          initial={animate ? { opacity: 0, y: 18 } : false}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
-          className="max-w-4xl"
-        >
-          <div className="flex flex-wrap items-center gap-2.5">
-            <span
-              className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.24em]"
-              style={{ color: QSR.live, borderColor: tint(QSR.live, 0.3), background: tint(QSR.live, 0.08) }}
-            >
-              <Radio className="h-3 w-3" />
-              QGuard Helix · Quantum Range
-            </span>
-            <span className="font-mono text-[10px] uppercase tracking-[0.18em]" style={{ color: QSR.inkMuted }}>
-              FIPS 203 / 204 / 205 · NIST IR 8547 · CNSA 2.0
-            </span>
+    <header className="qsr-hero">
+      <div className="lp-wrap">
+        <div className="qsr-hero__grid">
+          <div className="qsr-hero__copy">
+            <p className="lp-eyebrow">Interactive cryptography lab</p>
+            <h1 className="qsr-hero__title qsr-heading" data-letters="load" aria-label={HERO_TITLE}>
+              <Chars text="Quantum Attack" />{' '}
+              <span className="qsr-hero__accent"><Chars text="Simulation Range" /></span>
+            </h1>
+            <p className="lp-lede">
+              Follow a quantum threat from exposure to mitigation. Run a state-vector simulation, inspect TLS 1.3 records,
+              and measure post-quantum algorithms in your browser.
+            </p>
+            <div className="qsr-hero__actions" data-lp-reveal>
+              <button type="button" onClick={onEnterRange} className="lp-btn lp-btn--primary lp-btn--dot qsr-primary">
+                Enter the range <ButtonDot />
+              </button>
+              <a href="#transition-timeline" className="qsr-hero__link">
+                Transition timeline <ArrowUpRight aria-hidden="true" size={16} />
+              </a>
+            </div>
+            <p className="qsr-hero__note" data-lp-reveal>
+              <ShieldAlert aria-hidden="true" size={16} /> Exercises run on local simulation data.
+            </p>
           </div>
 
-          <h1 className="mt-5 text-4xl font-black leading-[1.03] tracking-tight qsr-heading sm:text-5xl md:text-[64px]">
-            Quantum Attack
-            <br />
-            <span style={{ color: QSR.live }}>Simulation</span> Range
-          </h1>
+          <div className="qsr-deadlines lp-dark" style={CONSOLE_THEME} data-lp-reveal>
+            <div className="lp-console__bar">
+              <h2>Published transition deadlines</h2>
+              <ProvenanceBadge kind="published" compact />
+            </div>
+            {HEADLINE_MILESTONE_IDS.map((id) => <CountdownCell key={id} milestoneId={id} now={now} />)}
+            <p className="qsr-deadlines__foot">Milestones apply according to each source’s scope.</p>
+          </div>
+        </div>
 
-          <p className="mt-6 max-w-2xl text-[15px] leading-relaxed" style={{ color: QSR.inkSoft }}>
-            A working instrument, not an animation. It runs a real state-vector quantum simulator, factors real numbers with
-            Shor's algorithm, performs real ML-KEM key encapsulation in your browser, and builds byte-accurate TLS 1.3 records
-            so you can see exactly which bytes an adversary is recording today.
-          </p>
-
-          <div className="mt-6 flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={onEnterRange}
-              className="inline-flex items-center gap-2 rounded-lg px-5 py-3 font-mono text-[11px] font-bold uppercase tracking-[0.16em] transition-transform hover:scale-[1.02]"
-              style={{ background: QSR.live, color: QSR.onAccent, boxShadow: `0 0 32px ${tint(QSR.live, 0.35)}` }}
-            >
-              Enter the range
-            </button>
-            <span className="inline-flex items-center gap-2 text-[11px]" style={{ color: QSR.inkMuted }}>
-              <ShieldAlert className="h-3.5 w-3.5" style={{ color: QSR.model }} />
-              Simulation only. No live systems are contacted.
-            </span>
-          </div>
-        </motion.div>
-
-        {/* ── Live countdown to published deadlines ─────────────────────── */}
-        <motion.div
-          initial={animate ? { opacity: 0, y: 20 } : false}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.7, delay: 0.15, ease: [0.22, 1, 0.36, 1] }}
-          className="mt-10"
-        >
-          <div className="mb-2.5 flex items-center gap-2">
-            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.24em]" style={{ color: QSR.inkMuted }}>
-              Time remaining on the published transition deadlines
-            </span>
-            <ProvenanceBadge kind="published" compact />
-          </div>
-          <div className="flex flex-col gap-3 sm:flex-row">
-            {HEADLINE_MILESTONE_IDS.map((id) => (
-              <CountdownCell key={id} milestoneId={id} now={now} />
-            ))}
-          </div>
-        </motion.div>
-
-        {/* ── Provenance contract ───────────────────────────────────────── */}
-        <motion.div
-          initial={animate ? { opacity: 0 } : false}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.8, delay: 0.3 }}
-          className="mt-8 rounded-xl border px-4 py-3.5 backdrop-blur-sm"
-          style={{ borderColor: QSR.hairline, background: QSR.well }}
-        >
-          <div className="mb-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.22em]" style={{ color: QSR.inkMuted }}>
-            Every number on this page carries one of these
-          </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            {(Object.keys(PROVENANCE) as Array<keyof typeof PROVENANCE>).map((key) => (
-              <div key={key} className="flex gap-2.5">
-                <ProvenanceBadge kind={key} />
-                <p className="min-w-0 text-[11px] leading-snug" style={{ color: QSR.inkFaint }}>
-                  {PROVENANCE[key].description}
-                </p>
-              </div>
-            ))}
-          </div>
-        </motion.div>
+        <div className="qsr-provenance" aria-label="Evidence sources" data-lp-reveal>
+          {(Object.keys(PROVENANCE) as Array<keyof typeof PROVENANCE>).map((key) => (
+            <div key={key} className="qsr-provenance__item">
+              <ProvenanceBadge kind={key} />
+              <p>{PROVENANCE[key].description}</p>
+            </div>
+          ))}
+        </div>
       </div>
     </header>
   );

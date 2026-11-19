@@ -1,5 +1,11 @@
 # QGuard Helix — Phase 1 MVP Production Deployment
 
+> Updated 2026-11-19: the obsolete DigitalOcean Kubernetes deployment workflow
+> and shared deployment action have been removed at the owner's request.
+> DOKS provisioning, automatic staging/promotion, and automatic rollback described
+> below are historical reference; they are not active GitHub Actions automation.
+> CI still builds and checks the API image.
+
 This folder is the source of truth for deploying QGuard Helix to production.
 It was produced from a full audit of the repository (September 2026) and
 describes what is **implemented in the codebase**, what must be **configured on
@@ -13,8 +19,16 @@ each platform**, and what is **deliberately deferred**.
 | [04-SECURITY-AND-OPERATIONS.md](04-SECURITY-AND-OPERATIONS.md) | Security findings and fixes, CI security gates, observability, backups, disaster recovery, failure behaviour |
 | [05-READINESS-CHECKLIST.md](05-READINESS-CHECKLIST.md) | Production readiness checklist with current status, and the Phase 2+ roadmap |
 | [06-PUBLIC-WEBSITE.md](06-PUBLIC-WEBSITE.md) | The website edition: marketing pages + free Web assessment on Cloudflare Pages, with the public-only API that serves it |
+| [07-CLOUDFLARE-DROPLET.md](07-CLOUDFLARE-DROPLET.md) | Full platform on Cloudflare Pages with the Express API and scanners on a Docker Droplet |
 
 ## Verdict
+
+Apply [the report snapshot schema](../../supabase/report-snapshots.sql) to each
+Supabase project that serves the dashboard before deploying the reporting API.
+The API uses the server-only service role for that same project to append and
+read saved snapshots. The browser sends the signed-in user's bearer token.
+Verify capture, historical download, and access denial from a second account
+with different organization membership after applying the schema.
 
 **The codebase is deployable to the Vercel + Supabase + DigitalOcean Kubernetes
 topology once the platform steps in the runbook are done.** Before this work it

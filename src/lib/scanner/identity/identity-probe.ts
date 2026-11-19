@@ -24,6 +24,7 @@ import {
   type IdentityDiscoveryResult,
   type RawProbe,
 } from './identity-discovery'
+import { requestPublicWebResource } from '../public-scan/public-http'
 
 const PROBE_TIMEOUT_MS = 6000
 const MAX_BODY_BYTES = 512 * 1024
@@ -66,24 +67,18 @@ export function probeOutcome(fetched: FetchedDocument): ProbeOutcome['outcome'] 
 /**
  * Fetch one document.
  *
- * `redirect: 'follow'` is deliberate — identity providers routinely redirect
- * `/.well-known/...` to a regional host — but the response is only accepted as
- * JSON/XML, so an HTML login page returned by a catch-all route is rejected
- * rather than parsed. That rejection is what stops a marketing 200 from
- * becoming an "identity provider".
+ * Public HTTPS redirects support regional identity providers. Only JSON/XML
+ * documents count as discovery evidence.
  */
 async function fetchDocument(url: string, expect: 'json' | 'xml'): Promise<FetchedDocument> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
   try {
-    const response = await fetch(url, {
+    const response = await requestPublicWebResource(url, {
       method: 'GET',
-      headers: {
-        'User-Agent': 'QGuard-Scanner/2.4 (identity-discovery)',
-        Accept: expect === 'json' ? 'application/json' : 'application/samlmetadata+xml, application/xml, text/xml',
-      },
-      signal: controller.signal,
-      redirect: 'follow',
+      accept: expect === 'json' ? 'application/json' : 'application/samlmetadata+xml, application/xml, text/xml',
+      userAgent: 'QGuard-Scanner/2.4 (identity-discovery)',
+      timeoutMs: PROBE_TIMEOUT_MS,
+      bodyLimit: MAX_BODY_BYTES,
+      requireHttps: true,
     })
 
     // 401/403 answered, but refused: the document may exist behind an access
@@ -94,7 +89,7 @@ async function fetchDocument(url: string, expect: 'json' | 'xml'): Promise<Fetch
     if (!response.ok) return { status: response.status, body: null, error: null }
 
     const contentType = String(response.headers.get('content-type') ?? '').toLowerCase()
-    const text = (await response.text()).slice(0, MAX_BODY_BYTES)
+    const text = response.body
 
     if (expect === 'json') {
       // A catch-all SPA route answers 200 with HTML for any path. Parsing that
@@ -115,8 +110,6 @@ async function fetchDocument(url: string, expect: 'json' | 'xml'): Promise<Fetch
     return { status: response.status, body: text, error: null }
   } catch (error) {
     return { status: null, body: null, error: describeFetchError(error) }
-  } finally {
-    clearTimeout(timer)
   }
 }
 
@@ -134,16 +127,16 @@ const NETWORK_CAUSES: Array<[RegExp, string]> = [
 ]
 
 /**
- * undici reports every network failure as the bare message "fetch failed"; the
- * reason lives on `error.cause`. Surfacing it is what makes a failed probe
- * actionable — "TLS certificate has expired" tells the operator what to fix.
+ * Translate direct Node networking errors and wrapped transport errors to
+ * evidence that explains why a probe could not read the document.
  */
 export function describeFetchError(error: unknown): string {
-  const err = error as { name?: string; message?: string; cause?: { code?: string; message?: string } } | null
-  if (err?.name === 'AbortError') return 'Probe timed out'
-  const code = `${err?.cause?.code ?? ''} ${err?.cause?.message ?? ''}`
+  const err = error as { name?: string; code?: string; message?: string; cause?: { code?: string; message?: string } } | null
+  if (err?.name === 'AbortError' || err?.name === 'TimeoutError') return 'Probe timed out'
+  const networkCode = err?.cause?.code ?? err?.code
+  const code = `${networkCode ?? ''} ${err?.cause?.message ?? ''}`
   for (const [pattern, label] of NETWORK_CAUSES) if (pattern.test(code)) return label
-  return err?.cause?.code ? `Network error (${err.cause.code})` : err?.message || 'Probe failed'
+  return networkCode ? `Network error (${networkCode})` : err?.message || 'Probe failed'
 }
 
 function originFor(hostname: string): string {

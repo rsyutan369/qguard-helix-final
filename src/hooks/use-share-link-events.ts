@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/contexts/auth-context'
+import { openAuthenticatedEventStream } from '@/lib/authenticated-event-stream'
 
 /**
  * Real-time security events for vault share links.
@@ -23,41 +24,37 @@ export function useShareLinkEvents() {
   useEffect(() => {
     if (!session?.access_token) return
 
-    let connected = false
-    const url = `/api/v1/vault/share/events?token=${encodeURIComponent(session.access_token)}`
-    const eventSource = new EventSource(url)
+    const token = session.access_token
+    let closeStream: (() => void) | undefined
+    let retry: ReturnType<typeof setTimeout> | undefined
 
-    const handleSecurityEvent = (event: MessageEvent) => {
+    const handleSecurityEvent = (payload: string) => {
       try {
-        const data = JSON.parse(event.data) as ShareLinkSecurityEvent
+        const data = JSON.parse(payload) as ShareLinkSecurityEvent
         setEvents((prev) => [data, ...prev])
       } catch (err) {
         console.error('Failed to parse share security event:', err)
       }
     }
 
-    eventSource.addEventListener('connected', () => {
-      connected = true
-    })
-    eventSource.addEventListener('security_alert', handleSecurityEvent)
-    eventSource.addEventListener('failed_attempt', handleSecurityEvent)
-    eventSource.addEventListener('link_destroyed', handleSecurityEvent)
-
-    eventSource.onerror = (err) => {
-      if (!connected) {
-        if (import.meta.env.DEV) {
-          console.debug('Share security event stream unavailable; continuing without share alerts.', err)
-        }
-        eventSource.close()
-        return
-      }
-      if (import.meta.env.DEV) {
-        console.debug('Share security event stream interrupted; browser will retry.', err)
-      }
+    const connect = (attempt = 0) => {
+      closeStream = openAuthenticatedEventStream('/api/v1/vault/share/events', token, {
+        onOpen: () => { attempt = 0 },
+        onEvent: (name, data) => {
+          if (name === 'security_alert' || name === 'failed_attempt' || name === 'link_destroyed') {
+            handleSecurityEvent(data)
+          }
+        },
+        onError: () => {
+          retry = setTimeout(() => connect(attempt + 1), Math.min(60_000, 5_000 * 2 ** Math.min(attempt, 4)))
+        },
+      })
     }
+    connect()
 
     return () => {
-      eventSource.close()
+      closeStream?.()
+      clearTimeout(retry)
     }
   }, [session?.access_token])
 

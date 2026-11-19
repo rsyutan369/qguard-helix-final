@@ -14,6 +14,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+import { operationHref } from './_planner-guide';
 import {
   AlertTriangle,
   ArrowDown,
@@ -94,7 +96,7 @@ const POSTURE_TONE: Record<string, string> = { pqc: EMERALD, hybrid: AMBER, vuln
 function statusTone(status: string): string {
   const s = status.toLowerCase();
   if (s.includes('fail')) return RED;
-  if (s.includes('complete')) return EMERALD;
+  if (s.includes('complete')) return CYAN;
   if (s.includes('progress') || s.includes('validat')) return BLUE;
   if (s.includes('queue') || s.includes('plan')) return GOLD;
   return SLATEISH;
@@ -158,26 +160,18 @@ function AssetCard({
   active,
   onSelect,
   onQueue,
+  busy,
 }: {
   asset: AssetSummaryRecord;
   active: boolean;
   onSelect: () => void;
   onQueue: () => void;
+  busy: boolean;
 }) {
   const postureTone = POSTURE_TONE[asset.posture] || SLATEISH;
   return (
-    <div
-      role="option"
-      aria-selected={active}
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
-      className={`group cursor-pointer rounded-xl border p-3 transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/60 ${
+    <article
+      className={`group rounded-xl border p-3 transition-colors duration-200 ${
         active
           ? 'border-cyan-400/60 bg-cyan-400/[0.09] shadow-[0_0_0_1px_rgba(34,211,238,0.25),0_10px_30px_-12px_rgba(34,211,238,0.5)]'
           : 'border-white/8 bg-white/[0.025] hover:border-cyan-400/35 hover:bg-white/[0.045]'
@@ -185,10 +179,10 @@ function AssetCard({
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="flex items-center gap-1.5">
+          <button type="button" onClick={onSelect} aria-pressed={active} className="flex min-h-11 max-w-full items-center gap-1.5 text-left hover:underline">
             <span className="truncate text-[13px] font-bold text-white/90">{asset.name}</span>
             {asset.internetFacing ? <Globe className="h-3 w-3 shrink-0 text-orange-300" aria-label="Internet-facing" /> : null}
-          </div>
+          </button>
           <div className="truncate text-[10px] text-white/45">
             {asset.type}
             {asset.hostname && asset.hostname !== 'Evidence Not Available' ? ` · ${asset.hostname}` : ''}
@@ -201,8 +195,8 @@ function AssetCard({
             event.stopPropagation();
             onQueue();
           }}
-          disabled={asset.queued}
-          className={`shrink-0 rounded-md border px-1.5 py-1 text-[9px] font-black uppercase transition ${
+          disabled={asset.queued || !asset.hasEvidence || busy}
+          className={`min-h-11 shrink-0 rounded-md border px-2 text-[10px] font-bold transition ${
             asset.queued
               ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-300'
               : 'border-white/12 bg-black/25 text-white/50 hover:border-cyan-400/50 hover:text-cyan-200'
@@ -231,7 +225,11 @@ function AssetCard({
         </div>
         <div>
           <div className="flex items-center justify-between text-[9px] text-white/40">
-            <span>Risk</span>
+            {/* The Quantum Readiness Engine's per-asset risk — the figure the QR
+                pages and reports show. The Asset Inventory lists the SCANNER's
+                risk for the same asset under that name; they are two
+                measurements, so each is labelled with its source. */}
+            <span title="Quantum Readiness Engine risk for this asset (0–100, lower is better). The Asset Inventory shows the scanner's own risk score, a separate measurement.">QR risk</span>
             <span className="font-mono" style={{ color: riskTone(asset.riskScore) }}>{integerFmt(asset.riskScore)}</span>
           </div>
           <MiniBar value={asset.riskScore} tone={riskTone(asset.riskScore)} />
@@ -249,7 +247,7 @@ function AssetCard({
         <span className="truncate">{asset.cryptoPostureSummary}</span>
         <span className="shrink-0 pl-2">{asset.estimatedDurationLabel}</span>
       </div>
-    </div>
+    </article>
   );
 }
 
@@ -271,6 +269,12 @@ export function AssetSelectorRail({
   onApplyRecommended,
   onDispatchQueue,
   busy,
+  tab,
+  page,
+  pageSize,
+  onPage,
+  loadError,
+  onResetFilters,
 }: {
   assets: AssetSummaryRecord[];
   total: number;
@@ -289,13 +293,23 @@ export function AssetSelectorRail({
   onApplyRecommended: () => void;
   onDispatchQueue: () => void;
   busy: string | null;
+  tab: 'assets' | 'queue';
+  page: number;
+  pageSize: number;
+  onPage: (page: number) => void;
+  loadError: string | null;
+  onResetFilters: () => void;
 }) {
-  const [tab, setTab] = useState<'assets' | 'queue'>('assets');
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(720);
   const [rowHeight, setRowHeight] = useState(FALLBACK_ROW_HEIGHT);
   const listRef = useRef<HTMLDivElement | null>(null);
   const measureRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = 0;
+    setScrollTop(0);
+  }, [filters, page]);
 
   useEffect(() => {
     const node = listRef.current;
@@ -348,7 +362,7 @@ export function AssetSelectorRail({
     // than the screen would push the last cards below the fold while the panel
     // clipped them. On xl the rail sticks and spans the viewport minus its own
     // top/bottom inset; below xl it is a bounded, self-scrolling column.
-    <Panel className="h-[calc(100dvh-2rem)] min-h-[380px] overflow-hidden xl:sticky xl:top-4">
+    <Panel className="h-[min(72dvh,48rem)] min-h-[26rem] overflow-hidden xl:sticky xl:top-4">
       {/*
         Panel renders its children inside its own wrapper div, so the flex column
         has to live HERE — putting `flex flex-col` on Panel itself leaves these
@@ -356,23 +370,8 @@ export function AssetSelectorRail({
         grows past the panel and gets clipped by its overflow-hidden.
       */}
       <div className="flex h-full min-h-0 flex-col">
-      {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-white/8 p-2">
-        {([
-          ['assets', `Assets ${totalUnfiltered ? `(${integerFmt(totalUnfiltered)})` : ''}`],
-          ['queue', `Queue ${queue.length ? `(${queue.length})` : ''}`],
-        ] as Array<['assets' | 'queue', string]>).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setTab(key)}
-            className={`flex-1 rounded-lg px-3 py-2 text-[11px] font-black uppercase tracking-wide transition ${
-              tab === key ? 'bg-cyan-400/12 text-cyan-200' : 'text-white/45 hover:text-white/75'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+      <div className="border-b border-white/8 px-4 py-3">
+        <h2 className="text-sm font-semibold">{tab === 'assets' ? 'Asset findings' : `Migration queue (${queue.length})`}</h2>
       </div>
 
       {tab === 'assets' ? (
@@ -391,7 +390,7 @@ export function AssetSelectorRail({
             </div>
             <div className="grid grid-cols-2 gap-2">
               {([
-                ['posture', ['all', 'vulnerable', 'hybrid', 'pqc'], 'Posture'],
+                ['posture', ['all', 'needs-migration', 'vulnerable', 'hybrid', 'pqc'], 'Posture'],
                 ['priority', ['all', 'critical', 'high', 'medium', 'low'], 'Priority'],
                 ['status', ['all', 'not started', 'queued', 'in progress', 'validating', 'completed', 'failed'], 'Status'],
                 ['sort', ['priority', 'risk', 'readiness', 'effort', 'name'], 'Sort'],
@@ -406,7 +405,7 @@ export function AssetSelectorRail({
                   >
                     {options.map((option) => (
                       <option key={option} value={option} className="bg-[#0b1120]">
-                        {option === 'all' ? `${label}: All` : `${label}: ${option.replace(/\b\w/g, (c) => c.toUpperCase())}`}
+                        {option === 'all' ? `${label}: All` : `${label}: ${option.replaceAll('-', ' ').replace(/\b\w/g, (c) => c.toUpperCase())}`}
                       </option>
                     ))}
                   </select>
@@ -445,10 +444,12 @@ export function AssetSelectorRail({
             ref={listRef}
             onScroll={(event) => setScrollTop((event.target as HTMLDivElement).scrollTop)}
             className="min-h-0 flex-1 overflow-y-auto p-2"
-            role="listbox"
+            role="region"
             aria-label="Discovered assets"
           >
-            {loading && !assets.length ? (
+            {loadError && !assets.length ? (
+              <EmptyState label="Could not load asset findings." hint={loadError} />
+            ) : loading && !assets.length ? (
               <div className="space-y-2">
                 {[0, 1, 2, 3, 4].map((index) => <SkeletonBlock key={index} className="h-28" />)}
               </div>
@@ -469,32 +470,37 @@ export function AssetSelectorRail({
                         active={asset.id === selectedId}
                         onSelect={() => onSelect(asset.id)}
                         onQueue={() => onQueue(asset.id)}
+                        busy={Boolean(busy)}
                       />
                     </div>
                   ))}
                 </div>
               </div>
             ) : (
-              <EmptyState label="No assets match these filters." hint="Clear the filters, or run a discovery scan to populate the estate." />
+              <div className="space-y-2 p-2">
+                <EmptyState label={totalUnfiltered ? 'No assets match these filters.' : 'No discovered assets yet.'} hint={totalUnfiltered ? 'Change a filter to see more assets.' : 'Run a discovery scan to populate your inventory.'} />
+                {totalUnfiltered > 0 && <button className="mp-button" onClick={onResetFilters}>Clear filters</button>}
+              </div>
             )}
           </div>
-          <div className="border-t border-white/8 px-3 py-2 text-[10px] text-white/35">
-            Showing {integerFmt(Math.min(assets.length, total))} of {integerFmt(total)} matching · {integerFmt(totalUnfiltered)} discovered
+          <div className="border-t border-white/8 px-3 py-2 text-xs text-[var(--qg-dashboard-text-muted)]">
+            {total > 0 && <span>{page * pageSize + 1}–{Math.min(page * pageSize + assets.length, total)} of {integerFmt(total)} matching</span>}
+            {total > pageSize && <div className="mt-2 flex gap-2"><button className="mp-button" disabled={page === 0} onClick={() => onPage(page - 1)}>Previous</button><button className="mp-button" disabled={(page + 1) * pageSize >= total} onClick={() => onPage(page + 1)}>Next</button></div>}
           </div>
         </>
       ) : (
         /* Queue tab */
         <>
           <div className="flex flex-wrap gap-2 border-b border-white/8 p-3">
-            <HeaderButton icon={ListOrdered} onClick={onApplyRecommended}>
+            <button className="mp-button" onClick={onApplyRecommended} disabled={Boolean(busy) || queue.length < 2}>
               {busy === 'prioritize' ? 'Sorting…' : 'Apply Recommended Order'}
-            </HeaderButton>
-            <PrimaryButton icon={Rocket} onClick={onDispatchQueue} disabled={!queue.length || busy === 'dispatch'}>
-              {busy === 'dispatch' ? 'Dispatching…' : `Migrate Queue (${queue.length})`}
-            </PrimaryButton>
+            </button>
+            <button className="mp-button" onClick={onDispatchQueue} disabled={!queue.length || Boolean(busy)}>
+              {busy === 'dispatch' ? 'Dispatching…' : 'Review queue execution'}
+            </button>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
-            {queue.length ? (
+            {loadError && !queue.length ? <EmptyState label="Could not load migration queue." hint={loadError} /> : queue.length ? (
               <div className="space-y-2">
                 {queue.map((entry, index) => (
                   <div key={entry.assetId} className="rounded-xl border border-white/8 bg-white/[0.025] p-3">
@@ -669,8 +675,8 @@ export function AssetPortfolioOverview({
         </div>
         <p className="mt-3 text-[10px] leading-snug text-white/35">
           The three posture rows are the strict invariant — the same engine derives them for both columns, so they must be
-          identical. “Assets assessed” and component counts are measured on two bases (exact tenant-wide count and
-          scanner-expanded CBOM view versus rows bound to individual assets); both figures are shown rather than silently
+          identical. Component counts use the CBOM&rsquo;s own rule on both sides; they differ only when the CBOM holds
+          components that are not attached to an asset record, and then both figures are shown rather than silently
           reconciled.
         </p>
       </Panel>
@@ -705,6 +711,7 @@ export function AssetDossierView({
   onDispatch,
   onClear,
   busy,
+  children,
 }: {
   asset: AssetDossier;
   position: { recommendedRank: number | null; totalRanked: number; rationale: string; riskPercentile: number } | null;
@@ -714,6 +721,7 @@ export function AssetDossierView({
   onDispatch: () => void;
   onClear: () => void;
   busy: string | null;
+  children: ReactNode;
 }) {
   const changed = useMemo(() => new Set(changedFields), [changedFields]);
   const postureTone = POSTURE_TONE[asset.posture] || SLATEISH;
@@ -742,7 +750,8 @@ export function AssetDossierView({
               </div>
               <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[10px] text-white/35">
                 <span className="inline-flex items-center gap-1 font-mono"><Fingerprint className="h-3 w-3" />{asset.id}</span>
-                <span>Last evidence {longDate(asset.lastEvidenceAt)}</span>
+                <span>Discovered {longDate(asset.discoveredAt)}</span>
+                <span>Last assessed {longDate(asset.lastEvidenceAt)}</span>
                 {position?.recommendedRank ? <span>Recommended rank #{position.recommendedRank} of {position.totalRanked}</span> : null}
                 {asset.tags.map((tag) => <Chip key={tag} tone={TEAL}>{tag}</Chip>)}
               </div>
@@ -752,8 +761,8 @@ export function AssetDossierView({
               <HeaderButton icon={ListOrdered} onClick={onQueue} active={asset.queued}>
                 {asset.queued ? 'In queue' : 'Queue for Migration'}
               </HeaderButton>
-              <PrimaryButton icon={Rocket} onClick={onDispatch} disabled={busy === 'dispatch' || !asset.hasEvidence}>
-                {busy === 'dispatch' ? 'Sending…' : 'Send to Live Migration'}
+              <PrimaryButton icon={Rocket} onClick={onDispatch} disabled={Boolean(busy) || !asset.hasEvidence}>
+                {busy === 'dispatch' ? 'Sending…' : 'Review execution'}
               </PrimaryButton>
             </div>
           </div>
@@ -770,6 +779,14 @@ export function AssetDossierView({
           ) : null}
         </div>
 
+      </Panel>
+
+      {children}
+
+      <details id="asset-evidence" className="mp-disclosure">
+        <summary>Technical evidence and operational details <ChevronRight size={16} aria-hidden="true" /></summary>
+        <div className="mt-3 space-y-4">
+        <Panel>
         {/* Headline scores */}
         <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-[auto_1fr]">
           <div className="flex items-center gap-5">
@@ -842,7 +859,7 @@ export function AssetDossierView({
                   {asset.algorithms.map((algorithm) => {
                     const tone = algorithm.classification === 'vulnerable' ? RED : algorithm.classification === 'pqc' ? EMERALD : algorithm.classification === 'hybrid' ? AMBER : SLATEISH;
                     return (
-                      <tr key={algorithm.algorithm} className="border-b border-white/5 align-top text-white/70">
+                      <tr key={`${algorithm.algorithm}:${algorithm.category}`} className="border-b border-white/5 align-top text-white/70">
                         <td className="py-2 font-medium text-white/85">
                           {algorithm.algorithm}
                           {algorithm.keySizes.length ? <span className="ml-1 font-mono text-[10px] text-white/40">{algorithm.keySizes.join('/')}-bit</span> : null}
@@ -886,7 +903,7 @@ export function AssetDossierView({
                       <span className="text-[11px] font-bold text-white/85">{finding.title}</span>
                       <Chip tone={tone}>{finding.severity}</Chip>
                     </div>
-                    <div className="mt-1 line-clamp-2 text-[10px] text-white/45">{finding.description}</div>
+                    <div className="mt-1 text-xs leading-relaxed text-white/65">{finding.description}</div>
                     <div className="mt-1 flex items-center justify-between text-[9px] text-white/30">
                       <span>{finding.source}{finding.instances > 1 ? ` · ${finding.instances} instances` : ''}</span>
                       <span>{longDate(finding.detectedAt)}</span>
@@ -1144,7 +1161,7 @@ export function AssetDossierView({
             <Stat label="Migration jobs" value={integerFmt(asset.jobs.length)} tone={CYAN} />
             <Stat label="Progress" value={percentLabel(asset.migrationProgressPct)} tone={statusTone(asset.migrationStatus)} />
             <Stat label="Validation records" value={integerFmt(asset.validation.records)} tone={VIOLET} hint={asset.validation.lastStatus} />
-            <Stat label="Last validated" value={asset.validation.lastAt ? longDate(asset.validation.lastAt) : '—'} tone={TEAL} />
+            <Stat label="Latest validation check" value={asset.validation.lastAt ? longDate(asset.validation.lastAt) : '—'} tone={TEAL} />
           </div>
           <p className="mb-3 text-[11px] text-white/50">
             {asset.migrationStatusDetail}
@@ -1160,8 +1177,9 @@ export function AssetDossierView({
                 return (
                   <div key={job.id} className="grid grid-cols-[1fr_110px_auto] items-center gap-3 rounded-lg border border-white/8 bg-white/[0.025] p-2.5 text-xs">
                     <div className="min-w-0">
-                      <div className="truncate font-medium text-white/80">{job.jobType}</div>
+                      <Link className="font-medium text-[var(--qg-accent-strong)] hover:underline" to={operationHref(job)}>{job.jobType}</Link>
                       <div className="truncate text-[10px] text-white/40">→ {job.targetAlgorithm}</div>
+                      {job.error && <p className="break-words text-xs text-[var(--mp-risk)]">{job.error}</p>}
                     </div>
                     <MiniBar value={job.progress} tone={tone} />
                     <Chip tone={tone}>{job.status}</Chip>
@@ -1191,6 +1209,8 @@ export function AssetDossierView({
           </p>
         </DossierPanel>
       </section>
+        </div>
+      </details>
     </div>
   );
 }

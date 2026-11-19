@@ -8,9 +8,10 @@
  *
  * Data: /api/v1/sandbox (snapshot + SSE + Supabase realtime). Simulations
  * execute exclusively against the metadata-only digital twin — production is
- * never modified. The Production Approval Gate records governed decisions.
+ * never modified. The Analytical Review records governed decisions.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { openAuthenticatedEventStream } from '@/lib/authenticated-event-stream'
 import type { LucideIcon } from 'lucide-react'
 import {
   Activity,
@@ -141,19 +142,19 @@ const DEFAULT_PIPELINE: PipelineStage[] = [
   { id: 'compliance_validation', label: 'Compliance Validation', detail: '', at: 86 },
   { id: 'ai_risk_analysis', label: 'AI Risk Analysis', detail: '', at: 93 },
   { id: 'executive_approval', label: 'Executive Approval', detail: '', at: 100, gate: true },
-  { id: 'production_ready', label: 'Production Ready', detail: '', at: 100, gate: true },
+  { id: 'production_ready', label: 'Planner review', detail: '', at: 100, gate: true },
 ]
 
 const EMPTY: SandboxSnapshot = {
   generatedAt: new Date().toISOString(),
-  summary: { totalSimulations: 0, running: 0, completed: 0, failed: 0, queued: 0, paused: 0, totalWorkflows: 0, actualMigrations: 0, remediationWorkflows: 0, runningWorkflows: 0, completedWorkflows: 0, failedWorkflows: 0, queuedWorkflows: 0, pausedWorkflows: 0, blockedWorkflows: 0, averageWorkflowProgress: 0, backgroundEngine: 'idle', lastMigrationEventAt: null, totalAssets: 0, vulnerableAssets: 0, criticalExposures: 0, highExposures: 0, mediumExposures: 0, gradedObservations: 0, gradedObservationsSource: 'none', openVulnerabilities: 0, pqcReadiness: 0, hasReadinessBaseline: false, quantumRiskScore: null, quantumRiskLevel: 'Not assessed', quantumRiskSource: 'not-assessed', complianceScore: 0, expiringCerts: 0, nonPqcCerts: 0, certsNeedingRotation: 0, lastScanAt: null, completionRate: 0, workflowCompletionRate: 0 },
+  summary: { totalSimulations: 0, running: 0, completed: 0, failed: 0, queued: 0, paused: 0, totalWorkflows: 0, actualMigrations: 0, remediationWorkflows: 0, runningWorkflows: 0, completedWorkflows: 0, failedWorkflows: 0, queuedWorkflows: 0, pausedWorkflows: 0, blockedWorkflows: 0, averageWorkflowProgress: 0, backgroundEngine: 'idle', lastMigrationEventAt: null, totalAssets: 0, vulnerableAssets: 0, criticalExposures: 0, highExposures: 0, mediumExposures: 0, gradedObservations: 0, gradedObservationsSource: 'none', openVulnerabilities: 0, pqcReadiness: 0, hasReadinessBaseline: false, quantumRiskScore: null, quantumRiskLevel: 'Not assessed', quantumRiskSource: 'not-assessed', complianceScore: null, expiringCerts: 0, nonPqcCerts: 0, certsNeedingRotation: 0, lastScanAt: null, completionRate: 0, workflowCompletionRate: 0 },
   simulations: [],
   history: [],
   workflows: [],
   riskFactors: [],
   recommendations: [],
   complianceItems: [],
-  complianceScore: 0,
+  complianceScore: null,
   workflowPhases: [],
   pqcStack: [],
   recentLogs: [],
@@ -183,7 +184,7 @@ function historyRiskScore(sim: Simulation) {
   return Math.max(0, Math.min(100, Math.round(100 - riskPenalty - statusPenalty + sim.progress * 0.35)))
 }
 
-function deriveHistory(simulations: Simulation[], complianceScore = 0): SimulationHistoryRow[] {
+function deriveHistory(simulations: Simulation[]): SimulationHistoryRow[] {
   return simulations.map((sim) => {
     const duration = historyDuration(sim.startedAt || sim.createdAt, sim.completedAt, sim.updatedAt)
     return {
@@ -195,7 +196,7 @@ function deriveHistory(simulations: Simulation[], complianceScore = 0): Simulati
       assetType: sim.assetType,
       assets: sim.assetName && sim.assetName !== 'Unknown Asset' ? 1 : 0,
       riskScore: historyRiskScore(sim),
-      complianceScore: Math.max(0, Math.min(100, Math.round((complianceScore + (sim.status === 'completed' ? 100 : sim.progress || 0)) / 2))),
+      complianceScore: null,
       status: sim.status,
       durationMs: duration.durationMs,
       duration: duration.duration,
@@ -386,7 +387,6 @@ function useSandbox() {
   const [notice, setNotice] = useState<OperatorNotice | null>(null)
   const [pendingAction, setPendingAction] = useState<string | null>(null)
   const [sseActive, setSseActive] = useState(false)
-  const esRef = useRef<EventSource | null>(null)
   const lastGeneratedAtRef = useRef(0)
   const lastFingerprintRef = useRef<string | null>(null)
   const userId = user?.id
@@ -408,7 +408,7 @@ function useSandbox() {
       setData({
         ...snapshot,
         simulations,
-        history: Array.isArray(snapshot.history) ? snapshot.history : deriveHistory(simulations, snapshot.complianceScore || snapshot.summary?.complianceScore || 0),
+        history: Array.isArray(snapshot.history) ? snapshot.history : deriveHistory(simulations),
         workflows: Array.isArray(snapshot.workflows) ? snapshot.workflows : simulations,
       })
     }
@@ -465,34 +465,60 @@ function useSandbox() {
   // Initial fetch
   useEffect(() => { if (token && user) fetchSnapshot() }, [token, user, fetchSnapshot])
 
-  // SSE connection
+  // Live stream. Read with fetch() so the bearer token travels in the
+  // Authorization header: EventSource cannot set headers, which had put the
+  // access token in the URL (`?token=`) — and so into browser history, proxy
+  // logs and server access logs. The header also lets the server see the
+  // token's expiry and end the stream cleanly so we reconnect with a fresh one.
   useEffect(() => {
-    if (!token) return
+    if (!token || !userId) return
     let cancelled = false
     let retry: ReturnType<typeof setTimeout> | undefined
-    const connect = () => {
-      if (cancelled) return
-      const es = new EventSource(`/api/v1/sandbox/stream?token=${encodeURIComponent(token)}`)
-      esRef.current = es
-      es.onopen = () => { if (!cancelled) setSseActive(true) }
-      es.onerror = () => { es.close(); if (cancelled) return; setSseActive(false); if (retry) clearTimeout(retry); retry = setTimeout(connect, 12000) }
-      es.addEventListener('sandbox-update', (e) => {
-        if (cancelled) return
+    let close: (() => void) | null = null
+    let attempt = 0
+
+    const onEvent = (name: string, raw: string) => {
+      if (cancelled || scopeRef.current !== userId) return
+      if (name === 'sandbox-update') {
         try {
-          const d = JSON.parse(e.data)
-          applySnapshot(d)
+          applySnapshot(JSON.parse(raw))
+          attempt = 0
+          setSseActive(true)
           setLoading(false)
           setError(null)
-        } catch { /* skip */ }
-      })
-      es.addEventListener('sandbox-update-error', (e) => {
-        if (cancelled) return
-        try { setError(JSON.parse(e.data).message || 'Sandbox update failed') } catch { /* keep last good snapshot */ }
+        } catch { /* malformed frame — keep the current snapshot */ }
+      } else if (name === 'sandbox-update-unchanged') {
+        // The server re-checked and nothing changed: the stream is healthy and
+        // any earlier failure is over.
+        attempt = 0
+        setSseActive(true)
+        setError(null)
+      } else if (name === 'sandbox-update-error') {
+        try { setError(JSON.parse(raw).message || 'Sandbox update failed') } catch { setError('Sandbox update failed') }
+      }
+    }
+
+    const connect = () => {
+      if (cancelled) return
+      close = openAuthenticatedEventStream('/api/v1/sandbox/stream', token, {
+        onEvent,
+        onError: () => {
+          close = null
+          if (cancelled) return
+          setSseActive(false)
+          // Keep the page current over REST while the stream is down.
+          void fetchSnapshot()
+          attempt += 1
+          const delay = Math.min(30_000, 2_000 * 2 ** Math.min(attempt - 1, 4))
+          if (retry) clearTimeout(retry)
+          retry = setTimeout(connect, delay)
+        },
       })
     }
+
     connect()
-    return () => { cancelled = true; if (retry) clearTimeout(retry); esRef.current?.close(); esRef.current = null; setSseActive(false) }
-  }, [token, applySnapshot])
+    return () => { cancelled = true; close?.(); if (retry) clearTimeout(retry); setSseActive(false) }
+  }, [token, userId, applySnapshot, fetchSnapshot])
 
   // Supabase realtime. Refetches are debounced: while a simulation runs, the
   // engine updates migration_jobs every couple of seconds, and refetching on
@@ -611,7 +637,7 @@ function useSandbox() {
     }
   }, [token, fetchSnapshot, applySnapshot, showNotice])
 
-  // Production Approval Gate decision — records the governed decision with
+  // Analytical Review decision — records the governed decision with
   // audit evidence server-side. Never mutates production systems.
   const approveSimulation = useCallback(async (jobId: string, decision: 'approve' | 'reject' | 'request_review', note?: string) => {
     if (!token) return
@@ -627,7 +653,7 @@ function useSandbox() {
       if (!response.ok) throw new Error(payload?.error?.message || 'Failed to record approval decision')
       applySnapshot(payload?.data?.snapshot)
       showNotice(decision === 'reject' ? 'info' : 'success',
-        decision === 'approve' ? 'Simulation approved for production planning — decision recorded with audit evidence.'
+        decision === 'approve' ? 'Analytical review recorded.'
         : decision === 'reject' ? 'Simulation rejected — decision recorded with audit evidence.'
         : 'Review requested — decision recorded with audit evidence.')
       await fetchSnapshot()
@@ -783,7 +809,7 @@ function HandoffTerminalConsole({
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   PRODUCTION APPROVAL GATE BANNER
+   ANALYTICAL REVIEW BANNER
    ═══════════════════════════════════════════════════════════════════════════ */
 
 function ApprovalGateBanner({ gate, pendingAction, onDecision, onExport, exportPending }: {
@@ -793,8 +819,8 @@ function ApprovalGateBanner({ gate, pendingAction, onDecision, onExport, exportP
   onExport: () => void
   exportPending: boolean
 }) {
-  const statusStyles = gate.simulationStatus === 'PASS'
-    ? { border: 'border-emerald-500/30', bg: 'bg-emerald-500/[0.04]', text: 'text-emerald-300', icon: ShieldCheck }
+  const statusStyles = gate.simulationStatus === 'MODELED'
+    ? { border: 'border-violet-400/30', bg: 'bg-violet-500/[0.04]', text: 'text-violet-300', icon: BookOpen }
     : gate.simulationStatus === 'FAILED'
       ? { border: 'border-red-500/30', bg: 'bg-red-500/[0.04]', text: 'text-red-300', icon: ShieldAlert }
       : { border: 'border-sky-500/25', bg: 'bg-sky-500/[0.03]', text: 'text-sky-300', icon: ShieldQuestion }
@@ -811,11 +837,10 @@ function ApprovalGateBanner({ gate, pendingAction, onDecision, onExport, exportP
           </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-sm font-black uppercase tracking-wider text-white/85">Production Approval Gate</h2>
+              <h2 className="text-sm font-black uppercase tracking-wider text-white/85">Analytical Review</h2>
               <Pill className={cn('text-[11px]', statusStyles.border, statusStyles.bg, statusStyles.text)}>
                 Simulation {gate.simulationStatus}
               </Pill>
-              {gate.productionReady && <Pill className="border-emerald-500/30 bg-emerald-500/10 text-emerald-300">PRODUCTION READY</Pill>}
             </div>
             <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-white/55">{gate.aiRecommendation}</p>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -838,12 +863,12 @@ function ApprovalGateBanner({ gate, pendingAction, onDecision, onExport, exportP
           <div className="flex flex-wrap gap-2">
             <ActionBtn
               icon={ThumbsUp}
-              label={primary && pendingAction === `${primary.id}:approval:approve` ? 'Approving…' : 'Approve for Production'}
+              label={primary && pendingAction === `${primary.id}:approval:approve` ? 'Recording…' : 'Accept analytical review'}
               variant="success"
-              disabled={!primary || gate.simulationStatus !== 'PASS' || pendingAction !== null}
+              disabled={!primary || gate.simulationStatus !== 'MODELED' || pendingAction !== null}
               onClick={() => {
                 if (!primary) return
-                if (window.confirm(`Approve "${primary.name}" for production planning?\n\nThis records a governed decision with audit evidence. No production system is modified — execution happens through the operational migration workflow.`)) {
+                if (window.confirm(`Approve "${primary.name}" for analytical review?\n\nThis records your review of a modeled scenario.`)) {
                   void onDecision(primary.id, 'approve')
                 }
               }}
@@ -1235,8 +1260,8 @@ function WorkflowQueueRow({
         <div>Updated {relTime(workflow.updatedAt)}</div>
       </div>
       <div className="flex flex-wrap gap-2 lg:justify-end">
-        {rollbackEligible && <ActionBtn icon={RotateCcw} label={busy('rollback') ? 'Rolling Back' : 'Rollback'} onClick={() => onAction(workflow.id, 'rollback')} disabled={busy('rollback')} variant="danger" small />}
-        <ActionBtn icon={Save} label={busy('snapshot') ? 'Capturing' : 'Snapshot'} onClick={() => onAction(workflow.id, 'snapshot')} disabled={busy('snapshot')} small />
+        {workflow.isSandbox && rollbackEligible && <ActionBtn icon={RotateCcw} label={busy('rollback') ? 'Running model' : 'Model rollback'} onClick={() => onAction(workflow.id, 'rollback')} disabled={busy('rollback')} variant="danger" small />}
+        {workflow.isSandbox && <ActionBtn icon={Save} label={busy('snapshot') ? 'Capturing' : 'Model checkpoint'} onClick={() => onAction(workflow.id, 'snapshot')} disabled={busy('snapshot')} small />}
         <ActionBtn icon={Eye} label="Details" onClick={() => onDetails(workflow)} small />
       </div>
     </div>
@@ -1555,6 +1580,7 @@ export default function MigrationSandbox() {
           fill: var(--qg-dashboard-text-soft) !important;
         }
       `}</style>
+      <div className="border-b border-white/10 px-4 py-3 text-sm"><a className="font-semibold text-[var(--qg-accent-strong)] underline" href="/dashboard/migration-sandbox">Open the cryptographic lab</a><p className="mt-1 text-[var(--qg-dashboard-text-muted)]">Analytical models and historical records can inform planning. Measured primitive and TLS results are recorded in the lab.</p></div>
       <SimulationDetailsModal simulation={selectedSimulation} onClose={closeDetails} onAction={doAction} onApproval={approveSimulation} pendingAction={pendingAction} pipeline={pipeline} />
       {notice && (
         <div className={cn(
@@ -1576,8 +1602,8 @@ export default function MigrationSandbox() {
                 <FlaskConical className="h-5 w-5 text-gold" />
               </div>
               <div>
-                <h1 className="text-xl font-black tracking-tight text-white lg:text-2xl">Migration Sandbox</h1>
-                <p className="text-[11px] font-medium text-white/40">Enterprise Digital Twin · Post-Quantum Migration Simulation Platform</p>
+                <h1 className="text-xl font-black tracking-tight text-white lg:text-2xl">Migration Sandbox · Analytical workspace</h1>
+                <p className="text-[11px] font-medium text-white/40">Level 3 · Analytical simulation and recorded history</p>
               </div>
             </div>
           </div>
@@ -1757,7 +1783,7 @@ export default function MigrationSandbox() {
             {/* ─── Executive Command Metrics ────────────────────────────────── */}
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
               <MetricTile label="Migration Confidence" value={pct(data.sophia?.migrationConfidencePct ?? 0)} detail={data.sophia?.verdict === 'ready' ? 'Evidence-backed' : data.sophia?.verdict === 'at_risk' ? 'Blockers present' : 'Building evidence'} icon={Target} color={(data.sophia?.migrationConfidencePct ?? 0) >= 70 ? GREEN : (data.sophia?.migrationConfidencePct ?? 0) >= 45 ? GOLD : RED} />
-              <MetricTile label="Production Readiness" value={data.approvalGate?.simulationStatus ?? 'PENDING'} detail={data.approvalGate?.productionReady ? 'Approved + gates pass' : `${data.approvalGate?.counts.approved ?? 0} approval(s)`} icon={ShieldCheck} color={data.approvalGate?.simulationStatus === 'PASS' ? GREEN : data.approvalGate?.simulationStatus === 'FAILED' ? RED : BLUE} />
+              <MetricTile label="Analytical review" value={data.approvalGate?.simulationStatus ?? 'PENDING'} detail={`${data.approvalGate?.counts.approved ?? 0} accepted reviews`} icon={ShieldCheck} color={data.approvalGate?.simulationStatus === 'MODELED' ? GREEN : data.approvalGate?.simulationStatus === 'FAILED' ? RED : BLUE} />
               <MetricTile label="Compatibility Score" value={pct(data.sophia?.compatibilityScorePct ?? 0)} detail="Protocol + library fit" icon={Cpu} color={(data.sophia?.compatibilityScorePct ?? 0) >= 70 ? GREEN : GOLD} />
               <MetricTile label="Rollback Confidence" value={data.rollbackAnalysis?.successProbabilityPct == null ? 'Not assessed' : pct(data.rollbackAnalysis.successProbabilityPct)} detail={`RTO ${data.rollbackAnalysis?.rtoMinutes ?? '—'}m · RPO ${data.rollbackAnalysis?.rpoMinutes ?? '—'}`} icon={RotateCcw} color={(data.rollbackAnalysis?.successProbabilityPct ?? 0) >= 70 ? GREEN : GOLD} />
               <MetricTile label="AI Confidence" value={pct(data.sophia?.aiConfidencePct ?? 0)} detail="Evidence depth" icon={Bot} color={(data.sophia?.aiConfidencePct ?? 0) >= 70 ? GREEN : PURPLE} />
@@ -1777,7 +1803,7 @@ export default function MigrationSandbox() {
               <MetricTile label="Sandbox Runs" value={fmt(s.totalSimulations)} detail={`${s.running} running / ${s.queued} queued`} icon={FlaskConical} color={GOLD} />
               <MetricTile label="Live Workflows" value={fmt(s.runningWorkflows)} detail={s.backgroundEngine === 'active' ? 'Engine active' : 'Engine idle'} icon={Activity} color={GREEN} />
               <MetricTile label="PQC Readiness" value={pct(s.pqcReadiness)} icon={Shield} color={s.pqcReadiness >= 70 ? GREEN : GOLD} detail={s.pqcReadiness >= 80 ? 'Strong' : 'In Progress'} />
-              <MetricTile label="Compliance" value={pct(data.complianceScore)} icon={ShieldCheck} color={data.complianceScore >= 70 ? GREEN : GOLD} detail={data.complianceScore >= 80 ? 'Compliant' : 'Review Needed'} />
+              <MetricTile label="Tenant control evidence" value={data.complianceScore === null ? "Not assessed" : pct(data.complianceScore)} icon={ShieldCheck} color={CYAN} detail="From Compliance Command Center" />
             </div>
 
             {/* ─── Workflow + Score Gauges ──────────────────────────────────── */}
@@ -1799,7 +1825,7 @@ export default function MigrationSandbox() {
                       <ScoreGauge value={s.quantumRiskScore} size={100} label="Quantum Risk" lowerBetter />
                     </div>
                     <div className="relative flex justify-center py-2">
-                      <ScoreGauge value={data.complianceScore} size={100} label="Compliance" />
+                      <ScoreGauge value={data.complianceScore} size={100} label="Control evidence" />
                     </div>
                   </div>
                   <div className="mt-1 text-center text-[9px] text-white/35">
@@ -1987,8 +2013,8 @@ export default function MigrationSandbox() {
                 ))}
               </div>
               <p className="mt-2 text-[10px] leading-relaxed text-white/30">
-                Every simulation executes stages 1–13 automatically inside the digital twin. Executive Approval and Production
-                Ready are human gates resolved through the Production Approval Gate — the engine never auto-approves production.
+                These timeline stages represent modeled milestones in the digital twin. Executive Approval and Production
+                Ready are human gates resolved through the Analytical Review — the engine never auto-approves production.
               </p>
             </Panel>
 
@@ -2064,31 +2090,28 @@ export default function MigrationSandbox() {
 
             <Panel className="p-5">
               <SectionHead icon={RotateCcw}>Rollback & Recovery Control Center</SectionHead>
-              <p className="mb-4 text-xs text-white/40">Safely revert cryptographic migrations, restore snapshots, and execute emergency recovery procedures.</p>
+              <p className="mb-4 text-xs text-white/40">Model rollback and record configuration checkpoints for analytical runs.</p>
 
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                 {[
-                  { label: 'Restore Previous Keys', icon: Key, desc: 'Revert to classical key pairs', action: 'rollback' },
-                  { label: 'Revert Certificates', icon: Lock, desc: 'Restore original certificate chain', action: 'rollback' },
-                  { label: 'Restore TLS Config', icon: Globe2, desc: 'Reset TLS to pre-migration state', action: 'rollback' },
-                  { label: 'Emergency Recovery', icon: ShieldAlert, desc: 'Full environment restore', action: 'rollback' },
-                  { label: 'Create Snapshot', icon: Save, desc: 'Capture all eligible recovery points', action: 'snapshot' },
+                  { label: 'Model rollback', icon: RotateCcw, desc: 'Run the analytical rollback scenario', action: 'rollback' },
+                  { label: 'Save model checkpoint', icon: Save, desc: 'Capture recorded configuration for analytical runs', action: 'snapshot' },
                 ].map((item) => {
                   const Icon = item.icon
                   const isSnapshot = item.action === 'snapshot'
                   const confirmBulk = () => {
-                    if (isSnapshot || window.confirm(`${item.label}: request rollback for ALL eligible workflows?\n\nSandbox simulations roll back immediately. Operational migrations are marked rollback-requested and wait for an approved executor.`)) {
-                      doBulkAction(item.action, 'all')
+                    if (isSnapshot || window.confirm('Run modeled rollback for all eligible analytical sessions?')) {
+                      doBulkAction(item.action)
                     }
                   }
                   return (
-                    <button key={item.label} type="button" onClick={confirmBulk} disabled={pendingAction === `bulk:all:${item.action}`}
+                    <button key={item.label} type="button" onClick={confirmBulk} disabled={pendingAction === `bulk:${item.action}`}
                       className={cn('flex flex-col items-center gap-3 rounded-xl border p-5 text-center transition disabled:pointer-events-none disabled:opacity-45',
                         isSnapshot ? 'border-gold/20 bg-gold/[0.04] hover:border-gold/35 hover:bg-gold/[0.07]' : 'border-red-500/15 bg-red-500/[0.03] hover:border-red-500/30 hover:bg-red-500/[0.06]')}>
                       <div className={cn('flex h-12 w-12 items-center justify-center rounded-full border', isSnapshot ? 'border-gold/30 bg-gold/10' : 'border-red-500/25 bg-red-500/10')}>
                         <Icon className={cn('h-6 w-6', isSnapshot ? 'text-gold' : 'text-red-300')} />
                       </div>
-                      <div className="text-sm font-bold text-white/80">{pendingAction === `bulk:all:${item.action}` ? 'Processing...' : item.label}</div>
+                      <div className="text-sm font-bold text-white/80">{pendingAction === `bulk:${item.action}` ? 'Processing...' : item.label}</div>
                       <div className="text-[11px] text-white/35">{item.desc}</div>
                     </button>
                   )
@@ -2129,9 +2152,9 @@ export default function MigrationSandbox() {
           <>
             <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
               <Panel className="p-5">
-                <SectionHead icon={ShieldCheck}>Crypto Posture Score</SectionHead>
+                <SectionHead icon={ShieldCheck}>Tenant Control Evidence</SectionHead>
                 <div className="relative flex justify-center py-4">
-                  <ScoreGauge value={data.complianceScore} size={160} label="Posture Indicators" />
+                  <ScoreGauge value={data.complianceScore} size={160} label="Measured controls" />
                 </div>
                 {/* These are screening indicators over cryptographic evidence, not
                     compliance verdicts — a formula over exposure counts cannot decide
@@ -2139,15 +2162,13 @@ export default function MigrationSandbox() {
                     claim "every status traces to live tenant evidence" while printing
                     "HIPAA · non-compliant" from `100 - critical*22 - high*8`. */}
                 <div className="mt-3 rounded-lg border border-white/8 bg-white/[0.02] p-3 text-center text-[11px] leading-relaxed text-white/45">
-                  Cryptographic screening indicators against the control families that depend on crypto posture — each row
-                  states the measurement it was decided from. These are not compliance verdicts: control evidence and
-                  attestation live in the Compliance dashboard.
+                  These results come from the Compliance Command Center. Review coverage before interpreting any score. Sandbox runs cannot prove agency compliance or cryptographic module validation.
                 </div>
               </Panel>
 
               <Panel className="p-5">
-                <SectionHead icon={BookOpen} suffix={<Pill className="border-white/10 bg-white/5 text-white/40">{fmt(data.complianceItems.length)} control families</Pill>}>
-                  Cryptographic Posture Indicators
+                <SectionHead icon={BookOpen} suffix={<Pill className="border-white/10 bg-white/5 text-white/40">{fmt(data.complianceItems.length)} sources</Pill>}>
+                  Framework Evidence
                 </SectionHead>
                 <div className="space-y-2">
                   {data.complianceItems.map((ci) => (
@@ -2160,18 +2181,18 @@ export default function MigrationSandbox() {
                             ci.status === 'partial' ? 'border-amber-500/30 bg-amber-500/10 text-amber-300' :
                             ci.status === 'pending' ? 'border-sky-500/25 bg-sky-500/10 text-sky-300' :
                             'border-red-500/30 bg-red-500/10 text-red-300'
-                          )}>{ci.status === 'met' ? 'indicator met' : ci.status === 'not-met' ? 'indicator not met' : ci.status === 'pending' ? 'no evidence' : 'partial'}</Pill>
+                          )}>{ci.status === 'met' ? 'measured controls met' : ci.status === 'not-met' ? 'measured control gap' : ci.status === 'pending' ? 'not assessed' : 'partial'}</Pill>
                         </div>
                         <div className="mt-0.5 text-[11px] text-white/35">{ci.control}</div>
                         {ci.basis && <div className="mt-1 text-[10px] font-mono text-white/25">{ci.basis}</div>}
                       </div>
-                      <div className="text-right">
+                      {ci.score !== null && <div className="text-right">
                         <div className="font-mono text-lg font-black" style={{ color: ci.score >= 80 ? GREEN : ci.score >= 50 ? GOLD : RED }}>{ci.score}</div>
                         <div className="text-[9px] font-bold text-white/25">SCORE</div>
-                      </div>
-                      <div className="w-20">
+                      </div>}
+                      {ci.score !== null && <div className="w-20">
                         <ProgressBar value={ci.score} color={ci.score >= 80 ? GREEN : ci.score >= 50 ? GOLD : RED} />
-                      </div>
+                      </div>}
                     </div>
                   ))}
                 </div>
@@ -2381,7 +2402,7 @@ export default function MigrationSandbox() {
                             ['Assets', fmt(row.assets || 0)],
                             ['Asset Type', row.assetType || 'service'],
                             ['Risk Score', `${row.riskScore}`],
-                            ['Compliance', `${row.complianceScore}%`],
+                            ['Compliance assessment', 'Not assessed by simulation'],
                             ['Duration', row.duration || '--'],
                             ['Events', fmt(row.eventCount || 0)],
                           ].map(([label, value]) => (

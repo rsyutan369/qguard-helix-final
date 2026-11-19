@@ -4,6 +4,7 @@
  * timeline, metrics, insights, logs, guardrails and checklist cannot disagree.
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { csvCell } from '@/lib/csv'
 import gsap from 'gsap'
 import { Link } from 'react-router-dom'
 import {
@@ -938,11 +939,6 @@ const LEVEL: Record<EventSeverity, { tag: string; color: string }> = {
   warning: { tag: 'WARN', color: TONE.amber },
   error: { tag: 'ERROR', color: TONE.red },
   critical: { tag: 'CRIT', color: TONE.rose },
-}
-
-function csvCell(value: unknown) {
-  const text = String(value ?? '')
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
 }
 
 export function ExecutionLogs({

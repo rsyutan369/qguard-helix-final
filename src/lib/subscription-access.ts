@@ -43,7 +43,10 @@ export const TIER_ORDER: PlanTier[] = ['starter', 'basic', 'pro', 'elite'];
 // `pending_renewal` still has an active period, so it keeps access; grace-period
 // handling for `past_due` is intentionally strict here and can be relaxed by
 // adding it to this set if a grace policy is desired.
-export const ACCESS_STATUSES = new Set(['active', 'trial', 'pending_renewal']);
+// No free tier and no free trial exist (Qguard_Wiki/GooglePlay_Billing §1), so
+// 'trial' grants nothing. Same set as supabase/functions/billing/logic.ts and
+// SQL qguard_subscription_access_until.
+export const ACCESS_STATUSES = new Set(['active', 'pending_renewal']);
 
 export function isAccessGrantingStatus(status: string | null | undefined): boolean {
   return !!status && ACCESS_STATUSES.has(String(status).toLowerCase());
@@ -143,6 +146,7 @@ const MODULE_MIN_TIER: Array<{ prefix: string; tier: PlanTier }> = [
   { prefix: '/dashboard/vendor-pqc-readiness', tier: 'pro' },
   { prefix: '/dashboard/ecosystem-dependency-map', tier: 'pro' },
   { prefix: '/dashboard/trust-chain-analyzer', tier: 'pro' },
+  { prefix: '/dashboard/estate-intelligence', tier: 'pro' }, // Estate Remediation Intelligence (matches the API gate)
   { prefix: '/dashboard/hybrid-crypto-lab', tier: 'pro' },
   // PRO — Intelligence
   { prefix: '/dashboard/runtime-crypto-intel', tier: 'pro' },

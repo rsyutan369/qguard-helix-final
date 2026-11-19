@@ -2,10 +2,11 @@ import { Router, Request, Response, NextFunction } from 'express'
 import net from 'node:net'
 import { createHash } from 'node:crypto'
 import { getToken, getServerUser, createAuthClient, getServiceClient } from '@/lib/supabase-server'
+import { getReportOrganizationId } from './report-snapshot-store'
 import { validateAsset } from '@/lib/scanner/asset-validator'
 import { persistableTelemetry } from '@/lib/scanner/session-payload'
 import { findingIdentityKey, isCryptographicComponent, richerText } from '@/lib/scanner/finding-identity'
-import { cbomComponentKey, evidenceTimestamp, partitionAssetInventory } from '@/lib/scanner/asset-components'
+import { cbomComponentKey, componentPosture, contradictoryFlags, evidenceTimestamp, partitionAssetInventory } from '@/lib/scanner/asset-components'
 import { algorithmFamily, assetIsInternetFacing } from '@/lib/governance/subjects'
 import { foldDeviceAssetGraph } from '@/lib/agent-installer/device-profile'
 import { classifyCryptoRootCause } from '@/lib/crypto-root-cause'
@@ -51,9 +52,9 @@ const router = Router()
 
 type ScanStatus = 'idle' | 'queued' | 'running' | 'analyzing' | 'completed' | 'failed' | 'cancelled'
 type DefensiveTargetType = WebScanTargetType | 'ssh'
-type PersistenceMode = 'database' | 'memory' | 'none'
+export type PersistenceMode = 'database' | 'memory' | 'none'
 
-interface AuthorizedTarget {
+export interface AuthorizedTarget {
   raw: string
   normalized: string
   host: string
@@ -80,9 +81,10 @@ interface DefensiveFinding {
   timestamp?: string
   detectedAt?: string
   raw?: unknown
+  inventoryOnly?: boolean
 }
 
-interface DefensiveResult {
+export interface DefensiveResult {
   scanId: string
   target: string
   targetType: DefensiveTargetType
@@ -529,7 +531,7 @@ function parseSshTarget(raw: string): AuthorizedTarget | null {
   }
 }
 
-function normalizeTarget(raw: string): { ok: true; target: AuthorizedTarget } | { ok: false; message: string } {
+export function normalizeTarget(raw: string): { ok: true; target: AuthorizedTarget } | { ok: false; message: string } {
   const ssh = parseSshTarget(raw)
   if (ssh) {
     if (isPrivateOrReservedHost(ssh.host)) {
@@ -859,7 +861,7 @@ async function scanSshMetadata(target: AuthorizedTarget, emit: (event: Record<st
   }
 }
 
-function getDbClient(token: string) {
+export function getDbClient(token: string) {
   return createAuthClient(token) || getServiceClient()
 }
 
@@ -870,7 +872,7 @@ async function dbSelectUserAssets(client: any, userId: string) {
   return data || []
 }
 
-async function createSession(client: any, userId: string, targets: AuthorizedTarget[], telemetry: unknown[]) {
+export async function createSession(client: any, userId: string, targets: AuthorizedTarget[], telemetry: unknown[]) {
   const now = new Date().toISOString()
   const base = {
     user_id: userId,
@@ -905,7 +907,7 @@ async function createSession(client: any, userId: string, targets: AuthorizedTar
   return { id: memorySession.id, mode: 'memory' as PersistenceMode }
 }
 
-async function updateSession(client: any, sessionId: string, userId: string, patch: Record<string, unknown>, mode: PersistenceMode) {
+export async function updateSession(client: any, sessionId: string, userId: string, patch: Record<string, unknown>, mode: PersistenceMode) {
   const nextPatch = { ...patch, updated_at: new Date().toISOString() }
   if (mode === 'database' && client) {
     const { error } = await client.from('pqc_scan_sessions').update(nextPatch).eq('id', sessionId).eq('user_id', userId)
@@ -942,9 +944,10 @@ async function upsertAsset(client: any, userId: string, target: AuthorizedTarget
     target_type: target.type,
     protocol: target.protocol,
     port: target.port,
-    riskScore: result.riskScore,
-    qScore: result.qScore,
-    riskLevel: result.riskLevel,
+    riskScore: result.metadata.partialAssessment ? null : result.riskScore,
+    qScore: result.metadata.partialAssessment ? null : result.qScore,
+    riskLevel: result.metadata.partialAssessment ? null : result.riskLevel,
+    partialAssessment: Boolean(result.metadata.partialAssessment),
     certificate: result.certificateInfo || null,
     tlsVersion: result.tlsVersion || null,
   }
@@ -964,7 +967,6 @@ async function upsertAsset(client: any, userId: string, target: AuthorizedTarget
           type: assetTypeFor(target),
           ip_address: target.type === 'ip' ? target.host : null,
           criticality: criticalityFromRisk(result.riskScore),
-          status: 'active',
           metadata: { ...(existing[0].metadata || {}), ...metadata },
           updated_at: now,
         })
@@ -1206,6 +1208,8 @@ function persistFindingToMemory(
     created_at: now,
   })
 
+  if (finding.inventoryOnly) return { inventoryId, exposureId }
+
   memoryStore.results.unshift({
     id: randomId('result'),
     user_id: userId,
@@ -1239,7 +1243,7 @@ function persistFindingToMemory(
   return { inventoryId, exposureId }
 }
 
-async function persistResult(client: any, userId: string, sessionId: string, target: AuthorizedTarget, result: DefensiveResult, mode: PersistenceMode) {
+export async function persistResult(client: any, userId: string, sessionId: string, target: AuthorizedTarget, result: DefensiveResult, mode: PersistenceMode) {
   const assetId = await upsertAsset(client, userId, target, result, mode)
   const now = new Date().toISOString()
   const cbomIds: string[] = []
@@ -1293,6 +1297,8 @@ async function persistResult(client: any, userId: string, sessionId: string, tar
         cbomIds.push(memoryIds.inventoryId)
         if (memoryIds.exposureId) exposureIds.push(memoryIds.exposureId)
       }
+
+      if (finding.inventoryOnly) continue
 
       const { data: resultData } = await client
         .from('pqc_scan_results')
@@ -1360,9 +1366,9 @@ async function persistResult(client: any, userId: string, sessionId: string, tar
   if (mode === 'database' && client) {
     await client.from('security_events').insert({
       user_id: userId,
-      event_type: 'authorized_crypto_scan_completed',
-      severity: result.riskLevel === 'CRITICAL' || result.riskLevel === 'HIGH' ? 'warning' : 'success',
-      message: `Authorized cryptographic inventory scan completed for ${target.normalized}`,
+      event_type: result.metadata.partialAssessment ? 'authorized_crypto_scan_partial' : 'authorized_crypto_scan_completed',
+      severity: result.metadata.partialAssessment || result.riskLevel === 'CRITICAL' || result.riskLevel === 'HIGH' ? 'warning' : 'success',
+      message: `Authorized cryptographic inventory scan ${result.metadata.partialAssessment ? 'recorded partial evidence' : 'completed'} for ${target.normalized}`,
       asset_id: assetId,
       resource_name: target.displayName,
       resource_type: assetTypeFor(target),
@@ -1380,15 +1386,16 @@ async function persistResult(client: any, userId: string, sessionId: string, tar
   return { assetId, cbomIds, exposureIds }
 }
 
-function buildSummary(results: DefensiveResult[]) {
-  const findings = results.flatMap((result) => result.findings)
+export function buildSummary(results: DefensiveResult[]) {
+  const findings = results.flatMap((result) => result.findings.filter((finding) => !finding.inventoryOnly))
   const critical = findings.filter((finding) => finding.threatLevel === 'CRITICAL').length
   const high = findings.filter((finding) => finding.threatLevel === 'HIGH').length
   const medium = findings.filter((finding) => finding.threatLevel === 'MEDIUM').length
   const low = findings.filter((finding) => finding.threatLevel === 'LOW').length
   const safe = findings.filter((finding) => finding.threatLevel === 'SAFE').length
-  const riskScore = results.length
-    ? Math.round(results.reduce((sum, result) => sum + result.riskScore, 0) / results.length)
+  const scored = results.filter((result) => !result.metadata?.partialAssessment)
+  const riskScore = scored.length
+    ? Math.round(scored.reduce((sum, result) => sum + result.riskScore, 0) / scored.length)
     : 0
   return {
     targetsScanned: results.length,
@@ -2308,7 +2315,7 @@ router.post('/jobs/:id/cancel', (req, res) => {
   res.json({ data: { jobId: req.params.id, status: 'cancelled' } })
 })
 
-async function loadScannerTables(client: any, userId: string) {
+async function loadScannerTables(client: any, userId: string, forReport = false) {
   const memoryRows = {
     assets: memoryStore.assets.filter((item) => item.user_id === userId),
     inventory: memoryStore.inventory.filter((item) => item.user_id === userId),
@@ -2317,11 +2324,14 @@ async function loadScannerTables(client: any, userId: string) {
     sessions: memoryStore.sessions.filter((item) => item.user_id === userId),
     vulnerabilities: [],
   }
+  const sources = ['assets', 'crypto_inventory', 'crypto_exposures', 'pqc_scan_results', 'pqc_scan_sessions', 'vulnerabilities']
+  const memoryCoverage = sources.map((source) => ({ source, status: 'partial' as const, detail: 'The database could not be read. Only process-local scanner evidence is available.' }))
 
   if (!client) {
     return foldDeviceAssetGraph({
       ...memoryRows,
       mode: 'memory' as PersistenceMode,
+      sourceCoverage: forReport ? memoryCoverage : undefined,
     })
   }
 
@@ -2330,34 +2340,65 @@ async function loadScannerTables(client: any, userId: string) {
     // page size (1000 rows) — an undocumented truncation for large estates.
     // These caps are deliberate and generous; tenant-wide headline counts come
     // from exact COUNT queries in quantum-readiness.ts, not from page lengths.
-    const [assets, inventory, exposures, results, sessions, vulnerabilities] = await Promise.all([
-      client.from('assets').select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(4000),
-      client.from('crypto_inventory').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(6000),
-      client.from('crypto_exposures').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(4000),
-      client.from('pqc_scan_results').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(4000),
-      client.from('pqc_scan_sessions').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(100),
-      client.from('vulnerabilities').select('*').eq('user_id', userId).order('updated_at', { ascending: false }).limit(2000),
+    const read = (source: string, timeColumn: string, limit: number) => client.from(source)
+      .select('*', forReport ? { count: 'exact' } : undefined).eq('user_id', userId)
+      .order(timeColumn, { ascending: false }).order('id', { ascending: true }).limit(limit)
+    const reads = await Promise.all([
+      read('assets', 'updated_at', 4000),
+      read('crypto_inventory', 'created_at', 6000),
+      read('crypto_exposures', 'created_at', 4000),
+      read('pqc_scan_results', 'created_at', 4000),
+      read('pqc_scan_sessions', 'created_at', 100),
+      read('vulnerabilities', 'updated_at', 2000),
     ])
+    const [assets, inventory, exposures, results, sessions, vulnerabilities] = reads
     const mergeRows = <T extends { id: string }>(databaseRows: T[], fallbackRows: T[]) => {
       const seen = new Set(databaseRows.map((item) => item.id))
       return databaseRows.concat(fallbackRows.filter((item) => !seen.has(item.id)))
     }
+    const sourceCoverage = forReport ? sources.map((source, index) => {
+      const result = reads[index]
+      const loaded = result.data?.length ?? 0
+      if (result.error) return { source, status: 'missing' as const, detail: 'The database read failed.' }
+      if (result.count == null || result.count !== loaded) return { source, status: 'partial' as const, detail: `${loaded} of ${result.count ?? 'unconfirmed'} database rows read.` }
+      return { source, status: 'available' as const, detail: `${loaded} database rows read.` }
+    }) : undefined
 
     return foldDeviceAssetGraph({
-      assets: mergeRows(assets.error ? [] : assets.data || [], memoryRows.assets),
-      inventory: mergeRows(inventory.error ? [] : inventory.data || [], memoryRows.inventory),
-      exposures: mergeRows(exposures.error ? [] : exposures.data || [], memoryRows.exposures),
-      results: mergeRows(results.error ? [] : results.data || [], memoryRows.results),
-      sessions: mergeRows(sessions.error ? [] : sessions.data || [], memoryRows.sessions),
-      vulnerabilities: mergeRows(vulnerabilities.error ? [] : vulnerabilities.data || [], memoryRows.vulnerabilities),
-      mode: (assets.error || inventory.error || exposures.error || results.error || sessions.error || vulnerabilities.error ? 'memory' : 'database') as PersistenceMode,
+      assets: mergeRows(assets.error ? [] : assets.data || [], forReport ? [] : memoryRows.assets),
+      inventory: mergeRows(inventory.error ? [] : inventory.data || [], forReport ? [] : memoryRows.inventory),
+      exposures: mergeRows(exposures.error ? [] : exposures.data || [], forReport ? [] : memoryRows.exposures),
+      results: mergeRows(results.error ? [] : results.data || [], forReport ? [] : memoryRows.results),
+      sessions: mergeRows(sessions.error ? [] : sessions.data || [], forReport ? [] : memoryRows.sessions),
+      vulnerabilities: mergeRows(vulnerabilities.error ? [] : vulnerabilities.data || [], forReport ? [] : memoryRows.vulnerabilities),
+      mode: (assets.error || inventory.error || (!forReport && (exposures.error || results.error || sessions.error || vulnerabilities.error))
+        ? 'memory' : 'database') as PersistenceMode,
+      sourceCoverage,
     })
   } catch {
     return foldDeviceAssetGraph({
       ...memoryRows,
       mode: 'memory' as PersistenceMode,
+      sourceCoverage: forReport ? memoryCoverage : undefined,
     })
   }
+}
+
+function activeScannerInventory<T extends Awaited<ReturnType<typeof loadScannerTables>>>(tables: T): T {
+  const excluded = new Set(tables.assets.filter((asset) => ['archived', 'deleted'].includes(asset.status)).map((asset) => asset.id))
+  return {
+    ...tables,
+    assets: tables.assets.filter((asset) => !excluded.has(asset.id)),
+    inventory: tables.inventory.filter((row) => !excluded.has(row.asset_id)),
+    exposures: tables.exposures.filter((row) => !excluded.has(row.asset_id)),
+    results: tables.results.filter((row) => !excluded.has(row.asset_id)),
+    vulnerabilities: tables.vulnerabilities.filter((row) => !excluded.has(row.asset_id)),
+  }
+}
+
+function archivedScannerAssets(tables: Awaited<ReturnType<typeof loadScannerTables>>) {
+  return tables.assets.filter((asset) => asset.status === 'archived' && !asset.metadata?.consolidatedIntoAssetId)
+    .map((asset) => ({ id: asset.id, name: asset.name }))
 }
 
 /**
@@ -2542,23 +2583,25 @@ function buildCbomPayload(assets: any[], inventory: any[], mode: PersistenceMode
       if (Date.parse(discoveredAt) > Date.parse(existing.lastScannedDate)) existing.lastScannedDate = discoveredAt
       continue
     }
+    const posture = componentPosture(item)
     grouped.set(key, {
       id: item.id,
       component: item.name,
       type: item.item_type,
       algorithm: item.algorithm || 'Unknown',
       keySize: item.key_size,
-      status: item.is_quantum_safe ? 'PQC-ready' : item.is_vulnerable ? 'Quantum-vulnerable' : 'Unknown / requires manual review',
-      isVulnerable: Boolean(item.is_vulnerable),
-      isQuantumSafe: Boolean(item.is_quantum_safe),
+      status: posture === 'pqc-ready' ? 'PQC-ready' : posture === 'vulnerable' ? 'Quantum-vulnerable' : 'Unknown / requires manual review',
+      isVulnerable: posture === 'vulnerable',
+      isQuantumSafe: posture === 'pqc-ready',
+      contradictoryFlags: contradictoryFlags(item),
       pqcReplacement: item.metadata?.pqcReplacement || replacementFor(item.algorithm || ''),
       instances: 1,
       sourceAsset: asset?.name || item.metadata?.target || 'Unknown asset',
       sourceAssetId: item.asset_id,
       detectionMethod: item.metadata?.detectionMethod || item.metadata?.source || 'scanner',
       lastScannedDate: discoveredAt,
-      riskSeverity: item.exposure_level || 'low',
-      evidence: item.metadata?.evidence || 'Stored scanner result',
+      riskSeverity: item.exposure_level || null,
+      evidence: item.metadata?.evidence || null,
       recommendation: item.metadata?.recommendation || null,
       metadata: item.metadata || {},
     })
@@ -2999,7 +3042,6 @@ function buildEvidenceBackedAssets(assets: any[], inventory: any[], exposures: a
   addEvidenceRows(results)
   addEvidenceRows(vulnerabilityRows)
 
-  const now = new Date().toISOString()
   for (const [assetId, rows] of rowsByAsset.entries()) {
     const label = evidenceAssetLabel(assetId, rows)
     const strongestRisk = rows.reduce((max, row) => {
@@ -3020,8 +3062,8 @@ function buildEvidenceBackedAssets(assets: any[], inventory: any[], exposures: a
         authorized_target: label,
         riskScore: strongestRisk,
       },
-      created_at: rows[0]?.created_at || now,
-      updated_at: rows[0]?.updated_at || rows[0]?.created_at || now,
+      created_at: rows[0]?.created_at || null,
+      updated_at: rows[0]?.updated_at || rows[0]?.created_at || null,
     })
     seen.add(assetId)
   }
@@ -3030,7 +3072,8 @@ function buildEvidenceBackedAssets(assets: any[], inventory: any[], exposures: a
 }
 
 function assetRiskScore(asset: any, crypto: any[], exposures: any[], vulnerabilities: AssetVulnerabilityItem[]) {
-  const metadataRisk = Number(asset?.metadata?.riskScore)
+  const rawRisk = asset?.metadata?.riskScore
+  const metadataRisk = rawRisk == null ? NaN : Number(rawRisk)
   if (Number.isFinite(metadataRisk)) return clampRisk(metadataRisk)
 
   const vulnerabilityRisk = vulnerabilities.reduce((max, item) => (
@@ -3085,8 +3128,8 @@ function vulnerabilityItemToFinding(item: AssetVulnerabilityItem, asset?: any): 
   }
 }
 
-type ScannerFindingInput = DefensiveFinding & { scanTarget?: string }
-export type MergedScannerFinding = DefensiveFinding & { observations: number; sources: string[] }
+type ScannerFindingInput = DefensiveFinding & { scanTarget?: string; assetIds?: string[]; evidenceIds?: string[] }
+export type MergedScannerFinding = DefensiveFinding & { observations: number; sources: string[]; assetIds: string[]; evidenceIds: string[]; scanTarget?: string }
 
 /**
  * Collapse the four storage views of one observation into a single finding.
@@ -3113,7 +3156,7 @@ function mergeScannerFindings(findings: ScannerFindingInput[]): MergedScannerFin
     const source = String(finding.source || 'scanner-evidence')
     const current = grouped.get(key)
     if (!current) {
-      grouped.set(key, { ...finding, observations: 1, sources: [source] })
+      grouped.set(key, { ...finding, observations: 1, sources: [source], assetIds: finding.assetIds ?? [], evidenceIds: finding.evidenceIds ?? [] })
       continue
     }
 
@@ -3135,6 +3178,8 @@ function mergeScannerFindings(findings: ScannerFindingInput[]): MergedScannerFin
     // a user would read is lost to the merge.
     grouped.set(key, {
       ...winner,
+      assetIds: Array.from(new Set([...current.assetIds, ...(finding.assetIds ?? [])])),
+      evidenceIds: Array.from(new Set([...current.evidenceIds, ...(finding.evidenceIds ?? [])])),
       description: richerText(current.description, finding.description),
       evidence: richerText(current.evidence, finding.evidence),
       recommendation: richerText(current.recommendation, finding.recommendation),
@@ -3187,8 +3232,8 @@ function buildAssetsPayload(assets: any[], inventory: any[], exposures: any[], r
     const assetResults = results.filter((item) => item.asset_id === asset.id)
     const assetVulnerabilityRows = vulnerabilityRows.filter((item) => item.asset_id === asset.id)
     const vulnerabilities = buildAssetVulnerabilities(asset.id, crypto, assetExposures, assetResults, assetVulnerabilityRows)
-    const hasClassifiedEvidence = partition.components.some((item) => item.is_vulnerable || item.is_quantum_safe) || partition.posture.length > 0 || assetExposures.length > 0 || assetVulnerabilityRows.length > 0
-    const riskScore = asset.metadata?.deviceProfile && !hasClassifiedEvidence ? null : assetRiskScore(asset, crypto, assetExposures, vulnerabilities)
+    const hasClassifiedEvidence = partition.counts.vulnerable + partition.counts.pqcReady > 0 || partition.posture.length > 0 || assetExposures.length > 0 || assetVulnerabilityRows.length > 0
+    const riskScore = asset.metadata?.partialAssessment || (asset.metadata?.deviceProfile && !hasClassifiedEvidence) ? null : assetRiskScore(asset, crypto, assetExposures, vulnerabilities)
     const algorithms = Array.from(new Set(partition.components.map((item) => item.algorithm).filter(Boolean)))
     const pqcStatus = assetPqcStatus(partition.counts)
     // "Last scanned" is when the scanner last OBSERVED this asset. The asset row
@@ -3203,6 +3248,7 @@ function buildAssetsPayload(assets: any[], inventory: any[], exposures: any[], r
     const lastScannedMs = Math.max(latestEvidenceMs, recordedScanMs)
     return {
       id: asset.id,
+      registrationSource: asset.metadata?.generatedFromScannerEvidence ? 'scanner-evidence' : 'registered',
       name: asset.name,
       type: asset.type,
       domain: asset.metadata?.authorized_target || asset.name,
@@ -3413,6 +3459,7 @@ export function buildHistoryPayload(sessions: any[], results: any[], mode: Persi
 const INTEL_CACHE_TTL_MS = 15_000
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const intelCache = new Map<string, { at: number; promise: Promise<any> }>()
+const inventoryListeners = new Map<string, Set<() => void>>()
 
 /**
  * The scanner's in-memory persistence fallback, read-only, for one tenant.
@@ -3439,7 +3486,8 @@ export function readScannerMemoryRows(userId: string) {
   }
 }
 
-export async function buildScannerIntelligence(token: string, userId: string) {
+export async function buildScannerIntelligence(token: string, userId: string, options: { fresh?: boolean } = {}) {
+  if (options.fresh) return computeScannerIntelligence(token, userId, true)
   const hasActiveScan = Array.from(activeJobs.values()).some((job) => job.userId === userId)
   const cached = intelCache.get(userId)
   if (!hasActiveScan && cached && Date.now() - cached.at < INTEL_CACHE_TTL_MS) return cached.promise
@@ -3459,25 +3507,34 @@ export async function buildScannerIntelligence(token: string, userId: string) {
   return promise
 }
 
-async function computeScannerIntelligence(token: string, userId: string) {
-  const client = getDbClient(token)
-  const { assets, inventory, exposures, results, sessions, vulnerabilities, mode } = await loadScannerTables(client, userId)
+async function computeScannerIntelligence(token: string, userId: string, forReport = false) {
+  const client = forReport ? createAuthClient(token) : getDbClient(token)
+  const tables = await loadScannerTables(client, userId, forReport)
+  const { assets, inventory, exposures, results, sessions, vulnerabilities, mode } = activeScannerInventory(tables)
   const evidenceAssets = buildEvidenceBackedAssets(assets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[])
   const cbom = buildCbomPayload(evidenceAssets as any[], inventory as any[], mode)
   const assetPayload = buildAssetsPayload(evidenceAssets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[], mode)
   const exposure = buildExposurePayload(evidenceAssets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[], mode)
-  const historyPayload = mergeActiveScannerJobs(userId, buildHistoryPayload(sessions as any[], results as any[], mode))
+  const storedHistory = buildHistoryPayload(sessions as any[], tables.results as any[], mode)
+  const historyPayload = forReport ? storedHistory : mergeActiveScannerJobs(userId, storedHistory)
   // Stamp the scan / asset each finding was observed on. Rule-derived session
   // findings carry a location like "Detection Rule TLS-008" with no target in
   // it, so without this the merge cannot tell that the session's copy and the
   // asset's copy of one observation describe the same thing.
   const historyFindings = historyPayload.history.flatMap((entry: any) =>
-    (entry.findings || []).map((finding: DefensiveFinding) => ({ ...finding, scanTarget: entry.target })),
+    (entry.findings || []).map((finding: DefensiveFinding) => ({ ...finding, scanTarget: entry.target, evidenceIds: [`pqc_scan_sessions:${entry.scanId}`] })),
   )
   const assetFindings = assetPayload.assets.flatMap((asset: any) =>
     (Array.isArray(asset.vulnerabilities) ? asset.vulnerabilities : []).map((item: AssetVulnerabilityItem) => ({
       ...vulnerabilityItemToFinding(item, asset),
       scanTarget: String(asset.url || asset.domain || asset.name || ''),
+      assetIds: [String(asset.id)],
+      evidenceIds: [
+        item.metadata?.scanResultId && `pqc_scan_results:${item.metadata.scanResultId}`,
+        item.metadata?.exposureId && `crypto_exposures:${item.metadata.exposureId}`,
+        item.metadata?.vulnerabilityId && `vulnerabilities:${item.metadata.vulnerabilityId}`,
+        !item.metadata?.scanResultId && !item.metadata?.exposureId && !item.metadata?.vulnerabilityId && item.id && `crypto_inventory:${item.id}`,
+      ].filter((id): id is string => typeof id === 'string' && Boolean(id)),
     })),
   )
   const findings = mergeScannerFindings([...historyFindings, ...assetFindings])
@@ -3542,10 +3599,23 @@ async function computeScannerIntelligence(token: string, userId: string) {
     ecosystem: enrichedFindings.filter((f) => f.ownership.domain === 'ecosystem').length,
     customerActionable: enrichedFindings.filter((f) => f.ownership.domain === 'customer' && f.ownership.customerActionable !== 'no').length,
   }
+  const versionOf = (rows: Array<{ id: string }>) => createHash('sha3-256').update(JSON.stringify(
+    [...rows].sort((left, right) => left.id.localeCompare(right.id)),
+    (_key, value) => value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)))
+      : value,
+  )).digest('hex')
+  const reportVersions = forReport ? {
+    assetInventoryVersion: versionOf(assetPayload.assets),
+    cbomVersion: versionOf(cbom.entries),
+    findingsVersion: versionOf(enrichedFindings),
+  } : undefined
 
   return {
     generatedAt: new Date().toISOString(),
     mode,
+    sourceCoverage: tables.sourceCoverage,
+    reportVersions,
     summary: {
       totalAssets: assetPayload.assets.length,
       totalComponents: cbom.stats.totalComponents,
@@ -3570,7 +3640,10 @@ async function computeScannerIntelligence(token: string, userId: string) {
     },
     severityCounts,
     cbom,
-    assets: assetPayload,
+    assets: {
+      ...assetPayload,
+      archived: archivedScannerAssets(tables),
+    },
     exposure,
     history: historyPayload,
     findings: enrichedFindings,
@@ -3669,7 +3742,18 @@ function snapshotFingerprint(data: any): string {
 router.get('/intelligence', async (req, res) => {
   const user = (req as any).user
   const token = (req as any).token as string
-  const data = await buildScannerIntelligence(token, user.id)
+  const fresh = req.query.fresh === '1'
+  if (fresh && !getToken(req)) {
+    res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Bearer authorization is required for report snapshots.' } })
+    return
+  }
+  if (fresh) res.setHeader('Cache-Control', 'private, no-store')
+  const data = await buildScannerIntelligence(token, user.id, { fresh })
+  if (fresh) {
+    const organizationId = await getReportOrganizationId(token, user.id).catch(() => null)
+    res.json({ data: { ...data, workspaceOwnerId: user.id, organizationId } })
+    return
+  }
   res.json({ data: { ...data, fingerprint: snapshotFingerprint(data) } })
 })
 
@@ -3696,6 +3780,7 @@ router.get('/intelligence/stream', async (req, res) => {
 
   let closed = false
   let emitting = false
+  let refreshPending = false
   let lastFingerprint = ''
   const emitSnapshot = async () => {
     // A build slower than the tick must not stack a second one behind it.
@@ -3719,10 +3804,20 @@ router.get('/intelligence/stream', async (req, res) => {
       sendSsePayload(res, 'scanner-error', { message: err instanceof Error ? err.message : 'Scanner intelligence stream failed' })
     } finally {
       emitting = false
+      if (refreshPending && !closed) {
+        refreshPending = false
+        void emitSnapshot()
+      }
     }
   }
 
-  await emitSnapshot()
+  const invalidate = () => {
+    if (emitting) refreshPending = true
+    else void emitSnapshot()
+  }
+  const listeners = inventoryListeners.get(user.id) ?? new Set<() => void>()
+  listeners.add(invalidate)
+  inventoryListeners.set(user.id, listeners)
   const heartbeat = setInterval(() => {
     res.write(': heartbeat\n\n')
   }, 25000)
@@ -3732,9 +3827,12 @@ router.get('/intelligence/stream', async (req, res) => {
 
   req.on('close', () => {
     closed = true
+    listeners.delete(invalidate)
+    if (!listeners.size) inventoryListeners.delete(user.id)
     clearInterval(heartbeat)
     clearInterval(snapshotTimer)
   })
+  await emitSnapshot()
 })
 
 router.get('/history', async (req, res) => {
@@ -3786,7 +3884,7 @@ router.get('/cbom', async (req, res) => {
   const user = (req as any).user
   const token = (req as any).token as string
   const client = getDbClient(token)
-  const { assets, inventory, exposures, results, vulnerabilities, mode } = await loadScannerTables(client, user.id)
+  const { assets, inventory, exposures, results, vulnerabilities, mode } = activeScannerInventory(await loadScannerTables(client, user.id))
   // Evidence-backed assets, exactly as computeScannerIntelligence does it —
   // otherwise every component discovered on an asset that exists only as
   // scanner evidence renders as "Unknown asset" on this route but not on the
@@ -3799,15 +3897,62 @@ router.get('/assets', async (req, res) => {
   const user = (req as any).user
   const token = (req as any).token as string
   const client = getDbClient(token)
-  const { assets, inventory, exposures, results, vulnerabilities, mode } = await loadScannerTables(client, user.id)
-  res.json({ data: buildAssetsPayload(assets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[], mode) })
+  const tables = await loadScannerTables(client, user.id)
+  const { assets, inventory, exposures, results, vulnerabilities, mode } = activeScannerInventory(tables)
+  res.json({ data: { ...buildAssetsPayload(assets, inventory, exposures, results, vulnerabilities, mode), archived: archivedScannerAssets(tables) } })
+})
+
+router.post('/assets/lifecycle', async (req, res) => {
+  const token = getToken(req)
+  if (!token) return res.status(401).json({ error: { message: 'Authentication required.' } })
+  const client = createAuthClient(token)
+  const userId = (req as Request & { user: { id: string } }).user.id
+  const { action, ids } = req.body ?? {}
+  if (!['archive', 'restore', 'remove'].includes(action) || !Array.isArray(ids) || !ids.length || ids.length > 4000 ||
+    ids.some((id: unknown) => typeof id !== 'string' || !/^(?:asset-[a-z0-9]+-[a-z0-9]+|[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12})$/i.test(id))) {
+    return res.status(400).json({ error: { message: 'Select valid saved assets and an inventory action.' } })
+  }
+  const uniqueIds: string[] = [...new Set<string>(ids)]
+  const requested = new Set(uniqueIds)
+  const memoryIds = new Set(memoryStore.assets.filter((asset) => asset.user_id === userId && requested.has(asset.id)).map((asset) => asset.id))
+  const dbIds = uniqueIds.filter((id) => !memoryIds.has(id) && !id.startsWith('asset-'))
+  const nextStatus = action === 'archive' ? 'archived' : action === 'restore' ? 'active' : 'deleted'
+  const updatedIds: string[] = []
+  const batchSize = 100
+  let failed = dbIds.length > 0 && !client
+  for (let start = 0; client && start < dbIds.length; start += batchSize) {
+    const batch = dbIds.slice(start, start + batchSize)
+    let query = client.from('assets').update({ status: nextStatus })
+      .eq('user_id', userId).in('id', batch).is('metadata->>consolidatedIntoAssetId', null)
+    query = action === 'restore' ? query.eq('status', 'archived') : query.or('status.is.null,status.neq.deleted')
+    const { data, error } = await query.select('id')
+    if (error) { failed = true; break }
+    updatedIds.push(...(data ?? []).map((asset) => asset.id))
+  }
+  for (const asset of memoryStore.assets) {
+    if (asset.user_id !== userId || !memoryIds.has(asset.id) || asset.metadata.consolidatedIntoAssetId ||
+      (action === 'restore' ? asset.status !== 'archived' : asset.status === 'deleted')) continue
+    asset.status = nextStatus
+    updatedIds.push(asset.id)
+  }
+  if (updatedIds.length) {
+    intelCache.delete(userId)
+    for (const listener of inventoryListeners.get(userId) ?? []) listener()
+    const { error } = client ? await client.from('audit_logs').insert({
+      user_id: userId, action: `inventory_assets_${action}`, entity_type: 'asset',
+      details: { assetIds: updatedIds },
+    }) : { error: null }
+    if (error) console.warn('[scanner] Unable to write asset lifecycle audit entry:', error.code)
+  }
+  if (failed && !updatedIds.length) return res.status(503).json({ error: { message: 'The inventory action could not be saved.' } })
+  return res.json({ data: { updatedIds, skipped: uniqueIds.length - updatedIds.length } })
 })
 
 router.get('/exposure-map', async (req, res) => {
   const user = (req as any).user
   const token = (req as any).token as string
   const client = getDbClient(token)
-  const { assets, inventory, exposures, results, vulnerabilities, mode } = await loadScannerTables(client, user.id)
+  const { assets, inventory, exposures, results, vulnerabilities, mode } = activeScannerInventory(await loadScannerTables(client, user.id))
   res.json({ data: { ...buildExposurePayload(assets as any[], inventory as any[], exposures as any[], results as any[], vulnerabilities as any[], mode), edges: [] } })
 })
 

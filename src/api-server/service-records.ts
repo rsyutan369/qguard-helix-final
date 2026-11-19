@@ -1,3 +1,4 @@
+import { ISSUANCE_UNAVAILABLE, isIssuanceAction } from '@/lib/crypto/issuance-evidence'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { Router, type Request, type Response, type NextFunction } from 'express'
 import { createAuthClient, getToken, getServerUser } from '@/lib/supabase-server'
@@ -8,7 +9,6 @@ type AuthenticatedRequest = Request & {
 }
 
 const router = Router()
-const VALID_KEY_ALGORITHMS = new Set(['ML-KEM', 'ML-DSA', 'SPHINCS+', 'HYBRID'])
 
 function tokenFromRequest(req: Request): string | null {
   const headerToken = getToken(req)
@@ -77,25 +77,6 @@ function sseHeaders(res: Response) {
 
 function writeSse(res: Response, event: string, data: unknown) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-}
-
-function generatedKeyPayload(body: Record<string, any>, userId: string) {
-  const algorithm = String(body.algorithm || 'ML-KEM')
-  const bitLength = Number(body.bitLength || body.bit_length || 256)
-  const publicKey = randomBytes(Math.max(32, Math.ceil(bitLength / 8))).toString('hex')
-  const fingerprint = hash(`${userId}:${algorithm}:${publicKey}`, 40)
-  const expiresAt = new Date()
-  expiresAt.setFullYear(expiresAt.getFullYear() + 2)
-
-  return {
-    algorithm,
-    bitLength,
-    publicKey,
-    fingerprint,
-    expiresAt: expiresAt.toISOString(),
-    qualityScore: 0.992,
-    entropySource: 'QRNG',
-  }
 }
 
 async function fetchGeneratedRows(req: AuthenticatedRequest, res: Response, options: {
@@ -195,64 +176,8 @@ router.get('/keys', requireAuth, async (req: AuthenticatedRequest, res) => {
   })
 })
 
-router.post('/keys', requireAuth, async (req: AuthenticatedRequest, res) => {
-  const client = clientFor(req)
-  const userId = req.user!.id
-  const payload = generatedKeyPayload(req.body || {}, userId)
-
-  if (!VALID_KEY_ALGORITHMS.has(payload.algorithm)) {
-    return res.status(400).json({ error: { code: 'INVALID_ALGORITHM', message: 'Unsupported key algorithm' } })
-  }
-
-  let persistedId: string | null = null
-  if (client) {
-    const rotatedFrom = req.body?.rotatedFrom || req.body?.rotated_from || null
-    if (rotatedFrom) {
-      await client
-        .from('generated_keys')
-        .update({ status: 'rotated', revoked_at: new Date().toISOString() })
-        .eq('id', rotatedFrom)
-        .eq('user_id', userId)
-    }
-
-    const { data, error } = await client
-      .from('generated_keys')
-      .insert({
-        user_id: userId,
-        algorithm: payload.algorithm,
-        bit_length: payload.bitLength,
-        entropy_source: payload.entropySource,
-        quality_score: payload.qualityScore,
-        fingerprint: payload.fingerprint,
-        status: 'active',
-        expires_at: payload.expiresAt,
-        rotated_from: rotatedFrom,
-        label: req.body?.label || null,
-      })
-      .select('id')
-      .single()
-
-    if (!error) persistedId = data?.id || null
-    if (error && !isMissingTable(error)) console.error('Key persist error:', error)
-  }
-
-  return res.json({
-    data: {
-      id: persistedId || randomBytes(16).toString('hex'),
-      publicKey: payload.publicKey,
-      algorithm: payload.algorithm,
-      bitLength: payload.bitLength,
-      fingerprint: payload.fingerprint,
-      entropySource: payload.entropySource,
-      qualityScore: payload.qualityScore,
-      status: 'active',
-      createdAt: new Date().toISOString(),
-      expiresAt: payload.expiresAt,
-      rotatedFrom: req.body?.rotatedFrom || null,
-      label: req.body?.label || null,
-      persisted: Boolean(persistedId),
-    },
-  })
+router.post('/keys', requireAuth, (_req, res) => {
+  res.status(503).json({ error: ISSUANCE_UNAVAILABLE })
 })
 
 router.patch('/keys', requireAuth, async (req: AuthenticatedRequest, res) => {
@@ -407,19 +332,38 @@ router.post('/otp/validate', requireAuth, async (req: AuthenticatedRequest, res)
   const isExpired = record.expires_at ? new Date(record.expires_at) < new Date() : false
   const isUsed = record.status === 'used'
   const isRevoked = record.status === 'revoked'
-  const valid = hashMatch && !isExpired && !isUsed && !isRevoked
   const validatedAt = new Date().toISOString()
   const label = parseLabel(record.label)
+  let valid = false
+  let reason = 'OTP is no longer available'
 
-  if (valid) {
-    await client.from('generated_keys').update({ status: 'used', revoked_at: validatedAt }).eq('id', record.id).eq('user_id', userId)
+  if (!hashMatch) reason = 'OTP value does not match'
+  else if (isExpired) reason = 'OTP has expired'
+  else if (isUsed) reason = 'OTP has already been used'
+  else if (isRevoked) reason = 'OTP has been revoked'
+  else {
+    const claim = client.from('generated_keys')
+      .update({ status: 'used', revoked_at: validatedAt })
+      .eq('id', record.id)
+      .eq('user_id', userId)
+      .eq('algorithm', 'OTP')
+      .eq('fingerprint', submittedHex)
+      .or(`expires_at.is.null,expires_at.gt.${validatedAt}`)
+    const { data: consumed, error: claimError } = await (
+      record.status == null ? claim.is('status', null) : claim.eq('status', record.status)
+    ).select('id').maybeSingle()
+    if (claimError) return res.status(500).json({ error: { code: 'VALIDATE_FAILED', message: 'Failed to validate OTP' } })
+    if (consumed) {
+      valid = true
+      reason = 'Valid'
+    }
   }
 
   return res.json({
     data: {
       valid,
       otp_id: record.id,
-      reason: !hashMatch ? 'OTP value does not match' : isExpired ? 'OTP has expired' : isUsed ? 'OTP has already been used' : isRevoked ? 'OTP has been revoked' : 'Valid',
+      reason,
       format: label.format || 'numeric',
       purpose: label.purpose || 'login',
       length: record.bit_length,
@@ -485,44 +429,8 @@ router.get('/otp/stream', requireAuth, async (req: AuthenticatedRequest, res) =>
   })
 })
 
-router.post('/pki', requireAuth, async (req: AuthenticatedRequest, res) => {
-  const client = clientFor(req)
-  const userId = req.user!.id
-  const commonName = req.body?.common_name
-  if (!commonName) return res.status(400).json({ error: { code: 'INVALID_REQUEST', message: 'common_name required' } })
-
-  const keyAlgorithm = req.body?.key_algorithm || 'ML-DSA'
-  const validityDays = Number(req.body?.validity_days || 365)
-  const expiresAt = new Date(Date.now() + validityDays * 86400000).toISOString()
-  const fingerprint = req.body?.fingerprint_sha256 || hash(`${commonName}:${Date.now()}`, 40)
-  const label = JSON.stringify({
-    common_name: commonName,
-    organization: req.body?.organization || null,
-    serial_number: req.body?.serial_number || null,
-    key_usage: req.body?.key_usage || [],
-    extended_key_usage: req.body?.extended_key_usage || [],
-    sans: req.body?.sans || [],
-    validity_days: validityDays,
-  })
-
-  let inserted: any = null
-  if (client) {
-    const { data, error } = await client.from('generated_keys').insert({
-      user_id: userId,
-      algorithm: `PKI-${keyAlgorithm}`,
-      bit_length: keyAlgorithm === 'ML-DSA' ? 2528 : keyAlgorithm === 'SPHINCS+' ? 256 : 768,
-      entropy_source: req.body?.entropy_source || 'QRNG',
-      quality_score: Number(req.body?.quality_score || 0.992),
-      fingerprint,
-      status: 'active',
-      expires_at: expiresAt,
-      label,
-    }).select('id, created_at').single()
-    if (!error) inserted = data
-    if (error && !isMissingTable(error)) console.error('PKI persist error:', error)
-  }
-
-  return res.json({ data: { id: inserted?.id || randomBytes(16).toString('hex'), common_name: commonName, key_algorithm: keyAlgorithm, validity_days: validityDays, entropy_source: req.body?.entropy_source || 'QRNG', quality_score: Number(req.body?.quality_score || 0.992), fingerprint, expires_at: expiresAt, created_at: inserted?.created_at || new Date().toISOString(), status: 'active', persisted: Boolean(inserted) } })
+router.post('/pki', requireAuth, (_req, res) => {
+  res.status(503).json({ error: ISSUANCE_UNAVAILABLE })
 })
 
 router.get('/pki', requireAuth, async (req: AuthenticatedRequest, res) => {
@@ -641,8 +549,9 @@ router.get('/qrng/status', (_req, res) => {
 })
 
 router.post('/qrng/generate/stream', requireAuth, async (req: AuthenticatedRequest, res) => {
-  sseHeaders(res)
   const action = String(req.body?.action || 'entropy')
+  if (isIssuanceAction(action)) return res.status(503).json({ error: ISSUANCE_UNAVAILABLE })
+  sseHeaders(res)
   const stages = ['allocate', 'sample', 'condition', 'derive', 'seal']
   for (let index = 0; index < stages.length; index += 1) {
     writeSse(res, 'progress', { stage: stages[index], progress: Math.round(((index + 1) / stages.length) * 100) })

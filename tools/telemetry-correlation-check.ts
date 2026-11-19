@@ -60,7 +60,7 @@ const portfolio = buildAssetPortfolio({
 
 const scannerEvidence: Row[] = [
   { id: 'se1', asset_name: 'edge.example.com', host: 'edge.example.com', protocol: 'TLS', observed_algorithm: 'X25519MLKEM768', observed_at: minutesAgo(30), created_at: minutesAgo(30) },
-  { id: 'se2', asset_name: 'api.example.com', host: 'api.example.com', protocol: 'TLS', observed_algorithm: 'X25519MLKEM768', observed_at: minutesAgo(30), created_at: minutesAgo(30) },
+  { id: 'se2', asset_name: 'api.example.com', host: 'api.example.com', port: 443, protocol: 'TLS', observed_algorithm: 'X25519MLKEM768', observed_at: minutesAgo(30), created_at: minutesAgo(30) },
   // Same channel, second reading on edge — must NOT count as a second source.
   { id: 'se3', asset_name: 'edge.example.com', host: 'edge.example.com', protocol: 'TLS', observed_algorithm: 'AES-256-GCM', observed_at: minutesAgo(25), created_at: minutesAgo(25) },
 ]
@@ -68,7 +68,7 @@ const scannerEvidence: Row[] = [
 const runtimeEvents: Row[] = [
   { id: 'rt1', asset_id: 'a-edge', asset_name: 'edge.example.com', agent_id: 'agent-1', key_exchange_algorithm: 'X25519MLKEM768', protocol: 'TLS', observed_at: minutesAgo(5), created_at: minutesAgo(5) },
   // Runtime disagrees with discovery on api.example.com.
-  { id: 'rt2', asset_id: 'a-conflict', asset_name: 'api.example.com', agent_id: 'agent-1', key_exchange_algorithm: 'X25519', protocol: 'TLS', observed_at: minutesAgo(5), created_at: minutesAgo(5) },
+  { id: 'rt2', asset_id: 'a-conflict', asset_name: 'api.example.com', host: 'api.example.com', port: 443, agent_id: 'agent-1', key_exchange_algorithm: 'X25519', protocol: 'TLS', observed_at: minutesAgo(5), created_at: minutesAgo(5) },
   // An unclassifiable reading — must never be treated as disagreement.
   { id: 'rt3', asset_id: 'a-edge', asset_name: 'edge.example.com', agent_id: 'agent-1', algorithm: 'proprietary-wrapper', observed_at: minutesAgo(4), created_at: minutesAgo(4) },
 ]
@@ -146,6 +146,15 @@ console.log('\n3. Two readings from one channel are ONE source')
   const edgeHybrid = model.observations.find((o) => o.assetName === 'edge.example.com' && o.algorithm === 'X25519MLKEM768')!
   assert(edgeHybrid.sourceCount === 3, 'edge hybrid confirmed by 3 DISTINCT channels', `${edgeHybrid.sourceCount}: ${edgeHybrid.sources.join(', ')}`)
   assert(new Set(edgeHybrid.sources).size === edgeHybrid.sources.length, 'source names are never repeated')
+  const mirrored = buildCorrelationIntelligence({
+    ...base,
+    assets: [{ ...portfolio.assets[0], name: 'edge.example.com', hostname: 'edge.example.com' },
+      { ...portfolio.assets[0], id: 'different-asset', name: 'edge.example.com', hostname: 'different.example.com' }],
+    scannerEvidence: [{ ...scannerEvidence[0], raw_evidence: { binding: { attribution: 'bound', assetId: portfolio.assets[0].id } } }],
+    runtimeEvents: [{ ...runtimeEvents[0], asset_id: portfolio.assets[0].id, metadata: { observationKind: 'scan-evidence', evidenceId: scannerEvidence[0].id } }],
+    cryptoInventory: [],
+  })
+  assert(mirrored.kpis.assetsCovered === 1 && mirrored.kpis.corroboratedAssets === 0, 'mirrored and same-name rows do not invent independent asset coverage')
 
   const tiers = model.coverage.reduce((s, c) => s + c.count, 0)
   assert(tiers === model.kpis.assetsTotal, 'coverage tiers sum to the asset count', `${tiers} vs ${model.kpis.assetsTotal}`)

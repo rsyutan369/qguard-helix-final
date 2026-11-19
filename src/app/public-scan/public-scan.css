@@ -1,0 +1,249 @@
+/* The palette, type families, and easing come from the homepage. This scope
+   also travels with the scan's portalled dialogs. */
+.public-scan-surface {
+  color-scheme: light;
+  --scan-bg: var(--lp-bg);
+  --scan-text: var(--lp-text);
+  --scan-muted: var(--lp-text-3);
+  --scan-panel: rgb(255 255 255 / 90%);
+  --scan-console: rgb(250 252 255 / 94%);
+  --scan-nav: rgb(255 255 255 / 66%);
+  --scan-nav-solid: rgb(255 255 255 / 94%);
+  --scan-line: var(--lp-line);
+  --scan-focus: var(--lp-gold-ink);
+  --scan-shadow: 0 1px 2px rgb(11 29 58 / 5%), 0 16px 44px -27px rgb(35 63 125 / 30%);
+  --scan-action: #294cbf;
+  --scan-action-hover: #203d9a;
+  --scan-atmo-base: #fff;
+  --scan-atmo-canvas: 0.84;
+  --scan-switch-selection: #fff;
+  --font-mono: var(--lp-mono);
+  color: var(--scan-text);
+  font-family: var(--lp-sans);
+}
+
+.public-scan-surface--dark {
+  color-scheme: dark;
+  --scan-bg: #081226;
+  --scan-text: var(--lp-ink-text);
+  --scan-muted: var(--lp-ink-text-2);
+  --scan-panel: rgb(14 26 51 / 94%);
+  --scan-console: rgb(8 17 36 / 96%);
+  --scan-nav: rgb(8 18 38 / 66%);
+  --scan-nav-solid: rgb(8 18 38 / 94%);
+  --scan-line: var(--lp-ink-line);
+  --scan-focus: #aabaff;
+  --scan-shadow: 0 1px 0 rgb(255 255 255 / 5%) inset, 0 20px 60px -35px rgb(0 0 0 / 90%);
+  --scan-action: #a6b7ff;
+  --scan-action-hover: #c0ccff;
+  --scan-atmo-base: #081226;
+  --scan-atmo-canvas: 0.55;
+  --scan-switch-selection: #263a62;
+  --color-slate-500: #a1b0c9;
+  --color-slate-600: #8fa1be;
+}
+
+.public-scan-shell {
+  position: relative;
+  isolation: isolate;
+  background-color: var(--scan-bg);
+}
+
+html:has(.public-scan-shell) {
+  scrollbar-color: #9caecc #f6f8fd;
+}
+
+html:has(.public-scan-surface--dark.public-scan-shell) {
+  scrollbar-color: #4d648a #081226;
+}
+
+.public-scan-focus { background-color: var(--scan-bg); }
+
+.public-scan-atmosphere {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: var(--scan-atmo-base);
+}
+
+.public-scan-atmosphere canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  opacity: var(--scan-atmo-canvas);
+  transition: opacity 300ms var(--lp-ease);
+}
+
+.public-scan-surface--dark .public-scan-atmosphere canvas {
+  mix-blend-mode: screen;
+  filter: invert(1) hue-rotate(180deg);
+}
+
+.public-scan-nav,
+.public-scan-footer {
+  background-color: var(--scan-nav);
+  border-color: var(--scan-line);
+  transition: background-color 260ms var(--lp-ease), box-shadow 260ms var(--lp-ease);
+}
+
+.public-scan-nav[data-scrolled="true"] {
+  background-color: var(--scan-nav-solid);
+  box-shadow: 0 8px 28px -21px rgb(11 29 58 / 45%);
+}
+
+.public-scan-surface :focus-visible {
+  outline: 2px solid var(--scan-focus);
+  outline-offset: 3px;
+}
+
+.public-scan-theme-switch {
+  display: grid;
+  min-height: 44px;
+  place-items: center;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.public-scan-theme-track {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, 26px);
+  place-items: center;
+  color: var(--scan-muted);
+  border: 1px solid var(--scan-line);
+  border-radius: inherit;
+  padding: 2px;
+  min-height: 32px;
+  background: var(--scan-panel);
+}
+
+.public-scan-theme-track::before {
+  content: "";
+  position: absolute;
+  inset: 2px auto 2px 2px;
+  width: 26px;
+  border-radius: 50%;
+  background: var(--scan-switch-selection);
+  box-shadow: 0 1px 4px rgb(11 29 58 / 22%);
+  transition: transform 220ms var(--lp-ease);
+}
+
+.public-scan-theme-switch[aria-checked="true"] .public-scan-theme-track::before { transform: translateX(26px); }
+.public-scan-theme-track svg { position: relative; }
+.public-scan-theme-switch[aria-checked="false"] svg:first-child,
+.public-scan-theme-switch[aria-checked="true"] svg:last-child { color: var(--scan-focus); }
+.public-scan-theme-switch:hover .public-scan-theme-track { border-color: var(--scan-focus); }
+
+.public-scan-surface .qg-scan-panel {
+  background-color: var(--scan-panel);
+  border-color: var(--scan-line);
+  box-shadow: var(--scan-shadow);
+  transition: background-color 260ms var(--lp-ease), border-color 260ms var(--lp-ease);
+}
+
+.public-scan-surface .public-scan-console {
+  background-color: var(--scan-console);
+  border-color: color-mix(in srgb, var(--scan-focus) 23%, transparent);
+}
+
+.public-scan-surface .public-scan-title {
+  max-width: 18ch;
+  font-size: clamp(1.95rem, 1.25rem + 2.3vw, 3.25rem);
+  font-weight: 600;
+  line-height: 1.03;
+  letter-spacing: -0.045em;
+  text-wrap: balance;
+}
+
+.public-scan-surface .public-scan-form {
+  border-color: color-mix(in srgb, var(--scan-focus) 35%, transparent);
+  background-color: var(--scan-panel);
+  box-shadow: var(--scan-shadow);
+}
+
+.public-scan-surface .public-scan-form:focus-within { border-color: var(--scan-focus); }
+.public-scan-surface .public-scan-form input:focus-visible { outline-offset: -2px; border-radius: 4px; }
+
+.public-scan-surface .public-scan-primary {
+  min-height: 44px;
+  background-color: var(--scan-action);
+  color: #fff;
+  transition: background-color 180ms var(--lp-ease);
+}
+
+.public-scan-surface--dark .public-scan-primary { color: var(--lp-ink); }
+.public-scan-surface .public-scan-primary:hover:not(:disabled) { background-color: var(--scan-action-hover); }
+
+/* Shared scanner views still use Tailwind's dark-surface utility colors.
+   Tune those tokens locally so drawers, tabs and reports inherit legible ink. */
+.public-scan-surface--light {
+  --color-white: var(--lp-text);
+  --color-slate-100: var(--lp-text);
+  --color-slate-200: var(--lp-text);
+  --color-slate-300: var(--lp-text-2);
+  --color-slate-400: var(--lp-text-2);
+  --color-slate-500: var(--lp-text-3);
+  --color-slate-600: var(--lp-text-3);
+  --color-cyan-100: #124875;
+  --color-cyan-200: #1c528c;
+  --color-cyan-300: #234f99;
+  --color-cyan-400: #285fb3;
+  --color-sky-400: #165890;
+  --color-violet-100: #44277c;
+  --color-violet-200: #4c2b94;
+  --color-violet-300: #5435a3;
+  --color-violet-400: #6242ab;
+  --color-emerald-50: #125846;
+  --color-emerald-100: #125846;
+  --color-emerald-200: #125846;
+  --color-emerald-300: #12634c;
+  --color-emerald-400: #12634c;
+  --color-amber-100: #663a0a;
+  --color-amber-200: #663a0a;
+  --color-amber-300: #71420b;
+  --color-amber-400: #884905;
+  --color-orange-400: #9b3e10;
+  --color-rose-100: #86243c;
+  --color-rose-200: #86243c;
+  --color-rose-300: #9d2242;
+  --color-rose-400: #a12848;
+}
+
+.public-scan-surface--light :is(
+  [class*="bg-[#04060e]"], [class*="bg-[#040810]"], [class*="bg-[#050914]"],
+  [class*="bg-[#050a15]"], [class*="bg-[#060b16]"], [class*="bg-[#070d1b]"],
+  [class*="bg-[#080d1a]"]
+):not(.qg-scan-panel, .public-scan-form) {
+  background-color: var(--scan-panel);
+}
+
+.public-scan-surface--light [class*="from-[#080d1a]"] {
+  --tw-gradient-from: var(--lp-card);
+}
+
+.public-scan-surface--light .qg-scan-locked-overlay {
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--lp-card) 85%, transparent),
+    var(--lp-card) 52%,
+    var(--lp-raised)
+  );
+}
+
+.public-scan-surface--light [class*="bg-[#03050c]"] { background-color: rgb(11 29 58 / 46%); }
+
+.public-scan-surface--light .bg-cyan-400.text-\[\#04060e\] {
+  background-color: var(--scan-action);
+  color: #fff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .public-scan-surface *,
+  .public-scan-surface *::before,
+  .public-scan-surface *::after {
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}

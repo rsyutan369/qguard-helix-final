@@ -10,6 +10,14 @@ coverage/
 !.env.example
 .report-smoke/
 
+# Generated media, downloaded tool dependencies, and one-off QA snapshots.
+/output/
+/.local-ci-tools/
+qguard-messaging/artifacts/**/*.before
+qguard-messaging/artifacts/**/*-before.json
+qguard-messaging/artifacts/**/input-hashes.json
+qguard-messaging/artifacts/**/unit-tests.json
+
 # Agent runtime bundle - rebuilt by "npm run agent:release" (chained from prebuild)
 tools/qguard-agent/dist/
 .playwright-mcp/
