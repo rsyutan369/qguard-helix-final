@@ -174,6 +174,56 @@ html:has(.public-scan-surface--dark.public-scan-shell) {
 .public-scan-surface--dark .public-scan-primary { color: var(--lp-ink); }
 .public-scan-surface .public-scan-primary:hover:not(:disabled) { background-color: var(--scan-action-hover); }
 
+.public-scan-surface--light .qg-exposure-primary {
+  min-height: 44px;
+  background: var(--scan-action);
+  color: #fff;
+}
+
+/* Pricing uses landing page surfaces. The assessment's text utility palette
+   remaps white to ink, so using bg-white here would also paint the dialog navy. */
+.public-scan-surface .public-scan-plan-dialog {
+  color-scheme: light;
+  background: var(--lp-card);
+  border-color: var(--lp-line-strong);
+  color: var(--lp-text);
+  box-shadow: 0 28px 80px rgb(11 29 58 / 24%);
+  --color-slate-400: var(--lp-text-3);
+  --color-slate-500: var(--lp-text-3);
+  --color-slate-600: var(--lp-text-2);
+  --color-slate-800: var(--lp-text);
+  --color-slate-900: var(--lp-text);
+}
+
+.public-scan-plan-dialog::backdrop { background: rgb(11 29 58 / 34%); }
+body:has(.public-scan-plan-dialog[open]) { overflow: hidden; }
+
+.public-scan-plan-dialog :is(.qg-plan-cycles, .qg-plan-card) {
+  background: var(--lp-card);
+  border-color: var(--lp-line-strong);
+}
+
+.public-scan-plan-dialog :is(.qg-plan-cycles, .qg-plan-card-featured) { background: var(--lp-bg); }
+.public-scan-plan-dialog .qg-plan-card-featured {
+  border-color: var(--lp-gold);
+  box-shadow: none;
+}
+
+.public-scan-plan-dialog .qg-plan-choice { border: 1px solid var(--lp-line-strong); }
+.public-scan-plan-dialog .qg-plan-choice:hover { border-color: var(--lp-gold-ink); }
+.public-scan-plan-dialog .qg-plan-selected {
+  background: #294cbf;
+  border-color: transparent;
+  color: #fff;
+}
+
+.public-scan-plan-dialog .qg-plan-choice.qg-plan-selected:hover { background: #203d9a; }
+.public-scan-surface .public-scan-plan-dialog :focus-visible,
+.public-scan-plan-dialog .peer:focus-visible + .qg-plan-cycle {
+  outline: 2px solid var(--lp-gold-ink);
+  outline-offset: 3px;
+}
+
 /* Shared scanner views still use Tailwind's dark-surface utility colors.
    Tune those tokens locally so drawers, tabs and reports inherit legible ink. */
 .public-scan-surface--light {
