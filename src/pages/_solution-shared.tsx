@@ -6,11 +6,10 @@
  * language (light theme, white + dot-grid background, CyberBackground particle
  * field, gold #d4af37 / cyan / violet accents, GlassCard system, Framer Motion
  * reveals) so all four marketing surfaces stay visually identical by
- * construction. The nav/footer are parameterized per product.
+ * construction. The navigation is parameterized per product.
  */
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { ChevronDown, Github, Globe, Linkedin, Twitter } from 'lucide-react';
 import { SkyAtmosphere } from '@/components/sky/SkyAtmosphere';
 import { cn } from '@/lib/utils';
 import {
@@ -58,8 +57,6 @@ export {
 export type { Feature, Score };
 
 export type NavLink = { label: string; href: string };
-export type FooterLink = { label: string; to?: string; href?: string };
-export type FooterGroup = { title: string; links: FooterLink[] };
 
 function SolutionNav({
   homePath,
@@ -124,97 +121,17 @@ function SolutionNav({
   );
 }
 
-const FooterCol: React.FC<{ title: string; links: FooterLink[] }> = ({ title, links }) => {
-  return (
-    <div>
-      <h3 className="font-mono text-[11px] font-bold uppercase tracking-widest text-slate-900">{title}</h3>
-      <ul className="mt-3 space-y-2">
-        {links.map((l) => (
-          <li key={l.label}>
-            {l.to ? (
-              <Link to={l.to} className="text-sm text-slate-600 no-underline transition-colors hover:text-gold">{l.label}</Link>
-            ) : (
-              <a href={l.href} className="text-sm text-slate-600 no-underline transition-colors hover:text-gold">{l.label}</a>
-            )}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function SolutionFooter({
-  homePath,
-  brandTitle,
-  brandTagline,
-  footerBlurb,
-  footerGroups,
-}: {
-  homePath: string;
-  brandTitle: string;
-  brandTagline: string;
-  footerBlurb: React.ReactNode;
-  footerGroups: FooterGroup[];
-}) {
-  return (
-    <footer className="relative z-10 mt-24 border-t border-slate-200 bg-white/70 px-6 py-14 backdrop-blur-xl">
-      <div className="mx-auto grid max-w-[96rem] gap-10 lg:grid-cols-[1.6fr_2fr]">
-        <div className="space-y-5">
-          <Link to={homePath} className="flex items-center gap-3 no-underline">
-            <img src="/NEW_LOGO.png" alt="QGuard logo" className="h-12 w-auto object-contain" />
-            <span className="flex flex-col leading-none">
-              <strong className="text-base font-black tracking-wide text-gold">{brandTitle}</strong>
-              <small className="mt-1 font-mono text-[9px] uppercase tracking-[0.3em] text-slate-500">// {brandTagline}</small>
-            </span>
-          </Link>
-          <p className="max-w-md text-sm leading-relaxed text-slate-600">{footerBlurb}</p>
-          <div className="flex items-center gap-2">
-            {[Twitter, Linkedin, Github].map((Icon, i) => (
-              <a key={i} href="#" aria-label="social" className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-gold hover:text-gold">
-                <Icon className="h-4 w-4" />
-              </a>
-            ))}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-8 sm:grid-cols-3">
-          {footerGroups.map((group) => (
-            <FooterCol key={group.title} title={group.title} links={group.links} />
-          ))}
-        </div>
-      </div>
-
-      <div className="mx-auto mt-12 flex max-w-[96rem] flex-col gap-4 border-t border-slate-200 pt-6 text-xs text-slate-500 md:flex-row md:items-center md:justify-between">
-        <p>&copy; {new Date().getFullYear()} QGuard Helix. All rights reserved.</p>
-        <div className="flex items-center gap-4">
-          <Link to="/privacy" className="no-underline hover:text-gold">Privacy</Link>
-          <Link to="/terms" className="no-underline hover:text-gold">Terms</Link>
-          <Link to="/refund" className="no-underline hover:text-gold">Refunds</Link>
-          <Link to="/contact" className="no-underline hover:text-gold">Contact</Link>
-          <span className="inline-flex items-center gap-1.5"><Globe className="h-3.5 w-3.5" /> English <ChevronDown className="h-3.5 w-3.5" /></span>
-        </div>
-      </div>
-    </footer>
-  );
-}
-
 export function SolutionLayout({
   homePath,
   brandTitle,
   brandSubtitle,
-  brandTagline,
   navLinks,
-  footerBlurb,
-  footerGroups,
   children,
 }: {
   homePath: string;
   brandTitle: string;
   brandSubtitle: string;
-  brandTagline: string;
   navLinks: NavLink[];
-  footerBlurb: React.ReactNode;
-  footerGroups: FooterGroup[];
   children: React.ReactNode;
 }) {
   const { pathname } = useLocation();
@@ -225,13 +142,6 @@ export function SolutionLayout({
       <SkyAtmosphere routeKey={pathname} />
       <SolutionNav homePath={homePath} brandTitle={brandTitle} brandSubtitle={brandSubtitle} navLinks={navLinks} />
       <main className="relative z-10">{children}</main>
-      <SolutionFooter
-        homePath={homePath}
-        brandTitle={brandTitle.toUpperCase()}
-        brandTagline={brandTagline}
-        footerBlurb={footerBlurb}
-        footerGroups={footerGroups}
-      />
     </div>
   );
 }

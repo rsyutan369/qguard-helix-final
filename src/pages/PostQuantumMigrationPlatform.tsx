@@ -158,46 +158,13 @@ const INCLUDED = [
   'Email Support',
 ];
 
-const FOOTER_GROUPS = [
-  {
-    title: 'Solutions',
-    links: [
-      { label: 'Qguard Messaging', to: '/qguard-messaging' },
-      { label: 'Quantum Readiness', to: '/quantum-readiness-assessment' },
-      { label: 'Free Scan', to: '/public-scan' },
-      { label: 'Migration Platform', to: '/post-quantum-migration-platform' },
-      { label: 'Trust & Governance', to: '/quantum-trust-governance-center' },
-    ],
-  },
-  {
-    title: 'Platform',
-    links: [
-      { label: 'QGuard Helix', href: '/' },
-      { label: 'Pricing', href: '/#pricing' },
-      { label: 'Documentation', href: '/docs' },
-      { label: 'Live Dashboard', href: '/dashboard/migration-planner' },
-    ],
-  },
-  {
-    title: 'Company',
-    links: [
-      { label: 'Sign in', href: '/login' },
-      { label: 'Get started', href: '/register' },
-      { label: 'Contact', href: '/docs' },
-    ],
-  },
-];
-
 export default function PostQuantumMigrationPlatform() {
   return (
     <SolutionLayout
       homePath="/post-quantum-migration-platform"
       brandTitle="Migration Platform"
       brandSubtitle="Post-Quantum Operations"
-      brandTagline="Post-Quantum Migration"
       navLinks={NAV_LINKS}
-      footerBlurb="The operational core of your post-quantum transition — discover the crypto estate, then plan, orchestrate and validate the migration to PQC with rollback-safe controls and runtime intelligence."
-      footerGroups={FOOTER_GROUPS}
     >
       <span id="top" />
 

@@ -239,13 +239,6 @@ export function AuthShell({ mode, nextQuery, children }: { mode: AuthMode; nextQ
           <aside className="lp-auth__aside">{children}</aside>
         </div>
       </main>
-
-      <footer className="lp-auth__footer">
-        <div className="lp-wrap">
-          <span>© {new Date().getFullYear()} Qguard Helix</span>
-          <span className="lp-auth__footer-mark">Your bridge to the quantum-safe future.</span>
-        </div>
-      </footer>
     </div>
   );
 }

@@ -384,47 +384,13 @@ const FEATURE_GRID: Feature[] = [
   },
 ];
 
-const FOOTER_GROUPS = [
-  {
-    title: 'Solutions',
-    links: [
-      { label: 'PQC Solutions', to: '/pqc-solutions' },
-      { label: 'Qguard Messaging', to: '/qguard-messaging' },
-      { label: 'Quantum Readiness', to: '/quantum-readiness-assessment' },
-      { label: 'Free Scan', to: '/public-scan' },
-      { label: 'Migration Platform', to: '/post-quantum-migration-platform' },
-      { label: 'Trust & Governance', to: '/quantum-trust-governance-center' },
-    ],
-  },
-  {
-    title: 'Platform',
-    links: [
-      { label: 'QGuard Helix', href: '/' },
-      { label: 'Pricing', href: '/#pricing' },
-      { label: 'Documentation', href: '/docs' },
-      { label: 'Live Dashboard', href: '/dashboard' },
-    ],
-  },
-  {
-    title: 'Company',
-    links: [
-      { label: 'Sign in', href: '/login' },
-      { label: 'Get started', href: '/register' },
-      { label: 'Contact', href: '/docs' },
-    ],
-  },
-];
-
 export default function PqcSolutions() {
   return (
     <SolutionLayout
       homePath="/pqc-solutions"
       brandTitle="PQC Solutions"
       brandSubtitle="Six Problems // Solved"
-      brandTagline="Post-Quantum Solutions"
       navLinks={NAV_LINKS}
-      footerBlurb="The six problems that stall every post-quantum migration — hidden trust, missing inventories, runtime cost, shadow crypto, unmanaged keys and the enterprise roadmap — solved as evidence-backed workflows in one platform."
-      footerGroups={FOOTER_GROUPS}
     >
       <PqcScrollExperience>
       <span id="top" />

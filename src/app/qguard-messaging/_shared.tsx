@@ -16,16 +16,12 @@ import {
   Copy,
   Download,
   FileCheck2,
-  Github,
-  Globe,
-  Linkedin,
   Loader2,
   Lock,
   MessageSquareLock,
   ShieldCheck,
   Sparkles,
   Terminal,
-  Twitter,
   X,
   type LucideIcon,
 } from 'lucide-react';
@@ -820,86 +816,6 @@ function MessagingNav() {
   );
 }
 
-function FooterCol({
-  title,
-  links,
-}: {
-  title: string;
-  links: Array<{ label: string; to?: string; href?: string }>;
-}) {
-  return (
-    <div>
-      <h3 className="font-mono text-[11px] font-bold uppercase tracking-widest text-slate-900">{title}</h3>
-      <ul className="mt-3 space-y-2">
-        {links.map((l) => (
-          <li key={l.label}>
-            {l.to ? (
-              <Link to={l.to} className="text-sm text-slate-600 no-underline transition-colors hover:text-gold">{l.label}</Link>
-            ) : (
-              <a href={l.href} className="text-sm text-slate-600 no-underline transition-colors hover:text-gold">{l.label}</a>
-            )}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function MessagingFooter() {
-  return (
-    <footer className="relative z-10 mt-24 border-t border-slate-200 bg-white/70 px-6 py-14 backdrop-blur-xl">
-      <div className="mx-auto grid max-w-[96rem] gap-10 lg:grid-cols-[1.6fr_2fr]">
-        <div className="space-y-5">
-          <Link to="/qguard-messaging" className="flex items-center gap-3 no-underline">
-            <img src="/NEW_LOGO.png" alt="QGuard logo" className="h-12 w-auto object-contain" />
-            <span className="flex flex-col leading-none">
-              <strong className="text-base font-black tracking-wide text-gold">QGUARD MESSAGING</strong>
-              <small className="mt-1 font-mono text-[9px] uppercase tracking-[0.3em] text-slate-500">// Quantum Cyber Defense</small>
-            </span>
-          </Link>
-          <p className="max-w-md text-sm leading-relaxed text-slate-600">
-            End-to-end encrypted messaging and on-device file encryption, with optional encrypted backup and sharing.
-          </p>
-          <div className="flex items-center gap-2">
-            {[Twitter, Linkedin, Github].map((Icon, i) => (
-              <a key={i} href="#" aria-label="social" className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:border-gold hover:text-gold">
-                <Icon className="h-4 w-4" />
-              </a>
-            ))}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-8 sm:grid-cols-3">
-          <FooterCol title="Product" links={[
-            { label: 'Overview', to: '/qguard-messaging' },
-            { label: 'Secure Chat', to: '/qguard-messaging/secure-chat' },
-            { label: 'Quantum Vault', to: '/qguard-messaging/quantum-vault' },
-          ]} />
-          <FooterCol title="Platform" links={[
-            { label: 'QGuard Helix', href: '/' },
-            { label: 'Documentation', href: '/docs' },
-            { label: 'Dashboard', href: '/dashboard' },
-          ]} />
-          <FooterCol title="Company" links={[
-            { label: 'Helix account sign-in', href: '/login' },
-            { label: 'Get started', href: '/register' },
-            { label: 'Contact', href: '/docs' },
-          ]} />
-        </div>
-      </div>
-
-      <div className="mx-auto mt-12 flex max-w-[96rem] flex-col gap-4 border-t border-slate-200 pt-6 text-xs text-slate-500 md:flex-row md:items-center md:justify-between">
-        <p>&copy; {new Date().getFullYear()} QGuard Helix. All rights reserved.</p>
-        <div className="flex items-center gap-4">
-          <a href="/docs" className="no-underline hover:text-gold">Privacy</a>
-          <a href="/docs" className="no-underline hover:text-gold">Terms</a>
-          <span className="inline-flex items-center gap-1.5"><Globe className="h-3.5 w-3.5" /> English <ChevronDown className="h-3.5 w-3.5" /></span>
-        </div>
-      </div>
-    </footer>
-  );
-}
-
 export function MessagingLayout({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
   React.useEffect(() => { window.scrollTo({ top: 0 }); }, [pathname]);
@@ -910,7 +826,6 @@ export function MessagingLayout({ children }: { children: React.ReactNode }) {
       <ScrollProgress />
       <MessagingNav />
       <main className="relative z-10">{children}</main>
-      <MessagingFooter />
     </div>
   );
 }

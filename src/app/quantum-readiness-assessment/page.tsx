@@ -254,14 +254,6 @@ export default function QuantumReadinessAssessmentPage() {
           </div>
         </section>
       </main>
-      <footer className="qa-footer">
-        <div className="qa-container">
-          <Link to="/">Qguard Helix</Link>
-          <nav aria-label="Company">
-            <Link to="/docs">Documentation</Link><Link to="/contact">Contact</Link><Link to="/privacy">Privacy</Link><Link to="/terms">Terms</Link>
-          </nav>
-        </div>
-      </footer>
     </div>
   );
 }

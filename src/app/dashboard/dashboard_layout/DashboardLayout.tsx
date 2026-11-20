@@ -19,6 +19,7 @@ import ThemeToggle from '@/components/theme/ThemeToggle';
 import { useSubscription } from '@/hooks/use-subscription';
 import { canAccessPath, resolveRequiredTier, type AccessTier } from '@/lib/subscription-access';
 import { StarterDashboard } from '@/app/dashboard/_components/StarterDashboard';
+import { SiteFooter } from '@/components/SiteFooter';
 import { UpgradeRequired } from '@/components/subscription/UpgradeRequired';
 import { SophiaCopilot } from '@/components/copilot/SophiaCopilot';
 import { useTheme } from '@/contexts/theme-context';
@@ -366,7 +367,7 @@ export default function DashboardLayout() {
   // say so and offer a retry rather than an upgrade prompt.
   if (!isOwner && !subscription.isActive && subscription.error) {
     return (
-      <div className="qg-dashboard-shell min-h-screen bg-[var(--qg-dashboard-bg)] text-slate-100">
+      <div className="qg-dashboard-shell flex min-h-screen flex-col bg-[var(--qg-dashboard-bg)] text-slate-100">
         <NoAccessHeader />
         <div role="alert" className="mx-auto mt-16 max-w-lg rounded-xl border border-amber-400/30 bg-amber-500/10 p-6 text-center">
           <h1 className="text-[18px] font-black text-white">We couldn't verify your plan</h1>
@@ -381,6 +382,7 @@ export default function DashboardLayout() {
             Retry
           </button>
         </div>
+        <div className="mt-auto pt-8"><SiteFooter /></div>
       </div>
     );
   }
@@ -388,16 +390,22 @@ export default function DashboardLayout() {
   // No active subscription (and not the owner) — block the whole dashboard.
   if (!isOwner && !subscription.isActive) {
     return (
-      <div className="qg-dashboard-shell min-h-screen bg-[var(--qg-dashboard-bg)] text-slate-100">
+      <div className="qg-dashboard-shell flex min-h-screen flex-col bg-[var(--qg-dashboard-bg)] text-slate-100">
         <NoAccessHeader />
         <UpgradeRequired requiredTier="starter" currentTier={subscription.tier} variant="no-subscription" />
+        <div className="mt-auto pt-8"><SiteFooter /></div>
       </div>
     );
   }
 
   // STARTER is scoped to QGuard Messaging — its own dashboard, no enterprise shell.
   if (effectiveTier === 'starter') {
-    return <StarterDashboard />;
+    return (
+      <>
+        <StarterDashboard />
+        <SiteFooter />
+      </>
+    );
   }
 
   // The Owner/Administrator dashboard is OWNER-ONLY — it is NOT a subscription
@@ -608,6 +616,7 @@ export default function DashboardLayout() {
             <UpgradeRequired requiredTier={resolveRequiredTier(location.pathname)} currentTier={effectiveTier} />
           )}
         </div>
+        <SiteFooter />
       </main>
 
       <DefaultViewRedirect userId={user.id} tier={effectiveTier} />

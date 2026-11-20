@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { useParams } from 'react-router-dom';
 import { ArrowRight, BadgeCheck, Building2, Fingerprint, LoaderCircle, Search, ShieldAlert, ShieldCheck, ShieldX } from 'lucide-react';
 import type { PublicCertificateVerification } from '@/types/quantum-certification';
-import { FOOTER_GROUPS, NAV_LINKS } from './_legal-shared';
+import { NAV_LINKS } from './_legal-shared';
 import { SolutionLayout } from './_solution-shared';
 import './verify-certificate.css';
 
@@ -219,10 +219,7 @@ export default function VerifyCertificate() {
       homePath="/"
       brandTitle="QGuard Helix"
       brandSubtitle="Certificate verification"
-      brandTagline="Post-Quantum Security Platform"
       navLinks={NAV_LINKS}
-      footerGroups={FOOTER_GROUPS}
-      footerBlurb="Verify a QGuard Helix Quantum Trust Certificate against the public registry."
     >
       <div className="qc-verify">
         <section className="qc-verify__hero" aria-labelledby="verify-title">

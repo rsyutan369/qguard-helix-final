@@ -66,7 +66,7 @@ const REVEAL_SELECTOR = [
   '.lp-faq__cats',
   '.lp-faq__item',
   '.lp-cta',
-  '.lp-footer__grid > *',
+  '.site-footer__grid > *',
   // Opt-in for pages that reuse this motion with their own markup (login, register).
   '[data-lp-reveal]',
 ].join(',');

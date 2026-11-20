@@ -5,6 +5,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useInView, useReducedMotion } from 'motion/react';
+import { SiteFooter } from '@/components/SiteFooter';
 import Navbar2 from "@/components/ui/navbar2";
 import { Hero195 } from "@/components/ui/hero-195";
 import { capabilities } from "@/components/ui/sticky-scroll-cards-section";
@@ -2247,92 +2248,6 @@ function FaqAndCtaSection() {
   );
 }
 
-function HomepageFooter({ onRequestDemo }: { onRequestDemo: () => void }) {
-  return (
-    <footer className="lp-footer">
-      <div className="lp-wrap">
-        <div className="lp-footer__grid">
-          <div>
-            <a href="#hero" className="lp-footer__brand">
-              <img src="/NEW_LOGO.png" alt="Qguard Helix logo" />
-              <span>
-                <strong>Qguard Helix</strong>
-                <small>Quantum Cyber Defense</small>
-              </span>
-            </a>
-
-            <p className="lp-footer__about">
-              Empowering enterprises to build a quantum-secure future with
-              confidence through cryptographic automation, continuous
-              vulnerability scanning, and continuous post-quantum readiness monitoring.
-            </p>
-          </div>
-
-          <nav className="lp-footer__cols" aria-label="Footer navigation">
-            {[
-              {
-                title: "Platform",
-                links: [
-                  { label: "Overview", href: "#hero" },
-                  { label: "Features", href: "/qguard-helix-features" }
-                ]
-              },
-              {
-                title: "Solutions",
-                links: [
-                  { label: "Use Cases", href: "#use-cases" },
-                  { label: "Migration Roadmap", href: "#roadmap" }
-                ]
-              },
-              {
-                title: "Resources",
-                links: [
-                  { label: "PQC Checklist", href: "/resources/pqc-checklist" },
-                  { label: "Documentation", href: "/docs" }
-                ]
-              }
-            ].map((column) => (
-              <div key={column.title}>
-                <h3>{column.title}</h3>
-                <ul>
-                  {column.links.map((link) => (
-                    <li key={`${column.title}-${link.label}`}>
-                      <a href={link.href}>{link.label}</a>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </nav>
-
-          <aside className="lp-footer__cta">
-            <h3>Ready to become quantum safe?</h3>
-            <p>
-              Schedule a walkthrough to see cryptographic discovery, quantum
-              risk scoring and post-quantum migration running on real data.
-            </p>
-            <button type="button" onClick={onRequestDemo} className="lp-btn lp-btn--primary lp-btn--dot">
-              Request Demo
-              <ButtonDot />
-            </button>
-          </aside>
-        </div>
-
-        <div className="lp-footer__bottom">
-          <p>&copy; {new Date().getUTCFullYear()} Qguard Helix. All rights reserved.</p>
-
-          <div className="lp-footer__legal">
-            <a href="/privacy">Privacy Policy</a>
-            <a href="/terms">Terms of Service</a>
-            <a href="/refund">Refund Policy</a>
-            <a href="/contact">Contact</a>
-          </div>
-        </div>
-      </div>
-    </footer>
-  );
-}
-
 export default function App() {
   const [isDemoModalOpen, setIsDemoModalOpen] = useState(false);
   const openDemoModal = () => setIsDemoModalOpen(true);
@@ -2366,7 +2281,12 @@ export default function App() {
         <PricingSection />
         <FaqAndCtaSection />
 
-        <HomepageFooter onRequestDemo={openDemoModal} />
+        <SiteFooter>
+          <button type="button" onClick={openDemoModal} className="lp-btn lp-btn--primary lp-btn--dot">
+            Request Demo
+            <ButtonDot />
+          </button>
+        </SiteFooter>
 
         <RequestDemoModal isOpen={isDemoModalOpen} onClose={() => setIsDemoModalOpen(false)} />
       </div>

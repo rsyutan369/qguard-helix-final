@@ -66,7 +66,7 @@
 .qa-brand small { display: block; margin-top: 4px; color: var(--qa-muted); font: 9px var(--qa-mono); letter-spacing: .13em; }
 .qa-nav-links { display: flex; align-items: center; gap: clamp(14px, 2vw, 32px); color: var(--qa-accent); font-size: 14px; font-weight: 650; }
 .qa-nav-links a { display: inline-flex; align-items: center; gap: 5px; min-height: 44px; white-space: nowrap; }
-.qa-nav-links a:hover, .qa-footer a:hover { color: #4c1d95; }
+.qa-nav-links a:hover { color: #4c1d95; }
 .qa-menu { display: none; }
 
 .qa-button {
@@ -420,11 +420,6 @@
 .qa-close { padding-block: clamp(53px, 6vw, 85px); border-top: 1px solid var(--qa-line); }
 .qa-close-grid { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 24px; }
 .qa-close h2 { max-width: none; font-size: clamp(34px, 4vw, 55px); text-wrap: initial; }
-.qa-footer { border-top: 1px solid var(--qa-line); color: var(--qa-muted); font-size: 14px; }
-.qa-footer .qa-container { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 20px; padding-block: 11px; }
-.qa-footer nav { display: flex; flex-wrap: wrap; gap: 0 18px; }
-.qa-footer a { display: inline-flex; align-items: center; min-height: 44px; }
-.qa-footer .qa-container > a { font-weight: 730; color: var(--qa-ink); }
 
 @supports (animation-timeline: view()) {
   @media (prefers-reduced-motion: no-preference) {

@@ -1,6 +1,6 @@
 /**
  * Shared chrome for the public legal surfaces (/terms, /privacy, /refund),
- * whose nav and footer /contact reuses too.
+ * whose navigation /contact reuses too.
  *
  * Reuses the marketing design language via SolutionLayout so the legal pages
  * are unmistakably part of the same product, then adds what a policy document
@@ -26,30 +26,6 @@ export const NAV_LINKS = [
   { label: 'Platform', href: '/qguard-helix-features' },
   { label: 'Downloads', href: '/downloads' },
   { label: 'Docs', href: '/docs' },
-];
-
-export const FOOTER_GROUPS = [
-  {
-    title: 'Product',
-    links: [
-      { label: 'Platform Features', to: '/qguard-helix-features' },
-      { label: 'Quantum Messaging', to: '/qguard-messaging' },
-      { label: 'Readiness Assessment', to: '/quantum-readiness-assessment' },
-      { label: 'Downloads', to: '/downloads' },
-    ],
-  },
-  {
-    title: 'Legal',
-    links: LEGAL_PAGES.map((page) => ({ label: page.label, to: page.path })),
-  },
-  {
-    title: 'Support',
-    links: [
-      { label: 'Contact Support', to: '/contact' },
-      { label: 'Documentation', to: '/docs' },
-      { label: 'Free Public Scan', to: '/public-scan' },
-    ],
-  },
 ];
 
 /** Inline paragraph + list primitives so every document reads identically. */
@@ -105,19 +81,7 @@ export function LegalLayout({
       homePath="/"
       brandTitle="QGuard Helix"
       brandSubtitle="Legal"
-      brandTagline="Post-Quantum Security Platform"
       navLinks={NAV_LINKS}
-      footerBlurb={
-        <>
-          {SITE.productName} is a post-quantum cryptography discovery, migration and governance platform
-          operated from {SITE.city}, {SITE.province}, {SITE.country}. Questions about these documents go to{' '}
-          <a href={`mailto:${SITE.supportEmail}`} className="font-semibold text-gold no-underline hover:underline">
-            {SITE.supportEmail}
-          </a>
-          .
-        </>
-      }
-      footerGroups={FOOTER_GROUPS}
     >
       <section className="relative px-6 pb-8 pt-16 md:pt-24">
         <div className="mx-auto max-w-[72rem]">

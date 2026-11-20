@@ -9,8 +9,7 @@
   flex-direction: column;
 }
 
-.lp-auth > main,
-.lp-auth > footer {
+.lp-auth > main {
   position: relative;
   z-index: 1;
 }
@@ -694,25 +693,6 @@
   width: 26px;
   height: 26px;
   stroke-width: 1.5;
-}
-
-/* ---------- Footer ---------- */
-
-.lp-auth__footer {
-  border-top: 1px solid var(--lp-line);
-  background: rgba(255, 255, 255, 0.7);
-}
-
-.lp-auth__footer .lp-wrap {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 8px 24px;
-  padding-top: 20px;
-  padding-bottom: 20px;
-  font-family: var(--lp-mono);
-  font-size: 12px;
-  color: var(--lp-text-3);
 }
 
 /* ---------- Page-to-page transition (login <-> register) ---------- */

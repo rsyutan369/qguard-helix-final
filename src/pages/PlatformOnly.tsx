@@ -10,7 +10,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import { ArrowRight, Mail, Radar } from 'lucide-react';
 import { GhostButton, GoldButton, Reveal, SolutionLayout } from './_solution-shared';
-import { FOOTER_GROUPS, NAV_LINKS } from './_legal-shared';
+import { NAV_LINKS } from './_legal-shared';
 import { SITE } from '@/lib/site-identity';
 
 /** Paths that are platform features, as opposed to a mistyped address. */
@@ -39,18 +39,7 @@ export default function PlatformOnly() {
       homePath="/"
       brandTitle="QGuard Helix"
       brandSubtitle="Platform"
-      brandTagline="Post-Quantum Security Platform"
       navLinks={NAV_LINKS}
-      footerBlurb={
-        <>
-          Questions go to{' '}
-          <a href={`mailto:${SITE.salesEmail}`} className="font-semibold text-gold no-underline hover:underline">
-            {SITE.salesEmail}
-          </a>
-          .
-        </>
-      }
-      footerGroups={FOOTER_GROUPS}
     >
       <section className="relative px-6 pb-24 pt-20 md:pt-28">
         <div className="mx-auto max-w-[48rem] text-center">

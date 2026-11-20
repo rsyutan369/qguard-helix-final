@@ -865,9 +865,11 @@ export default function PublicScanPage() {
         )}
         </div>
         )}
+        <p className="relative mx-auto max-w-[92rem] px-6 py-6 text-sm text-slate-500">
+          The Public Quantum Exposure Assessment analyzes publicly observable TLS, certificate, DNS and HTTP
+          metadata. Use authenticated cryptographic discovery for a full assessment of your estate.
+        </p>
       </main>
-
-      <PublicScanFooter />
     </div>
     </QveThemeProvider>
     </MotionConfig>
@@ -1008,74 +1010,5 @@ function FinalCta() {
         </div>
       </div>
     </Panel>
-  );
-}
-
-/* ---------------------------------------------------------------- footer --- */
-
-function PublicScanFooter() {
-  return (
-    <footer className="public-scan-footer relative z-10 border-t px-6 py-10 backdrop-blur-xl">
-      <div className="mx-auto flex max-w-[92rem] flex-col gap-6 md:flex-row md:items-start md:justify-between" data-lp-reveal>
-        <div className="max-w-md">
-          <Link to="/" className="flex items-center gap-2.5 no-underline">
-            <img src="/NEW_LOGO.png" alt="" className="h-9 w-auto object-contain" />
-            <span className="text-[15px] font-black tracking-wide text-white">QGUARD HELIX</span>
-          </Link>
-          <p className="mt-3 text-[12px] leading-relaxed text-slate-500">
-            The Public Quantum Exposure Assessment analyzes publicly observable TLS, certificate, DNS and HTTP
-            metadata only. It is not a substitute for an authenticated cryptographic discovery of your estate.
-          </p>
-        </div>
-        <div className="grid grid-cols-2 gap-8 sm:grid-cols-3">
-          {[
-            {
-              title: 'Assessment',
-              links: [
-                { label: 'Quantum Readiness', to: '/quantum-readiness-assessment' },
-                { label: 'PQC Solutions', to: '/pqc-solutions' },
-                { label: 'Migration Platform', to: '/post-quantum-migration-platform' },
-              ],
-            },
-            {
-              title: 'Platform',
-              links: [
-                { label: 'Dashboard', to: '/dashboard' },
-                { label: 'QGuard Messaging', to: '/qguard-messaging' },
-                { label: 'Documentation', to: '/docs' },
-              ],
-            },
-            {
-              title: 'Get started',
-              links: [
-                { label: 'Sign in', to: '/login' },
-                { label: 'Create account', to: '/register' },
-                { label: 'Verify a certificate', to: '/verify-certificate' },
-              ],
-            },
-          ].map((column) => (
-            <div key={column.title}>
-              <h3 className="font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
-                {column.title}
-              </h3>
-              <ul className="mt-2.5 space-y-1.5">
-                {column.links.map((link) => (
-                  <li key={link.label}>
-                    <Link to={link.to} className="text-[12.5px] text-slate-500 no-underline transition-colors hover:text-cyan-300">
-                      {link.label}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      </div>
-      <p className="mx-auto mt-8 max-w-[92rem] border-t border-white/[0.06] pt-5 text-[11.5px] text-slate-600">
-        &copy; {new Date().getFullYear()} QGuard Helix. Quantum Exposure Assessment™, Cryptographic Governance
-        Center™, Runtime Crypto Telemetry™, Migration Sandbox™ and Sophia AI Security Copilot™ are trademarks of
-        QGuard Helix.
-      </p>
-    </footer>
   );
 }

@@ -12,6 +12,7 @@
  * resolve the same way.
  */
 import { BrowserRouter as Router, Navigate, Route, Routes } from 'react-router-dom';
+import { RouteFooter } from '@/components/SiteFooter';
 import { AuthProvider } from './contexts/auth-context';
 import { ThemeProvider } from './contexts/theme-context';
 import Landing from './pages/Landing';
@@ -68,6 +69,7 @@ export default function PublicApp() {
             <Route path="/quantum-emulation" element={<QuantumSimulationPage />} />
             <Route path="*" element={<PlatformOnly />} />
           </Routes>
+          <RouteFooter />
         </Router>
       </AuthProvider>
     </ThemeProvider>

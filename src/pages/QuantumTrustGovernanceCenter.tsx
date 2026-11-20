@@ -161,46 +161,13 @@ const INCLUDED = [
   'Email Support',
 ];
 
-const FOOTER_GROUPS = [
-  {
-    title: 'Solutions',
-    links: [
-      { label: 'Qguard Messaging', to: '/qguard-messaging' },
-      { label: 'Quantum Readiness', to: '/quantum-readiness-assessment' },
-      { label: 'Free Scan', to: '/public-scan' },
-      { label: 'Migration Platform', to: '/post-quantum-migration-platform' },
-      { label: 'Trust & Governance', to: '/quantum-trust-governance-center' },
-    ],
-  },
-  {
-    title: 'Platform',
-    links: [
-      { label: 'QGuard Helix', href: '/' },
-      { label: 'Pricing', href: '/#pricing' },
-      { label: 'Documentation', href: '/docs' },
-      { label: 'Live Dashboard', href: '/dashboard/qkms/overview' },
-    ],
-  },
-  {
-    title: 'Company',
-    links: [
-      { label: 'Sign in', href: '/login' },
-      { label: 'Get started', href: '/register' },
-      { label: 'Contact', href: '/docs' },
-    ],
-  },
-];
-
 export default function QuantumTrustGovernanceCenter() {
   return (
     <SolutionLayout
       homePath="/quantum-trust-governance-center"
       brandTitle="Trust & Governance"
       brandSubtitle="Quantum Governance Center"
-      brandTagline="Trust & Governance"
       navLinks={NAV_LINKS}
-      footerBlurb="The enterprise trust anchor for your cryptographic estate — govern thousands of assets, run a full quantum key management system, and prove compliance across SOC 2, PCI-DSS 4.0, NIST and your own frameworks."
-      footerGroups={FOOTER_GROUPS}
     >
       <span id="top" />
 

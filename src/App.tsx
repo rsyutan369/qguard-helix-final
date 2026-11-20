@@ -1,4 +1,5 @@
 import { lazy, Suspense } from 'react';
+import { RouteFooter } from '@/components/SiteFooter';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/auth-context';
 import { ThemeProvider } from './contexts/theme-context';
@@ -343,6 +344,7 @@ export default function App() {
           <Route path="q-features" element={<QFeaturesPage />} />
           </Route>
         </Routes>
+        <RouteFooter />
         </Suspense>
       </Router>
       </UserPreferencesProvider>

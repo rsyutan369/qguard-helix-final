@@ -80,8 +80,7 @@ html:has(.public-scan-surface--dark.public-scan-shell) {
   filter: invert(1) hue-rotate(180deg);
 }
 
-.public-scan-nav,
-.public-scan-footer {
+.public-scan-nav {
   background-color: var(--scan-nav);
   border-color: var(--scan-line);
   transition: background-color 260ms var(--lp-ease), box-shadow 260ms var(--lp-ease);

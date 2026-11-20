@@ -17,7 +17,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { Mail, CreditCard, ShieldCheck, Scale, LifeBuoy, MapPin, Clock, Copy, Check, ExternalLink } from 'lucide-react';
 import { SolutionLayout, Reveal } from './_solution-shared';
-import { NAV_LINKS, FOOTER_GROUPS } from './_legal-shared';
+import { NAV_LINKS } from './_legal-shared';
 import { SITE, REFUND_POLICY, formatLegalDate } from '@/lib/site-identity';
 
 /**
@@ -144,19 +144,7 @@ export default function ContactPage() {
       homePath="/"
       brandTitle="QGuard Helix"
       brandSubtitle="Contact"
-      brandTagline="Post-Quantum Security Platform"
       navLinks={NAV_LINKS}
-      footerBlurb={
-        <>
-          {SITE.productName} is operated by {SITE.providerName} from {SITE.city}, {SITE.province}, {SITE.country}. Every
-          enquiry reaches{' '}
-          <a href={`mailto:${SITE.supportEmail}`} className="font-semibold text-gold no-underline hover:underline">
-            {SITE.supportEmail}
-          </a>
-          .
-        </>
-      }
-      footerGroups={FOOTER_GROUPS}
     >
       <section className="relative px-6 pb-8 pt-16 md:pt-24">
         <div className="mx-auto max-w-[72rem]">

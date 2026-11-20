@@ -86,36 +86,6 @@ const NAV_LINKS = [
   { label: 'Compare', href: '#compare' },
 ];
 
-const FOOTER_GROUPS = [
-  {
-    title: 'Assess',
-    links: [
-      { label: 'Quantum Readiness', to: '/dashboard/quantum-readiness' },
-      { label: 'Quantum Remediation', to: '/dashboard/quantum-readiness/remediation' },
-      { label: 'Quantum Certification', to: '/dashboard/quantum-certification' },
-      { label: 'Free Public Scan', to: '/public-scan' },
-    ],
-  },
-  {
-    title: 'Migrate',
-    links: [
-      { label: 'Migration Planner', to: '/dashboard/migration-planner' },
-      { label: 'Migration Sandbox', to: '/dashboard/migration-sandbox' },
-      { label: 'Live Migration', to: '/dashboard/live-migration' },
-      { label: 'Migration Timeline', to: '/dashboard/migration-timeline' },
-    ],
-  },
-  {
-    title: 'Platform',
-    links: [
-      { label: 'QGuard Helix', href: '/' },
-      { label: 'PQC Solutions', to: '/pqc-solutions' },
-      { label: 'Documentation', href: '/docs' },
-      { label: 'Pricing', href: '/#pricing' },
-    ],
-  },
-];
-
 const TRUST_ITEMS = [
   'FIPS 203 · ML-KEM',
   'FIPS 204 · ML-DSA',
@@ -765,17 +735,7 @@ export default function QguardHelixFeatures() {
       homePath="/qguard-helix-features"
       brandTitle="QGuard Helix"
       brandSubtitle="Platform Features"
-      brandTagline="Quantum Cyber Defense"
       navLinks={NAV_LINKS}
-      footerBlurb={
-        <>
-          QGuard Helix discovers cryptographic assets, measures quantum exposure, plans and rehearses
-          post-quantum migration, executes it with verified rollback, and holds the signed evidence
-          your auditors and customers ask for &mdash; built on the NIST post-quantum standards
-          (FIPS&nbsp;203/204/205).
-        </>
-      }
-      footerGroups={FOOTER_GROUPS}
     >
       {/* ============================================================ hero == */}
       <FeaturesBookHero modules={MODULES} />
