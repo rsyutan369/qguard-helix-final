@@ -1,6 +1,8 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useObservedDetail } from '@/hooks/use-observed-paged-resource';
+import { TelemetryAssetComparison } from '../_components/observability/TelemetryAssetComparison';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Activity,
@@ -17,7 +19,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
-import { useAlgorithmDetail, useEncryptionMonitoring, useEncryptionTable, type AlgorithmDetail } from '@/hooks/use-encryption-monitoring';
+import { useEncryptionMonitoring, useEncryptionTable, type AlgorithmDetail } from '@/hooks/use-encryption-monitoring';
 import type { AlgorithmRow, EncryptionFinding, KeyRecord, ProtectionLayer } from '@/lib/encryption/types';
 import { EncryptionPostureStrip } from '../_components/observability/EncryptionPostureStrip';
 import {
@@ -85,33 +87,29 @@ const LAYER_LABEL: Record<ProtectionLayer, string> = {
 
 export default function EncryptionMonitoring() {
   const { data, state, error, live, lastSyncedAt, refresh, reconnect } = useEncryptionMonitoring();
-  const { loadAlgorithm, loading: detailLoading } = useAlgorithmDetail();
 
   const [search, setSearch] = useState('');
   const [strength, setStrength] = useState('all');
   const [layer, setLayer] = useState('all');
   const [offset, setOffset] = useState(0);
-  const [detail, setDetail] = useState<AlgorithmDetail | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const { detail, detailError, detailLoading, retryDetail } = useObservedDetail<AlgorithmDetail>(
+    '/api/v1/dashboard/encryption-monitoring/algorithms', detailId, data?.generatedAt,
+  );
 
   const revision = useMemo(() => Date.parse(data?.generatedAt || '') || 0, [data?.generatedAt]);
   const query = useMemo(
     () => ({ search, strength, layer, limit: PAGE_SIZE, offset, sort: 'observations' }),
     [search, strength, layer, offset],
   );
-  const { rows: algorithms, total: algorithmTotal, loading: tableLoading } = useEncryptionTable<AlgorithmRow>(
+  const { rows: algorithms, total: algorithmTotal, error: tableError, retry: retryTable, loading: tableLoading } = useEncryptionTable<AlgorithmRow>(
     '/algorithms',
     'algorithms',
     query,
     revision,
   );
 
-  const openAlgorithm = useCallback(
-    async (label: string) => {
-      const result = await loadAlgorithm(label);
-      if (result) setDetail(result);
-    },
-    [loadAlgorithm],
-  );
+  const openAlgorithm = setDetailId;
 
   const showSkeleton = state === 'loading' && !data;
   const showHardError = state === 'error' && !data;
@@ -161,6 +159,8 @@ export default function EncryptionMonitoring() {
       <ModuleNav />
 
       {connectionLost ? <ConnectionLost onReconnect={reconnect} lastSyncedAt={lastSyncedAt} /> : null}
+      <TelemetryAssetComparison />
+      {tableError ? <ErrorState message={tableError} onRetry={retryTable} /> : null}
       {error && data ? (
         <p className="rounded-lg border border-red-500/25 bg-red-500/5 px-3 py-2 text-[11px] text-red-200/85">{error}</p>
       ) : null}
@@ -569,11 +569,12 @@ export default function EncryptionMonitoring() {
       ) : null}
 
       <Drawer
-        open={Boolean(detail)}
+        open={Boolean(detailId)}
         title={detail?.algorithm.label ?? 'Algorithm'}
         subtitle={detail ? LAYER_LABEL[detail.algorithm.layer] : undefined}
-        onClose={() => setDetail(null)}
+        onClose={() => setDetailId(null)}
       >
+        {detailError ? <ErrorState message={detailError} onRetry={retryDetail} /> : null}
         {detailLoading && !detail ? <PanelEmpty>Loading evidence…</PanelEmpty> : null}
         {detail ? <AlgorithmInvestigation detail={detail} /> : null}
       </Drawer>

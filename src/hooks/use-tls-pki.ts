@@ -1,8 +1,8 @@
 'use client';
 
 import type { SourceRead } from '@/lib/source-read';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useAuth } from '@/contexts/auth-context';
+import { useCallback, useMemo, useState } from 'react';
+import { useObservedPagedResource, useTelemetryAccount } from './use-observed-paged-resource';
 import { useLiveModel } from '@/hooks/use-live-resource';
 import type {
   ConfigurationDrift,
@@ -91,6 +91,7 @@ export interface PkiPayload extends CommonPayload {
 export interface ProtocolPayload extends CommonPayload {
   view: 'protocol';
   protocol: ProtocolAnalytics;
+  sshObservationCount: number;
   endpointIndex: EndpointSummary[];
   findings: TlsFinding[];
 }
@@ -173,7 +174,7 @@ export function useTlsPkiView<T extends TlsPkiPayload>(view: TlsPkiView): UseTls
     event: 'tls-pki',
     realtimeTables: REALTIME_TABLES,
     channelPrefix: 'tls-pki-' + view,
-    validate: (value) => value.view === view && typeof value.generatedAt === 'string',
+    validate: (value) => value.view === view && typeof value.generatedAt === 'string' && Number.isFinite(Date.parse(value.generatedAt)) && Array.isArray(value.reads),
   });
   return { ...model, lastSyncedAt: model.lastVerifiedAt };
 }
@@ -182,60 +183,6 @@ export const useTlsTelemetry = () => useTlsPkiView<TelemetryPayload>('telemetry'
 export const usePkiVisibility = () => useTlsPkiView<PkiPayload>('pki');
 export const useProtocolAnalytics = () => useTlsPkiView<ProtocolPayload>('protocol');
 export const useTlsOrchestrator = () => useTlsPkiView<OrchestratorPayload>('orchestrator');
-
-/* ------------------------------------------------------------------ */
-/* Lazy drill-down                                                     */
-/* ------------------------------------------------------------------ */
-
-/**
- * Fetches the full investigation record for one endpoint or certificate.
- *
- * The dashboard payloads deliberately do not ship every observation for every
- * endpoint; the drawer asks for the one the user actually opened.
- */
-export function useTlsPkiDetail(view: TlsPkiView) {
-  const { session } = useAuth();
-  const token = session?.access_token;
-  const pending = useRef<AbortController | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [detailError, setDetailError] = useState<string | null>(null);
-
-  useEffect(() => () => pending.current?.abort(), [view]);
-
-  const load = useCallback(
-    async <R,>(path: string): Promise<R | null> => {
-      if (!token) return null;
-      pending.current?.abort();
-      const controller = new AbortController();
-      pending.current = controller;
-      setLoading(true);
-      setDetailError(null);
-      try {
-        const response = await fetch(`${API_BASE[view]}${path}`, {
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          signal: controller.signal,
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (controller.signal.aborted) return null;
-        if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-        return (payload.data ?? null) as R | null;
-      } catch (err) {
-        if (controller.signal.aborted) return null;
-        console.error('TLS/PKI detail load failed:', err);
-        setDetailError(err instanceof Error ? err.message : 'Unable to load detail');
-        return null;
-      } finally {
-        if (pending.current === controller && !controller.signal.aborted) setLoading(false);
-      }
-    },
-    [token, view],
-  );
-
-  const loadEndpoint = useCallback((id: string) => load<EndpointDetail>(`/endpoints/${encodeURIComponent(id)}`), [load]);
-  const loadCertificate = useCallback((id: string) => load<CertificateDetail>(`/certificates/${encodeURIComponent(id)}`), [load]);
-
-  return { loadEndpoint, loadCertificate, loading, detailError };
-}
 
 /* ------------------------------------------------------------------ */
 /* Orchestrator actions - every one calls a real backend               */
@@ -253,8 +200,7 @@ export type ActionState = 'idle' | 'busy' | 'done' | 'error';
  * each item).
  */
 export function useTlsOrchestratorActions(onChanged?: () => void) {
-  const { session } = useAuth();
-  const token = session?.access_token;
+  const { token } = useTelemetryAccount();
   const [actionState, setActionState] = useState<ActionState>('idle');
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -369,51 +315,5 @@ export function usePagedResource<T>(
   query: PagedQuery,
   revision: number,
 ) {
-  const { session } = useAuth();
-  const token = session?.access_token;
-  const [rows, setRows] = useState<T[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const serialized = JSON.stringify(query);
-
-  useEffect(() => {
-    if (!token) return;
-    const controller = new AbortController();
-    const timer = setTimeout(async () => {
-      setLoading(true);
-      try {
-        const params = new URLSearchParams();
-        for (const [name, value] of Object.entries(JSON.parse(serialized) as PagedQuery)) {
-          if (value === undefined || value === '' || value === 'all') continue;
-          params.set(name, String(value));
-        }
-        const response = await fetch(`${API_BASE[view]}${path}?${params.toString()}`, {
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          signal: controller.signal,
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (controller.signal.aborted) return;
-        if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-        setRows((payload.data?.[key] ?? []) as T[]);
-        setTotal(Number(payload.data?.total ?? 0));
-        setError(null);
-      } catch (err) {
-        if (controller.signal.aborted) return;
-        console.error('TLS/PKI table load failed:', err);
-        setError(err instanceof Error ? err.message : 'Unable to load rows');
-      } finally {
-        if (!controller.signal.aborted) setLoading(false);
-      }
-      // Debounced so typing in the search box does not fire a request per keystroke.
-    }, 250);
-
-    return () => {
-      controller.abort();
-      clearTimeout(timer);
-    };
-  }, [token, view, path, key, serialized, revision]);
-
-  return { rows, total, loading, error };
+  return useObservedPagedResource<T>(API_BASE[view] + path, key, query, revision);
 }

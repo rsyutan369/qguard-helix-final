@@ -23,6 +23,16 @@
  */
 import { buildTlsPkiIntelligence, isTransportAlert, isTransportRelevant } from '../src/lib/tls-pki/intelligence'
 import { buildTrustFabricIntelligence, failedTrustChecks } from '../src/lib/trust-fabric/intelligence'
+import { discoveryLinks } from '../src/lib/trust-fabric/graph'
+import { buildEncryptionIntelligence } from '../src/lib/encryption/intelligence'
+import { compareTelemetryAssets } from '../src/lib/telemetry/asset-comparison'
+import { countTelemetrySources } from '../src/lib/telemetry/source-health'
+import { buildAssetPortfolio } from '../src/lib/migration/asset-intelligence'
+import { EventEmitter } from 'node:events'
+import type { Request, Response } from 'express'
+import { payloadFingerprint, streamLiveSnapshot } from '../src/api-server/live-snapshot-stream'
+import { createSourceLedger } from '../src/api-server/source-ledger'
+import { readTelemetrySource } from '../src/api-server/telemetry-source-rows'
 
 let failures = 0
 function assert(cond: boolean, label: string, extra = '') {
@@ -195,5 +205,161 @@ console.log('\nG. Listener measurements and certificate identities stay separate
   assert(result.pki.lifecycle.notYetValid === 1, 'a future notBefore is reported as not yet valid')
 }
 
+console.log('\nH. Discovery scopes relationship limits to the visible subjects')
+{
+  const link = {
+    id: 'stored-edge', from: 'cert:leaf', to: 'endpoint:service', kind: 'protects',
+    label: 'protects', state: 'unknown', reason: 'Certificate inventory record',
+    source: 'certificate-chain', measured: false,
+  } as const
+  const subjects = [{ id: link.from }, { id: link.to }]
+  const otherLinks = Array.from({ length: 230 }, (_, index) => ({
+    ...link, id: `outside-${index}`, to: 'endpoint:other',
+  }))
+  const scoped = discoveryLinks(subjects, [...otherLinks, link])
+  assert(scoped.matchingRelationships === 1 && scoped.relationships[0] === link,
+    'unrelated links cannot exhaust the graph limit or alter link direction or provenance')
+  const capped = discoveryLinks(subjects, Array.from({ length: 221 }, (_, index) => ({ ...link, id: `visible-${index}` })))
+  assert(capped.relationships.length === 220 && capped.matchingRelationships === 221, 'the graph reports limits separately from matching links')
+  assert(discoveryLinks([subjects[0]], [link]).matchingRelationships === 0, 'links never point at a subject outside the graph')
+}
+
 console.log(failures === 0 ? '\n✓ TLS / PKI / TRUST INTEGRITY INVARIANTS HOLD\n' : `\n✗ ${failures} CHECK(S) FAILED\n`)
-process.exit(failures === 0 ? 0 : 1)
+console.log('\nI. Account-scoped telemetry and measured operational status')
+{
+  const linked = 'fixture-asset-a'
+  const runtime = [
+    { ...runtimeEvents[0], asset_id: linked },
+    { ...runtimeEvents[0], id: 'same-asset-second-listener', asset_id: linked, port: 8443 },
+    { ...runtimeEvents[0], id: 'different-asset', asset_id: 'fixture-other', host: 'other.example.test' },
+  ]
+  const portfolio = buildAssetPortfolio({
+    assets: [
+      { id: linked, name: 'live.example.test', type: 'service' },
+      { id: 'fixture-other', name: 'other.example.test', type: 'service' },
+      { id: 'unobserved', name: 'unobserved.example.test', type: 'service' },
+    ],
+    cryptoInventory: [], scanResults: [], cryptoExposures: [], certificates: [], runtimeEvents: runtime,
+    relationships: [], migrationJobs: [], validationLogs: [], complianceEvidence: [], now: NOW,
+  })
+  const model = buildTlsPkiIntelligence({
+    ...tlsInputs, assets: portfolio.assets,
+    runtimeEvents: runtime,
+    cryptoInventory: [
+      { id: 'ssh-one', asset_id: linked, name: 'SSH Key Exchange: curve25519-sha256', algorithm: 'curve25519-sha256', protocol: 'SSH',
+        metadata: { category: 'SSH Key Exchange', target: 'ssh://live.example.test:22', raw: { banner: 'SSH-2.0-test-fixture' } }, discovered_at: AT },
+    ],
+    certificates: [
+      { ...certificates[0], id: 'legacy-field', asset_id: linked, algorithm: 'SHA256withRSA', not_after: days(-1) },
+      { ...certificates[0], id: 'explicit-key', asset_id: linked, serial_number: '05', algorithm: 'SHA384withRSA', metadata: { ...certificates[0].metadata, public_key_algorithm: 'ECDSA' } },
+    ],
+    queuedAssetIds: [linked, linked, 'unobserved'],
+    migrationJobs: [
+      { id: 'completed', asset_id: linked, status: 'completed', updated_at: days(-2) },
+      { id: 'running', asset_id: linked, status: 'running', updated_at: days(-2) },
+      { id: 'simulation', asset_id: linked, status: 'running', metadata: { dryRun: true }, updated_at: days(-1) },
+    ],
+    validationLogs: [
+      { migration_id: 'completed', status: 'passed', created_at: days(-2) },
+      { migration_id: 'completed', status: 'invalid', created_at: days(-1) },
+      { migration_id: 'running', status: 'validated', created_at: days(-1) },
+      { migration_id: 'simulation', status: 'passed', created_at: days(-1) },
+    ],
+  })
+  const legacyCert = model.certificates.find((row) => row.serialNumber === '01')
+  const explicitCert = model.certificates.find((row) => row.serialNumber === '05')
+  assert(legacyCert?.signatureAlgorithm === 'SHA256withRSA' && legacyCert.publicKeyAlgorithm === 'Not observed', 'legacy signature does not establish a public key')
+  assert(explicitCert?.signatureAlgorithm === 'SHA384withRSA' && explicitCert.publicKeyAlgorithm === 'ECDSA', 'explicit leaf key remains distinct from issuer signature')
+  assert(Boolean(legacyCert && model.findings.some((row) => row.certificateId === legacyCert.id &&
+    row.evidence.some((item) => item.recordId === 'legacy-field'))), 'certificate finding is linked to the exact certificate')
+  const operations = model.orchestration
+  assert(operations.queueDepth === 1 && operations.queuedAssetIds[0] === linked, 'one queued asset with multiple listeners counts once')
+  assert(operations.activeJobCount === 1 && operations.activeJobs.every((row) => row.id !== 'simulation'), 'a simulated job never contributes to live operations')
+  assert(operations.validation.validated === 0 && operations.validation.failed === 1 && !operations.validation.lastValidatedAt,
+    'latest failed validation supersedes old pass; running and simulated jobs do not validate')
+  const sources = {
+    scannerAgents: [{ status: 'online', last_seen_at: days(-1) }, { status: 'online', last_seen_at: days(0) }, { status: 'offline', last_seen_at: days(0) }],
+    connectorAccounts: [{ status: 'inactive' }, { status: 'disconnected' }, { status: 'active' }],
+    scanSessions: [{ status: 'queued' }, { status: 'running' }, { status: 'not_running' }],
+  }
+  const health = countTelemetrySources(sources, NOW)
+  assert(health.agentsOnline === 1 && health.connectorsActive === 1 && health.runningScans === 1,
+    'source health excludes stale agents, negative connector statuses and queued scans')
+  const encryption = buildEncryptionIntelligence({
+    ...sources, now: NOW, assets: portfolio.assets, snapshot: { ...tlsInputs.snapshot, hndlRisk: 0, hndlRiskLevel: 'Unknown' },
+    cryptoInventory: [], runtimeEvents: runtime, scannerEvidence: [], generatedKeys: [], vaultFiles: [], cryptoExposures: [],
+    scanResults: [], scannerAlerts: [], securityEvents: [],
+  })
+  const scope = compareTelemetryAssets([
+    { id: linked, name: 'Registered TLS', type: 'service', environment: 'test' },
+    { id: 'unobserved', name: 'Unobserved asset', type: 'service', environment: 'test' },
+  ], { ...model, reads: [] }, { ...encryption, reads: [] })
+  assert(scope.assets[0].counts.endpoints >= 2 && scope.assets[0].transport.every((row) => row.assetId === linked),
+    'comparison links evidence by asset ID and excludes the other observed asset')
+  assert(scope.assets[1].counts.transport === 0 && scope.assets[1].counts.certificates === 0 &&
+    scope.assets[0].counts.protection === 0, 'unobserved assets stay empty and TLS handshakes do not establish data protection')
+  assert(model.posture.assetsWithoutTransportEvidence === 1 && model.posture.transportCoveragePercent < 100,
+    'asset coverage counts registered assets once even when one has several TLS listeners')
+  assert(scope.assets[0].ssh[0]?.version === '2.0' && scope.assets[0].ssh[0]?.algorithm === 'curve25519-sha256' &&
+    !scope.assets[0].transport.some((row) => row.evidence.recordId === 'ssh-one'),
+    'persisted SSH advertisements retain their scanner evidence and never enter TLS distributions')
+}
+
+async function checkPipeline() {
+  console.log('\nJ. Source windows and SSE delivery')
+  const ledger = createSourceLedger('telemetry-test')
+  const records = Array.from({ length: 1_050 }, (_, id) => ({ id }))
+  const client = { from: () => ({
+    select: (_columns: string, options: { count?: string }) => {
+      const q = { order: () => q, range: (start: number, end: number) => Promise.resolve({
+        data: records.slice(start, Math.min(end + 1, start + 500)),
+        count: options.count ? records.length : null,
+      }) }
+      return q
+    },
+  }) }
+  const rows = await readTelemetrySource(ledger, client, 'fixture', 'id', 1_025, (query) => query)
+  assert(rows.length === 1_025 && rows.at(-1)?.id === 1_024 && ledger.reads[0]?.state === 'truncated',
+    'multi-page input honors the backend row limit and records incomplete coverage')
+
+  const req = Object.assign(new EventEmitter(), { headers: {} }) as unknown as Request
+  const events: string[] = []
+  const content = { generatedAt: days(0), tlsSnapshot: { generatedAt: days(0) }, assets: [{ id: 'fixture-asset', count: 1 }] }
+  const changed = { ...content, assets: [{ id: 'fixture-asset', count: 2 }] }
+  let builds = 0
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      req.emit('close')
+      reject(new Error('Timed out while checking SSE frames'))
+    }, 1_000)
+    const res = {
+      status() {},
+      setHeader() {},
+      write(frame: string) {
+        events.push(frame)
+        if (events.length === 3) {
+          req.emit('close')
+          clearTimeout(timeout)
+          resolve()
+        }
+      },
+    } as unknown as Response
+    streamLiveSnapshot(req, res, {
+      event: 'asset-telemetry', intervalMs: 15,
+      async build() {
+        builds += 1
+        if (builds === 1) return content
+        if (builds === 2) return { ...content, generatedAt: days(1), tlsSnapshot: { generatedAt: days(1) } }
+        return changed
+      },
+    })
+  })
+  assert(events[0].includes(payloadFingerprint(content)) && events[1].startsWith('event: asset-telemetry-unchanged') &&
+    events[2].includes(payloadFingerprint(changed)), 'REST and SSE fingerprints agree, duplicate checks stay compact and changes publish new content')
+  await new Promise((resolve) => setTimeout(resolve, 35))
+  assert(builds === 3, 'closing a stream stops subsequent model builds')
+}
+
+await checkPipeline()
+console.log(failures === 0 ? '\n✓ TELEMETRY AUDIT CHECKS PASSED' : `\n✗ ${failures} invariant(s) failed`)
+process.exitCode = failures === 0 ? 0 : 1

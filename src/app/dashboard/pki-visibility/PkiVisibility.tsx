@@ -1,11 +1,13 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useObservedDetail } from '@/hooks/use-observed-paged-resource';
+import { TelemetryAssetComparison } from '../_components/observability/TelemetryAssetComparison';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Award, CalendarClock, GitBranch, Landmark, ScrollText, ShieldAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
-import { usePagedResource, usePkiVisibility, useTlsPkiDetail, type CertificateDetail } from '@/hooks/use-tls-pki';
+import { usePagedResource, usePkiVisibility, type CertificateDetail } from '@/hooks/use-tls-pki';
 import { POSTURE_LABEL } from '@/lib/tls-pki/classify';
 import type { CertificateLifecycle, PkiCertificate, TrustChainNode } from '@/lib/tls-pki/types';
 import { PostureStrip } from '../_components/observability/TlsPostureStrip';
@@ -76,14 +78,16 @@ const LIFECYCLE_TONE: Record<CertificateLifecycle, 'good' | 'warning' | 'critica
 
 export default function PkiVisibility() {
   const { data, state, error, live, lastSyncedAt, refresh, reconnect } = usePkiVisibility();
-  const { loadCertificate, loading: detailLoading } = useTlsPkiDetail('pki');
 
   const [search, setSearch] = useState('');
   const [lifecycle, setLifecycle] = useState('all');
   const [posture, setPosture] = useState('all');
   const [issuer, setIssuer] = useState('all');
   const [offset, setOffset] = useState(0);
-  const [detail, setDetail] = useState<CertificateDetail | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const { detail, detailError, detailLoading, retryDetail } = useObservedDetail<CertificateDetail>(
+    '/api/v1/dashboard/pki-visibility/certificates', detailId, data?.generatedAt,
+  );
 
   const revision = useMemo(() => Date.parse(data?.generatedAt || '') || 0, [data?.generatedAt]);
   const query = useMemo(
@@ -93,16 +97,10 @@ export default function PkiVisibility() {
   const {
     rows: certificates,
     total: certificateTotal,
-    loading: tableLoading,
+    error: tableError, retry: retryTable, loading: tableLoading,
   } = usePagedResource<PkiCertificate>('pki', '/certificates', 'certificates', query, revision);
 
-  const openCertificate = useCallback(
-    async (id: string) => {
-      const result = await loadCertificate(id);
-      if (result) setDetail(result);
-    },
-    [loadCertificate],
-  );
+  const openCertificate = setDetailId;
 
   const showSkeleton = state === 'loading' && !data;
   const showHardError = state === 'error' && !data;
@@ -163,6 +161,8 @@ export default function PkiVisibility() {
       <ModuleNav />
 
       {connectionLost ? <ConnectionLost onReconnect={reconnect} lastSyncedAt={lastSyncedAt} /> : null}
+      <TelemetryAssetComparison />
+      {tableError ? <ErrorState message={tableError} onRetry={retryTable} /> : null}
       {error && data ? (
         <p className="rounded-lg border border-red-500/25 bg-red-500/5 px-3 py-2 text-[11px] text-red-200/85">{error}</p>
       ) : null}
@@ -552,11 +552,12 @@ export default function PkiVisibility() {
       ) : null}
 
       <Drawer
-        open={Boolean(detail)}
+        open={Boolean(detailId)}
         title={detail?.certificate.subject ?? 'Certificate'}
         subtitle={detail ? `Issued by ${detail.certificate.issuer}` : undefined}
-        onClose={() => setDetail(null)}
+        onClose={() => setDetailId(null)}
       >
+        {detailError ? <ErrorState message={detailError} onRetry={retryDetail} /> : null}
         {detailLoading && !detail ? <PanelEmpty>Loading certificate…</PanelEmpty> : null}
         {detail ? <CertificateInvestigation detail={detail} /> : null}
       </Drawer>
