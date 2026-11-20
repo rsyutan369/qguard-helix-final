@@ -2,7 +2,7 @@
  * QGuard Helix — Public Scan SSRF containment.
  *
  * The public assessment endpoint takes an arbitrary hostname from an
- * unauthenticated caller and opens TLS/HTTP connections to it. That is the
+ * authenticated caller and opens TLS/HTTP connections to it. That is the
  * product, but it also makes the API server a confused deputy: without the
  * guards here, `evil.example` with an `A 169.254.169.254` record (or a plain
  * `302 -> http://10.0.0.5/`) turns the scanner into a reader of cloud metadata
@@ -51,14 +51,16 @@ export const PRIVATE_IP_PATTERNS: readonly RegExp[] = [
   // 198.51.100/24, 203.0.113/24, 224+ multicast/reserved.
   /^192\.0\.0\./,
   /^192\.0\.2\./,
+  /^192\.88\.99\./,
+  /^168\.63\.129\.16$/,
   /^198\.1[89]\./,
   /^198\.51\.100\./,
   /^203\.0\.113\./,
   /^(22[4-9]|2[3-5]\d)\./,
-  /^::$/,
-  /^::1$/,
-  /^f[cd][0-9a-f]{2}:/i,
-  /^fe[89ab][0-9a-f]:/i,
+  // Special-use blocks inside IPv6 global unicast, including transition ranges.
+  /^2001:(?::|(?:[0-9a-f]{1,2}|1[0-9a-f]{2}|db8):)/i,
+  /^2002:/i,
+  /^3fff:/i,
 ]
 
 /**
@@ -68,7 +70,8 @@ export const PRIVATE_IP_PATTERNS: readonly RegExp[] = [
  * (`fe80::1%eth0`).
  */
 export function normalizeAddress(ip: string): string {
-  const withoutZone = ip.trim().toLowerCase().split('%')[0]
+  let withoutZone = ip.trim().toLowerCase().split('%')[0]
+  if (net.isIPv6(withoutZone)) withoutZone = new URL(`https://[${withoutZone}]`).hostname.slice(1, -1)
   const mapped = withoutZone.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/)
   if (mapped) return mapped[1]
   // Some resolvers render the mapped form in hex (::ffff:0a00:0001).
@@ -84,8 +87,9 @@ export function normalizeAddress(ip: string): string {
 /** True when `ip` is outside publicly routable space and must never be scanned. */
 export function isPrivateAddress(ip: string): boolean {
   const normalized = normalizeAddress(ip)
-  if (!net.isIP(normalized)) return true // unparseable: fail closed
-  return PRIVATE_IP_PATTERNS.some((pattern) => pattern.test(normalized))
+  const family = net.isIP(normalized)
+  return family === 0 || (family === 6 && !/^[23][0-9a-f]{3}:/i.test(normalized)) ||
+    PRIVATE_IP_PATTERNS.some((pattern) => pattern.test(normalized))
 }
 
 /** Hostnames that never belong to a public target, regardless of what DNS says. */
@@ -112,7 +116,7 @@ export interface HostVerdict {
  * literal private IP (which bypasses `lookup` altogether).
  */
 export function checkHostSyntax(host: string): HostVerdict {
-  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '')
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
   if (!normalized) {
     return { ok: false, code: 'INVALID_TARGET', message: 'Enter a domain or https:// URL to assess.' }
   }
@@ -136,8 +140,8 @@ export function checkHostSyntax(host: string): HostVerdict {
 /** Thrown through the lookup callback so a blocked connection is distinguishable. */
 export class BlockedAddressError extends Error {
   readonly code = 'SSRF_BLOCKED'
-  constructor(host: string, address: string) {
-    super(`Refusing to connect: ${host} resolves to the non-public address ${address}.`)
+  constructor() {
+    super('The destination resolves to a non-public address.')
     this.name = 'BlockedAddressError'
   }
 }
@@ -160,13 +164,13 @@ export const safeLookup: net.LookupFunction = (hostname, options, callback) => {
 
   const syntax = checkHostSyntax(hostname)
   if (!syntax.ok) {
-    callback(Object.assign(new BlockedAddressError(hostname, hostname), { code: 'SSRF_BLOCKED' }), '')
+    callback(new BlockedAddressError(), '')
     return
   }
 
   dns.lookup(
     hostname,
-    { ...(options ?? {}), all: true, verbatim: true } as dns.LookupAllOptions,
+    { all: true, verbatim: true },
     (err, addresses) => {
       if (err) {
         callback(err, '')
@@ -181,14 +185,20 @@ export const safeLookup: net.LookupFunction = (hostname, options, callback) => {
       // public and private records is either misconfigured or attacking us.
       const blocked = list.find((entry) => isPrivateAddress(entry.address))
       if (blocked) {
-        callback(new BlockedAddressError(hostname, blocked.address), '')
+        callback(new BlockedAddressError(), '')
+        return
+      }
+      const family = options?.family
+      const matching = family === 4 || family === 6 ? list.filter((entry) => entry.family === family) : list
+      if (matching.length === 0) {
+        callback(Object.assign(new Error('No public address matches the requested address family.'), { code: 'ENOTFOUND' }), '')
         return
       }
       if (wantsAll) {
-        callback(null, list)
+        callback(null, matching)
         return
       }
-      callback(null, list[0].address, list[0].family)
+      callback(null, matching[0].address, matching[0].family)
     },
   )
 }
@@ -205,7 +215,14 @@ export async function verifyPublicHost(host: string): Promise<HostVerdict & { ad
   if (net.isIP(host)) return { ok: true, addresses: [host] }
 
   try {
-    const addresses = await dns.promises.lookup(host, { all: true, verbatim: true })
+    const addresses = await new Promise<dns.LookupAddress[]>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('DNS lookup timed out')), 4_000)
+      dns.lookup(host, { all: true, verbatim: true }, (error, results) => {
+        clearTimeout(timeout)
+        if (error) reject(error)
+        else resolve(results)
+      })
+    })
     if (addresses.length === 0) {
       return { ok: false, code: 'UNRESOLVABLE_TARGET', message: `${host} has no DNS address records.` }
     }
@@ -244,6 +261,9 @@ export function canFollowRedirect(rawUrl: string): HostVerdict {
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     return { ok: false, code: 'INVALID_REDIRECT', message: `Refusing to follow a ${url.protocol} redirect.` }
+  }
+  if (url.username || url.password) {
+    return { ok: false, code: 'INVALID_REDIRECT', message: 'Redirects containing credentials are refused.' }
   }
   const port = Number(url.port || (url.protocol === 'http:' ? 80 : 443))
   if (!FOLLOWABLE_PORTS.has(port)) {

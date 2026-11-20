@@ -2,6 +2,8 @@
 <p>Confirm your email address to finish creating your account.</p>
 {{ if eq .RedirectTo "https://qguardhelix.com/auth/confirm" }}
 <p><a href="https://qguardhelix.com/auth/confirm#token_hash={{ .TokenHash }}">Confirm email address</a></p>
+{{ else if or (eq .RedirectTo "https://qguardhelix.com/auth/confirm/public-scan") (eq .RedirectTo "https://www.qguardhelix.com/auth/confirm/public-scan") }}
+<p><a href="{{ .RedirectTo }}#token_hash={{ .TokenHash }}">Confirm email address</a></p>
 {{ else }}
 <p><a href="{{ .ConfirmationURL }}">Confirm email address</a></p>
 {{ end }}

@@ -1,14 +1,8 @@
 'use client';
 
-/**
- * Public Quantum Exposure Assessment™ — client hook.
- *
- * Drives /api/v1/public-scan/stream over SSE so the workflow rail animates in
- * real time, then holds the completed report. No authentication is involved:
- * this endpoint is deliberately anonymous.
- */
-
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { openAuthenticatedEventStream } from '@/lib/authenticated-event-stream';
+import { isPublicScanUsage, type PublicScanUsage } from '@/lib/public-scan-usage';
 import type {
   PublicScanReport,
   PublicScanStage,
@@ -63,14 +57,6 @@ export interface PublicScanQueue {
   receivedAt: number;
 }
 
-/**
- * Why the server declined to start this assessment, in its own words.
- *
- * An EventSource cannot read the body of a non-200 response, so these used to
- * arrive as a bare transport error and render as "Connection to the assessment
- * service was lost" — whether the visitor was rate limited, the line was full
- * or the domain was simply invalid. The server now sends them in the stream.
- */
 export interface PublicScanRefusal {
   code: string;
   message: string;
@@ -93,6 +79,9 @@ export interface UsePublicScanResult {
   progress: number;
   /** Live measurements, in the order the scanner made them. */
   observations: PublicScanObservation[];
+  usage: PublicScanUsage | null;
+  usageError: string | null;
+  refreshUsage: () => void;
   scan: (target: string) => void;
   reset: () => void;
 }
@@ -100,7 +89,7 @@ export interface UsePublicScanResult {
 /** Guard against an unbounded array if a target somehow produces a long tail. */
 const OBSERVATIONS_MAX = 200;
 
-export function usePublicScan(): UsePublicScanResult {
+export function usePublicScan(token: string | null, accountId: string | null): UsePublicScanResult {
   const [state, setState] = useState<PublicScanState>('idle');
   const [stages, setStages] = useState<PublicScanStage[]>(initialStages);
   const [report, setReport] = useState<PublicScanReport | null>(null);
@@ -109,12 +98,73 @@ export function usePublicScan(): UsePublicScanResult {
   const [sharedViewers, setSharedViewers] = useState<number | null>(null);
   const [refusal, setRefusal] = useState<PublicScanRefusal | null>(null);
   const [observations, setObservations] = useState<PublicScanObservation[]>([]);
-  const sourceRef = useRef<EventSource | null>(null);
+  const [allowance, setAllowance] = useState<{ accountId: string; usage: PublicScanUsage } | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
+  const sourceRef = useRef<(() => void) | null>(null);
+  const usageRequest = useRef<AbortController | null>(null);
+  const usage = accountId && allowance?.accountId === accountId ? allowance.usage : null;
+
+  const publishUsage = useCallback((value: unknown) => {
+    if (!accountId || !isPublicScanUsage(value)) return false;
+    usageRequest.current?.abort();
+    setUsageError(null);
+    setAllowance({ accountId, usage: value });
+    return true;
+  }, [accountId]);
+
+  const refreshUsage = useCallback(() => {
+    if (!token || !accountId) return;
+    usageRequest.current?.abort();
+    const controller = new AbortController();
+    usageRequest.current = controller;
+    setUsageError(null);
+    void fetch('/api/v1/public-scan/usage', {
+      headers: { Authorization: `Bearer ${token}` },
+      credentials: 'omit',
+      cache: 'no-store',
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(18_000)]),
+      redirect: 'error',
+    }).then(async (response) => {
+      if (!response.ok) {
+        if (response.status === 401 && !controller.signal.aborted) {
+          setAllowance(null);
+          setUsageError('Your session has expired. Sign in again to run an assessment.');
+          return;
+        }
+        throw new Error('Allowance unavailable');
+      }
+      const payload = await response.json();
+      if (!isPublicScanUsage(payload.data)) throw new Error('Allowance unavailable');
+      if (!controller.signal.aborted) setAllowance({ accountId, usage: payload.data });
+    }).catch(() => {
+      if (!controller.signal.aborted) setUsageError('Could not refresh your scan allowance. Try again.');
+    });
+  }, [accountId, token]);
+
+  useEffect(() => {
+    refreshUsage();
+    const refreshVisible = () => { if (document.visibilityState === 'visible') refreshUsage(); };
+    window.addEventListener('focus', refreshVisible);
+    document.addEventListener('visibilitychange', refreshVisible);
+    return () => {
+      usageRequest.current?.abort();
+      window.removeEventListener('focus', refreshVisible);
+      document.removeEventListener('visibilitychange', refreshVisible);
+    };
+  }, [refreshUsage]);
+
+  useEffect(() => {
+    if (!usage) return;
+    const untilReset = Math.max(1000, Date.parse(usage.resetAt) - Date.now() + 800);
+    const delay = usage.inProgress ? Math.min(untilReset, 15_000) : untilReset;
+    const timer = window.setTimeout(refreshUsage, delay);
+    return () => window.clearTimeout(timer);
+  }, [usage, refreshUsage]);
   /** Monotonic floor for the reported progress. Cleared at the start of a run. */
   const progressFloor = useRef(0);
 
   const closeStream = useCallback(() => {
-    sourceRef.current?.close();
+    sourceRef.current?.();
     sourceRef.current = null;
   }, []);
 
@@ -133,135 +183,99 @@ export function usePublicScan(): UsePublicScanResult {
     setObservations([]);
   }, [closeStream]);
 
+  useEffect(() => {
+    reset();
+    setAllowance(null);
+    setUsageError(null);
+  }, [accountId, reset]);
+
   const scan = useCallback(
     (target: string) => {
       const trimmed = target.trim();
-      if (!trimmed) {
-        setError('Enter a domain or https:// URL to assess.');
-        setState('error');
-        return;
-      }
+      if (!trimmed || !token) return;
 
-      closeStream();
-      progressFloor.current = 0;
+      reset();
       setState('scanning');
-      setStages(initialStages());
-      setReport(null);
-      setError(null);
-      setQueue(null);
-      setSharedViewers(null);
-      setRefusal(null);
-      setObservations([]);
 
-      const source = new EventSource(`/api/v1/public-scan/stream?target=${encodeURIComponent(trimmed)}`);
-      sourceRef.current = source;
-
-      /* The waiting line. Positions arrive whenever the line moves; the estimate
-         is the server's, from its measured scan durations. */
-      source.addEventListener('scan-queued', (event) => {
-        try {
-          const payload = JSON.parse((event as MessageEvent).data) as Omit<PublicScanQueue, 'receivedAt'>;
-          if (typeof payload?.position !== 'number') return;
-          setQueue({ ...payload, receivedAt: Date.now() });
-        } catch {
-          /* malformed frame — the next position supersedes it */
-        }
-      });
-
-      source.addEventListener('scan-started', () => setQueue(null));
-
-      source.addEventListener('scan-shared', (event) => {
-        try {
-          const payload = JSON.parse((event as MessageEvent).data) as { viewers?: number };
-          if (typeof payload?.viewers === 'number') setSharedViewers(payload.viewers);
-        } catch {
-          /* informational only */
-        }
-      });
-
-      /* The server declined to start: invalid target, rate limit or a full line.
-         The message is the server's own, and it says when to try again. */
-      source.addEventListener('scan-refused', (event) => {
-        let detail: Omit<PublicScanRefusal, 'receivedAt'> = {
-          code: 'REFUSED',
-          message: 'The assessment could not be started.',
-          retryAfterSeconds: null,
-        };
-        try {
-          const payload = JSON.parse((event as MessageEvent).data) as Partial<PublicScanRefusal>;
-          detail = {
-            code: payload.code ?? detail.code,
-            message: payload.message ?? detail.message,
-            retryAfterSeconds: typeof payload.retryAfterSeconds === 'number' ? payload.retryAfterSeconds : null,
-          };
-        } catch {
-          /* keep the generic wording */
-        }
-        setRefusal({ ...detail, receivedAt: Date.now() });
-        setError(detail.message);
+      const fail = (message: string) => {
+        setError(message);
         setQueue(null);
         setState('error');
         closeStream();
-      });
+      };
 
-      source.addEventListener('observation', (event) => {
-        try {
-          const payload = JSON.parse((event as MessageEvent).data) as PublicScanObservation;
-          if (!payload?.surface || !payload.label) return;
-          setObservations((current) => [...current, payload].slice(-OBSERVATIONS_MAX));
-        } catch {
-          /* malformed frame — the scan continues, the report is authoritative */
-        }
-      });
-
-      source.addEventListener('stage', (event) => {
-        try {
-          const payload = JSON.parse((event as MessageEvent).data) as { stage: PublicScanStage };
-          setStages((current) =>
-            current.map((stage) => (stage.key === payload.stage.key ? { ...stage, ...payload.stage } : stage)),
-          );
-        } catch {
-          /* malformed frame — the next event supersedes it */
-        }
-      });
-
-      source.addEventListener('scan-complete', (event) => {
-        try {
-          const payload = JSON.parse((event as MessageEvent).data) as { report: PublicScanReport };
-          setReport(payload.report);
-          setStages((current) =>
-            current.map((stage) => (stage.state === 'waiting' || stage.state === 'running'
-              ? { ...stage, state: 'complete' }
-              : stage)),
-          );
-          setState('complete');
-        } catch {
-          setError('The assessment completed but the report could not be read.');
-          setState('error');
-        }
-        closeStream();
-      });
-
-      source.addEventListener('error', (event) => {
-        // Distinguish a server-sent `error` event (has data) from a transport drop.
-        const data = (event as MessageEvent).data;
-        if (typeof data === 'string' && data) {
+      sourceRef.current = openAuthenticatedEventStream('/api/v1/public-scan/stream', token, {
+        onEvent(name, data) {
           try {
-            const payload = JSON.parse(data) as { message?: string };
-            setError(payload.message || 'The assessment could not be completed.');
+            const payload = JSON.parse(data);
+            switch (name) {
+              case 'scan-queued':
+                if (typeof payload.position === 'number') setQueue({ ...payload, receivedAt: Date.now() });
+                break;
+              case 'scan-started':
+                setQueue(null);
+                break;
+              case 'scan-shared':
+                if (typeof payload.viewers === 'number') setSharedViewers(payload.viewers);
+                break;
+              case 'observation':
+                if (payload.surface && payload.label) {
+                  setObservations((current) => [...current, payload as PublicScanObservation].slice(-OBSERVATIONS_MAX));
+                }
+                break;
+              case 'stage':
+                setStages((current) => current.map((stage) =>
+                  stage.key === payload.stage.key ? { ...stage, ...payload.stage } : stage));
+                break;
+              case 'scan-complete':
+                if (!payload.report) {
+                  fail('The assessment report could not be read.');
+                  break;
+                }
+                if (!publishUsage(payload.usage)) refreshUsage();
+                setQueue(null);
+                setReport(payload.report);
+                setStages((current) => current.map((stage) => stage.state === 'waiting' || stage.state === 'running'
+                  ? { ...stage, state: 'complete' }
+                  : stage));
+                setState('complete');
+                closeStream();
+                break;
+              case 'error':
+                if (!publishUsage(payload.usage)) refreshUsage();
+                fail(payload.message || 'The assessment could not be completed.');
+                break;
+            }
           } catch {
-            setError('The assessment could not be completed.');
+            // Malformed frames are ignored. A missing terminal frame is a connection error.
           }
-        } else if (source.readyState === EventSource.CLOSED) {
-          setError((current) => current ?? 'Connection to the assessment service was lost.');
-        } else {
-          return;
-        }
-        setState('error');
-        closeStream();
+        },
+        async onResponseError(response) {
+          const payload = await response.json().catch(() => null);
+          if (!sourceRef.current || sourceRef.current !== stop) return;
+          const detail = {
+            code: payload?.error?.code ?? 'REFUSED',
+            message: payload?.error?.message ?? 'The assessment could not be started.',
+            retryAfterSeconds: typeof payload?.error?.retryAfterSeconds === 'number' ? payload.error.retryAfterSeconds : null,
+            receivedAt: Date.now(),
+          };
+          if (response.status === 401) {
+            usageRequest.current?.abort();
+            setAllowance(null);
+          } else if (!publishUsage(payload?.usage)) refreshUsage();
+          setRefusal(detail);
+          fail(detail.message);
+        },
+        onError() {
+          refreshUsage();
+          fail('Connection to the assessment service was lost.');
+        },
+      }, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: trimmed }),
       });
+      const stop = sourceRef.current;
     },
-    [closeStream],
+    [closeStream, publishUsage, refreshUsage, reset, token],
   );
 
   /*
@@ -325,7 +339,7 @@ export function usePublicScan(): UsePublicScanResult {
   else if (state === 'scanning' && computed > progressFloor.current) progressFloor.current = computed;
   const progress = state === 'scanning' || state === 'complete' ? progressFloor.current : computed;
 
-  return { state, stages, report, error, queue, sharedViewers, refusal, progress, observations, scan, reset };
+  return { state, stages, report, error, queue, sharedViewers, refusal, progress, observations, usage, usageError, refreshUsage, scan, reset };
 }
 
 export type { PublicScanReport, PublicScanStage, PublicScanStageKey };

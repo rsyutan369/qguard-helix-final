@@ -1,21 +1,25 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
+import { useAuth } from '@/contexts/auth-context';
+import { PUBLIC_SCAN_CONFIRMATION_PATH, PUBLIC_SCAN_LOGIN, PUBLIC_SCAN_PATH, PUBLIC_SCAN_REGISTER } from '@/lib/public-scan-auth';
 import { readSignupConfirmation, SIGNUP_CONFIRMATION_PATH } from '@/lib/signup-confirmation';
 import { confirmSignupEmail } from '@/lib/supabase';
 import { AuthAlert, AuthCard, AuthShell } from '../AuthShell';
 
-export default function ConfirmEmailPage() {
+export default function ConfirmEmailPage({ forPublicScan = false }: { forPublicScan?: boolean }) {
   const [confirmation, setConfirmation] = useState(() => readSignupConfirmation(window.location.hash));
   const [state, setState] = useState<'idle' | 'verifying' | 'verified' | 'error'>('idle');
   const inFlight = useRef(false);
+  const { session } = useAuth();
 
   useEffect(() => {
     // Supabase's legacy redirect can contain session tokens for the default
     // template. Let the main auth client handle that fragment.
     if (new URLSearchParams(window.location.hash.slice(1)).has('token_hash')) {
-      window.history.replaceState(window.history.state, '', SIGNUP_CONFIRMATION_PATH);
+      window.history.replaceState(window.history.state, '',
+        forPublicScan ? PUBLIC_SCAN_CONFIRMATION_PATH : SIGNUP_CONFIRMATION_PATH);
     }
-  }, []);
+  }, [forPublicScan]);
 
   async function verify() {
     if (!confirmation || inFlight.current) return;
@@ -27,9 +31,12 @@ export default function ConfirmEmailPage() {
   }
 
   const canVerify = confirmation !== null;
+  const login = forPublicScan ? PUBLIC_SCAN_LOGIN : '/login';
+  const register = forPublicScan ? PUBLIC_SCAN_REGISTER : '/register';
+  if (forPublicScan && session && !canVerify && state === 'idle') return <Navigate to={PUBLIC_SCAN_PATH} replace />;
 
   return (
-    <AuthShell mode="register" nextQuery="">
+    <AuthShell mode="register" nextQuery={forPublicScan ? '?next=%2Fpublic-scan' : ''}>
       <AuthCard
         kicker="Account verification"
         heading={state === 'verified' ? 'Email confirmed' : 'Confirm your email'}
@@ -52,7 +59,7 @@ export default function ConfirmEmailPage() {
             {state === 'verifying' ? 'Confirming…' : 'Confirm email'}
           </button>
         ) : (
-          <Link to={state === 'error' ? '/register' : '/login'} className="lp-btn lp-btn--primary lp-btn--block">
+          <Link to={state === 'error' ? register : login} className="lp-btn lp-btn--primary lp-btn--block">
             {state === 'error' ? 'Go to registration' : 'Sign in'}
           </Link>
         )}

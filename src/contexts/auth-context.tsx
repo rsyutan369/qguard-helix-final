@@ -9,6 +9,7 @@ import {
 import type { User, Session } from '@supabase/supabase-js';
 import { SIGNUP_CONFIRMATION_URL } from '../lib/signup-confirmation';
 import { GOOGLE_CALLBACK_PATH } from '../lib/oauth-callback';
+import { PUBLIC_SCAN_CONFIRMATION_PATH, PUBLIC_SCAN_OAUTH_KEY } from '../lib/public-scan-auth';
 
 const AUTH_TIMEOUT_MS = 12000;
 
@@ -17,8 +18,8 @@ interface AuthContextType {
   session: Session | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
-  signUp: (email: string, password: string) => Promise<{ error: Error | null }>;
-  signInWithGoogle: () => Promise<{ error: Error | null }>;
+  signUp: (email: string, password: string, forPublicScan?: boolean) => Promise<{ error: Error | null }>;
+  signInWithGoogle: (forPublicScan?: boolean) => Promise<{ error: Error | null }>;
   completeGoogleSignIn: (code: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
 }
@@ -173,7 +174,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return { error };
   };
 
-  const signUp = async (email: string, password: string) => {
+  const signUp = async (email: string, password: string, forPublicScan = false) => {
     // Register through the platform API first: client-side auth.signUp sends a
     // confirmation email via Supabase's built-in mailer (~2/hour quota), so a
     // few registrations produce 429 "email rate limit exceeded" for everyone.
@@ -181,27 +182,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // mailer quota — and we establish the session with a normal password
     // sign-in. Deployments without the API (static hosting) fall through to
     // the original client-side flow below.
-    try {
-      const response = await fetch('/api/v1/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      if (response.status === 201) {
-        return await signIn(email, password);
+    if (!forPublicScan) {
+      try {
+        const response = await fetch('/api/v1/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+        if (response.status === 201) {
+          return await signIn(email, password);
+        }
+        if ([400, 403, 409, 429].includes(response.status)) {
+          const payload = await response.json().catch(() => null);
+          return { error: new Error(payload?.error?.message || 'Registration failed. Please review your details and try again.') };
+        }
+        // An unavailable endpoint falls through to Supabase confirmation.
+      } catch {
+        // Continue with confirmation when the API is unreachable.
       }
-      if ([400, 403, 409, 429].includes(response.status)) {
-        const payload = await response.json().catch(() => null);
-        return { error: new Error(payload?.error?.message || 'Registration failed. Please review your details and try again.') };
-      }
-      // 404/503/5xx → endpoint unavailable or confirmation required on this
-      // deployment; use the standard Supabase signup flow (real confirmation
-      // email) instead.
-    } catch {
-      // API unreachable — fall through to the client-side flow.
     }
 
-    const credentials = { email, password, options: { emailRedirectTo: SIGNUP_CONFIRMATION_URL } };
+    const emailRedirectTo = forPublicScan
+      ? new URL(PUBLIC_SCAN_CONFIRMATION_PATH, window.location.origin).href
+      : SIGNUP_CONFIRMATION_URL;
+    const credentials = { email, password, options: { emailRedirectTo } };
     let client = getSupabaseClient();
     let { data, error } = await withAuthTimeout(
       client.auth.signUp(credentials),
@@ -239,7 +243,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return { error };
   };
 
-  const signInWithGoogle = async () => {
+  const signInWithGoogle = async (forPublicScan = false) => {
+    if (forPublicScan) sessionStorage.setItem(PUBLIC_SCAN_OAUTH_KEY, '1');
+    else sessionStorage.removeItem(PUBLIC_SCAN_OAUTH_KEY);
     const redirectTo = new URL(GOOGLE_CALLBACK_PATH, window.location.origin).href;
     let result = await withAuthTimeout(
       beginGoogleOAuth(redirectTo),

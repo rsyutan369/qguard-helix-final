@@ -11,6 +11,8 @@
   --scan-nav-solid: rgb(255 255 255 / 94%);
   --scan-line: var(--lp-line);
   --scan-focus: var(--lp-gold-ink);
+  --scan-field-focus: #845010;
+  --scan-error: #a3263e;
   --scan-shadow: 0 1px 2px rgb(11 29 58 / 5%), 0 16px 44px -27px rgb(35 63 125 / 30%);
   --scan-action: #294cbf;
   --scan-action-hover: #203d9a;
@@ -33,6 +35,8 @@
   --scan-nav-solid: rgb(8 18 38 / 94%);
   --scan-line: var(--lp-ink-line);
   --scan-focus: #aabaff;
+  --scan-field-focus: #ffcb78;
+  --scan-error: #ff9bae;
   --scan-shadow: 0 1px 0 rgb(255 255 255 / 5%) inset, 0 20px 60px -35px rgb(0 0 0 / 90%);
   --scan-action: #a6b7ff;
   --scan-action-hover: #c0ccff;
@@ -91,7 +95,7 @@ html:has(.public-scan-surface--dark.public-scan-shell) {
   box-shadow: 0 8px 28px -21px rgb(11 29 58 / 45%);
 }
 
-.public-scan-surface :focus-visible {
+.public-scan-surface :focus-visible:not(.public-scan-target-input) {
   outline: 2px solid var(--scan-focus);
   outline-offset: 3px;
 }
@@ -155,14 +159,77 @@ html:has(.public-scan-surface--dark.public-scan-shell) {
   text-wrap: balance;
 }
 
-.public-scan-surface .public-scan-form {
-  border-color: color-mix(in srgb, var(--scan-focus) 35%, transparent);
-  background-color: var(--scan-panel);
+.public-scan-target-label {
+  display: block;
+  margin-block-end: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+.public-scan-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 0.5rem;
+  padding: 0.375rem;
+  border: 1px solid color-mix(in srgb, var(--scan-text) 42%, transparent);
+  border-radius: 0.875rem;
+  background: var(--scan-panel);
   box-shadow: var(--scan-shadow);
 }
 
-.public-scan-surface .public-scan-form:focus-within { border-color: var(--scan-focus); }
-.public-scan-surface .public-scan-form input:focus-visible { outline-offset: -2px; border-radius: 4px; }
+.public-scan-target {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 44px;
+  gap: 0.625rem;
+  padding-inline: 0.625rem;
+  color: var(--scan-muted);
+}
+
+.public-scan-target-input {
+  flex: 1;
+  align-self: stretch;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--scan-text);
+  font-size: 1rem;
+}
+
+.public-scan-target-input::placeholder { color: var(--scan-muted); }
+.public-scan-target-input:focus { outline: none; }
+.public-scan-form:has(.public-scan-target-input:focus) { border-color: var(--scan-field-focus); }
+.public-scan-form:has(.public-scan-target-input:focus-visible) {
+  border-color: transparent;
+  outline: 2px solid var(--scan-field-focus);
+  outline-offset: 0;
+}
+
+.public-scan-access,
+.public-scan-target-error {
+  margin-block-start: 0.625rem;
+  color: var(--scan-muted);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.public-scan-access strong { color: var(--scan-text); }
+.public-scan-access :is(a, button) {
+  color: var(--scan-text);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+.public-scan-access button { min-height: 44px; margin-inline-end: 1rem; }
+.public-scan-target-error { color: var(--scan-error); }
+
+@media (max-width: 420px) {
+  .public-scan-form { grid-template-columns: minmax(0, 1fr); }
+}
 
 .public-scan-surface .public-scan-primary {
   min-height: 44px;

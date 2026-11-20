@@ -21,7 +21,7 @@
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import useMeasure from 'react-use-measure';
-import { Globe, Loader2, Radar, Search, Volume2, VolumeX } from 'lucide-react';
+import { Globe, Loader2, Search, Volume2, VolumeX } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { PublicScanReport } from '@/lib/scanner/public-scan/types';
 import type { UsePublicScanResult } from '@/hooks/use-public-scan';
@@ -77,13 +77,19 @@ export interface QuantumScanHeroProps {
   target: string;
   onTargetChange: (value: string) => void;
   onSubmit: (event: React.FormEvent) => void;
+  disabled: boolean;
+  targetRequired: boolean;
+  targetError?: string;
+  accessStatus: React.ReactNode;
   /** The existing workflow rail + enterprise CTA, rendered in the left column. */
   railSlot: React.ReactNode;
 }
 
 /* ---------------------------------------------------------------------- inner - */
 
-function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }: QuantumScanHeroProps) {
+function HeroInner({
+  scan, report, target, onTargetChange, onSubmit, disabled, targetRequired, targetError, accessStatus, railSlot,
+}: QuantumScanHeroProps) {
   const budget = useQveBudget();
   const wide = useIsWide();
   const audio = useQveAudio();
@@ -344,16 +350,8 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
           />
 
           <div className="relative z-10 px-4 pb-5 pt-5 sm:px-7 sm:pb-7 sm:pt-7">
-            {/* ── Header: badge + title | divider | promise ───────────────── */}
             <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-4 lg:grid-cols-[minmax(0,1.12fr)_1px_minmax(0,0.88fr)] lg:gap-7">
-              <div className="min-w-0">
-                <span className="inline-flex items-center gap-2 rounded-full border border-cyan-400/25 bg-cyan-400/[0.08] px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
-                  <Radar className="h-3 w-3" /> No registration required
-                </span>
-                <h1 className="public-scan-title mt-3.5 text-white">
-                  Quantum Exposure Assessment
-                </h1>
-              </div>
+              <h1 className="public-scan-title text-white">Quantum Exposure Assessment</h1>
 
               <div aria-hidden className="hidden self-stretch bg-gradient-to-b from-transparent via-white/[0.12] to-transparent lg:block" />
 
@@ -385,35 +383,44 @@ function HeroInner({ scan, report, target, onTargetChange, onSubmit, railSlot }:
             </div>
 
             {/* ── Target input ───────────────────────────────────────────── */}
-            <form
-              onSubmit={onSubmit}
-              className="public-scan-form mt-5 flex items-center gap-2 rounded-xl border border-cyan-400/25 bg-[#040810]/85 p-1.5 shadow-[0_0_34px_-22px_rgba(34,211,238,0.9)] transition-colors focus-within:border-cyan-400/55"
-            >
-              <Globe aria-hidden className="ml-2.5 h-4 w-4 shrink-0 text-slate-500" />
-              <input
-                value={target}
-                onChange={(event) => onTargetChange(event.target.value)}
-                placeholder="https://company.com"
-                aria-label="Domain or URL to assess"
-                autoComplete="url"
-                spellCheck={false}
-                className="min-w-0 flex-1 bg-transparent py-2 text-[14px] text-white outline-none placeholder:text-slate-600"
-              />
-              <button
-                type="submit"
-                disabled={scan.state === 'scanning'}
-                className="public-scan-primary inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3.5 py-2 text-[13px] font-bold disabled:cursor-not-allowed disabled:opacity-60 sm:px-5"
-              >
-                {scan.state === 'scanning' ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" /> Analyzing
-                  </>
-                ) : (
-                  <>
-                    <Search className="h-4 w-4" /> Analyze Now
-                  </>
-                )}
-              </button>
+            <form onSubmit={onSubmit} className="mt-5">
+              <label htmlFor="public-scan-target" className="public-scan-target-label">Domain or HTTPS URL</label>
+              <div className="public-scan-form">
+                <div className="public-scan-target">
+                  <Globe aria-hidden="true" className="h-4 w-4 shrink-0" />
+                  <input
+                    id="public-scan-target"
+                    className="public-scan-target-input"
+                    value={target}
+                    onChange={(event) => onTargetChange(event.target.value)}
+                    placeholder="https://company.com"
+                    autoComplete="url"
+                    inputMode="url"
+                    spellCheck={false}
+                    maxLength={269}
+                    required={targetRequired}
+                    aria-invalid={targetError ? true : undefined}
+                    aria-describedby={targetError ? 'public-scan-target-error' : undefined}
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={disabled || scan.state === 'scanning'}
+                  className="public-scan-primary inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 text-[13px] font-bold disabled:cursor-not-allowed disabled:opacity-60 sm:px-5"
+                >
+                  {scan.state === 'scanning' ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" /> Analyzing
+                    </>
+                  ) : (
+                    <>
+                      <Search className="h-4 w-4" /> Analyze Now
+                    </>
+                  )}
+                </button>
+              </div>
+              {targetError && <p className="public-scan-target-error" id="public-scan-target-error" role="alert">{targetError}</p>}
+              {accessStatus}
             </form>
 
             {/* ── Visualization band ─────────────────────────────────────── */}

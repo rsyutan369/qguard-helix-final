@@ -17,6 +17,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  public-scan-quota:
+    name: Public Scan quota migration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: qguard_public_scan_test
+          POSTGRES_PASSWORD: disposable-ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test quota, permissions and UTC reset
+        env:
+          PGPASSWORD: disposable-ci-password
+        run: psql -X -h 127.0.0.1 -U postgres -d qguard_public_scan_test -f tools/public-scan-quota-check.sql
+
   quality:
     name: Typecheck, tests, build
     runs-on: ubuntu-latest
@@ -49,6 +72,7 @@ jobs:
           npx tsx tools/agent-access-check.ts
           npx tsx tools/hero-grading-alignment-check.ts
           npx tsx tools/csv-export-check.ts
+          npx tsx tools/public-scan-load-check.ts
 
       - name: Production build (as Vercel runs it)
         env:

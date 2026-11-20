@@ -6,6 +6,7 @@ import { ThemeProvider } from './contexts/theme-context';
 import { UserPreferencesProvider } from './contexts/user-preferences-context';
 import Landing from './pages/Landing';
 import { SIGNUP_CONFIRMATION_PATH } from './lib/signup-confirmation';
+import { PUBLIC_SCAN_CONFIRMATION_PATH } from './lib/public-scan-auth';
 
 // Keep the landing page on the initial render path. Other routes load when matched.
 const SubscriptionThankYou = lazy(() => import('./pages/SubscriptionThankYou'));
@@ -147,6 +148,7 @@ export default function App() {
           <Route path="/authentication/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
           <Route path={SIGNUP_CONFIRMATION_PATH} element={<ConfirmEmailPage />} />
+          <Route path={PUBLIC_SCAN_CONFIRMATION_PATH} element={<ConfirmEmailPage forPublicScan />} />
           <Route path="/auth/callback" element={<OAuthCallbackPage />} />
           <Route path="/authentication/register" element={<RegisterPage />} />
           <Route path="/reset-password" element={<ResetPasswordPage />} />
