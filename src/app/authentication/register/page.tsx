@@ -1,9 +1,10 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { Check, Loader2, Lock, Mail, MailCheck, X } from "lucide-react";
 import { useAuth } from "@/contexts/auth-context";
+import { PUBLIC_SCAN_PATH, safeAuthDestination } from "@/lib/public-scan-auth";
 import { ButtonDot } from "@/pages/landing-chars";
 import { AuthAlert, AuthCard, AuthDivider, AuthField, AuthShell, GoogleButton } from "../AuthShell";
 
@@ -28,11 +29,12 @@ export default function RegisterPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sentTo, setSentTo] = useState<string | null>(null);
-  const { signUp, signInWithGoogle } = useAuth();
+  const { session, signUp, signInWithGoogle } = useAuth();
   const [searchParams] = useSearchParams();
-  const nextParam = searchParams.get("next");
-  // Preserve a checkout target across register -> verify email -> sign in.
-  const nextQuery = nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//") ? `?next=${encodeURIComponent(nextParam)}` : "";
+  const next = safeAuthDestination(searchParams.get("next")) ??
+    (import.meta.env.VITE_SITE_EDITION === 'public' ? PUBLIC_SCAN_PATH : null);
+  const forPublicScan = next === PUBLIC_SCAN_PATH;
+  const nextQuery = next ? `?next=${encodeURIComponent(next)}` : "";
 
   const strength = useMemo(() => passwordStrength(password), [password]);
   const matchState = confirmPassword.length === 0 ? "idle" : confirmPassword === password ? "match" : "mismatch";
@@ -54,7 +56,7 @@ export default function RegisterPage() {
     }
 
     try {
-      const { error } = await signUp(email, password);
+      const { error } = await signUp(email, password, forPublicScan);
       if (error) {
         setIsLoading(false);
         let msg = error.message || "Registration failed. Please try again.";
@@ -74,7 +76,7 @@ export default function RegisterPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const { error } = await signInWithGoogle();
+      const { error } = await signInWithGoogle(forPublicScan);
       if (error) {
         setIsLoading(false);
         setError("Google sign-up failed: " + error.message);
@@ -86,6 +88,8 @@ export default function RegisterPage() {
       setError("Google sign-up failed: " + err.message);
     }
   };
+
+  if (forPublicScan && session) return <Navigate to={PUBLIC_SCAN_PATH} replace />;
 
   if (sentTo) {
     return (

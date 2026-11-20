@@ -2,15 +2,15 @@
  * Website edition — the public site published to static hosting
  * (`npm run build:public` → dist-public/, entry src/main-public.tsx).
  *
- * Only marketing pages, the legal documents, the resources and the free Web
- * assessment are routed here. The dashboard, sign-in, checkout and the Agent
- * Center are deliberately NOT imported, so none of the platform's modules or
- * engines are in this bundle; every link to them lands on PlatformOnly.
+ * Marketing pages, resources, the Web assessment, and its shared account
+ * flows are routed here. Dashboard, checkout and Agent Center destinations
+ * resolve to PlatformOnly.
  * tools/deploy/public-site-check.ts fails the build if that ever changes.
  *
  * Routes are kept identical to src/App.tsx so links shared from either build
  * resolve the same way.
  */
+import { lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Navigate, Route, Routes } from 'react-router-dom';
 import { RouteFooter } from '@/components/SiteFooter';
 import { AuthProvider } from './contexts/auth-context';
@@ -33,12 +33,21 @@ import QguardMessagingSecureChat from './app/qguard-messaging/secure-chat/page';
 import QguardMessagingQuantumVault from './app/qguard-messaging/quantum-vault/page';
 import QuantumReadinessAssessmentPage from './app/quantum-readiness-assessment/page';
 import PublicScanPage from './app/public-scan/page';
+import { SIGNUP_CONFIRMATION_PATH } from './lib/signup-confirmation';
+import { PUBLIC_SCAN_CONFIRMATION_PATH } from './lib/public-scan-auth';
+
+const LoginPage = lazy(() => import('./app/authentication/login/page'));
+const RegisterPage = lazy(() => import('./app/authentication/register/page'));
+const ConfirmEmailPage = lazy(() => import('./app/authentication/confirm-email/page'));
+const OAuthCallbackPage = lazy(() => import('./app/authentication/oauth-callback/page'));
+const ResetPasswordPage = lazy(() => import('./app/authentication/reset-password/page'));
 
 export default function PublicApp() {
   return (
     <ThemeProvider>
       <AuthProvider>
         <Router>
+          <Suspense fallback={<p role="status">Loading…</p>}>
           <Routes>
             <Route path="/" element={<Landing />} />
             <Route path="/docs/*" element={<DocsPage />} />
@@ -47,6 +56,12 @@ export default function PublicApp() {
             <Route path="/qguard-messaging/quantum-vault" element={<QguardMessagingQuantumVault />} />
             <Route path="/quantum-readiness-assessment" element={<QuantumReadinessAssessmentPage />} />
             <Route path="/public-scan" element={<PublicScanPage />} />
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/register" element={<RegisterPage />} />
+            <Route path="/auth/callback" element={<OAuthCallbackPage />} />
+            <Route path={SIGNUP_CONFIRMATION_PATH} element={<ConfirmEmailPage forPublicScan />} />
+            <Route path={PUBLIC_SCAN_CONFIRMATION_PATH} element={<ConfirmEmailPage forPublicScan />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/public-scanner" element={<Navigate to="/public-scan" replace />} />
             <Route path="/scan" element={<Navigate to="/public-scan" replace />} />
             <Route path="/post-quantum-migration-platform" element={<PostQuantumMigrationPlatform />} />
@@ -69,6 +84,7 @@ export default function PublicApp() {
             <Route path="/quantum-emulation" element={<QuantumSimulationPage />} />
             <Route path="*" element={<PlatformOnly />} />
           </Routes>
+          </Suspense>
           <RouteFooter />
         </Router>
       </AuthProvider>

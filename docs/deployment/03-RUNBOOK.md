@@ -45,7 +45,7 @@ dashboard's 12–54 queries.
   - Site URL: `https://qguardhelix.com`.
   - Redirect URLs: `https://qguardhelix.com/dashboard`,
     `https://qguardhelix.com/reset-password`, `https://qguardhelix.com/auth/confirm`,
-    `https://qguardhelix.com/auth/callback`,
+    `https://qguardhelix.com/auth/callback`, `https://qguardhelix.com/auth/confirm/public-scan`,
     and the `www.` variants if served.
   - Keep existing entries used by the messaging app.
 - **Google sign-in:** the web app uses PKCE and returns to `/auth/callback`

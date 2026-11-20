@@ -23,12 +23,14 @@ export interface AuthenticatedEventStreamHandlers {
   onError: (error: Error) => void
   /** The response arrived with a 2xx status and a readable body. */
   onOpen?: () => void
+  onResponseError?: (response: Response) => Promise<void>
 }
 
 export function openAuthenticatedEventStream(
   url: string,
   token: string,
   handlers: AuthenticatedEventStreamHandlers,
+  request?: Pick<RequestInit, 'method' | 'body'> & { headers?: Record<string, string> },
 ): () => void {
   const controller = new AbortController()
   let closed = false
@@ -46,10 +48,16 @@ export function openAuthenticatedEventStream(
   void (async () => {
     try {
       const response = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
+        ...request,
+        headers: { ...request?.headers, Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
         signal: controller.signal,
         cache: 'no-store',
+        ...(request ? { redirect: 'error', credentials: 'omit' } : {}),
       })
+      if (!response.ok && handlers.onResponseError && !closed) {
+        await handlers.onResponseError(response)
+        return
+      }
       if (!response.ok || !response.body) throw new Error(`Stream responded ${response.status}`)
       if (!closed) handlers.onOpen?.()
       const reader = response.body.getReader()

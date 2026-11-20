@@ -1,28 +1,15 @@
-/**
- * QGuard Helix — Public Quantum Exposure Assessment™ API
- *
- * Unauthenticated, edge-only scanner. Mounted BEFORE the subscription gateway
- * so anonymous visitors can run an assessment without an account.
- *
- * Security posture for an open endpoint:
- *  - strict input validation + sanitisation (reuses the scanner asset validator)
- *  - SSRF protection: private/loopback/link-local targets are refused, and the
- *    reused TLS analyzer re-validates every resolved address
- *  - per-client rate limiting on NEW scans, a per-client cap on active scans,
- *    and a global concurrency cap with a bounded, fair waiting line
- *  - one shared scan per target, and no scan for a visitor who has left
- *  - hard scan timeout
- *  - short-lived result cache keyed by host:port (cuts repeat load and abuse)
- *  - privacy-first logging: only host + outcome, never client identifiers
- */
-
-import { Router, type Request, type Response } from 'express'
+import { json, Router, type NextFunction, type Request, type Response } from 'express'
+import { randomUUID } from 'node:crypto'
 import net from 'node:net'
 import { validateAsset } from '@/lib/scanner/asset-validator'
 import { assessPublicTarget, quantumStageDetail } from '@/lib/scanner/public-scan/assess'
 import { ScanCancelledError, tlsStageDetail, type ObservationSink } from '@/lib/scanner/public-scan/engines'
 import type { PublicScanReport, PublicScanStage } from '@/lib/scanner/public-scan/types'
-import { readClientIp } from './runtime/client-ip'
+import { trustedClientIp } from './runtime/client-ip'
+import { allowedOrigin } from './runtime/http-baseline'
+import { authenticatePublicScan, type PublicScanAccount } from './public-scan-account'
+import type { PublicScanUsage } from '@/lib/public-scan-usage'
+import { checkHostSyntax, verifyPublicHost } from '@/lib/scanner/public-scan/safe-dns'
 import { PublicScanCoordinator, type CoordinatorOptions, type QueueEvent, type QueueTarget } from './public-scan-queue'
 
 // ─── Limits ───────────────────────────────────────────────────────────────────
@@ -57,6 +44,9 @@ const STREAM_CACHE_TTL_MS = 45 * 1000
 const CACHE_MAX_ENTRIES = 400
 const RATE_LIMIT_WINDOW_MS = 60_000
 const RATE_LIMIT_MAX_TRACKED_IPS = 5_000
+const MAX_PENDING_CHECKS = 48
+const REQUEST_BUDGET_MS = 115_000
+const MAX_STREAM_BUFFER_BYTES = 256 * 1024
 const ALLOWED_PORTS = new Set([443, 8443, 9443, 4443, 10443])
 /** How long a scan nobody is watching survives — a reload or reconnect keeps its place. */
 const ABANDON_GRACE_MS = 4_000
@@ -67,68 +57,35 @@ function envInt(name: string, fallback: number, min: number, max: number): numbe
   return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback
 }
 
-const BLOCKED_HOST_SUFFIXES = ['.local', '.internal', '.localdomain', '.home.arpa', '.lan']
-const BLOCKED_HOSTS = new Set(['localhost', 'ip6-localhost', 'metadata.google.internal', 'instance-data'])
-const PRIVATE_IP_PATTERNS = [
-  /^10\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-  /^192\.168\./,
-  /^127\./,
-  /^0\./,
-  /^169\.254\./,
-  /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./,
-  /^::1$/,
-  /^fc00:/i,
-  /^fd00:/i,
-  /^fe80:/i,
-]
-
-// ─── Target resolution ────────────────────────────────────────────────────────
-
 function resolveTarget(raw: unknown): { target: QueueTarget } | { error: { code: string; message: string } } {
-  if (typeof raw !== 'string' || !raw.trim()) {
-    return { error: { code: 'MISSING_TARGET', message: 'Enter a domain or https:// URL to assess.' } }
-  }
-  if (raw.length > 253 + 16) {
-    return { error: { code: 'TARGET_TOO_LONG', message: 'Target exceeds the maximum hostname length.' } }
+  const input = typeof raw === 'string' ? raw.trim() : ''
+  if (!input || input.length > 269 || /[\s@]/u.test(input)) {
+    return { error: { code: 'INVALID_TARGET', message: 'Enter a domain or HTTPS URL up to 269 characters, without credentials.' } }
   }
 
-  const validated = validateAsset(raw)
-  if (!validated.valid) {
-    return { error: { code: 'INVALID_TARGET', message: validated.error || 'Target is not a valid domain or URL.' } }
-  }
-  if (validated.type === 'subnet') {
-    return { error: { code: 'UNSUPPORTED_TARGET', message: 'Subnet ranges are not supported by the public scanner.' } }
-  }
-  if (validated.protocol === 'ssh' || validated.protocol === 'git') {
-    return { error: { code: 'UNSUPPORTED_TARGET', message: 'The public scanner assesses HTTPS endpoints only.' } }
+  const validated = validateAsset(input)
+  if (!validated.valid || validated.type === 'subnet' ||
+    (validated.protocol !== null && validated.protocol !== 'https')) {
+    return { error: { code: 'INVALID_TARGET', message: 'Enter a valid domain or HTTPS URL to assess.' } }
   }
 
-  const host = validated.host.toLowerCase()
+  const host = validated.host.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
   const port = validated.port ?? 443
-
   if (!ALLOWED_PORTS.has(port)) {
-    return {
-      error: {
-        code: 'UNSUPPORTED_PORT',
-        message: `Port ${port} is not assessed by the public scanner. Supported: ${[...ALLOWED_PORTS].join(', ')}.`,
-      },
-    }
-  }
-  if (BLOCKED_HOSTS.has(host) || BLOCKED_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))) {
-    return { error: { code: 'PRIVATE_TARGET', message: 'Internal and loopback hostnames cannot be assessed publicly.' } }
-  }
-  if (net.isIP(host) && PRIVATE_IP_PATTERNS.some((pattern) => pattern.test(host))) {
-    return { error: { code: 'PRIVATE_TARGET', message: 'Private and reserved IP ranges cannot be assessed publicly.' } }
-  }
-  if (!net.isIP(host) && !host.includes('.')) {
-    return { error: { code: 'INVALID_TARGET', message: 'Enter a fully-qualified domain such as example.com.' } }
+    return { error: { code: 'UNSUPPORTED_PORT', message: 'Use HTTPS on port 443, 8443, 9443, 4443, or 10443.' } }
   }
 
-  return { target: { input: raw.trim(), host, port, key: `${host}:${port}` } }
+  const verdict = checkHostSyntax(host)
+  if (!verdict.ok) return { error: { code: verdict.code!, message: verdict.message! } }
+  const domain = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u
+  if (!net.isIP(host) && (host.length > 253 || !domain.test(host))) {
+    return { error: { code: 'INVALID_TARGET', message: 'Enter a fully qualified domain such as example.com.' } }
+  }
+
+  // Shared scans and results describe the origin. Do not retain paths or queries.
+  const authority = net.isIPv6(host) ? `[${host}]` : host
+  return { target: { input: `https://${authority}${port === 443 ? '' : `:${port}`}`, host, port, key: `${authority}:${port}` } }
 }
-
-// ─── The router ───────────────────────────────────────────────────────────────
 
 export interface PublicScanRouterConfig {
   /** Scans running at once. Env: PUBLIC_SCAN_MAX_CONCURRENT. */
@@ -153,6 +110,9 @@ export interface PublicScanRouterConfig {
   run?: CoordinatorOptions['run']
   /** Privacy-first outcome logging. On by default. */
   log?: boolean
+  /** Dependencies overridden by isolated HTTP integration checks. */
+  authenticate?: (token: string) => Promise<PublicScanAccount | null>
+  verifyTarget?: typeof verifyPublicHost
 }
 
 /**
@@ -199,42 +159,28 @@ export function createPublicScanRouter(config: PublicScanRouterConfig = {}): Rou
   // ── rate limiting ─────────────────────────────────────────────────────────
 
   const rateBuckets = new Map<string, RateEntry>()
+  let authInFlight = 0
+  let preflights = 0
+  let quotaReads = 0
+  const rejectionLogs = new Map<string, { at: number; suppressed: number }>()
 
-  /**
-   * Would one more NEW scan for this client fit in its window? Checking and
-   * charging are separate on purpose: the limit used to be charged before the
-   * capacity check and before the cache, so a visitor retrying through "busy"
-   * spent their whole minute on refusals, and a cache hit — which costs nothing
-   * — still counted. Only a scan this client actually starts is charged now.
-   */
-  const peekRateLimit = (ip: string): { allowed: boolean; retryAfterSeconds: number } => {
+  const rateLimit = (key: string, max: number, charge = true): number => {
     const now = Date.now()
-    const entry = rateBuckets.get(ip)
-    if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS || entry.count < limits.rateLimitPerMinute) {
-      return { allowed: true, retryAfterSeconds: 0 }
-    }
-    return {
-      allowed: false,
-      retryAfterSeconds: Math.max(1, Math.ceil((RATE_LIMIT_WINDOW_MS - (now - entry.windowStart)) / 1000)),
-    }
-  }
-
-  const chargeRateLimit = (ip: string): void => {
-    const now = Date.now()
-    if (rateBuckets.size > RATE_LIMIT_MAX_TRACKED_IPS) {
-      for (const [key, entry] of rateBuckets) {
-        if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS) rateBuckets.delete(key)
+    let entry = rateBuckets.get(key)
+    if (!entry || now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) {
+      if (rateBuckets.size >= RATE_LIMIT_MAX_TRACKED_IPS && !rateBuckets.has(key)) {
+        for (const [id, bucket] of rateBuckets) {
+          if (now - bucket.windowStart >= RATE_LIMIT_WINDOW_MS) rateBuckets.delete(id)
+        }
+        if (rateBuckets.size >= RATE_LIMIT_MAX_TRACKED_IPS) return 60
       }
+      entry = { count: 0, windowStart: now }
+      if (charge) rateBuckets.set(key, entry)
     }
-    const entry = rateBuckets.get(ip)
-    if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
-      rateBuckets.set(ip, { count: 1, windowStart: now })
-      return
-    }
-    entry.count += 1
+    if (entry.count >= max) return Math.max(1, Math.ceil((RATE_LIMIT_WINDOW_MS - now + entry.windowStart) / 1000))
+    if (charge) entry.count += 1
+    return 0
   }
-
-  // ── result cache ──────────────────────────────────────────────────────────
 
   const resultCache = new Map<string, CacheEntry>()
 
@@ -289,7 +235,7 @@ export function createPublicScanRouter(config: PublicScanRouterConfig = {}): Rou
         })),
     isCancellation: (error) => error instanceof ScanCancelledError,
     onReport: (target, report, durationMs) => {
-      writeCache(target.key, report)
+      if (!report.unreachable) writeCache(target.key, report)
       if (!log) return
       // Privacy-first logging: target host + outcome only, no client identifiers.
       console.info(
@@ -300,51 +246,234 @@ export function createPublicScanRouter(config: PublicScanRouterConfig = {}): Rou
           `, ${durationMs}ms`,
       )
     },
-    onFailure: (target, message, durationMs) => {
-      if (log) console.warn(`[public-scan] ${target.host}:${target.port} → failed after ${durationMs}ms: ${message}`)
+    onFailure: (target, _message, durationMs) => {
+      if (log) console.warn(`[public-scan] ${target.host}:${target.port} → failed after ${durationMs}ms`)
     },
   })
 
-  /**
-   * Admit one request: join the job already running for this target, or —
-   * rate limit permitting — create one (running or queued). The limit is
-   * charged only when a scan is actually created for this client.
-   */
-  const admit = (
-    target: QueueTarget,
-    clientId: string,
-    send: (event: QueueEvent) => void,
-    allowQueue: boolean,
-  ):
-    | { admitted: true; unsubscribe: () => void }
-    | { admitted: false; status: number; code: string; message: string; retryAfterSeconds: number } => {
-    if (!coordinator.has(target.key)) {
-      const limit = peekRateLimit(clientId)
-      if (!limit.allowed) {
-        return {
-          admitted: false,
-          status: 429,
-          code: 'RATE_LIMITED',
-          message: `Each visitor may start ${limits.rateLimitPerMinute} new assessments per minute. You can start another in ${limit.retryAfterSeconds}s — viewing a site someone else is already assessing does not count.`,
-          retryAfterSeconds: limit.retryAfterSeconds,
-        }
-      }
+  const reject = (res: Response, status: number, code: string, message: string,
+    retryAfterSeconds?: number, usage?: PublicScanUsage) => {
+    if (res.destroyed || res.writableEnded) return
+    if (log) {
+      const previous = rejectionLogs.get(code)
+      const now = Date.now()
+      if (!previous || now - previous.at >= 5_000) {
+        console.warn('[public-scan] rejected', { code, status, suppressed: previous?.suppressed ?? 0 })
+        rejectionLogs.set(code, { at: now, suppressed: 0 })
+      } else previous.suppressed += 1
     }
-    const admission = coordinator.subscribe(target, clientId, send, { allowQueue })
-    if (admission.admitted === false) {
-      return {
-        admitted: false,
-        status: admission.code === 'CLIENT_BUSY' ? 429 : 503,
-        code: admission.code,
-        message: admission.message,
-        retryAfterSeconds: admission.retryAfterSeconds,
-      }
-    }
-    if (admission.created) chargeRateLimit(clientId)
-    return { admitted: true, unsubscribe: admission.unsubscribe }
+    if (retryAfterSeconds) res.setHeader('Retry-After', String(retryAfterSeconds))
+    res.status(status).json({ error: { code, message, retryAfterSeconds }, usage })
   }
 
-  // ── routes ────────────────────────────────────────────────────────────────
+  const unavailable = (res: Response) => reject(res, 503, 'SERVICE_UNAVAILABLE', 'Public Scan is temporarily unavailable. Try again shortly.')
+  const throttled = (res: Response, seconds: number) =>
+    reject(res, 429, 'RATE_LIMITED', 'Too many requests. Wait before trying again.', seconds)
+
+  const scanBody = json({ limit: '1kb', inflate: false })
+  const readScanBody = (req: Request, res: Response, next: NextFunction) => {
+    const timeout = setTimeout(() => res.destroy(), 10_000)
+    const clear = () => clearTimeout(timeout)
+    res.once('close', clear)
+    scanBody(req, res, (error?: unknown) => {
+      clear()
+      res.removeListener('close', clear)
+      next(error)
+    })
+  }
+
+  router.use((req, res, next) => {
+    res.setHeader('Cache-Control', 'private, no-store, no-transform')
+    if (req.headers.origin && !allowedOrigin(req)) {
+      reject(res, 403, 'ORIGIN_NOT_ALLOWED', 'This origin is not allowed.')
+      return
+    }
+
+    const ip = trustedClientIp(req) ?? req.socket.remoteAddress ?? 'unknown'
+    const failures = `failed:${ip}`
+    const retry = rateLimit(failures, 8, false) || rateLimit(`requests:${ip}`, 120)
+    if (retry) {
+      throttled(res, retry)
+      return
+    }
+    res.locals.failureBucket = failures
+    next()
+  })
+
+  async function route(req: Request, res: Response, mode: 'usage' | 'json' | 'stream') {
+    const authorization = req.get('authorization') ?? ''
+    const token = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/i.exec(authorization)?.[1]
+    const unauthorized = () => {
+      rateLimit(res.locals.failureBucket, 8)
+      res.setHeader('WWW-Authenticate', 'Bearer')
+      reject(res, 401, 'AUTH_REQUIRED', 'Sign in with a verified Qguard Helix account to run an assessment.')
+    }
+    if (!token || token.length > 4096) return unauthorized()
+    if (authInFlight >= MAX_PENDING_CHECKS) return unavailable(res)
+
+    authInFlight += 1
+    let account: PublicScanAccount | null
+    try {
+      account = await (config.authenticate ?? authenticatePublicScan)(token)
+    } catch {
+      return unavailable(res)
+    } finally {
+      authInFlight -= 1
+    }
+    if (res.destroyed) return
+    if (!account) return unauthorized()
+
+    if (mode === 'usage') {
+      if (quotaReads >= MAX_PENDING_CHECKS) return unavailable(res)
+      quotaReads += 1
+      try {
+        const { usage } = await account.quota('usage')
+        if (!res.destroyed) res.json({ data: usage })
+      } finally {
+        quotaReads -= 1
+      }
+      return
+    }
+
+    if (!req.is('application/json') || !req.body || Object.keys(req.body).length !== 1) {
+      return reject(res, 400, 'INVALID_REQUEST', 'Send a JSON object containing only the target.')
+    }
+    const resolved = resolveTarget(req.body.target)
+    if ('error' in resolved) return reject(res, 400, resolved.error.code, resolved.error.message)
+
+    const attemptRetry = rateLimit(`scan:${account.id}`, limits.rateLimitPerMinute)
+    if (attemptRetry) return throttled(res, attemptRetry)
+
+    const { target } = resolved
+    const scanId = randomUUID()
+    const deadline = Date.now() + REQUEST_BUDGET_MS
+    if (preflights >= MAX_PENDING_CHECKS) return unavailable(res)
+    preflights += 1
+    let preparing = true
+    let shouldRelease = true
+    try {
+      const { status, usage } = await account.quota('reserve', scanId)
+      shouldRelease = status === 'ok'
+      if (status === 'exhausted') {
+        reject(res, 429, 'DAILY_LIMIT_REACHED', 'You have used all 3 assessments for this UTC day.',
+          Math.max(1, Math.ceil((Date.parse(usage.resetAt) - Date.now()) / 1000)), usage)
+        return
+      }
+      if (status === 'active') {
+        reject(res, 409, 'SCAN_IN_PROGRESS', 'An assessment is already running for your account.', undefined, usage)
+        return
+      }
+      if (status !== 'ok') return unavailable(res)
+      if (res.destroyed) return
+
+      const verdict = await (config.verifyTarget ?? verifyPublicHost)(target.host)
+      preflights -= 1
+      preparing = false
+      if (res.destroyed) return
+      if (!verdict.ok) return reject(res, 400, verdict.code ?? 'INVALID_TARGET', verdict.message ?? 'Target is unavailable.')
+
+      const cached = readCache(target.key, mode === 'stream' ? STREAM_CACHE_TTL_MS : CACHE_TTL_MS)
+      const streaming = mode === 'stream'
+      const write = (event: string, payload: unknown) => {
+        if (res.writableEnded || res.destroyed) return
+        if (res.writableLength > MAX_STREAM_BUFFER_BYTES) {
+          res.destroy()
+          return
+        }
+        res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`)
+      }
+      const openStream = () => {
+        res.setHeader('Content-Type', 'text/event-stream')
+        res.setHeader('X-Accel-Buffering', 'no')
+        res.flushHeaders()
+        write('scan-start', { target: target.host, port: target.port })
+      }
+
+      type Outcome = { type: 'complete'; report: PublicScanReport } | { type: 'failed' | 'closed' }
+      let outcome: Outcome
+      if (cached) {
+        if (streaming) {
+          openStream()
+          for (const stage of cached.evidence ? cachedStages(cached) : []) write('stage', { stage })
+        }
+        outcome = { type: 'complete', report: cached }
+      } else {
+        let settle!: (value: Outcome) => void
+        const terminal = new Promise<Outcome>((resolve) => { settle = resolve })
+        const held: QueueEvent[] = []
+        let open = false
+        const deliver = (event: QueueEvent) => {
+          if (event.type === 'complete' || event.type === 'failed') {
+            settle(event)
+          } else if (streaming) {
+            if (open) write(STREAM_EVENT[event.type], event.type === 'observation' ? event.observation : event)
+            else held.push(event)
+          }
+        }
+        const admission = coordinator.subscribe(target, account.id, deliver, { allowQueue: streaming })
+        if (admission.admitted === false) {
+          reject(res, admission.code === 'CLIENT_BUSY' ? 429 : 503, admission.code,
+            'The scanner is at capacity. Try again shortly.', admission.retryAfterSeconds)
+          return
+        }
+        const onClose = () => settle({ type: 'closed' })
+        res.once('close', onClose)
+        const timer = setTimeout(() => settle({ type: 'failed' }), Math.max(0, deadline - Date.now()))
+        const heartbeat = streaming ? setInterval(() => {
+          if (res.writableLength > MAX_STREAM_BUFFER_BYTES) res.destroy()
+          else if (!res.destroyed && !res.writableEnded) res.write(': heartbeat\n\n')
+        }, 15_000) : null
+        try {
+          if (streaming) {
+            openStream()
+            open = true
+            for (const event of held) deliver(event)
+          }
+          outcome = await terminal
+        } finally {
+          clearTimeout(timer)
+          if (heartbeat) clearInterval(heartbeat)
+          res.removeListener('close', onClose)
+          admission.unsubscribe()
+        }
+      }
+
+      if (outcome.type === 'closed') return
+      const operation = outcome.type === 'complete' && !outcome.report.unreachable && !cached ? 'complete' : 'release'
+      // Release is conditional on the row still being pending, including when
+      // the completion transaction succeeded but its HTTP response was lost.
+      const updated = await account.quota(operation, scanId)
+      shouldRelease = false
+      if (updated.status !== 'ok') throw new Error('Scan reservation expired')
+      if (res.destroyed) return
+      if (streaming) {
+        if (outcome.type === 'complete') write('scan-complete', { report: outcome.report, usage: updated.usage })
+        else write('error', { code: 'SCAN_FAILED', message: 'The assessment could not be completed.', usage: updated.usage })
+        res.end()
+      } else if (outcome.type === 'complete') {
+        res.json({ data: outcome.report, usage: updated.usage })
+      } else {
+        reject(res, 502, 'SCAN_FAILED', 'The assessment could not be completed.', undefined, updated.usage)
+      }
+    } finally {
+      if (preparing) preflights -= 1
+      if (shouldRelease) {
+        await account.quota('release', scanId).catch(() => {
+          if (log) console.warn('[public-scan] reservation release failed')
+        })
+      }
+    }
+  }
+
+  const handle = (mode: 'usage' | 'json' | 'stream') => (req: Request, res: Response) => {
+    void route(req, res, mode).catch(() => {
+      if (res.destroyed || res.writableEnded) return
+      if (res.headersSent) {
+        if (log) console.warn('[public-scan] stream interrupted')
+        res.end('event: error\ndata: {"message":"The assessment could not be saved. Refresh your allowance before trying again."}\n\n')
+      } else unavailable(res)
+    })
+  }
 
   /** Scanner capability disclosure — what the public scanner does and does not do. */
   router.get('/capabilities', (_req, res) => {
@@ -352,7 +481,7 @@ export function createPublicScanRouter(config: PublicScanRouterConfig = {}): Rou
       data: {
         name: 'Public Quantum Exposure Assessment',
         version: '1.1.0',
-        authentication: 'none',
+        authentication: 'required',
         modules: ['dns', 'tls', 'certificate', 'headers', 'quantum', 'report'],
         analyzed: [
           'TLS protocol and cipher negotiation',
@@ -369,8 +498,10 @@ export function createPublicScanRouter(config: PublicScanRouterConfig = {}): Rou
           'Cryptographic governance and compliance evidence',
         ],
         limits: {
-          scansPerMinutePerClient: limits.rateLimitPerMinute,
-          activeScansPerClient: limits.maxActivePerClient,
+          scansPerDayPerAccount: 3,
+          resetTimezone: 'UTC',
+          scanRequestsPerMinutePerAccount: limits.rateLimitPerMinute,
+          activeScansPerAccount: 1,
           concurrentScans: limits.maxConcurrent,
           queueCapacity: limits.maxQueue,
           scanBudgetSeconds: SCAN_BUDGET_MS / 1000,
@@ -386,197 +517,18 @@ export function createPublicScanRouter(config: PublicScanRouterConfig = {}): Rou
     })
   })
 
-  /**
-   * One-shot assessment. Returns the complete report as JSON.
-   *
-   * For scripts, not people: it joins a scan already running for the target or
-   * starts one if a slot is free, but it never waits in the line — a busy
-   * server answers 503 with `Retry-After`, which a script handles better than a
-   * held connection.
-   */
-  router.post('/', async (req: Request, res: Response) => {
-    const resolved = resolveTarget(req.body?.target)
-    if ('error' in resolved) {
-      res.status(400).json({ error: resolved.error })
-      return
-    }
-
-    const cached = readCache(resolved.target.key)
-    if (cached) {
-      res.setHeader('Cache-Control', 'public, max-age=60')
-      res.json({ data: cached })
-      return
-    }
-
-    let settle: (event: QueueEvent) => void = () => undefined
-    const outcome = new Promise<QueueEvent>((resolve) => {
-      settle = resolve
-    })
-    const admission = admit(
-      resolved.target,
-      readClientIp(req),
-      (event) => {
-        if (event.type === 'complete' || event.type === 'failed') settle(event)
-      },
-      false,
-    )
-    if (admission.admitted === false) {
-      res.setHeader('Retry-After', String(admission.retryAfterSeconds))
-      res.status(admission.status).json({
-        error: { code: admission.code, message: admission.message, retryAfterSeconds: admission.retryAfterSeconds },
-      })
-      return
-    }
-    // The caller hanging up is the same signal as a visitor closing the tab.
-    res.on('close', () => admission.unsubscribe())
-
-    const event = await outcome
-    if (res.writableEnded || res.destroyed) return
-    if (event.type === 'complete') {
-      res.setHeader('Cache-Control', 'public, max-age=60')
-      res.json({ data: event.report })
-    } else if (event.type === 'failed') {
-      res.status(502).json({ error: { code: 'SCAN_FAILED', message: event.message } })
-    }
+  router.get('/usage', handle('usage'))
+  router.post('/', readScanBody, handle('json'))
+  router.post('/stream', readScanBody, handle('stream'))
+  router.all('/stream', (_req, res) => {
+    res.setHeader('Allow', 'POST')
+    res.setHeader('Cache-Control', 'no-store')
+    reject(res, 405, 'METHOD_NOT_ALLOWED', 'Use an authenticated POST request to start an assessment.')
   })
-
-  /**
-   * Streaming assessment (SSE).
-   *
-   * Events, in order: `scan-start`; then either `scan-queued` (repeated as the
-   * line moves) followed by `scan-started`, or `scan-started` at once;
-   * `scan-shared` when the visitor joined a scan someone else started; `stage`
-   * and `observation` as measurements land; finally `scan-complete` or `error`.
-   *
-   * A refusal — invalid target, rate limit, full line — is delivered IN the
-   * stream as `scan-refused` when the caller is an EventSource. A browser
-   * cannot read the body of a non-200 event-stream response, so every refusal
-   * used to surface as "Connection to the assessment service was lost".
-   * Callers that do not ask for `text/event-stream` still receive the HTTP
-   * status and JSON body.
-   */
-  router.get('/stream', (req: Request, res: Response) => {
-    const wantsStream = String(req.headers.accept ?? '').includes('text/event-stream')
-
-    const openStream = () => {
-      res.status(200)
-      res.setHeader('Content-Type', 'text/event-stream')
-      res.setHeader('Cache-Control', 'no-cache, no-transform')
-      res.setHeader('Connection', 'keep-alive')
-      res.setHeader('X-Accel-Buffering', 'no')
-      res.flushHeaders?.()
-    }
-    const write = (event: string, payload: unknown) => {
-      if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`)
-    }
-
-    const refuse = (status: number, code: string, message: string, retryAfterSeconds?: number) => {
-      if (retryAfterSeconds) res.setHeader('Retry-After', String(retryAfterSeconds))
-      if (!wantsStream) {
-        res.status(status).json({ error: { code, message, ...(retryAfterSeconds ? { retryAfterSeconds } : {}) } })
-        return
-      }
-      openStream()
-      /* A finished stream is reconnected by EventSource after `retry` ms. The
-         client closes on this event; the long retry is the belt to those
-         braces, so a refusal can never become a reconnect loop against a busy
-         server. */
-      res.write('retry: 86400000\n\n')
-      write('scan-refused', { code, status, message, retryAfterSeconds: retryAfterSeconds ?? null, timestamp: new Date().toISOString() })
-      res.end()
-    }
-
-    const resolved = resolveTarget(req.query.target)
-    if ('error' in resolved) {
-      refuse(400, resolved.error.code, resolved.error.message)
-      return
-    }
-    const { target } = resolved
-
-    /* A very recent result is served before any gate: it costs nothing, so it
-       is neither refused when the scanner is busy nor charged to the visitor. */
-    const cached = readCache(target.key, STREAM_CACHE_TTL_MS)
-    if (cached) {
-      openStream()
-      write('scan-start', { target: target.host, port: target.port, timestamp: new Date().toISOString() })
-      for (const stage of cached.evidence ? cachedStages(cached) : []) {
-        write('stage', { stage, timestamp: new Date().toISOString() })
-      }
-      write('scan-complete', { report: cached, timestamp: new Date().toISOString() })
-      res.end()
-      return
-    }
-
-    /* Events can arrive during admission itself (a queue position, a late
-       joiner's replay), before the response is open — so they are held and
-       flushed once it is. */
-    let open = false
-    const held: QueueEvent[] = []
-    let heartbeat: ReturnType<typeof setInterval> | null = null
-    const finish = () => {
-      if (heartbeat) clearInterval(heartbeat)
-      heartbeat = null
-      if (!res.writableEnded) res.end()
-    }
-    const deliver = (event: QueueEvent) => {
-      const name = STREAM_EVENT[event.type]
-      const timestamp = new Date().toISOString()
-      switch (event.type) {
-        case 'stage':
-          write(name, { stage: event.stage, timestamp })
-          break
-        case 'observation':
-          write(name, event.observation)
-          break
-        case 'complete':
-          write(name, { report: event.report, timestamp })
-          finish()
-          break
-        case 'failed':
-          write(name, { code: 'SCAN_FAILED', message: event.message, timestamp })
-          finish()
-          break
-        case 'queued':
-          write(name, {
-            position: event.position,
-            queueLength: event.queueLength,
-            estimatedWaitSeconds: event.estimatedWaitSeconds,
-            running: event.running,
-            capacity: event.capacity,
-            timestamp,
-          })
-          break
-        case 'shared':
-          write(name, { viewers: event.viewers, state: event.state, timestamp })
-          break
-        case 'started':
-          write(name, { timestamp })
-          break
-      }
-    }
-
-    const admission = admit(target, readClientIp(req), (event) => (open ? deliver(event) : held.push(event)), true)
-    if (admission.admitted === false) {
-      refuse(admission.status, admission.code, admission.message, admission.retryAfterSeconds)
-      return
-    }
-
-    openStream()
-    open = true
-    write('scan-start', { target: target.host, port: target.port, timestamp: new Date().toISOString() })
-    for (const event of held.splice(0)) deliver(event)
-    heartbeat = setInterval(() => {
-      if (!res.writableEnded) res.write(': heartbeat\n\n')
-    }, 15_000)
-
-    /* `res` 'close' — not `req` — fires when the visitor goes away: on a GET
-       the request side can finish long before the connection does. Leaving
-       releases this viewer; the coordinator stops the scan once nobody is
-       left. */
-    res.on('close', () => {
-      finish()
-      admission.unsubscribe()
-    })
+  router.use((error: { type?: string }, _req: Request, res: Response, _next: unknown) => {
+    res.setHeader('Cache-Control', 'no-store')
+    if (error.type === 'entity.too.large') reject(res, 413, 'PAYLOAD_TOO_LARGE', 'The scan request is too large.')
+    else reject(res, 400, 'INVALID_REQUEST', 'Send a valid JSON scan request.')
   })
 
   return router

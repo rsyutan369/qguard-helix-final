@@ -296,7 +296,7 @@ const caaAnswered = (dns: { caaQueryable: boolean; caaClimbComplete: boolean }) 
   }
 
   onEngineStart?.('http-security')
-  const httpPromise = runHttpEngine(host, port).then((result) => {
+  const httpPromise = runHttpEngine(host, port, options.signal).then((result) => {
     if (!signal?.aborted && result.data.reachable) options.onHttpEvidence?.(result.data)
     // HSTS is scored as its own control and reported on its own card, so the
     // transport-header tally EXCLUDES it — exactly as `http-security` in
@@ -358,7 +358,7 @@ const caaAnswered = (dns: { caaQueryable: boolean; caaClimbComplete: boolean }) 
   )
 
   onEngineStart?.('certificate-intelligence')
-  const certificateResult = await runCertificateEngine(host, port, options.onObservation)
+  const certificateResult = await runCertificateEngine(host, port, options.onObservation, options.signal)
   stopIfCancelled()
   if (certificateResult.data.certificate) options.onCertificateEvidence?.(certificateResult.data)
   onEngine?.(

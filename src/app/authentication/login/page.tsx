@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Loader2, Lock, Mail } from "lucide-react";
 import { useAuth } from "@/contexts/auth-context";
+import { PUBLIC_SCAN_PATH, safeAuthDestination } from "@/lib/public-scan-auth";
 import { ButtonDot } from "@/pages/landing-chars";
 import { AuthAlert, AuthCard, AuthDivider, AuthField, AuthShell, GoogleButton } from "../AuthShell";
 
@@ -15,9 +16,8 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const nextParam = searchParams.get("next");
-  // Only allow internal, non-protocol-relative paths as a redirect target.
-  const safeNext = nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//") ? nextParam : "/dashboard";
-  const nextQuery = nextParam && safeNext !== "/dashboard" ? `?next=${encodeURIComponent(safeNext)}` : "";
+  const safeNext = safeAuthDestination(nextParam) ?? (import.meta.env.VITE_SITE_EDITION === 'public' ? PUBLIC_SCAN_PATH : "/dashboard");
+  const nextQuery = safeNext !== "/dashboard" ? `?next=${encodeURIComponent(safeNext)}` : "";
   const { signIn, signInWithGoogle } = useAuth();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -56,7 +56,7 @@ export default function LoginPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const { error } = await signInWithGoogle();
+      const { error } = await signInWithGoogle(safeNext === PUBLIC_SCAN_PATH);
       if (error) {
         setIsLoading(false);
         setError("Google sign-in failed: " + error.message);

@@ -284,13 +284,14 @@ export async function assessPublicTarget(options: AssessOptions): Promise<Public
 
   // ── Executive report ──────────────────────────────────────────────────────
   emit(stage('report', 'running'))
+  const authority = host.includes(':') ? `[${host}]` : host
   const report: PublicScanReport = {
     scanId,
     target: {
       input,
       host,
       port,
-      displayUrl: port === 443 ? `https://${host}` : `https://${host}:${port}`,
+      displayUrl: port === 443 ? `https://${authority}` : `https://${authority}:${port}`,
     },
     startedAt: startedAt.toISOString(),
     completedAt: new Date().toISOString(),
