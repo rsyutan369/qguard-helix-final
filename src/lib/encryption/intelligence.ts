@@ -31,6 +31,7 @@
  * reported 564 "events" on a 2-asset tenant.
  */
 
+import { countTelemetrySources } from '@/lib/telemetry/source-health'
 import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
 import { findingIdentityKey, namesCryptography, observationClass } from '@/lib/scanner/finding-identity'
 import type { AssetMigrationRecord } from '@/lib/migration/asset-intelligence'
@@ -642,9 +643,8 @@ export function buildEncryptionIntelligence(inputs: EncryptionInputs): Encryptio
   const timeline = buildTimeline({ observations, runtimeEvents: inputs.runtimeEvents, findings, now })
 
   const latestEvidenceAt = latestIso(
-    ...observations.slice(0, 200).map((row) => row.observedAt),
-    telemetry.lastRuntimeEventAt,
-    telemetry.lastScanAt,
+    ...observations.map((row) => row.observedAt),
+    ...findings.map((row) => row.lastObservedAt),
     telemetry.lastKeyEventAt,
     telemetry.lastVaultActivityAt,
   )
@@ -1181,20 +1181,14 @@ function buildTelemetryHealth(input: {
 }): TelemetryHealth {
   const { inputs: raw, observations, now } = input
 
-  const agentsOnline = raw.scannerAgents.filter((agent) => {
-    const status = str(agent.status).toLowerCase()
-    const seen = dateMs(agent.last_seen_at)
-    return status === 'online' || status === 'active' || (seen > 0 && now - seen < 10 * 60_000)
-  }).length
-  const connectorsActive = raw.connectorAccounts.filter((account) => /active|connected|ok/i.test(str(account.status))).length
-  const runningScans = raw.scanSessions.filter((session) => /running|in_progress|scanning|queued/i.test(str(session.status))).length
+  const { agentsOnline, connectorsActive, runningScans } = countTelemetrySources(raw, now)
 
   const lastRuntimeEventAt = latestIso(...raw.runtimeEvents.slice(0, 200).map((row) => row.observed_at ?? row.created_at))
   const lastScanAt = latestIso(...raw.scanSessions.slice(0, 100).map((row) => row.completed_at ?? row.updated_at ?? row.created_at))
   const lastKeyEventAt = latestIso(...raw.generatedKeys.slice(0, 100).map((row) => row.updated_at ?? row.created_at))
   const lastVaultActivityAt = latestIso(...raw.vaultFiles.slice(0, 100).map((row) => row.updated_at ?? row.created_at))
 
-  const runtimeFresh = lastRuntimeEventAt ? now - dateMs(lastRuntimeEventAt) < 15 * 60_000 : false
+  const runtimeFresh = lastRuntimeEventAt ? dateMs(lastRuntimeEventAt) <= now && now - dateMs(lastRuntimeEventAt) < 15 * 60_000 : false
 
   let pipelineStatus: PipelineStatus
   if (runtimeFresh) pipelineStatus = 'live'

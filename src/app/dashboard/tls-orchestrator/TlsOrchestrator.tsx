@@ -1,6 +1,8 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useObservedDetail } from '@/hooks/use-observed-paged-resource';
+import { TelemetryAssetComparison } from '../_components/observability/TelemetryAssetComparison';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   CheckCircle2,
@@ -18,7 +20,6 @@ import { WorkflowRail } from '@/components/workflow/WorkflowRail';
 import {
   useTlsOrchestrator,
   useTlsOrchestratorActions,
-  useTlsPkiDetail,
   usePagedResource,
   type EndpointDetail,
   type EndpointSummary,
@@ -111,7 +112,6 @@ const ACTION_LABEL: Record<OrchestrationItem['action'], string> = {
 
 export default function TlsOrchestrator() {
   const { data, state, error, live, lastSyncedAt, refresh, reconnect } = useTlsOrchestrator();
-  const { loadEndpoint, loading: detailLoading } = useTlsPkiDetail('orchestrator');
   const { queueAsset, unqueueAsset, prioritizeQueue, submitPlan, actionState, actionError, pendingId, resetAction } =
     useTlsOrchestratorActions(() => void refresh(true));
 
@@ -121,14 +121,17 @@ export default function TlsOrchestrator() {
   const [severity, setSeverity] = useState('all');
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<OrchestrationItem | null>(null);
-  const [detail, setDetail] = useState<EndpointDetail | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const { detail, detailError, detailLoading, retryDetail } = useObservedDetail<EndpointDetail>(
+    '/api/v1/dashboard/tls-orchestrator/endpoints', detailId, data?.generatedAt,
+  );
 
   const revision = useMemo(() => Date.parse(data?.generatedAt || '') || 0, [data?.generatedAt]);
   const query = useMemo(
     () => ({ search, status, action, severity, limit: PAGE_SIZE, offset }),
     [search, status, action, severity, offset],
   );
-  const { rows: items, total: itemTotal, loading: tableLoading } = usePagedResource<OrchestrationItem>(
+  const { rows: items, total: itemTotal, error: tableError, retry: retryTable, loading: tableLoading } = usePagedResource<OrchestrationItem>(
     'orchestrator',
     '/queue',
     'items',
@@ -142,16 +145,7 @@ export default function TlsOrchestrator() {
     return map;
   }, [data?.endpointIndex]);
 
-  const openEndpoint = useCallback(
-    async (id: string) => {
-      const result = await loadEndpoint(id);
-      if (result) {
-        setSelected(null);
-        setDetail(result);
-      }
-    },
-    [loadEndpoint],
-  );
+  const openEndpoint = (id: string) => { setSelected(null); setDetailId(id); };
 
   const showSkeleton = state === 'loading' && !data;
   const showHardError = state === 'error' && !data;
@@ -203,6 +197,8 @@ export default function TlsOrchestrator() {
       <ModuleNav />
 
       {connectionLost ? <ConnectionLost onReconnect={reconnect} lastSyncedAt={lastSyncedAt} /> : null}
+      <TelemetryAssetComparison />
+      {tableError ? <ErrorState message={tableError} onRetry={retryTable} /> : null}
       {error && data ? (
         <p className="rounded-lg border border-red-500/25 bg-red-500/5 px-3 py-2 text-[11px] text-red-200/85">{error}</p>
       ) : null}
@@ -246,7 +242,7 @@ export default function TlsOrchestrator() {
             />
             <Kpi
               label="Active migration jobs"
-              value={fmtNumber(orchestration.activeJobs.filter((job) => /running|in_progress|validating|queued|pending/i.test(job.status)).length)}
+              value={fmtNumber(orchestration.activeJobCount)}
               detail={`${fmtNumber(orchestration.activeJobs.length)} job(s) touch TLS/PKI assets`}
               tone={orchestration.activeJobs.length ? 'ai' : 'neutral'}
               hint="Real rows from migration_jobs, filtered to assets that carry TLS or PKI evidence."
@@ -365,7 +361,7 @@ export default function TlsOrchestrator() {
                 title="Reorders the shared Migration Planner queue by the platform's own priority score."
                 className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-white/12 bg-white/[0.04] px-3 py-2 text-[9.5px] font-black uppercase tracking-wider text-white/70 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-35"
               >
-                <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" /> Apply recommended order
+                <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" /> Prioritize planner queue
               </button>
               <button
                 type="button"
@@ -658,11 +654,12 @@ export default function TlsOrchestrator() {
 
       {/* ---- Endpoint investigation ------------------------------- */}
       <Drawer
-        open={Boolean(detail)}
+        open={Boolean(detailId)}
         title={detail?.endpoint.name ?? 'Endpoint'}
         subtitle={detail ? `${detail.endpoint.host}${detail.endpoint.port ? `:${detail.endpoint.port}` : ''}` : undefined}
-        onClose={() => setDetail(null)}
+        onClose={() => setDetailId(null)}
       >
+        {detailError ? <ErrorState message={detailError} onRetry={retryDetail} /> : null}
         {detailLoading && !detail ? <PanelEmpty>Loading evidence…</PanelEmpty> : null}
         {detail ? <EndpointInvestigation detail={detail} /> : null}
       </Drawer>

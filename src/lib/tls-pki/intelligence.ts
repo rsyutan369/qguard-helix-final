@@ -28,6 +28,8 @@
  * "PQC ready" on the next.
  */
 
+import { countTelemetrySources } from '@/lib/telemetry/source-health'
+import { isFailingValidation, isPassingValidation, isSimulationJob } from '@/lib/migration/job-safety'
 import type { AssetMigrationRecord } from '@/lib/migration/asset-intelligence'
 import { isDerivedScanObservation } from '@/lib/telemetry/evidence-identity'
 import { findingIdentityKey, namesCryptography, observationClass, richerText } from '@/lib/scanner/finding-identity'
@@ -88,6 +90,17 @@ import type {
 import { observationBasisFor } from './types'
 
 type Row = Record<string, unknown>
+const SSH_PROTOCOL = /^ssh(?:$|[\s_-])/i
+
+function certificateAlgorithms(metadata: Row, algorithm: unknown) {
+  const recorded = str(algorithm) || pick(metadata, ['algorithm'])
+  // Older imports sometimes stored the issuer's signature in the generic algorithm field.
+  const legacySignature = /^(?:(?:sha[\d-]+|md5)\s*with\s*\w|(?:ecdsa|rsa|dsa)[\s_-]+with[\s_-]+sha|rsassa-pss)/i.test(recorded)
+  return {
+    publicKeyAlgorithm: pick(metadata, ['public_key_algorithm', 'publicKeyAlgorithm', 'key_algorithm']) || (legacySignature ? '' : recorded),
+    signatureAlgorithm: pick(metadata, ['signature_algorithm', 'signatureAlgorithm', 'sig_alg']) || (legacySignature ? recorded : null),
+  }
+}
 
 const DAY_MS = 86_400_000
 
@@ -399,8 +412,27 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
   }
 
   /* ---- crypto_inventory: scanner component inventory --------------- */
+  const ssh = new Map<string, ProtocolAnalytics['ssh'][number]>()
   for (const item of inputs.cryptoInventory) {
     const metadata = recordOf(item.metadata)
+    if (SSH_PROTOCOL.test(str(item.protocol))) {
+      const category = str(metadata.category) || str(item.name).split(':', 1)[0]
+      const kind = category === 'SSH Key Exchange' ? 'Key exchange' : category === 'SSH Host Key' ? 'Host key' : 'Banner'
+      const raw = recordOf(metadata.raw)
+      const version = /^SSH-(\d+(?:\.\d+)?)-/.exec(str(raw.banner))?.[1] ?? null
+      const algorithm = kind === 'Banner' ? null : str(item.algorithm) || null
+      const asset = assetById.get(str(item.asset_id))
+      const target = pick(metadata, ['target', 'host', 'hostname']) || asset?.hostname || asset?.name || ''
+      const id = str(item.id)
+      if (id && target && (algorithm || version)) {
+        const key = JSON.stringify([asset?.id, target, kind, algorithm, version])
+        const observedAt = isoOrNull(item.discovered_at) || isoOrNull(item.created_at)
+        if (!ssh.has(key) || dateMs(observedAt) > dateMs(ssh.get(key)?.observedAt)) {
+          ssh.set(key, { id, assetId: asset?.id ?? null, target, version, algorithm, kind, observedAt })
+        }
+      }
+      continue
+    }
     // Deliberately NOT `metadata.location`: in the scanner's schema that is a
     // code or file location ("TLS Configuration", "package.json"), not a host.
     // Treating it as one turned finding labels into TLS endpoints.
@@ -630,9 +662,8 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
       assetId: str(cert.asset_id) || null,
       assetName: endpoint?.name || 'Unassigned',
       endpointId: endpoint?.id || null,
-      publicKeyAlgorithm: str(cert.algorithm) || pick(metadata, ['algorithm', 'public_key_algorithm']),
+      ...certificateAlgorithms(metadata, cert.algorithm),
       keySize: num(cert.key_size) || pickNumber(metadata, ['key_size', 'bits']),
-      signatureAlgorithm: pick(metadata, ['signature_algorithm', 'signatureAlgorithm', 'sig_alg']) || null,
       notBefore: isoOrNull(cert.not_before),
       notAfter: isoOrNull(cert.not_after),
       status: str(cert.status) || 'active',
@@ -671,9 +702,8 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
       assetId: str(item.asset_id) || null,
       assetName: endpoint?.name || 'Unassigned',
       endpointId: endpoint?.id || null,
-      publicKeyAlgorithm: str(item.algorithm),
+      ...certificateAlgorithms(metadata, item.algorithm),
       keySize: num(item.key_size) || null,
-      signatureAlgorithm: pick(metadata, ['signature_algorithm', 'signatureAlgorithm']) || null,
       notBefore: isoOrNull(pick(metadata, ['not_before', 'valid_from'])),
       notAfter: isoOrNull(pick(metadata, ['not_after', 'valid_to', 'expires_at'])),
       status: pick(metadata, ['status']) || 'active',
@@ -926,6 +956,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
         id,
         title: weakness,
         category: 'certificate',
+        certificateId: cert.id,
         severity: weaknessSeverity(weakness),
         endpointId: cert.endpointId,
         assetId: cert.assetId,
@@ -962,6 +993,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
   }> = []
 
   for (const row of inputs.cryptoExposures) {
+    if (SSH_PROTOCOL.test(str(row.exposure_type)) || /^SSH endpoint advertises /i.test(str(row.description))) continue
     scannerFindingRows.push({
       table: 'crypto_exposures',
       source: 'exposure',
@@ -977,6 +1009,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
     })
   }
   for (const row of inputs.scanResults) {
+    if (SSH_PROTOCOL.test(str(row.finding_type))) continue
     scannerFindingRows.push({
       table: 'pqc_scan_results',
       source: 'scan-finding',
@@ -1239,6 +1272,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
     datedObservations: [...datedObservations.values()],
     endpoints: finalEndpoints,
     runtimeHandshakes: [...runtimeHandshakes.values()],
+    ssh: [...ssh.values()].sort((a, b) => dateMs(b.observedAt) - dateMs(a.observedAt)),
     now,
   })
 
@@ -1256,6 +1290,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
    * rows that could never have had a protocol version.
    */
   const measured = finalEndpoints.filter((endpoint) => endpoint.hasTransportEvidence)
+  const measuredAssetCount = new Set(measured.flatMap((endpoint) => endpoint.assetId ? [endpoint.assetId] : [])).size
   const totalAssets = Math.max(inputs.snapshot.assetsAssessed, inputs.assets.length)
   const countVersion = (version: TlsVersionLabel) => measured.filter((endpoint) => endpoint.negotiatedVersion === version).length
 
@@ -1268,7 +1303,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
   const kexObservations = observations.filter((row) => row.kind === 'key-exchange' || row.kind === 'cipher-suite')
   const posture: PqcTlsPosture = {
     tlsEnabledAssets: measured.length,
-    assetsWithoutTransportEvidence: Math.max(0, totalAssets - measured.filter((endpoint) => endpoint.assetId).length),
+    assetsWithoutTransportEvidence: Math.max(0, totalAssets - measuredAssetCount),
     tls13Endpoints: countVersion('TLS 1.3'),
     tls12Endpoints: countVersion('TLS 1.2'),
     // ANY observed deprecated version, not merely the best one. An endpoint
@@ -1302,7 +1337,7 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
     quantumReadinessScore: clamp(inputs.snapshot.quantumReadiness),
     quantumRiskScore: clamp(inputs.snapshot.quantumRisk),
     quantumRiskLevel: inputs.snapshot.quantumRiskLevel || 'Unknown',
-    transportCoveragePercent: percentOf(measured.filter((endpoint) => endpoint.assetId).length, Math.max(1, totalAssets)),
+    transportCoveragePercent: percentOf(measuredAssetCount, Math.max(1, totalAssets)),
   }
 
   /* ---------------------------------------------------------------- */
@@ -1337,10 +1372,9 @@ export function buildTlsPkiIntelligence(inputs: TlsPkiInputs): TlsPkiIntelligenc
   const timeline = buildTimeline({ observations: [...datedObservations.values()], certificates, findings, now })
 
   const latestEvidenceAt = latestIso(
-    ...observations.slice(0, 200).map((row) => row.observedAt),
-    ...certificates.slice(0, 200).map((cert) => cert.lastObservedAt),
-    telemetry.lastRuntimeEventAt,
-    telemetry.lastScanAt,
+    ...observations.map((row) => row.observedAt),
+    ...certificates.map((cert) => cert.lastObservedAt),
+    ...findings.map((row) => row.lastObservedAt),
   )
 
   return {
@@ -1393,6 +1427,7 @@ const TLS_PORTS = new Set([443, 465, 587, 636, 989, 990, 993, 995, 8443, 9443, 4
  * to say otherwise does not qualify.
  */
 function isTransportEvent(event: Row): boolean {
+  if (SSH_PROTOCOL.test(str(event.protocol))) return false
   if (str(event.tls_version) || str(event.cipher_suite) || str(event.key_exchange_algorithm)) return true
   if (str(event.certificate_fingerprint)) return true
 
@@ -1418,6 +1453,7 @@ function isTransportEvent(event: Row): boolean {
  * never merely because it failed to say otherwise.
  */
 function isTransportEvidence(item: Row, raw: Record<string, unknown>): boolean {
+  if (SSH_PROTOCOL.test(str(item.protocol)) || SSH_PROTOCOL.test(str(raw.protocol))) return false
   const kind = `${str(item.evidence_type)} ${str(item.source_type)}`.toLowerCase()
 
   // Explicitly non-transport agent evidence classes.
@@ -1860,6 +1896,7 @@ function buildTrustChains(certificates: PkiCertificate[]): TrustChainNode[] {
 /* ---- protocol analytics ------------------------------------------- */
 
 function buildProtocolAnalytics(input: {
+  ssh: ProtocolAnalytics['ssh']
   observations: TlsObservation[]
   datedObservations: TlsObservation[]
   endpoints: TlsEndpoint[]
@@ -1973,6 +2010,7 @@ function buildProtocolAnalytics(input: {
   }
 
   return {
+    ssh: input.ssh,
     basis: 'observations',
     totalObservations: observations.length,
     versionDistribution: distribution('protocol', (row) => row.family || 'Unknown'),
@@ -2029,23 +2067,38 @@ function buildOrchestration(input: {
   queued: Set<string>
 }): OrchestrationState {
   const items: OrchestrationItem[] = []
+  const migrationJobs = input.migrationJobs.filter((job) => !isSimulationJob(job))
+  const latestValidation = new Map<string, Row>()
+  for (const row of input.validationLogs) {
+    const jobId = str(row.migration_id)
+    if (!jobId) continue
+    const previous = latestValidation.get(jobId)
+    if (!previous || dateMs(row.created_at) > dateMs(previous.created_at)) latestValidation.set(jobId, row)
+  }
+  const latestScopedJob = new Map<string, Row>()
+  const jobScopeKey = (assetId: string, endpointId: string, action: string) => JSON.stringify([assetId, endpointId, action])
+  for (const job of migrationJobs) {
+    const metadata = recordOf(job.metadata)
+    const key = jobScopeKey(str(job.asset_id), str(metadata.endpointId || metadata.endpoint_id), str(metadata.remediationAction || metadata.action))
+    const previous = latestScopedJob.get(key)
+    if (!previous || dateMs(job.updated_at ?? job.created_at) > dateMs(previous.updated_at ?? previous.created_at)) latestScopedJob.set(key, job)
+  }
 
   const jobStatusFor = (assetId: string | null, endpointId: string, action: OrchestrationActionKind): { status: OrchestrationStatus; detail: string; progress: number; at: string | null } => {
     if (!assetId) return { status: 'not-started', detail: 'Endpoint is not bound to a managed asset.', progress: 0, at: null }
-    const jobs = input.migrationJobs.filter((job) => {
-      const metadata = recordOf(job.metadata)
-      return str(job.asset_id) === assetId && str(metadata.endpointId || metadata.endpoint_id) === endpointId &&
-        str(metadata.remediationAction || metadata.action) === action
-    })
-    const latest = jobs
-      .slice()
-      .sort((a, b) => dateMs(b.updated_at ?? b.created_at) - dateMs(a.updated_at ?? a.created_at))[0]
+    const latest = latestScopedJob.get(jobScopeKey(assetId, endpointId, action))
 
     if (latest) {
       const raw = str(latest.status).toLowerCase()
       const at = isoOrNull(latest.updated_at) || isoOrNull(latest.created_at)
       const progress = clamp(num(latest.progress))
-      if (raw === 'completed' || raw === 'succeeded') return { status: 'validating', detail: 'The job completed. Current observations still show this remediation is needed.', progress, at }
+      if (raw === 'completed' || raw === 'succeeded') {
+        const result = latestValidation.get(str(latest.id))
+        if (isFailingValidation(result?.status)) {
+          return { status: 'failed', detail: 'The latest post-change validation recorded a failure.', progress, at: isoOrNull(result?.created_at) ?? at }
+        }
+        return { status: 'validating', detail: 'The job completed. Current observations still show this remediation is needed.', progress, at }
+      }
       if (raw === 'failed' || raw === 'error') return { status: 'failed', detail: 'Last migration job failed - review the job log.', progress, at }
       if (raw === 'rolled_back' || raw === 'rolledback') return { status: 'rolled-back', detail: 'Change was rolled back.', progress, at }
       if (raw === 'validating' || raw === 'verification') return { status: 'validating', detail: 'Post-change validation in progress.', progress, at }
@@ -2235,12 +2288,13 @@ function buildOrchestration(input: {
     const metadata = recordOf(event.metadata)
     const previous = pick(metadata, ['previous', 'previousValue', 'before', 'from'])
     const current = pick(metadata, ['current', 'currentValue', 'after', 'to'])
-    if (!previous || !current) continue
+    if (!previous || !current || previous === current) continue
     const text = `${str(event.event_type)} ${str(event.message)} ${previous} ${current}`
     if (!isTransportRelevant(text)) continue
     const endpoint = input.endpoints.find((row) => row.assetId && row.assetId === str(event.asset_id))
     drift.push({
       id: `drift:${str(event.id)}`,
+      assetId: endpoint?.assetId ?? null,
       endpointId: endpoint?.id || '',
       assetName: endpoint?.name || str(event.resource_name) || 'Unknown asset',
       detail: str(event.message) || titleCase(event.event_type, 'Configuration change'),
@@ -2252,10 +2306,12 @@ function buildOrchestration(input: {
   }
 
   /* ---- real migration jobs on TLS/PKI endpoints -------------------- */
-  const tlsAssetIds = new Set(input.endpoints.map((endpoint) => endpoint.assetId).filter(Boolean) as string[])
-  const activeJobs = input.migrationJobs
-    .filter((job) => tlsAssetIds.has(str(job.asset_id)))
-    .slice(0, 40)
+  const tlsAssetIds = new Set(input.endpoints.flatMap((endpoint) =>
+    endpoint.assetId && (endpoint.hasTransportEvidence || endpoint.certificateIds.length > 0) ? [endpoint.assetId] : []))
+  const jobsForTls = migrationJobs.filter((job) => tlsAssetIds.has(str(job.asset_id)))
+  const activeJobCount = jobsForTls.filter((job) =>
+    ['running', 'in_progress', 'validating', 'queued', 'pending'].includes(str(job.status).toLowerCase())).length
+  const activeJobs = jobsForTls
     .map((job) => ({
       id: str(job.id),
       assetId: str(job.asset_id) || null,
@@ -2267,8 +2323,10 @@ function buildOrchestration(input: {
       updatedAt: isoOrNull(job.updated_at) || isoOrNull(job.created_at),
     }))
     .sort((a, b) => dateMs(b.updatedAt) - dateMs(a.updatedAt))
+    .slice(0, 40)
 
-  const plans = input.migrationPlans.slice(0, 20).map((plan) => {
+  const plans = input.migrationPlans.filter((plan) => Array.isArray(plan.selected_asset_ids) &&
+    plan.selected_asset_ids.some((id) => tlsAssetIds.has(str(id)))).slice(0, 20).map((plan) => {
     const metadata = recordOf(plan.metadata)
     const selected = Array.isArray(plan.selected_asset_ids) ? plan.selected_asset_ids.length : 0
     return {
@@ -2280,19 +2338,25 @@ function buildOrchestration(input: {
     }
   })
 
-  const validationRows = input.validationLogs.filter((row) => tlsAssetIds.has(str(row.asset_id)))
+  const jobById = new Map(jobsForTls.map((job) => [str(job.id), job]))
+  const validationRows = [...latestValidation].filter(([id]) => jobById.has(id)).map(([, row]) => row)
+  const passed = validationRows.filter((row) => isPassingValidation(row.status) &&
+    ['completed', 'succeeded'].includes(str(jobById.get(str(row.migration_id))?.status).toLowerCase()))
+  const queuedAssetIds = [...tlsAssetIds].filter((id) => input.queued.has(id))
   const validation = {
-    validated: validationRows.filter((row) => /pass|success|validated/i.test(str(row.status))).length,
-    pending: validationRows.filter((row) => /pending|running/i.test(str(row.status))).length,
-    failed: validationRows.filter((row) => /fail|error/i.test(str(row.status))).length,
-    lastValidatedAt: latestIso(...validationRows.map((row) => row.created_at ?? row.updated_at)),
+    validated: passed.length,
+    pending: validationRows.filter((row) => ['pending', 'running', 'validating'].includes(str(row.status).toLowerCase())).length,
+    failed: validationRows.filter((row) => isFailingValidation(row.status)).length,
+    lastValidatedAt: latestIso(...passed.map((row) => row.created_at ?? row.updated_at)),
   }
 
   return {
     items,
     statusCounts,
-    queueDepth: input.endpoints.filter((endpoint) => endpoint.queued).length,
-    drift: drift.sort((a, b) => dateMs(b.detectedAt) - dateMs(a.detectedAt)).slice(0, 25),
+    queueDepth: queuedAssetIds.length,
+    queuedAssetIds,
+    activeJobCount,
+    drift: drift.sort((a, b) => dateMs(b.detectedAt) - dateMs(a.detectedAt)),
     driftMeasured: input.securityEvents.length > 0,
     activeJobs,
     plans,
@@ -2327,13 +2391,7 @@ function buildTelemetryHealth(input: {
 }): TelemetryHealth {
   const { inputs: raw, observations, certificates, now } = input
 
-  const agentsOnline = raw.scannerAgents.filter((agent) => {
-    const status = str(agent.status).toLowerCase()
-    const seen = dateMs(agent.last_seen_at)
-    return status === 'online' || status === 'active' || (seen > 0 && now - seen < 10 * 60_000)
-  }).length
-  const connectorsActive = raw.connectorAccounts.filter((account) => /active|connected|ok/i.test(str(account.status))).length
-  const runningScans = raw.scanSessions.filter((session) => /running|in_progress|scanning|queued/i.test(str(session.status))).length
+  const { agentsOnline, connectorsActive, runningScans } = countTelemetrySources(raw, now)
 
   const lastRuntimeEventAt = latestIso(...raw.runtimeEvents.slice(0, 200).map((row) => row.observed_at ?? row.created_at))
   const lastScanAt = latestIso(...raw.scanSessions.slice(0, 100).map((row) => row.completed_at ?? row.updated_at ?? row.created_at))
@@ -2345,7 +2403,7 @@ function buildTelemetryHealth(input: {
       .map((event) => event.created_at),
   )
 
-  const runtimeFresh = lastRuntimeEventAt ? now - dateMs(lastRuntimeEventAt) < 15 * 60_000 : false
+  const runtimeFresh = lastRuntimeEventAt ? dateMs(lastRuntimeEventAt) <= now && now - dateMs(lastRuntimeEventAt) < 15 * 60_000 : false
 
   let pipelineStatus: PipelineStatus
   if (runtimeFresh) pipelineStatus = 'live'
