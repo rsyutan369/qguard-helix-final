@@ -1,5 +1,7 @@
+import { useTelemetryAccount } from '@/hooks/use-observed-paged-resource';
 import TlsTelemetry from './TlsTelemetry';
 
 export default function TlsTelemetryPage() {
-  return <TlsTelemetry />;
+  const { accountId } = useTelemetryAccount();
+  return <TlsTelemetry key={accountId} />;
 }

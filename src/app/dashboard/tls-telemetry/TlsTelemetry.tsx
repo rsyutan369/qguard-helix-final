@@ -1,7 +1,9 @@
 'use client';
 
+import { useObservedDetail } from '@/hooks/use-observed-paged-resource';
+import { TelemetryAssetComparison } from '../_components/observability/TelemetryAssetComparison';
 import { cn } from '@/lib/utils';
-import { useCallback, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Activity,
@@ -12,7 +14,7 @@ import {
   Waves,
 } from 'lucide-react';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
-import { useTlsPkiDetail, useTlsTelemetry, usePagedResource, type EndpointDetail } from '@/hooks/use-tls-pki';
+import { useTlsTelemetry, usePagedResource, type EndpointDetail } from '@/hooks/use-tls-pki';
 import { POSTURE_LABEL } from '@/lib/tls-pki/classify';
 import type { TlsEndpoint, TlsFinding } from '@/lib/tls-pki/types';
 import { PostureStrip } from '../_components/observability/TlsPostureStrip';
@@ -81,7 +83,6 @@ const TRANSPORT_BASIS_HINT = {
 
 export default function TlsTelemetry() {
   const { data, state, error, live, lastSyncedAt, refresh, reconnect } = useTlsTelemetry();
-  const { loadEndpoint, loading: detailLoading } = useTlsPkiDetail('telemetry');
 
   const [search, setSearch] = useState('');
   const [posture, setPosture] = useState('all');
@@ -89,7 +90,10 @@ export default function TlsTelemetry() {
   const [risk, setRisk] = useState('all');
   const [transport, setTransport] = useState('measured');
   const [offset, setOffset] = useState(0);
-  const [detail, setDetail] = useState<EndpointDetail | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const { detail, detailError, detailLoading, retryDetail } = useObservedDetail<EndpointDetail>(
+    '/api/v1/dashboard/tls-telemetry/endpoints', detailId, data?.generatedAt,
+  );
 
   /** Bumped by the live model so the open table refreshes in step with the KPIs. */
   const revision = useMemo(() => Date.parse(data?.generatedAt || '') || 0, [data?.generatedAt]);
@@ -101,16 +105,10 @@ export default function TlsTelemetry() {
   const {
     rows: endpoints,
     total: endpointTotal,
-    loading: tableLoading,
+    error: tableError, retry: retryTable, loading: tableLoading,
   } = usePagedResource<TlsEndpoint>('telemetry', '/endpoints', 'endpoints', query, revision);
 
-  const openEndpoint = useCallback(
-    async (id: string) => {
-      const result = await loadEndpoint(id);
-      if (result) setDetail(result);
-    },
-    [loadEndpoint],
-  );
+  const openEndpoint = setDetailId;
 
   const showSkeleton = state === 'loading' && !data;
   const showHardError = state === 'error' && !data;
@@ -165,6 +163,8 @@ export default function TlsTelemetry() {
       <ModuleNav />
 
       {connectionLost ? <ConnectionLost onReconnect={reconnect} lastSyncedAt={lastSyncedAt} /> : null}
+      <TelemetryAssetComparison />
+      {tableError ? <ErrorState message={tableError} onRetry={retryTable} /> : null}
       {error && data ? (
         <p className="rounded-lg border border-red-500/25 bg-red-500/5 px-3 py-2 text-[11px] text-red-200/85">{error}</p>
       ) : null}
@@ -535,11 +535,12 @@ export default function TlsTelemetry() {
 
       {/* ---- Investigation drawer -------------------------------- */}
       <Drawer
-        open={Boolean(detail)}
+        open={Boolean(detailId)}
         title={detail?.endpoint.name ?? 'Endpoint'}
         subtitle={detail ? `${detail.endpoint.host}${detail.endpoint.port ? `:${detail.endpoint.port}` : ''}` : undefined}
-        onClose={() => setDetail(null)}
+        onClose={() => setDetailId(null)}
       >
+        {detailError ? <ErrorState message={detailError} onRetry={retryDetail} /> : null}
         {detailLoading && !detail ? <PanelEmpty>Loading evidence…</PanelEmpty> : null}
         {detail ? <EndpointInvestigation detail={detail} /> : null}
       </Drawer>

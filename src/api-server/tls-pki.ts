@@ -24,8 +24,12 @@ import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server
 import { buildSnapshot } from './quantum-readiness'
 import { buildPortfolio } from './migration-planner'
 import { buildTlsPkiIntelligence } from '@/lib/tls-pki/intelligence'
-import { streamLiveSnapshot } from './live-snapshot-stream'
+import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
+import { createSingleFlightCache } from '@/lib/single-flight-cache'
+import { compareTelemetryAssets, type TelemetryAsset } from '@/lib/telemetry/asset-comparison'
+import { buildEncryptionModel } from './encryption-monitoring'
 import { createSourceLedger, type SourceRead } from './source-ledger'
+import { readTelemetrySource } from './telemetry-source-rows'
 import type { TlsPkiIntelligence, TlsEndpoint, PkiCertificate, TlsFinding, OrchestrationItem } from '@/lib/tls-pki/types'
 
 type Row = Record<string, unknown>
@@ -109,22 +113,20 @@ const CAP = {
 /* ------------------------------------------------------------------ */
 
 const MODEL_TTL_MS = 15_000
-const modelCache = new Map<string, { at: number; promise: Promise<TlsPkiModel> }>()
+const modelCache = createSingleFlightCache<TlsPkiModel>(MODEL_TTL_MS)
 
-async function computeModel(token: string, userId: string): Promise<TlsPkiModel> {
+async function computeModel(token: string, userId: string, force: boolean): Promise<TlsPkiModel> {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
   // A failed read still degrades to [] (one broken table never blanks the
   // page) but is RECORDED as unavailable and published, so its zeros are never
   // read as measurements (common-issues #64).
   const ledger = createSourceLedger('tls-pki')
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const safeRows = (c: any, table: string, build: (query: any) => any) => ledger.read(c, table, table.replace(/_/g, ' '), null, build)
 
   // Canonical estate truth first: these two are themselves cached per tenant,
   // so asking for them here is nearly free and guarantees this page agrees with
   // Quantum Readiness, Assets, Migration Planner and every report.
-  const [snapshot, portfolio] = await Promise.all([buildSnapshot(token, userId), buildPortfolio(token, userId)])
+  const [snapshot, portfolio] = await Promise.all([buildSnapshot(token, userId, undefined, force), buildPortfolio(token, userId, force)])
 
   const [
     runtimeEvents,
@@ -143,101 +145,107 @@ async function computeModel(token: string, userId: string): Promise<TlsPkiModel>
     agentHeartbeats,
     validationLogs,
   ] = await Promise.all([
-    safeRows(client, 'runtime_crypto_events', (q) =>
-      q
-        .select(
-          'id, agent_id, connector_account_id, asset_id, source_type, event_type, operation_type, severity, risk_score, asset_name, asset_type, host, port, protocol, tls_version, cipher_suite, key_exchange_algorithm, algorithm, key_size, certificate_fingerprint, process_name, is_pqc, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, metadata, observed_at, created_at',
-        )
+    readTelemetrySource(
+      ledger, client, 'runtime_crypto_events',
+      'id, agent_id, connector_account_id, asset_id, source_type, event_type, operation_type, severity, risk_score, asset_name, asset_type, host, port, protocol, tls_version, cipher_suite, key_exchange_algorithm, algorithm, key_size, certificate_fingerprint, process_name, is_pqc, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, metadata, observed_at, created_at',
+      CAP.runtimeEvents, (q) => q
         .eq('user_id', userId)
-        .order('observed_at', { ascending: false })
-        .limit(CAP.runtimeEvents),
+        .order('observed_at', { ascending: false }),
     ),
-    safeRows(client, 'crypto_inventory', (q) =>
-      q
-        .select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, metadata, discovered_at, created_at')
+    readTelemetrySource(
+      ledger, client, 'crypto_inventory',
+      'id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, metadata, discovered_at, created_at',
+      CAP.cryptoInventory, (q) => q
         .eq('user_id', userId)
-        .order('discovered_at', { ascending: false })
-        .limit(CAP.cryptoInventory),
+        .order('discovered_at', { ascending: false }),
     ),
-    safeRows(client, 'certificates', (q) =>
-      q
-        .select('id, asset_id, name, algorithm, key_size, issuer, subject, serial_number, not_before, not_after, is_quantum_safe, is_expiring_soon, status, metadata, created_at, updated_at')
+    readTelemetrySource(
+      ledger, client, 'certificates',
+      'id, asset_id, name, algorithm, key_size, issuer, subject, serial_number, not_before, not_after, is_quantum_safe, is_expiring_soon, status, metadata, created_at, updated_at',
+      CAP.certificates, (q) => q
         .eq('user_id', userId)
-        .order('updated_at', { ascending: false })
-        .limit(CAP.certificates),
+        .order('updated_at', { ascending: false }),
     ),
-    safeRows(client, 'scanner_evidence', (q) =>
-      q
-        .select('id, agent_id, connector_account_id, source_type, evidence_type, asset_name, asset_type, target, host, port, protocol, observed_algorithm, raw_evidence, processed_at, observed_at, created_at')
+    readTelemetrySource(
+      ledger, client, 'scanner_evidence',
+      'id, agent_id, connector_account_id, source_type, evidence_type, asset_name, asset_type, target, host, port, protocol, observed_algorithm, raw_evidence, processed_at, observed_at, created_at',
+      CAP.scannerEvidence, (q) => q
         .eq('user_id', userId)
-        .order('observed_at', { ascending: false })
-        .limit(CAP.scannerEvidence),
+        .order('observed_at', { ascending: false }),
     ),
-    safeRows(client, 'pqc_scan_results', (q) =>
-      q
-        .select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at')
+    readTelemetrySource(
+      ledger, client, 'pqc_scan_results',
+      'id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, metadata, created_at',
+      CAP.scanResults, (q) => q
         .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(CAP.scanResults),
+        .order('created_at', { ascending: false }),
     ),
-    safeRows(client, 'crypto_exposures', (q) =>
-      q
-        .select('id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at')
+    readTelemetrySource(
+      ledger, client, 'crypto_exposures',
+      'id, asset_id, exposure_type, severity, description, detected_value, metadata, created_at, updated_at',
+      CAP.cryptoExposures, (q) => q
         .eq('user_id', userId)
-        .order('updated_at', { ascending: false })
-        .limit(CAP.cryptoExposures),
+        .order('updated_at', { ascending: false }),
     ),
-    safeRows(client, 'scanner_alerts', (q) =>
-      q
-        .select('id, agent_id, evidence_id, severity, category, title, message, recommendation, status, metadata, created_at, updated_at')
+    readTelemetrySource(
+      ledger, client, 'scanner_alerts',
+      'id, agent_id, evidence_id, severity, category, title, message, recommendation, status, metadata, created_at, updated_at',
+      CAP.scannerAlerts, (q) => q
         .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(CAP.scannerAlerts),
+        .order('created_at', { ascending: false }),
     ),
-    safeRows(client, 'security_events', (q) =>
-      q
-        .select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, created_at')
+    readTelemetrySource(
+      ledger, client, 'security_events',
+      'id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, created_at',
+      CAP.securityEvents, (q) => q
         .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(CAP.securityEvents),
+        .order('created_at', { ascending: false }),
     ),
-    safeRows(client, 'migration_jobs', (q) =>
-      q
-        .select('id, asset_id, name, job_type, status, target_algorithm, progress, metadata, started_at, completed_at, created_at, updated_at')
+    readTelemetrySource(
+      ledger, client, 'migration_jobs',
+      'id, asset_id, name, job_type, status, target_algorithm, progress, metadata, started_at, completed_at, created_at, updated_at',
+      CAP.migrationJobs, (q) => q
         .eq('user_id', userId)
-        .order('updated_at', { ascending: false })
-        .limit(CAP.migrationJobs),
+        .order('updated_at', { ascending: false }),
     ),
-    safeRows(client, 'migration_plans', (q) =>
-      q
-        .select('id, status, selected_asset_ids, metadata, created_at, updated_at')
+    readTelemetrySource(
+      ledger, client, 'migration_plans',
+      'id, status, selected_asset_ids, metadata, created_at, updated_at',
+      CAP.migrationPlans, (q) => q
         .eq('user_id', userId)
-        .order('updated_at', { ascending: false })
-        .limit(CAP.migrationPlans),
+        .order('updated_at', { ascending: false }),
     ),
-    safeRows(client, 'pqc_scan_sessions', (q) =>
-      q
-        .select('id, status, progress, total_assets, scanned_assets, findings_count, started_at, completed_at, created_at, updated_at')
+    readTelemetrySource(
+      ledger, client, 'pqc_scan_sessions',
+      'id, status, progress, total_assets, scanned_assets, findings_count, started_at, completed_at, created_at, updated_at',
+      CAP.scanSessions, (q) => q
         .eq('user_id', userId)
-        .order('updated_at', { ascending: false })
-        .limit(CAP.scanSessions),
+        .order('updated_at', { ascending: false }),
     ),
-    safeRows(client, 'scanner_agents', (q) =>
-      q.select('id, name, status, hostname, platform, last_seen_at, metadata, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).limit(CAP.scannerAgents),
+    readTelemetrySource(
+      ledger, client, 'scanner_agents',
+      'id, name, status, hostname, platform, last_seen_at, metadata, created_at, updated_at',
+      CAP.scannerAgents, (q) => q.eq('user_id', userId),
     ),
-    safeRows(client, 'connector_accounts', (q) =>
-      q.select('id, provider, display_name, status, last_sync_at, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).limit(CAP.connectorAccounts),
+    readTelemetrySource(
+      ledger, client, 'connector_accounts',
+      'id, provider, display_name, status, last_sync_at, created_at, updated_at',
+      CAP.connectorAccounts, (q) => q.eq('user_id', userId),
     ),
-    safeRows(client, 'agent_heartbeats', (q) =>
-      q.select('id, agent_id, status, observed_at, created_at', { count: 'exact' }).eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.agentHeartbeats),
+    readTelemetrySource(
+      ledger, client, 'agent_heartbeats',
+      'id, agent_id, status, observed_at, created_at',
+      CAP.agentHeartbeats, (q) => q.eq('user_id', userId).order('observed_at', { ascending: false }),
     ),
     // migration_validation_logs is JOB-scoped: its only FK is
     // migration_id -> migration_jobs(id). Asking for asset_id here made
     // PostgREST reject the whole query (42703) and silently return nothing,
     // which is the trap documented in migration-planner.ts. Resolve the asset
     // through the job below instead.
-    safeRows(client, 'migration_validation_logs', (q) =>
-      q.select('id, migration_id, status, created_at', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.validationLogs),
+    readTelemetrySource(
+      ledger, client, 'migration_validation_logs',
+      'id, migration_id, status, created_at',
+      CAP.validationLogs, (q) => q.eq('user_id', userId).order('created_at', { ascending: false }),
     ),
   ])
 
@@ -247,11 +255,7 @@ async function computeModel(token: string, userId: string): Promise<TlsPkiModel>
     asset_id: jobAssetById.get(str(log.migration_id)) || '',
   }))
 
-  const truncated =
-    runtimeEvents.length >= CAP.runtimeEvents ||
-    cryptoInventory.length >= CAP.cryptoInventory ||
-    certificates.length >= CAP.certificates ||
-    scannerEvidence.length >= CAP.scannerEvidence
+  const truncated = ledger.reads.some((read) => read.state === 'truncated')
 
   const intelligence = buildTlsPkiIntelligence({
     assets: portfolio.assets,
@@ -283,16 +287,7 @@ async function computeModel(token: string, userId: string): Promise<TlsPkiModel>
 }
 
 export async function buildTlsPkiModel(token: string, userId: string, force = false): Promise<TlsPkiModel> {
-  const cached = modelCache.get(userId)
-  if (!force && cached && Date.now() - cached.at < MODEL_TTL_MS) return cached.promise
-  const promise = computeModel(token, userId)
-  modelCache.set(userId, { at: Date.now(), promise })
-  promise.catch(() => modelCache.delete(userId))
-  if (modelCache.size > 500) {
-    const now = Date.now()
-    for (const [key, value] of modelCache) if (now - value.at > MODEL_TTL_MS) modelCache.delete(key)
-  }
-  return promise
+  return modelCache.get(userId, () => computeModel(token, userId, force), force)
 }
 
 /** Drops the tenant's cached model so the next read reflects a just-made write. */
@@ -308,9 +303,21 @@ export function invalidateTlsPkiModel(userId: string) {
 const PAGE = { endpoints: 60, certificates: 60, findings: 40, items: 60 } as const
 
 /** Fields every page shares, so the header is identical on all four. */
+const inventoryRevisions = new WeakMap<TlsPkiModel, string>()
+function tlsInventoryRevision(model: TlsPkiModel) {
+  let revision = inventoryRevisions.get(model)
+  if (!revision) {
+    revision = payloadFingerprint({ endpoints: model.endpoints, certificates: model.certificates,
+      findings: model.findings, observations: model.observations, orchestration: model.orchestration.items })
+    inventoryRevisions.set(model, revision)
+  }
+  return revision
+}
+
 function commonEnvelope(model: TlsPkiModel) {
   return {
     generatedAt: model.generatedAt,
+    inventoryRevision: tlsInventoryRevision(model),
     latestEvidenceAt: model.latestEvidenceAt,
     hasData: model.hasData,
     /** Outcome of every source read: `unavailable` means the query FAILED, not "none". */
@@ -405,7 +412,8 @@ export function projectView(model: TlsPkiModel, view: TlsPkiView) {
       return {
         ...base,
         view: 'protocol' as const,
-        protocol: model.protocol,
+        protocol: { ...model.protocol, ssh: model.protocol.ssh.slice(0, 25) },
+        sshObservationCount: model.protocol.ssh.length,
         endpointIndex: model.endpoints.map(endpointSummary),
         findings: model.findings
           .filter((finding) => finding.category === 'protocol' || finding.category === 'cipher' || finding.category === 'key-exchange')
@@ -417,10 +425,11 @@ export function projectView(model: TlsPkiModel, view: TlsPkiView) {
       return {
         ...base,
         view: 'orchestrator' as const,
-        queuedAssetIds: [...new Set(model.orchestration.items.flatMap((item) => item.queued && item.assetId ? [item.assetId] : []))],
+        queuedAssetIds: model.orchestration.queuedAssetIds,
         orchestration: {
           ...model.orchestration,
           items: model.orchestration.items.slice(0, PAGE.items),
+          drift: model.orchestration.drift.slice(0, 25),
         },
         endpointIndex: model.endpoints.map(endpointSummary),
         findings: model.findings.slice(0, PAGE.findings),
@@ -575,14 +584,82 @@ function filterOrchestration(items: OrchestrationItem[], req: Request): Orchestr
 function buildRouter(view: TlsPkiView): Router {
   const router = Router()
   router.use(requireAuth)
+  router.use((_req, res, next) => { res.setHeader('Cache-Control', 'private, no-store'); next() })
 
   const model = (req: AuthedRequest, force = false) => buildTlsPkiModel(req.token!, req.user!.id, force)
+
+  if (view === 'telemetry') {
+    const inventory = (req: AuthedRequest) => {
+      const client = createAuthClient(req.token!)
+      if (!client) throw new Error('Asset inventory unavailable')
+      return client.from('assets').select('id, name, type, environment', { count: 'exact' })
+        .eq('user_id', req.user!.id).is('metadata->>consolidatedIntoAssetId', null)
+    }
+    const assetOption = (row: Record<string, unknown>): TelemetryAsset => ({
+      id: str(row.id), name: str(row.name) || 'Unnamed asset', type: str(row.type) || 'Unrecorded',
+      environment: str(row.environment) || 'Unrecorded',
+    })
+    router.get('/asset-options', async (req: AuthedRequest, res) => {
+      try {
+        const search = str(req.query.search).slice(0, 120)
+        const offset = Math.max(0, Math.floor(num(req.query.offset)))
+        const query = inventory(req)
+        if (search) query.ilike('name', `%${search.replace(/[\\%_]/g, '\\$&')}%`)
+        const { data, error, count } = await query.order('name').order('id').range(offset, offset + 19)
+        if (error || count === null) throw new Error('Asset inventory unavailable')
+        res.json({ data: { assets: (data ?? []).map(assetOption), total: count } })
+      } catch {
+        res.status(503).json({ error: { message: 'Registered asset inventory is unavailable.' } })
+      }
+    })
+
+    function scope(req: AuthedRequest, res: Response) {
+      const ids = [...new Set(str(req.query.assets).toLowerCase().split(',').filter(Boolean))].sort()
+      if (ids.length < 1 || ids.length > 4 || ids.some((id) => !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id))) {
+        res.status(400).json({ error: { message: 'Select one to four registered assets.' } })
+        return null
+      }
+      return ids
+    }
+    const compare = async (req: AuthedRequest, ids: string[]) => {
+      const { data, error } = await inventory(req).in('id', ids).order('name').order('id')
+      if (error) throw new Error('Registered asset inventory is unavailable.')
+      if (!data || data.length !== ids.length) return null
+      const force = req.query.refresh === '1'
+      const tls = await model(req, force)
+      const encryption = await buildEncryptionModel(req.token!, req.user!.id, force)
+      return compareTelemetryAssets(data.map(assetOption), tls, encryption)
+    }
+    router.get('/asset-comparison', async (req: AuthedRequest, res) => {
+      const ids = scope(req, res)
+      if (!ids) return
+      try {
+        const data = await compare(req, ids)
+        if (!data) return res.status(404).json({ error: { message: 'A selected asset is unavailable.' } })
+        return res.json({ data: { ...data, fingerprint: payloadFingerprint(data) } })
+      } catch {
+        return res.status(503).json({ error: { message: 'Asset telemetry is temporarily unavailable.' } })
+      }
+    })
+    router.get('/asset-comparison/stream', (req: AuthedRequest, res) => {
+      const ids = scope(req, res)
+      if (!ids) return
+      streamLiveSnapshot(req, res, {
+        event: 'asset-telemetry', intervalMs: 10_000, build: async () => {
+          const data = await compare(req, ids)
+          if (!data) throw new Error('A selected asset is unavailable.')
+          return data
+        },
+      })
+    })
+  }
 
   /* ---- GET / — the view payload -------------------------------- */
   router.get('/', async (req: AuthedRequest, res: Response) => {
     try {
       const data = await model(req, str(req.query.refresh) === '1')
-      res.json({ data: projectView(data, view) })
+      const projection = projectedView(data, view)
+      res.json({ data: { ...projection, fingerprint: payloadFingerprint(projection) } })
     } catch (error) {
       console.error(`[tls-pki:${view}] snapshot failed:`, error)
       res.status(500).json({
@@ -672,7 +749,7 @@ function buildRouter(view: TlsPkiView): Router {
         data: {
           certificate,
           endpoint,
-          findings: data.findings.filter((finding) => finding.category === 'certificate' && finding.endpointId === certificate.endpointId),
+          findings: data.findings.filter((finding) => finding.category === 'certificate' && finding.certificateId === certificate.id),
           chain: data.trustChains.filter(
             (node) => node.certificateIds.includes(certificate.id) || node.children.some((child) => child.certificateIds.includes(certificate.id)),
           ),

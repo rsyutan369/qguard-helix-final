@@ -260,6 +260,7 @@ export interface TrustChainNode {
 
 export interface TlsFinding {
   id: string
+  certificateId?: string
   title: string
   category: 'protocol' | 'cipher' | 'key-exchange' | 'certificate' | 'configuration' | 'quantum'
   severity: Severity
@@ -293,7 +294,18 @@ export interface DistributionRow {
   endpointIds: string[]
 }
 
+export interface SshObservation {
+  id: string
+  assetId: string | null
+  target: string
+  version: string | null
+  algorithm: string | null
+  kind: 'Key exchange' | 'Host key' | 'Banner'
+  observedAt: string | null
+}
+
 export interface ProtocolAnalytics {
+  ssh: SshObservation[]
   /** Denominator label so a percentage can never be read against the wrong base. */
   basis: 'observations' | 'endpoints'
   totalObservations: number
@@ -430,6 +442,7 @@ export interface OrchestrationItem {
 }
 
 export interface ConfigurationDrift {
+  assetId: string | null
   id: string
   endpointId: string
   assetName: string
@@ -444,6 +457,8 @@ export interface OrchestrationState {
   items: OrchestrationItem[]
   statusCounts: Record<OrchestrationStatus, number>
   queueDepth: number
+  queuedAssetIds: string[]
+  activeJobCount: number
   drift: ConfigurationDrift[]
   driftMeasured: boolean
   /** Real migration jobs touching TLS/PKI assets. */

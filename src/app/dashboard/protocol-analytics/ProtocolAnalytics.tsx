@@ -1,11 +1,13 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useObservedDetail } from '@/hooks/use-observed-paged-resource';
+import { TelemetryAssetComparison } from '../_components/observability/TelemetryAssetComparison';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Activity, AlertTriangle, GitCompare, KeyRound, Layers, Signature, TrendingUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { WorkflowRail } from '@/components/workflow/WorkflowRail';
-import { useProtocolAnalytics, useTlsPkiDetail, type EndpointDetail, type EndpointSummary } from '@/hooks/use-tls-pki';
+import { useProtocolAnalytics, type EndpointDetail, type EndpointSummary } from '@/hooks/use-tls-pki';
 import { POSTURE_LABEL } from '@/lib/tls-pki/classify';
 import type { DistributionRow } from '@/lib/tls-pki/types';
 import { PostureStrip } from '../_components/observability/TlsPostureStrip';
@@ -59,10 +61,12 @@ import {
 
 export default function ProtocolAnalytics() {
   const { data, state, error, live, lastSyncedAt, refresh, reconnect } = useProtocolAnalytics();
-  const { loadEndpoint, loading: detailLoading } = useTlsPkiDetail('protocol');
 
   const [drill, setDrill] = useState<{ title: string; endpointIds: string[] } | null>(null);
-  const [detail, setDetail] = useState<EndpointDetail | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const { detail, detailError, detailLoading, retryDetail } = useObservedDetail<EndpointDetail>(
+    '/api/v1/dashboard/protocol-analytics/endpoints', detailId, data?.generatedAt,
+  );
 
   const endpointById = useMemo(() => {
     const map = new Map<string, EndpointSummary>();
@@ -70,16 +74,7 @@ export default function ProtocolAnalytics() {
     return map;
   }, [data?.endpointIndex]);
 
-  const openEndpoint = useCallback(
-    async (id: string) => {
-      const result = await loadEndpoint(id);
-      if (result) {
-        setDrill(null);
-        setDetail(result);
-      }
-    },
-    [loadEndpoint],
-  );
+  const openEndpoint = (id: string) => { setDrill(null); setDetailId(id); };
 
   const showSkeleton = state === 'loading' && !data;
   const showHardError = state === 'error' && !data;
@@ -132,14 +127,36 @@ export default function ProtocolAnalytics() {
       <ModuleNav />
 
       {connectionLost ? <ConnectionLost onReconnect={reconnect} lastSyncedAt={lastSyncedAt} /> : null}
+      <TelemetryAssetComparison />
       {error && data ? (
         <p className="rounded-lg border border-red-500/25 bg-red-500/5 px-3 py-2 text-[11px] text-red-200/85">{error}</p>
       ) : null}
 
+      {data && protocol ? (
+        <Panel>
+          <SectionLabel icon={KeyRound} meta={`${data.sshObservationCount} distinct records in the evidence window`}>
+            SSH scanner evidence
+          </SectionLabel>
+          <p className="mb-3 text-xs text-white/70">Server banners and advertised algorithms from stored scans. Negotiated SSH sessions require separate runtime evidence.</p>
+          {protocol.ssh.length ? (
+            <TableShell minWidth={660}>
+              <thead><tr>{['Target', 'Banner version', 'Scanner evidence', 'Algorithm', 'Observed'].map((label) => <Th key={label}>{label}</Th>)}</tr></thead>
+              <tbody>{protocol.ssh.map((row) => (
+                <tr key={row.id}>
+                  <Td>{row.target}</Td><Td>{row.version ? `SSH ${row.version}` : 'Unrecorded'}</Td>
+                  <Td>{row.kind === 'Banner' ? 'Banner' : `Advertised ${row.kind.toLowerCase()}`}</Td>
+                  <Td>{row.algorithm ?? 'Unrecorded'}</Td><Td>{row.observedAt ? new Date(row.observedAt).toLocaleString() : 'Unrecorded'}</Td>
+                </tr>
+              ))}</tbody>
+            </TableShell>
+          ) : <PanelEmpty>No SSH scanner evidence in this window.</PanelEmpty>}
+        </Panel>
+      ) : null}
+
       {data && protocol && protocol.totalObservations === 0 ? (
         <NoDataState
-          title="No protocol observations yet"
-          body="Protocol analytics is computed entirely from measured negotiations. Until a scan or a runtime collector reports one, there is nothing here to distribute."
+          title="No TLS observations yet"
+          body="TLS distributions require scanner evidence or a runtime observation."
           telemetry={data.telemetry}
         />
       ) : null}
@@ -387,11 +404,12 @@ export default function ProtocolAnalytics() {
 
       {/* ---- Endpoint investigation ------------------------------- */}
       <Drawer
-        open={Boolean(detail)}
+        open={Boolean(detailId)}
         title={detail?.endpoint.name ?? 'Endpoint'}
         subtitle={detail ? `${detail.endpoint.host}${detail.endpoint.port ? `:${detail.endpoint.port}` : ''}` : undefined}
-        onClose={() => setDetail(null)}
+        onClose={() => setDetailId(null)}
       >
+        {detailError ? <ErrorState message={detailError} onRetry={retryDetail} /> : null}
         {detailLoading && !detail ? <PanelEmpty>Loading evidence…</PanelEmpty> : null}
         {detail ? <EndpointInvestigation detail={detail} /> : null}
       </Drawer>
