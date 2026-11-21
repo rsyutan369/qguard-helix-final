@@ -24,6 +24,8 @@ import {
 } from '@/lib/scanner/exposure/algorithms'
 import type { CryptoRole, FindingSeverity, QuantumStatus } from '@/lib/scanner/exposure/types'
 import { isInternetFacing, recordOf, str, type Row } from '@/lib/migration/asset-intelligence'
+import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
+import { observationClass } from '@/lib/scanner/finding-identity'
 
 export type { Row }
 
@@ -46,6 +48,9 @@ export interface EstateInputs {
   certificates: Row[]
   relationships: Row[]
   migrationJobs: Row[]
+  migrationValidations?: Row[]
+  plannerQueueAssetIds?: Set<string>
+  revision?: string
   coverage: TableCoverage[]
   /** Epoch ms; injectable so tests and fixtures are deterministic. */
   now?: number
@@ -64,12 +69,11 @@ export const ENVIRONMENT_ROLLOUT: EnvironmentKey[] = ['development', 'test', 'st
 
 export type CriticalityKey = 'critical' | 'high' | 'medium' | 'low' | 'unknown'
 
-export type OwnerSource = 'service_owner' | 'owner tag' | 'cloud tag' | 'certificate subject'
+export type OwnerSource = 'service_owner' | 'owner tag' | 'cloud tag'
 export const OWNER_SOURCE_LABEL: Record<OwnerSource, string> = {
   service_owner: 'Asset record (service_owner)',
   'owner tag': 'Owner / team tag on the asset',
   'cloud tag': 'Cloud resource tag',
-  'certificate subject': 'Certificate subject OU (inferred)',
 }
 
 export interface EstateAsset {
@@ -84,13 +88,15 @@ export interface EstateAsset {
   service: string | null
   criticality: CriticalityKey
   internetFacing: boolean
+  status: string | null
+  recordedScanAt: string | null
 }
 
 function normaliseEnvironment(raw: string): EnvironmentKey {
   const value = raw.toLowerCase()
   if (!value) return 'unknown'
-  if (/\bprod|production|live\b|\bprd\b/.test(value)) return 'production'
   if (/stag|pre-?prod|uat/.test(value)) return 'staging'
+  if (/\bprod|production|live\b|\bprd\b/.test(value)) return 'production'
   if (/\btest|\bqa\b|\bsit\b/.test(value)) return 'test'
   if (/\bdev|sandbox|local/.test(value)) return 'development'
   return 'unknown'
@@ -107,7 +113,7 @@ function normaliseCriticality(raw: string): CriticalityKey {
 
 const firstString = (...values: unknown[]) => {
   for (const value of values) {
-    const text = str(value).trim()
+    const text = typeof value === 'string' ? value.trim() : ''
     if (text) return text
   }
   return ''
@@ -119,10 +125,10 @@ function resolveOwner(asset: Row): { owner: string | null; source: OwnerSource |
   if (column) return { owner: column, source: 'service_owner' }
   const meta = recordOf(asset.metadata)
   const tags = recordOf(meta.tags)
-  const tagged = firstString(meta.owner, meta.team, meta.owner_team, meta.ownerTeam, tags.owner, tags.team, tags.Owner, tags.Team)
+  const tagged = firstString(meta.owner, meta.businessOwner, meta.team, meta.owner_team, meta.ownerTeam, tags.owner, tags.team, tags.Owner, tags.Team)
   if (tagged) return { owner: tagged, source: 'owner tag' }
   const cloud = { ...recordOf(meta.cloud_tags), ...recordOf(meta.cloudTags), ...recordOf(meta.resource_tags) }
-  const cloudOwner = firstString(cloud.owner, cloud.Owner, cloud.team, cloud.Team, cloud['cost-center'], cloud.CostCenter)
+  const cloudOwner = firstString(cloud.owner, cloud.Owner, cloud.team, cloud.Team)
   if (cloudOwner) return { owner: cloudOwner, source: 'cloud tag' }
   return { owner: null, source: null }
 }
@@ -130,19 +136,23 @@ function resolveOwner(asset: Row): { owner: string | null; source: OwnerSource |
 export function normaliseAsset(asset: Row): EstateAsset {
   const meta = recordOf(asset.metadata)
   const tags = recordOf(meta.tags)
-  const environmentRaw = firstString(asset.environment, meta.environment, tags.environment, tags.env)
+  const cloud = { ...recordOf(meta.cloud_tags), ...recordOf(meta.cloudTags), ...recordOf(meta.resource_tags) }
+  const environmentRaw = firstString(asset.environment, meta.environment, tags.environment, tags.env, tags.Environment, cloud.environment, cloud.Environment, cloud.env)
   const { owner, source } = resolveOwner(asset)
+  const recordedScanAt = Date.parse(firstString(meta.last_scanned_at))
   return {
     id: str(asset.id),
     name: firstString(asset.name, meta.target, asset.id),
-    type: firstString(asset.type, 'asset'),
+    type: firstString(asset.type),
     environment: normaliseEnvironment(environmentRaw),
     environmentRaw,
     owner,
     ownerSource: source,
-    service: firstString(meta.business_service, meta.businessService, meta.application, meta.app, meta.service, tags.service, tags.application) || null,
+    service: firstString(meta.business_service, meta.businessService, meta.application, meta.app, meta.service, tags.business_service, tags.service, tags.Service, tags.application, cloud.business_service, cloud.service, cloud.Service, cloud.application) || null,
     criticality: normaliseCriticality(firstString(asset.criticality, meta.criticality, tags.criticality)),
     internetFacing: isInternetFacing(asset),
+    status: firstString(asset.status) || null,
+    recordedScanAt: Number.isFinite(recordedScanAt) ? new Date(recordedScanAt).toISOString() : null,
   }
 }
 
@@ -150,7 +160,7 @@ export function normaliseAsset(asset: Row): EstateAsset {
 /* Observations (crypto_inventory)                                     */
 /* ------------------------------------------------------------------ */
 
-export type Actionability = 'quantum' | 'classical' | 'none' | 'unclassified'
+export type Actionability = 'quantum' | 'classical' | 'none' | 'unclassified' | 'context'
 
 export interface Observation {
   id: string
@@ -165,7 +175,8 @@ export interface Observation {
    * quantum      — a Shor-broken primitive in a quantum-relevant role;
    * classical    — broken today regardless of quantum (SHA-1, 3DES, RSA-1024…);
    * none         — PQC, hybrid or quantum-resistant: nothing to migrate;
-   * unclassified — the algorithm is not one the engine recognises.
+   * unclassified — the row needs more algorithm evidence.
+   * context      — a scanner rule, software inventory or scan diagnostic.
    */
   actionability: Actionability
   itemType: string
@@ -191,28 +202,85 @@ function integerKeySize(canonical: CanonicalAlgorithm | null, keySize: number | 
 }
 
 const LIBRARY_TYPE = /librar|package|dependenc|sdk|module|crate|gem|npm|maven|pip/i
+const CONTEXT_CLASSES = new Set([
+  'rule', 'connectivity', 'certificate revocation', 'certificate transparency', 'dns security',
+  'nist compliance', 'repository access', 'repository scan error', 'security headers', 'ssh metadata',
+  'policy', 'configuration finding', 'scan diagnostic',
+])
+const API_CONTEXT_LABELS = new Set(['hsts', 'information disclosure', 'cookie security', 'graphql', 'pgp/gpg', 'oauth'])
+
+function observedPrimitive(algorithm: string): { name: string; role?: CryptoRole; hybrid?: string; suite?: boolean } {
+  const annotated = algorithm.match(/^(.+)\s+\((Certificate|Signature|Chain Signature)\)$/i)
+  if (annotated) {
+    const base = observedPrimitive(annotated[1])
+    return { ...base, role: /^certificate$/i.test(annotated[2]) ? 'certificate' : 'signature' }
+  }
+  const anatomy = analyzeCryptoObservation({ algorithm })
+  if (anatomy.kind === 'cipher-suite') {
+    const parts = [anatomy.bulk, anatomy.mac]
+    const weak = parts.find((part) => describeAlgorithm(part)?.classicallyWeak)
+    if (weak) return { name: weak, role: weak === anatomy.bulk ? 'encryption' : 'hashing', suite: true }
+    if (anatomy.keyExchange && describeAlgorithm(anatomy.keyExchange)) return { name: anatomy.keyExchange, role: 'key-exchange', suite: true }
+    if (anatomy.authentication && describeAlgorithm(anatomy.authentication)) return { name: anatomy.authentication, role: 'signature', suite: true }
+    return anatomy.keyExchange?.startsWith('Ephemeral (TLS 1.3') && anatomy.bulk
+      ? { name: anatomy.bulk, role: 'encryption', suite: true }
+      : { name: '', suite: true } // An unknown suite must not inherit the bulk cipher's verdict.
+  }
+  if (anatomy.quantumClass === 'hybrid' && (anatomy.kind === 'key-exchange' || anatomy.kind === 'signature')) {
+    const role = anatomy.kind === 'key-exchange' ? 'key-exchange' : 'signature'
+    return { name: algorithm, role, hybrid: anatomy.family }
+  }
+  if (/^sha1withrsa(?:encryption)?$/i.test(algorithm)) return { name: 'SHA-1', role: 'signature' }
+  if (/^rsaencryption(?:[ -]\d{4})?$|^sha(?:224|256|384|512)withrsa(?:encryption)?$/i.test(algorithm)) {
+    return { name: 'RSA', role: algorithm.toLowerCase().startsWith('sha') ? 'signature' : undefined }
+  }
+  if (/^(?:RS|PS)(256|384|512)$/i.test(algorithm)) return { name: 'RSA', role: 'token-signing' }
+  if (/^ES(?:256K?|384|512)$/i.test(algorithm)) return { name: 'ECDSA', role: 'token-signing' }
+  if (/^HS(?:256|384|512)$/i.test(algorithm)) return { name: 'HMAC', role: 'authentication' }
+  return { name: algorithm }
+}
+
+export function observedAlgorithmFamily(algorithm: string): CanonicalAlgorithm | null {
+  const primitive = observedPrimitive(algorithm)
+  return describeAlgorithm(primitive.hybrid ?? primitive.name)
+}
 
 export function observationFromInventory(row: Row): Observation {
   const meta = recordOf(row.metadata)
-  const algorithm = firstString(row.algorithm, meta.algorithm, row.name)
+  const name = firstString(row.name)
+  const nameClass = observationClass(name)
+  const category = observationClass(meta.category)
+  const labelAlgorithm = name.includes(':') ? name.slice(name.indexOf(':') + 1).trim() : name
+  const recordedAlgorithm = [firstString(row.algorithm), firstString(meta.algorithm)]
+    .find((value) => value && !/^(?:unknown(?: algorithm)?|undetected|n\/a|none|-|pqc-ready)$/i.test(value))
+  const labelPrimitive = recordedAlgorithm ? null : observedPrimitive(labelAlgorithm)
+  const algorithm = recordedAlgorithm ?? (labelPrimitive && (labelPrimitive.hybrid || describeAlgorithm(labelPrimitive.name)) ? labelAlgorithm : '')
   const itemType = firstString(row.item_type, meta.category)
-  const keySize = parseKeySize(str(row.key_size ?? meta.keySize ?? '')) ?? null
+  const primitive = observedPrimitive(algorithm)
+  const canonical = describeAlgorithm(primitive.name)
+  const contextOnly = CONTEXT_CLASSES.has(nameClass) || CONTEXT_CLASSES.has(category)
+    || (category === 'api security' && API_CONTEXT_LABELS.has(algorithm.toLowerCase()))
+    || (category === 'certificate' && /^expired certificate$/i.test(algorithm))
+    || (category === 'key exchange' && /^hndl risk:/i.test(algorithm))
+    || (LIBRARY_TYPE.test(itemType) && !canonical && !primitive.hybrid)
+  const recordedSize = parseKeySize(str(row.key_size ?? meta.keySize ?? ''))
+  const embeddedSize = /^(?:rsa(?:encryption)?|dsa|dh|dhe|ffdhe)[-_ ]?\d{4,5}$/i.test(algorithm) ? parseKeySize(algorithm) : null
+  // Older scanner writers placed the suite's AES/digest length in key_size.
+  const keySize = primitive.suite ? (canonical?.family === 'aes' ? parseKeySize(primitive.name) : null) : recordedSize ?? embeddedSize
   const explicitRole = firstString(meta.role) as CryptoRole
   const context = [itemType, row.name, row.protocol, meta.category, meta.detectionMethod].map(str).join(' ')
-  const role = inferRole(algorithm, context, explicitRole || undefined)
-  const canonical = describeAlgorithm(algorithm)
-  let verdict = classifyQuantum({ algorithm, role, keySize, hybridPartner: firstString(meta.hybridPartner, meta.hybrid_partner) || null })
-  // The engine does not know the algorithm, but the writer stored a verdict:
-  // keep the stored fact rather than discarding it.
-  if (verdict.status === 'unknown' && row.is_quantum_safe === true) verdict = { ...verdict, status: 'pqc', quantumRelevant: true }
-  if (verdict.status === 'unknown' && row.is_vulnerable === true && canonical) verdict = { ...verdict, status: 'vulnerable', quantumRelevant: true }
+  const role = primitive.role ?? inferRole(primitive.name, context, explicitRole || undefined)
+  const classification = classifyQuantum({ algorithm: primitive.name, role, keySize, hybridPartner: firstString(meta.hybridPartner, meta.hybrid_partner) || null })
+  const verdict = contextOnly ? { ...classification, status: 'not-applicable' as const, quantumRelevant: false }
+    : primitive.hybrid ? { ...classification, status: 'hybrid' as const, quantumRelevant: true } : classification
 
   const classicallyWeak = Boolean(canonical?.classicallyWeak) || undersizedKey(canonical, keySize)
   const detection = /potential|pattern|heuristic/i.test(str(meta.detectionMethod)) ? 'potential' : 'observed'
   const severity = severityFor({ quantum: verdict, classicallyWeak, role, detection, keySize: integerKeySize(canonical, keySize) })
 
   let actionability: Actionability
-  if (!canonical && verdict.status === 'unknown') actionability = 'unclassified'
+  if (contextOnly) actionability = 'context'
+  else if (verdict.status === 'unknown') actionability = 'unclassified'
   else if (classicallyWeak) actionability = 'classical'
   else if (verdict.status === 'vulnerable' && verdict.quantumRelevant) actionability = 'quantum'
   else actionability = 'none'
@@ -234,7 +302,7 @@ export function observationFromInventory(row: Row): Observation {
     itemType,
     packageName: packageName ? packageName.toLowerCase() : null,
     observedAt,
-    componentKey: [canonical?.canonical ?? algorithm.toLowerCase(), keySize ?? '', role, packageName.toLowerCase()].join('|'),
+    componentKey: [primitive.hybrid?.toLowerCase() ?? canonical?.canonical ?? algorithm.toLowerCase(), keySize ?? '', role, packageName.toLowerCase()].join('|'),
   }
 }
 
@@ -259,9 +327,7 @@ export interface CertificateIdentity {
   severity: FindingSeverity
   assetIds: Set<string>
   recordIds: string[]
-  /** Subject OU, used only as an inferred ownership hint. */
-  subjectOu: string | null
-  observedAt: number
+  observedAtByAsset: Map<string, number>
 }
 
 function distinguishedNamePart(dn: string, part: string): string {
@@ -295,21 +361,24 @@ export function mergeCertificates(rows: Row[]): CertificateIdentity[] {
     const key = fingerprint ? `fp:${fingerprint}` : serial && issuer ? `sn:${serial}|${issuer.toLowerCase()}` : `id:${str(row.id)}`
     const existing = merged.get(key)
     const assetId = str(row.asset_id)
-    const observedAt = Date.parse(firstString(row.updated_at, row.created_at)) || 0
+    const observedAt = Date.parse(firstString(row.evidence_at, meta.observedAt, meta.observed_at, row.updated_at, row.created_at)) || 0
     if (existing) {
-      if (assetId) existing.assetIds.add(assetId)
+      if (assetId) {
+        existing.assetIds.add(assetId)
+        existing.observedAtByAsset.set(assetId, Math.max(existing.observedAtByAsset.get(assetId) ?? 0, observedAt))
+      }
       existing.recordIds.push(str(row.id))
-      existing.observedAt = Math.max(existing.observedAt, observedAt)
       continue
     }
     const algorithm = firstString(row.algorithm)
     const keySize = parseKeySize(str(row.key_size ?? '')) ?? null
-    const canonical = describeAlgorithm(algorithm)
-    let verdict = classifyQuantum({ algorithm, role: 'certificate', keySize })
-    if (row.is_quantum_safe === true && verdict.status !== 'vulnerable') verdict = { ...verdict, status: 'pqc' }
+    const primitive = observedPrimitive(algorithm)
+    const canonical = describeAlgorithm(primitive.name)
+    const classification = classifyQuantum({ algorithm: primitive.name, role: 'certificate', keySize })
+    const verdict = primitive.hybrid ? { ...classification, status: 'hybrid' as const, quantumRelevant: true } : classification
     const classicallyWeak = Boolean(canonical?.classicallyWeak) || undersizedKey(canonical, keySize)
     const severity = severityFor({ quantum: verdict, classicallyWeak, role: 'certificate', detection: 'observed', keySize: integerKeySize(canonical, keySize) })
-    const actionability: Actionability = !canonical && verdict.status === 'unknown'
+    const actionability: Actionability = verdict.status === 'unknown'
       ? 'unclassified'
       : classicallyWeak ? 'classical' : verdict.status === 'vulnerable' ? 'quantum' : 'none'
     const subject = firstString(row.subject, row.name)
@@ -329,8 +398,7 @@ export function mergeCertificates(rows: Row[]): CertificateIdentity[] {
       severity,
       assetIds: new Set(assetId ? [assetId] : []),
       recordIds: [str(row.id)],
-      subjectOu: distinguishedNamePart(subject, 'OU') || null,
-      observedAt,
+      observedAtByAsset: new Map(assetId ? [[assetId, observedAt]] : []),
     })
   }
   return [...merged.values()]

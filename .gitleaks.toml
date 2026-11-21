@@ -1,0 +1,33 @@
+title = "Qguard Helix credential detection"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "qguard-supabase-secret-key"
+description = "Supabase privileged secret API key"
+regex = '''\b(sb_secret_[A-Za-z0-9_-]{20,})\b'''
+secretGroup = 1
+keywords = ["sb_secret_"]
+
+[[rules]]
+id = "qguard-supabase-service-role-jwt"
+description = "Supabase service-role JWT assigned as a literal"
+regex = '''(?i)\b(?:SUPABASE(?:_FALLBACK)?_SERVICE_ROLE_KEY|SERVICE_ROLE_KEY)\b["']?[ \t]{0,8}[:=][ \t]{0,8}["']?(eyJ[A-Za-z0-9_-]{6,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,})\b'''
+secretGroup = 1
+keywords = ["service_role_key"]
+
+[[rules]]
+id = "qguard-google-oauth-client-secret"
+description = "Google OAuth client secret"
+regex = '''\b(GOCSPX-[A-Za-z0-9_-]{20,})\b'''
+secretGroup = 1
+keywords = ["gocspx-"]
+
+[[rules]]
+id = "qguard-payment-or-oauth-secret"
+description = "PayPal or Google OAuth client secret assigned as a literal"
+regex = '''(?i)\b(?:PAYPAL(?:_[A-Z]+)*_SECRET|GOOGLE(?:_OAUTH)?_CLIENT_SECRET|GOTRUE_EXTERNAL_GOOGLE_SECRET)\b["']?[ \t]{0,8}[:=][ \t]{0,8}["']?([A-Za-z0-9_-]{20,})\b'''
+secretGroup = 1
+entropy = 3.3
+keywords = ["paypal", "google"]

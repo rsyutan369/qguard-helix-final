@@ -2734,11 +2734,11 @@ function inventoryToVulnerability(item: any): AssetVulnerabilityItem {
   }
 }
 
-function resultToVulnerability(row: any, index: number): AssetVulnerabilityItem | null {
+function resultToVulnerability(row: any, index: number, includeLow = false): AssetVulnerabilityItem | null {
   const finding = normalizeStoredFinding(row, index)
-  if (!['CRITICAL', 'HIGH', 'MEDIUM'].includes(finding.threatLevel)) return null
+  if (!['CRITICAL', 'HIGH', 'MEDIUM'].includes(finding.threatLevel) && !(includeLow && finding.threatLevel === 'LOW')) return null
 
-  const timestamp = finding.detectedAt || finding.timestamp || row.created_at || new Date().toISOString()
+  const timestamp = finding.detectedAt || finding.timestamp || row.created_at || ''
   return {
     id: `scan-result-${finding.id}`,
     user_id: row.user_id,
@@ -2773,7 +2773,7 @@ function exposureToVulnerability(row: any): AssetVulnerabilityItem | null {
   if (storedSeverityWeight(row.severity) <= 0) return null
 
   const metadata = row.metadata || {}
-  const timestamp = row.updated_at || row.created_at || new Date().toISOString()
+  const timestamp = row.updated_at || row.created_at || ''
   return {
     id: `exposure-${row.id}`,
     user_id: row.user_id,
@@ -2825,7 +2825,7 @@ function vulnerabilityRowToItems(row: any): AssetVulnerabilityItem[] {
   if (!vulnerabilityStatusIsOpen(row.status)) return []
 
   const metadata = row.metadata || {}
-  const timestamp = row.updated_at || row.created_at || new Date().toISOString()
+  const timestamp = row.updated_at || row.created_at || ''
   const evidence = Array.isArray(metadata.evidence)
     ? metadata.evidence.filter((entry: any) => entry && typeof entry === 'object')
     : []
@@ -2914,7 +2914,7 @@ function vulnerabilityRowToItems(row: any): AssetVulnerabilityItem[] {
   ]
 }
 
-function buildAssetVulnerabilities(assetId: string, crypto: any[], exposures: any[], results: any[], vulnerabilityRows: any[]) {
+function buildAssetVulnerabilities(assetId: string, crypto: any[], exposures: any[], results: any[], vulnerabilityRows: any[], includeLow = false) {
   /* `crypto_inventory`, `crypto_exposures` and `pqc_scan_results` are PRIMARY:
      the scanner writes every observation to them as it is measured.
      `vulnerabilities` is DERIVED — one row per (asset, root cause), aggregating
@@ -2934,7 +2934,7 @@ function buildAssetVulnerabilities(assetId: string, crypto: any[], exposures: an
   const primary = [
     ...crypto.filter((item) => item.is_vulnerable && !item.is_quantum_safe).map(inventoryToVulnerability),
     ...exposures.map(exposureToVulnerability).filter(Boolean),
-    ...results.map(resultToVulnerability).filter(Boolean),
+    ...results.map((row, index) => resultToVulnerability(row, index, includeLow)).filter(Boolean),
   ] as AssetVulnerabilityItem[]
 
   const observationKey = (item: AssetVulnerabilityItem) =>
@@ -3106,7 +3106,7 @@ function vulnerabilityItemToFinding(item: AssetVulnerabilityItem, asset?: any): 
   const metadata = item.metadata || {}
   const algorithm = String(item.algorithm || metadata.algorithm || item.name || 'Detected crypto')
   const threatLevel = threatFromVulnerabilityItem(item)
-  const timestamp = String(item.discovered_at || item.created_at || metadata.detectedAt || metadata.timestamp || asset?.updated_at || '')
+  const timestamp = String(item.discovered_at || item.created_at || metadata.detectedAt || metadata.timestamp || '')
 
   return {
     id: String(metadata.scanResultId || metadata.exposureId || metadata.vulnerabilityId || item.id),
@@ -3130,6 +3130,37 @@ function vulnerabilityItemToFinding(item: AssetVulnerabilityItem, asset?: any): 
 
 type ScannerFindingInput = DefensiveFinding & { scanTarget?: string; assetIds?: string[]; evidenceIds?: string[] }
 export type MergedScannerFinding = DefensiveFinding & { observations: number; sources: string[]; assetIds: string[]; evidenceIds: string[]; scanTarget?: string }
+
+function observationsForScannerAsset(asset: { id: string; name: string; url?: string | null; domain?: string; vulnerabilities: AssetVulnerabilityItem[] }): ScannerFindingInput[] {
+  return asset.vulnerabilities.map((item) => ({
+    ...vulnerabilityItemToFinding(item, asset),
+    scanTarget: asset.url || asset.domain || asset.name,
+    assetIds: [asset.id],
+    evidenceIds: [
+      item.metadata?.scanResultId && `pqc_scan_results:${item.metadata.scanResultId}`,
+      item.metadata?.exposureId && `crypto_exposures:${item.metadata.exposureId}`,
+      item.metadata?.vulnerabilityId && `vulnerabilities:${item.metadata.vulnerabilityId}`,
+      !item.metadata?.scanResultId && !item.metadata?.exposureId && !item.metadata?.vulnerabilityId && item.id && `crypto_inventory:${item.id}`,
+    ].filter((id): id is string => typeof id === 'string' && Boolean(id)),
+  }))
+}
+
+/** Scope observations before merging so a same-host asset cannot supply another asset's evidence. */
+export function scannerFindingsForAsset(asset: Parameters<typeof observationsForScannerAsset>[0]): MergedScannerFinding[] {
+  return mergeScannerFindings(observationsForScannerAsset(asset))
+}
+
+/** The exposure graph reuses the scanner's per-asset merge, including low findings. */
+export function scannerFindingsFromEvidence(
+  asset: { id: string; name: string },
+  evidence: { inventory: any[]; exposures: any[]; results: any[]; vulnerabilities: any[] },
+) {
+  const { inventory, exposures, results, vulnerabilities } = evidence
+  return scannerFindingsForAsset({
+    ...asset,
+    vulnerabilities: buildAssetVulnerabilities(asset.id, inventory, exposures, results, vulnerabilities, true),
+  })
+}
 
 /**
  * Collapse the four storage views of one observation into a single finding.
@@ -3269,6 +3300,7 @@ function buildAssetsPayload(assets: any[], inventory: any[], exposures: any[], r
       // Ownership and exposure context, straight from the asset record. `null`
       // means NOT RECORDED — the register says "Unassigned", never a guess.
       owner: asset.service_owner || asset.metadata?.owner || asset.metadata?.businessOwner || null,
+      serviceOwner: asset.service_owner || null,
       environment: asset.environment || asset.metadata?.environment || null,
       region: asset.region || null,
       criticality: asset.criticality || null,
@@ -3486,11 +3518,11 @@ export function readScannerMemoryRows(userId: string) {
   }
 }
 
-export async function buildScannerIntelligence(token: string, userId: string, options: { fresh?: boolean } = {}) {
+export async function buildScannerIntelligence(token: string, userId: string, options: { fresh?: boolean; refresh?: boolean } = {}) {
   if (options.fresh) return computeScannerIntelligence(token, userId, true)
   const hasActiveScan = Array.from(activeJobs.values()).some((job) => job.userId === userId)
   const cached = intelCache.get(userId)
-  if (!hasActiveScan && cached && Date.now() - cached.at < INTEL_CACHE_TTL_MS) return cached.promise
+  if (!options.refresh && !hasActiveScan && cached && Date.now() - cached.at < INTEL_CACHE_TTL_MS) return cached.promise
   const promise = computeScannerIntelligence(token, userId)
   intelCache.set(userId, { at: Date.now(), promise })
   // A degraded build (a database read failed, so the view fell back to the
@@ -3524,19 +3556,7 @@ async function computeScannerIntelligence(token: string, userId: string, forRepo
   const historyFindings = historyPayload.history.flatMap((entry: any) =>
     (entry.findings || []).map((finding: DefensiveFinding) => ({ ...finding, scanTarget: entry.target, evidenceIds: [`pqc_scan_sessions:${entry.scanId}`] })),
   )
-  const assetFindings = assetPayload.assets.flatMap((asset: any) =>
-    (Array.isArray(asset.vulnerabilities) ? asset.vulnerabilities : []).map((item: AssetVulnerabilityItem) => ({
-      ...vulnerabilityItemToFinding(item, asset),
-      scanTarget: String(asset.url || asset.domain || asset.name || ''),
-      assetIds: [String(asset.id)],
-      evidenceIds: [
-        item.metadata?.scanResultId && `pqc_scan_results:${item.metadata.scanResultId}`,
-        item.metadata?.exposureId && `crypto_exposures:${item.metadata.exposureId}`,
-        item.metadata?.vulnerabilityId && `vulnerabilities:${item.metadata.vulnerabilityId}`,
-        !item.metadata?.scanResultId && !item.metadata?.exposureId && !item.metadata?.vulnerabilityId && item.id && `crypto_inventory:${item.id}`,
-      ].filter((id): id is string => typeof id === 'string' && Boolean(id)),
-    })),
-  )
+  const assetFindings = assetPayload.assets.flatMap(observationsForScannerAsset)
   const findings = mergeScannerFindings([...historyFindings, ...assetFindings])
   const latest = historyPayload.history[0] || null
   const severityCounts = {

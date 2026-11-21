@@ -393,9 +393,16 @@ export default function QuantumGovernanceCenter() {
         <div className="rounded-xl border border-cyan-400/25 bg-cyan-500/[0.07] px-4 py-2 text-[11px] font-semibold text-cyan-100">{notice}</div>
       ) : null}
 
+      {error ? <GovernanceError message={error} onRetry={reconnect} /> : null}
       {data.stale && data.staleSinceHours !== null ? <StaleBanner hours={data.staleSinceHours} onRefresh={() => void refresh(true)} /> : null}
 
-      {!data.hasData ? (
+      {(data.telemetry.absentSources.length > 0 || data.telemetry.truncated) && (
+        <div role="status" className="rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-card-bg-strong)] px-4 py-3 text-sm">
+          <strong>Evidence coverage is limited.</strong> Review the source coverage below before interpreting these results.
+        </div>
+      )}
+
+      {!data.hasData && data.telemetry.absentSources.length === 0 ? (
         <NoEvidenceState
           title="No cryptographic evidence yet"
           detail="Policy rules are defined and ready, but there is nothing to evaluate them against. Discover your cryptographic estate and every rule begins reporting real adherence."
@@ -462,7 +469,7 @@ export default function QuantumGovernanceCenter() {
             Cryptographic control status
           </SectionLabel>
           <CoverageBar
-            compliant={controls.rows.length ? data.controls.filter((control) => control.status === 'compliant').length : 0}
+            compliant={data.controls.filter((control) => control.status === 'compliant').length}
             partial={data.controls.filter((control) => control.status === 'partial').length}
             failing={data.controls.filter((control) => control.status === 'non-compliant').length}
             unassessed={data.controls.filter((control) => control.status === 'not-assessed').length}
@@ -592,7 +599,7 @@ export default function QuantumGovernanceCenter() {
               Close
             </button>
           </div>
-          {violations.loading && !violations.rows.length ? (
+          {violations.error ? <GovernanceError message={violations.error} onRetry={violations.retry} /> : violations.loading && !violations.rows.length ? (
             <GovernanceSkeleton rows={4} height={36} />
           ) : violations.rows.length ? (
             <>
@@ -644,7 +651,7 @@ export default function QuantumGovernanceCenter() {
         >
           Cryptographic controls
         </SectionLabel>
-        {controls.loading && !controls.rows.length ? (
+        {controls.error ? <GovernanceError message={controls.error} onRetry={controls.retry} /> : controls.loading && !controls.rows.length ? (
           <GovernanceSkeleton rows={5} height={38} />
         ) : controls.rows.length ? (
           <>
@@ -710,7 +717,7 @@ export default function QuantumGovernanceCenter() {
         >
           Risk governance
         </SectionLabel>
-        {gaps.loading && !gaps.rows.length ? (
+        {gaps.error ? <GovernanceError message={gaps.error} onRetry={gaps.retry} /> : gaps.loading && !gaps.rows.length ? (
           <GovernanceSkeleton rows={3} height={110} />
         ) : gaps.rows.length ? (
           <div className="grid gap-2.5 lg:grid-cols-2">

@@ -19,7 +19,7 @@
 
 import { CONTROL_CATALOG, FRAMEWORKS_BY_CONTROL, REQUIREMENTS_BY_CONTROL } from './catalog'
 import { looksLikeFailure } from './audit'
-import { severityOrder } from './policy'
+import { policyViolations, severityOrder } from './policy'
 import {
   ALGORITHM_FAMILY_LABEL,
   assetIsInternetFacing,
@@ -208,7 +208,7 @@ function fromPolicies(
   const population = measurable.reduce((sum, policy) => sum + policy.evaluated, 0)
   const failing: ControlSubject[] = []
   for (const policy of measurable) {
-    for (const item of policy.violationSample) {
+    for (const item of policyViolations(policy)) {
       failing.push({
         id: item.id,
         label: item.subject,
@@ -223,8 +223,7 @@ function fromPolicies(
       })
     }
   }
-  const violations = measurable.reduce((sum, policy) => sum + policy.violations, 0)
-  const satisfied = Math.max(0, population - violations)
+  const satisfied = measurable.reduce((sum, policy) => sum + policy.compliantSubjects, 0)
   const worstSeverity = measurable.reduce<GovernanceSeverity>(
     (worst, policy) => (policy.violations > 0 && severityOrder(policy.severity) > severityOrder(worst) ? policy.severity : worst),
     'low',
@@ -237,7 +236,7 @@ function fromPolicies(
     passing: [],
     basis: measurable.map((policy) => policy.basis).join(' '),
     lastValidatedAt: newest(...measurable.map((policy) => policy.lastEvaluatedAt)),
-    severityFloor: violations > 0 ? worstSeverity : undefined,
+    severityFloor: failing.length > 0 ? worstSeverity : undefined,
   }
 }
 
@@ -1304,8 +1303,8 @@ function exceptionFor(definition: ControlDefinition, assessments: Row[] | null, 
  * excluded from the aggregate score — but the exception itself becomes a
  * governed object (CTL-GOV-02), so scoping something out is never free.
  */
-export function evaluateControls(inputs: ControlEvaluationInputs): ControlRecord[] {
-  return CONTROL_CATALOG.map((definition) => {
+export function evaluateControls(inputs: ControlEvaluationInputs, applicable?: ReadonlySet<string>): ControlRecord[] {
+  return CONTROL_CATALOG.filter((definition) => !applicable || applicable.has(definition.evaluator)).map((definition) => {
     const evaluator = EVALUATORS[definition.evaluator]
     const evaluation: Evaluation = evaluator
       ? evaluator(inputs)

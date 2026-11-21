@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { matchPath, useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import { LEGAL_PAGES } from '@/lib/site-identity';
 import './site-footer.css';
 
@@ -56,6 +56,8 @@ export function SiteFooter({ children }: { children?: ReactNode }) {
               <img src="/NEW_LOGO.png" width="44" height="44" alt="" loading="lazy" />
               <span>Qguard Helix</span>
             </a>
+            <p className="site-footer__tagline"><em>Quantum Cyber Defense &amp; Post-Quantum Security Platform</em></p>
+            <p className="site-footer__description">Securing today's digital infrastructure while preparing organizations for the quantum era.</p>
             {children}
           </div>
           <nav className="site-footer__links" aria-label="Footer navigation">
@@ -81,11 +83,4 @@ export function SiteFooter({ children }: { children?: ReactNode }) {
       </div>
     </footer>
   );
-}
-
-export function RouteFooter() {
-  const { pathname } = useLocation();
-  // These shells place the same footer inside their own scrolling content.
-  if (pathname === '/' || (!websiteOnly && matchPath('/dashboard/*', pathname))) return null;
-  return <SiteFooter />;
 }

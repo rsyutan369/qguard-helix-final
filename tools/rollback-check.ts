@@ -76,7 +76,7 @@ assert(
   'the agent claim path calls the snapshot gate before dispatching a job',
 )
 assert(
-  /if \(!snapshot\.ok\) \{[\s\S]*?\n {6}continue\n {4}\}/.test(scannerSrc),
+  /if \(!snapshot\.ok\) \{[\s\S]*?\r?\n {6}continue\r?\n {4}\}/.test(scannerSrc),
   'a job whose snapshot could not be created is NOT dispatched',
 )
 
@@ -261,7 +261,10 @@ assert(!isPassingValidation('validation_failed'), '"validation_failed" is NOT a 
 assert(!isPassingValidation('unvalidated') && !isPassingValidation('pending') && !isPassingValidation(''), 'unvalidated / pending / empty are not passes')
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const job = (over: Record<string, unknown>) => ({ isSandbox: false, status: 'completed', validationStatus: 'passed', jobType: 'key_rotation', logs: [], ...over }) as any
+const job = (over: Record<string, unknown>) => ({
+  isSandbox: false, status: 'completed', executionBacked: true, validationCount: 1,
+  validationStatus: 'passed', validationEvidenceStatus: 'passed', jobType: 'key_rotation', logs: [], ...over,
+}) as any
 const claimRow = { event_type: 'agent-job-claimed', metric_type: 'key_rotation', message: 'QGuard agent claimed ML-KEM-768 key envelope migration' }
 
 const claimOnly = buildLiveTelemetry([job({ status: 'running', validationStatus: 'pending' })], [claimRow, claimRow])
@@ -271,8 +274,10 @@ assert(claimOnly.certificateReplacements === 0 && claimOnly.tlsHandshakeEvents =
 const done = buildLiveTelemetry([job({})], [claimRow, claimRow, claimRow])
 assert(done.keyRotations === 1, 'a completed + validated key rotation counts ONCE, however many rows mention it', `${done.keyRotations}`)
 
-const failedValidation = buildLiveTelemetry([job({ validationStatus: 'validation_failed' })], [])
+const failedValidation = buildLiveTelemetry([job({ validationStatus: 'validation_failed', validationEvidenceStatus: 'validation_failed' })], [])
 assert(failedValidation.keyRotations === 0, 'a completion whose validation FAILED is not counted')
+const unverified = buildLiveTelemetry([job({ validationCount: 0, validationEvidenceStatus: undefined })], [])
+assert(unverified.keyRotations === 0 && unverified.pqcValidationEvents === 0, 'completion metadata alone cannot count as recorded validation')
 
 const sim = buildLiveTelemetry([job({ isSandbox: true })], [])
 assert(sim.keyRotations === 0, 'a sandbox simulation is never counted as a real operation')

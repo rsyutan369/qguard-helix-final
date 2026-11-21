@@ -17,6 +17,7 @@ import tls from 'node:tls'
 import net from 'node:net'
 import crypto from 'node:crypto'
 import { safeLookup } from '../safe-dns'
+import { requestPublicWebResource } from '../public-http'
 import type { CertificateInfo } from '../../web-scanner/types'
 import { parseCertificateFromPeer } from '../../web-scanner/certificate-parser'
 import {
@@ -268,7 +269,7 @@ interface CertProbe {
   error: string | null
 }
 
-function probeCertificate(host: string, port: number): Promise<CertProbe> {
+function probeCertificate(host: string, port: number, signal?: AbortSignal): Promise<CertProbe> {
   return new Promise((resolve) => {
     let settled = false
     let ocspStapled = false
@@ -291,6 +292,7 @@ function probeCertificate(host: string, port: number): Promise<CertProbe> {
       port,
       servername: net.isIP(host) ? undefined : host,
       lookup: safeLookup,
+      signal,
       // nosemgrep: bypass-tls-verification -- assessment probe, not a client.
       // An assessment must be able to READ expired, self-signed and untrusted
       // chains; refusing them would report "Not observable" for properties that
@@ -351,6 +353,7 @@ export type OcspResponderState = 'reachable' | 'unreachable' | 'not-advertised' 
  */
 async function probeOcspResponder(
   uri: string | null,
+  signal?: AbortSignal,
 ): Promise<{ state: OcspResponderState; detail: string; statusCode: number | null }> {
   if (!uri) return { state: 'not-advertised', detail: 'No OCSP responder in the certificate', statusCode: null }
 
@@ -364,14 +367,12 @@ async function probeOcspResponder(
     return { state: 'not-probed', detail: `Unsupported responder scheme ${parsed.protocol}`, statusCode: null }
   }
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), OCSP_PROBE_TIMEOUT_MS)
   try {
-    const response = await fetch(parsed.toString(), {
+    const response = await requestPublicWebResource(parsed.href, {
       method: 'GET',
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: { accept: 'application/ocsp-response' },
+      accept: 'application/ocsp-response',
+      timeoutMs: OCSP_PROBE_TIMEOUT_MS,
+      signal,
     })
     // Any HTTP answer proves the responder is serving. RFC 6960 responders
     // routinely return 400 for a GET with no encoded request — that is the
@@ -381,11 +382,8 @@ async function probeOcspResponder(
       detail: `Responder answered HTTP ${response.status}`,
       statusCode: response.status,
     }
-  } catch (err) {
-    const reason = (err as Error).name === 'AbortError' ? 'timed out' : (err as Error).message
-    return { state: 'unreachable', detail: `Responder did not answer (${reason})`, statusCode: null }
-  } finally {
-    clearTimeout(timer)
+  } catch {
+    return { state: 'unreachable', detail: 'No response was collected from a permitted public responder.', statusCode: null }
   }
 }
 
@@ -395,6 +393,7 @@ export async function runCertificateEngine(
   host: string,
   port: number,
   onObservation?: ObservationSink,
+  signal?: AbortSignal,
 ): Promise<EngineResult<CertificateIntelligence>> {
   return runEngine('certificate-intelligence', emptyCertificate(), async () => {
     const evidence: Evidence[] = []
@@ -405,8 +404,8 @@ export async function runCertificateEngine(
     // attempt loses the chain entirely, which would down-rank issuer, OCSP, CT
     // and lifetime to Unknown for reasons unrelated to the target's posture.
     const probe = await retryTransient(
-      () => probeCertificate(host, port),
-      (value) => value.peer !== null,
+      () => probeCertificate(host, port, signal),
+      (value) => value.peer !== null || Boolean(signal?.aborted),
       350,
     )
 
@@ -552,7 +551,7 @@ export async function runCertificateEngine(
 
     // Live responder liveness — a real request, made only when the certificate
     // actually advertises a responder.
-    const responder = await probeOcspResponder(data.ocspUri)
+    const responder = await probeOcspResponder(data.ocspUri, signal)
     data.ocspResponderState = responder.state
     data.ocspResponderDetail = responder.detail
     evidence.push({

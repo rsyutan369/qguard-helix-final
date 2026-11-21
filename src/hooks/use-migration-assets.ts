@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { supabase } from '@/lib/supabase';
+import type { HandoffReview } from '@/lib/migration/planner-progress';
 
 /**
  * useMigrationAssets — the asset-centric layer of the Migration Planner.
@@ -24,6 +25,7 @@ import { supabase } from '@/lib/supabase';
 /* ------------------------------------------------------------------ */
 
 export type Posture = 'pqc' | 'hybrid' | 'vulnerable';
+export type MigrationReservation = 'submitted' | 'in-execution' | null;
 
 export interface AssetSummaryRecord {
   id: string;
@@ -56,6 +58,7 @@ export interface AssetSummaryRecord {
   blastRadius: number;
   successProbabilityPct: number;
   queued: boolean;
+  reservation?: MigrationReservation;
   tags: string[];
   lastEvidenceAt: string | null;
 }
@@ -127,6 +130,7 @@ export interface PortfolioSummary {
 }
 
 export interface QueueEntry {
+  reservation?: MigrationReservation;
   sequence: number;
   assetId: string;
   name: string;
@@ -164,7 +168,7 @@ export const DEFAULT_ASSET_FILTERS: AssetFilters = {
   environment: 'all',
   priority: 'all',
   status: 'all',
-  sort: 'priority',
+  sort: 'name',
 };
 
 interface PortfolioResponse {
@@ -251,6 +255,7 @@ export function useMigrationAssets(streamVerifiedAt: string | null) {
   const [dossierError, setDossierError] = useState<string | null>(null);
   const [queueError, setQueueError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const actionPending = useRef(false);
 
   const dossierRef = useRef<AssetDossier | null>(null);
   const selectedRef = useRef<string | null>(null);
@@ -357,6 +362,8 @@ export function useMigrationAssets(streamVerifiedAt: string | null) {
 
   const mutateQueue = useCallback(
     async (label: string, run: () => Promise<unknown>) => {
+      if (actionPending.current) return;
+      actionPending.current = true;
       setBusy(label);
       setError(null);
       try {
@@ -369,11 +376,13 @@ export function useMigrationAssets(streamVerifiedAt: string | null) {
         await Promise.all([loadPortfolio(), selectedRef.current && loadDossier(selectedRef.current, { silent: true })]);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Queue update failed');
+        await loadQueue();
       } finally {
+        actionPending.current = false;
         setBusy(null);
       }
     },
-    [loadDossier, loadPortfolio],
+    [loadDossier, loadPortfolio, loadQueue],
   );
 
   const enqueue = useCallback(
@@ -402,59 +411,35 @@ export function useMigrationAssets(streamVerifiedAt: string | null) {
    * returns the Live Migration deep link.
    */
   const sendToLiveMigration = useCallback(
-    async (assets: Array<Pick<AssetSummaryRecord, 'id' | 'name' | 'type' | 'environment' | 'owner' | 'riskScore' | 'priority'>>, targetByAsset: Record<string, string> = {}, action: 'start' | 'sandbox' = 'start', approvalPlanId?: string) => {
+    async (approvalPlanId: string, assetIds: string[], handoffReview: HandoffReview) => {
       if (!token) throw new Error('Authentication required');
-      if (!assets.length) throw new Error('Select at least one asset to migrate.');
-      setBusy(action === 'start' ? 'dispatch' : 'sandbox');
+      if (!approvalPlanId || !assetIds.length) throw new Error('Choose an approved proposal with assets in scope.');
+      if (actionPending.current) throw new Error('Another migration action is in progress.');
+      actionPending.current = true;
+      setBusy('dispatch');
       setError(null);
       try {
-        const planId = `planner-asset-${crypto.randomUUID()}`;
         const response = await fetch('/api/v1/migration/planner/create', {
           method: 'POST',
           headers: authHeaders,
-          body: JSON.stringify({
-            action,
-            approvalPlanId,
-            planId,
-            limit: Math.max(1, assets.length),
-            assetIds: assets.map((a) => a.id),
-            selectedAssets: assets.map((a) => ({
-              assetId: a.id,
-              id: a.id,
-              name: a.name,
-              type: a.type,
-              environment: a.environment,
-              owner: a.owner,
-              risk: a.riskScore,
-              priority: a.priority,
-              targetSolution: targetByAsset[a.id] || undefined,
-              status: 'Planned',
-            })),
-            configuration: {
-              deploymentStrategy: 'Staged Rollout',
-              controls: { rollback: true, validation: true, compatibility: true, hybridMode: true, continuousMonitoring: true, complianceValidation: true },
-              notes: 'Dispatched from the Migration Planner asset workspace.',
-            },
-          }),
+          body: JSON.stringify({ action: 'start', approvalPlanId, assetIds, handoffReview }),
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload?.error?.message || 'Failed to hand off to Live Migration');
-        const createdPlanId = payload?.data?.plan?.id || planId;
+        const createdPlanId = payload?.data?.planId;
+        if (!createdPlanId) throw new Error('Live Migration did not return a plan identifier.');
 
         // Stamp the authoritative, server-derived migration context onto the plan
         // so Live Migration loads the same intelligence the planner displayed.
-        if (action === 'start') await request(`/plans/${encodeURIComponent(createdPlanId)}/context`, {
+        await request(`/plans/${encodeURIComponent(createdPlanId)}/context`, {
           method: 'POST',
-          body: JSON.stringify({ assetIds: assets.map((a) => a.id) }),
+          body: JSON.stringify({ assetIds }),
         }).catch(() => undefined);
 
         await Promise.all([loadPortfolio(), loadQueue()]);
-        return {
-          planId: createdPlanId,
-          liveMigrationUrl: payload?.data?.plan?.liveMigrationUrl || `/dashboard/live-migration?planId=${encodeURIComponent(createdPlanId)}`,
-          sandboxUrl: payload?.data?.sandboxUrl || `/dashboard/migration-sandbox?planId=${encodeURIComponent(createdPlanId)}`,
-        };
+        return { planId: createdPlanId };
       } finally {
+        actionPending.current = false;
         setBusy(null);
       }
     },

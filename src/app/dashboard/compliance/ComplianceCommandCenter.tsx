@@ -82,8 +82,21 @@ import {
   type ControlSummary,
 } from '@/hooks/use-governance';
 import type { AssetComplianceRecord, ControlStatus, GovernanceGap } from '@/lib/governance/types';
+import type { ComplianceAssetOption } from '@/lib/governance/asset-scope';
+import { ComplianceAssetPicker, SelectedAssetCompliance } from './ComplianceAssetScope';
 
 export default function ComplianceCommandCenter() {
+  const [selected, setSelected] = useState<ComplianceAssetOption[]>([]);
+  const picker = <ComplianceAssetPicker selected={selected} onApply={setSelected} />;
+  const ids = selected.map((asset) => asset.id);
+  return ids.length > 0
+    ? <SelectedAssetCompliance key={[...ids].sort().join(',')} assetIds={ids} picker={picker} />
+    : <OrganizationCompliance picker={picker} onSelectAsset={(asset) => setSelected([{
+        id: asset.assetId, name: asset.name, environment: asset.environment, owner: asset.owner, type: asset.type, lifecycle: 'Unrecorded',
+      }])} />;
+}
+
+function OrganizationCompliance({ picker, onSelectAsset }: { picker: React.ReactNode; onSelectAsset: (asset: AssetComplianceRecord) => void }) {
   const { data, state, error, live, lastSyncedAt, revision, refresh, reconnect } = useComplianceCommandCenter();
   const { filters, setFilter, reset, activeCount } = useGovernanceFilters();
   const [target, setTarget] = useState<DrawerTarget>(null);
@@ -184,6 +197,7 @@ export default function ComplianceCommandCenter() {
           accent="Command Center"
           subtitle="Evaluating cryptographic controls against your tenant evidence…"
         />
+        {picker}
         <ScoreSkeleton />
         <GovernanceSkeleton rows={4} height={110} />
       </div>
@@ -195,6 +209,7 @@ export default function ComplianceCommandCenter() {
       <div className={GOV_SHELL_CLASS}>
         <style>{GOV_SHELL_CSS}</style>
         <GovernanceHeader icon={ClipboardCheck} title="Compliance" accent="Command Center" subtitle="Control coverage, gaps and the evidence behind each status." />
+        {picker}
         <GovernanceError message={error || 'The governance model could not be computed.'} onRetry={reconnect} />
       </div>
     );
@@ -235,10 +250,18 @@ export default function ComplianceCommandCenter() {
       />
 
       <GovernanceModuleNav />
+      {picker}
 
+      {error ? <GovernanceError message={error} onRetry={reconnect} /> : null}
       {data.stale && data.staleSinceHours !== null ? <StaleBanner hours={data.staleSinceHours} onRefresh={() => void refresh(true)} /> : null}
 
-      {!data.hasData ? (
+      {(data.telemetry.absentSources.length > 0 || data.telemetry.truncated) && (
+        <div role="status" className="rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-card-bg-strong)] px-4 py-3 text-sm">
+          <strong>Evidence coverage is limited.</strong> Review the source coverage below before interpreting these results.
+        </div>
+      )}
+
+      {!data.hasData && data.telemetry.absentSources.length === 0 ? (
         <NoEvidenceState
           title="No compliance evidence yet"
           detail="Compliance status is derived from your own cryptographic estate. Run a discovery scan or connect a collector, and every control that gains evidence moves from “Not assessed” into scope automatically."
@@ -301,7 +324,7 @@ export default function ComplianceCommandCenter() {
         <CountTile
           label="Policy violations"
           value={totals.policyViolations}
-          detail={`${totals.policiesEnforced} of ${totals.policies} rules active`}
+          detail={`${totals.policiesEnforced} of ${totals.policies} rules enforced`}
           tone={totals.criticalPolicyViolations > 0 ? 'critical' : totals.policyViolations > 0 ? 'warning' : 'good'}
           onOpen={() => setTarget(null)}
           hint="Subject-level violations of the cryptographic policy rules. Manage the rules on Quantum Governance."
@@ -446,7 +469,7 @@ export default function ComplianceCommandCenter() {
         >
           Control inventory
         </SectionLabel>
-        {controls.loading && !controls.rows.length ? (
+        {controls.error ? <GovernanceError message={controls.error} onRetry={controls.retry} /> : controls.loading && !controls.rows.length ? (
           <GovernanceSkeleton rows={5} height={40} />
         ) : controls.rows.length ? (
           <>
@@ -524,7 +547,7 @@ export default function ComplianceCommandCenter() {
         >
           Compliance gap analysis
         </SectionLabel>
-        {gaps.loading && !gaps.rows.length ? (
+        {gaps.error ? <GovernanceError message={gaps.error} onRetry={gaps.retry} /> : gaps.loading && !gaps.rows.length ? (
           <GovernanceSkeleton rows={3} height={120} />
         ) : gaps.rows.length ? (
           <>
@@ -615,7 +638,7 @@ export default function ComplianceCommandCenter() {
         >
           Asset compliance
         </SectionLabel>
-        {assets.loading && !assets.rows.length ? (
+        {assets.error ? <GovernanceError message={assets.error} onRetry={assets.retry} /> : assets.loading && !assets.rows.length ? (
           <GovernanceSkeleton rows={4} height={38} />
         ) : assets.rows.length ? (
           <>
@@ -645,6 +668,10 @@ export default function ComplianceCommandCenter() {
                         {asset.type} · {asset.environment}
                         {asset.internetFacing ? ' · internet-facing' : ''}
                       </div>
+                      <button type="button" className="mt-1 text-xs font-semibold underline" onClick={(event) => {
+                        event.stopPropagation();
+                        onSelectAsset(asset);
+                      }}>Assess this asset</button>
                     </Td>
                     <Td className={asset.owner === 'Unassigned' ? 'text-white/30' : 'text-white/65'}>{asset.owner}</Td>
                     <Td>

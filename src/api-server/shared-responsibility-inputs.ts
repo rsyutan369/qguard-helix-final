@@ -1,4 +1,5 @@
 import type { OwnershipFindingInput } from '@/lib/shared-responsibility'
+import { normaliseAsset } from '@/lib/estate/model'
 
 /**
  * Shared ownership-input adapter.
@@ -16,36 +17,34 @@ const recordOf = (v: unknown): Record<string, unknown> =>
   v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
 
 export interface AssetContext {
+  name?: string
+  owner?: string | null
   type?: string
   environment?: string
   provider?: string
   host?: string
 }
 
-/** Index scanner-intelligence assets by name + id for finding enrichment. */
+/** Index authoritative scanner asset IDs for finding enrichment. */
 export function buildAssetIndex(intel: unknown): Map<string, AssetContext> {
   const index = new Map<string, AssetContext>()
   const assets = (recordOf(recordOf(intel).assets).assets as unknown[]) || []
   for (const raw of assets) {
     const a = recordOf(raw)
     const meta = recordOf(a.metadata)
+    const asset = normaliseAsset({ ...a, service_owner: a.serviceOwner })
     const ctx: AssetContext = {
-      type: str(a.type) || undefined,
-      environment: str(meta.environment) || str(meta.env) || str(a.region) || str(meta.region) || undefined,
+      name: asset.name,
+      owner: asset.owner,
+      type: asset.type.replace(/_/g, '-') || undefined,
+      environment: asset.environmentRaw || undefined,
       provider: str(meta.provider) || str(meta.cloud_provider) || str(meta.cloud) || undefined,
       host: str(a.url) || str(a.domain) || str(meta.authorized_target) || str(a.name) || undefined,
     }
-    const name = str(a.name).toLowerCase()
-    if (name) index.set(name, ctx)
-    const id = str(a.id).toLowerCase()
+    const id = str(a.id)
     if (id) index.set(id, ctx)
   }
   return index
-}
-
-/** Strip a trailing :port so a finding location matches an asset name. */
-export function assetKeyFromLocation(location: string): string {
-  return location.toLowerCase().trim().replace(/:\d+$/, '')
 }
 
 const HNDL_RE = /hndl|harvest|long[-\s]?lived|store now/i
@@ -55,7 +54,9 @@ const HNDL_RE = /hndl|harvest|long[-\s]?lived|store now/i
  * fallback) into ownership inputs. `intel` is the raw buildScannerIntelligence
  * result; `snapshotLike` need only carry `criticalFindings` for the fallback.
  */
-export function buildOwnershipInputs(intel: unknown, snapshotLike: unknown, limit = 1500): OwnershipFindingInput[] {
+export const OWNERSHIP_INPUT_LIMIT = 1500
+
+export function buildOwnershipInputs(intel: unknown, snapshotLike: unknown, limit = OWNERSHIP_INPUT_LIMIT): OwnershipFindingInput[] {
   const assetIndex = buildAssetIndex(intel)
   const inputs: OwnershipFindingInput[] = []
   const seen = new Set<string>()
@@ -70,7 +71,9 @@ export function buildOwnershipInputs(intel: unknown, snapshotLike: unknown, limi
   for (const raw of findings) {
     const f = recordOf(raw)
     const location = str(f.location)
-    const asset = assetIndex.get(assetKeyFromLocation(location)) || assetIndex.get(location.toLowerCase()) || {}
+    const ids = Array.isArray(f.assetIds) ? [...new Set(f.assetIds.filter((id): id is string => typeof id === 'string' && Boolean(id)))] : []
+    const assetId = ids.length === 1 ? ids[0] : ids.length === 0 ? str(f.assetId) : ''
+    const asset = assetIndex.get(assetId)
     const description = str(f.description)
     push({
       id: str(f.id) || `finding-${inputs.length}`,
@@ -79,11 +82,14 @@ export function buildOwnershipInputs(intel: unknown, snapshotLike: unknown, limi
       algorithm: str(f.algorithm) || undefined,
       category: str(f.category) || undefined,
       location: location || undefined,
-      assetName: location || undefined,
-      assetType: asset.type,
-      environment: asset.environment,
-      provider: asset.provider,
-      host: asset.host || location || undefined,
+      assetId: asset ? assetId : undefined,
+      assetName: asset?.name || location || undefined,
+      assetOwner: asset?.owner || undefined,
+      assetType: asset?.type,
+      environment: asset?.environment,
+      provider: asset?.provider,
+      host: asset?.host || str(f.scanTarget) || location || undefined,
+      protocol: str(recordOf(f.raw).protocol) || undefined,
       severity: str(f.threatLevel) || 'medium',
       isHNDL: HNDL_RE.test(`${description} ${str(f.category)}`),
       detectionMethod: str(f.detectionMethod) || undefined,

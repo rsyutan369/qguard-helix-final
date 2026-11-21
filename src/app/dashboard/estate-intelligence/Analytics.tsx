@@ -50,7 +50,7 @@ function Heatmap({ heatmap }: { heatmap: EstateOverview['heatmap'] }) {
 /* ------------------------------------------------------------------ */
 
 const STATUS_STROKE: Record<string, string> = {
-  Validated: 'var(--qe-valid)', 'In flight': 'var(--qe-open)', 'Awaiting rescan': 'var(--qe-open)', 'Not started': '#94a3b8', Exceptions: '#dc2626',
+  Validated: 'var(--qe-valid)', 'In flight': 'var(--qe-open)', 'Awaiting evidence': 'var(--qe-open)', 'Not started': '#94a3b8', Exceptions: '#dc2626',
 }
 
 function Sankey({ sankey }: { sankey: EstateOverview['sankey'] }) {

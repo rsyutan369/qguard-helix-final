@@ -27,7 +27,7 @@ import { algorithmFamily } from '../src/lib/governance/subjects'
 import { buildAssetRegister, type AssetRegister } from '../src/lib/assets/asset-register'
 import { ASSET_REPORT_TEMPLATES, buildAssetReport, canonicalAssetReport, consolidateExposures } from '../src/services/reporting/AssetReport'
 import { sha3Hex } from '../src/services/reporting/ReportIntegrity'
-import { brandingSchema } from '../src/services/reporting/schemas/ReportSchema'
+import { ASSET_REPORT_LOGO_MAX_BYTES, assetReportLogoSchema, brandingSchema } from '../src/services/reporting/schemas/ReportSchema'
 import { exportDocument, DOCUMENT_FORMATS } from '../src/services/reporting/exporters/DocumentExporters'
 import type { InventoryReport } from '../src/services/reporting/InventoryReport'
 
@@ -45,6 +45,13 @@ const ok = (name: string, condition: boolean, detail = '') => check(detail ? `${
 const NOW = Date.parse('2026-09-25T06:00:00Z')
 const hoursAgo = (h: number) => new Date(NOW - h * 36e5).toISOString()
 const branding = brandingSchema.parse({ companyName: 'Acme Corp', reportOwner: 'CISO Office' })
+
+const maxLogo = Buffer.alloc(ASSET_REPORT_LOGO_MAX_BYTES).toString('base64')
+ok('report accepts a PNG at the logo size limit', assetReportLogoSchema.safeParse(`data:image/png;base64,${maxLogo}`).success)
+ok('report accepts a JPEG at the logo size limit', assetReportLogoSchema.safeParse(`data:image/jpeg;base64,${maxLogo}`).success)
+const oversizedLogo = Buffer.alloc(ASSET_REPORT_LOGO_MAX_BYTES + 1).toString('base64')
+ok('report rejects a logo one byte over the limit', !assetReportLogoSchema.safeParse(`data:image/png;base64,${oversizedLogo}`).success)
+ok('report rejects unsupported logo formats', !assetReportLogoSchema.safeParse('data:image/svg+xml;base64,AAAA').success)
 
 /* ------------------------------------------------------------------ */
 /* Fixture register                                                    */

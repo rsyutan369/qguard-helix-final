@@ -70,7 +70,8 @@ const SECTIONS: LegalSection[] = [
         </P>
         <P>
           <Term>Support and contact data.</Term> Your name, email, organisation and the message you send through the
-          contact page or by email.
+          contact page or by email. When you submit a demo request or checklist download form, we save the details
+          you provide and the submission time so the team can manage requests and follow up as described on the form.
         </P>
         <P>
           <Term>Technical logs.</Term> Server logs needed to operate and debug the Service, such as request paths, error

@@ -6,11 +6,11 @@ import type { FixCluster } from '@/lib/estate'
 import { useEstateFix, useEstateGraph, useQueueWave } from '@/hooks/use-estate-intelligence'
 import { ProgressBar, StatusLegend } from './FixPlan'
 
-export function Campaigns({ clusters, fixId, setFixId }: { clusters: FixCluster[]; fixId: string | null; setFixId: (id: string) => void }) {
+export function Campaigns({ clusters, revision, fixId, setFixId, onQueued }: { clusters: FixCluster[]; revision: string; fixId: string | null; setFixId: (id: string) => void; onQueued: () => void }) {
   const selected = clusters.find((c) => c.id === fixId) ?? clusters[0] ?? null
   const id = selected?.id ?? null
-  const detail = useEstateFix(id, { offset: 0, limit: 1, status: 'all', q: '' })
-  const pipeline = useEstateGraph('campaign', id ? `fix:${id}` : null)
+  const detail = useEstateFix(id, { offset: 0, limit: 1, status: 'all', q: '' }, revision)
+  const pipeline = useEstateGraph('campaign', id ? `fix:${id}` : null, revision)
   const queueWave = useQueueWave()
   const [confirming, setConfirming] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
@@ -18,17 +18,17 @@ export function Campaigns({ clusters, fixId, setFixId }: { clusters: FixCluster[
 
   if (!selected) return <p className="p-8 text-center text-[13px] text-slate-500">No open fixes — there is no campaign to plan.</p>
   const campaign = detail.data?.campaign
+  const waveCurrent = detail.data?.revision === revision && detail.state !== 'error' && !detail.refreshing
 
   const queue = async (waveIndex: number) => {
     const wave = campaign?.waves.find((w) => w.index === waveIndex)
-    if (!wave) return
+    if (!wave?.ready || busy || !waveCurrent) return
     setBusy(true)
     setResult(null)
     try {
-      await queueWave(wave.assetIds)
-      setResult({ tone: 'ok', text: `${wave.label}: ${wave.assets} asset(s) added to the Migration Planner queue. Approve and execute them there; this campaign updates as jobs run and rescans validate them.` })
-      void detail.refresh(true)
-      void pipeline.refresh(true)
+      const confirmed = await queueWave(wave.assetIds)
+      setResult({ tone: 'ok', text: `${confirmed} of ${wave.assets} assets confirmed in the Migration Planner queue. Submit them for approval in Migration Planner.` })
+      onQueued()
     } catch (error) {
       setResult({ tone: 'error', text: (error as Error).message })
     } finally {
@@ -74,9 +74,10 @@ export function Campaigns({ clusters, fixId, setFixId }: { clusters: FixCluster[
             {result.text} {result.tone === 'ok' && <a href="/dashboard/migration-planner" className="font-semibold underline">Open Migration Planner</a>}
           </p>
         )}
-        {!campaign && <p className="text-[12px] text-slate-500">Loading waves…</p>}
+        {detail.state === 'error' && <p role="alert" className="text-[12px] text-red-400">Could not refresh rollout waves. <button type="button" className="underline" onClick={() => void detail.refresh()}>Retry</button></p>}
+        {detail.state !== 'error' && !campaign && <p className="text-[12px] text-slate-500">Loading waves…</p>}
         {campaign && campaign.waves.length === 0 && (
-          <p className="flex items-center gap-2 text-[13px] text-slate-400"><CheckCircle2 className="h-4 w-4 text-emerald-400" />Every asset in scope already has a migration job. Track them in the pipeline above.</p>
+          <p className="flex items-center gap-2 text-[13px] text-slate-400"><CheckCircle2 className="h-4 w-4 text-emerald-400" />No assets are ready to queue. Track their current status in the pipeline above.</p>
         )}
         <ol className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
           {campaign?.waves.slice(0, 12).map((wave) => (
@@ -99,7 +100,7 @@ export function Campaigns({ clusters, fixId, setFixId }: { clusters: FixCluster[
                 <div className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 p-2.5 text-[11px] text-amber-200">
                   Adds {wave.assets} asset(s) to your Migration Planner queue (it holds up to 200). Nothing runs until a plan is approved there.
                   <div className="mt-2 flex gap-2">
-                    <button type="button" disabled={busy} onClick={() => void queue(wave.index)} className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 font-semibold text-white disabled:opacity-60">
+                    <button type="button" disabled={busy || !waveCurrent || !wave.ready} onClick={() => void queue(wave.index)} className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 font-semibold text-white disabled:opacity-60">
                       {busy && <Loader2 className="h-3 w-3 animate-spin" />} Confirm
                     </button>
                     <button type="button" disabled={busy} onClick={() => setConfirming(null)} className="rounded-md border border-white/15 px-2.5 py-1 text-slate-200">Cancel</button>

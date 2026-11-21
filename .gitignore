@@ -10,6 +10,16 @@ coverage/
 !.env.example
 .report-smoke/
 
+# Local credential and signing files.
+.aws/credentials
+.npmrc
+client_secret_*.json
+*.p12
+*.pfx
+*.jks
+*.keystore
+key.properties
+
 # Generated media, downloaded tool dependencies, and one-off QA snapshots.
 /output/
 /.local-ci-tools/
@@ -27,6 +37,10 @@ tools/qguard-agent/dist/
 .codex-logs/
 .playwright-cli/
 *.dmp
+**/Default/Network/Cookies*
+**/Default/Login Data*
+**/Default/Local Storage/
+**/Default/Session Storage/
 
 # Deployment secrets rendered for kubectl / local testing
 deploy/**/*.env

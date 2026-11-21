@@ -60,32 +60,30 @@ forgotten.
 | `API_JSON_LIMIT` / `API_PUBLIC_JSON_LIMIT` | unset (`80mb` / `256kb`) | Body limits; the public endpoints use the small one |
 | `PUBLIC_SCAN_MAX_CONCURRENT` | `24` (code default `6`) | Public scans running at once in this pod. See *Public scanner capacity* below |
 | `PUBLIC_SCAN_MAX_QUEUE` | `500` | Visitors allowed to wait for a slot; each is told their place and an estimated wait |
-| `PUBLIC_SCAN_MAX_ACTIVE_PER_CLIENT` | `3` | Scans one client may hold **while others wait**; not applied when a slot is free |
-| `PUBLIC_SCAN_RATE_LIMIT_PER_MINUTE` | `5` | NEW scans one client may start per minute. Cached results, joining a scan already running, and refusals are not charged |
+| `PUBLIC_SCAN_MAX_ACTIVE_PER_CLIENT` | `3` | Coordinator fairness setting. The database allows only one outstanding Public Scan per account across all replicas |
+| `PUBLIC_SCAN_RATE_LIMIT_PER_MINUTE` | `5` | Valid-target scan requests per account per minute. This throttle is separate from the daily allowance |
 | `APP_VERSION`, `GIT_SHA` | baked into the image by CI | Reported in `/readyz` and every log line |
 
 ## Public scanner capacity
 
-`/public-scan` is anonymous, so its capacity is set per pod by the four
-`PUBLIC_SCAN_*` variables above. How a request is handled, in order:
+The landing page is public. `GET /api/v1/public-scan/usage`, `POST /api/v1/public-scan`,
+and `POST /api/v1/public-scan/stream` require an Authorization Bearer token from
+the same Supabase project used by the website. The API uses the project URL and
+anon key to verify users, and its server-only service role to manage usage.
 
-1. **Cache.** A result for the same `host:port` from the last 45 s (stream) or
-   10 min (JSON API) is served at once. It is never refused and never charged.
-2. **Join.** If that site is already queued or being scanned, the visitor
-   watches the same scan (`scan-shared`), replayed from where it is. One scan,
-   any number of viewers. Never charged.
-3. **Rate limit.** Otherwise the client must be under its per-minute limit.
-4. **Start or wait.** A free slot starts the scan; otherwise the visitor joins a
-   FIFO line (`scan-queued` with position and estimate, updated as it moves).
-   A client already holding `PUBLIC_SCAN_MAX_ACTIVE_PER_CLIENT` scans, or a full
-   line, is refused **with the reason and a retry time** (`scan-refused`).
-5. **Stop.** A visitor who closes the page releases their place after a 4 s
-   grace period (a reload keeps it). A running scan nobody is watching is
-   aborted, so its slot goes to someone still waiting.
-
-Refusals arrive inside the event stream, because a browser `EventSource`
-cannot read the body of a non-200 response. They used to surface as
-"Connection to the assessment service was lost" whatever the cause.
+1. Authentication and request limits run before scanner admission. The API accepts
+   a JSON object with one target, capped at 1 KiB, and checks the destination.
+2. The quota RPC reserves one scan per account across API replicas. A newly
+   completed reachable assessment uses one credit. Cached results, rejected
+   requests, failures, and cancelled work leave the daily balance intact.
+3. The allowance is three per day, resets at midnight UTC, and counts successful
+   assessments against the day their reservation began.
+4. Equivalent targets share in-flight work per process. The scan stream reports queue
+   position and progress. A tab close releases its reservation. A running probe
+   without subscribers stops after its grace period. Timeout and crash recovery
+   expire unclaimed reservations.
+5. The streaming route returns pre-admission refusals as JSON with their HTTP
+   status. The browser reads SSE with bearer-authenticated fetch.
 
 **Measured basis** (2026-10-14, real scans of 24 large public sites, one Node
 process, a residential connection):
@@ -150,7 +148,7 @@ Template: `deploy/k8s/secrets.example.env` (names only).
 | `PAYPAL_CLIENT_ID`, `PAYPAL_SECRET_KEY`, `PAYPAL_ENV`, `PAYPAL_PLAN_*` (8) | For billing actions | Subscription revise/cancel from Settings |
 | `PAYPAL_RECONCILE_SECRET` | Optional | Enables `POST /api/v1/paypal/reconcile` (and the CronJob component) |
 | `PAYPAL_WEBHOOK_ID` | **Leave unset** | The live webhook is registered to the Edge Function; register exactly one receiver |
-| `SMTP_HOST`, `SMTP_PORT` (465), `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` (defaults to `SMTP_USER`) | For the Request Demo form | `POST /api/v1/demo-request` emails each request to `DEMO_REQUEST_TO` (default `info@qguardhelix.com`) with the visitor as Reply-To. Unset: the form returns 503 and tells visitors to email the inbox. Port 587 must offer STARTTLS. Limits: `DEMO_REQUEST_MAX_PER_CLIENT` (3 per 10 min), `DEMO_REQUEST_MAX_PER_HOUR` (60). Verify with `npm run check:demo-request` |
+| `SMTP_HOST`, `SMTP_PORT` (465), `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` (defaults to `SMTP_USER`) | For the Request Demo form | `POST /api/v1/demo-request` emails each request to `DEMO_REQUEST_TO` (default `info@qguardhelix.com`) with the visitor as Reply-To. Unset: requests are saved with email marked unconfigured. Port 587 must offer STARTTLS. Limits: `DEMO_REQUEST_MAX_PER_CLIENT` (3 per 10 min), `DEMO_REQUEST_MAX_PER_HOUR` (60). Verify with `npm run check:demo-request` |
 | `GOOGLE_PLAY_*`, `PLAY_RTDN_TOKEN` | Only for Android billing | RTDN URL: `https://api.qguardhelix.com/api/v1/play-billing/rtdn` |
 | `STRIPE_*` | No | Dormant code path |
 

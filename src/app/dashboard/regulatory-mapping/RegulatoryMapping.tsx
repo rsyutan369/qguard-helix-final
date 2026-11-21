@@ -202,9 +202,16 @@ export default function RegulatoryMapping() {
 
       <GovernanceModuleNav />
 
+      {error ? <GovernanceError message={error} onRetry={reconnect} /> : null}
       {data.stale && data.staleSinceHours !== null ? <StaleBanner hours={data.staleSinceHours} onRefresh={() => void refresh(true)} /> : null}
 
-      {!data.hasData ? (
+      {(data.telemetry.absentSources.length > 0 || data.telemetry.truncated) && (
+        <div role="status" className="rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-card-bg-strong)] px-4 py-3 text-sm">
+          <strong>Evidence coverage is limited.</strong> Review the source coverage below before interpreting these results.
+        </div>
+      )}
+
+      {!data.hasData && data.telemetry.absentSources.length === 0 ? (
         <NoEvidenceState
           title="No evidence to map yet"
           detail="The framework catalog is loaded and every requirement is mapped to platform controls. Those controls have nothing to evaluate until your estate is discovered."
@@ -389,7 +396,7 @@ export default function RegulatoryMapping() {
         >
           Requirement mapping
         </SectionLabel>
-        {requirements.loading && !requirements.rows.length ? (
+        {requirements.error ? <GovernanceError message={requirements.error} onRetry={requirements.retry} /> : requirements.loading && !requirements.rows.length ? (
           <GovernanceSkeleton rows={5} height={40} />
         ) : requirements.rows.length ? (
           <>
@@ -461,7 +468,7 @@ export default function RegulatoryMapping() {
         >
           Control mapping
         </SectionLabel>
-        {controls.loading && !controls.rows.length ? (
+        {controls.error ? <GovernanceError message={controls.error} onRetry={controls.retry} /> : controls.loading && !controls.rows.length ? (
           <GovernanceSkeleton rows={5} height={38} />
         ) : controls.rows.length ? (
           <>
@@ -525,7 +532,7 @@ export default function RegulatoryMapping() {
         >
           Stored attestations
         </SectionLabel>
-        {evidence.loading && !evidence.rows.length ? (
+        {evidence.error ? <GovernanceError message={evidence.error} onRetry={evidence.retry} /> : evidence.loading && !evidence.rows.length ? (
           <GovernanceSkeleton rows={4} height={38} />
         ) : evidence.rows.length ? (
           <>
@@ -573,7 +580,7 @@ export default function RegulatoryMapping() {
       </Panel>
 
       {/* ---- Regulatory gaps --------------------------------------------- */}
-      {gaps.rows.length ? (
+      {gaps.error ? <GovernanceError message={gaps.error} onRetry={gaps.retry} /> : gaps.rows.length ? (
         <Panel>
           <SectionLabel icon={Scale} meta={`${fmtNumber(gaps.total)} gaps`} hint="Gaps ordered by severity, each stating which frameworks it affects and what closing it changes.">
             Regulatory gaps

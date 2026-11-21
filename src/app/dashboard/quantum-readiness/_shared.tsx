@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { ChevronRight, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { downloadJsonFile, useLiveResource } from '@/hooks/use-live-resource';
+import { downloadJsonFile, useLiveResource, type LiveTransport } from '@/hooks/use-live-resource';
 import { riskBandFor } from '@/lib/migration/asset-intelligence';
 import { STALE_AFTER_HOURS as STALE_HOURS, assessmentAgeHours as ageHours, describeAge as ageLabel } from '@/lib/dashboard-freshness';
 import type { SharedResponsibilityIntelligence } from '@/lib/shared-responsibility';
@@ -858,6 +858,7 @@ export function QuantumReadinessShell({
   badge,
   actions,
   sseConnected,
+  transport,
   state,
   snapshot,
   error,
@@ -869,6 +870,7 @@ export function QuantumReadinessShell({
   badge?: ReactNode;
   actions?: ReactNode;
   sseConnected: boolean;
+  transport?: LiveTransport;
   state: LoadState;
   snapshot: QuantumReadinessSnapshot;
   error?: string | null;
@@ -951,7 +953,10 @@ export function QuantumReadinessShell({
             <span
               className={cn('h-2 w-2 rounded-full', sseConnected ? 'bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)]' : 'bg-amber-300 animate-pulse')}
             />
-            {sseConnected ? 'Live assessment stream connected' : state === 'error' ? 'Live stream unavailable — retrying' : 'Connecting live assessment stream'}
+            {sseConnected ? 'Live assessment stream connected' :
+              transport === 'polling' ? 'Refreshing by API while the live stream reconnects' :
+              transport === 'offline' || state === 'error' ? 'Assessment refresh unavailable. Retrying…' :
+              'Connecting live assessment stream'}
             {lastVerifiedAt ? <span className="text-white/30">· re-checked {relativeTime(lastVerifiedAt)}</span> : null}
           </span>
           <span>

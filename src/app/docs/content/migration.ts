@@ -71,6 +71,7 @@ export const migrationArticles: DocArticle[] = [
     keywords: ['responsibility matrix', 'migration blockers', 'upstream dependency', 'edge origin', 'migration waves'],
     sections: [
       { id: 'scores-and-scope', title: 'Read the ownership model', body: [
+        'Use Select an asset to scope findings, readiness estimates, blockers and the roadmap to that inventory record. The asset panel lists its accountable owner, recorded relationships, scan timestamps and recent migration jobs. Use View entire estate to restore the overall view.',
         'Overall, Customer, Provider and Ecosystem readiness are distinct views of classified findings. A slice with no attributed findings can be marked N/A. Readiness is interpreted from the available evidence.',
         'Ownership Distribution and Severity by Responsibility show who owns the change and how severe the grouped findings are. Edge and origin attribution can differ when a provider terminates HTTPS in front of your service. The edge observation alone leaves origin posture unknown.',
       ] },

@@ -1,12 +1,9 @@
 /**
  * QGuard Helix — Public API (the website's backend).
  *
- * The public website (src/PublicApp.tsx, static hosting) needs exactly two
- * server features: the free Web assessment and the Request Demo form. This app
- * mounts those two routers and nothing else — no authentication, no tenant
- * data, no Supabase, no platform scanners or schedulers — so it runs with no
- * database credentials and exposes the smallest possible surface. Any other
- * /api path answers 404.
+ * The public website needs free Web assessment and website submission intake.
+ * This app mounts those routes without exposing admin or tenant API reads.
+ * The form routes and authenticated scanner use server-side Supabase storage.
  *
  * It shares the HTTP baseline (HTTPS, security headers, CORS) with the full
  * platform API through runtime/http-baseline.ts. Entry:
@@ -18,6 +15,7 @@
 
 import express, { Router } from 'express'
 import demoRequestRoutes from './demo-request'
+import checklistRequestRoutes from './checklist-request'
 import publicScanRoutes from './public-scan'
 import { corsPolicy, enforceHttps, securityHeaders } from './runtime/http-baseline'
 import { buildInfo, isDraining, lifecycleSnapshot } from './runtime/lifecycle'
@@ -65,19 +63,19 @@ export function createPublicApiServer(): express.Express {
   // Ahead of the HTTPS redirect: platform health checks arrive over plain HTTP.
   app.use(publicHealthRoutes())
   app.use(enforceHttps)
-  // Both routes take small JSON documents only.
-  app.use(express.json({ limit: process.env.API_PUBLIC_JSON_LIMIT || '256kb' }))
   app.use(securityHeaders)
   app.use(corsPolicy)
 
   app.use('/api/v1/public-scan', publicScanRoutes)
+  app.use(express.json({ limit: process.env.API_PUBLIC_JSON_LIMIT || '256kb' }))
   app.use('/api/v1/demo-request', demoRequestRoutes)
+  app.use('/api/v1/checklist-request', checklistRequestRoutes)
 
   app.use((_req, res) => {
     res.status(404).json({
       error: {
         code: 'NOT_FOUND',
-        message: 'This API serves the public assessment and the demo request form only.',
+        message: 'This API serves public assessments and website submissions.',
       },
     })
   })

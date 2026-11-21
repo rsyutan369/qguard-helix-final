@@ -1804,15 +1804,15 @@ function configAssetTypeFor(filePath: string, line: string) {
   return 'application'
 }
 
-async function scanConfigFile(filePath: string): Promise<ScannerEvidence[]> {
+async function scanConfigFile(filePath: string): Promise<ScannerEvidence[] | null> {
   const stat = await fs.stat(filePath).catch(() => null)
-  if (!stat || stat.size > MAX_CONFIG_BYTES) return []
+  if (!stat?.isFile() || stat.size > MAX_CONFIG_BYTES) return null
   const extension = path.extname(filePath).toLowerCase()
-  if (!CONFIG_EXTENSIONS.has(extension)) return []
-  if (path.basename(filePath).startsWith('.env')) return []
+  if (!CONFIG_EXTENSIONS.has(extension)) return null
+  if (path.basename(filePath).startsWith('.env')) return null
 
   const content = await fs.readFile(filePath, 'utf8').catch(() => '')
-  if (!content) return []
+  if (!content) return null
 
   const evidence: ScannerEvidence[] = []
   const observedAt = isoNow()
@@ -1928,7 +1928,7 @@ async function scanAllowedPath(root: string, scanTypes: Set<string>) {
        surfaces are kept. Before this, a surface module on its own collected
        nothing and switching one off changed nothing. */
     if (readsConfigFiles(scanTypes)) {
-      const found = await scanConfigFile(filePath)
+      const found = await scanConfigFile(filePath) ?? []
       for (const row of found) if (configEvidenceInScope(row.evidenceType, scanTypes)) evidence.push(row)
     }
     if (scanTypes.has('ssh') && (SSH_KEY_FILE_NAMES.has(fileName) || /\.pub$/i.test(fileName))) {
@@ -2107,27 +2107,39 @@ async function collectRemediationValidationEvidence(job: RemediationJob, policy:
   let probeFailure: string | null = null
   const target = remediationTargetFromJob(job)
   const parsedTarget = target ? parseTarget(target) : null
+  const allowedTarget = parsedTarget && policy.allowedTargets.some((entry) => {
+    const allowed = parseTarget(entry)
+    return allowed?.type === parsedTarget.type && allowed.port === parsedTarget.port &&
+      allowed.host.toLowerCase() === parsedTarget.host.toLowerCase()
+  })
 
   // Network probes are discovery, not a gate: an unreachable target (asset
   // names are not always resolvable hosts from this agent) must not abort the
   // remediation — local file evidence and connector validation still apply.
-  if (parsedTarget) {
+  if (parsedTarget && allowedTarget) {
     try {
-      if (parsedTarget.type === 'tls') evidence.push(...await scanTlsTarget(parsedTarget))
-      if (parsedTarget.type === 'ssh') evidence.push(...await scanSshTarget(parsedTarget))
-      scanned = true
+      const observations = parsedTarget.type === 'tls' ? await scanTlsTarget(parsedTarget) : await scanSshTarget(parsedTarget)
+      evidence.push(...observations)
+      scanned = observations.length > 0
     } catch (error) {
       probeFailure = `${parsedTarget.host}:${parsedTarget.port} probe failed: ${(error as Error).message}`
       console.warn(`Remediation probe skipped for ${job.name}: ${probeFailure}`)
     }
+  } else if (parsedTarget) {
+    probeFailure = 'The job endpoint is outside the agent policy.'
   }
 
   const filePath = remediationFilePathFromJob(job)
   if (filePath && fileAllowedByPolicy(filePath, policy)) {
-    scanned = true
-    const fileEvidence = await scanConfigFile(filePath)
-    evidence.push(...fileEvidence)
-    if (fileEvidence.length === 0) evidence.push(positiveConfigValidationEvidence(job, filePath))
+    const resolved = await fs.realpath(filePath).catch(() => null)
+    const fileEvidence = resolved && fileAllowedByPolicy(resolved, policy) ? await scanConfigFile(filePath) : null
+    if (fileEvidence) {
+      scanned = true
+      evidence.push(...fileEvidence)
+      if (fileEvidence.length === 0) evidence.push(positiveConfigValidationEvidence(job, filePath))
+    } else {
+      probeFailure ||= 'The selected configuration file could not be read within the agent policy.'
+    }
   }
 
   return { evidence, scanned, probeFailure }

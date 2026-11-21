@@ -55,6 +55,7 @@ import scannerRoutes from './scanner'
 import liveScanRoutes from './live-scan'
 import publicScanRoutes from './public-scan'
 import demoRequestRoutes from './demo-request'
+import checklistRequestRoutes from './checklist-request'
 import downloadRoutes, { blockPublicInstallerPath } from './downloads'
 import exposureRoutes from './exposure'
 import agentScannerRoutes, { startAgentScannerScheduler } from './agent-scanner'
@@ -305,6 +306,10 @@ export function createApiServer() {
   app.use(installCookieHardening)
 
   app.use(enforceHttps)
+  app.use(securityHeaders)
+  app.use(corsPolicy)
+  // Public Scan applies its own small parser and authenticated account access.
+  app.use('/api/v1/public-scan', publicScanRoutes)
 
   // The raw body is kept for webhook signature checks (billing.ts Stripe HMAC).
   // body-parser hands `verify` a buffer it never mutates or reuses, so keeping
@@ -318,7 +323,7 @@ export function createApiServer() {
   // 80 MB bodies. body-parser skips an already-parsed body, so the general
   // parser below leaves these requests alone.
   app.use(
-    ['/api/v1/auth', '/api/v1/public-scan', '/api/v1/demo-request', '/api/v1/paypal/webhook', '/api/v1/play-billing/rtdn', '/api/v1/webhooks/google-play'],
+    ['/api/v1/auth', '/api/v1/demo-request', '/api/v1/checklist-request', '/api/v1/paypal/webhook', '/api/v1/play-billing/rtdn', '/api/v1/webhooks/google-play'],
     express.json({ limit: process.env.API_PUBLIC_JSON_LIMIT || '256kb', verify: keepRawBody }),
   )
 
@@ -326,11 +331,6 @@ export function createApiServer() {
     limit: process.env.API_JSON_LIMIT || '80mb',
     verify: keepRawBody,
   }))
-
-  app.use(securityHeaders)
-
-  // Same-origin CORS by default; see runtime/http-baseline.ts for the allow-list.
-  app.use(corsPolicy)
 
   // Health check
   app.get('/api/v1/health', (_req, res) => {
@@ -745,12 +745,6 @@ export function createApiServer() {
   // the subscription gateway so unauthenticated visitors can verify a cert.
   app.use('/api/v1/certificate-verification', certificateVerificationRouter)
 
-  // Public Quantum Exposure Assessment™ — anonymous, edge-only scanner behind
-  // /public-scan. No auth and no tier gate by design (that is the product), so
-  // it mounts BEFORE the subscription gateway. It carries its own rate limiting,
-  // concurrency cap, SSRF guard and result cache.
-  app.use('/api/v1/public-scan', publicScanRoutes)
-
   // Entitlement-gated product downloads. Mounted BEFORE the subscription
   // gateway because it enforces a STRICTER rule than the gateway would: the
   // gateway fails open on an entitlement lookup error so a blip cannot brick
@@ -761,6 +755,7 @@ export function createApiServer() {
   // Anonymous by design (visitors have no account), so it mounts before the
   // gateway with its own validation, honeypot and rate limits.
   app.use('/api/v1/demo-request', demoRequestRoutes)
+  app.use('/api/v1/checklist-request', checklistRequestRoutes)
 
   // Exposure Assessment Engine™ — the Local and Dev counterparts to the public
   // edge scanner. Mounted BEFORE the subscription gateway because capability

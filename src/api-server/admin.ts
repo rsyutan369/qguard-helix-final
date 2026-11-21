@@ -886,6 +886,23 @@ async function buildAdminStats(db: any) {
 
 router.use(requireOwner)
 
+router.get('/website-submissions', async (req: AdminRequest, res) => {
+  res.setHeader('Cache-Control', 'private, no-store')
+  const kind = req.query.kind
+  const page = Math.min(10_000, Math.max(0, Math.floor(numberValue(req.query.page))))
+  try {
+    const query = req.adminDb.from('website_submissions')
+      .select('id, created_at, kind, source, name, email, organization, details, email_status', { count: 'exact' })
+    if (kind === 'demo' || kind === 'pqc-checklist') query.eq('kind', kind)
+    const { data, error, count } = await query.order('created_at', { ascending: false }).order('id', { ascending: false })
+      .range(page * DEFAULT_LIMIT, (page + 1) * DEFAULT_LIMIT - 1)
+    if (error || typeof count !== 'number') throw new Error('Records unavailable')
+    res.json({ rows: data ?? [], total: count, pageSize: DEFAULT_LIMIT })
+  } catch {
+    jsonError(res, 503, 'WEBSITE_SUBMISSIONS_UNAVAILABLE', 'Website submissions are unavailable. Check the website-submissions schema and database configuration.')
+  }
+})
+
 router.get('/me', async (req: AdminRequest, res) => {
   const ctx: SafeContext = { unavailable: new Set() }
   const profile = await safeMaybeSingle(ctx, req.adminDb, 'profiles', (q) => q.select('*').eq('id', req.adminUser!.id))

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { motion } from 'framer-motion'
 import {
   Activity,
   AlertTriangle,
@@ -12,10 +11,8 @@ import {
   Diamond,
   Download,
   FileText,
-  Filter,
   Layers3,
   ListChecks,
-  Maximize2,
   MoreVertical,
   Pause,
   Play,
@@ -39,7 +36,8 @@ import { SnapshotManager } from './_snapshots'
 import { ReportExportMenu } from '../_components/InventoryExportMenu'
 import { buildMigrationReport } from '@/services/reporting/MigrationReport'
 import { Archive, FileJson, History as HistoryIcon } from 'lucide-react'
-import type { ApprovalVerdict } from '@/lib/migration/job-safety'
+import { type ApprovalVerdict } from '@/lib/migration/job-safety'
+import { isAwaitingMigrationWave, isVerifiedMigrationJob } from '@/lib/migration/planner-progress'
 import {
   AGENT_META,
   SCAN_STAGE_LABEL,
@@ -129,6 +127,7 @@ export type LiveMigrationJob = {
   telemetryCount: number
   validationCount: number
   validationStatus: string
+  validationEvidenceStatus?: string
   logs: LiveMigrationEvent[]
   logCount: number
   metadata: Record<string, unknown>
@@ -186,6 +185,7 @@ type LiveMigrationSnapshot = {
     awaitingApproval: number
     completionRate: number
     waitingForAgent: number
+    held?: number
     agentBacked: number
     verified: number
     agentsOnline: number
@@ -318,7 +318,7 @@ const EMPTY_SNAPSHOT: LiveMigrationSnapshot = {
 // Premium glassmorphism — aligned with the Agent Collector Console, Quantum
 // Certification and Quantum Readiness surfaces (cyan-forward, soft, spacious).
 const GLASS =
-  'rounded-2xl border border-white/10 bg-white/[0.035] backdrop-blur-xl text-white shadow-[0_18px_60px_rgba(0,0,0,0.35)]'
+  'rounded-2xl border border-white/10 bg-[var(--lw-panel-solid)] text-white shadow-[var(--lw-card-shadow)]'
 const INNER =
   'rounded-xl border border-white/10 bg-white/[0.02] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
 // Theme tokens (live-workflow.css): neon on dark, the hue's dark end on parchment.
@@ -463,69 +463,79 @@ function Sparkline({ values, color = GOLD }: { values: number[]; color?: string 
   )
 }
 
-function PhaseRail({ job }: { job: LiveMigrationJob }) {
-  const phases = [
-    ['Key Generation', 15],
-    ['Hybrid Handshake', 35],
-    ['Certificate Deploy', 55],
-    ['Validation', 72],
-    ['Cutover', 88],
-    ['Verify & Monitor', 100],
-  ] as const
+function executionLabel(job: LiveMigrationJob) {
+  if (isAwaitingMigrationWave(job)) return 'Held for prior wave'
+  if (job.status === 'queued' && !job.executionBacked) return 'Awaiting claim'
+  return job.status.replaceAll('_', ' ')
+}
 
-  const completedIndex = job.status === 'completed'
-    ? phases.length
-    : job.status === 'failed'
-      ? Math.max(0, phases.findIndex(([, threshold]) => job.progress < threshold))
-      : phases.filter(([, threshold]) => job.progress >= threshold).length
-  const currentIndex = Math.min(completedIndex, phases.length - 1)
+function validationLabel(job: LiveMigrationJob) {
+  if (isVerifiedMigrationJob(job)) return 'Verified'
+  if (!job.validationCount) return 'Awaiting evidence'
+  return (job.validationEvidenceStatus || 'Recorded').replaceAll('_', ' ')
+}
+
+function WorkspaceClock() {
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   return (
-    <div className="relative z-10 px-2 py-4">
-      <div className="absolute left-[8%] right-[8%] top-[34px] h-px bg-white/30" />
-      <div className="grid grid-cols-6 gap-2">
-        {phases.map(([label], index) => {
-          const complete = index < completedIndex || job.status === 'completed'
-          const current = index === currentIndex && job.status === 'running'
-          const failed = index === currentIndex && job.status === 'failed'
-          return (
-            <div key={label} className="relative flex flex-col items-center gap-2 text-center">
-              <div
-                className={cn(
-                  'z-10 grid h-7 w-7 place-items-center rounded-full border bg-[#0b1120] shadow-[0_0_16px_rgba(0,0,0,0.65)]',
-                  complete && 'border-[#34d399] text-[#34d399]',
-                  current && 'border-[#22d3ee] text-[#22d3ee] shadow-[0_0_18px_rgba(212,175,55,0.45)]',
-                  failed && 'border-[#f87171] text-[#f87171]',
-                  !complete && !current && !failed && 'border-white/30 text-white/30',
-                )}
-              >
-                <BadgeCheck className="h-3.5 w-3.5" />
-              </div>
-              <div className="min-h-10">
-                <div className="text-[9px] font-bold leading-tight text-white/70">{label}</div>
-                <div
-                  className={cn(
-                    'mt-1 text-[8px] font-black uppercase tracking-wider',
-                    complete && 'text-[#34d399]',
-                    current && 'text-[#22d3ee]',
-                    failed && 'text-[#f87171]',
-                    !complete && !current && !failed && 'text-white/32',
-                  )}
-                >
-                  {failed ? 'Failed' : complete ? 'Completed' : current ? 'In Progress' : 'Pending'}
-                </div>
-              </div>
-            </div>
-          )
-        })}
+    <div className="text-right font-mono tabular-nums">
+      <div className="flex items-center justify-end gap-2 text-xs font-black text-white">
+        <Clock3 className="h-4 w-4 text-[#22d3ee]" aria-hidden="true" />
+        {now.toLocaleTimeString('en-US', { hour12: false, timeZone: 'UTC' })} UTC
       </div>
+      <div className="text-[10px] text-white/45">{now.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric', timeZone: 'UTC' })}</div>
+    </div>
+  )
+}
+
+function JobOptions({ onLogs, onSnapshots, onRollback }: { onLogs: () => void; onSnapshots: () => void; onRollback?: () => void }) {
+  const [open, setOpen] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const outside = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('pointerdown', outside)
+    return () => document.removeEventListener('pointerdown', outside)
+  }, [open])
+
+  const actionClass = 'flex w-full items-center gap-2 whitespace-nowrap rounded-md px-3 py-2 text-left text-xs font-bold hover:bg-[var(--lw-track)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--lw-cyan)]'
+  return (
+    <div ref={root} className="relative shrink-0"
+      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false) }}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || !open) return
+        setOpen(false)
+        trigger.current?.focus()
+      }}
+    >
+      <button ref={trigger} type="button" aria-label="Migration options" aria-expanded={open} title="Migration options"
+        className="grid h-9 w-9 place-items-center rounded-lg border border-[var(--lw-line)] text-[var(--lw-cyan)] hover:bg-[var(--lw-track)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--lw-cyan)]"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <MoreVertical className="h-4 w-4" aria-hidden="true" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-30 mt-2 min-w-max rounded-lg border border-[var(--lw-line)] bg-[var(--lw-panel-solid)] p-1 text-[var(--lw-ink)] shadow-lg">
+          <button type="button" className={actionClass} onClick={() => { setOpen(false); onLogs() }}><Terminal className="h-4 w-4" /> View job log</button>
+          <button type="button" className={actionClass} onClick={() => { setOpen(false); trigger.current?.focus(); onSnapshots() }}><Archive className="h-4 w-4" /> View job snapshots</button>
+          {onRollback && <button type="button" className={actionClass} onClick={() => { setOpen(false); trigger.current?.focus(); onRollback() }}><RotateCcw className="h-4 w-4" /> Roll back from snapshot</button>}
+        </div>
+      )}
     </div>
   )
 }
 
 function SeverityDots({ criticality }: { criticality: string }) {
   const value = criticality.toLowerCase()
-  const count = value === 'critical' ? 4 : value === 'high' ? 3 : value === 'medium' ? 2 : 1
+  const count = ['low', 'medium', 'high', 'critical'].indexOf(value) + 1
   return (
     <div className="flex items-center gap-1">
       {Array.from({ length: 4 }, (_, index) => (
@@ -534,26 +544,37 @@ function SeverityDots({ criticality }: { criticality: string }) {
           className={cn('h-2.5 w-2.5 rounded-full', index < count ? 'bg-[#f87171] shadow-[0_0_9px_rgba(255,59,48,0.45)]' : 'bg-white/12')}
         />
       ))}
-      <span className="ml-1 text-[9px] capitalize text-white/35">{criticality || 'medium'}</span>
+      <span className="ml-1 text-[9px] capitalize text-white/55">{criticality || 'Unknown'}</span>
     </div>
   )
 }
 
 export default function LiveMigrationOperations() {
+  const [params] = useSearchParams()
+  const { user } = useAuth()
+  return <LiveMigrationWorkspace key={JSON.stringify([user?.id, params.get('planId')])} />
+}
+
+function LiveMigrationWorkspace() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
-  const planId = searchParams.get('planId')
+  const planId = searchParams.get('planId') || null
   const requestedAgentId = searchParams.get('agentId')
   const requestedCommandId = searchParams.get('commandId')
   const requestedJobId = searchParams.get('jobId')
   const { session, user } = useAuth()
   const token = session?.access_token
   const [snapshot, setSnapshot] = useState<LiveMigrationSnapshot>(EMPTY_SNAPSHOT)
+  const executionConfig = snapshot.jobs.find((job) => job.metadata?.planId === planId)?.metadata?.configuration as Record<string, unknown> | undefined
+  const proposalId = searchParams.get('proposal') || (typeof executionConfig?.approvalPlanId === 'string' ? executionConfig.approvalPlanId : null)
+  const plannerUrl = proposalId ? `/dashboard/migration-planner?${new URLSearchParams({ view: 'execution', proposal: proposalId, ...(planId ? { executionPlan: planId } : {}) })}` : '/dashboard/migration-planner'
   const [selectedJobId, setSelectedJobId] = useState<string>('')
   const openedJobLink = useRef<string | null>(null)
-  const [filter, setFilter] = useState<'all' | LiveMigrationStatus>('all')
+  const [filter, setFilter] = useState<'all' | 'held' | LiveMigrationStatus>('all')
   const [loading, setLoading] = useState(true)
+  const [snapshotError, setSnapshotError] = useState(false)
   const [streamConnected, setStreamConnected] = useState(false)
+  const [lastStreamUpdateAt, setLastStreamUpdateAt] = useState(0)
   const [realtimeStatus, setRealtimeStatus] = useState('CLOSED')
   const [actionPending, setActionPending] = useState('')
   const [notice, setNotice] = useState('')
@@ -562,9 +583,9 @@ export default function LiveMigrationOperations() {
   // explicit confirmation that names exactly what will be deleted.
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [confirm, setConfirm] = useState<null | { mode: 'cancel' | 'remove' | 'rollback' | 'approve'; ids: string[]; includeCompleted: boolean }>(null)
-  const [now, setNow] = useState(new Date())
+  const [now, setNow] = useState(() => new Date())
   const [snapshotsOpen, setSnapshotsOpen] = useState(false)
-  const [snapshotFocusAsset, setSnapshotFocusAsset] = useState<string | null>(null)
+  const [snapshotFocusJobId, setSnapshotFocusJobId] = useState<string | null>(null)
   // Workflow command center (presentation state only — truth is the snapshot).
   const [selectedAgent, setSelectedAgent] = useState<WorkflowAgentId>('collector')
   const agentChosenRef = useRef(false)
@@ -576,6 +597,7 @@ export default function LiveMigrationOperations() {
   const [minSeverity, setMinSeverity] = useState<'warning' | 'error'>(() => storedJson('qg.liveMigration.minSeverity', 'warning' as 'warning' | 'error'))
   const insightsRef = useRef<HTMLDivElement>(null)
   const jobsRef = useRef<HTMLElement>(null)
+  const jobLogRef = useRef<HTMLElement>(null)
 
   const authHeaders = useMemo(() => ({
     'Content-Type': 'application/json',
@@ -588,12 +610,15 @@ export default function LiveMigrationOperations() {
   // never let an older snapshot overwrite a newer one, and never replace live
   // data with a missing payload.
   const applySnapshot = useCallback((next?: LiveMigrationSnapshot | null) => {
-    if (!next) return
-    const generatedMs = Date.parse(String(next.generatedAt || '')) || Date.now()
-    if (generatedMs < lastGeneratedAtRef.current) return
+    if (!next || next.planId !== planId || !Array.isArray(next.jobs) || !next.summary) return false
+    const generatedMs = Date.parse(next.generatedAt)
+    if (!Number.isFinite(generatedMs) || generatedMs < lastGeneratedAtRef.current) return false
     lastGeneratedAtRef.current = generatedMs
     setSnapshot(next)
-  }, [])
+    setSnapshotError(false)
+    setNow(new Date())
+    return true
+  }, [planId])
 
   const fetchSnapshot = useCallback(async () => {
     if (!token) return
@@ -607,22 +632,24 @@ export default function LiveMigrationOperations() {
       setLatency((current) => ({ latest: elapsed, series: [...current.series, elapsed].slice(-30) }))
       // A 200 with a missing/truncated body must not wipe the dashboard to the
       // empty state — keep last-known-good data and surface the error instead.
-      if (!json?.data) throw new Error('Snapshot response was empty or malformed')
+      if (!json?.data || !Array.isArray(json.data.jobs) || json.data.planId !== planId || !json.data.summary) {
+        throw new Error('Snapshot response was empty or malformed')
+      }
       applySnapshot(json.data)
     } catch (error) {
       console.error('Live migration sync failed:', error)
-      setNotice('Live migration data is temporarily unavailable.')
+      setSnapshotError(true)
     } finally {
       setLoading(false)
     }
-  }, [applySnapshot, authHeaders, planQuery, token])
+  }, [applySnapshot, authHeaders, planId, planQuery, token])
 
   useEffect(() => {
     fetchSnapshot()
   }, [fetchSnapshot])
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 1000)
+    const timer = window.setInterval(() => setNow(new Date()), 15000)
     return () => window.clearInterval(timer)
   }, [])
 
@@ -630,8 +657,25 @@ export default function LiveMigrationOperations() {
     if (!token || !user?.id) return
     const owner = user.id
     const pending: ReportedAgentDiscovery[] = []
+    const pendingFrames: AgentStreamFrame[] = []
     const seen = new Set<string>()
     let revealTimer: number | undefined
+    let frameTimer: number | undefined
+    function flushFrames() {
+      frameTimer = undefined
+      const frames = pendingFrames.splice(0).reverse()
+      setLiveFrames((current) => {
+        // Bus ids restart with the API process. The timestamp distinguishes
+        // a new frame from a replay of the same id.
+        const keys = new Set<string>()
+        return [...frames, ...current].filter((frame) => {
+          const key = `${frame.id}:${frame.at}`
+          if (keys.has(key)) return false
+          keys.add(key)
+          return true
+        }).slice(0, 100)
+      })
+    }
     function revealNext() {
       revealTimer = undefined
       const next = pending.shift()
@@ -645,14 +689,21 @@ export default function LiveMigrationOperations() {
     const streamParams = new URLSearchParams({ token })
     if (planId) streamParams.set('planId', planId)
     const source = new EventSource(`/api/v1/migration/live/stream?${streamParams.toString()}`)
-    source.onopen = () => setStreamConnected(true)
     source.onerror = () => setStreamConnected(false)
-    source.addEventListener('connected', () => setStreamConnected(true))
+    source.addEventListener('migration-update-error', () => setStreamConnected(false))
     source.addEventListener('migration-update', (event) => {
       try {
-        applySnapshot(JSON.parse(event.data))
+        const next = JSON.parse(event.data) as LiveMigrationSnapshot
+        if (next.planId !== planId || !next.summary || !Array.isArray(next.jobs) || !Number.isFinite(Date.parse(next.generatedAt))) {
+          setStreamConnected(false)
+          return
+        }
+        applySnapshot(next)
+        setLastStreamUpdateAt(Date.now())
+        setStreamConnected(true)
         setLoading(false)
       } catch (error) {
+        setStreamConnected(false)
         console.error('Invalid live migration stream payload:', error)
       }
     })
@@ -660,6 +711,7 @@ export default function LiveMigrationOperations() {
     // Last-Event-ID) replays what was missed; duplicates are dropped by id.
     source.addEventListener('agent-event', (event) => {
       try {
+        if (planId) return
         const frame = JSON.parse((event as MessageEvent).data) as AgentStreamFrame
         if (!frame || typeof frame.id !== 'number') return
         if (frame.name === AGENT_DISCOVERY_EVENT) {
@@ -680,9 +732,9 @@ export default function LiveMigrationOperations() {
           if (pending.length && revealTimer === undefined) revealTimer = window.setTimeout(revealNext, 280)
           return
         }
-        // Ids restart at 1 when the API process restarts, so id alone would
-        // drop a genuinely new frame that reuses an id still in this buffer.
-        setLiveFrames((current) => (current.some((item) => item.id === frame.id && item.at === frame.at) ? current : [frame, ...current].slice(0, 100)))
+        pendingFrames.push(frame)
+        if (pendingFrames.length > 100) pendingFrames.shift()
+        if (frameTimer === undefined) frameTimer = window.setTimeout(flushFrames, 150)
       } catch (error) {
         console.error('Invalid agent stream frame:', error)
       }
@@ -690,12 +742,15 @@ export default function LiveMigrationOperations() {
     return () => {
       source.close()
       window.clearTimeout(revealTimer)
+      window.clearTimeout(frameTimer)
       setStreamConnected(false)
     }
   }, [applySnapshot, planId, token, user?.id])
 
+  const live = streamConnected && now.getTime() - lastStreamUpdateAt <= 120000
+
   useEffect(() => {
-    if (!user?.id) return
+    if (!user?.id || live) return
     // Debounced: while a migration runs, migration_jobs updates land every
     // couple of seconds; refetching on every event creates a request storm
     // (each snapshot build advances the sandbox engine, which writes again).
@@ -719,12 +774,14 @@ export default function LiveMigrationOperations() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'pqc_scan_results', filter: `user_id=eq.${user.id}` }, scheduleRefetch)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'crypto_exposures', filter: `user_id=eq.${user.id}` }, scheduleRefetch)
       .subscribe((status) => setRealtimeStatus(status))
+    const poll = window.setInterval(() => void fetchSnapshot(), 15000)
 
     return () => {
       if (refetchTimer) clearTimeout(refetchTimer)
+      window.clearInterval(poll)
       supabase.removeChannel(channel)
     }
-  }, [fetchSnapshot, user?.id])
+  }, [fetchSnapshot, live, user?.id])
 
   useEffect(() => {
     if (!requestedJobId) openedJobLink.current = null
@@ -747,11 +804,11 @@ export default function LiveMigrationOperations() {
   const selectedJobConfig = uiRecord(selectedJob?.metadata?.configuration)
   const selectedJobExecution = uiRecord(selectedJob?.metadata?.execution)
   const selectedJobControls = uiRecord(selectedJob?.metadata?.controls || selectedJobConfig.controls)
-  const selectedJobEnabledControls = Object.entries(selectedJobControls).filter(([, enabled]) => enabled !== false).length
+  const selectedJobEnabledControls = Object.values(selectedJobControls).filter((enabled) => enabled === true).length
   const selectedConfigPath = selectedJobConfigPath(selectedJob)
   const selectedConnector = selectedJobConnector(selectedJob)
   const selectedNeedsConnector = selectedJobNeedsConnector(selectedJob)
-  const filteredJobs = filter === 'all' ? snapshot.jobs : snapshot.jobs.filter((job) => job.status === filter)
+  const filteredJobs = filter === 'all' ? snapshot.jobs : snapshot.jobs.filter((job) => (isAwaitingMigrationWave(job) ? 'held' : job.status) === filter)
 
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
   const allFilteredSelected = filteredJobs.length > 0 && filteredJobs.every((job) => selectedSet.has(job.id))
@@ -781,9 +838,7 @@ export default function LiveMigrationOperations() {
   /**
    * How old the data on screen is.
    *
-   * Recomputed from `now` (which ticks every second) rather than from a render,
-   * so a page left open with a dead stream visibly ages instead of freezing at
-   * whatever it last said.
+   * Refresh age when a snapshot arrives and periodically while disconnected.
    */
   const snapshotAgeSeconds = useMemo(() => {
     const generated = Date.parse(String(snapshot.generatedAt || ''))
@@ -814,7 +869,7 @@ export default function LiveMigrationOperations() {
       const res = await fetch(`/api/v1/migration/jobs/${jobId}/action`, {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action, ...(planId ? { planId } : {}) }),
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json?.error?.message || `HTTP ${res.status}`)
@@ -829,7 +884,7 @@ export default function LiveMigrationOperations() {
     } finally {
       setActionPending('')
     }
-  }, [applySnapshot, authHeaders, token])
+  }, [applySnapshot, authHeaders, planId, token])
 
   const runBulkAction = useCallback(async (action: 'pause' | 'resume' | 'retry' | 'cancel', jobIds?: string[]) => {
     if (!token) return
@@ -925,10 +980,10 @@ export default function LiveMigrationOperations() {
       key: 'running',
       label: 'Running',
       value: snapshot.summary.running,
-      detail: `${numberFmt(snapshot.summary.agentBacked)} agent-backed`,
+      detail: `${numberFmt(snapshot.jobs.filter((job) => job.status === 'running' && job.executionBacked && job.agentId && !job.isSandbox).length)} agent-backed`,
       color: GOLD,
       icon: RefreshCcw,
-      iconClass: 'animate-spin',
+      iconClass: snapshot.summary.running ? 'animate-spin motion-reduce:animate-none' : '',
       spark: statSparklines.running,
     },
     {
@@ -1068,7 +1123,7 @@ export default function LiveMigrationOperations() {
   const historical = Boolean(planId) && snapshot.jobs.length > 0 && snapshot.jobs.every((job) => TERMINAL_JOB.has(job.status))
   const connection: ConnectionState = historical
     ? 'historical'
-    : streamConnected ? 'live' : snapshotAgeSeconds > 120 ? 'stale' : 'reconnecting'
+    : live ? 'live' : snapshotAgeSeconds > 120 ? 'stale' : 'reconnecting'
 
   const risks = useMemo(() => (model ? deriveRisks(model, snapshot.jobs) : []), [model, snapshot.jobs])
   const checklist = useMemo(() => (model && selectedJob ? safetyChecklist(selectedJob, model) : []), [model, selectedJob])
@@ -1129,7 +1184,7 @@ export default function LiveMigrationOperations() {
   const handleNavigate = useCallback((href: string, agent?: WorkflowAgentId | null) => {
     if (href === '#jobs') return scrollTo(jobsRef.current)
     if (href === '#snapshots') {
-      setSnapshotFocusAsset(selectedJob?.asset || null)
+      setSnapshotFocusJobId(selectedJob?.id || null)
       setSnapshotsOpen(true)
       return
     }
@@ -1165,16 +1220,21 @@ export default function LiveMigrationOperations() {
   const moreActions = [
     { label: 'Export logs (CSV)', icon: ArrowDownToLine, onClick: () => void downloadExport('csv'), disabled: actionPending.startsWith('export:') },
     { label: 'Export record (JSON)', icon: FileJson, onClick: () => void downloadExport('json'), disabled: actionPending.startsWith('export:') },
-    { label: 'Snapshots', icon: Archive, onClick: () => { setSnapshotFocusAsset(null); setSnapshotsOpen(true) } },
-    { label: 'Rollback selected job', icon: RotateCcw, tone: 'var(--lw-amber)', onClick: () => { setSnapshotFocusAsset(selectedJob?.asset || null); setSnapshotsOpen(true) }, disabled: !selectedJob },
+    { label: 'Snapshots', icon: Archive, onClick: () => { setSnapshotFocusJobId(null); setSnapshotsOpen(true) } },
+    { label: 'Rollback selected job', icon: RotateCcw, tone: 'var(--lw-amber)', onClick: () => { setSnapshotFocusJobId(selectedJob?.id || null); setSnapshotsOpen(true) }, disabled: !selectedJob },
     { label: 'Retry failed jobs', icon: RefreshCcw, onClick: () => void runBulkAction('retry'), disabled: snapshot.summary.failed === 0 },
     { label: 'Audit trail', icon: ShieldCheck, onClick: () => navigate('/dashboard/audit-vault') },
     { label: 'Agent Center', icon: Server, onClick: () => navigate('/downloads') },
   ]
 
   return (
-    <div id="agent-workflow" className="qg-lw grid min-h-[calc(100vh-64px)] scroll-mt-20 grid-cols-[minmax(0,1fr)] gap-3 overflow-x-hidden p-3 text-white sm:p-4 lg:scroll-mt-5 lg:p-5">
+    <div id="agent-workflow" className="qg-lw grid min-h-[calc(100vh-64px)] scroll-mt-20 grid-cols-[minmax(0,1fr)] gap-3 overflow-x-clip p-3 text-white sm:p-4 lg:scroll-mt-5 lg:p-5">
       {requestedAgentId && requestedCommandId ? <ScanRunPanel key={`${requestedAgentId}:${requestedCommandId}`} agentId={requestedAgentId} commandId={requestedCommandId} onRole={selectAgent} /> : null}
+      {snapshotError && !live && (
+        <p role="status" className={cn(INNER, 'p-3 text-sm text-[var(--lw-amber)]')}>
+          {lastGeneratedAtRef.current ? 'Could not refresh migration operations. Showing the last available update.' : 'Migration data is temporarily unavailable. Retrying…'}
+        </p>
+      )}
       {model ? (
         <>
           <WorkflowHeader
@@ -1207,7 +1267,12 @@ export default function LiveMigrationOperations() {
                   {CONNECTION_META[connection].detail}
                 </span>
               </div>
-              <p className="mb-3 px-1 text-xs text-white/50">Live fleet · latest collection cycle per agent. Scheduled cycles continue according to each agent’s policy.{requestedCommandId ? ' Your requested scan outcome stays in the receipt above.' : ''}</p>
+              <p className="mb-3 px-1 text-xs text-white/65">
+                {planId
+                  ? 'Inventory, findings, and job activity reflect this plan’s assets. Agent availability is reported for the workspace fleet.'
+                  : 'Live fleet · latest collection cycle per agent. Scheduled cycles follow each agent’s policy.'}
+                {requestedCommandId ? ' Your requested scan outcome stays in the receipt above.' : ''}
+              </p>
               <WorkflowCanvas
                 model={model}
                 now={now.getTime()}
@@ -1219,7 +1284,7 @@ export default function LiveMigrationOperations() {
                 events={allEvents}
                 discoveries={!planId && discoveryFeed.owner === user?.id ? discoveryFeed.items : undefined}
                 discoveriesPlanScoped={Boolean(planId)}
-                discoveriesConnected={streamConnected}
+                discoveriesConnected={live}
               />
             </div>
             <NotificationStack
@@ -1302,19 +1367,21 @@ export default function LiveMigrationOperations() {
         <div className="flex items-center justify-end gap-3">
           {/* The live/stale indicator lives in the workflow header above, bound
               to the same stream state, so it is not repeated here. */}
-          <div className="text-right font-mono">
-            <div className="flex items-center justify-end gap-2 text-xs font-black text-white">
-              <Clock3 className="h-4 w-4 text-[#22d3ee]" />
-              {now.toLocaleTimeString('en-US', { hour12: false, timeZone: 'UTC' })} UTC
-            </div>
-            <div className="text-[10px] text-white/45">{now.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' })}</div>
-          </div>
+          <WorkspaceClock />
           <div className={cn(INNER, 'flex items-center gap-2 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-[#22d3ee]')}>
             <Zap className="h-3.5 w-3.5" />
             {numberFmt(snapshot.summary.agentBacked)} Agent Backed
           </div>
         </div>
       </header>
+
+      {planId && proposalId && <section className={cn(GLASS, 'relative p-4')} aria-label="Migration proposal workflow">
+        <div className="relative flex flex-wrap items-center justify-between gap-3">
+          <div><h2 className="text-sm font-bold text-white">Execute and validate this migration</h2>
+            <p className="mt-1 text-xs text-white/65">Check agent or connector requirements and review the operation’s validation. Return to the planner to release the next wave or view Program Analytics after all assets are verified.</p></div>
+          <Link to={plannerUrl} className="rounded-lg border border-[#22d3ee]/35 px-3 py-2 text-xs font-bold text-[#22d3ee]">Return to proposal progress</Link>
+        </div>
+      </section>}
 
       {/*
        * Migration Planner handoff. Rendered when this page was opened via
@@ -1334,7 +1401,7 @@ export default function LiveMigrationOperations() {
                   {snapshot.plannerHandoff.stampedAt ? ` · ${new Date(snapshot.plannerHandoff.stampedAt).toLocaleString()}` : ''}
                 </span>
               </div>
-              <Link to="/dashboard/migration-planner" className="text-[10px] font-black uppercase tracking-wider text-white/50 transition hover:text-[#22d3ee]">
+              <Link to={plannerUrl} className="text-[10px] font-black uppercase tracking-wider text-white/50 transition hover:text-[#22d3ee]">
                 Back to planner
               </Link>
             </div>
@@ -1370,10 +1437,8 @@ export default function LiveMigrationOperations() {
         {metricCards.map((metric) => {
           const Icon = metric.icon
           return (
-            <motion.div
+            <div
               key={metric.key}
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
               className={cn(GLASS, 'min-h-[104px] p-4')}
             >
               <div className="relative z-10 flex items-center gap-4">
@@ -1390,7 +1455,7 @@ export default function LiveMigrationOperations() {
                 </div>
                 <Sparkline values={metric.spark} color={metric.color} />
               </div>
-            </motion.div>
+            </div>
           )
         })}
       </section>
@@ -1419,9 +1484,9 @@ export default function LiveMigrationOperations() {
             {[
               /* Operations that happened: completed with a passing validation,
                  one per job, classified by recorded job type. */
-              ['TLS Upgrades Validated', snapshot.telemetry.tlsHandshakeEvents],
-              ['Certificates Replaced', snapshot.telemetry.certificateReplacements],
-              ['Keys Rotated', snapshot.telemetry.keyRotations],
+              ['Verified TLS jobs', snapshot.telemetry.tlsHandshakeEvents],
+              ['Verified certificate jobs', snapshot.telemetry.certificateReplacements],
+              ['Verified key rotation jobs', snapshot.telemetry.keyRotations],
               ['Validations Recorded', snapshot.telemetry.pqcValidationEvents],
               ['Compatibility Checks', snapshot.telemetry.compatibilityChecks],
             ].map(([label, value]) => (
@@ -1463,12 +1528,14 @@ export default function LiveMigrationOperations() {
 
       <CryptoUpgradePanel transitions={transitions} loading={loading} />
 
-      <section ref={jobsRef} id="jobs" className="grid scroll-mt-4 grid-cols-[minmax(0,1fr)] gap-3 xl:grid-cols-[440px_minmax(0,1fr)]">
+      <section ref={jobsRef} id="jobs" className="grid scroll-mt-4 grid-cols-[minmax(0,1fr)] gap-3 xl:grid-cols-[minmax(17rem,28%)_minmax(0,1fr)]">
         <div className={cn(GLASS, 'overflow-hidden')}>
           <div className="relative z-10 border-b border-[#22d3ee]/10 px-4 py-3">
             <div className="flex items-center justify-between">
               <h2 className="text-[11px] font-black uppercase tracking-[0.18em] text-[#22d3ee]">Migration Jobs</h2>
-              <span className="text-[10px] text-white/35">Last scan {formatShortDate(snapshot.summary.lastScanAt)}</span>
+              <span className="text-[10px] text-white/55">{snapshot.summary.lastScanAt
+                ? `${planId ? 'Latest scan finding' : 'Last scan'} ${formatShortDate(snapshot.summary.lastScanAt)}`
+                : planId ? 'No scan findings recorded' : 'No scan recorded'}</span>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               {[
@@ -1477,6 +1544,7 @@ export default function LiveMigrationOperations() {
                 ['completed', 'Completed', snapshot.summary.completed],
                 ['failed', 'Failed', snapshot.summary.failed],
                 ['queued', 'Queued', snapshot.summary.queued],
+                ['held', 'Awaiting wave', snapshot.summary.held ?? 0],
                 ['paused', 'Paused', snapshot.summary.paused],
                 ['rolling_back', 'Rolling Back', snapshot.summary.rollingBack],
                 ['rolled_back', 'Rolled Back', snapshot.summary.rolledBack],
@@ -1485,7 +1553,7 @@ export default function LiveMigrationOperations() {
                 <button
                   key={String(key)}
                   type="button"
-                  onClick={() => setFilter(key as 'all' | LiveMigrationStatus)}
+                  onClick={() => setFilter(key as 'all' | 'held' | LiveMigrationStatus)}
                   className={cn(
                     'rounded-full border px-2.5 py-1 text-[10px] font-bold transition',
                     filter === key
@@ -1556,7 +1624,7 @@ export default function LiveMigrationOperations() {
                 </div>
               </div>
             )}
-            {filteredJobs.map((job, index) => {
+            {filteredJobs.map((job) => {
               const config = statusConfig(job.status)
               const StatusIcon = config.icon
               const selected = selectedJob?.id === job.id
@@ -1565,13 +1633,10 @@ export default function LiveMigrationOperations() {
                 // A row is a container, not a <button>: the checkbox and the
                 // per-row remove control are themselves interactive, and nesting
                 // buttons inside a button is invalid.
-                <motion.div
+                <div
                   key={job.id}
                   role="button"
                   tabIndex={0}
-                  initial={{ opacity: 0, x: -12 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: index * 0.025 }}
                   onClick={() => setSelectedJobId(job.id)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
@@ -1603,7 +1668,7 @@ export default function LiveMigrationOperations() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-3">
                         <span className="truncate text-sm font-black text-white">{job.asset}</span>
-                        <span className={cn('text-[10px] font-black uppercase', config.color)}>{config.label}</span>
+                        <span className={cn('text-[10px] font-black uppercase', config.color)}>{isAwaitingMigrationWave(job) ? 'Awaiting wave' : config.label}</span>
                       </div>
                       <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[10px] text-white/42">
                         <span className="truncate">{job.fromAlgo}</span>
@@ -1636,7 +1701,7 @@ export default function LiveMigrationOperations() {
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </div>
-                </motion.div>
+                </div>
               )
             })}
           </div>
@@ -1652,25 +1717,86 @@ export default function LiveMigrationOperations() {
           <div className={cn(GLASS, 'p-4')}>
             {selectedJob ? (
               <>
-                <div className="relative z-10 flex flex-col gap-3 border-b border-[#22d3ee]/10 pb-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="min-w-0">
-                    <h2 className="truncate text-xl font-black text-white">{selectedJob.asset}</h2>
-                    <div className="mt-1 flex min-w-0 items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-[#22d3ee]">
-                      <span className="truncate">{selectedJob.fromAlgo}</span>
-                      <ArrowRight className="h-3 w-3 shrink-0" />
-                      <span className="truncate">{selectedJob.toAlgo}</span>
+                <div className="relative z-20 space-y-3 border-b border-[#22d3ee]/10 pb-3">
+                  <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+                    <div className="min-w-0 flex-[1_1_14rem]">
+                      <h2 className="break-words text-xl font-black text-white">{selectedJob.asset}</h2>
+                      <div className="mt-1 flex min-w-0 items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-[#22d3ee]">
+                        <span className="truncate">{selectedJob.fromAlgo}</span>
+                        <ArrowRight className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{selectedJob.toAlgo}</span>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 flex-nowrap items-center justify-end gap-1.5 sm:gap-2" role="group" aria-label="Job actions">
+                      {selectedJob.status === 'running' && (
+                        <button
+                          type="button"
+                          disabled={Boolean(actionPending)}
+                          onClick={() => runJobAction(selectedJob.id, 'pause')}
+                          className="inline-flex h-9 shrink-0 items-center gap-1 rounded-lg border border-[#22d3ee]/45 bg-[#22d3ee]/10 px-1.5 text-[10px] sm:gap-2 sm:px-3 font-black uppercase tracking-wider text-[#22d3ee] transition hover:bg-[#22d3ee]/18 disabled:opacity-50"
+                        >
+                          <Pause className="h-3.5 w-3.5" />
+                          Pause
+                        </button>
+                      )}
+                      {!isAwaitingMigrationWave(selectedJob) && (selectedJob.status === 'paused' || selectedJob.status === 'queued') && (!selectedJob.approval.required || selectedJob.approval.approved) && (
+                        <button
+                          type="button"
+                          disabled={Boolean(actionPending)}
+                          onClick={() => runJobAction(selectedJob.id, 'resume')}
+                          className="inline-flex h-9 shrink-0 items-center gap-1 rounded-lg border border-[#34d399]/35 bg-[#34d399]/10 px-1.5 text-[10px] sm:gap-2 sm:px-3 font-black uppercase tracking-wider text-[#34d399] transition hover:bg-[#34d399]/18 disabled:opacity-50"
+                        >
+                          <Play className="h-3.5 w-3.5" />
+                          Resume
+                        </button>
+                      )}
+                      {selectedJob.status === 'failed' && (!selectedJob.approval.required || selectedJob.approval.approved) && (
+                        <button
+                          type="button"
+                          disabled={Boolean(actionPending)}
+                          onClick={() => runJobAction(selectedJob.id, 'retry')}
+                          className="inline-flex h-9 shrink-0 items-center gap-1 rounded-lg border border-[#22d3ee]/45 bg-[#22d3ee]/10 px-1.5 text-[10px] sm:gap-2 sm:px-3 font-black uppercase tracking-wider text-[#22d3ee] transition hover:bg-[#22d3ee]/18 disabled:opacity-50"
+                        >
+                          <RefreshCcw className="h-3.5 w-3.5" />
+                          Retry
+                        </button>
+                      )}
+                      {/* Cancel withdraws this job from execution but keeps it on
+                          the record; Remove deletes it from the queue entirely. */}
+                      {selectedJob.status !== 'completed' && selectedJob.status !== 'cancelled' && (
+                        <button
+                          type="button"
+                          disabled={Boolean(actionPending)}
+                          onClick={() => setConfirm({ mode: 'cancel', ids: [selectedJob.id], includeCompleted: false })}
+                          className="inline-flex h-9 shrink-0 items-center gap-1 rounded-lg border border-white/15 bg-white/[0.04] px-1.5 text-[10px] sm:gap-2 sm:px-3 font-black uppercase tracking-wider text-white/60 transition hover:border-white/35 hover:text-white disabled:opacity-50"
+                        >
+                          <Ban className="h-3.5 w-3.5" />
+                          Cancel
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={selectedJob.status === 'running' || Boolean(actionPending)}
+                        title={selectedJob.status === 'running' ? 'Pause or cancel a running job before removing it' : 'Remove from the migration queue'}
+                        onClick={() => setConfirm({ mode: 'remove', ids: [selectedJob.id], includeCompleted: selectedJob.status === 'completed' })}
+                        className="inline-flex h-9 shrink-0 items-center gap-1 rounded-lg border border-[#f87171]/40 bg-[#f87171]/10 px-1.5 text-[10px] sm:gap-2 sm:px-3 font-black uppercase tracking-wider text-[#f87171] transition hover:border-[#f87171]/70 hover:bg-[#f87171]/18 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Remove
+                      </button>
+                      <JobOptions
+                        key={selectedJob.id}
+                        onLogs={() => {
+                          jobLogRef.current?.focus({ preventScroll: true })
+                          jobLogRef.current?.scrollIntoView({ block: 'start' })
+                        }}
+                        onSnapshots={() => { setSnapshotFocusJobId(selectedJob.id); setSnapshotsOpen(true) }}
+                        onRollback={['completed', 'failed', 'paused'].includes(selectedJob.status) && !actionPending
+                          ? () => setConfirm({ mode: 'rollback', ids: [selectedJob.id], includeCompleted: false })
+                          : undefined}
+                      />
                     </div>
                   </div>
-                  {/*
-                    A queued job that no agent may claim is not a slow queue —
-                    it is a role boundary or a missing snapshot, and the operator
-                    can only act on it if they are told which.
-                  */}
-                  {/*
-                    Approval, stated from the same verdict the agent poll
-                    enforces. An unapproved job is not "queued and slow" — no
-                    agent will take it until a named person approves it.
-                  */}
                   {selectedJob.approval.required && !selectedJob.approval.approved && ['queued', 'paused', 'failed'].includes(selectedJob.status) && (
                     <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#fbbf24]/35 bg-[#fbbf24]/[0.08] px-3 py-2 text-[11px] leading-relaxed text-white/80">
                       <div className="min-w-0 flex-1">
@@ -1704,23 +1830,14 @@ export default function LiveMigrationOperations() {
                     </div>
                   )}
                   {selectedJob.approval.required && selectedJob.approval.approved && (
-                    <div className="flex items-center gap-1.5 text-[10px] text-white/50">
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-white/65">
                       <BadgeCheck className="h-3.5 w-3.5 text-[#34d399]" />
                       Approved by <span className="font-bold text-white/75">{selectedJob.approval.approvedBy || 'unknown'}</span>
                       {selectedJob.approval.approvedAt ? <span>· {formatShortDate(selectedJob.approval.approvedAt)}</span> : null}
                       <span className="text-white/35">· {selectedJob.approval.source === 'plan' ? 'via migration plan' : 'job-level approval'}</span>
                     </div>
                   )}
-                  {!selectedJob.approval.required && (
-                    <div className="text-[10px] text-white/45">
-                      Sandbox simulation — executed by the sandbox engine against a digital twin. Never dispatched to an agent.
-                    </div>
-                  )}
-                  {/*
-                    A queued job that no agent may claim is not a slow queue — it
-                    is a role boundary, a missing approval or a missing snapshot,
-                    and the operator can only act on it if told which.
-                  */}
+                  {selectedJob.isSandbox && <p className="text-[11px] text-white/65">Sandbox simulation on a digital twin.</p>}
                   {selectedJob.dispatchBlock && (
                     <div className="rounded-lg border border-[#fbbf24]/30 bg-[#fbbf24]/[0.07] px-3 py-2 text-[11px] leading-relaxed text-white/75">
                       <span className="font-black uppercase tracking-wider text-[#fbbf24]">
@@ -1737,106 +1854,22 @@ export default function LiveMigrationOperations() {
                       <span className="ml-2">{selectedJob.dispatchBlock.reason}</span>
                     </div>
                   )}
-                  <div className="flex flex-wrap gap-2">
-                    {selectedJob.status === 'running' && (
-                      <button
-                        type="button"
-                        disabled={actionPending === `${selectedJob.id}:pause`}
-                        onClick={() => runJobAction(selectedJob.id, 'pause')}
-                        className="inline-flex items-center gap-2 rounded-lg border border-[#22d3ee]/45 bg-[#22d3ee]/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#22d3ee] transition hover:bg-[#22d3ee]/18 disabled:opacity-50"
-                      >
-                        <Pause className="h-3.5 w-3.5" />
-                        Pause
-                      </button>
-                    )}
-                    {(selectedJob.status === 'paused' || selectedJob.status === 'queued') && (!selectedJob.approval.required || selectedJob.approval.approved) && (
-                      <button
-                        type="button"
-                        disabled={actionPending === `${selectedJob.id}:resume`}
-                        onClick={() => runJobAction(selectedJob.id, 'resume')}
-                        className="inline-flex items-center gap-2 rounded-lg border border-[#34d399]/35 bg-[#34d399]/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#34d399] transition hover:bg-[#34d399]/18 disabled:opacity-50"
-                      >
-                        <Play className="h-3.5 w-3.5" />
-                        Resume
-                      </button>
-                    )}
-                    {selectedJob.status === 'failed' && (!selectedJob.approval.required || selectedJob.approval.approved) && (
-                      <button
-                        type="button"
-                        disabled={actionPending === `${selectedJob.id}:retry`}
-                        onClick={() => runJobAction(selectedJob.id, 'retry')}
-                        className="inline-flex items-center gap-2 rounded-lg border border-[#22d3ee]/45 bg-[#22d3ee]/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#22d3ee] transition hover:bg-[#22d3ee]/18 disabled:opacity-50"
-                      >
-                        <RefreshCcw className="h-3.5 w-3.5" />
-                        Retry
-                      </button>
-                    )}
-                    {/*
-                       Rollback goes through Migration Snapshot Management: it
-                       resolves the executor that holds the recorded undo
-                       information and reports what actually happened. Offered on
-                       jobs that have executed something — a queued job has
-                       nothing to undo.
-                    */}
-                    {(selectedJob.status === 'completed' || selectedJob.status === 'failed' || selectedJob.status === 'paused') && (
-                      <button
-                        type="button"
-                        disabled={actionPending === `${selectedJob.id}:rollback`}
-                        title="Restore this asset from its pre-change snapshot"
-                        onClick={() => setConfirm({ mode: 'rollback', ids: [selectedJob.id], includeCompleted: false })}
-                        className="inline-flex items-center gap-2 rounded-lg border border-[#fbbf24]/45 bg-[#fbbf24]/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#fbbf24] transition hover:bg-[#fbbf24]/18 disabled:opacity-50"
-                      >
-                        <RotateCcw className="h-3.5 w-3.5" />
-                        Rollback
-                      </button>
-                    )}
-                    {/* Cancel withdraws this job from execution but keeps it on
-                        the record; Remove deletes it from the queue entirely. */}
-                    {selectedJob.status !== 'completed' && selectedJob.status !== 'cancelled' && (
-                      <button
-                        type="button"
-                        disabled={actionPending === `${selectedJob.id}:cancel`}
-                        onClick={() => setConfirm({ mode: 'cancel', ids: [selectedJob.id], includeCompleted: false })}
-                        className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/[0.04] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-white/60 transition hover:border-white/35 hover:text-white disabled:opacity-50"
-                      >
-                        <Ban className="h-3.5 w-3.5" />
-                        Cancel
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      disabled={selectedJob.status === 'running' || actionPending.startsWith('remove:')}
-                      title={selectedJob.status === 'running' ? 'Pause or cancel a running job before removing it' : 'Remove from the migration queue'}
-                      onClick={() => setConfirm({ mode: 'remove', ids: [selectedJob.id], includeCompleted: selectedJob.status === 'completed' })}
-                      className="inline-flex items-center gap-2 rounded-lg border border-[#f87171]/40 bg-[#f87171]/10 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#f87171] transition hover:border-[#f87171]/70 hover:bg-[#f87171]/18 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      Remove
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-white/45 transition hover:border-[#22d3ee]/30 hover:text-[#22d3ee]"
-                      title="Migration options"
-                    >
-                      <MoreVertical className="h-4 w-4" />
-                    </button>
-                  </div>
                 </div>
 
-                <div className="relative z-10 mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                <div className="relative z-10 mt-3 grid grid-cols-[repeat(auto-fit,minmax(min(100%,8.5rem),1fr))] gap-2">
                   {[
-                    { label: 'Progress', value: `${selectedJob.progress}%`, color: '#22d3ee', icon: RefreshCcw },
-                    { label: 'Execution', value: selectedJob.executionBacked ? selectedJob.executionStatus : 'Waiting', color: selectedJob.executionBacked ? '#34d399' : '#22d3ee', icon: Radio },
-                    { label: 'Agent', value: selectedJob.agentName || 'Unassigned', color: '#ffffff', icon: Server },
-                    { label: 'Telemetry', value: numberFmt(selectedJob.telemetryCount), color: '#22d3ee', icon: Activity },
-                    { label: 'Validation', value: selectedJob.validationStatus, color: /pass|success|valid/.test(selectedJob.validationStatus) ? '#34d399' : '#ffffff', icon: ShieldCheck },
+                    { label: 'Progress', value: `${selectedJob.progress}%`, color: GOLD, icon: RefreshCcw },
+                    { label: 'Execution', value: executionLabel(selectedJob), color: selectedJob.status === 'failed' ? RED : GOLD, icon: Radio },
+                    { label: 'Agent', value: selectedJob.agentName || 'Unassigned', color: 'var(--lw-ink)', icon: Server },
+                    { label: 'Telemetry records shown', value: numberFmt(selectedJob.telemetryCount), color: GOLD, icon: Activity },
+                    { label: 'Validation', value: validationLabel(selectedJob), color: isVerifiedMigrationJob(selectedJob) ? GREEN : 'var(--lw-ink)', icon: ShieldCheck },
                   ].map((tile) => {
                     const Icon = tile.icon
                     return (
                       <div key={tile.label} className={cn(INNER, 'min-h-[68px] px-3 py-2.5')}>
                         <div className="flex items-center gap-2">
-                          <Icon className="h-4 w-4" style={{ color: tile.color }} />
-                          <div className="truncate text-lg font-black leading-none" style={{ color: tile.color }}>{tile.value}</div>
+                          <Icon className="h-4 w-4 shrink-0" aria-hidden="true" style={{ color: tile.color }} />
+                          <div className="min-w-0 break-words text-sm font-black capitalize leading-tight" style={{ color: tile.color }}>{tile.value}</div>
                         </div>
                         <div className="mt-1 text-[8px] font-black uppercase tracking-wider text-white/35">{tile.label}</div>
                       </div>
@@ -1844,25 +1877,23 @@ export default function LiveMigrationOperations() {
                   })}
                 </div>
 
-                <PhaseRail job={selectedJob} />
-
-                <div className="relative z-10 grid gap-2 md:grid-cols-5">
+                <div className="relative z-10 mt-3 grid grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))] gap-2">
                   {[
                     ['Target Algorithm', selectedJob.toAlgo],
                     ['Migration Type', selectedJob.migrationType],
-                    ['Strategy', String(selectedJobConfig.deploymentStrategy || selectedJobExecution.strategy || 'Staged Rollout')],
-                    ['Phase', `${Number(selectedJobExecution.phaseIndex || 1)}/${Number(selectedJobExecution.totalPhases || 1)}`],
-                    ['Controls', `${selectedJobEnabledControls || 0} enabled`],
+                    ['Strategy', uiText(selectedJobConfig.deploymentStrategy || selectedJobExecution.strategy || selectedJob.metadata.strategy) || 'Not recorded'],
+                    ['Wave', selectedJobExecution.phaseIndex ? [selectedJobExecution.phaseIndex, selectedJobExecution.totalPhases].filter(Boolean).join('/') : 'Not recorded'],
+                    ['Controls', Object.keys(selectedJobControls).length ? `${selectedJobEnabledControls} enabled` : 'Not recorded'],
                     ['Agent Status', selectedJob.agentStatus || 'unassigned'],
                     ['Current Step', selectedJob.currentStep],
-                    ['Validation Logs', numberFmt(selectedJob.validationCount)],
-                    ['Started', formatTime(selectedJob.startedAt)],
+                    ['Validation records shown', numberFmt(selectedJob.validationCount)],
+                    ['Started', safeDate(selectedJob.startedAt)?.toLocaleString() || 'Not started'],
                     ['Asset Type', selectedJob.assetType],
                     ['Owner', selectedJob.owner],
                   ].map(([label, value]) => (
                     <div key={label} className={cn(INNER, 'px-3 py-2.5')}>
                       <div className="text-[8px] font-black uppercase tracking-wider text-[#22d3ee]/75">{label}</div>
-                      <div className="mt-1 truncate text-xs font-bold text-white">{value}</div>
+                      <div className="mt-1 break-words text-xs font-bold text-white">{value}</div>
                     </div>
                   ))}
                   <div className={cn(INNER, 'px-3 py-2.5')}>
@@ -1944,7 +1975,7 @@ export default function LiveMigrationOperations() {
             )}
           </div>
 
-          <div className={cn(GLASS, 'overflow-hidden')}>
+          <section ref={jobLogRef} tabIndex={-1} aria-label="Migration job log" className={cn(GLASS, 'scroll-mt-4 overflow-hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--lw-cyan)]')}>
             <div className="relative z-10 flex flex-wrap items-center gap-3 border-b border-[#22d3ee]/10 px-4 py-3">
               <div className="flex min-w-0 items-center gap-2">
                 <Terminal className="h-4 w-4 text-[#22d3ee]" />
@@ -1956,12 +1987,10 @@ export default function LiveMigrationOperations() {
                 {/* Bound to the stream, like the header indicator — a dropped
                     stream must not keep a green "Live" dot on the log. */}
                 <span className="flex items-center gap-2 text-[10px] text-white/65">
-                  <span className={cn('h-2 w-2 rounded-full', streamConnected ? 'bg-[#34d399]' : snapshotAgeSeconds > 120 ? 'bg-[#f87171]' : 'bg-[#fbbf24]')} />
-                  {streamConnected ? 'Live' : snapshotAgeSeconds > 120 ? 'Stale' : 'Reconnecting'}
+                  <span className={cn('h-2 w-2 rounded-full', live ? 'bg-[#34d399]' : snapshotAgeSeconds > 120 ? 'bg-[#f87171]' : 'bg-[#fbbf24]')} />
+                  {live ? 'Live' : snapshotAgeSeconds > 120 ? 'Stale' : 'Reconnecting'}
                 </span>
-                <button type="button" title="Filter logs" className="text-white/35 transition hover:text-[#22d3ee]"><Filter className="h-4 w-4" /></button>
-                <button type="button" title="Export logs" onClick={() => downloadExport('csv')} className="text-white/35 transition hover:text-[#22d3ee]"><Download className="h-4 w-4" /></button>
-                <button type="button" title="Expand log panel" className="text-white/35 transition hover:text-[#22d3ee]"><Maximize2 className="h-4 w-4" /></button>
+                <button type="button" title="Export migration jobs as CSV" aria-label="Export migration jobs as CSV" onClick={() => downloadExport('csv')} className="text-white/55 transition hover:text-[#22d3ee]"><Download className="h-4 w-4" /></button>
               </div>
             </div>
 
@@ -1977,15 +2006,14 @@ export default function LiveMigrationOperations() {
                           'leading-relaxed',
                           (severity === 'error' || severity === 'critical') && 'font-bold text-[#f87171]',
                           severity === 'warning' && 'font-bold text-[#22d3ee]',
-                          (severity === 'success' || log.message.toUpperCase().includes('PASS')) && 'font-bold text-[#34d399]',
-                          !['error', 'critical', 'warning', 'success'].includes(severity) && !log.message.toUpperCase().includes('PASS') && 'text-white/55',
+                          severity === 'success' && 'font-bold text-[#34d399]',
+                          !['error', 'critical', 'warning', 'success'].includes(severity) && 'text-white/55',
                         )}
                       >
                         <span className="text-white/38">[{formatTime(log.createdAt)}]</span> {log.message}
                       </div>
                     )
                   })}
-                  {selectedJob.status === 'running' && <div className="animate-pulse text-[#22d3ee]">█</div>}
                 </div>
               ) : (
                 <div className="grid h-[150px] place-items-center text-center text-white/36">
@@ -1997,19 +2025,19 @@ export default function LiveMigrationOperations() {
                 </div>
               )}
             </div>
-          </div>
+          </section>
         </div>
       </section>
 
       {/* Snapshot Management — pre-migration backups + safe rollback */}
-      <SnapshotManager
+      {snapshotsOpen && <SnapshotManager
         enabled={Boolean(token)}
         open={snapshotsOpen}
-        onOpenChange={(v) => { setSnapshotsOpen(v); if (!v) setSnapshotFocusAsset(null) }}
-        focusAssetName={snapshotFocusAsset}
-      />
+        onOpenChange={(v) => { setSnapshotsOpen(v); if (!v) setSnapshotFocusJobId(null) }}
+        initialSearch={snapshotFocusJobId}
+      />}
 
-      <section className="sticky bottom-0 z-20 -mx-3 border-t border-[#22d3ee]/10 bg-[#0b1120]/88 px-3 py-3 backdrop-blur-xl sm:-mx-4 sm:px-4 lg:-mx-5 lg:px-5">
+      <section className="sticky bottom-0 z-20 -mx-3 border-t border-[#22d3ee]/10 bg-[var(--lw-panel-solid)] px-3 py-3 sm:-mx-4 sm:px-4 lg:-mx-5 lg:px-5">
         <div className="flex flex-wrap items-center gap-2">
           <a href="/dashboard/migration-planner" className="inline-flex items-center gap-2 rounded-lg border border-[#22d3ee]/30 bg-[#22d3ee]/8 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#22d3ee] transition hover:border-[#22d3ee]/65 hover:bg-[#22d3ee]/14">
             <Play className="h-3.5 w-3.5" />
@@ -2027,11 +2055,11 @@ export default function LiveMigrationOperations() {
             <Play className="h-3.5 w-3.5" />
             Resume All
           </button>
-          <button type="button" onClick={() => { setSnapshotFocusAsset(selectedJob?.asset || null); setSnapshotsOpen(true) }} className="inline-flex items-center gap-2 rounded-lg border border-[#f87171]/25 bg-[#f87171]/8 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#ff6b61] transition hover:border-[#f87171]/55">
+          <button type="button" onClick={() => { setSnapshotFocusJobId(selectedJob?.id || null); setSnapshotsOpen(true) }} className="inline-flex items-center gap-2 rounded-lg border border-[#f87171]/25 bg-[#f87171]/8 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#ff6b61] transition hover:border-[#f87171]/55">
             <RotateCcw className="h-3.5 w-3.5" />
             Rollback
           </button>
-          <button type="button" onClick={() => { setSnapshotFocusAsset(null); setSnapshotsOpen(true) }} className="inline-flex items-center gap-2 rounded-lg border border-[#22d3ee]/25 bg-[#22d3ee]/8 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#22d3ee] transition hover:border-[#22d3ee]/55">
+          <button type="button" onClick={() => { setSnapshotFocusJobId(null); setSnapshotsOpen(true) }} className="inline-flex items-center gap-2 rounded-lg border border-[#22d3ee]/25 bg-[#22d3ee]/8 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#22d3ee] transition hover:border-[#22d3ee]/55">
             <Archive className="h-3.5 w-3.5" />
             Snapshots
           </button>
@@ -2071,7 +2099,7 @@ export default function LiveMigrationOperations() {
             Audit Trail
           </a>
           <div className="ml-auto flex min-w-[220px] flex-wrap justify-end gap-3 text-[10px] text-white/38">
-            <span className="flex items-center gap-1.5"><Activity className="h-3.5 w-3.5 text-[#22d3ee]" />SSE {streamConnected ? 'connected' : 'reconnecting'}</span>
+            <span className="flex items-center gap-1.5"><Activity className="h-3.5 w-3.5 text-[#22d3ee]" />SSE {live ? 'connected' : 'reconnecting'}</span>
             <span className="flex items-center gap-1.5"><Radio className="h-3.5 w-3.5 text-[#22d3ee]" />Realtime {realtimeStatus}</span>
             {/* Online is heartbeat-measured; an enrolled agent that stopped
                 checking in is shown as stale rather than counted as online. */}

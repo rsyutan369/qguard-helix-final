@@ -825,6 +825,7 @@ export function buildAssetRegister(input: RegisterInput): AssetRegister {
 export type RegisterSort = 'risk' | 'vulnerable' | 'last-scanned' | 'name'
 
 export interface RegisterFilter {
+  assetId?: string | null
   agentId?: string | null
   sourceKind?: ScanSourceKind | null
   query?: string
@@ -836,6 +837,7 @@ export interface RegisterFilter {
 export function filterRows(rows: AssetRegisterRow[], filter: RegisterFilter): AssetRegisterRow[] {
   const query = text(filter.query).toLowerCase()
   return rows.filter((row) => {
+    if (filter.assetId && row.id !== filter.assetId) return false
     if (filter.agentId && !row.sources.some((source) => source.agentId === filter.agentId)) return false
     if (filter.sourceKind && !row.sources.some((source) => source.kind === filter.sourceKind)) return false
     if (filter.bands?.length && !filter.bands.includes(row.risk.key)) return false

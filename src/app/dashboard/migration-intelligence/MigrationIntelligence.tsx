@@ -1,8 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Scale, Shield, Cloud, Globe, UserCog, RefreshCw, Radio, AlertTriangle, CheckCircle2,
   Clock, Layers, Network, ChevronRight, ChevronLeft, ChevronsLeft, ChevronsRight,
@@ -10,7 +9,9 @@ import {
   Workflow, ShieldCheck, Info, Server, Wifi, Route, type LucideIcon,
 } from 'lucide-react';
 import { useMigrationIntelligence } from '@/hooks/use-migration-intelligence';
-import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/contexts/auth-context';
+import { MigrationAssetScope } from './MigrationAssetScope';
+import './migration-intelligence.css';
 import { migrationDependencyLabel } from '@/lib/shared-responsibility';
 import type {
   OwnershipFinding, ResponsibilityDomain, FindingPriority, MigrationDependencyStatus,
@@ -26,7 +27,7 @@ import {
 /* Domain + priority presentation                                     */
 /* ------------------------------------------------------------------ */
 const DOMAIN_META: Record<ResponsibilityDomain, { label: string; short: string; color: string; icon: LucideIcon; blurb: string }> = {
-  customer: { label: 'Customer-Controlled', short: 'Customer', color: CYAN, icon: UserCog, blurb: 'You own the asset — directly actionable today.' },
+  customer: { label: 'Customer Responsibility', short: 'Customer', color: CYAN, icon: UserCog, blurb: 'Findings routed to customer review or remediation.' },
   provider: { label: 'Provider-Controlled', short: 'Provider', color: BLUE, icon: Cloud, blurb: 'Managed by a cloud / edge / SaaS provider.' },
   ecosystem: { label: 'Ecosystem-Dependent', short: 'Ecosystem', color: VIOLET, icon: Globe, blurb: 'Depends on browsers, OS, hardware or standards.' },
 };
@@ -333,8 +334,24 @@ function StackedSeverityBar({ bucket }: { bucket: { critical: number; high: numb
 /* Main                                                               */
 /* ------------------------------------------------------------------ */
 export default function MigrationIntelligence() {
+  const [params, setParams] = useSearchParams();
+  const { user } = useAuth();
+  const assetId = params.get('asset') || null;
+  const selectAsset = (id: string | null) => {
+    setParams((current) => {
+      const next = new URLSearchParams(current);
+      if (id) next.set('asset', id); else next.delete('asset');
+      return next;
+    });
+  };
+  return <MigrationIntelligenceView key={JSON.stringify([user?.id, assetId])} assetId={assetId} onSelectAsset={selectAsset} />;
+}
+
+function MigrationIntelligenceView({ assetId, onSelectAsset }: { assetId: string | null; onSelectAsset: (id: string | null) => void }) {
   const navigate = useNavigate();
-  const { data, state, error, sseConnected, transport, lastVerifiedAt, refresh } = useMigrationIntelligence();
+  const { session, user } = useAuth();
+  const accessToken = session?.user.id === user?.id ? session?.access_token : undefined;
+  const { data, state, error, sseConnected, transport, lastVerifiedAt, refresh } = useMigrationIntelligence(assetId);
   const [domainFilter, setDomainFilter] = useState<'all' | ResponsibilityDomain>('all');
   const [companyFilter, setCompanyFilter] = useState<string | null>(null);
   const [assetFilter, setAssetFilter] = useState<string | null>(null);
@@ -342,6 +359,9 @@ export default function MigrationIntelligence() {
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [drawerError, setDrawerError] = useState<string | null>(null);
   const [matrixPage, setMatrixPage] = useState(1);
+  const findingRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => findingRequest.current?.abort(), []);
+  const hasModel = Boolean(data.generatedAt);
 
   const readiness = data.readiness;
   const w = data.widgets;
@@ -422,42 +442,35 @@ export default function MigrationIntelligence() {
    * if it cannot be resolved rather than failing silently.
    */
   const openFinding = useCallback(async (findingId: string) => {
-    const baseId = findingId.split(':')[0];
-    const local = data.findings.find((f) => f.id === baseId);
+    findingRequest.current?.abort();
+    setDrawerLoading(false);
+    const local = data.findings.find((f) => f.id === findingId);
     if (local) { setSelected(local); setDrawerError(null); return; }
+    const controller = new AbortController();
+    findingRequest.current = controller;
     setDrawerLoading(true);
     setDrawerError(null);
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData.session?.access_token;
       if (!accessToken) throw new Error('Your session expired — sign in again to open this finding.');
-      const response = await fetch(`/api/v1/migration-intelligence/finding/${encodeURIComponent(baseId)}`, {
+      const query = assetId ? `?asset=${encodeURIComponent(assetId)}` : '';
+      const response = await fetch(`/api/v1/migration-intelligence/finding/${encodeURIComponent(findingId)}${query}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
+        cache: 'no-store',
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(12_000)]),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.error?.message || `Unable to load finding (HTTP ${response.status})`);
-      if (!payload?.finding) throw new Error('This finding is no longer in the current intelligence window — refresh to re-classify.');
-      setSelected(payload.finding as OwnershipFinding);
+      if (payload?.finding?.id !== findingId || (assetId && payload.finding.assetId !== assetId)) throw new Error('This finding is no longer in the current intelligence window.');
+      if (!controller.signal.aborted) setSelected(payload.finding as OwnershipFinding);
     } catch (err) {
-      setDrawerError(err instanceof Error ? err.message : 'Unable to open this finding.');
+      if (!controller.signal.aborted) setDrawerError(err instanceof Error ? err.message : 'Unable to open this finding.');
     } finally {
-      setDrawerLoading(false);
+      if (!controller.signal.aborted) setDrawerLoading(false);
     }
-  }, [data.findings]);
-
-  if (state === 'loading' && !data.hasData) {
-    return (
-      <div className="grid min-h-[70vh] place-items-center">
-        <div className="flex items-center gap-3 text-white/60">
-          <RefreshCw className="h-5 w-5 animate-spin" />
-          <span className="text-sm font-semibold">Classifying cryptographic ownership…</span>
-        </div>
-      </div>
-    );
-  }
+  }, [accessToken, assetId, data.findings]);
 
   return (
-    <div className="mx-auto max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8">
+    <div className="mi-view mx-auto max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8">
       {/* Header */}
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -465,11 +478,11 @@ export default function MigrationIntelligence() {
             <Scale className="h-6 w-6" />
           </span>
           <div>
-            <h1 className="text-xl font-black tracking-tight text-white sm:text-2xl">
+            <h1 className="text-xl font-black tracking-tight text-[var(--qg-text-primary)] sm:text-2xl">
               Shared Responsibility Migration Intelligence™
             </h1>
-            <p className="mt-0.5 max-w-2xl text-xs text-white/55">
-              Every finding classified by ownership — who owns it, who can fix it, what it depends on, and what to do next.
+            <p className="mt-0.5 max-w-2xl text-xs text-[var(--qg-text-secondary)]">
+              Review cryptographic findings, who can act on them, and which dependencies affect migration.
             </p>
           </div>
         </div>
@@ -478,8 +491,9 @@ export default function MigrationIntelligence() {
               to show for every non-live state, including a healthy REST poll. */}
           <span
             role="status"
+            data-connected={sseConnected}
             title={lastVerifiedAt ? `Server last confirmed this model at ${new Date(lastVerifiedAt).toLocaleTimeString()}` : 'Waiting for the first server answer'}
-            className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide ${
+            className={`mi-transport inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide ${
               sseConnected
                 ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-300'
                 : transport === 'polling'
@@ -488,7 +502,7 @@ export default function MigrationIntelligence() {
             }`}
           >
             <Radio className="h-3 w-3" />
-            {sseConnected ? 'Live' : transport === 'polling' ? 'Polling' : transport === 'offline' ? 'Offline' : 'Connecting'}
+            {sseConnected ? 'Live feed' : transport === 'polling' ? 'Polling' : transport === 'offline' ? 'Offline' : 'Connecting'}
             {lastVerifiedAt ? <span className="font-mono normal-case tracking-normal opacity-70">· checked {new Date(lastVerifiedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span> : null}
           </span>
           <HeaderButton icon={RefreshCw} onClick={() => void refresh({ force: true })}>Refresh</HeaderButton>
@@ -496,9 +510,21 @@ export default function MigrationIntelligence() {
         </div>
       </div>
 
+      <MigrationAssetScope assetId={assetId} asset={data.assetScope} onSelect={onSelectAsset} />
+
+      {data.coverage && (data.coverage.source !== 'scanner' || !data.coverage.providerConnectorsAvailable || (data.coverage.scannerFindings ?? 0) > data.totals.findings) && (
+        <div role="status" className="mb-4 space-y-1 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-[var(--qg-text-primary)]">
+          <p className="font-semibold">Limited evidence coverage</p>
+          {data.coverage.source === 'partial-scanner' && <p>The scanner reported a partial inventory or evidence read.</p>}
+          {data.coverage.source === 'readiness-fallback' && <p>Showing priority findings from the Quantum Readiness assessment fallback.</p>}
+          {(data.coverage.scannerFindings ?? 0) > data.totals.findings && <p>{integerFmt(data.totals.findings)} of {integerFmt(data.coverage.scannerFindings!)} scanner observations were classified in this view.</p>}
+          {!data.coverage.providerConnectorsAvailable && <p>Connected-provider corroboration is temporarily unavailable.</p>}
+        </div>
+      )}
+
       {/* A failed update must not look like a current one: the last good model
           stays on screen and says that it may be out of date. */}
-      {error && data.hasData ? (
+      {error && hasModel ? (
         <div role="alert" className="mb-4 flex flex-wrap items-center gap-3 rounded-md border border-amber-400/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-200">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <span>Live updates interrupted: {error}. Showing the last model received — figures may be out of date.</span>
@@ -506,7 +532,9 @@ export default function MigrationIntelligence() {
         </div>
       ) : null}
 
-      {error && !data.hasData ? (
+      {state === 'loading' && !hasModel ? (
+        <Panel className="p-5"><p role="status" className="flex items-center gap-2 text-sm text-white/70"><RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" /> Loading migration intelligence…</p></Panel>
+      ) : error && !hasModel ? (
         <Panel className="p-5">
           <div className="flex flex-wrap items-center gap-3 text-sm text-red-300" role="alert">
             <AlertTriangle className="h-4 w-4" /> <span>Migration intelligence could not be loaded: {error}</span>
@@ -516,8 +544,8 @@ export default function MigrationIntelligence() {
       ) : !data.hasData ? (
         <Panel className="p-8">
           <EmptyState
-            label="No cryptographic findings to classify yet."
-            hint="Run a PQC scan or connect a provider account. Findings will be classified into customer, provider and ecosystem ownership as evidence arrives."
+            label={assetId ? 'No findings linked to this asset in the current scanner evidence.' : 'No cryptographic findings in the current scanner evidence.'}
+            hint={assetId ? 'The asset record, scan evidence, and job status are available above when recorded.' : 'Run a PQC scan or connect an evidence source to populate the assessment.'}
           />
         </Panel>
       ) : (
@@ -528,20 +556,20 @@ export default function MigrationIntelligence() {
               Quantum Readiness — Shared Responsibility Breakdown
             </SectionTitle>
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
-              <ScoreGauge label="Overall Readiness" score={readiness.overall.score} level={readiness.overall.level} color={readinessTone(readiness.overall.score)} />
+              <ScoreGauge label={data.coverage?.readiness === 'assessment' ? 'Estate Readiness' : 'Estimated Readiness'} score={readiness.overall.score} level={readiness.overall.level} color={readinessTone(readiness.overall.score)} />
               <ScoreGauge label="Customer Readiness" score={readiness.customer.score} level={readiness.customer.level} color={CYAN} notApplicable={readiness.customer.total === 0 ? 'No findings are owned by your teams.' : undefined} />
               <ScoreGauge label="Provider Readiness" score={readiness.provider.score} level={readiness.provider.level} color={BLUE} notApplicable={readiness.provider.total === 0 ? 'No finding is attributed to a cloud or SaaS provider.' : undefined} />
               <ScoreGauge label="Ecosystem Readiness" score={readiness.ecosystem.score} level={readiness.ecosystem.level} color={VIOLET} notApplicable={readiness.ecosystem.total === 0 ? 'No finding depends on browsers, CAs or standards bodies.' : undefined} />
             </div>
             <p className="mt-4 text-[11px] leading-relaxed text-white/45">
-              Overall readiness reflects the whole estate. The domain scores show how ready each ownership area is — so executives
-              see where their teams can drive progress today (customer) versus what depends on providers or the wider ecosystem.
+              {data.coverage?.readiness === 'assessment' ? 'Estate readiness comes from the Quantum Readiness assessment. ' : 'Overall readiness is estimated from the findings in this scope. '}
+              Domain scores are planning estimates based on classified evidence and provider roadmap references.
             </p>
           </Panel>
 
           {/* Widget grid */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
-            <MetricCard label="Customer Findings" value={integerFmt(w.customerFindings)} detail="You can remediate" color={CYAN} icon={UserCog} />
+            <MetricCard label="Customer Findings" value={integerFmt(w.customerFindings)} detail="Customer responsibility" color={CYAN} icon={UserCog} />
             <MetricCard label="Provider Findings" value={integerFmt(w.providerFindings)} detail="Provider-managed" color={BLUE} icon={Cloud} />
             <MetricCard label="Vendor / SaaS" value={integerFmt(w.vendorFindings)} detail="Partner dependencies" color={VIOLET} icon={Building2} />
             <MetricCard label="Cloud Dependencies" value={integerFmt(w.cloudDependencies)} detail="Edge / LB / managed" color={BLUE} icon={Server} />
@@ -552,7 +580,7 @@ export default function MigrationIntelligence() {
             {readiness.provider.total > 0
               ? <MetricCard label="Provider Readiness" value={integerFmt(w.providerReadiness)} suffix="/100" detail="PQ roadmap posture" color={BLUE} icon={Gauge} ring={w.providerReadiness} />
               : <MetricCard label="Provider Readiness" value="N/A" detail="No provider-attributed findings" color={SLATE} icon={Gauge} />}
-            <MetricCard label="Migration Progress" value={integerFmt(w.migrationProgress)} suffix="/100" detail="Overall readiness" color={readinessTone(w.migrationProgress)} icon={Workflow} ring={w.migrationProgress} />
+            <MetricCard label="No Action Indicated" value={integerFmt(data.totals.resolved)} detail="Scanner observations" color={SLATE} icon={Workflow} />
           </div>
 
           {/* Ownership distribution + severity per responsibility */}
@@ -616,26 +644,24 @@ export default function MigrationIntelligence() {
 
           {/* Edge vs Origin intelligence */}
           <Panel className="p-5">
-            <SectionTitle suffix={<Badge color={data.edgeOrigin.providerFrontedAssets > 0 ? BLUE : SLATE}>{integerFmt(data.edgeOrigin.providerFrontedAssets)} provider-fronted</Badge>}>
-              TLS Intelligence — Edge vs Origin
+            <SectionTitle suffix={<Badge color={data.edgeOrigin.edgeManaged > 0 ? BLUE : SLATE}>{integerFmt(data.edgeOrigin.edgeManaged)} edge signals</Badge>}>
+              TLS Termination Evidence
             </SectionTitle>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="rounded-lg border border-blue-400/20 bg-blue-500/[0.06] p-4">
                 <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-blue-300">
-                  <Wifi className="h-4 w-4" /> Edge (Provider-Managed)
+                  <Wifi className="h-4 w-4" /> Provider edge indicated
                 </div>
                 <p className="mt-2 text-xs leading-relaxed text-white/60">
-                  {integerFmt(data.edgeOrigin.edgeManaged)} public TLS endpoints terminate at a provider edge. The edge certificate is
-                  provider-managed — monitor the provider roadmap; no customer edge change is required.
+                  {integerFmt(data.edgeOrigin.edgeManaged)} recorded findings indicate a provider edge. {integerFmt(data.edgeOrigin.providerFrontedAssets)} distinct inventory assets are linked by ID.
                 </p>
               </div>
               <div className="rounded-lg border border-cyan-400/20 bg-cyan-500/[0.06] p-4">
                 <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-cyan-300">
-                  <Server className="h-4 w-4" /> Origin (Customer-Controlled)
+                  <Server className="h-4 w-4" /> Origin verification
                 </div>
                 <p className="mt-2 text-xs leading-relaxed text-white/60">
-                  {integerFmt(data.edgeOrigin.originCustomerControlled)} origins behind those edges are customer-controlled and can be
-                  hardened today — upgrade the origin TLS library and deploy an ML-KEM hybrid (X25519+ML-KEM).
+                  Verify the origin with its asset owner and capture origin TLS evidence before assigning a migration action.
                 </p>
               </div>
             </div>
@@ -702,7 +728,7 @@ export default function MigrationIntelligence() {
             <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg border border-white/8 bg-white/[0.02] px-3 py-2 text-[11px]">
               <span className="inline-flex items-center gap-1.5 font-bold text-white/70">
                 <Filter className="h-3.5 w-3.5 text-cyan-300" />
-                {scopeActive ? 'Filtered scope' : 'Full estate'}
+                {scopeActive ? 'Filtered scope' : assetId ? 'Selected asset' : 'Estate evidence window'}
               </span>
               <span className="text-white/45">
                 <span className="font-mono text-white/80">{integerFmt(filteredMatrix.length)}</span>
@@ -712,7 +738,7 @@ export default function MigrationIntelligence() {
                 <span className="font-mono text-white/80">{integerFmt(scopedInstances)}</span> instances
               </span>
               <span className="text-white/45">
-                <span className="font-mono text-white/80">{integerFmt(scopedAssets)}</span> {scopedAssets === 1 ? 'asset' : 'assets'}
+                <span className="font-mono text-white/80">{integerFmt(scopedAssets)}</span> {scopedAssets === 1 ? 'asset label' : 'asset labels'}
               </span>
               <span className="inline-flex items-center gap-2 text-white/45">
                 <LegendSeverity />
@@ -729,6 +755,8 @@ export default function MigrationIntelligence() {
               )}
             </div>
 
+            {(data.matrixTotal ?? 0) > data.matrix.length && <p className="mb-3 text-xs text-white/55">The table includes the {integerFmt(data.matrix.length)} highest-priority of {integerFmt(data.matrixTotal!)} consolidated rows in this scope.</p>}
+
             {drawerError ? (
               <div className="mb-3 flex items-center gap-2 rounded-lg border border-red-400/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-200">
                 <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> {drawerError}
@@ -738,7 +766,7 @@ export default function MigrationIntelligence() {
             {filteredMatrix.length === 0 ? (
               <EmptyState
                 label={scopeActive ? 'No findings match this scope.' : 'No findings in this ownership domain.'}
-                hint={scopeActive ? 'Clear a filter to widen the scope — the estate totals above are unchanged.' : undefined}
+                hint={scopeActive ? 'Clear a matrix filter to show more rows in the current scope.' : undefined}
               />
             ) : (
               <div className="overflow-x-auto">
@@ -763,13 +791,12 @@ export default function MigrationIntelligence() {
                       return (
                         <tr
                           key={row.findingId}
-                          className="cursor-pointer border-b border-white/5 transition hover:bg-white/[0.03]"
-                          onClick={() => void openFinding(row.findingId)}
+                          className="border-b border-white/5 transition hover:bg-white/[0.03]"
                         >
                           <td className="max-w-[220px] py-2.5 pr-3">
                             <div className="flex items-center gap-2">
                               <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: meta.color }} />
-                              <span className="truncate font-semibold text-white/85" title={row.finding}>{row.finding}</span>
+                              <button type="button" className="min-h-8 truncate rounded text-left font-semibold text-white/85 underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-cyan-400" title={row.finding} onClick={() => void openFinding(row.sourceFindingId ?? row.findingId)}>{row.finding}</button>
                             </div>
                           </td>
                           <td className="max-w-[180px] py-2.5 pr-3">
@@ -812,14 +839,14 @@ export default function MigrationIntelligence() {
           {/* Blockers + 7-wave roadmap */}
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <Panel className="p-5">
-              <SectionTitle suffix={<Badge color={data.blockers.length ? RED : EMERALD}>{integerFmt(data.blockers.length)}</Badge>}>Migration Blockers</SectionTitle>
+              <SectionTitle suffix={<Badge color={w.migrationBlockers ? RED : SLATE}>{integerFmt(w.migrationBlockers)}</Badge>}>Migration Blockers</SectionTitle>
               {data.blockers.length === 0 ? (
                 <EmptyState label="No high-impact blockers." hint="High/critical findings gated on an upstream dependency appear here." />
               ) : (
                 <div className="space-y-2.5">
                   {data.blockers.length > 8 ? (
                     <div className="rounded-md border border-white/8 bg-white/[0.02] px-2.5 py-1.5 text-[10px] text-white/40">
-                      Showing the 8 highest-impact of {integerFmt(data.blockers.length)} blockers.
+                      Showing the 8 highest-impact of {integerFmt(w.migrationBlockers)} blockers.
                     </div>
                   ) : null}
                   {data.blockers.slice(0, 8).map((b) => (
@@ -844,7 +871,7 @@ export default function MigrationIntelligence() {
             </Panel>
 
             <Panel className="p-5">
-              <SectionTitle suffix={<span className="text-[10px] font-bold uppercase tracking-wide text-white/40">Dependency-ordered</span>}>Migration Roadmap — 7 Waves</SectionTitle>
+              <SectionTitle suffix={<span className="text-[10px] font-bold uppercase tracking-wide text-white/40">Planning estimates</span>}>Migration Roadmap — 7 Waves</SectionTitle>
               <div className="space-y-2">
                 {data.waves.map((wave) => {
                   const meta = wave.domain === 'mixed' ? { color: SLATE } : DOMAIN_META[wave.domain];
@@ -927,9 +954,9 @@ export default function MigrationIntelligence() {
       )}
 
       {drawerLoading ? (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 backdrop-blur-sm">
-          <div className="flex items-center gap-3 rounded-lg border border-white/10 bg-[#0b1220] px-5 py-3 text-sm text-white/70">
-            <RefreshCw className="h-4 w-4 animate-spin" /> Loading finding…
+        <div className="mi-drawer-loading fixed inset-0 z-50 grid place-items-center">
+          <div className="mi-drawer-loading-status" role="status">
+            <RefreshCw className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> Loading finding…
           </div>
         </div>
       ) : null}
@@ -1031,174 +1058,152 @@ function MatrixPagination({
 /* ------------------------------------------------------------------ */
 /* Finding drill-down drawer — ownership, dependency chain, edge/origin */
 /* ------------------------------------------------------------------ */
+type DrawerTone = 'muted' | 'accent' | 'customer' | 'ecosystem' | 'positive' | 'warning' | 'danger';
+
+const DRAWER_DOMAIN_TONE: Record<ResponsibilityDomain, DrawerTone> = {
+  customer: 'customer', provider: 'accent', ecosystem: 'ecosystem',
+};
+
+const DRAWER_PRIORITY_TONE: Record<FindingPriority, DrawerTone> = {
+  critical: 'danger', high: 'warning', medium: 'warning', low: 'accent', informational: 'muted',
+};
+
 function FindingDrawer({ finding, onClose }: { finding: OwnershipFinding; onClose: () => void }) {
   const meta = DOMAIN_META[finding.domain];
   const Icon = meta.icon;
+  const dialog = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  useEffect(() => {
+    const element = dialog.current;
+    element?.showModal();
+    return () => element?.close();
+  }, []);
+  const observedAt = finding.observedAt && Number.isFinite(Date.parse(finding.observedAt))
+    ? new Date(finding.observedAt).toLocaleString()
+    : null;
+  const actionTone = finding.customerActionable === 'yes' ? 'positive'
+    : finding.customerActionable === 'partial' ? 'warning' : 'muted';
+
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <motion.div
-        initial={{ x: 40, opacity: 0 }}
-        animate={{ x: 0, opacity: 1 }}
-        transition={{ duration: 0.2 }}
-        className="h-full w-full max-w-xl overflow-y-auto border-l border-white/10 bg-[#0b1220] p-6 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <span className="grid h-10 w-10 place-items-center rounded-lg" style={{ backgroundColor: `${meta.color}18`, color: meta.color }}>
-              <Icon className="h-5 w-5" />
-            </span>
-            <div>
-              <div className="text-[10px] font-black uppercase tracking-wide" style={{ color: meta.color }}>{meta.label}</div>
-              <h3 className="text-sm font-bold text-white">{finding.title}</h3>
+    <dialog ref={dialog} aria-labelledby={titleId} onCancel={(event) => { event.preventDefault(); onClose(); }}
+      className="mi-drawer">
+      <header className="mi-drawer-header" data-tone={DRAWER_DOMAIN_TONE[finding.domain]}>
+        <span className="mi-drawer-icon"><Icon size={21} aria-hidden="true" /></span>
+        <div className="mi-drawer-heading">
+          <p>{meta.label}</p>
+          <h2 id={titleId}>{finding.title}</h2>
+        </div>
+        <button type="button" autoFocus onClick={onClose} aria-label="Close finding details" className="mi-drawer-close">
+          <X size={20} aria-hidden="true" />
+        </button>
+      </header>
+
+      <div className="mi-drawer-body">
+        <p className="mi-drawer-description">{finding.description}</p>
+
+        <dl className="mi-drawer-grid">
+          <DrawerField label="Asset" value={finding.asset || 'Unknown asset'} />
+          <DrawerField label="Company" value={finding.attribution.attributed ? finding.attribution.providerName : 'Unattributed'}
+            tone={finding.attribution.attributed ? undefined : 'muted'} />
+          <DrawerField label="Algorithm" value={finding.algorithm || 'Not recorded'} tone={finding.algorithm ? undefined : 'muted'} />
+          <DrawerField label="Evidence observed" value={observedAt ?? 'No timestamp recorded'} tone={observedAt ? undefined : 'muted'} />
+          <DrawerField label="Owner" value={finding.ownerType} />
+          <DrawerField label="Remediation contact" value={finding.responsibleParty} />
+          <DrawerField label="Customer actionability" value={finding.actionability.label} tone={actionTone} />
+          <DrawerField label="Priority" value={finding.priority} tone={DRAWER_PRIORITY_TONE[finding.priority]} />
+          <DrawerField label="Business impact" value={finding.businessImpact.level} />
+          <DrawerField label="Migration complexity" value={finding.migrationComplexity} />
+          <DrawerField label="Estimated effort" value={finding.estimatedEffort} />
+          <DrawerField label="Estimated timeline" value={finding.estimatedTimeline} />
+        </dl>
+
+        <section className="mi-drawer-card mi-drawer-action" data-tone="accent">
+          <h3 className="mi-drawer-section-title"><ArrowRight size={17} aria-hidden="true" /> Recommended action</h3>
+          <p>{finding.recommendedAction}</p>
+        </section>
+
+        {finding.dependencyChain.nodes.length > 0 && (
+          <section className="mi-drawer-section">
+            <h3 className="mi-drawer-section-title"><Network size={17} aria-hidden="true" /> Migration planning dependencies</h3>
+            <div className="mi-drawer-card">
+              <p>{finding.dependencyChain.summary}</p>
+              <ol className="mi-drawer-dependencies">
+                {finding.dependencyChain.nodes.map((node, index) => (
+                  <li key={node.id}>
+                    {index > 0 && <ChevronRight size={14} aria-hidden="true" />}
+                    <span className="mi-drawer-pill" title={node.note}
+                      data-tone={node.blocking ? 'danger' : node.status === 'complete' ? 'positive' : 'muted'}>
+                      {node.label}
+                    </span>
+                  </li>
+                ))}
+              </ol>
             </div>
-          </div>
-          <button type="button" onClick={onClose} className="rounded-md p-1.5 text-white/50 hover:bg-white/10 hover:text-white">
-            <X className="h-5 w-5" />
-          </button>
-        </div>
+          </section>
+        )}
 
-        <p className="mb-4 text-xs leading-relaxed text-white/60">{finding.description}</p>
-
-        {/*
-          These four fields exist so the drawer and the matrix row describe the
-          SAME record. The drawer previously showed neither the asset nor the
-          attributed company, so a reader could not confirm that the row they
-          clicked was the record they were now reading.
-        */}
-        <div className="mb-3 grid grid-cols-2 gap-3 text-xs">
-          <Field label="Asset" value={finding.asset || 'Unknown asset'} />
-          <Field
-            label="Company"
-            value={finding.attribution.attributed ? finding.attribution.providerName : 'Unattributed'}
-            valueColor={finding.attribution.attributed ? undefined : SLATE}
-          />
-          <Field label="Algorithm" value={finding.algorithm || 'Not recorded'} valueColor={finding.algorithm ? undefined : SLATE} />
-          <Field
-            label="Evidence Observed"
-            value={finding.observedAt ? new Date(finding.observedAt).toLocaleString() : 'No timestamp recorded'}
-            valueColor={finding.observedAt ? undefined : SLATE}
-          />
-        </div>
-
-        <div className="grid grid-cols-2 gap-3 text-xs">
-          <Field label="Owner" value={finding.ownerType} />
-          <Field label="Responsible Party" value={finding.responsibleParty} />
-          <Field label="Customer Actionable" value={finding.actionability.label} valueColor={finding.customerActionable === 'yes' ? EMERALD : finding.customerActionable === 'partial' ? AMBER : SLATE} />
-          <Field label="Priority" value={finding.priority} valueColor={PRIORITY_COLOR[finding.priority]} />
-          <Field label="Business Impact" value={finding.businessImpact.level} />
-          <Field label="Migration Complexity" value={finding.migrationComplexity} />
-          <Field label="Estimated Effort" value={finding.estimatedEffort} />
-          <Field label="Estimated Timeline" value={finding.estimatedTimeline} />
-        </div>
-
-        {/* Recommended action */}
-        <div className="mt-5 rounded-lg border border-cyan-400/20 bg-cyan-500/[0.05] p-3">
-          <div className="mb-1 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wide text-cyan-300">
-            <ArrowRight className="h-3.5 w-3.5" /> Recommended Action
-          </div>
-          <p className="text-xs leading-relaxed text-white/70">{finding.recommendedAction}</p>
-        </div>
-
-        {/* Migration dependency chain */}
-        <div className="mt-5">
-          <div className="mb-2 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wide text-white/50">
-            <Network className="h-3.5 w-3.5" /> Migration Dependency Chain
-          </div>
-          <div className="rounded-lg border border-white/8 bg-white/[0.02] p-3">
-            <div className="mb-2 text-[11px] text-white/55">{finding.dependencyChain.summary}</div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              {finding.dependencyChain.nodes.map((node, i) => (
-                <span key={node.id} className="inline-flex items-center gap-1.5">
-                  <span
-                    className="rounded px-2 py-1 text-[10px] font-bold"
-                    style={{
-                      backgroundColor: node.blocking ? `${RED}18` : node.status === 'complete' ? `${EMERALD}14` : 'rgba(255,255,255,0.05)',
-                      color: node.blocking ? RED : node.status === 'complete' ? EMERALD : 'rgba(255,255,255,0.7)',
-                      border: `1px solid ${node.blocking ? `${RED}40` : 'rgba(255,255,255,0.08)'}`,
-                    }}
-                    title={node.note}
-                  >
-                    {node.label}
+        {finding.edgeOrigin && (
+          <section className="mi-drawer-section">
+            <h3 className="mi-drawer-section-title"><Layers size={17} aria-hidden="true" /> TLS layers</h3>
+            {finding.edgeOrigin.layers.map((layer) => (
+              <div key={layer.layer} className="mi-drawer-card">
+                <div className="mi-drawer-layer">
+                  <strong>{layer.layer} · {layer.owner}</strong>
+                  <span className="mi-drawer-pill" data-tone={DRAWER_DOMAIN_TONE[layer.domain]}>
+                    {layer.customerControl === 'yes' ? 'Customer' : 'Provider'}
                   </span>
-                  {i < finding.dependencyChain.nodes.length - 1 ? <ChevronRight className="h-3 w-3 text-white/25" /> : null}
-                </span>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Edge / origin */}
-        {finding.edgeOrigin ? (
-          <div className="mt-5">
-            <div className="mb-2 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wide text-white/50">
-              <Layers className="h-3.5 w-3.5" /> TLS Layers (Edge vs Origin)
-            </div>
-            <div className="space-y-2">
-              {finding.edgeOrigin.layers.map((layer) => (
-                <div key={layer.layer} className="rounded-lg border border-white/8 bg-white/[0.02] p-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold capitalize text-white/80">{layer.layer} · {layer.owner}</span>
-                    <Badge color={layer.domain === 'customer' ? CYAN : BLUE}>{layer.customerControl === 'yes' ? 'Customer' : 'Provider'}</Badge>
-                  </div>
-                  <p className="mt-1.5 text-[11px] leading-relaxed text-white/55">{layer.recommendation}</p>
                 </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
+                <p>{layer.recommendation}</p>
+              </div>
+            ))}
+          </section>
+        )}
 
-        {/* Confidence + evidence */}
-        <div className="mt-5">
-          <div className="mb-2 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wide text-white/50">
-            <Shield className="h-3.5 w-3.5" /> Evidence &amp; Confidence
+        <section className="mi-drawer-section">
+          <h3 className="mi-drawer-section-title"><Shield size={17} aria-hidden="true" /> Evidence &amp; confidence</h3>
+          <div className="mi-drawer-card mi-drawer-grid mi-drawer-confidence">
+            <ConfidenceBar label="Overall" value={finding.confidence.overall} />
+            <ConfidenceBar label="Ownership" value={finding.confidence.ownership} />
+            <ConfidenceBar label="Actionability" value={finding.confidence.actionability} />
+            <ConfidenceBar label="Provider attribution" value={finding.confidence.providerAttribution} />
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <ConfBar label="Overall" value={finding.confidence.overall} />
-            <ConfBar label="Ownership" value={finding.confidence.ownership} />
-            <ConfBar label="Actionability" value={finding.confidence.actionability} />
-            <ConfBar label="Provider Attribution" value={finding.confidence.providerAttribution} />
-          </div>
-          <div className="mt-3 space-y-1 rounded-lg border border-white/8 bg-white/[0.02] p-3 text-[11px] text-white/55">
-            <div><span className="text-white/40">Detection:</span> {finding.evidence.detectionMethod}</div>
-            <div><span className="text-white/40">Source:</span> {finding.evidence.evidenceSource}</div>
-            <div><span className="text-white/40">Attribution:</span> {finding.evidence.providerAttributionReason}</div>
-          </div>
-          {finding.references.length ? (
-            <div className="mt-2 flex flex-wrap gap-2">
-              {finding.references.map((r) => (
-                <a key={r.url} href={r.url} target="_blank" rel="noreferrer" className="text-[11px] text-cyan-300 underline decoration-dotted hover:text-cyan-200">
-                  {r.label}
-                </a>
+          <dl className="mi-drawer-card mi-drawer-evidence">
+            <div><dt>Detection</dt><dd>{finding.evidence.detectionMethod}</dd></div>
+            <div><dt>Source</dt><dd>{finding.evidence.evidenceSource}</dd></div>
+            <div><dt>Attribution</dt><dd>{finding.evidence.providerAttributionReason}</dd></div>
+          </dl>
+          {finding.references.length > 0 && (
+            <ul className="mi-drawer-references">
+              {finding.references.map((reference) => (
+                <li key={reference.url}>
+                  <a href={reference.url} target="_blank" rel="noreferrer">{reference.label}</a>
+                </li>
               ))}
-            </div>
-          ) : null}
-        </div>
-      </motion.div>
+            </ul>
+          )}
+        </section>
+      </div>
+    </dialog>
+  );
+}
+
+function DrawerField({ label, value, tone }: { label: string; value: string; tone?: DrawerTone }) {
+  return (
+    <div className="mi-drawer-card mi-drawer-field">
+      <dt>{label}</dt>
+      <dd data-tone={tone}>{value}</dd>
     </div>
   );
 }
 
-function Field({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
+function ConfidenceBar({ label, value }: { label: string; value: number }) {
+  const tone = value >= 80 ? 'positive' : value >= 60 ? 'accent' : value >= 40 ? 'warning' : 'muted';
   return (
-    <div className="rounded-md border border-white/8 bg-white/[0.02] p-2.5">
-      <div className="text-[9px] font-black uppercase tracking-wide text-white/40">{label}</div>
-      <div className="mt-0.5 truncate text-xs font-semibold capitalize" style={{ color: valueColor || 'rgba(255,255,255,0.85)' }} title={value}>{value}</div>
-    </div>
-  );
-}
-
-function ConfBar({ label, value }: { label: string; value: number }) {
-  const color = value >= 80 ? EMERALD : value >= 60 ? BLUE : value >= 40 ? AMBER : SLATE;
-  return (
-    <div>
-      <div className="mb-1 flex items-center justify-between text-[10px]">
-        <span className="text-white/45">{label}</span>
-        <span className="font-mono text-white/60">{integerFmt(value)}%</span>
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-white/5">
-        <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(100, value)}%`, backgroundColor: color }} />
-      </div>
+    <div className="mi-drawer-meter">
+      <div><span>{label}</span><span>{integerFmt(value)}%</span></div>
+      <span className="mi-drawer-meter-track" aria-hidden="true">
+        <span data-tone={tone} style={{ width: Math.min(100, Math.max(0, value)) + '%' }} />
+      </span>
     </div>
   );
 }

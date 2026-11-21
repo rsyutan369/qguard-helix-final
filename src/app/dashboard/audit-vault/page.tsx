@@ -1,7 +1,9 @@
 'use client'
 
 import AuditVault from './AuditVault'
+import { useGovernanceAccount } from '@/hooks/use-governance'
 
 export default function AuditVaultPage() {
-  return <AuditVault />
+  const { accountId } = useGovernanceAccount()
+  return <AuditVault key={accountId} />
 }

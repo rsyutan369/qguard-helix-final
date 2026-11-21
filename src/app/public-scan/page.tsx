@@ -1,18 +1,18 @@
 /**
  * Public Quantum Exposure Assessment™ — /public-scan
  *
- * The anonymous front door to QGuard Helix. Runs the platform's real TLS +
+ * The public landing page and authenticated Web assessment. Runs real TLS +
  * public-edge scanner modules against a domain, renders an executive-grade
  * assessment of what is publicly observable, and presents the authenticated
  * Enterprise capabilities as locked previews for Basic / Pro / Elite plans.
  *
- * Data source: /api/v1/public-scan/stream (SSE, no authentication).
+ * Data sources: authenticated /api/v1/public-scan/usage and POST /stream.
  */
 'use client';
 
 import React from 'react';
 import { quotedCsvCell } from '@/lib/csv';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, MotionConfig, useReducedMotion } from 'motion/react';
 import {
   ArrowRight,
@@ -41,6 +41,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/auth-context';
 import { usePublicScan } from '@/hooks/use-public-scan';
+import { PUBLIC_SCAN_DRAFT_KEY, PUBLIC_SCAN_LOGIN, PUBLIC_SCAN_REGISTER } from '@/lib/public-scan-auth';
 import type { PublicScanReport } from '@/lib/scanner/public-scan/types';
 import { ACCENT, Panel, Reveal, SectionLabel } from './_ui';
 import { ResizablePanelRow } from '@/components/quantum-scan/resizable-panels';
@@ -126,8 +127,8 @@ function TopNav({ theme, onThemeChange }: { theme: QveTheme; onThemeChange: () =
   /* Fail closed: the nav appears only when a session is CONFIRMED. While the
      session is still resolving the visitor is treated as anonymous, so the
      links can never flash up for someone who is not signed in. */
-  const { user, loading: authLoading } = useAuth();
-  const signedIn = Boolean(user) && !authLoading;
+  const { session, loading: authLoading, signOut } = useAuth();
+  const signedIn = Boolean(session) && !authLoading;
   const [scrolled, setScrolled] = React.useState(false);
   React.useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 12);
@@ -152,7 +153,7 @@ function TopNav({ theme, onThemeChange }: { theme: QveTheme; onThemeChange: () =
           </span>
         </Link>
 
-        {signedIn && (
+        {signedIn && !WEBSITE_EDITION && (
           <nav className="hidden items-center gap-1 lg:flex" aria-label="Platform">
             {NAV_LINKS.map((link) => (
               <Link
@@ -189,7 +190,15 @@ function TopNav({ theme, onThemeChange }: { theme: QveTheme; onThemeChange: () =
               <Moon size={14} />
             </span>
           </button>
-          {signedIn ? (
+          {signedIn ? WEBSITE_EDITION ? (
+            <button
+              type="button"
+              onClick={() => { void signOut().catch(() => undefined); }}
+              className="min-h-11 rounded-lg px-3 text-[13px] font-semibold text-slate-300 hover:text-cyan-300"
+            >
+              Sign out
+            </button>
+          ) : (
             <Link
               to="/dashboard"
               className="inline-flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-400/10 px-3.5 py-2 text-[13px] font-bold text-cyan-300 no-underline transition-colors hover:bg-cyan-400/15"
@@ -199,13 +208,13 @@ function TopNav({ theme, onThemeChange }: { theme: QveTheme; onThemeChange: () =
           ) : (
             <>
               <Link
-                to="/login"
+              to={PUBLIC_SCAN_LOGIN}
                 className="hidden rounded-lg border border-white/10 px-3.5 py-2 text-[13px] font-semibold text-slate-300 no-underline transition-colors hover:border-cyan-400/30 hover:text-cyan-300 sm:inline-flex"
               >
                 Sign in
               </Link>
               <Link
-                to="/register"
+                to={PUBLIC_SCAN_REGISTER}
                 className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-cyan-400/30 bg-cyan-400/10 font-mono text-[11px] font-black text-cyan-300 no-underline"
                 aria-label="Create an account"
               >
@@ -509,13 +518,21 @@ export default function PublicScanPage() {
   const rootRef = React.useRef<HTMLDivElement>(null);
   const glowRef = React.useRef<HTMLCanvasElement>(null);
   const reduceMotion = useReducedMotion();
+  const navigate = useNavigate();
+  const { session, loading: authLoading } = useAuth();
+  const token = session?.access_token ?? null;
   // The whole result is kept (not just the destructured fields) because the QVE
   // hero consumes the live stream object directly to drive its event store.
-  const scanResult = usePublicScan();
-  const { state, stages, report, error, progress, scan, reset, queue, sharedViewers, refusal } = scanResult;
+  const scanResult = usePublicScan(token, session?.user.id ?? null);
+  const { state, stages, report, error, progress, scan, reset, queue, sharedViewers, refusal, usage, usageError, refreshUsage } = scanResult;
   /* Ticks only while a refusal names a retry time; null otherwise. */
-  const retryIn = useCountdown(refusal?.retryAfterSeconds ?? null, refusal?.receivedAt ?? null);
-  const [target, setTarget] = React.useState('');
+  const retryIn = useCountdown(refusal?.code === 'DAILY_LIMIT_REACHED' ? null : refusal?.retryAfterSeconds ?? null, refusal?.receivedAt ?? null);
+  const [target, setTarget] = React.useState(() => {
+    const preset = new URLSearchParams(window.location.search).get('target');
+    if (preset) return preset.slice(0, 269);
+    try { return window.sessionStorage.getItem(PUBLIC_SCAN_DRAFT_KEY) ?? ''; }
+    catch { return ''; }
+  });
   const resultsRef = React.useRef<HTMLDivElement>(null);
 
   /* Three assessment modes on one page (§3). Web keeps the whole existing
@@ -552,20 +569,11 @@ export default function PublicScanPage() {
     return locked;
   }, [localAccess.loading, localAccess.allowed, localAccess.message, devAccess.loading, devAccess.allowed, devAccess.message]);
 
-  // Deep-linkable assessments: /public-scan?target=example.com runs on load.
+  // Shared links prefill the host and let the account holder start the scan.
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const requestedMode = params.get('mode');
-    if (!WEBSITE_EDITION && (requestedMode === 'local' || requestedMode === 'dev')) setMode(requestedMode);
-
-    const preset = params.get('target');
-    if (preset) {
-      setMode('web');
-      setTarget(preset);
-      scan(preset);
-    }
-    // Intentionally on-mount only — a query change is a full navigation here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!params.has('target') && !WEBSITE_EDITION && (requestedMode === 'local' || requestedMode === 'dev')) setMode(requestedMode);
   }, []);
 
   const changeMode = React.useCallback((next: ScanMode) => {
@@ -582,10 +590,28 @@ export default function PublicScanPage() {
     }
   }, [state, reduceMotion]);
 
-  const submit = (event: React.FormEvent) => {
-    event.preventDefault();
+  const exhausted = usage?.remaining === 0;
+  const needsSignIn = !token || refusal?.code === 'AUTH_REQUIRED';
+  const startScan = () => {
+    if (authLoading || state === 'scanning' || exhausted) return;
+    if (needsSignIn) {
+      try {
+        const draft = target.trim().match(/^(?:https:\/\/)?[^/?#@\s]+/i)?.[0];
+        if (draft && !target.includes('@')) window.sessionStorage.setItem(PUBLIC_SCAN_DRAFT_KEY, draft);
+        else window.sessionStorage.removeItem(PUBLIC_SCAN_DRAFT_KEY);
+      } catch { /* Continue to sign-in if storage is unavailable. */ }
+      navigate(PUBLIC_SCAN_LOGIN);
+      return;
+    }
+    try { window.sessionStorage.removeItem(PUBLIC_SCAN_DRAFT_KEY); } catch { /* Optional draft. */ }
     scan(target);
   };
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    startScan();
+  };
+  const targetError = refusal && ['INVALID_TARGET', 'UNSUPPORTED_PORT', 'PRIVATE_TARGET', 'UNRESOLVABLE_TARGET'].includes(refusal.code)
+    ? refusal.message : undefined;
 
   return (
     <MotionConfig reducedMotion="user">
@@ -636,8 +662,38 @@ export default function PublicScanPage() {
           scan={scanResult}
           report={report}
           target={target}
-          onTargetChange={setTarget}
+          onTargetChange={(value) => {
+            setTarget(value);
+            if (targetError) reset();
+          }}
           onSubmit={submit}
+          disabled={authLoading || exhausted}
+          targetRequired={!needsSignIn}
+          targetError={targetError}
+          accessStatus={
+            <div className="public-scan-access">
+              <p role="status">
+                {authLoading ? 'Checking your session…' : needsSignIn ? (
+                  <>Sign in to run up to 3 free assessments per UTC day. <Link to={PUBLIC_SCAN_REGISTER}>Create an account</Link></>
+                ) : usage ? (
+                  <>
+                    <strong>{usage.remaining}/{usage.limit} scans remaining.</strong>{' '}
+                    {exhausted ? 'Daily allowance used. ' : usage.inProgress && state !== 'scanning' ? 'An assessment is already running. ' : ''}
+                    Resets <time dateTime={usage.resetAt}>{new Intl.DateTimeFormat('en', {
+                      timeZone: 'UTC', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+                    }).format(new Date(usage.resetAt))} UTC</time>.
+                  </>
+                ) : usageError ?? 'Checking your scan allowance…'}
+              </p>
+              {usageError && !needsSignIn && (
+                <>
+                  {usage && <p role="status">{usageError}</p>}
+                  <button type="button" onClick={refreshUsage}>Refresh allowance</button>
+                  <Link to={PUBLIC_SCAN_LOGIN}>Sign in again</Link>
+                </>
+              )}
+            </div>
+          }
           railSlot={
             <>
               <ScanRail stages={stages} progress={progress} state={state} queue={queue} sharedViewers={sharedViewers} />
@@ -681,19 +737,19 @@ export default function PublicScanPage() {
                   </span>
                   {/* The server's own reason, in full — a refusal names its cause
                       and when to retry, which a truncated line would cut off. */}
-                  <span className={cn('text-[12px] text-slate-500', refusal ? 'min-w-0 whitespace-normal' : 'truncate')}>
+                  {!targetError && <span className={cn('text-[12px] text-slate-500', refusal ? 'min-w-0 whitespace-normal' : 'truncate')}>
                     {state === 'complete' && report
                       ? `${report.target.displayUrl} · ${new Date(report.completedAt).toUTCString().replace('GMT', 'UTC')}${report.cached ? ' · cached' : ''}`
                       : error}
-                  </span>
+                  </span>}
                 </div>
                 <div className="flex items-center gap-2">
                   {state === 'complete' && report && <ExportBar report={report} />}
-                  {refusal && retryIn !== null && target.trim() && (
+                  {refusal && refusal.code !== 'DAILY_LIMIT_REACHED' && retryIn !== null && target.trim() && (
                     <button
                       type="button"
                       disabled={retryIn > 0}
-                      onClick={() => scan(target)}
+                      onClick={startScan}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-400/30 bg-cyan-400/[0.08] px-3 py-1.5 text-[11.5px] font-bold text-cyan-200 transition-colors hover:bg-cyan-400/[0.14] disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <RotateCcw className="h-3.5 w-3.5" />

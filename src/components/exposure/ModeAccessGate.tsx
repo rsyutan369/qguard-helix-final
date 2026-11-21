@@ -192,7 +192,7 @@ export function ModeAccessGate({ mode, access, upsellSlot }: ModeAccessGateProps
         return {
           primary: { label: 'Sign in', to: '/login' },
           secondary: { label: 'See plans', to: '/#pricing' },
-          note: `${copy.label} assessment is included in the ${access.includedIn.map((plan) => TIER_LABEL[plan]).join(', ')} plans. Sign in to use it, or run the Web assessment now without an account.`,
+          note: `${copy.label} assessment is included in the ${access.includedIn.map((plan) => TIER_LABEL[plan]).join(', ')} plans. Sign in to use it or run the free Web assessment.`,
         };
       case 'inactive-subscription':
         return {
@@ -368,7 +368,7 @@ export function ModeAccessGate({ mode, access, upsellSlot }: ModeAccessGateProps
             </ul>
             <p className="border-t border-white/[0.06] px-5 py-2.5 text-[11.5px] leading-relaxed text-slate-500">
               <Sparkles aria-hidden className="mr-1 inline h-3 w-3 -translate-y-px text-violet-300" />
-              The Web assessment stays free and needs no account, on every plan and none.
+              Every verified account can run free Web assessments.
             </p>
           </Panel>
 

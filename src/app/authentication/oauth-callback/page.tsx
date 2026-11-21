@@ -2,12 +2,17 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/auth-context'
 import { clearAuthReturnUrl } from '@/lib/oauth-callback'
+import { PUBLIC_SCAN_LOGIN, PUBLIC_SCAN_OAUTH_KEY, PUBLIC_SCAN_PATH } from '@/lib/public-scan-auth'
 import { AuthAlert, AuthCard, AuthShell } from '../AuthShell'
 
 export default function OAuthCallbackPage() {
   const [callback] = useState(() => {
     const params = new URLSearchParams(window.location.search)
-    return { code: params.get('code'), denied: params.has('error') }
+    return {
+      code: params.get('code'),
+      denied: params.has('error'),
+      forPublicScan: import.meta.env.VITE_SITE_EDITION === 'public' || sessionStorage.getItem(PUBLIC_SCAN_OAUTH_KEY) === '1',
+    }
   })
   const [error, setError] = useState<string | null>(null)
   const { completeGoogleSignIn } = useAuth()
@@ -16,6 +21,7 @@ export default function OAuthCallbackPage() {
 
   useEffect(() => {
     clearAuthReturnUrl()
+    sessionStorage.removeItem(PUBLIC_SCAN_OAUTH_KEY)
     if (callback.denied || !callback.code) {
       setError('Google sign-in was cancelled or this link has expired. Start again from the sign-in page.')
       return
@@ -29,9 +35,9 @@ export default function OAuthCallbackPage() {
         setError('Google sign-in could not be completed. Start again from the sign-in page in this browser tab.')
         return
       }
-      let destination = '/dashboard'
+      let destination = callback.forPublicScan ? PUBLIC_SCAN_PATH : '/dashboard'
       try {
-        if (localStorage.getItem('qguard.pendingCheckout')) destination = '/checkout'
+        if (!callback.forPublicScan && localStorage.getItem('qguard.pendingCheckout')) destination = '/checkout'
       } catch {
         // The dashboard remains available without browser storage.
       }
@@ -50,7 +56,7 @@ export default function OAuthCallbackPage() {
         {error ? (
           <>
             <AuthAlert tone="error">{error}</AuthAlert>
-            <Link to="/login" className="lp-btn lp-btn--primary lp-btn--block">Return to sign-in</Link>
+            <Link to={callback.forPublicScan ? PUBLIC_SCAN_LOGIN : '/login'} className="lp-btn lp-btn--primary lp-btn--block">Return to sign-in</Link>
           </>
         ) : <p role="status" aria-live="polite">Completing sign-in…</p>}
       </AuthCard>

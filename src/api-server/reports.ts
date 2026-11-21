@@ -15,7 +15,7 @@ import {
   reportSnapshotClient, reportSnapshotDigest, saveReadinessReport, READINESS_REPORT_FAMILY,
 } from './report-snapshot-store'
 import {
-  brandingSchema, evidenceAssessmentReportSchema, REPORT_FORMATS, REPORT_KINDS, type ReportProvenance,
+  assetReportLogoSchema, brandingSchema, evidenceAssessmentReportSchema, REPORT_FORMATS, REPORT_KINDS, type ReportProvenance,
 } from '@/services/reporting/schemas/ReportSchema'
 
 const router = Router()
@@ -39,21 +39,22 @@ router.use((_req, res, next) => {
 
 const reportIdSchema = z.string().uuid()
 const boundedBrand = (limit: number, fallback = '') => z.string().trim().max(limit).default(fallback)
+const captureBrandingSchema = brandingSchema.extend({
+  companyName: boundedBrand(160, 'QGuard Helix'),
+  companyLogo: z.string().max(524_320).regex(/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/).nullable().default(null),
+  businessUnit: boundedBrand(160),
+  reportOwner: boundedBrand(160),
+  reviewer: boundedBrand(160),
+  classification: boundedBrand(80, 'CONFIDENTIAL'),
+  reportVersion: boundedBrand(32, '1.0'),
+  customNotes: boundedBrand(3000),
+})
 const captureSchema = z.object({
   format: z.enum(REPORT_FORMATS).default('json'),
   kind: z.enum(REPORT_KINDS).default('executive'),
   preview: z.boolean().default(false),
   scopeAssets: z.array(reportIdSchema).min(1).max(2000).nullable().default(null),
-  branding: brandingSchema.extend({
-    companyName: boundedBrand(160, 'QGuard Helix'),
-    companyLogo: z.string().max(524_320).regex(/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/).nullable().default(null),
-    businessUnit: boundedBrand(160),
-    reportOwner: boundedBrand(160),
-    reviewer: boundedBrand(160),
-    classification: boundedBrand(80, 'CONFIDENTIAL'),
-    reportVersion: boundedBrand(32, '1.0'),
-    customNotes: boundedBrand(3000),
-  }).prefault({}),
+  branding: captureBrandingSchema.prefault({}),
 }).strict()
 
 const assetCaptureSchema = z.object({
@@ -61,6 +62,7 @@ const assetCaptureSchema = z.object({
   scope: z.enum(['all', 'filtered', 'selection', 'single']),
   assetIds: z.array(z.string().min(1).max(256)).max(2000).default([]),
   filters: z.object({
+    assetId: z.string().min(1).max(256).nullish(),
     query: z.string().max(300).optional(),
     agentId: z.string().max(160).nullish(),
     sourceKind: z.string().max(40).nullish(),
@@ -68,8 +70,13 @@ const assetCaptureSchema = z.object({
     statuses: z.array(z.string().max(40)).max(8).nullish(),
     freshness: z.array(z.string().max(40)).max(8).nullish(),
   }).strict().prefault({}),
-  branding: captureSchema.shape.branding,
+  branding: captureBrandingSchema.extend({ companyLogo: assetReportLogoSchema }).prefault({}),
 }).strict()
+
+function assetSnapshotStorageError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error
+    && (error.code === 'PGRST205' || error.code === '42P01' || error.code === '42501')
+}
 
 function assessmentReference(
   scanner: Awaited<ReturnType<typeof buildScannerIntelligence>>,
@@ -151,7 +158,10 @@ router.post('/asset-snapshots', async (req, res) => {
     return res.status(201).json({ data: model, meta: summary })
   } catch (error) {
     console.error('Asset report capture failed:', error)
-    return res.status(503).json({ error: { message: 'The asset snapshot could not be captured and saved.' } })
+    const message = assetSnapshotStorageError(error)
+      ? 'Report storage is unavailable. Ask your administrator to check the report snapshot database setup.'
+      : 'The asset snapshot could not be captured and saved. Try capturing it again.'
+    return res.status(503).json({ error: { message } })
   }
 })
 

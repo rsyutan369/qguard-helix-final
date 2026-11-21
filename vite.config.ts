@@ -172,7 +172,7 @@ function isOutsideAppSources(file: string): boolean {
   }
 }
 
-export default defineConfig(({mode}) => {
+export default defineConfig(({command, isPreview, mode}) => {
   const env = loadEnv(mode, rootDir, '');
   for (const key of [
     'VITE_SUPABASE_URL',
@@ -415,6 +415,9 @@ export default defineConfig(({mode}) => {
       },
     ],
     define: {
+      // Vite mounts Express on the dev origin. A deployment value in .env or
+      // the shell must never redirect local API requests or streams away from it.
+      ...(command === 'serve' && !isPreview ? {'import.meta.env.VITE_API_ORIGIN': JSON.stringify('')} : {}),
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
       // 'public' compiles platform-only code paths out (src/app/public-scan/page.tsx).
       'import.meta.env.VITE_SITE_EDITION': JSON.stringify(websiteEdition ? 'public' : 'platform'),

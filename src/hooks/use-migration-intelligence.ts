@@ -2,11 +2,14 @@
 
 import { useLiveResource, type LiveTransport } from '@/hooks/use-live-resource';
 import type { SharedResponsibilityIntelligence } from '@/lib/shared-responsibility';
+import type { MigrationAssetScope, MigrationIntelligenceCoverage } from '@/lib/migration/intelligence-scope';
 
 export type LoadState = 'loading' | 'success' | 'error';
 
 export interface MigrationIntelligence extends SharedResponsibilityIntelligence {
-  baseline?: { quantumReadiness: number; quantumReadinessLevel: string };
+  baseline?: { quantumReadiness: number; quantumReadinessLevel: string } | null;
+  assetScope: MigrationAssetScope | null;
+  coverage: MigrationIntelligenceCoverage | null;
 }
 
 const emptyBucket = () => ({ critical: 0, high: 0, medium: 0, low: 0 });
@@ -51,11 +54,13 @@ export const EMPTY_MIGRATION_INTELLIGENCE: MigrationIntelligence = {
   providerBreakdown: [],
   edgeOrigin: { providerFrontedAssets: 0, edgeManaged: 0, originCustomerControlled: 0, summary: '' },
   attribution: { attributed: 0, unattributed: 0, avgConfidence: 0 },
-  baseline: { quantumReadiness: 0, quantumReadinessLevel: 'Not Started' },
+  baseline: null,
+  assetScope: null,
+  coverage: null,
 };
 
 const REALTIME_TABLES = [
-  'assets', 'pqc_scan_results', 'pqc_scan_sessions', 'crypto_inventory', 'crypto_exposures',
+  'assets', 'asset_relationships', 'pqc_scan_results', 'pqc_scan_sessions', 'crypto_inventory', 'crypto_exposures',
   'certificates', 'generated_keys', 'runtime_crypto_events', 'connector_accounts', 'migration_jobs',
 ] as const;
 
@@ -90,14 +95,18 @@ export interface MigrationIntelligenceResource {
  * Every value is tenant-scoped real data classified into customer / provider /
  * ecosystem ownership domains.
  */
-export function useMigrationIntelligence(): MigrationIntelligenceResource {
+export function useMigrationIntelligence(assetId: string | null = null): MigrationIntelligenceResource {
+  const query = assetId ? `?asset=${encodeURIComponent(assetId)}` : '';
   return useLiveResource<MigrationIntelligence>({
-    url: '/api/v1/migration-intelligence',
-    streamUrl: '/api/v1/migration-intelligence/stream',
+    url: '/api/v1/migration-intelligence' + query,
+    streamUrl: '/api/v1/migration-intelligence/stream' + query,
     event: 'migration-intelligence',
     empty: EMPTY_MIGRATION_INTELLIGENCE,
     normalize,
     unwrap,
+    validate: (raw) => Boolean(raw.totals && raw.readiness && raw.widgets && Array.isArray(raw.matrix)
+      && Array.isArray(raw.findings) && Array.isArray(raw.blockers) && Array.isArray(raw.waves)
+      && (assetId ? (raw.assetScope as MigrationAssetScope | null)?.id === assetId : !raw.assetScope)),
     realtimeTables: REALTIME_TABLES,
     channelPrefix: 'migration-intel',
   });

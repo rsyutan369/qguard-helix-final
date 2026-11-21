@@ -23,7 +23,7 @@ import https from 'node:https'
 import http from 'node:http'
 import net from 'node:net'
 import { URL } from 'node:url'
-import { canFollowRedirect, checkHostSyntax, safeLookup } from '../safe-dns'
+import { canFollowRedirect, safeLookup } from '../safe-dns'
 import {
   type ControlStatus,
   type Evidence,
@@ -248,7 +248,7 @@ interface RawResponse {
   elapsedMs: number
 }
 
-function rawRequest(target: string, method: 'GET' | 'HEAD' = 'GET'): Promise<RawResponse | null> {
+function rawRequest(target: string, method: 'GET' | 'HEAD' = 'GET', signal?: AbortSignal): Promise<RawResponse | null> {
   return new Promise((resolve) => {
     let settled = false
     const startedAt = Date.now()
@@ -267,14 +267,23 @@ function rawRequest(target: string, method: 'GET' | 'HEAD' = 'GET'): Promise<Raw
       return
     }
 
+    if (!canFollowRedirect(url.href).ok || signal?.aborted) {
+      resolve(null)
+      return
+    }
+
     const transport = url.protocol === 'http:' ? http : https
+    const hostname = url.hostname.replace(/^\[|\]$/g, '')
     const options: https.RequestOptions = {
       method,
-      host: url.hostname,
+      host: hostname,
       port: url.port || (url.protocol === 'http:' ? 80 : 443),
       path: `${url.pathname}${url.search}`,
-      servername: net.isIP(url.hostname) ? undefined : url.hostname,
+      servername: net.isIP(hostname) ? undefined : hostname,
       lookup: safeLookup,
+      signal,
+      agent: false,
+      maxHeaderSize: 16 * 1024,
       headers: {
         // Identify honestly; some WAFs serve a different header set to
         // unidentified clients, which would misrepresent the target.
@@ -293,8 +302,7 @@ function rawRequest(target: string, method: 'GET' | 'HEAD' = 'GET'): Promise<Raw
     }
 
     const request = transport.request(options, (response) => {
-      // Headers are all this engine needs; drain and close immediately.
-      response.resume()
+      // Headers are all this engine needs. Close the response without reading its body.
       finish({
         statusCode: response.statusCode ?? 0,
         httpVersion: response.httpVersion,
@@ -302,7 +310,7 @@ function rawRequest(target: string, method: 'GET' | 'HEAD' = 'GET'): Promise<Raw
         url: target,
         elapsedMs: Date.now() - startedAt,
       })
-      request.destroy()
+      response.destroy()
     })
 
     request.on('error', () => finish(null))
@@ -333,14 +341,16 @@ function rawRequest(target: string, method: 'GET' | 'HEAD' = 'GET'): Promise<Raw
  */
 async function requestFollowing(
   start: string,
+  signal?: AbortSignal,
 ): Promise<{ response: RawResponse | null; chain: string[]; blockedRedirect: string | null }> {
   const chain: string[] = []
   let current = start
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    if (signal?.aborted) break
     const response = await retryTransient(
-      () => rawRequest(current),
-      (value) => value !== null,
+      () => rawRequest(current, 'GET', signal),
+      (value) => value !== null || Boolean(signal?.aborted),
     )
     if (!response) return { response: null, chain, blockedRedirect: null }
 
@@ -514,13 +524,14 @@ export function fingerprint(headers: http.IncomingHttpHeaders): HttpFingerprint 
 
 // ─── Engine ───────────────────────────────────────────────────────────────────
 
-export async function runHttpEngine(host: string, port: number): Promise<EngineResult<HttpIntelligence>> {
+export async function runHttpEngine(host: string, port: number, signal?: AbortSignal): Promise<EngineResult<HttpIntelligence>> {
   return runEngine('http-security', emptyHttp(null), async () => {
-    const base = port === 443 ? `https://${host}` : `https://${host}:${port}`
+    const authority = net.isIPv6(host) ? `[${host}]` : host
+    const base = port === 443 ? `https://${authority}` : `https://${authority}:${port}`
     const evidence: Evidence[] = []
     const notes: string[] = []
 
-    const { response, chain } = await requestFollowing(base)
+    const { response, chain } = await requestFollowing(base, signal)
 
     if (!response) {
       const data = emptyHttp('HTTPS origin did not respond')
@@ -586,7 +597,7 @@ export async function runHttpEngine(host: string, port: number): Promise<EngineR
     const hsts = analyzeHsts(headerValue('strict-transport-security'), host)
 
     // Does plain HTTP redirect to HTTPS? Answered by asking, not assumed.
-    const plainHttp = await rawRequest(`http://${host}`, 'HEAD')
+    const plainHttp = await rawRequest(`http://${authority}`, 'HEAD', signal)
     const httpToHttpsRedirect = plainHttp
       ? plainHttp.statusCode >= 300 &&
         plainHttp.statusCode < 400 &&

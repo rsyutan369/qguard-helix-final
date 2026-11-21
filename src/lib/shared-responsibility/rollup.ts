@@ -189,11 +189,11 @@ interface MatrixSeed extends SharedResponsibilityMatrixRow {
   specificity: number
 }
 
-/** Expand a finding into matrix seeds — provider-fronted TLS yields edge + origin. */
+/** Project one matrix row for each measured finding. */
 function matrixSeedsFor(finding: OwnershipFinding): MatrixSeed[] {
   const rawAsset = finding.asset || 'Unknown asset'
-  const assetKey = canonicalAssetLabel(rawAsset)
-  const asset = assetDisplayLabel(rawAsset) || rawAsset
+  const assetKey = finding.assetId ? `asset:${finding.assetId}` : `unlinked:${canonicalAssetLabel(rawAsset)}`
+  const asset = finding.assetId ? rawAsset : assetDisplayLabel(rawAsset) || rawAsset
   /*
    * Provider attribution and freshness ride on every matrix row so the table
    * can be filtered by company and reconciled against the Provider & Ecosystem
@@ -205,6 +205,7 @@ function matrixSeedsFor(finding: OwnershipFinding): MatrixSeed[] {
    * guessed vendor.
    */
   const base = {
+    sourceFindingId: finding.id,
     occurrences: 1,
     detectionLabels: [rawAsset],
     severity: finding.severity,
@@ -216,37 +217,22 @@ function matrixSeedsFor(finding: OwnershipFinding): MatrixSeed[] {
     observedAt: finding.observedAt,
   }
 
-  if (finding.edgeOrigin && finding.edgeOrigin.isProviderFronted && finding.edgeOrigin.edge && finding.edgeOrigin.origin) {
+  if (finding.severity !== 'safe' && finding.domain === 'provider' && finding.edgeOrigin?.edge) {
     const edge = finding.edgeOrigin.edge
-    const origin = finding.edgeOrigin.origin
     return [
       {
         ...base,
-        groupKey: `edge|${edge.owner.toLowerCase()}|${assetKey}`,
+        groupKey: `edge|${edge.owner.toLowerCase()}|${findingStem(finding).toLowerCase()}|${assetKey}`,
         specificity: 2,
         findingId: `${finding.id}:edge`,
-        finding: 'Edge TLS',
+        finding: `Edge TLS · ${findingStem(finding)}`,
         owner: edge.owner,
         action: 'Monitor provider roadmap',
         priority: 'informational',
-        status: 'Provider Managed',
+        status: finding.status,
         domain: 'provider',
         customerActionable: 'no',
         migrationDependencyStatus: finding.migrationDependencyStatus,
-      },
-      {
-        ...base,
-        groupKey: `origin|${origin.owner.toLowerCase()}|${assetKey}`,
-        specificity: 2,
-        findingId: `${finding.id}:origin`,
-        finding: 'Origin TLS',
-        owner: origin.owner,
-        action: 'Replace with ML-KEM hybrid',
-        priority: finding.severity === 'critical' || finding.severity === 'high' ? 'high' : 'medium',
-        status: 'Action Required',
-        domain: 'customer',
-        customerActionable: 'yes',
-        migrationDependencyStatus: 'ready',
       },
     ]
   }
@@ -258,7 +244,7 @@ function matrixSeedsFor(finding: OwnershipFinding): MatrixSeed[] {
       // One row per cryptographic exposure per owner per asset. Detection
       // channel, scanner category and evidence text are deliberately excluded
       // from the key — they are what made one exposure repeat as identical rows.
-      groupKey: `f|${finding.domain}|${finding.ownerType.toLowerCase()}|${stem.toLowerCase()}|${assetKey}`,
+      groupKey: `f|${finding.domain}|${finding.ownerType.toLowerCase()}|${stem.toLowerCase()}|${assetKey}|${finding.severity === 'safe' ? 'safe' : 'open'}`,
       specificity: actionSpecificity(finding.recommendedAction),
       findingId: finding.id,
       finding: stem,
@@ -453,7 +439,7 @@ export function buildSharedResponsibility(
 
   // 7-wave roadmap.
   const waveCounts = new Map<number, OwnershipFinding[]>()
-  for (const f of findings) {
+  for (const f of open) {
     const w = waveFor(f)
     const arr = waveCounts.get(w) ?? []
     arr.push(f)
@@ -503,13 +489,14 @@ export function buildSharedResponsibility(
 
   // Edge/origin aggregate.
   const providerFronted = findings.filter((f) => f.edgeOrigin?.isProviderFronted)
+  const linkedEdgeAssets = new Set(providerFronted.flatMap((f) => f.assetId ? [f.assetId] : []))
   const edgeOrigin = {
-    providerFrontedAssets: providerFronted.length,
+    providerFrontedAssets: linkedEdgeAssets.size,
     edgeManaged: providerFronted.length,
-    originCustomerControlled: providerFronted.length,
+    originCustomerControlled: 0,
     summary: providerFronted.length
-      ? `${providerFronted.length} asset(s) are provider-fronted: the edge is provider-managed while the origin remains customer-controlled and directly actionable.`
-      : 'No provider-fronted TLS detected — transport findings are customer-controlled end to end.',
+      ? 'Provider-edge signals come from public TLS evidence. Origin ownership and configuration require separate evidence.'
+      : 'No provider-edge TLS signals were recorded in this evidence window.',
   }
 
   // Attribution honesty summary.
@@ -544,6 +531,7 @@ export function buildSharedResponsibility(
     domainDistribution: { customer: customer.length, provider: provider.length, ecosystem: ecosystem.length },
     severityByDomain,
     matrix,
+    matrixTotal: matrixGroups.size,
     findings: boundedFindings,
     blockers,
     waves,

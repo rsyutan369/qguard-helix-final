@@ -41,6 +41,13 @@ export const nodeId = {
   cloud: (id: string) => `cloud:${id}`,
 }
 
+/** Select links with both ends in the displayed window before applying the display limit. */
+export function discoveryLinks(nodes: ReadonlyArray<Pick<TrustNode, 'id'>>, relationships: TrustRelationship[]) {
+  const ids = new Set(nodes.map((node) => node.id))
+  const inView = relationships.filter((edge) => ids.has(edge.from) && ids.has(edge.to))
+  return { relationships: inView.slice(0, 220), matchingRelationships: inView.length }
+}
+
 /**
  * Classifies a tenant asset into the trust vocabulary using its declared type
  * and name. Falls back to the generic `asset` kind rather than guessing a

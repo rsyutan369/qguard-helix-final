@@ -1712,6 +1712,7 @@ function QuantumSecurityUseCasesSection() {
 }
 
 type RequestDemoModalProps = {
+  source: 'navigation' | 'footer';
   isOpen: boolean;
   onClose: () => void;
 };
@@ -1761,11 +1762,11 @@ function demoRequestMailto(inbox: string, data: DemoFormState): string {
   return `mailto:${inbox}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }
 
-function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
+function RequestDemoModal({ isOpen, onClose, source }: RequestDemoModalProps) {
   const [formData, setFormData] = useState<DemoFormState>(EMPTY_DEMO_FORM);
   const [step, setStep] = useState<'form' | 'sending' | 'success'>('form');
   const [sendError, setSendError] = useState<DemoSendError | null>(null);
-  const [deliveredTo, setDeliveredTo] = useState<string>(DEMO_REQUEST_INBOX);
+  const [deliveredTo, setDeliveredTo] = useState<string | null>(null);
   const inFlight = useRef<AbortController | null>(null);
 
   useEffect(() => () => inFlight.current?.abort(), []);
@@ -1819,18 +1820,18 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
       const response = await fetch('/api/v1/demo-request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...parsed.value, website: formData.website }),
+        body: JSON.stringify({ ...parsed.value, website: formData.website, source }),
         signal: controller.signal,
       });
       const payload = (await response.json().catch(() => null)) as
-        | { ok?: boolean; inbox?: unknown; error?: { message?: unknown; inbox?: unknown } }
+        | { ok?: boolean; emailAccepted?: boolean; inbox?: unknown; error?: { message?: unknown; inbox?: unknown } }
         | null;
       if (inFlight.current !== controller) {
         return;
       }
 
       if (response.ok && payload?.ok) {
-        setDeliveredTo(typeof payload.inbox === 'string' ? payload.inbox : DEMO_REQUEST_INBOX);
+        setDeliveredTo(payload.emailAccepted === true && typeof payload.inbox === 'string' ? payload.inbox : null);
         setStep('success');
         return;
       }
@@ -1895,6 +1896,7 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
 
         {step !== 'success' && (
           <form onSubmit={handleSubmit} id="demo-request-form" noValidate>
+            <p>Your submission is saved so our team can follow up. <a href="/privacy">Privacy policy</a></p>
             <fieldset disabled={step === 'sending'} className="lp-form">
               <div aria-hidden="true" className="lp-sr">
                 <label>
@@ -2032,9 +2034,9 @@ function RequestDemoModal({ isOpen, onClose }: RequestDemoModalProps) {
 
         {step === 'success' && (
           <div className="lp-success">
-            <h4>Demo Request Sent</h4>
+            <h4>Demo Request Received</h4>
             <p>
-              Thanks, <strong>{formData.name}</strong>. Your request reached <strong>{deliveredTo}</strong>. We will reply to <strong>{formData.email}</strong> to schedule the session for <strong>{formData.organization}</strong>.
+              Thanks, <strong>{formData.name}</strong>. Your request was recorded. {deliveredTo && <>The notification was accepted for <strong>{deliveredTo}</strong>. </>}We will reply to <strong>{formData.email}</strong> to schedule the session for <strong>{formData.organization}</strong>.
             </p>
             <dl>
               <dt>Contact email:</dt>
@@ -2249,8 +2251,9 @@ function FaqAndCtaSection() {
 }
 
 export default function App() {
-  const [isDemoModalOpen, setIsDemoModalOpen] = useState(false);
-  const openDemoModal = () => setIsDemoModalOpen(true);
+  const [demoSource, setDemoSource] = useState<'navigation' | 'footer' | null>(null);
+  const isDemoModalOpen = demoSource !== null;
+
   const rootRef = useRef<HTMLDivElement>(null);
   const glowRef = useRef<HTMLCanvasElement>(null);
   useLandingMotion(rootRef, glowRef, isDemoModalOpen);
@@ -2262,7 +2265,7 @@ export default function App() {
           <canvas ref={glowRef} width={96} height={60} />
         </div>
 
-        <Navbar2 onRequestDemo={openDemoModal} />
+        <Navbar2 onRequestDemo={() => setDemoSource('navigation')} />
 
         <HeroSection />
         <TrustedLeadersSection />
@@ -2282,13 +2285,13 @@ export default function App() {
         <FaqAndCtaSection />
 
         <SiteFooter>
-          <button type="button" onClick={openDemoModal} className="lp-btn lp-btn--primary lp-btn--dot">
+          <button type="button" onClick={() => setDemoSource('footer')} className="lp-btn lp-btn--primary lp-btn--dot">
             Request Demo
             <ButtonDot />
           </button>
         </SiteFooter>
 
-        <RequestDemoModal isOpen={isDemoModalOpen} onClose={() => setIsDemoModalOpen(false)} />
+        <RequestDemoModal source={demoSource ?? 'navigation'} isOpen={isDemoModalOpen} onClose={() => setDemoSource(null)} />
       </div>
     </TooltipProvider>
   );

@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from 'express'
+import { createHash } from 'node:crypto'
 import { csvCell } from '@/lib/csv'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import {
@@ -18,7 +19,10 @@ import {
   jobPlanId,
   planApproval,
   type ApprovalVerdict,
+  type ApprovalRecord,
 } from '@/lib/migration/job-safety'
+import { isAwaitingMigrationWave, isHeldMigrationWave, isVerifiedMigrationJob, migrationJobInProgress, parseHandoffReview } from '@/lib/migration/planner-progress'
+import { serializeMigrationScope } from './migration-scope-lock'
 import { dispatchBlockFor } from '@/lib/migration/operational-workflow'
 import { buildAgentWorkflow, redactDetail, type WorkflowHeartbeatRow } from '@/lib/migration/agent-workflow'
 import { resolveWriteAuthority } from '@/lib/agent-installer/agent-scope'
@@ -101,6 +105,7 @@ type LiveMigrationJob = {
   telemetryCount: number
   validationCount: number
   validationStatus: string
+  validationEvidenceStatus?: string
   logs: LiveMigrationEvent[]
   logCount: number
   metadata: Record<string, unknown>
@@ -370,18 +375,12 @@ function deriveSourceAlgorithm(row: any, metadata: Record<string, unknown>, inve
   if (parsed.from) return parsed.from
 
   const inventoryAlgorithm = firstInventoryAlgorithm(row?.asset_id || null, inventoryByAsset)
-  return inventoryAlgorithm || 'Classical'
+  return inventoryAlgorithm || 'Not recorded'
 }
 
-function deriveTargetAlgorithm(row: any, metadata: Record<string, unknown>, context = '') {
-  const stackContext = [
-    context,
-    row?.strategy,
-    row?.job_type,
-    pickString(metadata, ['sourceAlgorithm', 'source_algorithm', 'assetType', 'asset_type', 'assetName', 'asset_name', 'migrationType', 'migration_type']),
-  ].filter(Boolean).join(' ')
+function deriveTargetAlgorithm(row: any, metadata: Record<string, unknown>) {
   const target = String(row?.target_algorithm || '').trim()
-  if (target) return mandatoryPqcTargetForContext(target, stackContext)
+  if (target) return target
 
   const fromMetadata = pickString(metadata, [
     'targetAlgorithm',
@@ -394,10 +393,10 @@ function deriveTargetAlgorithm(row: any, metadata: Record<string, unknown>, cont
     'pqcReplacement',
     'pqc_replacement',
   ])
-  if (fromMetadata) return mandatoryPqcTargetForContext(fromMetadata, stackContext)
+  if (fromMetadata) return fromMetadata
 
   const parsed = parseStrategyAlgorithms(String(row?.strategy || ''))
-  return mandatoryPqcTargetForContext(parsed.to || 'PQC target pending', stackContext)
+  return parsed.to || 'Not recorded'
 }
 
 function deriveEta(row: any, status: LiveMigrationStatus, progress: number, metadata: Record<string, unknown>) {
@@ -541,15 +540,26 @@ function matchesPlanId(row: any, planId?: string | null) {
   return planIdFromMetadata(asRecord(row?.metadata)) === planId
 }
 
-async function fetchJobs(client: any, userId: string, planId?: string | null) {
+async function fetchJobs(client: any, userId: string, planId?: string | null, proposalId?: string | null) {
   const baseSelect = 'id, user_id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, started_at, completed_at, created_at, updated_at'
   const withAsset = `${baseSelect}, assets(id, name, type, environment, criticality, service_owner, status)`
-  const jobsQuery = (select: string) => client
-    .from('migration_jobs')
-    .select(select)
-    .eq('user_id', userId)
-    .order('updated_at', { ascending: false })
-    .limit(100)
+  let scope: string[] | null = planId?.startsWith('planner-approved-') ? [planId] : null
+  let scopedAssets: string[] | null = null
+  if (!planId && proposalId) {
+    const [batches, proposals] = await Promise.all([
+      liveRows('migration_plans', () => client.from('migration_plans').select('id').eq('user_id', userId).eq('configuration->>approvalPlanId', proposalId)),
+      liveRows('migration_plans', () => client.from('migration_plans').select('selected_asset_ids').eq('user_id', userId).eq('id', proposalId).eq('status', 'approved')),
+    ])
+    scope = batches.map((batch) => String(batch.id))
+    scopedAssets = asStringArray(proposals[0]?.selected_asset_ids)
+    if (!scope.length || !scopedAssets.length) return []
+  }
+  const jobsQuery = (select: string) => {
+    let query = client.from('migration_jobs').select(select).eq('user_id', userId)
+    if (scope) query = query.in('metadata->>planId', scope)
+    if (scopedAssets) query = query.in('asset_id', scopedAssets)
+    return query.order('updated_at', { ascending: false }).limit(100)
+  }
 
   const primary = await jobsQuery(withAsset)
   if (!primary.error) return (primary.data || []).filter((row: any) => matchesPlanId(row, planId))
@@ -567,49 +577,54 @@ async function fetchJobs(client: any, userId: string, planId?: string | null) {
 
 async function fetchEvents(client: any, userId: string, migrationIds: string[]) {
   if (migrationIds.length === 0) return []
-  return liveRows('migration_events', () => client
+  const rows = await liveRows('migration_events', () => client
     .from('migration_events')
     .select('id, migration_id, event_type, message, severity, metadata, created_at')
     .eq('user_id', userId)
     .in('migration_id', migrationIds)
-    .order('created_at', { ascending: true })
+    .order('created_at', { ascending: false })
     .limit(600))
+  return rows.reverse()
 }
 
 async function fetchExecutionRows(client: any, userId: string, migrationIds: string[]) {
   if (migrationIds.length === 0) return []
-  return liveRows('migration_execution', () => client
+  const rows = await liveRows('migration_execution', () => client
     .from('migration_execution')
     .select('id, migration_id, plan_id, agent_id, status, progress, current_step, started_at, completed_at, metadata, created_at, updated_at')
     .eq('user_id', userId)
     .in('migration_id', migrationIds)
-    .order('updated_at', { ascending: true })
+    .order('updated_at', { ascending: false })
     .limit(1000))
+  return rows.reverse()
 }
 
 async function fetchTelemetryRows(client: any, userId: string, migrationIds: string[]) {
   if (migrationIds.length === 0) return []
-  return liveRows('migration_telemetry', () => client
+  const rows = await liveRows('migration_telemetry', () => client
     .from('migration_telemetry')
     .select('id, migration_id, agent_id, event_type, metric_type, metric_value, message, metadata, observed_at, created_at')
     .eq('user_id', userId)
     .in('migration_id', migrationIds)
-    .order('observed_at', { ascending: true })
+    .order('observed_at', { ascending: false })
     .limit(1200))
+  return rows.reverse()
 }
 
 async function fetchValidationRows(client: any, userId: string, migrationIds: string[]) {
   if (migrationIds.length === 0) return []
-  return liveRows('migration_validation_logs', () => client
+  const mostRecent = await liveRows('migration_validation_logs', () => client
     .from('migration_validation_logs')
     .select('id, migration_id, agent_id, validation_type, status, evidence, metadata, created_at')
     .eq('user_id', userId)
     .in('migration_id', migrationIds)
-    .order('created_at', { ascending: true })
+    .order('created_at', { ascending: false }).order('id', { ascending: false })
     .limit(1000))
+  return mostRecent.reverse()
 }
 
-async function fetchAuditRows(client: any, userId: string, planId?: string | null) {
+async function fetchAuditRows(client: any, userId: string, planIds?: string[]) {
+  if (planIds?.length === 0) return []
   return liveRows('migration_audit_logs', () => {
     const query = client
       .from('migration_audit_logs')
@@ -617,7 +632,7 @@ async function fetchAuditRows(client: any, userId: string, planId?: string | nul
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
       .limit(500)
-    return planId ? query.eq('plan_id', planId) : query
+    return planIds ? query.in('plan_id', planIds) : query
   })
 }
 
@@ -699,7 +714,18 @@ async function fetchInventory(client: any, userId: string, assetIds: string[]) {
     .limit(500))
 }
 
-async function latestScanAt(client: any, userId: string) {
+async function latestScanAt(client: any, userId: string, assetIds?: string[]) {
+  if (assetIds) {
+    if (!assetIds.length) return null
+    const findings = await liveRows('pqc_scan_results', () => client
+      .from('pqc_scan_results')
+      .select('created_at')
+      .eq('user_id', userId)
+      .in('asset_id', assetIds)
+      .order('created_at', { ascending: false })
+      .limit(1))
+    return findings[0]?.created_at || null
+  }
   const rows = await liveRows('pqc_scan_sessions', () => client
     .from('pqc_scan_sessions')
     .select('completed_at, started_at, created_at')
@@ -758,13 +784,9 @@ function executionEvidenceInMetadata(metadata: Record<string, unknown>) {
  */
 export { isPassingValidation }
 
-function validationStatusFromRows(rows: any[], metadata: Record<string, unknown>) {
-  const latest = rows[rows.length - 1]
-  const metadataValidation = asRecord(metadata.lastValidation)
-  const status = String(latest?.status || metadataValidation.status || '').toLowerCase()
+function validationStatusFromRows(rows: any[]) {
+  const status = String(rows.at(-1)?.status || '').toLowerCase()
   if (status) return status
-  if (metadataValidation.passed === true) return 'passed'
-  if (metadataValidation.passed === false) return 'failed'
   return rows.length ? 'recorded' : 'pending'
 }
 
@@ -800,14 +822,8 @@ const OPERATION_CLASS_BY_JOB_TYPE: Record<string, 'tls' | 'certificate' | 'key' 
   pqc_migration: 'pqc',
 }
 
-/** Telemetry events that record intent or progress, not an operation outcome. */
-const NON_OUTCOME_EVENTS = new Set(['agent-job-claimed', 'agent-remediation-started', 'agent-remediation-precheck', 'agent-remediation-manual-required'])
-
 export function buildLiveTelemetry(jobs: LiveMigrationJob[], telemetryRows: any[] = [], validationRows: any[] = [], auditRows: any[] = []) {
-  const telemetryText = telemetryRows.map((row) => `${row.event_type || ''} ${row.metric_type || ''} ${row.message || ''}`.toLowerCase())
-  const logText = jobs.flatMap((job) => job.logs.map((log) => `${log.eventType} ${log.message}`.toLowerCase()))
-  const countTelemetry = (pattern: RegExp) => telemetryText.filter((text) => pattern.test(text)).length
-  const countLogs = (pattern: RegExp) => logText.filter((text) => pattern.test(text)).length
+  const logs = jobs.flatMap((job) => job.logs)
 
   /*
    * OPERATIONS THAT HAPPENED — counted per job, once, from its recorded type,
@@ -819,16 +835,15 @@ export function buildLiveTelemetry(jobs: LiveMigrationJob[], telemetryRows: any[
    * claiming a certificate job incremented Certificate Replacements before
    * anything had changed on the host.
    */
-  const validatedOperations = jobs.filter((job) => !job.isSandbox && job.status === 'completed' && isPassingValidation(job.validationStatus))
+  const validatedOperations = jobs.filter(isVerifiedMigrationJob)
   const countOperations = (kind: string) => validatedOperations.filter((job) => OPERATION_CLASS_BY_JOB_TYPE[job.jobType] === kind).length
   /* A validation OUTCOME was recorded for the job — passed or failed, not pending. */
-  const validationEvents = Math.max(validationRows.length, jobs.filter((job) => !job.isSandbox && job.validationStatus && job.validationStatus !== 'pending').length)
-  /* Classified once at write time; claims and progress rows excluded. */
-  const compatibilityEvents = telemetryRows.filter((row) =>
-    String(row?.metric_type || '') === 'compatibility_check' && !NON_OUTCOME_EVENTS.has(String(row?.event_type || ''))).length
+  const validationEvents = validationRows.length
+  const compatibilityEvents = validationRows.filter((row) =>
+    ['compatibility', 'compatibility_check', 'compatibility-check'].includes(String(row?.validation_type || '').toLowerCase())).length
   const failed = jobs.filter((job) => job.status === 'failed').length
   const running = jobs.filter((job) => job.status === 'running').length
-  const waiting = jobs.filter((job) => job.status === 'queued' && !job.executionBacked).length
+  const waiting = jobs.filter((job) => job.status === 'queued' && !job.executionBacked && !isAwaitingMigrationWave(job)).length
 
   return {
     /* Field names kept for API and report compatibility; each now counts
@@ -840,17 +855,18 @@ export function buildLiveTelemetry(jobs: LiveMigrationJob[], telemetryRows: any[
     compatibilityChecks: compatibilityEvents,
     systemHealth: failed > 0 ? 'Degraded' : running > 0 ? 'Executing' : waiting > 0 ? 'Awaiting Agent' : jobs.length > 0 ? 'Ready' : 'No active migrations',
     activityFeed: {
-      migrationLogs: jobs.flatMap((job) => job.logs).length,
+      migrationLogs: logs.length,
       validationLogs: validationRows.length,
-      errorLogs: jobs.flatMap((job) => job.logs).filter((log) => /error|critical|failed/i.test(`${log.severity} ${log.message}`)).length,
-      auditLogs: auditRows.length + countLogs(/operator|audit|approve|rollback|pause|resume/),
-      complianceLogs: countTelemetry(/compliance|nist|evidence|policy/) + countLogs(/compliance|nist|evidence|policy/),
+      errorLogs: logs.filter((log) => ['error', 'critical'].includes(log.severity)).length,
+      auditLogs: auditRows.length,
+      complianceLogs: telemetryRows.filter((row) => row.metric_type === 'compliance_check').length,
     },
   }
 }
 
-async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: string | null) {
-  const jobRows = await fetchJobs(client, userId, planId)
+async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: string | null, proposalId?: string | null) {
+  const generatedAt = new Date().toISOString()
+  const jobRows = await fetchJobs(client, userId, planId, proposalId)
   /* One bounded read for every plan the board's jobs declare. If it fails, a
      planned job's verdict is "not approved" — the board must not claim an
      approval it could not read. */
@@ -863,34 +879,42 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
       .map((row: any) => row.asset_id)
       .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0),
   ))
+  const scoped = Boolean(planId || proposalId)
+  const auditPlanIds = planId ? [planId] : proposalId
+    ? [...new Set(jobRows.map((row: any) => planIdFromMetadata(asRecord(row.metadata))).filter(Boolean))] as string[]
+    : undefined
+  const evidenceCount = (table: string, apply = (query: any) => query, optional = false) => {
+    if (scoped && !assetIds.length) return Promise.resolve(0)
+    const count = optional ? optionalCount : liveCount
+    return count(client, table, userId, (query) => apply(scoped ? query.in('asset_id', assetIds) : query))
+  }
   const [eventRows, executionRows, telemetryRows, validationRows, auditRows, agentRows, inventoryRows, totalAssets, findings, criticalExposures, highExposures, scanAt] = await Promise.all([
     fetchEvents(client, userId, migrationIds),
     fetchExecutionRows(client, userId, migrationIds),
     fetchTelemetryRows(client, userId, migrationIds),
     fetchValidationRows(client, userId, migrationIds),
-    fetchAuditRows(client, userId, planId),
+    fetchAuditRows(client, userId, auditPlanIds),
     fetchAgentRows(client, userId),
     fetchInventory(client, userId, assetIds),
-    liveCount(client, 'assets', userId, (query) => query.eq('status', 'active')),
-    liveCount(client, 'pqc_scan_results', userId),
-    liveCount(client, 'crypto_exposures', userId, (query) => query.eq('severity', 'critical')),
-    liveCount(client, 'crypto_exposures', userId, (query) => query.eq('severity', 'high')),
-    latestScanAt(client, userId),
+    scoped ? assetIds.length : liveCount(client, 'assets', userId, (query) => query.eq('status', 'active')),
+    evidenceCount('pqc_scan_results').then((count) => count ?? 0),
+    evidenceCount('crypto_exposures', (query) => query.eq('severity', 'critical')).then((count) => count ?? 0),
+    evidenceCount('crypto_exposures', (query) => query.eq('severity', 'high')).then((count) => count ?? 0),
+    latestScanAt(client, userId, scoped ? assetIds : undefined),
   ])
   const [heartbeatRows, exposureSample, mediumExposures, lowExposures, inventoryItems, certificateItems, keyItems, quantumSafeItems, vulnerableItems] = await Promise.all([
-    fetchWorkflowHeartbeats(client, userId),
-    optionalRows('crypto_exposures(sample)', () => client
-      .from('crypto_exposures')
-      .select('asset_id, exposure_type, severity')
-      .eq('user_id', userId)
-      .limit(EXPOSURE_SAMPLE_LIMIT)),
-    optionalCount(client, 'crypto_exposures', userId, (query) => query.in('severity', ['medium', 'moderate'])),
-    optionalCount(client, 'crypto_exposures', userId, (query) => query.eq('severity', 'low')),
-    optionalCount(client, 'crypto_inventory', userId),
-    optionalCount(client, 'crypto_inventory', userId, (query) => query.eq('item_type', 'certificate')),
-    optionalCount(client, 'crypto_inventory', userId, (query) => query.eq('item_type', 'key')),
-    optionalCount(client, 'crypto_inventory', userId, (query) => query.eq('is_quantum_safe', true)),
-    optionalCount(client, 'crypto_inventory', userId, (query) => query.eq('is_vulnerable', true)),
+    scoped ? [] : fetchWorkflowHeartbeats(client, userId),
+    scoped && !assetIds.length ? [] : optionalRows('crypto_exposures(sample)', () => {
+      const query = client.from('crypto_exposures').select('asset_id, exposure_type, severity').eq('user_id', userId).limit(EXPOSURE_SAMPLE_LIMIT)
+      return scoped ? query.in('asset_id', assetIds) : query
+    }),
+    evidenceCount('crypto_exposures', (query) => query.in('severity', ['medium', 'moderate']), true),
+    evidenceCount('crypto_exposures', (query) => query.eq('severity', 'low'), true),
+    evidenceCount('crypto_inventory', undefined, true),
+    evidenceCount('crypto_inventory', (query) => query.eq('item_type', 'certificate'), true),
+    evidenceCount('crypto_inventory', (query) => query.eq('item_type', 'key'), true),
+    evidenceCount('crypto_inventory', (query) => query.eq('is_quantum_safe', true), true),
+    evidenceCount('crypto_inventory', (query) => query.eq('is_vulnerable', true), true),
   ])
 
   const eventsByJob = new Map<string, LiveMigrationEvent[]>()
@@ -942,20 +966,10 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     const sandboxEngineBacked = isSandbox && Boolean(metadata.engine || metadata.lastEngineTickAt || metadata.sandboxMode === true)
     const executionBacked = Boolean(executionRow || jobTelemetryRows.length || executionEvidenceInMetadata(metadata)) || sandboxEngineBacked
     const executionStatus = String(executionRow?.status || executorState.status || (executionBacked ? row.status || 'running' : 'waiting_for_agent'))
-    let status = normalizeStatus(executionStatus)
-    if (!executionBacked && (rowStatus === 'running' || String(row.status || '').toLowerCase() === 'executing')) status = 'queued'
-    if (!executionBacked && rowStatus === 'completed' && validationStatusFromRows(jobValidationRows, metadata) === 'pending') status = 'queued'
-    if (rowStatus === 'failed') status = 'failed'
-    if (rowStatus === 'paused') status = 'paused'
-    /* A rollback decision is recorded on the job row and must win over whatever
-       the execution row last reported, exactly like a cancellation. */
-    if (rowStatus === 'rolling_back') status = 'rolling_back'
-    if (rowStatus === 'rolled_back') status = 'rolled_back'
-    // An operator cancellation is a decision recorded on the job row itself, so
-    // it must win over whatever the agent/execution row last reported —
-    // otherwise a cancelled job keeps displaying as queued.
-    if (rowStatus === 'cancelled') status = 'cancelled'
-    const progressSource = executionBacked ? executionRow?.progress ?? executorState.progress ?? row.progress : 0
+    // Operator decisions and agent reports both update the job row. The last
+    // execution row can still describe the previous attempt after a retry.
+    const status = !executionBacked && rowStatus === 'running' ? 'queued' : rowStatus
+    const progressSource = executionBacked ? row.progress ?? executionRow?.progress ?? executorState.progress : 0
     const progress = clampProgress(progressSource, status)
     const logs = eventsByJob.get(row.id) || []
     const metadataLogs = Array.isArray(metadata.logs)
@@ -995,11 +1009,21 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
 
     const strategy = String(row.strategy || pickString(metadata, ['strategy']) || '')
     const fromAlgo = deriveSourceAlgorithm(row, metadata, inventoryByAsset)
-    const toAlgo = deriveTargetAlgorithm(row, metadata, `${fromAlgo} ${strategy} ${asset?.type || ''} ${asset?.name || ''}`)
+    const toAlgo = deriveTargetAlgorithm(row, metadata)
     const agentId = String(executionRow?.agent_id || pickString(metadata, ['assignedAgentId', 'assigned_agent_id']) || '')
     const agent = agentId ? agentsById.get(agentId) : null
     const agentName = String(agent?.name || pickString(metadata, ['assignedAgentName', 'assigned_agent_name']) || agent?.hostname || (sandboxEngineBacked ? pickString(metadata, ['engine']) || 'qguard-sandbox-orchestrator' : ''))
-    const validationStatus = validationStatusFromRows(jobValidationRows, metadata)
+    const validationStatus = validationStatusFromRows(jobValidationRows)
+    const approval = approvalFor(row, approvalPlans)
+    const dispatchBlock = dispatchBlockFor(metadata, status, liveAgentIds)
+    const held = isAwaitingMigrationWave({ rawStatus: String(row.status), metadata })
+    const recordedStep = executionRow?.current_step || executorState.currentStep || pickString(executionMetadata, ['currentStep'])
+    const currentStep = status === 'queued' && !sandboxEngineBacked
+      ? held ? 'Waiting for prior wave'
+        : approval.required && !approval.approved ? 'Waiting for approval'
+          : dispatchBlock ? 'Dispatch blocked' : 'Waiting for agent claim'
+      : ['cancelled', 'rolling_back', 'rolled_back'].includes(status) ? prettify(status)
+        : recordedStep || (sandboxEngineBacked ? pickString(metadata, ['phaseDetail', 'phase']) : '') || prettify(status)
     const startedAt = executionBacked ? executionRow?.started_at || row.started_at || null : null
     const completedAt = status === 'completed' ? executionRow?.completed_at || row.completed_at || null : null
     const sortedLogs = [...logs, ...telemetryLogs, ...validationLogs, ...metadataLogs]
@@ -1009,10 +1033,10 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
       id: row.id,
       asset: String(asset?.name || row.name || 'Unnamed migration'),
       assetId: row.asset_id || null,
-      assetType: String(asset?.type || pickString(metadata, ['assetType', 'asset_type']) || 'Service'),
+      assetType: String(asset?.type || pickString(metadata, ['assetType', 'asset_type']) || 'Unknown'),
       environment: String(asset?.environment || pickString(metadata, ['environment']) || 'Unknown'),
       owner: String(asset?.service_owner || pickString(metadata, ['owner', 'serviceOwner', 'service_owner']) || 'Unassigned'),
-      criticality: String(asset?.criticality || pickString(metadata, ['criticality']) || 'medium').toLowerCase(),
+      criticality: String(asset?.criticality || pickString(metadata, ['criticality']) || 'unknown').toLowerCase(),
       fromAlgo,
       toAlgo,
       migrationType: String(pickString(metadata, ['migrationType', 'migration_type']) || strategy || prettify(row.job_type, 'PQC Migration')),
@@ -1030,25 +1054,24 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
       executionBacked,
       /* Stated rather than implied: a queued job that no agent may execute
          reads as a stuck queue unless the reason travels with it. */
-      approval: approvalFor(row, approvalPlans),
+      approval,
       // Shared with the Migration Sandbox's operational details, so both pages
       // show the same refusal for the same job.
-      dispatchBlock: dispatchBlockFor(metadata, status, liveAgentIds),
+      dispatchBlock,
       isSandbox,
       runMode: isSandbox ? (metadata.dryRun === true ? 'dry_run' : 'sandbox_simulation') : 'migration_workflow',
       agentId: agentId || null,
       agentName: agentName || null,
-      agentStatus: String(agent?.status || (sandboxEngineBacked && !agentId ? 'sandbox-engine' : executionBacked ? 'assigned' : 'unassigned')),
-      currentStep: String(
-        executionRow?.current_step
-        || executorState.currentStep
-        || pickString(executionMetadata, ['currentStep'])
-        || (sandboxEngineBacked ? pickString(metadata, ['phaseDetail', 'phase']) || 'Sandbox engine executing' : '')
-        || (executionBacked ? 'Agent execution reported' : 'Waiting for agent claim')
-      ),
+      agentStatus: sandboxEngineBacked ? 'sandbox engine'
+        : !agentId ? 'unassigned'
+          : agent?.revoked_at || agent?.status === 'revoked' ? 'revoked'
+            : !agent?.last_seen_at ? 'no heartbeat recorded'
+              : Date.now() - Date.parse(agent.last_seen_at) <= HEARTBEAT_ONLINE_WINDOW_MS ? 'online' : 'offline',
+      currentStep: String(currentStep),
       telemetryCount: jobTelemetryRows.length,
       validationCount: jobValidationRows.length,
       validationStatus,
+      validationEvidenceStatus: jobValidationRows.at(-1)?.status,
       logs: sortedLogs,
       logCount: sortedLogs.length,
       metadata: {
@@ -1076,7 +1099,8 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     running: jobs.filter((job) => job.status === 'running').length,
     completed: jobs.filter((job) => job.status === 'completed').length,
     failed: jobs.filter((job) => job.status === 'failed').length,
-    queued: jobs.filter((job) => job.status === 'queued').length,
+    queued: jobs.filter((job) => job.status === 'queued' && !isAwaitingMigrationWave(job)).length,
+    held: jobs.filter(isAwaitingMigrationWave).length,
     paused: jobs.filter((job) => job.status === 'paused').length,
     cancelled: jobs.filter((job) => job.status === 'cancelled').length,
     rollingBack: jobs.filter((job) => job.status === 'rolling_back').length,
@@ -1086,10 +1110,10 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     awaitingApproval: jobs.filter((job) =>
       job.approval.required && !job.approval.approved && ['queued', 'paused'].includes(job.status)).length,
     completionRate: total ? Math.round((jobs.filter((job) => job.status === 'completed').length / total) * 100) : 0,
-    waitingForAgent: jobs.filter((job) => job.status === 'queued' && !job.executionBacked && !job.isSandbox).length,
-    agentBacked: jobs.filter((job) => job.executionBacked).length,
+    waitingForAgent: jobs.filter((job) => job.status === 'queued' && !job.isSandbox && !job.dispatchBlock && (!job.approval.required || job.approval.approved) && !isAwaitingMigrationWave(job)).length,
+    agentBacked: jobs.filter((job) => job.executionBacked && Boolean(job.agentId) && !job.isSandbox).length,
     sandboxSimulations: jobs.filter((job) => job.isSandbox).length,
-    verified: jobs.filter((job) => !job.isSandbox && isPassingValidation(job.validationStatus)).length,
+    verified: jobs.filter(isVerifiedMigrationJob).length,
     /*
      * Online is a HEARTBEAT fact, not a status column.
      *
@@ -1127,12 +1151,18 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
   if (planId) {
     const planRows = await liveRows('migration_plans', () => client
       .from('migration_plans')
-      .select('id, status, metadata, updated_at')
+      .select('id, status, metadata, selected_asset_ids, updated_at')
       .eq('user_id', userId)
       .eq('id', planId)
       .limit(1)).catch(() => [])
     const context = asRecord(asRecord(planRows?.[0]?.metadata).migrationContext)
-    if (Array.isArray(context.assets) && context.assets.length) plannerHandoff = context
+    const savedScope = new Set(planRows?.[0]?.selected_asset_ids || [])
+    const currentScope = new Set(assetIds)
+    const assets = Array.isArray(context.assets) ? context.assets.filter((asset) => {
+      const id = String(asRecord(asset).assetId || '')
+      return savedScope.has(id) && currentScope.has(id)
+    }) : []
+    if (assets.length) plannerHandoff = { ...context, assets }
   }
 
   // Four-agent workflow (Collector → Scanner → Patcher → Migration Operator),
@@ -1151,7 +1181,7 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
         revoked: Boolean(agent.revoked_at) || String(agent.status || '').toLowerCase() === 'revoked',
         role,
         writeAuthority: resolveWriteAuthority(role, asRecord(agent.capabilities), metadata),
-        telemetry: Object.keys(asRecord(metadata.lastTelemetry)).length ? asRecord(metadata.lastTelemetry) : null,
+        telemetry: !scoped && Object.keys(asRecord(metadata.lastTelemetry)).length ? asRecord(metadata.lastTelemetry) : null,
       }
     }),
     heartbeats: heartbeatRows || [],
@@ -1186,7 +1216,7 @@ async function buildLiveMigrationSnapshot(client: any, userId: string, planId?: 
     .limit(25))
 
   return {
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     planId: planId || null,
     plannerHandoff,
     summary,
@@ -1343,11 +1373,12 @@ function phaseLabel(strategy: string, asset: any, index: number, total: number) 
 
 function buildExecutionPlan(assets: any[], configuration: Record<string, unknown>) {
   const strategy = String(configuration.deploymentStrategy || 'Staged Rollout')
-  const sorted = [...assets].sort((a, b) => plannerSequenceScore(b, configuration) - plannerSequenceScore(a, configuration))
+  const guided = configuration.guidedHandoff === true
+  const sorted = guided ? assets : [...assets].sort((a, b) => plannerSequenceScore(b, configuration) - plannerSequenceScore(a, configuration))
   const groups = new Map<string, any[]>()
 
   sorted.forEach((asset, index) => {
-    const label = phaseLabel(strategy, asset, index, Math.max(1, sorted.length))
+    const label = guided ? `Wave ${index + 1}` : phaseLabel(strategy, asset, index, Math.max(1, sorted.length))
     if (!groups.has(label)) groups.set(label, [])
     groups.get(label)!.push(asset)
   })
@@ -1977,12 +2008,11 @@ function buildPlanPayload({
   snapshot,
   jobs,
   now,
-  approvedBy,
+  approval,
 }: {
   planId: string
   action: PlannerAction
-  /** Operator identity, recorded on the approval a `start` writes. */
-  approvedBy?: string
+  approval?: ApprovalRecord
   selectedAssets: any[]
   configuration: Record<string, unknown>
   snapshot: Awaited<ReturnType<typeof buildMigrationPlannerSnapshot>>
@@ -2021,15 +2051,7 @@ function buildPlanPayload({
       createdAt: now,
       status,
       action,
-      /*
-       * Starting a migration is a change-producing decision, so it is RECORDED
-       * as an approval with the operator's identity rather than inferred from
-       * the plan's status. `save`, `schedule`, `export` and `sandbox` produce
-       * no approval — none of them may dispatch work to an agent.
-       */
-      ...(action === 'start'
-        ? { approval: approvalRecord(String(approvedBy || ''), now, 'planner-start', 'Approved by the operator who started this migration from the Migration Planner.') }
-        : {}),
+      ...(approval ? { approval } : {}),
       estimatedDuration: estimatePlanDuration(selectedAssets.length, String(configuration.deploymentStrategy || '')),
       expectedDowntime: estimateDowntime(String(configuration.deploymentStrategy || ''), controls),
       rollbackAvailable: controls.rollback !== false,
@@ -2103,7 +2125,7 @@ async function persistMigrationPlan(client: any, userId: string, plan: Migration
     /* `approved_at` is only stamped when an approval decision actually exists —
        previously `export` and `sandbox` stamped it too, which put an approval
        timestamp on plans nobody had approved. */
-    approved_at: planApproval({ status: plan.status, metadata: plan.migrationMetadata }).approved ? plan.updatedAt : null,
+    approved_at: planApproval({ status: plan.status, metadata: plan.migrationMetadata }).approvedAt || null,
     scheduled_at: pickString(plan.configuration, ['scheduleAt']) || null,
   }
   const { error } = await client.from('migration_plans').upsert(row)
@@ -2555,6 +2577,9 @@ function approvalFor(job: any, loaded: { plans: Map<string, any> }): ApprovalVer
 function actionApprovalBlock(action: string, job: any, loaded: { plans: Map<string, any>; degraded: boolean }): string | null {
   if (!['resume', 'retry'].includes(action)) return null
   if (isSimulationJob(job)) return null
+  if (asRecord(asRecord(job.metadata).configuration).guidedHandoff === true && isHeldMigrationWave(job)) {
+    return 'Release this wave from Migration Planner after the previous waves pass validation.'
+  }
   const verdict = approvalFor(job, loaded)
   if (verdict.approved) return null
   if (loaded.degraded && verdict.source === 'plan') {
@@ -2872,37 +2897,83 @@ router.post('/planner/scenario', requireAuth, async (req: AuthenticatedRequest, 
   res.json({ data: scenario })
 })
 
-router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, res) => {
+// A proposal and asset map to one job even if two requests reach different API replicas.
+function guidedJobId(planId: string, assetId: string) {
+  const hex = createHash('sha256').update(`${planId}:${assetId}`).digest('hex')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+}
+
+router.post('/planner/create', requireAuth, serializeMigrationScope(async (req: AuthenticatedRequest, res) => {
   const client = clientFor(req)
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
 
   const range = req.body?.range || req.query.range
   const action = plannerAction(req.body?.action)
-  const limit = Math.max(1, Math.min(50, Number(req.body?.limit || 25)))
+  const limit = action === 'start' ? 50 : Math.max(1, Math.min(50, Number(req.body?.limit || 25)))
   const selectedIds = Array.isArray(req.body?.assetIds) ? new Set(req.body.assetIds.map((id: unknown) => String(id))) : null
   const approvalPlanId = action === 'start' ? String(req.body?.approvalPlanId || '').trim() : ''
-  if (approvalPlanId) {
+  const handoffReview = action === 'start' ? parseHandoffReview(req.body?.handoffReview) : null
+  let approval: ApprovalRecord | undefined
+  let approvedScope: ReturnType<typeof plannerAssetFromInput>[] = []
+  let executionId: string | undefined
+  if (action === 'start') {
+    if (!approvalPlanId) return res.status(409).json({ error: { code: 'PLAN_NOT_APPROVED', message: 'Submit the assessed assets and record approval before sending a migration to Live Migration Ops.' } })
     const { data: proposal, error } = await client.from('migration_plans')
       .select('status, selected_asset_ids, metadata')
       .eq('user_id', req.user!.id).eq('id', approvalPlanId).maybeSingle()
     if (error) return res.status(503).json({ error: { code: 'PLAN_READ_FAILED', message: 'Unable to verify the approved migration plan.' } })
+    const decision = planApproval(proposal)
     const approvedIds = proposal?.selected_asset_ids
-    if (!proposal || proposal.status !== 'approved' || !planApproval(proposal).approved || !Array.isArray(approvedIds) ||
-      !selectedIds?.size || selectedIds.size !== approvedIds.length || approvedIds.some((id: unknown) => !selectedIds.has(String(id)))) {
-      return res.status(409).json({ error: { code: 'PLAN_NOT_APPROVED', message: 'The requested assets must match the scope of an approved migration plan.' } })
+    if (!proposal || proposal.status !== 'approved' || !decision.approved || !decision.approvedBy || !decision.approvedAt || !Array.isArray(approvedIds) ||
+      !selectedIds?.size || selectedIds.size !== req.body.assetIds.length || approvedIds.length > 50 || new Set(approvedIds).size !== approvedIds.length || [...selectedIds].some((id) => !approvedIds.includes(id))) {
+      return res.status(409).json({ error: { code: 'PLAN_NOT_APPROVED', message: 'Select one or more distinct assets in the approved proposal.' } })
     }
+    const chosenIds = approvedIds.filter((id: string) => selectedIds.has(id))
+    const existing = await client.from('migration_plans').select('id,configuration,metadata,selected_asset_ids')
+      .eq('user_id', req.user!.id).eq('configuration->>approvalPlanId', approvalPlanId)
+      .order('created_at', { ascending: false })
+    if (existing.error) return res.status(503).json({ error: { code: 'EXECUTION_LOOKUP_FAILED', message: 'Unable to verify whether the plan has already been handed off.' } })
+    const exact = existing.data?.find((batch) => batch.selected_asset_ids?.length === chosenIds.length && batch.selected_asset_ids.every((id: string) => selectedIds.has(id)))
+    if (exact && (exact.configuration?.guidedHandoff !== true || exact.metadata?.handoffReadyAt)) {
+      const id = String(exact.id)
+      const liveMigrationUrl = `/dashboard/live-migration?planId=${encodeURIComponent(id)}`
+      return res.json({ data: { planId: id, liveMigrationUrl, plan: { id, liveMigrationUrl } } })
+    }
+    if (existing.data?.some((batch) => batch.id !== exact?.id && batch.selected_asset_ids?.some((id: string) => selectedIds.has(id)))) {
+      return res.status(409).json({ error: { code: 'ASSET_ALREADY_SENT', message: 'One or more selected assets have already been sent from this proposal.' } })
+    }
+    const selectionHash = createHash('sha256').update(JSON.stringify(chosenIds)).digest('hex').slice(0, 24)
+    executionId = exact?.id || `planner-approved-${approvalPlanId}-${selectionHash}`
+    if (!handoffReview) return res.status(422).json({ error: { code: 'HANDOFF_REVIEW_REQUIRED', message: 'Record compatibility evidence, the change window, and the rollback procedure before handoff.' } })
+    const scope = Array.isArray(proposal.metadata?.scope) ? proposal.metadata.scope.map(asRecord) : []
+    const scopeById = new Map<string, Record<string, unknown>>(scope.map((asset: Record<string, unknown>) => [String(asset.id), asset]))
+    approvedScope = chosenIds.map((id: string) => {
+      const asset = scopeById.get(id)
+      if (!asset) return null
+      const algorithms = Array.isArray(asset.algorithms) ? asset.algorithms.map(asRecord) : []
+      const source = algorithms.find((item) => item.classification === 'vulnerable')
+      return plannerAssetFromInput({ ...asset, currentAlgorithm: source?.algorithm, detectedAt: asset.lastEvidenceAt })
+    })
+    if (approvedScope.some((asset) => !asset)) return res.status(409).json({ error: { code: 'PLAN_SCOPE_CHANGED', message: 'The approved findings could not be read. Review and resubmit the proposal.' } })
+    const { data: activeAssets, error: scopeError } = await client.from('assets').select('id,status')
+      .eq('user_id', req.user!.id).in('id', chosenIds)
+    if (scopeError) return res.status(503).json({ error: { code: 'SCOPE_READ_FAILED', message: 'Unable to verify the approved assets.' } })
+    if (activeAssets?.filter((asset) => !['archived', 'deleted'].includes(asset.status)).length !== chosenIds.length) {
+      return res.status(409).json({ error: { code: 'PLAN_SCOPE_CHANGED', message: 'An approved asset is no longer available. Review and resubmit the proposal.' } })
+    }
+    approval = approvalRecord(decision.approvedBy, decision.approvedAt, decision.via || 'planner-proposal', decision.reason)
   }
   const now = new Date().toISOString()
-  const planId = pickString(asRecord(req.body), ['planId', 'id']) || `planner-${Date.now()}`
-  const baseConfiguration = normalizePlannerConfiguration(req.body?.configuration)
-  const suppliedAssetActions: PlannerAction[] = ['start', 'sandbox']
-  const suppliedAssets = suppliedAssetActions.includes(action) && Array.isArray(req.body?.selectedAssets)
+  const planId = executionId || pickString(asRecord(req.body), ['planId', 'id']) || `planner-${Date.now()}`
+  if (!approval && planId.startsWith('planner-approved-')) return res.status(409).json({ error: { code: 'GUIDED_PLAN_ID', message: 'Open the approved proposal to manage this execution plan.' } })
+  const baseConfiguration = normalizePlannerConfiguration(approval ? {} : req.body?.configuration)
+  const suppliedAssets = action === 'sandbox' && Array.isArray(req.body?.selectedAssets)
     ? req.body.selectedAssets.map(plannerAssetFromInput).filter(Boolean).slice(0, limit)
     : []
   const tenantAssetIds = suppliedAssets.length
     ? new Set((await safeRows(client, 'assets', req.user!.id, (q) => q.select('id').in('id', suppliedAssets.map((asset: any) => asset.assetId)).limit(suppliedAssets.length))).map((asset: any) => String(asset.id)))
     : new Set<string>()
-  const verifiedSuppliedAssets = suppliedAssets.filter((asset: any) => tenantAssetIds.has(String(asset.assetId)))
+  const verifiedSuppliedAssets = approval ? approvedScope.filter(Boolean) : suppliedAssets.filter((asset: any) => tenantAssetIds.has(String(asset.assetId)))
   const snapshot = verifiedSuppliedAssets.length
     ? buildPlannerHandoffSnapshot(range, verifiedSuppliedAssets)
     : await buildMigrationPlannerSnapshot(client, req.user!.id, range)
@@ -2919,11 +2990,11 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
     return res.status(409).json({ error: { code: 'PLAN_SCOPE_CHANGED', message: 'The approved scope contains assets that are no longer available. Review and resubmit the plan.' } })
   }
 
-  const prepared = preparePlanAssets(selectedAssetCandidates, baseConfiguration)
+  const prepared = preparePlanAssets(selectedAssetCandidates, { ...baseConfiguration, guidedHandoff: Boolean(approval) })
   const selectedAssets = prepared.assets
   const configuration = {
     ...baseConfiguration,
-    ...(approvalPlanId ? { approvalPlanId } : {}),
+    ...(approvalPlanId ? { approvalPlanId, guidedHandoff: true } : {}),
     strategyPhases: prepared.phases,
     orchestrationRules: {
       strategy: baseConfiguration.deploymentStrategy,
@@ -2934,7 +3005,7 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
     },
   }
 
-  const existing = action === 'sandbox'
+  const existing = action === 'sandbox' || approval
     ? []
     : await safeRows(client, 'migration_jobs', req.user!.id, (q) => q.select('id, asset_id, name, job_type, status, target_algorithm, strategy, progress, metadata, created_at, updated_at').order('updated_at', { ascending: false }).limit(1200))
   const activeByAsset = new Map<string, any>(
@@ -2950,6 +3021,19 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
       })
       .map((job: any) => [String(job.asset_id), job]),
   )
+  if (approval) {
+    const { data: currentJobs, error } = await client.from('migration_jobs')
+      .select('id,asset_id,name,job_type,status,target_algorithm,strategy,progress,metadata,created_at,updated_at')
+      .eq('user_id', req.user!.id).in('asset_id', selectedAssets.map((asset) => asset.assetId))
+    if (error) return res.status(503).json({ error: { code: 'JOB_READ_FAILED', message: 'Unable to verify active work for the approved assets.' } })
+    for (const job of currentJobs || []) {
+      if (isSimulationJob(job)) continue
+      if (jobPlanId(job) === planId) activeByAsset.set(String(job.asset_id), job)
+      else if (migrationJobInProgress(job.status) || asRecord(asRecord(job.metadata).configuration).approvalPlanId === approvalPlanId) {
+        return res.status(409).json({ error: { code: 'ASSET_ALREADY_IN_EXECUTION', message: 'An asset already has a migration operation. Resolve it in Live Migration Ops before sending this proposal.' } })
+      }
+    }
+  }
 
   const candidates = action === 'sandbox'
     ? []
@@ -2968,7 +3052,7 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
     snapshot,
     jobs: reusedJobs,
     now,
-    approvedBy: req.user!.email || req.user!.id,
+    approval,
   })
 
   const rows = candidates.map((asset: any) => {
@@ -2978,6 +3062,7 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
     )
     const targetAlgorithm = String(targetStack.targetAlgorithm)
     return {
+    ...(approval ? { id: guidedJobId(approvalPlanId, asset.assetId) } : {}),
     user_id: req.user!.id,
     asset_id: asset.assetId,
     name: `PQC Migration: ${asset.name}`,
@@ -3032,7 +3117,7 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
         agentRequired: true,
         agentDispatchStatus: action === 'start' && asset.startsOnApproval ? 'queued_for_agent' : 'waiting_for_orchestration',
         operatorPatchWorkflow: true,
-        sequenceState: action === 'start' && asset.startsOnApproval ? 'waiting_for_agent' : 'pending',
+        sequenceState: action === 'start' ? asset.startsOnApproval ? 'waiting_for_agent' : 'waiting_for_prior_phase' : 'pending',
       },
       controls: configuration.controls,
       range: snapshot.range.key,
@@ -3058,6 +3143,7 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
     }
 
     if (result.error) {
+      if (approval && result.error.code === '23505') return res.status(409).json({ error: { code: 'HANDOFF_IN_PROGRESS', message: 'This proposal is already being sent. Refresh the planner before trying again.' } })
       return res.status(500).json({ error: { code: 'PLAN_CREATE_FAILED', message: result.error.message || 'Failed to create migration plan' } })
     }
     inserted = result.data || []
@@ -3072,8 +3158,9 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
     snapshot,
     jobs: allJobs,
     now,
-    approvedBy: req.user!.email || req.user!.id,
+    approval,
   })
+  if (handoffReview) plan.migrationMetadata.handoffReview = { ...handoffReview, recordedBy: req.user!.email || req.user!.id, recordedAt: now }
 
   let sandboxJobs: any[] = []
   if (action === 'sandbox') {
@@ -3283,7 +3370,7 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
     })
   }
 
-  for (const job of reusedJobs) {
+  for (const job of approval ? [] : reusedJobs) {
     const metadata = asRecord(job.metadata)
     const plannedAsset = selectedAssets.find((asset: any) => String(asset.assetId || asset.id) === String(job.asset_id))
     const targetStack = mandatoryPqcStackMetadata(
@@ -3357,6 +3444,10 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
     await persistMigrationPlan(client, req.user!.id, plan)
     if (action === 'start') {
       await persistExecutionDispatch(client, req.user!.id, plan, allJobs, action, 1, now)
+      const metadata = { ...plan.migrationMetadata, handoffReadyAt: new Date().toISOString() }
+      const { error } = await client.from('migration_plans').update({ metadata }).eq('user_id', req.user!.id).eq('id', planId)
+      if (error) throw error
+      plan.migrationMetadata = metadata
     }
 
     const eventRows = [
@@ -3446,7 +3537,7 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
 
     await Promise.resolve(client.from('security_events').insert({
       user_id: req.user!.id,
-      event_type: action === 'start' ? 'migration-plan-approved' : `migration-plan-${action}`,
+      event_type: action === 'start' ? 'migration-plan-handoff' : `migration-plan-${action}`,
       severity: 'info',
       message: `${selectedAssets.length} asset migration plan ${plan.status} from ${snapshot.range.label}.`,
       resource_name: 'Migration Planner',
@@ -3486,24 +3577,12 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
     message: `${selectedAssets.length} asset migration plan ${plan.status}; ${inserted.length} new job(s), ${reusedJobs.length} existing job(s) linked.`,
   }
 
-  if (action === 'start') {
-    void finalizePlannerHandoff().catch((error: any) => {
-      console.warn('[migration-planner] Background start handoff finalization failed:', error?.message || error)
-    })
-    return res.json({
-      data: {
-        ...responseData,
-        handoffStatus: 'background_finalizing',
-        message: `${selectedAssets.length} asset migration plan ${plan.status}; opening PQC Orchestration while dispatch packages and audit telemetry finish in the background.`,
-      },
-    })
-  }
-
   try {
     await finalizePlannerHandoff()
   } catch (error: any) {
     return res.status(500).json({ error: { code: 'PLAN_PERSIST_FAILED', message: error?.message || 'Failed to persist migration plan' } })
   }
+  if (action === 'start') return res.json({ data: responseData })
 
   let refreshed = snapshot
   try {
@@ -3517,7 +3596,7 @@ router.post('/planner/create', requireAuth, async (req: AuthenticatedRequest, re
       snapshot: refreshed,
     },
   })
-})
+}))
 
 router.get('/plans/:planId', requireAuth, async (req: AuthenticatedRequest, res) => {
   const client = clientFor(req)
@@ -3571,19 +3650,57 @@ router.post('/plans/:planId/action', requireAuth, async (req: AuthenticatedReque
     })
   }
 
-  const jobs = await fetchPlanJobs(client, req.user!.id, planId)
-  if (!jobs.length) return res.status(404).json({ error: { code: 'NO_PLAN_JOBS', message: 'No migration jobs are linked to this plan' } })
+  const planJobs = await fetchPlanJobs(client, req.user!.id, planId)
+  if (!planJobs.length) return res.status(404).json({ error: { code: 'NO_PLAN_JOBS', message: 'No migration jobs are linked to this plan' } })
 
-  const phaseToStart = nextPhaseForAction(action, jobs)
+  const guided = plan.configuration.guidedHandoff === true
+  if (guided && action === 'approve_next_phase' && !plan.migrationMetadata.handoffReadyAt) {
+    return res.status(409).json({ error: { code: 'HANDOFF_INCOMPLETE', message: 'Complete the approved handoff in Migration Planner before releasing a wave.' } })
+  }
+  let jobs = planJobs
+  let phaseToStart = nextPhaseForAction(action, jobs)
+  if (guided && action === 'start_execution') return res.status(409).json({ error: { code: 'ALREADY_STARTED', message: 'The first wave was sent at handoff. Review the current wave in Live Migration Ops.' } })
+  if (guided && action === 'approve_next_phase') {
+    const held = planJobs.filter((job) => job.status === 'pending' && isHeldMigrationWave(job))
+    if (!held.length) return res.status(409).json({ error: { code: 'NO_HELD_WAVE', message: 'There are no remaining waves to release.' } })
+    const wave = Math.min(...held.map(jobPhaseIndex))
+    const prior = planJobs.filter((job) => jobPhaseIndex(job) < wave)
+    const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id, planId)
+    if (!snapshot) return res.status(503).json({ error: { code: 'VALIDATION_UNAVAILABLE', message: 'Could not verify earlier waves. Try again after validation evidence is available.' } })
+    const verified = new Set(snapshot.jobs.filter(isVerifiedMigrationJob).map((job) => job.id))
+    const cancelled = prior.filter((job) => ['cancelled', 'canceled'].includes(String(job.status).toLowerCase()))
+    if (cancelled.length) {
+      const { data, error } = await client.from('migration_plans').select('metadata').eq('user_id', req.user!.id)
+        .eq('id', plan.configuration.approvalPlanId).maybeSingle()
+      if (error || !data) return res.status(503).json({ error: { code: 'PROPOSAL_LOOKUP_FAILED', message: 'Could not verify removed assets before releasing the next wave.' } })
+      const removals = asRecord(data.metadata).scopeRemovals
+      const removed = new Set(Array.isArray(removals) ? removals.flatMap((entry) => asStringArray(asRecord(entry).assetIds)) : [])
+      for (const job of cancelled) if (removed.has(String(job.asset_id))) verified.add(job.id)
+    }
+    if (prior.length !== wave - 1 || prior.some((job) => !verified.has(job.id))) {
+      return res.status(409).json({ error: { code: 'PRIOR_WAVE_UNVERIFIED', message: 'Complete execution and record passing validation for every earlier wave before releasing the next one.' } })
+    }
+    phaseToStart = wave
+    jobs = held.filter((job) => jobPhaseIndex(job) === wave)
+  } else if (guided) {
+    // Plan-wide controls only apply to work that has been released.
+    jobs = jobs.filter((job) => !isHeldMigrationWave(job))
+    if (action === 'resume') jobs = jobs.filter((job) => job.status === 'paused')
+    if (action === 'pause') jobs = jobs.filter((job) => ['running', 'in_progress', 'queued'].includes(job.status))
+    if (!jobs.length) return res.status(409).json({ error: { code: 'NO_ELIGIBLE_JOBS', message: 'No released migration operations are eligible for this action.' } })
+  }
   for (const job of jobs) {
-    const { error: updateError } = await client
+    let update = client
       .from('migration_jobs')
       .update(orchestrationActionUpdate(action, asRecord(job.metadata), job.progress, phaseToStart))
       .eq('id', job.id)
       .eq('user_id', req.user!.id)
+    if (guided && action === 'approve_next_phase') update = update.eq('status', 'pending')
+    const { data: updated, error: updateError } = await update.select('id').maybeSingle()
     if (updateError) {
       return res.status(500).json({ error: { code: 'UPDATE_FAILED', message: 'Failed to update plan migration jobs' } })
     }
+    if (!updated) return res.status(409).json({ error: { code: 'JOB_CHANGED', message: 'The migration changed while you were reviewing it. Refresh its status.' } })
   }
 
   await insertActionEvents(client, req.user!.id, jobs, action)
@@ -3703,8 +3820,9 @@ router.get('/live', requireAuth, async (req: AuthenticatedRequest, res) => {
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
 
   const planId = typeof req.query.planId === 'string' ? req.query.planId : null
+  const proposalId = typeof req.query.proposalId === 'string' ? req.query.proposalId : null
   try {
-    const snapshot = await buildLiveMigrationSnapshot(client, req.user!.id, planId)
+    const snapshot = await buildLiveMigrationSnapshot(client, req.user!.id, planId, proposalId)
     res.json({ data: snapshot })
   } catch (err) {
     if (err instanceof SnapshotUnavailableError) {
@@ -3755,6 +3873,7 @@ router.get('/live/stream', requireAuth, async (req: AuthenticatedRequest, res) =
 
   const userId = req.user!.id
   const planId = typeof req.query.planId === 'string' ? req.query.planId : null
+  const proposalId = typeof req.query.proposalId === 'string' ? req.query.proposalId : null
   let closed = false
   let building = false
   let rebuildQueued = false
@@ -3766,8 +3885,11 @@ router.get('/live/stream', requireAuth, async (req: AuthenticatedRequest, res) =
     }
     building = true
     try {
-      const snapshot = await buildLiveMigrationSnapshot(client, userId, planId)
+      const snapshot = await buildLiveMigrationSnapshot(client, userId, planId, proposalId)
       if (!closed) writeSse(res, 'migration-update', snapshot)
+    } catch (error) {
+      if (!closed) writeSse(res, 'migration-update-error', { message: 'Could not refresh migration operations.' })
+      throw error
     } finally {
       building = false
       if (rebuildQueued && !closed) {
@@ -3803,9 +3925,10 @@ router.get('/live/stream', requireAuth, async (req: AuthenticatedRequest, res) =
     for (const event of pending) {
       cursor = event.id
       const isDiscovery = event.name === AGENT_DISCOVERY_EVENT
-      if (isDiscovery && planId) continue
+      if (isDiscovery && (planId || proposalId)) continue
       if (!isDiscovery) needsSnapshot = true
-      res.write(`id: ${event.id}\nevent: agent-event\ndata: ${JSON.stringify({ id: event.id, name: event.name, agentId: event.agentId, at: event.at, payload: redactDetail(event.payload) })}\n\n`)
+      // Scoped views consume persisted jobs and evidence, not tenant-wide bus frames.
+      if (!planId && !proposalId) res.write(`id: ${event.id}\nevent: agent-event\ndata: ${JSON.stringify({ id: event.id, name: event.name, agentId: event.agentId, at: event.at, payload: redactDetail(event.payload) })}\n\n`)
     }
     if (needsSnapshot && !snapshotTimer) {
       snapshotTimer = setTimeout(() => {
@@ -3816,8 +3939,6 @@ router.get('/live/stream', requireAuth, async (req: AuthenticatedRequest, res) =
   }
   const unsubscribe = subscribeAgentEvents(userId, flushAgentEvents)
 
-  await emitSnapshot().catch(() => undefined)
-  flushAgentEvents()
   const heartbeat = setInterval(() => writeSse(res, 'heartbeat', { ts: Date.now() }), 15000)
   const poll = setInterval(() => emitSnapshot().catch(() => undefined), 7000)
 
@@ -3829,6 +3950,9 @@ router.get('/live/stream', requireAuth, async (req: AuthenticatedRequest, res) =
     clearInterval(poll)
     res.end()
   })
+
+  await emitSnapshot().catch(() => undefined)
+  flushAgentEvents()
 })
 
 router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, res) => {
@@ -3836,6 +3960,7 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
   if (!client) return res.status(500).json({ error: { code: 'DB_ERROR', message: 'Database connection failed' } })
 
   const action = String(req.body?.action || '').toLowerCase()
+  const planId = typeof req.body?.planId === 'string' && req.body.planId.trim() ? req.body.planId.trim() : null
   if (!['pause', 'resume', 'retry', 'rollback', 'cancel', 'approve'].includes(action)) {
     return res.status(400).json({ error: { code: 'INVALID_ACTION', message: 'Unsupported migration action' } })
   }
@@ -3847,7 +3972,7 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
     .eq('user_id', req.user!.id)
     .single()
 
-  if (readError || !job) {
+  if (readError || !job || !matchesPlanId(job, planId)) {
     return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Migration job not found' } })
   }
 
@@ -3897,7 +4022,7 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
       origin: 'operator',
     })
     await insertActionEvents(client, req.user!.id, [job], 'rollback')
-    const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id)
+    const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id, planId)
     return res.json({ data: { action, jobId: job.id, rollback: result, snapshot } })
   }
 
@@ -3914,7 +4039,7 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
     }
     const current = jobApproval(job, null)
     if (current.approved) {
-      const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id)
+      const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id, planId)
       return res.json({ data: { action, jobId: job.id, alreadyApproved: true, approval: current, snapshot } })
     }
     const now = new Date().toISOString()
@@ -3935,7 +4060,7 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
     await insertActionEvents(client, req.user!.id, [job], 'approve', { approval: record })
     const dispatchPlan = dispatchPlanFromJob(job, now)
     if (dispatchPlan) await persistExecutionDispatch(client, req.user!.id, dispatchPlan, [job], 'approve', null, now)
-    const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id)
+    const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id, planId)
     return res.json({ data: { action, jobId: job.id, approval: jobApproval({ ...job, metadata: { ...asRecord(job.metadata), approval: record } }, null), snapshot } })
   }
 
@@ -3964,7 +4089,7 @@ router.post('/jobs/:id/action', requireAuth, async (req: AuthenticatedRequest, r
     const dispatchPlan = dispatchPlanFromJob(job, new Date().toISOString())
     if (dispatchPlan) await persistExecutionDispatch(client, req.user!.id, dispatchPlan, [job], action, null, new Date().toISOString())
   }
-  const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id)
+  const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id, planId)
   return res.json({ data: { action, jobId: job.id, snapshot } })
 })
 
@@ -4065,7 +4190,7 @@ router.post('/jobs/actions', requireAuth, async (req: AuthenticatedRequest, res)
     }
   }
 
-  const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id)
+  const snapshot = await buildLiveMigrationSnapshotOrNull(client, req.user!.id, planId)
   return res.json({ data: { action, affected: ids.length, blocked, snapshot } })
 })
 

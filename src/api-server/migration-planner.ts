@@ -1,5 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { isPassingValidation, isSimulationJob } from '@/lib/migration/job-safety'
+import { migrationJobInProgress } from '@/lib/migration/planner-progress'
+import { serializeMigrationScope } from './migration-scope-lock'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { createSingleFlightCache } from '@/lib/single-flight-cache'
 import { streamLiveSnapshot } from './live-snapshot-stream'
@@ -29,6 +31,46 @@ import {
 const router = Router()
 type AuthedRequest = Request & { user?: { id: string; email?: string | null }; token?: string }
 type Row = Record<string, unknown>
+
+type AssetReservation = 'submitted' | 'in-execution'
+async function assetReservations(client: ReturnType<typeof createAuthClient>, userId: string, ids: string[]) {
+  const reservations = new Map<string, AssetReservation>()
+  if (!client || !ids.length) return reservations
+  const wanted = new Set(ids)
+  const handedOff = new Map<string, Set<string>>()
+  // Keep requests bounded, and page through history so newer work cannot hide older active jobs.
+  for (let offset = 0; offset < ids.length; offset += 50) {
+    const chunk = ids.slice(offset, offset + 50)
+    for (let page = 0; ; page += 1) {
+      const jobs = await client.from('migration_jobs').select('id,asset_id,job_type,name,status,metadata')
+        .eq('user_id', userId).in('asset_id', chunk).order('id').range(page * 500, page * 500 + 499)
+      if (jobs.error) throw jobs.error
+      for (const job of jobs.data || []) {
+        if (!job.asset_id || isSimulationJob(job)) continue
+        if (migrationJobInProgress(job.status)) reservations.set(job.asset_id, 'in-execution')
+        const proposal = recordOf(recordOf(job.metadata).configuration).approvalPlanId
+        if (typeof proposal !== 'string') continue
+        const scope = handedOff.get(proposal) || new Set<string>()
+        scope.add(job.asset_id)
+        handedOff.set(proposal, scope)
+      }
+      if ((jobs.data?.length || 0) < 500) break
+    }
+  }
+  for (let page = 0; ; page += 1) {
+    const plans = await client.from('migration_plans').select('id,selected_asset_ids')
+      .eq('user_id', userId).in('status', ['pending_approval', 'approved']).order('id').range(page * 500, page * 500 + 499)
+    if (plans.error) throw plans.error
+    for (const plan of plans.data || []) {
+      if (!Array.isArray(plan.selected_asset_ids)) continue
+      for (const id of plan.selected_asset_ids) {
+        if (wanted.has(id) && !reservations.has(id) && !handedOff.get(plan.id)?.has(id)) reservations.set(id, 'submitted')
+      }
+    }
+    if ((plans.data?.length || 0) < 500) break
+  }
+  return reservations
+}
 
 function tokenFromRequest(req: Request): string | null {
   const headerToken = getToken(req)
@@ -552,30 +594,24 @@ async function readQueue(client: any, userId: string): Promise<{ assetIds: strin
   return { assetIds: ids, updatedAt: str(row.updated_at) || null }
 }
 
-/** Persists the tenant's migration queue. Order IS the migration sequence. */
+class MigrationQueueChanged extends Error {
+  constructor() { super('The migration queue changed. Review its current order and retry.') }
+}
+
+/** Persists the ordered queue only if another request has not changed it. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function writeQueue(client: any, userId: string, assetIds: string[], email?: string | null) {
-  const now = new Date().toISOString()
-  const { error } = await client.from('migration_plans').upsert(
-    {
-      id: queuePlanId(userId),
-      user_id: userId,
-      status: QUEUE_PLAN_STATUS,
-      selected_asset_ids: assetIds,
-      configuration: { source: 'migration-planner-asset-queue' },
-      risk_data: {},
-      metadata: {
-        name: 'Asset Migration Queue',
-        kind: 'asset-migration-queue',
-        updatedBy: email || 'planner',
-        updatedAt: now,
-        sequence: assetIds,
-      },
-      created_at: now,
-      updated_at: now,
-    },
-    { onConflict: 'id' },
-  )
+async function writeQueue(client: any, userId: string, assetIds: string[], expectedAt: string | null, email?: string | null) {
+  const now = new Date(Math.max(Date.now(), (Date.parse(expectedAt || '') || 0) + 1)).toISOString()
+  const id = queuePlanId(userId)
+  const change = {
+    selected_asset_ids: assetIds,
+    metadata: { name: 'Asset Migration Queue', kind: 'asset-migration-queue', updatedBy: email || 'planner', updatedAt: now, sequence: assetIds },
+    updated_at: now,
+  }
+  const { data, error } = expectedAt
+    ? await client.from('migration_plans').update(change).eq('id', id).eq('user_id', userId).eq('updated_at', expectedAt).select('id').maybeSingle()
+    : await client.from('migration_plans').insert({ ...change, id, user_id: userId, status: QUEUE_PLAN_STATUS, configuration: { source: 'migration-planner-asset-queue' }, risk_data: {}, created_at: now }).select('id').single()
+  if (error?.code === '23505' || (!error && !data)) throw new MigrationQueueChanged()
   if (error) throw new Error(error.message || 'Queue persistence failed')
 }
 
@@ -724,10 +760,12 @@ router.get('/assets', async (req: Request, res: Response) => {
     else if (sort === 'effort') sorted.sort((a, b) => b.estimatedEffortHours - a.estimatedEffortHours)
     // default: portfolio order (priority score desc) is already applied
 
+    const page = sorted.slice(offset, offset + limit)
+    const reservations = await assetReservations(createAuthClient(token!), user!.id, page.map((asset) => asset.id))
     res.json({
       data: {
         generatedAt: portfolio.generatedAt,
-        assets: sorted.slice(offset, offset + limit).map(compactRecord),
+        assets: page.map((asset) => ({ ...compactRecord(asset), reservation: reservations.get(asset.id) ?? null })),
         total: filtered.length,
         totalUnfiltered: portfolio.assets.length,
         summary: portfolio.summary,
@@ -774,10 +812,11 @@ router.get('/assets/:assetId', async (req: Request, res: Response) => {
     if (!record) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Asset not found for this tenant' } })
 
     const rank = portfolio.recommendedOrder.find((r) => r.assetId === assetId)
+    const reservations = await assetReservations(createAuthClient(token!), user!.id, [assetId])
     res.json({
       data: {
         generatedAt: portfolio.generatedAt,
-        asset: record,
+        asset: { ...record, reservation: reservations.get(assetId) ?? null },
         position: {
           recommendedRank: rank?.rank ?? null,
           totalRanked: portfolio.recommendedOrder.length,
@@ -802,7 +841,9 @@ async function respondQueue(req: Request, res: Response) {
   const queue = await readQueue(client, user!.id)
   // Mutating routes invalidate the portfolio cache before calling this, so the
   // queue view is always rebuilt from the post-write evidence.
-  const portfolio = await buildPortfolio(token!, user!.id)
+  const [portfolio, reservations] = await Promise.all([
+    buildPortfolio(token!, user!.id), assetReservations(client, user!.id, queue.assetIds),
+  ])
   const byId = new Map(portfolio.assets.map((a) => [a.id, a]))
   const entries = queue.assetIds
     .map((id, index) => {
@@ -811,6 +852,7 @@ async function respondQueue(req: Request, res: Response) {
       return {
         sequence: index + 1,
         assetId: record.id,
+        reservation: reservations.get(record.id) ?? null,
         name: record.name,
         type: record.type,
         environment: record.environment,
@@ -860,50 +902,55 @@ router.get('/queue', async (req: Request, res: Response) => {
   }
 })
 
-router.post('/queue', async (req: Request, res: Response) => {
+router.post('/queue', serializeMigrationScope(async (req: Request, res: Response) => {
   try {
     const { token, user } = req as AuthedRequest
     const client = createAuthClient(token!)
     if (!client) return res.status(500).json({ error: { code: 'SUPABASE_UNAVAILABLE', message: 'Data layer unavailable' } })
     const incoming = Array.isArray(req.body?.assetIds) ? (req.body.assetIds as unknown[]).map(str) : [str(req.body?.assetId)]
-    const requested = incoming.filter(Boolean)
-    if (!requested.length) return res.status(400).json({ error: { code: 'VALIDATION', message: 'assetId or assetIds is required' } })
+    const requested = [...new Set(incoming.filter(Boolean))]
+    if (!requested.length || requested.length > 200) return res.status(400).json({ error: { code: 'VALIDATION', message: 'Choose between 1 and 200 assets.' } })
 
     // Tenant verification — only assets that belong to this tenant may be queued.
     const portfolio = await buildPortfolio(token!, user!.id)
-    const known = new Set(portfolio.assets.map((a) => a.id))
-    const valid = requested.filter((id) => known.has(id))
-    if (!valid.length) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'No matching tenant asset for the supplied id(s)' } })
+    const assessed = new Set(portfolio.assets.filter((asset) => asset.hasEvidence).map((asset) => asset.id))
+    if (requested.some((id) => !assessed.has(id))) {
+      return res.status(422).json({ error: { code: 'INVALID_SCOPE', message: 'Only assets with assessment evidence in this workspace can be queued.' } })
+    }
 
     const queue = await readQueue(client, user!.id)
-    const next = [...queue.assetIds]
-    for (const id of valid) if (!next.includes(id)) next.push(id)
-    await writeQueue(client, user!.id, next.slice(0, 200), user!.email)
+    const reservations = await assetReservations(client, user!.id, requested)
+    if (reservations.size) return res.status(409).json({ error: { code: 'ASSET_ALREADY_RESERVED', message: 'One or more assets are already submitted or in Live Migration Ops.', assetIds: [...reservations.keys()] } })
+    const next = [...new Set([...queue.assetIds, ...requested])]
+    if (next.length > 200) return res.status(409).json({ error: { code: 'QUEUE_FULL', message: 'Remove assets before adding to the 200-asset queue.' } })
+    await writeQueue(client, user!.id, next, queue.updatedAt, user!.email)
     portfolioCache.delete(user!.id)
     await respondQueue(req, res)
   } catch (error) {
+    if (error instanceof MigrationQueueChanged) return res.status(409).json({ error: { code: 'QUEUE_CHANGED', message: error.message } })
     console.error('Migration queue add failed:', error)
     res.status(500).json({ error: { code: 'QUEUE_ADD_ERROR', message: error instanceof Error ? error.message : 'Unable to queue asset' } })
   }
-})
+}))
 
-router.delete('/queue/:assetId', async (req: Request, res: Response) => {
+router.delete('/queue/:assetId', serializeMigrationScope(async (req: Request, res: Response) => {
   try {
     const { token, user } = req as AuthedRequest
     const client = createAuthClient(token!)
     if (!client) return res.status(500).json({ error: { code: 'SUPABASE_UNAVAILABLE', message: 'Data layer unavailable' } })
     const assetId = str(req.params.assetId)
     const queue = await readQueue(client, user!.id)
-    await writeQueue(client, user!.id, queue.assetIds.filter((id) => id !== assetId), user!.email)
+    await writeQueue(client, user!.id, queue.assetIds.filter((id) => id !== assetId), queue.updatedAt, user!.email)
     portfolioCache.delete(user!.id)
     await respondQueue(req, res)
   } catch (error) {
+    if (error instanceof MigrationQueueChanged) return res.status(409).json({ error: { code: 'QUEUE_CHANGED', message: error.message } })
     console.error('Migration queue remove failed:', error)
     res.status(500).json({ error: { code: 'QUEUE_REMOVE_ERROR', message: 'Unable to remove asset from the queue' } })
   }
-})
+}))
 
-router.post('/queue/reorder', async (req: Request, res: Response) => {
+router.post('/queue/reorder', serializeMigrationScope(async (req: Request, res: Response) => {
   try {
     const { token, user } = req as AuthedRequest
     const client = createAuthClient(token!)
@@ -913,18 +960,19 @@ router.post('/queue/reorder', async (req: Request, res: Response) => {
     const current = new Set(queue.assetIds)
     // Only reorder what is already queued; unknown ids are ignored and any
     // omitted queued asset keeps its place at the end (never silently dropped).
-    const reordered = requested.filter((id) => current.has(id))
+    const reordered = [...new Set(requested.filter((id) => current.has(id)))]
     const remaining = queue.assetIds.filter((id) => !reordered.includes(id))
-    await writeQueue(client, user!.id, [...reordered, ...remaining], user!.email)
+    await writeQueue(client, user!.id, [...reordered, ...remaining], queue.updatedAt, user!.email)
     portfolioCache.delete(user!.id)
     await respondQueue(req, res)
   } catch (error) {
+    if (error instanceof MigrationQueueChanged) return res.status(409).json({ error: { code: 'QUEUE_CHANGED', message: error.message } })
     console.error('Migration queue reorder failed:', error)
     res.status(500).json({ error: { code: 'QUEUE_REORDER_ERROR', message: 'Unable to reorder the migration queue' } })
   }
-})
+}))
 
-router.post('/queue/prioritize', async (req: Request, res: Response) => {
+router.post('/queue/prioritize', serializeMigrationScope(async (req: Request, res: Response) => {
   try {
     const { token, user } = req as AuthedRequest
     const client = createAuthClient(token!)
@@ -933,14 +981,15 @@ router.post('/queue/prioritize', async (req: Request, res: Response) => {
     const rank = new Map(portfolio.assets.map((a) => [a.id, a.priorityScore]))
     const queue = await readQueue(client, user!.id)
     const sorted = [...queue.assetIds].sort((a, b) => (rank.get(b) ?? 0) - (rank.get(a) ?? 0))
-    await writeQueue(client, user!.id, sorted, user!.email)
+    await writeQueue(client, user!.id, sorted, queue.updatedAt, user!.email)
     portfolioCache.delete(user!.id)
     await respondQueue(req, res)
   } catch (error) {
+    if (error instanceof MigrationQueueChanged) return res.status(409).json({ error: { code: 'QUEUE_CHANGED', message: error.message } })
     console.error('Migration queue prioritize failed:', error)
     res.status(500).json({ error: { code: 'QUEUE_PRIORITIZE_ERROR', message: 'Unable to apply the recommended order' } })
   }
-})
+}))
 
 /* ---- POST /plans/:planId/context — authoritative Live Migration handoff ---- */
 /*
@@ -967,13 +1016,17 @@ router.post('/plans/:planId/context', async (req: Request, res: Response) => {
 
     const { data: existing, error: readError } = await client
       .from('migration_plans')
-      .select('id, status, metadata')
+      .select('id, status, metadata, selected_asset_ids, updated_at')
       .eq('user_id', user!.id)
       .eq('id', planId)
       .limit(1)
     if (readError) return res.status(500).json({ error: { code: 'PLAN_READ_FAILED', message: readError.message } })
     const row = ((existing as Row[]) || [])[0]
     if (!row) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Migration plan not found' } })
+    const executionIds = Array.isArray(row.selected_asset_ids) ? row.selected_asset_ids : []
+    if (new Set(assetIds).size !== assetIds.length || assetIds.length !== executionIds.length || executionIds.some((id) => !assetIds.includes(str(id))) || records.length !== assetIds.length) {
+      return res.status(409).json({ error: { code: 'CONTEXT_SCOPE_CHANGED', message: 'The handoff context must match the saved execution scope.' } })
+    }
 
     const migrationContext = {
       source: 'migration-planner-asset-workspace',
@@ -1009,12 +1062,14 @@ router.post('/plans/:planId/context', async (req: Request, res: Response) => {
     }
 
     const metadata = { ...recordOf(row.metadata), migrationContext }
-    const { error } = await client
+    const stamped = await client
       .from('migration_plans')
       .update({ metadata, updated_at: new Date().toISOString() })
       .eq('user_id', user!.id)
       .eq('id', planId)
-    if (error) return res.status(500).json({ error: { code: 'CONTEXT_STAMP_FAILED', message: error.message } })
+      .eq('updated_at', row.updated_at).select('id').maybeSingle()
+    if (stamped.error) return res.status(500).json({ error: { code: 'CONTEXT_STAMP_FAILED', message: stamped.error.message } })
+    if (!stamped.data) return res.status(409).json({ error: { code: 'CONTEXT_STAMP_CHANGED', message: 'The execution plan changed before its context could be saved.' } })
 
     // Audit trail — the handoff is an operator action against real assets.
     await client
@@ -1079,22 +1134,53 @@ router.get('/plans', async (req: Request, res: Response) => {
       .neq('status', QUEUE_PLAN_STATUS)
     const assetId = str(req.query.assetId).trim()
     if (assetId) query = query.contains('selected_asset_ids', [assetId])
+    if (req.query.proposals === '1') query = query.in('status', ['approved', 'pending_approval', 'rejected'])
     const { data, error } = await query
       .order('updated_at', { ascending: false })
       .limit(50)
     if (error) return res.status(500).json({ error: { code: 'PLANS_QUERY_FAILED', message: error.message } })
-    const plans = ((data as Row[]) || []).map(mapPlanRow)
+    const planRows = (data || []) as Row[]
+    const proposalId = str(req.query.proposalId).trim().slice(0, 100)
+    if (req.query.proposals === '1' && proposalId && !planRows.some((row) => row.id === proposalId)) {
+      const selected = await client.from('migration_plans').select('id, status, metadata, selected_asset_ids, created_at, updated_at')
+        .eq('user_id', user!.id).eq('id', proposalId).in('status', ['approved', 'pending_approval', 'rejected']).maybeSingle()
+      if (selected.error) return res.status(503).json({ error: { code: 'PROPOSAL_LOOKUP_FAILED', message: 'Could not load the selected proposal.' } })
+      if (selected.data) planRows.push(selected.data)
+    }
+    const plans = planRows.map(mapPlanRow)
     if (!plans.length) return res.json({ data: plans })
-    const { data: evidence } = await client.from('sandbox_lab_runs').select('id,asset_id,attached_plan_id,attached_at')
-      .eq('user_id', user!.id).in('attached_plan_id', plans.map((plan) => plan.id)).order('attached_at', { ascending: false }).limit(200)
-    return res.json({ data: plans.map((plan) => ({ ...plan, labEvidence: (evidence || []).filter((run) => run.attached_plan_id === plan.id) })) })
+    const approvedIds = plans.filter((plan) => plan.status === 'approved' && plan.assetIds.length).map((plan) => plan.id)
+    const [lab, executions] = await Promise.all([
+      client.from('sandbox_lab_runs').select('id,asset_id,attached_plan_id,attached_at')
+        .eq('user_id', user!.id).in('attached_plan_id', plans.map((plan) => plan.id)).order('attached_at', { ascending: false }).limit(200),
+      approvedIds.length ? client.from('migration_plans').select('id,configuration,metadata,selected_asset_ids')
+        .eq('user_id', user!.id).in('configuration->>approvalPlanId', approvedIds).order('created_at', { ascending: false })
+        : { data: [], error: null },
+    ])
+    if (executions.error) return res.status(503).json({ error: { code: 'EXECUTION_LOOKUP_FAILED', message: 'Could not verify which proposals were sent to Live Migration Ops.' } })
+    return res.json({ data: plans.map((plan) => {
+      const batches = (executions.data || []).filter((execution) => execution.configuration?.approvalPlanId === plan.id)
+      const execution = batches.find((batch) => batch.configuration?.guidedHandoff !== true || batch.metadata?.handoffReadyAt)
+      return {
+        ...plan,
+        executionPlanId: execution?.id ?? null,
+        executions: batches.map((batch) => ({
+          id: batch.id,
+          assetIds: Array.isArray(batch.selected_asset_ids) ? batch.selected_asset_ids : [],
+          ready: batch.configuration?.guidedHandoff !== true || Boolean(batch.metadata?.handoffReadyAt),
+          guided: batch.configuration?.guidedHandoff === true,
+          handoffReview: batch.metadata?.handoffReview ?? null,
+        })),
+        labEvidence: (lab.data || []).filter((run) => run.attached_plan_id === plan.id),
+      }
+    }) })
   } catch (error) {
     console.error('migration plans list failed:', error)
     res.status(500).json({ error: { code: 'PLANS_ERROR', message: 'Unable to list migration plans' } })
   }
 })
 
-router.post('/plans', async (req: Request, res: Response) => {
+router.post('/plans', serializeMigrationScope(async (req: Request, res: Response) => {
   try {
     const { token, user } = req as AuthedRequest
     const client = createAuthClient(token!)
@@ -1102,22 +1188,26 @@ router.post('/plans', async (req: Request, res: Response) => {
     const name = str(req.body?.name).trim().slice(0, 160) || `PQC Migration Plan — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
     const requestedIds = req.body?.assetIds
     const scope: ProposalAsset[] = []
-    if (requestedIds !== undefined) {
-      if (!Array.isArray(requestedIds) || !requestedIds.length || requestedIds.length > 50 || requestedIds.some((id) => typeof id !== 'string' || !id.trim()) || new Set(requestedIds).size !== requestedIds.length) {
-        return res.status(400).json({ error: { code: 'INVALID_SCOPE', message: 'Select between 1 and 50 distinct assets.' } })
+    if (!Array.isArray(requestedIds) || !requestedIds.length || requestedIds.length > 50 || requestedIds.some((id) => typeof id !== 'string' || !id.trim()) || new Set(requestedIds).size !== requestedIds.length) {
+      return res.status(400).json({ error: { code: 'INVALID_SCOPE', message: 'Select between 1 and 50 distinct queued assets.' } })
+    }
+    const queue = await readQueue(client, user!.id)
+    const selected = new Set(requestedIds)
+    const orderedIds = [...new Set(queue.assetIds.filter((id) => selected.has(id)))]
+    if (orderedIds.length !== selected.size) return res.status(409).json({ error: { code: 'QUEUE_CHANGED', message: 'Some selected assets are no longer in the queue. Refresh it and review the scope.' } })
+    const reservations = await assetReservations(client, user!.id, orderedIds)
+    if (reservations.size) return res.status(409).json({ error: { code: 'ASSET_ALREADY_RESERVED', message: 'One or more assets are already submitted or in Live Migration Ops. Refresh and choose available assets.', assetIds: [...reservations.keys()] } })
+    const portfolio = await buildPortfolio(token!, user!.id, true)
+    const assets = new Map(portfolio.assets.map((asset) => [asset.id, asset]))
+    for (const id of orderedIds) {
+      const asset = assets.get(id)
+      if (!asset?.hasEvidence) return res.status(422).json({ error: { code: 'INVALID_SCOPE', message: 'Each selected asset must have assessment evidence in your workspace.' } })
+      const preferredTarget = str(req.body?.targets?.[id]).trim()
+      if (preferredTarget && !asset.algorithms.some((algorithm) => algorithm.classification === 'vulnerable' && algorithm.category !== 'unknown' && algorithm.target === preferredTarget)) {
+        return res.status(422).json({ error: { code: 'INVALID_TARGET', message: 'The proposed target is no longer supported by the selected asset evidence. Refresh and review the proposal.' } })
       }
-      const portfolio = await buildPortfolio(token!, user!.id, true)
-      const assets = new Map(portfolio.assets.map((asset) => [asset.id, asset]))
-      for (const id of requestedIds) {
-        const asset = assets.get(id)
-        if (!asset?.hasEvidence) return res.status(422).json({ error: { code: 'INVALID_SCOPE', message: 'Each selected asset must have assessment evidence in your workspace.' } })
-        const preferredTarget = str(req.body?.targets?.[id]).trim()
-        if (preferredTarget && !asset.algorithms.some((algorithm) => algorithm.classification === 'vulnerable' && algorithm.category !== 'unknown' && algorithm.target === preferredTarget)) {
-          return res.status(422).json({ error: { code: 'INVALID_TARGET', message: 'The proposed target is no longer supported by the selected asset evidence. Refresh and review the proposal.' } })
-        }
-        const { name, type, environment, owner, riskScore, algorithms, priority, lastEvidenceAt, dependencies, rollbackStrategy, compatibility } = asset
-        scope.push({ id, name, type, environment, owner, riskScore, algorithms, priority, lastEvidenceAt, dependencies, rollbackStrategy, compatibility, preferredTarget: preferredTarget || null })
-      }
+      const { name, type, environment, owner, riskScore, algorithms, priority, lastEvidenceAt, dependencies, rollbackStrategy, compatibility } = asset
+      scope.push({ id, name, type, environment, owner, riskScore, algorithms, priority, lastEvidenceAt, dependencies, rollbackStrategy, compatibility, preferredTarget: preferredTarget || null })
     }
     const now = new Date().toISOString()
     const row: Record<string, unknown> = {
@@ -1138,9 +1228,53 @@ router.post('/plans', async (req: Request, res: Response) => {
     console.error('migration plan submit failed:', error)
     res.status(500).json({ error: { code: 'PLAN_SUBMIT_ERROR', message: 'Unable to submit plan for approval' } })
   }
-})
+}))
 
-router.post('/plans/:planId/approval', async (req: Request, res: Response) => {
+router.post('/plans/:planId/remove-assets', serializeMigrationScope(async (req: Request, res: Response) => {
+  const { token, user } = req as AuthedRequest
+  const client = createAuthClient(token!)
+  if (!client) return res.status(503).json({ error: { message: 'The migration workspace is unavailable.' } })
+  const planId = str(req.params.planId)
+  const assetIds = req.body?.assetIds
+  if (!Array.isArray(assetIds) || !assetIds.length || assetIds.length > 50 || assetIds.some((id) => typeof id !== 'string') || new Set(assetIds).size !== assetIds.length) {
+    return res.status(400).json({ error: { message: 'Choose the submitted assets to remove.' } })
+  }
+  const plan = await client.from('migration_plans').select('id,status,metadata,selected_asset_ids,created_at,updated_at')
+    .eq('user_id', user!.id).eq('id', planId).maybeSingle()
+  if (plan.error) throw plan.error
+  if (!plan.data) return res.status(404).json({ error: { message: 'Proposal not found in this workspace.' } })
+  const { status, selected_asset_ids, metadata, updated_at } = plan.data
+  if (!['pending_approval', 'approved'].includes(status) || !Array.isArray(selected_asset_ids) || assetIds.some((id) => !selected_asset_ids.includes(id))) {
+    return res.status(409).json({ error: { message: 'The submitted scope has changed. Refresh before removing assets.' } })
+  }
+  const [batches, jobs] = await Promise.all([
+    client.from('migration_plans').select('selected_asset_ids').eq('user_id', user!.id).eq('configuration->>approvalPlanId', planId),
+    client.from('migration_jobs').select('id,asset_id,status').eq('user_id', user!.id).in('asset_id', assetIds).eq('metadata->configuration->>approvalPlanId', planId),
+  ])
+  if (batches.error || jobs.error) throw batches.error || jobs.error
+  if (assetIds.some((id) => {
+    const linked = (jobs.data || []).filter((job) => job.asset_id === id)
+    const sent = linked.length || batches.data?.some((batch) => batch.selected_asset_ids?.includes(id))
+    return sent && (!linked.length || linked.some((job) => !['cancelled', 'canceled'].includes(str(job.status).toLowerCase())))
+  })) {
+    return res.status(409).json({ error: { message: 'Cancel the linked operation in Live Migration Ops before removing a sent asset from its proposal.' } })
+  }
+  const original = recordOf(metadata)
+  const scope = mapPlanRow(plan.data).scope.filter((asset) => !assetIds.includes(asset.id))
+  const remaining = selected_asset_ids.filter((id: string) => !assetIds.includes(id))
+  const now = new Date(Math.max(Date.now(), Date.parse(updated_at) + 1)).toISOString()
+  const updated = await client.from('migration_plans').update({
+    status: remaining.length ? status : 'withdrawn', selected_asset_ids: remaining, updated_at: now,
+    metadata: { ...original, scope, scopeRemovals: [...(Array.isArray(original.scopeRemovals) ? original.scopeRemovals : []), { assetIds, removedAt: now, removedBy: user!.email || user!.id }] },
+  }).eq('user_id', user!.id).eq('id', planId).eq('status', status).eq('updated_at', updated_at)
+    .select('id,status,metadata,selected_asset_ids,created_at,updated_at').maybeSingle()
+  if (updated.error) throw updated.error
+  if (!updated.data) return res.status(409).json({ error: { message: 'The proposal changed. Refresh before retrying.' } })
+  portfolioCache.delete(user!.id)
+  return res.json({ data: mapPlanRow(updated.data) })
+}))
+
+router.post('/plans/:planId/approval', serializeMigrationScope(async (req: Request, res: Response) => {
   try {
     const { token, user } = req as AuthedRequest
     const client = createAuthClient(token!)
@@ -1162,6 +1296,9 @@ router.post('/plans/:planId/approval', async (req: Request, res: Response) => {
     const row = ((existing as Row[]) || [])[0]
     if (!row) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Migration plan not found' } })
     if (row.status !== 'pending_approval') return res.status(409).json({ error: { code: 'ALREADY_DECIDED', message: 'This plan is no longer awaiting approval.' } })
+    if (decision === 'approve' && (!Array.isArray(row.selected_asset_ids) || !row.selected_asset_ids.length || !mapPlanRow(row).scope.length)) {
+      return res.status(409).json({ error: { code: 'EMPTY_PROPOSAL', message: 'Queue assessed assets and submit a scoped proposal before approving a migration.' } })
+    }
     const metadata = {
       ...(row.metadata && typeof row.metadata === 'object' ? (row.metadata as Record<string, unknown>) : {}),
       approval: { decision, decidedBy: user!.email || 'owner', decidedAt: new Date().toISOString(), reason },
@@ -1173,6 +1310,7 @@ router.post('/plans/:planId/approval', async (req: Request, res: Response) => {
       .eq('user_id', user!.id)
       .eq('id', planId)
       .eq('status', 'pending_approval')
+      .eq('updated_at', row.updated_at)
       .select('id, status, metadata, selected_asset_ids, created_at, updated_at')
       .maybeSingle()
     if (error) return res.status(500).json({ error: { code: 'APPROVAL_FAILED', message: error.message } })
@@ -1182,6 +1320,6 @@ router.post('/plans/:planId/approval', async (req: Request, res: Response) => {
     console.error('migration plan approval failed:', error)
     res.status(500).json({ error: { code: 'APPROVAL_ERROR', message: 'Unable to record approval decision' } })
   }
-})
+}))
 
 export default router

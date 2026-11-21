@@ -5,7 +5,7 @@ import type { AssetDossier, AssetAlgorithm, PortfolioSummary } from '@/hooks/use
 import { integerFmt, longDate } from '@/app/dashboard/quantum-readiness/_shared';
 import type { LiveMigrationJob } from '@/app/dashboard/live_migration_ops/LiveMigrationOps';
 import { useLiveResource } from '@/hooks/use-live-resource';
-import { isPassingValidation } from '@/lib/migration/job-safety';
+import { isHeldMigrationWave, isVerifiedMigrationJob } from '@/lib/migration/planner-progress';
 
 export const SCANNER_PATH = '/dashboard/scanner';
 const OPS_PATH = '/dashboard/live-migration';
@@ -17,9 +17,10 @@ function openTechnicalEvidence() {
   details.querySelector('summary')?.focus();
 }
 
-export function operationHref(job: { id: string; planId: string | null }) {
+export function operationHref(job: { id: string; planId: string | null; proposalId?: string }) {
   const params = new URLSearchParams({ jobId: job.id });
   if (job.planId) params.set('planId', job.planId);
+  if (job.proposalId) params.set('proposal', job.proposalId);
   return `${OPS_PATH}?${params}`;
 }
 
@@ -33,9 +34,9 @@ const REVIEW_BY_CATEGORY: Record<AssetAlgorithm['category'], { label: string; ri
 };
 
 export function AssetMigrationGuide({
-  asset, onPlan, onSandbox, onDispatch, onReport, busy,
+  asset, onPlan, onSandbox, onReport, busy,
 }: {
-  asset: AssetDossier; onPlan: () => void; onSandbox: () => void; onDispatch: () => void; onReport: () => void; busy: boolean;
+  asset: AssetDossier; onPlan: () => void; onSandbox: () => void; onReport: () => void; busy: boolean;
 }) {
   const verificationPassed = asset.migrationStatus === 'Completed' && asset.validation.validated;
   const verified = verificationPassed && asset.posture === 'pqc' && asset.vulnerableComponentCount === 0;
@@ -49,14 +50,14 @@ export function AssetMigrationGuide({
   const latestJob = asset.jobs[0];
   const steps = [
     { title: 'Discovery & assessment', icon: Radar, state: asset.hasEvidence ? 'Evidence recorded' : 'Scan needed', text: 'Review the current cryptography, confirm the finding and check how the asset is used. Verify data sensitivity and retention with the owner when that information was not captured.', action: asset.hasEvidence ? <button className="mp-button" onClick={openTechnicalEvidence}>Inspect technical evidence</button> : <Link className="mp-button" to={SCANNER_PATH}>Open PQC Scanner</Link> },
-    { title: 'Migration planning', icon: ClipboardList, state: asset.queued ? 'In queue' : asset.hasEvidence ? 'Ready to review' : 'Awaiting discovery', text: 'Choose a supported candidate replacement. Identify the asset owner, dependent systems, and rollout order. Save the proposed scope for approval from the migration queue.', action: <button className="mp-button" onClick={onPlan} disabled={!asset.hasEvidence || busy}>{asset.queued ? 'Open migration queue' : 'Add to migration queue'}</button> },
+    { title: 'Migration planning', icon: ClipboardList, state: asset.reservation === 'submitted' ? 'Already submitted' : asset.reservation ? 'In Live Migration Ops' : asset.queued ? 'In queue' : asset.hasEvidence ? 'Ready to review' : 'Awaiting discovery', text: 'Choose a supported candidate replacement. Identify the asset owner, dependent systems, and rollout order. Save the proposed scope for approval from the migration queue.', action: <button className="mp-button" onClick={onPlan} disabled={!asset.hasEvidence || busy || (!asset.queued && Boolean(asset.reservation))}>{asset.queued ? 'Open migration queue' : asset.reservation ? 'Asset already has migration work' : 'Add to migration queue'}</button> },
     { title: 'Pre-migration validation', icon: FlaskConical, state: asset.validation.cutoverBlocked ? 'Review blockers' : 'Review lab evidence', text: 'Check the cryptographic provider, library versions, protocol support, downstream clients, and configuration conflicts. Test a canary in a representative environment and retain the current configuration for rollback.', action: <div className="flex flex-wrap gap-2">
       <button className="mp-button" onClick={onSandbox} disabled={!asset.hasEvidence || busy}>Test in Migration Sandbox</button>
       {sandbox?.planId && <Link className="mp-button" to={`/dashboard/migration-sandbox?view=analysis&planId=${encodeURIComponent(sandbox.planId)}`}>Open analytical history</Link>}
     </div> },
     { title: 'Migration execution', icon: Rocket, state: asset.migrationStatus, text: 'After rehearsal and change approval, use a staged rollout. Review agent and connector requirements, check the first deployment, and investigate failed operations before retrying.', action: latestJob && ['In Progress', 'Queued', 'Failed', 'Validating', 'Completed'].includes(asset.migrationStatus)
       ? <Link className="mp-button" to={operationHref(latestJob)}>Inspect execution</Link>
-      : <button className="mp-button" onClick={onDispatch} disabled={!asset.hasEvidence || busy}>Review execution handoff</button> },
+      : <p className="mp-muted">Submit and approve a proposal for this asset in Plan & approve to unlock handoff.</p> },
     { title: 'Post-migration validation', icon: ShieldCheck, state: verified ? 'Verified' : verificationPassed ? 'Passing check · posture pending' : asset.validation.lastStatus, text: 'Re-scan the asset. Verify the negotiated or active algorithm, connectivity and application behavior. Compare against the original finding and check that vulnerable paths are removed or accounted for.', action: latestJob ? <Link className="mp-button" to={operationHref(latestJob)}>Review validation and logs</Link> : <Link className="mp-button" to={SCANNER_PATH}>Open PQC Scanner</Link> },
     { title: 'Monitoring & compliance', icon: Activity, state: verified ? 'Monitor for drift' : 'Awaiting verified outcome', text: 'Monitor for fallback or configuration drift, retain job and scan evidence, and record remaining exceptions before closing the change.', action: <button className="mp-button" onClick={onReport} disabled={busy}><FileDown size={16} aria-hidden="true" /> Export asset evidence</button> },
   ];
@@ -168,15 +169,25 @@ function jobGroup(status: string) {
 const EMPTY_OPERATIONS: { jobs: LiveMigrationJob[] } = { jobs: [] };
 const OPERATION_TABLES = ['migration_jobs', 'migration_execution', 'migration_events', 'migration_telemetry', 'migration_validation_logs'];
 
-export function MigrationMonitoring() {
-  const { data, state, error, sseConnected, refresh } = useLiveResource({
-    url: '/api/v1/migration/live',
-    streamUrl: '/api/v1/migration/live/stream',
+export function usePlannerExecution(proposalId: string | null) {
+  const query = proposalId ? `?${new URLSearchParams({ proposalId })}` : '';
+  return useLiveResource({
+    enabled: Boolean(proposalId),
+    url: `/api/v1/migration/live${query}`,
+    streamUrl: `/api/v1/migration/live/stream${query}`,
     event: 'migration-update',
     empty: EMPTY_OPERATIONS,
     realtimeTables: OPERATION_TABLES,
     channelPrefix: 'migration-planner-ops',
   });
+}
+
+export function MigrationMonitoring({ execution, planId, proposalId }: {
+  execution: ReturnType<typeof usePlannerExecution>;
+  planId: string;
+  proposalId: string;
+}) {
+  const { data, state, error, sseConnected, refresh } = execution;
   const jobs = (data.jobs || []).filter((job) => !job.isSandbox);
   const [filter, setFilter] = useState('All');
   const [limit, setLimit] = useState(12);
@@ -184,10 +195,10 @@ export function MigrationMonitoring() {
   return (
     <section className="mp-card mp-monitor" aria-labelledby="mp-monitor-heading">
       <div className="mp-heading-row">
-          <div><h2 id="mp-monitor-heading">Execution & validation</h2><p>Inspect recent migration operations and open their logs, validation evidence and available controls.</p></div>
+          <div><h2 id="mp-monitor-heading">Operations for this proposal</h2><p>Open each operation to review agent status, logs and validation evidence.</p></div>
         <div className="flex flex-wrap gap-2">
           <Link className="mp-button" to="/dashboard/migration-timeline">Migration history</Link>
-          <Link className="mp-button mp-button-primary" to={OPS_PATH}>Live Migration Ops <ArrowRight size={16} aria-hidden="true" /></Link>
+          <Link className="mp-button mp-button-primary" to={`${OPS_PATH}?${new URLSearchParams({ planId, proposal: proposalId })}`}>Open in Live Migration Ops <ArrowRight size={16} aria-hidden="true" /></Link>
         </div>
       </div>
       <p className="mp-muted mt-2" role="status">{sseConnected ? 'Live operation updates' : 'Connecting to operation updates'}</p>
@@ -201,13 +212,12 @@ export function MigrationMonitoring() {
         <ul className="mp-job-list">
           {filtered.slice(0, limit).map((job) => {
             const failure = job.status === 'failed' ? [...(job.logs || [])].reverse().find((entry) => /error|critical|fail/i.test(entry.severity)) : undefined;
-            const planId = typeof job.metadata?.planId === 'string' ? job.metadata.planId : null;
             return (
             <li key={job.id}>
               <div><strong>{job.asset}</strong><p>{job.currentStep}</p><p>Updated {longDate(job.updatedAt)}</p></div>
-              <div><span className="mp-chip">{job.status.replaceAll('_', ' ')}</span><p>{integerFmt(job.progress)}% execution progress</p>{job.startedAt && <p>Started {longDate(job.startedAt)}</p>}</div>
-              <div><strong>{isPassingValidation(job.validationStatus) ? 'Passing validation recorded' : job.validationStatus === 'pending' ? 'No passing validation recorded' : job.validationStatus}</strong><p>{job.logCount} log entries</p></div>
-              <Link className="mp-button" to={operationHref({ id: job.id, planId })}>Inspect operation <ArrowRight size={15} aria-hidden="true" /></Link>
+              <div><span className="mp-chip">{isHeldMigrationWave(job) ? 'Waiting for prior wave' : job.status.replaceAll('_', ' ')}</span><p>{integerFmt(job.progress)}% execution progress</p>{job.startedAt && <p>Started {longDate(job.startedAt)}</p>}</div>
+              <div><strong>{isVerifiedMigrationJob(job) ? 'Execution verified' : job.validationStatus === 'pending' ? 'Awaiting validation' : job.validationStatus}</strong><p>{job.logCount} log entries</p></div>
+              <Link className="mp-button" to={operationHref({ id: job.id, planId: typeof job.metadata.planId === 'string' ? job.metadata.planId : planId, proposalId })}>Inspect operation <ArrowRight size={15} aria-hidden="true" /></Link>
               {(job.dispatchBlock || (job.status === 'failed' && failure)) && <p className="col-span-full break-words text-[var(--mp-risk)]">{job.dispatchBlock?.reason || failure?.message}</p>}
             </li>
             );

@@ -1,10 +1,13 @@
 import { useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { WebsiteSubmissions } from './WebsiteSubmissions'
 import {
   Activity,
   AlertTriangle,
   Building2,
   Crown,
   CreditCard,
+  Inbox,
   Radio,
   RefreshCw,
   Shield,
@@ -25,7 +28,7 @@ import { GovernanceTab } from './_governance/GovernanceTab'
 import { HistoryTab } from './_history/HistoryTab'
 import { Notices } from './_shared/console'
 
-type AdminTab = 'overview' | 'users' | 'roles' | 'tenants' | 'subscriptions' | 'security' | 'governance' | 'history'
+type AdminTab = 'overview' | 'users' | 'roles' | 'tenants' | 'subscriptions' | 'security' | 'governance' | 'history' | 'website-submissions'
 
 const tabs: Array<{ id: AdminTab; label: string; icon: typeof Activity }> = [
   { id: 'overview', label: 'Overview', icon: Activity },
@@ -36,6 +39,7 @@ const tabs: Array<{ id: AdminTab; label: string; icon: typeof Activity }> = [
   { id: 'security', label: 'Security', icon: ShieldAlert },
   { id: 'governance', label: 'Governance', icon: ShieldCheck },
   { id: 'history', label: 'History', icon: Radio },
+  { id: 'website-submissions', label: 'Website submissions', icon: Inbox },
 ]
 
 function formatNumber(value?: number | null) {
@@ -128,7 +132,8 @@ function SummaryCard({ title, rows }: { title: string; rows?: Array<{ label: str
 
 function AdminDashboardContent() {
   const admin = useAdminDashboard()
-  const [activeTab, setActiveTab] = useState<AdminTab>('overview')
+  const [searchParams] = useSearchParams()
+  const [activeTab, setActiveTab] = useState<AdminTab>(searchParams.get('tab') === 'website-submissions' ? 'website-submissions' : 'overview')
   const kpis = admin.stats?.kpis || {}
 
   const missingTables = useMemo(() => (admin.stats?.realtime?.unavailableTables || []).slice(0, 6), [admin.stats?.realtime?.unavailableTables])
@@ -241,6 +246,7 @@ function AdminDashboardContent() {
         {activeTab === 'security' && <SecurityTab admin={admin} onOpenUser={(email) => openUsers({ search: email })} />}
         {activeTab === 'governance' && <GovernanceTab admin={admin} />}
         {activeTab === 'history' && <HistoryTab admin={admin} />}
+        {activeTab === 'website-submissions' && <WebsiteSubmissions />}
       </div>
       <Notices admin={admin} />
     </section>

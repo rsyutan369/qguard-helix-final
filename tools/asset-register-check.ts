@@ -225,6 +225,8 @@ check('C has no lifecycle', row('C').lifecycle, null)
 /* ------------------------------------------------------------------ */
 console.log('[10] Filter and sort')
 check('status filter', filterRows(register.rows, { statuses: ['pqc-ready'] }).map((r) => r.id), ['B'])
+check('a linked asset limits the current view', filterRows(register.rows, { assetId: 'B' }).map((r) => r.id), ['B'])
+check('a linked asset still respects the other filters', filterRows(register.rows, { assetId: 'B', freshness: ['stale'] }).map((r) => r.id), [])
 check('search reaches owners', filterRows(register.rows, { query: 'platform team' }).map((r) => r.id), ['B'])
 check('search reaches risk-bearing primitives', filterRows(register.rows, { query: 'RSA key transport' }).map((r) => r.id), ['A'])
 check('freshness filter', filterRows(register.rows, { freshness: ['stale'] }).map((r) => r.id), ['A'])

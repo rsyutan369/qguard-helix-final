@@ -19,6 +19,7 @@ import { readFileSync } from 'node:fs'
 import type { AddressInfo } from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { resolveConfig } from 'vite'
 import { normaliseApiOrigin, resolveApiUrl } from '../../src/lib/api-origin-core'
 import { redactUrl, requestContext } from '../../src/api-server/runtime/observability'
 import { checkProductionConfig } from '../../src/api-server/runtime/config'
@@ -191,7 +192,7 @@ async function probeChecks() {
   const config = read('deploy/k8s/base/configmap.yaml')
   const service = read('deploy/k8s/base/service.yaml')
   const policy = read('deploy/k8s/base/networkpolicy.yaml')
-  check('replicas pinned to 1 (per-process state)', /\n  replicas: 1\n/.test(deployment))
+  check('replicas pinned to 1 (per-process state)', /^  replicas: 1\r?$/m.test(deployment))
   check('probes target healthz/readyz', deployment.includes('/api/v1/healthz') && deployment.includes('/api/v1/readyz'))
   check('pod runs non-root, read-only root fs', deployment.includes('runAsNonRoot: true') && deployment.includes('readOnlyRootFilesystem: true'))
   check('service-account token not mounted', deployment.includes('automountServiceAccountToken: false'))
@@ -206,6 +207,27 @@ async function probeChecks() {
 }
 
 await probeChecks()
+
+// The dev server mounts /api itself even if deployment config is in the shell.
+{
+  const key = 'VITE_API_ORIGIN'
+  const browserKey = `import.meta.env.${key}`
+  const previous = process.env[key]
+  const deployed = 'https://api.example.com'
+  const options = { root, configLoader: 'runner' as const, envFile: false as const }
+  process.env[key] = deployed
+  try {
+    const dev = await resolveConfig(options, 'serve')
+    check('dev keeps API calls and streams same-origin', dev.define?.[browserKey] === JSON.stringify(''))
+    for (const mode of ['production', 'public']) {
+      const build = await resolveConfig({ ...options, mode }, 'build', mode, 'production')
+      check(`${mode} build preserves split-origin API routing`, build.define?.[browserKey] === undefined && build.env[key] === deployed)
+    }
+  } finally {
+    if (previous === undefined) delete process.env[key]
+    else process.env[key] = previous
+  }
+}
 
 // exitCode rather than process.exit(): exiting while fetch's keep-alive sockets
 // are closing trips a libuv assertion on Windows. The loop drains on its own.

@@ -26,8 +26,9 @@ import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server
 import { buildSnapshot } from './quantum-readiness'
 import { buildPortfolio } from './migration-planner'
 import { buildTlsPkiModel } from './tls-pki'
-import { streamLiveSnapshot } from './live-snapshot-stream'
+import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
 import { createSourceLedger, type SourceRead } from './source-ledger'
+import { discoveryLinks } from '@/lib/trust-fabric/graph'
 import { buildTrustFabricIntelligence } from '@/lib/trust-fabric/intelligence'
 import type {
   CertificateTrustRecord,
@@ -126,9 +127,9 @@ const CAP = {
 /* ------------------------------------------------------------------ */
 
 const MODEL_TTL_MS = 15_000
-const modelCache = new Map<string, { at: number; promise: Promise<TrustFabricModel> }>()
+const modelCache = new Map<string, { at: number; pending: boolean; promise: Promise<TrustFabricModel> }>()
 
-async function computeModel(token: string, userId: string): Promise<TrustFabricModel> {
+async function computeModel(token: string, userId: string, force: boolean): Promise<TrustFabricModel> {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
   // Failed reads degrade to [] but are recorded and published (common-issues #64).
@@ -141,9 +142,9 @@ async function computeModel(token: string, userId: string): Promise<TrustFabricM
   // guarantees these four pages agree with PKI Visibility, TLS Telemetry,
   // Quantum Readiness, Assets, Migration Planner and every report.
   const [tlsPki, snapshot, portfolio] = await Promise.all([
-    buildTlsPkiModel(token, userId),
-    buildSnapshot(token, userId),
-    buildPortfolio(token, userId),
+    buildTlsPkiModel(token, userId, force),
+    buildSnapshot(token, userId, undefined, force),
+    buildPortfolio(token, userId, force),
   ])
 
   const [
@@ -267,15 +268,18 @@ async function computeModel(token: string, userId: string): Promise<TrustFabricM
 
 export async function buildTrustFabricModel(token: string, userId: string, force = false): Promise<TrustFabricModel> {
   const cached = modelCache.get(userId)
-  if (!force && cached && Date.now() - cached.at < MODEL_TTL_MS) return cached.promise
-  const promise = computeModel(token, userId)
-  modelCache.set(userId, { at: Date.now(), promise })
-  promise.catch(() => modelCache.delete(userId))
+  if (cached && (cached.pending || (!force && Date.now() - cached.at < MODEL_TTL_MS))) return cached.promise
+  const entry = { at: Date.now(), pending: true, promise: computeModel(token, userId, force) }
+  modelCache.set(userId, entry)
+  void entry.promise.then(
+    () => { entry.pending = false },
+    () => { if (modelCache.get(userId) === entry) modelCache.delete(userId) },
+  )
   if (modelCache.size > 500) {
     const now = Date.now()
-    for (const [key, value] of modelCache) if (now - value.at > MODEL_TTL_MS) modelCache.delete(key)
+    for (const [key, value] of modelCache) if (!value.pending && now - value.at > MODEL_TTL_MS) modelCache.delete(key)
   }
-  return promise
+  return entry.promise
 }
 
 /** Drops the tenant's cached model so the next read reflects a just-made write. */
@@ -288,7 +292,7 @@ export function invalidateTrustFabricModel(userId: string) {
 /* ------------------------------------------------------------------ */
 
 /** Rows shipped in the first paint. Deeper pages come from the paging routes. */
-const PAGE = { nodes: 80, certificates: 60, resources: 60, events: 60, findings: 40, relationships: 220 } as const
+const PAGE = { nodes: 80, certificates: 60, resources: 60, events: 60, findings: 40 } as const
 
 /** Fields every page shares, so the header is identical on all four. */
 function commonEnvelope(model: TrustFabricModel) {
@@ -408,12 +412,16 @@ export function projectView(model: TrustFabricModel, view: TrustView) {
         })),
       }
 
-    case 'discovery':
+    case 'discovery': {
+      const nodes = model.nodes.slice(0, PAGE.nodes)
       return {
         ...base,
         view: 'discovery' as const,
-        nodes: model.nodes.slice(0, PAGE.nodes),
-        relationships: model.relationships.slice(0, PAGE.relationships),
+        nodes,
+        ...discoveryLinks(nodes, model.relationships),
+        // Filtered views and detail drawers also need updates to subjects
+        // outside the first graph window.
+        inventoryRevision: payloadFingerprint({ nodes: model.nodes, relationships: model.relationships }),
         chainPaths: model.chainPaths.slice(0, 60),
         incompleteChains: model.chainPaths.filter((path) => !path.complete).length,
         trustChains: model.trustChains,
@@ -432,6 +440,7 @@ export function projectView(model: TrustFabricModel, view: TrustView) {
           tier: node.kind,
         })),
       }
+    }
 
     case 'certificate':
       return {
@@ -708,7 +717,8 @@ function buildRouter(view: TrustView): Router {
   router.get('/', async (req: AuthedRequest, res: Response) => {
     try {
       const data = await model(req, str(req.query.refresh) === '1')
-      res.json({ data: projectView(data, view) })
+      const projection = projectedView(data, view)
+      res.json({ data: { ...projection, fingerprint: payloadFingerprint(projection) } })
     } catch (error) {
       console.error(`[trust-fabric:${view}] snapshot failed:`, error)
       res.status(500).json({
@@ -743,7 +753,10 @@ function buildRouter(view: TrustView): Router {
     try {
       const data = await model(req)
       const page = paginate(filterNodes(data.nodes, req), req)
-      res.json({ data: { nodes: page.rows, total: page.total, limit: page.limit, offset: page.offset } })
+      const links = view === 'discovery' && req.query.includeRelationships === '1'
+        ? discoveryLinks(page.rows, data.relationships)
+        : undefined
+      res.json({ data: { nodes: page.rows, total: page.total, limit: page.limit, offset: page.offset, ...links } })
     } catch (error) {
       console.error(`[trust-fabric:${view}] nodes failed:`, error)
       res.status(500).json({ error: { code: 'TRUST_FABRIC_ERROR', message: 'Failed to load trust subjects' } })

@@ -4,10 +4,9 @@
  * Report Studio — the Assets page's enterprise report builder.
  *
  * Modelled on the Quantum Readiness Report Center (templates, branding, seven
- * formats, preview, history, SHA3-256 integrity), but built from the asset
- * register the page is rendering: the scope is the rows the user is looking at,
- * the numbers are the register's numbers, and the pre-export validation shown
- * here is the same validation printed inside the document.
+ * formats, preview, history, SHA3-256 integrity). The API captures the chosen
+ * asset scope and saves the sealed report. The browser previews and exports
+ * that saved model with the same validation shown here.
  *
  * Loaded lazily by the page, so the report builder, the integrity code and the
  * exporters never weigh on the page's first paint.
@@ -40,7 +39,7 @@ import {
 import { summarizeRows, type AssetRegister, type AssetRegisterRow, type RegisterFilter } from '@/lib/assets/asset-register';
 import { ASSET_REPORT_TEMPLATES, type AssetReportTemplate } from '@/services/reporting/AssetReport';
 import type { InventoryReport } from '@/services/reporting/InventoryReport';
-import { brandingSchema, type ReportBranding } from '@/services/reporting/schemas/ReportSchema';
+import { ASSET_REPORT_LOGO_MAX_BYTES, brandingSchema, type ReportBranding } from '@/services/reporting/schemas/ReportSchema';
 import type { DocumentFormat } from '@/services/reporting/exporters/DocumentExporters';
 import { nf } from './_register-ui';
 
@@ -121,11 +120,13 @@ export default function ReportStudio({ open, onClose, register, selection, filte
   const [template, setTemplate] = useState<AssetReportTemplate>('executive');
   const [branding, setBranding] = useState<ReportBranding>(() => loadBranding(brandingKey));
   const [brandingOpen, setBrandingOpen] = useState(false);
+  const [logoError, setLogoError] = useState<string | null>(null);
   const [busy, setBusy] = useState<DocumentFormat | 'preview' | 'capture' | null>(null);
   const [done, setDone] = useState<DocumentFormat | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [captured, setCaptured] = useState<{ configuration: string; report: InventoryReport; assetCount: number } | null>(null);
+  const [historyStatus, setHistoryStatus] = useState<'loading' | 'ready' | 'unavailable'>('loading');
+  const [captured, setCaptured] = useState<{ configuration: string; report: InventoryReport } | null>(null);
   const [showPassed, setShowPassed] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const operationRef = useRef<AbortController | null>(null);
@@ -134,8 +135,11 @@ export default function ReportStudio({ open, onClose, register, selection, filte
   useEffect(() => setScopeType(initialScope), [initialScope, open]);
 
   useEffect(() => {
+    if (open) panelRef.current?.focus();
+  }, [open]);
+
+  useEffect(() => {
     if (!open) return;
-    panelRef.current?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
     };
@@ -150,21 +154,25 @@ export default function ReportStudio({ open, onClose, register, selection, filte
       headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: controller.signal,
     }).then(async (response) => {
       if (!response.ok) throw new Error('Saved asset report history is unavailable.');
-      const payload = await response.json();
-      if (!controller.signal.aborted) setHistory(payload.data);
-    }).catch((cause) => {
-      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'History unavailable.');
+      const { data } = await response.json() as { data: HistoryEntry[] };
+      if (controller.signal.aborted) return;
+      setHistory((current) => {
+        const entries = new Map(data.map((entry) => [entry.id, entry]));
+        current.forEach((entry) => entries.set(entry.id, entry));
+        return [...entries.values()].sort((a, b) => b.generatedAt.localeCompare(a.generatedAt)).slice(0, 20);
+      });
+      setHistoryStatus('ready');
+    }).catch(() => {
+      if (!controller.signal.aborted) setHistoryStatus('unavailable');
     });
     return () => controller.abort();
   }, [open, token]);
 
-  const updateBranding = useCallback(<K extends keyof ReportBranding>(key: K, value: ReportBranding[K]) => {
-    setBranding((current) => {
-      const next = { ...current, [key]: value };
-      saveJson(brandingKey, next);
-      return next;
-    });
-  }, [brandingKey]);
+  useEffect(() => saveJson(brandingKey, branding), [brandingKey, branding]);
+
+  const updateBranding = <K extends keyof ReportBranding>(key: K, value: ReportBranding[K]) => {
+    setBranding((current) => ({ ...current, [key]: value }));
+  };
 
   const scopeOptions = useMemo(() => {
     const options: Array<{ type: StudioScopeType; label: string; detail: string; rows: AssetRegisterRow[]; description: string }> = [];
@@ -179,10 +187,15 @@ export default function ReportStudio({ open, onClose, register, selection, filte
   const activeScope = scopeOptions.find((option) => option.type === scopeType) ?? scopeOptions[scopeOptions.length - 1];
   const scopeRows = activeScope.rows;
 
-  const scopedIds = activeScope.type === 'selection' || activeScope.type === 'single'
-    ? scopeRows.map((row) => row.id).sort()
-    : [];
-  const configuration = JSON.stringify([scopeType, template, branding, scopedIds, scopeType === 'filtered' ? filters : null]);
+  const configuration = JSON.stringify({
+    template,
+    scope: activeScope.type,
+    branding,
+    assetIds: activeScope.type === 'selection' || activeScope.type === 'single'
+      ? scopeRows.map((row) => row.id).sort()
+      : [],
+    filters: activeScope.type === 'filtered' ? filters : {},
+  });
   const preview = captured?.configuration === configuration ? captured.report : null;
 
   const scopeTotals = useMemo(() => summarizeRows(scopeRows), [scopeRows]);
@@ -190,8 +203,8 @@ export default function ReportStudio({ open, onClose, register, selection, filte
   const reconciliation = preview?.reconciliation || [];
   const reconMatches = reconciliation.filter((row) => row.matches).length;
 
-  const capture = async (nextTemplate = template, nextScope = scopeType) => {
-    if (operationRef.current) return;
+  const capture = async () => {
+    if (!scopeRows.length || operationRef.current) return;
     const controller = new AbortController();
     operationRef.current = controller;
     setBusy('capture');
@@ -200,27 +213,17 @@ export default function ReportStudio({ open, onClose, register, selection, filte
       const response = await fetch('/api/v1/reports/asset-snapshots', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          template: nextTemplate, scope: nextScope, branding,
-          assetIds: nextScope === 'selection' || nextScope === 'single' ? scopedIds : [],
-          filters: nextScope === 'filtered' ? filters : {},
-        }),
+        body: configuration,
         cache: 'no-store',
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(90_000)]),
       });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error?.message || 'Unable to save the latest asset snapshot.');
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload) throw new Error(payload?.error?.message || 'Unable to save the latest asset snapshot.');
       const report = payload.data as InventoryReport;
       if (report.meta.snapshot?.workspaceOwnerId !== ownerId) throw new Error('Invalid asset snapshot owner.');
       if (controller.signal.aborted) return;
-      setScopeType(nextScope);
-      setTemplate(nextTemplate);
       setHistory((current) => [payload.meta, ...current.filter((entry) => entry.id !== payload.meta.id)].slice(0, 20));
-      setCaptured({
-        configuration: JSON.stringify([nextScope, nextTemplate, branding, nextScope === 'all' ? [] : scopedIds, nextScope === 'filtered' ? filters : null]),
-        report,
-        assetCount: payload.meta.assetCount,
-      });
+      setCaptured({ configuration, report });
     } catch (cause) {
       if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Snapshot capture failed');
     } finally {
@@ -317,12 +320,17 @@ export default function ReportStudio({ open, onClose, register, selection, filte
   const onLogo = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    if (!/^image\/(png|jpeg)$/.test(file.type) || file.size > 384 * 1024) {
-      setError('Upload the logo as PNG or JPEG, up to 384 KiB.');
+    event.target.value = '';
+    if (!/^image\/(png|jpeg)$/.test(file.type) || file.size === 0 || file.size > ASSET_REPORT_LOGO_MAX_BYTES) {
+      setLogoError('Choose a PNG or JPEG logo up to 2 MB.');
       return;
     }
+    setLogoError(null);
     const reader = new FileReader();
-    reader.onload = () => updateBranding('companyLogo', String(reader.result));
+    reader.onload = () => {
+      if (typeof reader.result === 'string') updateBranding('companyLogo', reader.result);
+    };
+    reader.onerror = () => setLogoError('The logo could not be read. Try choosing it again.');
     reader.readAsDataURL(file);
   };
 
@@ -434,7 +442,7 @@ export default function ReportStudio({ open, onClose, register, selection, filte
                 </label>
                 <div className="flex flex-wrap items-center gap-3 sm:col-span-2">
                   <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-[var(--qg-card-border)] px-3 py-1.5 text-[11px] font-bold text-[var(--qg-dashboard-text-soft)] hover:border-[var(--qg-amber)]/45">
-                    <ImagePlus className="h-4 w-4" aria-hidden /> Upload logo (PNG/JPEG)
+                    <ImagePlus className="h-4 w-4" aria-hidden /> Upload logo (PNG/JPEG, up to 2 MB)
                     <input type="file" accept="image/png,image/jpeg" onChange={onLogo} className="hidden" />
                   </label>
                   {branding.companyLogo ? (
@@ -444,7 +452,8 @@ export default function ReportStudio({ open, onClose, register, selection, filte
                     </span>
                   ) : <span className="text-[10.5px] text-[var(--qg-text-muted)]">No logo — the cover uses text branding.</span>}
                 </div>
-                <p className="text-[10px] text-[var(--qg-text-muted)] sm:col-span-2">Shared with the Quantum Readiness Report Center, so every report carries the same branding.</p>
+                {logoError && <p role="alert" className="text-[11px] text-red-700 dark:text-red-200 sm:col-span-2">{logoError}</p>}
+                <p className="text-[10px] text-[var(--qg-text-muted)] sm:col-span-2">Branding preferences are saved in this browser for your account.</p>
               </div>
             ) : null}
           </section>
@@ -484,7 +493,11 @@ export default function ReportStudio({ open, onClose, register, selection, filte
                 <p className="mt-2 text-[10px] text-[var(--qg-text-muted)]">Warnings do not block export; they are printed in the report's Validation section so a reader sees them too.</p>
               </div>
             ) : (
-              <p className="rounded-lg border border-dashed border-[var(--qg-card-border)] p-3 text-[11px] text-[var(--qg-text-muted)]">Choose a scope that contains at least one asset.</p>
+              <p className="rounded-lg border border-dashed border-[var(--qg-card-border)] p-3 text-[11px] text-[var(--qg-text-muted)]" role="status">
+                {busy === 'capture' ? 'Validating and saving the asset snapshot…'
+                  : scopeRows.length ? 'Capture a snapshot to validate this scope and enable preview and exports.'
+                    : 'Choose a scope that contains at least one asset.'}
+              </p>
             )}
           </section>
 
@@ -550,7 +563,11 @@ export default function ReportStudio({ open, onClose, register, selection, filte
                 ))}
               </ul>
             ) : (
-              <p className="text-[11px] text-[var(--qg-text-muted)]">No reports generated from this page yet.</p>
+              <p className="text-[11px] text-[var(--qg-text-muted)]" role="status">
+                {historyStatus === 'loading' ? 'Loading saved asset reports…'
+                  : historyStatus === 'unavailable' ? 'Saved asset report history is unavailable.'
+                    : 'No reports generated from this page yet.'}
+              </p>
             )}
             {history.length > 8 ? <p className="mt-1.5 text-[10px] text-[var(--qg-text-muted)]">Showing the 8 most recent of {history.length} saved reports.</p> : null}
           </section>
@@ -558,7 +575,7 @@ export default function ReportStudio({ open, onClose, register, selection, filte
 
         <footer className="flex items-center gap-2 border-t border-[var(--qg-card-border)] px-5 py-3 text-[10.5px] text-[var(--qg-text-muted)]">
           <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-500" aria-hidden />
-          Generated in your browser from the live asset register — nothing is uploaded. Each document is sealed with SHA3-256 and verifiable at /verify-report.
+          Snapshots are saved to your account and sealed with SHA3-256. Exports use the saved snapshot.
         </footer>
       </div>
     </div>

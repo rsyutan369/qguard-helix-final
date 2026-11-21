@@ -18,6 +18,7 @@ import {
   deriveMigrationDependencyStatus,
   type OwnershipFindingInput,
 } from '../src/lib/shared-responsibility'
+import { buildOwnershipInputs } from '../src/api-server/shared-responsibility-inputs'
 
 let failures = 0
 function assert(cond: boolean, label: string, extra = '') {
@@ -79,10 +80,12 @@ function main() {
   console.log('\n[3] Edge vs Origin TLS intelligence')
   const edgeFinding = classifyFinding({ id: 'k', assetName: 'app', host: 'app.cdn.cloudflare.net', assetType: 'cdn-service', environment: 'public', algorithm: 'TLS_RSA', category: 'TLS Cipher', severity: 'CRITICAL' })
   assert(edgeFinding.edgeOrigin?.isProviderFronted === true, 'provider-fronted TLS detected', String(edgeFinding.edgeOrigin?.isProviderFronted))
-  assert(edgeFinding.edgeOrigin?.edge?.domain === 'provider' && edgeFinding.edgeOrigin?.origin?.domain === 'customer', 'edge=provider, origin=customer (never conflated)', `${edgeFinding.edgeOrigin?.edge?.domain}/${edgeFinding.edgeOrigin?.origin?.domain}`)
-  assert(edgeFinding.customerActionable === 'partial', 'provider-fronted TLS is PARTIALLY actionable (origin fixable)', edgeFinding.customerActionable)
+  assert(edgeFinding.edgeOrigin?.edge?.domain === 'provider' && edgeFinding.edgeOrigin.origin === null, 'public TLS evidence leaves the origin unverified')
+  assert(edgeFinding.customerActionable === 'no', 'edge evidence alone never makes an origin customer-actionable')
   const nonTransport = classifyFinding({ id: 'l', assetName: 'x', algorithm: 'RSA', category: 'JWT signing', severity: 'HIGH' })
   assert(nonTransport.edgeOrigin === null, 'non-transport finding has no edge/origin layers', String(nonTransport.edgeOrigin))
+  const signingOnEdgeAsset = classifyFinding({ id: 'm', assetName: 'app', host: 'app.cdn.cloudflare.net', assetType: 'web-application', algorithm: 'RSA', category: 'JWT signing', severity: 'HIGH' })
+  assert(signingOnEdgeAsset.edgeOrigin === null, 'an asset type or CDN hostname alone does not make an application signature a TLS observation')
 
   /* ---------------------------------------------------------------- */
   console.log('\n[4] Migration dependency graph')
@@ -94,7 +97,7 @@ function main() {
   /* ---------------------------------------------------------------- */
   console.log('\n[5] Rollup — tri-part readiness, distribution, matrix, waves, widgets')
   const inputs: OwnershipFindingInput[] = [
-    { id: '1', algorithm: 'TLS_RSA', category: 'TLS Cipher', location: 'app.example.com', assetName: 'app.example.com', assetType: 'cdn-service', environment: 'public', host: 'app.example.com.cdn.cloudflare.net', severity: 'CRITICAL' },
+    { id: '1', assetId: 'app-1', algorithm: 'TLS_RSA', category: 'TLS Cipher', location: 'app.example.com', assetName: 'app.example.com', assetType: 'cdn-service', environment: 'public', host: 'app.example.com.cdn.cloudflare.net', severity: 'CRITICAL' },
     { id: '2', algorithm: 'RSA-2048', category: 'TLS Certificate', location: 'origin.internal', assetName: 'origin.internal', assetType: 'server', environment: 'internal', severity: 'HIGH', description: 'openssl origin' },
     { id: '3', algorithm: 'X25519', category: 'Browser TLS', location: 'chrome', assetName: 'chrome', severity: 'MEDIUM', description: 'chrome browser client' },
     { id: '4', algorithm: 'RSA', category: 'SaaS', location: 'okta.com', assetName: 'okta.com', assetType: 'saas-application', host: 'tenant.okta.com', severity: 'HIGH' },
@@ -108,10 +111,10 @@ function main() {
   assert(roll.readiness.provider.score >= roll.readiness.customer.score, 'provider readiness (roadmap-driven) ≥ customer readiness here')
   assert(roll.domainDistribution.customer + roll.domainDistribution.provider + roll.domainDistribution.ecosystem === roll.totals.findings, 'domain distribution sums to total findings')
 
-  // Matrix: the provider-fronted TLS finding expands into edge + origin rows.
+  // Public TLS evidence contributes a provider edge row only.
   const hasEdgeRow = roll.matrix.some((m) => /edge/i.test(m.finding) && m.domain === 'provider')
   const hasOriginRow = roll.matrix.some((m) => /origin/i.test(m.finding) && m.domain === 'customer')
-  assert(hasEdgeRow && hasOriginRow, 'matrix expands provider-fronted TLS into edge (provider) + origin (customer) rows')
+  assert(hasEdgeRow && !hasOriginRow, 'the matrix does not synthesize origin TLS findings')
 
   // 7-wave roadmap.
   assert(roll.waves.length === 7, 'roadmap has exactly 7 dependency-ordered waves', String(roll.waves.length))
@@ -127,6 +130,25 @@ function main() {
   // Edge/origin + attribution honesty summaries.
   assert(roll.edgeOrigin.providerFrontedAssets >= 1, 'edge/origin aggregate counts provider-fronted assets', String(roll.edgeOrigin.providerFrontedAssets))
   assert(roll.attribution.attributed + roll.attribution.unattributed === roll.totals.findings, 'attribution summary accounts for every finding (attributed + unattributed)')
+
+  const linked = buildOwnershipInputs({
+    assets: { assets: [
+      { id: 'separate-1', name: 'same.example', serviceOwner: 'Security Ops', environment: 'production', region: 'region-one' },
+      { id: 'separate-2', name: 'same.example', metadata: { businessOwner: 'Application Ops' } },
+    ] },
+    findings: [
+      { id: 'scan:layer:1', assetIds: ['separate-1'], location: 'same.example', algorithm: 'RSA-2048', threatLevel: 'HIGH' },
+      { id: 'scan:layer:2', assetIds: ['separate-2'], location: 'same.example', algorithm: 'RSA-2048', threatLevel: 'HIGH' },
+      { id: 'unlinked', assetIds: ['separate-1', 'separate-2'], location: 'same.example', algorithm: 'RSA-2048', threatLevel: 'HIGH' },
+      { id: 'safe', assetIds: ['separate-1'], location: 'same.example', algorithm: 'ML-KEM-768', threatLevel: 'SAFE' },
+    ],
+  }, null)
+  const peerScope = buildSharedResponsibility(linked)
+  assert(linked[0].environment === 'production' && linked[0].assetOwner === 'Security Ops' && linked[1].assetOwner === 'Application Ops', 'explicit asset links preserve recorded owner and environment')
+  assert(linked[2].assetId === undefined && linked[2].assetOwner === undefined, 'ambiguous legacy evidence does not inherit an asset owner')
+  assert(new Set(peerScope.matrix.map((row) => row.assetKey)).size === 3, 'asset IDs prevent same-host matrix rows merging with each other or unlinked evidence')
+  assert(peerScope.matrix.some((row) => row.sourceFindingId === 'scan:layer:1'), 'matrix retains exact finding ID for drawer lookup')
+  assert(peerScope.findings.find((finding) => finding.id === 'safe')?.status === 'No action indicated' && peerScope.waves.reduce((sum, wave) => sum + wave.findingCount, 0) === 3, 'safe observations do not create migration work')
 
   /* ---------------------------------------------------------------- */
   console.log('\n[6] Empty-state honesty')

@@ -1,7 +1,9 @@
 'use client'
 
 import RegulatoryMapping from './RegulatoryMapping'
+import { useGovernanceAccount } from '@/hooks/use-governance'
 
 export default function RegulatoryMappingPage() {
-  return <RegulatoryMapping />
+  const { accountId } = useGovernanceAccount()
+  return <RegulatoryMapping key={accountId} />
 }

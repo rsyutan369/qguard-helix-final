@@ -11,7 +11,7 @@
  */
 
 /** Runtime version of the lightweight agent bundle. Bump on any agent.ts change. */
-export const AGENT_VERSION = '1.6.3'
+export const AGENT_VERSION = '1.6.4'
 /** Every writer on a shared host must participate in the host mutation mutex. */
 export const AGENT_COORDINATION_MIN_VERSION = '1.6.3'
 

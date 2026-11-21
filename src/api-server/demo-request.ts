@@ -30,6 +30,7 @@ import {
   type DemoRequestInput,
 } from '@/lib/demo-request'
 import { readClientIp } from './runtime/client-ip'
+import { recordWebsiteSubmission, updateDemoEmailStatus } from './website-submissions'
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -59,6 +60,8 @@ export interface DemoRequestRouterConfig {
   /** Requests accepted from everyone per hour. Env: DEMO_REQUEST_MAX_PER_HOUR. */
   maxPerHour?: number
   now?: () => number
+  record?: typeof recordWebsiteSubmission
+  updateEmailStatus?: typeof updateDemoEmailStatus
 }
 
 /** A positive integer from the environment, clamped, or the default. */
@@ -210,7 +213,7 @@ export function createDemoRequestRouter(config: DemoRequestRouterConfig = {}): R
       return
     }
 
-    if (!sender || !from) {
+    if ((!sender || !from) && !config.record) {
       res.status(503).json({
         error: {
           code: 'DEMO_EMAIL_NOT_CONFIGURED',
@@ -237,8 +240,39 @@ export function createDemoRequestRouter(config: DemoRequestRouterConfig = {}): R
     }
 
     charge(client, at, 1)
+    if (config.record) {
+      let id: string
+      try {
+        const { name, email, organization, stage, message, whitepaper } = parsed.value
+        id = await config.record({
+          kind: 'demo',
+          source: body.source === 'navigation' || body.source === 'footer' ? body.source : 'homepage',
+          name, email, organization, details: { stage, message, whitepaper },
+          email_status: sender && from ? 'pending' : 'not_configured',
+        })
+      } catch {
+        console.warn('[demo-request] submission storage unavailable')
+        charge(client, at, -1)
+        return res.status(503).json({ error: { code: 'DEMO_STORAGE_UNAVAILABLE', message: `Your request could not be saved. Please email ${to}.`, inbox: to } })
+      }
+
+      if (!sender || !from) return res.status(201).json({ ok: true, emailAccepted: false })
+      let accepted = false
+      try {
+        await sender(composeDemoEmail(parsed.value, { to, from }, new Date(at)))
+        accepted = true
+      } catch {
+        console.warn('[demo-request] inbox notification failed after request was saved')
+      }
+      try {
+        await config.updateEmailStatus?.(id, accepted ? 'accepted' : 'failed')
+      } catch {
+        console.warn('[demo-request] inbox notification status could not be saved')
+      }
+      return res.status(201).json({ ok: true, emailAccepted: accepted, ...(accepted ? { inbox: to } : {}) })
+    }
     try {
-      await sender(composeDemoEmail(parsed.value, { to, from }, new Date(at)))
+      await sender!(composeDemoEmail(parsed.value, { to, from }, new Date(at)))
       console.info('[demo-request] delivered')
       res.json({ ok: true, inbox: to })
     } catch (error) {
@@ -259,4 +293,8 @@ export function createDemoRequestRouter(config: DemoRequestRouterConfig = {}): R
   return router
 }
 
-export default createDemoRequestRouter(demoRequestConfigFromEnv())
+export default createDemoRequestRouter({
+  ...demoRequestConfigFromEnv(),
+  record: recordWebsiteSubmission,
+  updateEmailStatus: updateDemoEmailStatus,
+})

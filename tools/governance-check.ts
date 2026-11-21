@@ -35,11 +35,15 @@ import {
   POLICY_CATALOG,
   REQUIREMENT_CATALOG,
   buildGovernanceIntelligence,
+  buildSubjects,
   contentDigest,
   type CanonicalSnapshot,
   type GovernanceInputs,
   type Row,
 } from '../src/lib/governance'
+import { buildAssetComplianceScope } from '../src/lib/governance/asset-scope'
+import { buildAssetComplianceDocument } from '../src/services/reporting/ComplianceDocument'
+import { exportDocument } from '../src/services/reporting/exporters/DocumentExporters'
 
 let failures = 0
 function assert(condition: boolean, label: string, extra = '') {
@@ -619,6 +623,71 @@ assert(
 )
 
 /* ------------------------------------------------------------------ */
+
+console.log('\n13. Asset-scoped controls and report formats')
+const fixture = populatedInputs()
+const scopeModel = buildGovernanceIntelligence(fixture)
+const evaluation = {
+  ...fixture, now: NOW, subjects: buildSubjects(fixture), evidence: scopeModel.evidence,
+  assessments: fixture.controlAssessments, policies: scopeModel.policies, anchoringAvailable: true,
+}
+const single = buildAssetComplianceScope(scopeModel, evaluation, fixture.assets.slice(0, 1), fixture.policyOverrides)
+const multiple = buildAssetComplianceScope(scopeModel, evaluation, fixture.assets.slice(0, 2), fixture.policyOverrides)
+assert(single.assets.length === 1 && single.assets[0].id === 'a1', 'one selected asset is returned')
+assert(multiple.assets.length === 2 && multiple.assets.every((row) => row.id === 'a1' || row.id === 'a2'), 'multi-asset selection is exact')
+assert(single.evidence.length > 0 && single.evidence.every((row) => row.assetId === 'a1'), 'evidence is strictly attributed to the single selection')
+assert(single.violations.every((row) => row.assetId === 'a1') && single.auditEvents.every((row) => row.assetId === 'a1'), 'violations and audit events are scoped')
+assert(multiple.evidence.length > single.evidence.length && multiple.evidence.every((row) => row.assetId === 'a1' || row.assetId === 'a2'), 'combined evidence excludes unselected assets')
+assert(single.controls.every((row) => row.id !== 'CTL-GOV-03' && row.failingSubjects.every((subject) => subject.assetId === 'a1')), 'tenant-only risk and out-of-scope failures are excluded')
+const unknown = buildAssetComplianceScope(scopeModel, evaluation, [{ id: 'a4', name: 'No evidence asset' }], fixture.policyOverrides)
+assert(unknown.assets[0].riskScore === null && unknown.latestEvidenceAt === null, 'unobserved assets have no fabricated risk score or evidence timestamp')
+
+const many = Array.from({ length: 42 }, (_, index) => ({ id: `bulk-${index}`, name: `Bulk asset ${index}`, status: 'active' }))
+const bulk = buildGovernanceIntelligence(populatedInputs({
+  assets: many, portfolioAssets: [],
+  cryptoInventory: many.map((row, index) => ({
+    id: `bulk-crypto-${index}`, asset_id: row.id, item_type: 'hash', algorithm: 'SHA-1', created_at: daysAgo(2),
+  })),
+}))
+assert(bulk.assets.every((asset) => asset.status === 'non-compliant' && asset.policyViolations > 0), 'assets beyond the policy sample receive their recorded violations')
+
+const telemetry = buildGovernanceIntelligence(populatedInputs({
+  scannerAgents: [
+    { id: 'old', status: 'online', last_seen_at: daysAgo(3), updated_at: daysAgo(0) },
+    { id: 'off', status: 'inactive', last_seen_at: daysAgo(0) },
+    { id: 'live', status: 'online', last_seen_at: daysAgo(0) },
+  ],
+  connectorAccounts: [{ status: 'disconnected' }, { status: 'inactive' }, { status: 'unhealthy' }, { status: 'connected' }],
+  scanSessions: [{ status: 'queued' }, { status: 'pending' }, { status: 'running' }],
+})).telemetry
+assert(telemetry.agentsOnline === 1 && telemetry.connectorsActive === 1 && telemetry.runningScans === 1,
+  'stale, disconnected, inactive and queued records never count as active telemetry')
+
+const enterpriseAssets = Array.from({ length: 2000 }, (_, index) => ({ id: `inventory-${index}`, name: `Asset ${index}`, status: 'active' }))
+const largeInput = populatedInputs({ assets: enterpriseAssets, portfolioAssets: [], cryptoInventory: [], certificates: [], runtimeEvents: [] })
+const estate = buildGovernanceIntelligence(largeInput)
+const selectedAtEnd = buildAssetComplianceScope(estate, { ...evaluation, assets: largeInput.assets, subjects: buildSubjects(largeInput), evidence: estate.evidence },
+  enterpriseAssets.slice(-100), largeInput.policyOverrides)
+assert(estate.assets.length === 2000 && selectedAtEnd.assets.length === 100 && selectedAtEnd.assets[0].id === 'inventory-1900',
+  'a 100-asset selection works at the end of a 2,000-asset inventory')
+
+for (const selection of [single, multiple]) {
+  const document = buildAssetComplianceDocument(selection, 'technical', daysAgo(0))
+  assert(document.tables[0].rows.length === selection.assets.length, 'report matches selected asset count')
+  for (const format of ['pdf', 'csv', 'json', 'html'] as const) {
+    const result = await exportDocument(document, format)
+    const content = await result.blob.text()
+    assert(result.blob.size > 0 && result.filename.endsWith(`.${format}`), `${format} export renders the selected scope`)
+    if (format === 'pdf') assert(content.startsWith('%PDF-'), 'PDF has a valid file signature')
+    else {
+      assert(content.includes('checkout.example.com') && !content.includes('batch-reporting'), `${format} includes the selected asset and excludes unrelated assets`)
+      assert((selection.assets.length === 2) === content.includes('identity.example.com'), `${format} includes the second asset only in the multi-asset scope`)
+    }
+  }
+}
+let rejected = false
+try { buildAssetComplianceDocument({ ...single, evidence: multiple.evidence }, 'executive') } catch { rejected = true }
+assert(rejected, 'report validation rejects records outside the selection')
 
 console.log(`\n${failures === 0 ? '✓ ALL GOVERNANCE INVARIANTS HOLD' : `✗ ${failures} INVARIANT(S) FAILED`}\n`)
 process.exit(failures === 0 ? 0 : 1)

@@ -17,6 +17,8 @@ import express from 'express'
 import type { AddressInfo } from 'node:net'
 import nodemailer from 'nodemailer'
 import { DEMO_REQUEST_INBOX, validateDemoRequest } from '../src/lib/demo-request'
+import { createChecklistRequestRouter } from '../src/api-server/checklist-request'
+import type { WebsiteSubmission } from '../src/api-server/website-submissions'
 import {
   composeDemoEmail,
   createDemoRequestRouter,
@@ -165,6 +167,56 @@ async function main(): Promise<void> {
       const retry = await post(VALID)
       check('failed sends are not charged to the limit', retry.status === 200, `status=${retry.status}`)
     })
+  }
+
+  {
+    const submissions: WebsiteSubmission[] = []
+    const record = async (row: WebsiteSubmission) => { submissions.push(row); return 'fixture-id' }
+    await withServer({ record }, async (post) => {
+      const response = await post({ ...VALID, source: 'footer' })
+      check('demo is recorded when email is unconfigured', response.status === 201 &&
+        response.json?.emailAccepted === false && submissions[0]?.source === 'footer' && submissions[0]?.email_status === 'not_configured')
+    })
+    let status = ''
+    await withServer({ record, from: 'noreply@qguardhelix.com',
+      sender: async () => { throw new Error('Fixture SMTP outage') },
+      updateEmailStatus: async (_id, result) => { status = result },
+    }, async (post) => {
+      const response = await post({ ...VALID, source: 'navigation' })
+      check('notification failure preserves the demo record', response.status === 201 && response.json?.emailAccepted === false &&
+        status === 'failed' && submissions[1]?.source === 'navigation')
+    })
+    await withServer({
+      record: async () => { throw new Error('Fixture storage outage') },
+      from: 'noreply@qguardhelix.com',
+      sender: async () => { status = 'unexpected-send' },
+    }, async (post) => {
+      const response = await post(VALID)
+      check('demo storage failure is explicit and SMTP is skipped', response.status === 503 && status === 'failed')
+    })
+
+    const app = express()
+    app.use(express.json())
+    app.use('/checklist', createChecklistRequestRouter(record))
+    app.use('/offline', createChecklistRequestRouter(async () => { throw new Error('Fixture storage outage') }))
+    const server = app.listen(0)
+    await new Promise<void>((resolve) => server.once('listening', resolve))
+    try {
+      const port = (server.address() as AddressInfo).port
+      const request = { firstName: 'Test', lastName: 'Visitor', workEmail: VALID.email, company: VALID.organization, title: 'Engineer', country: 'Philippines', consent: true }
+      const post = (path: string, body: typeof request) => fetch(`http://127.0.0.1:${port}/${path}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      })
+      const valid = await post('checklist', request)
+      const invalid = await post('checklist', { ...request, consent: false })
+      const offline = await post('offline', request)
+      check('checklist saves contact details and consent', valid.status === 201 && submissions[2]?.kind === 'pqc-checklist' &&
+        submissions[2]?.details.communicationsConsent === true)
+      check('invalid checklist consent is rejected without a record', invalid.status === 400 && submissions.length === 3)
+      check('checklist storage failure does not confirm a download', offline.status === 503)
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
   }
 
   console.log(`\n${passed} passed, ${failed} failed`)

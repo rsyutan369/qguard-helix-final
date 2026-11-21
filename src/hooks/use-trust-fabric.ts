@@ -122,6 +122,7 @@ export interface DiscoveryPayload extends CommonPayload {
   view: 'discovery';
   nodes: TrustNode[];
   relationships: TrustRelationship[];
+  matchingRelationships: number;
   chainPaths: TrustChainPath[];
   trustChains: TrustChainNode[];
   stateDistribution: TrustFabricIntelligence['stateDistribution'];
@@ -251,7 +252,9 @@ export function useTrustFabricView<T extends TrustFabricPayload>(view: TrustView
     validate: (payload) =>
       payload.view === view && typeof payload.generatedAt === 'string' &&
       Number.isFinite(Date.parse(payload.generatedAt)) && Array.isArray(payload.reads) &&
-      Boolean(payload.totals && payload.telemetry),
+      Boolean(payload.totals && payload.telemetry) &&
+      (view !== 'discovery' || (Array.isArray(payload.nodes) && Array.isArray(payload.relationships) &&
+        Number.isSafeInteger(payload.matchingRelationships))),
   });
 
   return {
@@ -376,10 +379,11 @@ export function useTrustPagedResource<T>(
   key: string,
   query: PagedQuery,
   revision: number,
+  enabled = true,
 ) {
   const { accountId, token } = useTrustAccount();
   const serialized = JSON.stringify(query);
-  const scope = accountId ? JSON.stringify([accountId, view, path, key, serialized]) : null;
+  const scope = accountId && enabled ? JSON.stringify([accountId, view, path, key, serialized]) : null;
   const [result, setResult] = useState<{
     scope: string;
     rows: T[];
@@ -408,7 +412,10 @@ export function useTrustPagedResource<T>(
         const payload = await response.json().catch(() => ({}));
         if (controller.signal.aborted) return;
         if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-        if (!Array.isArray(payload.data?.[key]) || !Number.isSafeInteger(payload.data?.total) || payload.data.total < 0) {
+        if (!Array.isArray(payload.data?.[key]) || !Number.isSafeInteger(payload.data?.total) || payload.data.total < 0 ||
+          (query.includeRelationships === '1' && (!Array.isArray(payload.data.relationships) ||
+            !Number.isSafeInteger(payload.data.matchingRelationships) ||
+            payload.data.matchingRelationships < payload.data.relationships.length))) {
           throw new Error('Trust inventory response was incomplete');
         }
         setResult({ scope, rows: payload.data[key] as T[], extra: payload.data, total: payload.data.total });
@@ -425,15 +432,15 @@ export function useTrustPagedResource<T>(
       controller.abort();
       clearTimeout(timer);
     };
-  }, [token, scope, view, path, key, serialized, revision, retryCount]);
+  }, [token, scope, view, path, key, serialized, revision, retryCount, query.includeRelationships]);
 
-  const current = result?.scope === scope ? result : null;
-  const currentRequest = request?.scope === scope ? request : null;
+  const current = scope && result?.scope === scope ? result : null;
+  const currentRequest = scope && request?.scope === scope ? request : null;
   return {
     rows: current?.rows ?? [],
     extra: current?.extra ?? {},
     total: current?.total ?? 0,
-    loading: Boolean(token && (currentRequest?.loading ?? true)),
+    loading: Boolean(token && scope && (currentRequest?.loading ?? true)),
     error: currentRequest?.error ?? null,
     retry,
   };

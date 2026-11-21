@@ -172,7 +172,8 @@ function ControlDrawer({
   const [detail, setDetail] = useState<ControlDetail | null>(null);
   const [offset, setOffset] = useState(0);
   const [severity, setSeverity] = useState('all');
-  const [ownerDraft, setOwnerDraft] = useState('');
+  const [ownerInput, setOwnerDraft] = useState<string | null>(null);
+  const ownerDraft = ownerInput ?? detail?.control.owner ?? '';
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -181,12 +182,11 @@ function ControlDrawer({
     void loadControl(id).then((result) => {
       if (cancelled) return;
       setDetail(result);
-      setOwnerDraft(result?.control.owner || '');
     });
     return () => {
       cancelled = true;
     };
-  }, [id, loadControl, reloadKey]);
+  }, [id, revision, loadControl, reloadKey]);
 
   const subjects = useGovernancePagedResource<ControlSubject>(
     view,
@@ -452,11 +452,13 @@ function ControlDrawer({
 function FrameworkDrawer({
   view,
   id,
+  revision,
   onClose,
   onNavigate,
 }: {
   view: GovernanceView;
   id: string;
+  revision: number;
   onClose: () => void;
   onNavigate: (target: DrawerTarget) => void;
 }) {
@@ -471,7 +473,7 @@ function FrameworkDrawer({
     return () => {
       cancelled = true;
     };
-  }, [id, loadFramework]);
+  }, [id, revision, loadFramework]);
 
   const framework = detail?.framework;
 
@@ -572,11 +574,13 @@ function FrameworkDrawer({
 function RequirementDrawer({
   view,
   id,
+  revision,
   onClose,
   onNavigate,
 }: {
   view: GovernanceView;
   id: string;
+  revision: number;
   onClose: () => void;
   onNavigate: (target: DrawerTarget) => void;
 }) {
@@ -591,7 +595,7 @@ function RequirementDrawer({
     return () => {
       cancelled = true;
     };
-  }, [id, loadRequirement]);
+  }, [id, revision, loadRequirement]);
 
   const requirement = detail?.requirement;
 
@@ -683,11 +687,13 @@ function RequirementDrawer({
 function EvidenceDrawer({
   view,
   id,
+  revision,
   onClose,
   onNavigate,
 }: {
   view: GovernanceView;
   id: string;
+  revision: number;
   onClose: () => void;
   onNavigate: (target: DrawerTarget) => void;
 }) {
@@ -705,7 +711,7 @@ function EvidenceDrawer({
     return () => {
       cancelled = true;
     };
-  }, [id, loadEvidence, reloadKey]);
+  }, [id, revision, loadEvidence, reloadKey]);
 
   const record = detail?.evidence;
 
@@ -858,11 +864,13 @@ function EvidenceDrawer({
 function AuditEventDrawer({
   view,
   id,
+  revision,
   onClose,
   onNavigate,
 }: {
   view: GovernanceView;
   id: string;
+  revision: number;
   onClose: () => void;
   onNavigate: (target: DrawerTarget) => void;
 }) {
@@ -877,7 +885,7 @@ function AuditEventDrawer({
     return () => {
       cancelled = true;
     };
-  }, [id, loadAuditEvent]);
+  }, [id, revision, loadAuditEvent]);
 
   const event = detail?.event;
 
@@ -964,11 +972,13 @@ function AuditEventDrawer({
 function AssetDrawer({
   view,
   id,
+  revision,
   onClose,
   onNavigate,
 }: {
   view: GovernanceView;
   id: string;
+  revision: number;
   onClose: () => void;
   onNavigate: (target: DrawerTarget) => void;
 }) {
@@ -983,7 +993,7 @@ function AssetDrawer({
     return () => {
       cancelled = true;
     };
-  }, [id, loadAsset]);
+  }, [id, revision, loadAsset]);
 
   const asset = detail?.asset;
 
@@ -1004,7 +1014,7 @@ function AssetDrawer({
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 sm:grid-cols-3">
             <Fact label="Owner" value={asset.owner} />
             <Fact label="Criticality" value={asset.criticality} />
-            <Fact label="Risk score" value={fmtNumber(asset.riskScore)} mono />
+            <Fact label="Risk score" value={asset.posture === 'unknown' || asset.posture === 'not-assessed' ? 'Not assessed' : fmtNumber(asset.riskScore)} mono />
             <Fact label="Readiness" value={`${asset.readinessScore}%`} mono />
             <Fact label="Failing controls" value={fmtNumber(asset.controlsFailing)} mono />
             <Fact label="Open findings" value={fmtNumber(asset.openFindings)} mono />
@@ -1091,17 +1101,17 @@ export function GovernanceDrawers({
 
   switch (target.kind) {
     case 'control':
-      return <ControlDrawer view={view} id={target.id} onClose={close} onNavigate={onTarget} revision={revision} />;
+      return <ControlDrawer key={target.id} view={view} id={target.id} onClose={close} onNavigate={onTarget} revision={revision} />;
     case 'framework':
-      return <FrameworkDrawer view={view} id={target.id} onClose={close} onNavigate={onTarget} />;
+      return <FrameworkDrawer key={target.id} revision={revision} view={view} id={target.id} onClose={close} onNavigate={onTarget} />;
     case 'requirement':
-      return <RequirementDrawer view={view} id={target.id} onClose={close} onNavigate={onTarget} />;
+      return <RequirementDrawer key={target.id} revision={revision} view={view} id={target.id} onClose={close} onNavigate={onTarget} />;
     case 'evidence':
-      return <EvidenceDrawer view={view} id={target.id} onClose={close} onNavigate={onTarget} />;
+      return <EvidenceDrawer key={target.id} revision={revision} view={view} id={target.id} onClose={close} onNavigate={onTarget} />;
     case 'audit':
-      return <AuditEventDrawer view={view} id={target.id} onClose={close} onNavigate={onTarget} />;
+      return <AuditEventDrawer key={target.id} revision={revision} view={view} id={target.id} onClose={close} onNavigate={onTarget} />;
     case 'asset':
-      return <AssetDrawer view={view} id={target.id} onClose={close} onNavigate={onTarget} />;
+      return <AssetDrawer key={target.id} revision={revision} view={view} id={target.id} onClose={close} onNavigate={onTarget} />;
     case 'reconciliation':
       return (
         <Drawer open title="Data reconciliation" subtitle="Where every number on this page comes from" onClose={close}>

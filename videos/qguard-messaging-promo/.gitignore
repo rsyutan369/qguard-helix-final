@@ -1,5 +1,0 @@
-# Rendered output and frame captures are rebuilt from source (npm run render).
-# The 4K master is larger than most Git hosts accept in a single file.
-renders/
-snapshots/
-node_modules/

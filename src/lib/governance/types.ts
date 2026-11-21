@@ -37,6 +37,7 @@ export type ControlStatus =
   | 'not-applicable'
 
 export type GovernanceSeverity = 'critical' | 'high' | 'medium' | 'low'
+export const MAX_COMPLIANCE_SELECTION = 100
 
 export type FreshnessState = 'fresh' | 'aging' | 'stale' | 'unknown'
 
@@ -627,6 +628,7 @@ export interface AssetComplianceRecord {
   posture: string
   postureLabel: string
   riskScore: number
+  riskLevel?: string | null
   readinessScore: number
   /** Controls this asset is in scope for, and how many it satisfies. */
   controlsInScope: number
@@ -668,7 +670,7 @@ export interface GovernanceTelemetry {
   sourceCounts: Record<string, number>
   /** True when any source query hit its row cap. */
   truncated: boolean
-  /** Tables that returned nothing (missing table or genuinely empty). */
+  /** Tables that could not be read. Successfully read empty tables are not listed. */
   absentSources: string[]
   /** True when the evidence-anchor store is available. */
   anchoringAvailable: boolean

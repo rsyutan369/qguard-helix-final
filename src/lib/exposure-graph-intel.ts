@@ -14,6 +14,8 @@
  * planning estimates and are bounded, monotonic functions of evidence counts.
  */
 
+import { analyzeCryptoObservation } from '@/lib/crypto/suite-anatomy'
+import { describeAlgorithm } from '@/lib/scanner/exposure/algorithms'
 import type {
   AssetCategory,
   BlastRadiusResult,
@@ -35,12 +37,12 @@ export type AlgorithmClass = 'vulnerable' | 'hybrid' | 'pqc' | 'safe' | 'unknown
 
 /** Canonical algorithm classifier for the exposure graph (mirrors platform rules). */
 export function classifyAlgorithmClass(raw: string): AlgorithmClass {
-  const a = (raw || '').toUpperCase()
-  if (!a.trim()) return 'unknown'
-  if (/HYBRID|X25519\s*\+|\+\s*ML-KEM|ED25519\s*\+|X25519MLKEM/.test(a)) return 'hybrid'
-  if (/ML-KEM|ML-DSA|SLH-DSA|KYBER|DILITHIUM|SPHINCS|FALCON|FIPS\s?20[345]|HQC|FRODOKEM/.test(a)) return 'pqc'
-  if (/AES-?256|SHA3|SHA-?384|SHA-?512|CHACHA20/.test(a) && !/RSA|ECDSA|ECDH|\bDH\b|\bDSA\b/.test(a)) return 'safe'
-  if (/RSA|ECDSA|ECDH|ELGAMAL|EL-GAMAL|\bDSA\b|DIFFIE|\bDH\b|\bEC\b|P-256|P-384|P-521|SECP|CURVE\s?25519$|3DES|\bDES\b|RC4|MD5|SHA-?1\b|TLS_RSA|SSH-RSA/.test(a)) return 'vulnerable'
+  const observation = analyzeCryptoObservation({ algorithm: raw })
+  if (observation.quantumClass === 'hybrid' || observation.quantumClass === 'vulnerable') return observation.quantumClass
+  const algorithm = describeAlgorithm(raw)
+  if (algorithm && ['ml-kem', 'ml-dsa', 'slh-dsa', 'falcon', 'pqc-other'].includes(algorithm.family)) return 'pqc'
+  if (algorithm?.shorBroken || algorithm?.classicallyWeak) return 'vulnerable'
+  if (observation.quantumClass === 'safe') return 'safe'
   return 'unknown'
 }
 
@@ -48,7 +50,7 @@ export function classifyAlgorithmClass(raw: string): AlgorithmClass {
 export function postureFromAlgorithmClass(cls: AlgorithmClass): NodePosture {
   if (cls === 'vulnerable') return 'vulnerable'
   if (cls === 'hybrid') return 'hybrid'
-  if (cls === 'pqc' || cls === 'safe') return 'pqc'
+  if (cls === 'pqc') return 'pqc'
   return 'unknown'
 }
 
@@ -180,12 +182,12 @@ export function priorityFromScore(score: number): PriorityLabel {
   return 'Low'
 }
 
-export function criticalityLabel(raw: string): PriorityLabel {
+export function criticalityLabel(raw: string): ExposureGraphNode['businessCriticality'] {
   const t = (raw || '').toLowerCase()
   if (t.includes('critical')) return 'Critical'
   if (t.includes('high')) return 'High'
   if (t.includes('low')) return 'Low'
-  return 'Medium'
+  return t.includes('medium') || t.includes('moderate') ? 'Medium' : 'Unknown'
 }
 
 /**
@@ -199,7 +201,7 @@ export function computePriority(input: {
   posture: NodePosture
   riskScore: number
   internetFacing: boolean
-  businessCriticality: PriorityLabel
+  businessCriticality: ExposureGraphNode['businessCriticality']
   dependents: number
   dependencies: number
   expiringCertificates: number

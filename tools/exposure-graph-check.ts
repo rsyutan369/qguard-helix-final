@@ -11,7 +11,8 @@
  *   npx tsx tools/exposure-graph-check.ts
  */
 import { assembleExposureIntelligence, type ExposureRawRows } from '../src/api-server/exposure-graph'
-import { computeBlastRadius, computeMigrationImpact, pqcTargetFor, classifyAssetCategory, tierForCategory } from '../src/lib/exposure-graph-intel'
+import { buildExposureWorkflowGraph } from '../src/lib/exposure-graph-workflow'
+import { computeBlastRadius, computeMigrationImpact, pqcTargetFor, classifyAlgorithmClass, classifyAssetCategory, tierForCategory } from '../src/lib/exposure-graph-intel'
 
 type AssembleSnapshot = Parameters<typeof assembleExposureIntelligence>[0]
 
@@ -70,6 +71,7 @@ const A = {
   pki: 'a-pki', kms: 'a-kms', idp: 'a-idp', vpn: 'a-vpn', lb: 'a-lb',
   api1: 'a-api1', api2: 'a-api2', db: 'a-db', k8s: 'a-k8s', web: 'a-web', ws: 'a-ws',
 }
+const STRIPE = 'ext:api.stripe.com'
 
 const ROWS: ExposureRawRows = {
   assets: [
@@ -114,13 +116,13 @@ const ROWS: ExposureRawRows = {
     { asset_id: A.api2, name: 'orders-api.acme.com', algorithm: 'ECDSA-P256', issuer: 'CN=internal-pki.acme.local', not_after: '2026-09-15', is_quantum_safe: false, is_expiring_soon: false },
   ],
   runtimeEvents: [
-    { asset_id: A.api1, asset_name: 'payments-api.acme.com', algorithm: 'TLS_RSA_WITH_AES_128_GCM_SHA256', host: 'api.stripe.com', risk_score: 72, is_legacy: true, is_pqc: false },
-    { asset_id: A.api1, asset_name: 'payments-api.acme.com', algorithm: 'TLS_RSA_WITH_AES_128_GCM_SHA256', host: 'api.stripe.com', risk_score: 72, is_legacy: true, is_pqc: false },
+    { asset_id: A.api1, event_type: 'tls-handshake', metadata: { observationKind: 'runtime-observation' }, algorithm: 'TLS_RSA_WITH_AES_128_GCM_SHA256', host: 'api.stripe.com', risk_score: 72 },
+    { asset_id: A.api1, event_type: 'tls-handshake', metadata: { observationKind: 'runtime-observation' }, algorithm: 'TLS_RSA_WITH_AES_128_GCM_SHA256', host: 'api.stripe.com', risk_score: 72 },
     { asset_id: A.web, asset_name: 'portal.acme.com', algorithm: 'ECDHE-RSA-AES256', host: 'sso.acme.com', risk_score: 40, is_legacy: false, is_pqc: false },
   ],
   scanResults: [
-    { asset_id: A.pki, algorithm: 'RSA-2048', threat_level: 'critical' },
-    { asset_id: A.lb, algorithm: 'TLS_RSA_WITH_AES_256_CBC_SHA', threat_level: 'high' },
+    { id: 'scan-pki', asset_id: A.pki, algorithm: 'RSA-2048', threat_level: 'critical' },
+    { id: 'scan-lb', asset_id: A.lb, algorithm: 'TLS_RSA_WITH_AES_256_CBC_SHA', threat_level: 'high' },
   ],
   cryptoExposures: [{ asset_id: A.idp, exposure_type: 'legacy-signature', severity: 'high' }],
   connectorAccounts: [{ id: 'conn-1', provider: 'aws', status: 'connected' }],
@@ -134,25 +136,35 @@ const intel = assembleExposureIntelligence(SNAPSHOT, ROWS)
 const nodes = intel.graph.nodes
 const edges = intel.graph.edges
 const byId = new Map(nodes.map((n) => [n.id, n]))
+const recordedEdges = edges.filter((edge) => edge.provenance !== 'inferred')
 
 console.log('— Graph assembly')
 check('hasData true with evidence', intel.hasData === true)
 check('all 11 assets became nodes', nodes.filter((n) => n.kind === 'asset').length === 11, `got ${nodes.filter((n) => n.kind === 'asset').length}`)
 check('external CA node derived from certificate issuers', nodes.some((n) => n.id.startsWith('ca:') && /digicert/i.test(n.label)))
-check('external vendor node derived from runtime hosts', nodes.some((n) => n.id === 'ext:api-stripe-com'))
+check('external vendor node derived from runtime hosts', nodes.some((n) => n.id === STRIPE))
 check('cloud provider node linked via metadata evidence', nodes.some((n) => n.id.startsWith('cloud:')))
 check('relationship edges materialised', edges.filter((e) => e.trustClass === 'mtls' || e.trustClass === 'identity' || e.trustClass === 'kms').length >= 3)
 check('certificate-chain edges to external CA', edges.some((e) => e.trustClass === 'certificate-chain' && e.target.startsWith('ca:')))
 check('internal issuer resolves to internal PKI edge (no duplicate CA node)', edges.some((e) => e.trustClass === 'certificate-chain' && e.target === A.pki) && !nodes.some((n) => n.id.startsWith('ca:') && /internal-pki/i.test(n.label)))
-check('external communication edge to vendor', edges.some((e) => (e.source === A.api1 && e.target === 'ext:api-stripe-com')))
-check('internal host communication resolved to asset edge', edges.some((e) => e.source === A.web && e.target === A.idp && (e.trustClass === 'communication' || e.trustClass === 'tls')))
+check('repeated handshake observes one vendor link', edges.filter((e) => e.source === A.api1 && e.target === STRIPE && e.provenance === 'observed').length === 1)
+check('internal host match is inferred', edges.some((e) => e.source === A.web && e.target === A.idp && e.provenance === 'inferred'))
+check('external issuer key posture is unknown', nodes.find((n) => n.id.startsWith('ca:'))?.posture === 'unknown')
+const workflow = buildExposureWorkflowGraph(nodes, edges, null, [])
+check('workflow preserves real asset IDs and evidence link directions', workflow.nodes.length === nodes.length && workflow.edges.every((edge, index) =>
+  edge.source === edges[index].source && edge.target === edges[index].target && edge.provenance === edges[index].provenance))
+const onlyWeb = buildExposureWorkflowGraph(nodes.filter((node) => node.id === A.web), edges, null, [])
+check('workflow filtering drops links to hidden nodes', onlyWeb.nodes.length === 1 && onlyWeb.edges.length === 0)
 
 console.log('\n— Five-state posture')
 check('vulnerable posture derived', byId.get(A.pki)?.posture === 'vulnerable')
 check('pqc posture derived', byId.get(A.db)?.posture === 'pqc')
 check('migrating posture from active migration job', byId.get(A.k8s)?.posture === 'migrating')
 check('unknown posture for evidence-free asset', byId.get(A.ws)?.posture === 'unknown')
-check('posture counts sum to asset universe', intel.summary.quantumVulnerable + intel.summary.hybridAssets + intel.summary.pqcReadyAssets + intel.summary.migrationInProgress + intel.summary.unknownPosture === 11)
+check('crypto posture counts sum to all loaded assets', intel.summary.quantumVulnerable + intel.summary.hybridAssets + intel.summary.pqcReadyAssets + intel.summary.unknownPosture === 11)
+check('active jobs preserve the measured crypto posture', intel.summary.migrationInProgress === 1 && byId.get(A.k8s)?.cryptoPosture === 'vulnerable')
+check('posture ignores bare policy labels and distinguishes symmetric crypto', classifyAlgorithmClass('Hybrid readiness policy') === 'unknown' && classifyAlgorithmClass('AES-256-GCM') === 'safe')
+check('X25519 and hybrid signature evidence are recognized', classifyAlgorithmClass('X25519') === 'vulnerable' && classifyAlgorithmClass('Ed25519 + ML-DSA-65') === 'hybrid')
 
 console.log('\n— Categorisation & tiers')
 check('classifyAssetCategory maps PKI', classifyAssetCategory('pki service', 'internal-pki.acme.local') === 'pki')
@@ -161,21 +173,23 @@ check('tier ladder: CA before endpoints', tierForCategory('certificate-authority
 check('node carries tier label', Boolean(byId.get(A.db)?.tierLabel))
 
 console.log('\n— Summary metrics')
-check('total assets floored by snapshot', intel.summary.totalAssets === 11)
-check('internet-facing counted (dmz lb + domain-named assets)', intel.summary.internetFacingAssets >= 1)
+check('total assets reflects loaded inventory', intel.summary.totalAssets === 11)
+check('internet-facing counts require recorded exposure', intel.summary.internetFacingAssets === 1)
 check('third-party dependencies counted', intel.summary.thirdPartyDependencies >= 2)
 check('critical trust relationships flagged', intel.summary.criticalTrustRelationships >= 1)
-check('pki objects = certs + external CAs', intel.summary.pkiObjects === 3 + nodes.filter((n) => n.id.startsWith('ca:')).length)
+check('certificate KPI counts certificate records', intel.summary.pkiObjects === 3)
+check('trust KPI excludes inferred connections', intel.summary.trustRelationships === recordedEdges.length && intel.summary.inferredRelationships === edges.length - recordedEdges.length)
 check('max blast radius computed', intel.summary.maxBlastRadius >= 4)
 check('readiness scores mirror snapshot', intel.summary.quantumReadinessScore === 34 && intel.summary.quantumRiskScore === 61)
 
 console.log('\n— Blast Radius Analysis™')
-const blastWeb = computeBlastRadius(nodes, edges, A.web)
+const blastWeb = computeBlastRadius(nodes, recordedEdges, A.web)
 check('direct dependencies correct for portal', blastWeb.direct.includes(A.lb), `direct=${JSON.stringify(blastWeb.direct)}`)
 check('indirect propagation reaches api tier', blastWeb.indirect.includes(A.api1) && blastWeb.indirect.includes(A.api2))
 check('trust-chain members tracked', computeBlastRadius(nodes, edges, A.api1).trustChain.length >= 1)
 check('depth map includes root at 0', blastWeb.depths[A.web] === 0)
 check('environments aggregated', blastWeb.environments.length >= 1)
+check('blast radius excludes inferred shortcuts', !blastWeb.direct.includes(A.idp))
 
 console.log('\n— Migration Impact Analysis™')
 const impact = computeMigrationImpact(nodes, edges, A.api1)
@@ -205,13 +219,31 @@ check('mTLS pair must migrate together', intel.migrationOrder.clusters.some((c) 
   return ids.includes(A.api1) && ids.includes(A.api2)
 }))
 check('vulnerable KMS flagged as blocker', intel.migrationOrder.blockers.some((b) => b.id === A.kms))
-check('vulnerable vendor flagged as blocker', intel.migrationOrder.blockers.some((b) => b.id === 'ext:api-stripe-com'))
+check('vulnerable vendor flagged as blocker', intel.migrationOrder.blockers.some((b) => b.id === STRIPE))
 
 console.log('\n— Third-party dependency analysis')
 check('external CA row present', intel.thirdParty.some((t) => /digicert/i.test(t.vendor) && t.category === 'External PKI / CA'))
 check('payment vendor categorised', intel.thirdParty.some((t) => /stripe/i.test(t.vendor) && t.category === 'Payment Gateway'))
 check('vendor readiness reflects observed crypto', intel.thirdParty.find((t) => /stripe/i.test(t.vendor))?.readiness === 'vulnerable')
 check('vendor rows carry connected assets', (intel.thirdParty.find((t) => /stripe/i.test(t.vendor))?.connectedAssets || 0) >= 1)
+
+console.log('\n— Live evidence scope')
+const scoped = assembleExposureIntelligence(SNAPSHOT, {
+  ...ROWS,
+  assets: [...ROWS.assets,
+    { id: 'same-name', name: 'internal-pki.acme.local', status: 'active' },
+    { id: 'old-asset', name: 'Archived asset', status: 'archived' }],
+  runtimeEvents: [...ROWS.runtimeEvents, { asset_id: A.web, host: 'internal-pki.acme.local', algorithm: 'ML-KEM-768' }],
+  migrationJobs: [...ROWS.migrationJobs, { id: 'sim-job', asset_id: A.ws, status: 'running', metadata: { dryRun: true } }],
+  scanResults: [...ROWS.scanResults,
+    { id: 'scan-low', asset_id: 'same-name', algorithm: 'A recorded low finding', threat_level: 'low', created_at: NOW },
+    { id: 'unlinked', asset_name: 'internal-pki.acme.local', algorithm: 'Unlinked high finding', threat_level: 'high' }],
+})
+const scopedNodes = new Map(scoped.graph.nodes.map((node) => [node.id, node]))
+check('same-name assets count only their own findings, including low severity', scopedNodes.get('same-name')?.findingsCount === 1)
+check('archived asset is omitted and dry run is excluded from live migration counts', !scopedNodes.has('old-asset') && scoped.summary.migrationInProgress === 1)
+check('ambiguous telemetry name is disclosed without inventing a dependency', !scoped.graph.edges.some((edge) => edge.source === A.web && (edge.target === A.pki || edge.target === 'same-name')) &&
+  scoped.evidence.limitations?.some((notice) => notice.includes('more than one workspace asset')) === true)
 
 console.log('\n— AI Migration Advisor™ & prioritisation')
 check('advisor recommends trust-anchor-first sequencing', intel.advisor.recommendations.some((r) => r.category === 'Sequencing'))

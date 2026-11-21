@@ -6,14 +6,14 @@
  * exactly ONE fix (the action that resolves it), so the sum of the fixes is the
  * whole backlog with nothing counted twice.
  *
- * Progress is evidence-based: an asset is `validated` only when a migration job
- * completed AND a scan recorded after that completion no longer shows the
- * vulnerable component. A completed job alone is `awaiting validation`.
+ * Progress is evidence-based. A matching completed migration job and a passing
+ * validation record are required for validation.
  */
-import { migrationTargetFor, type CanonicalAlgorithm } from '@/lib/scanner/exposure/algorithms'
+import { migrationTargetFor, type AlgorithmFamily, type CanonicalAlgorithm } from '@/lib/scanner/exposure/algorithms'
+import { isPassingValidation, isSimulationRow } from '@/lib/migration/job-safety'
 import type { CryptoRole, FindingSeverity } from '@/lib/scanner/exposure/types'
 import {
-  ENVIRONMENT_LABEL, assetWeight, worstSeverity,
+  ENVIRONMENT_LABEL, assetWeight, observedAlgorithmFamily, worstSeverity,
   type CertificateIdentity, type EnvironmentKey, type EstateAsset, type Observation, type Row,
 } from './model'
 import { str } from '@/lib/migration/asset-intelligence'
@@ -26,30 +26,49 @@ import { PQC_TRANSITION_SOURCES } from '@/lib/crypto/pqc-transition-sources'
 export type JobPhase = 'planned' | 'running' | 'completed' | 'failed'
 
 export function jobPhase(status: string): JobPhase | null {
-  const value = status.toLowerCase()
-  if (/complete|succeed|success|done|finished/.test(value)) return 'completed'
-  if (/fail|error|roll|cancel/.test(value)) return 'failed'
-  if (/run|progress|execut|dispatch|validat/.test(value)) return 'running'
-  if (/queue|pend|await|pause|block|schedul|plan|approv|draft/.test(value)) return 'planned'
+  const value = status.trim().toLowerCase().replace(/[\s-]+/g, '_')
+  if (['completed', 'complete', 'success', 'succeeded', 'successful', 'done', 'finished'].includes(value)) return 'completed'
+  if (['failed', 'error', 'validation_failed', 'rollback_failed', 'rolled_back', 'cancelled', 'canceled', 'rejected'].includes(value)) return 'failed'
+  if (['running', 'executing', 'dispatched', 'validating', 'in_progress', 'migrating', 'rolling_back'].includes(value)) return 'running'
+  if (['queued', 'pending', 'awaiting_agent', 'waiting_for_agent', 'paused', 'blocked', 'scheduled', 'planned', 'approved', 'draft'].includes(value)) return 'planned'
   return null
 }
 
-export interface AssetJob { id: string; phase: JobPhase; status: string; updatedAt: number; targetAlgorithm: string }
+export interface AssetJob { id: string; phase: JobPhase; status: string; updatedAt: number; completedAt: number; validationAt: number; target: AlgorithmFamily | null; source: string | null }
 
-/** Latest migration job per asset. */
-export function latestJobs(rows: Row[]): Map<string, AssetJob> {
-  const latest = new Map<string, AssetJob>()
+/** Recorded non-simulation jobs indexed by asset, newest first. */
+export function indexJobs(rows: Row[], validations: Row[] = []): Map<string, AssetJob[]> {
+  const validationByJob = new Map<string, { at: number; id: string; passed: boolean }>()
+  for (const row of validations) {
+    const key = str(row.migration_id)
+    const at = Date.parse(str(row.created_at))
+    if (!key || !Number.isFinite(at)) continue
+    const previous = validationByJob.get(key)
+    const id = str(row.id)
+    if (!previous || at > previous.at || (at === previous.at && id > previous.id)) {
+      validationByJob.set(key, { at, id, passed: isPassingValidation(str(row.status)) })
+    }
+  }
+  const jobs = new Map<string, AssetJob[]>()
   for (const row of rows) {
     const assetId = str(row.asset_id)
     const phase = jobPhase(str(row.status))
-    if (!assetId || !phase) continue
+    if (!assetId || !phase || isSimulationRow(row)) continue
+    const id = str(row.id)
     const updatedAt = Date.parse(str(row.updated_at) || str(row.created_at)) || 0
-    const current = latest.get(assetId)
-    if (!current || updatedAt > current.updatedAt) {
-      latest.set(assetId, { id: str(row.id), phase, status: str(row.status), updatedAt, targetAlgorithm: str(row.target_algorithm) })
-    }
+    const validation = validationByJob.get(id)
+    const completedAt = Date.parse(str(row.completed_at)) || 0
+    const assetJobs = jobs.get(assetId) ?? []
+    assetJobs.push({
+      id, phase, status: str(row.status), updatedAt, completedAt,
+      validationAt: validation?.passed && completedAt && validation.at >= completedAt ? validation.at : 0,
+      target: observedAlgorithmFamily(str(row.target_algorithm))?.family ?? null,
+      source: observedAlgorithmFamily(str(row.source_algorithm))?.canonical ?? null,
+    })
+    jobs.set(assetId, assetJobs)
   }
-  return latest
+  for (const assetJobs of jobs.values()) assetJobs.sort((a, b) => b.updatedAt - a.updatedAt || b.id.localeCompare(a.id))
+  return jobs
 }
 
 export type MemberStatus = 'open' | 'planned' | 'running' | 'failed' | 'awaiting-validation' | 'validated' | 'regressed'
@@ -59,8 +78,8 @@ export const MEMBER_STATUS_LABEL: Record<MemberStatus, string> = {
   planned: 'Planned / queued',
   running: 'In progress',
   failed: 'Failed / rolled back',
-  'awaiting-validation': 'Completed — awaiting rescan',
-  validated: 'Validated by rescan',
+  'awaiting-validation': 'Completed · awaiting validation evidence',
+  validated: 'Validated',
   regressed: 'Rescan still vulnerable',
 }
 
@@ -161,7 +180,7 @@ export interface FixCluster {
 export interface ClusterState {
   cluster: FixCluster
   /** asset id → member facts. */
-  members: Map<string, { severity: FindingSeverity; observations: number; firstSeenAt: number; status: MemberStatus; weight: number }>
+  members: Map<string, { severity: FindingSeverity; observations: number; firstSeenAt: number; status: MemberStatus; weight: number; validatedAt: number }>
   certificateKeys: Set<string>
 }
 
@@ -177,13 +196,13 @@ interface Accumulator {
   reusedCertificates: number
   observations: number
   deadlineInputs: TimingObservation[]
-  members: Map<string, { severity: FindingSeverity; observations: number; firstSeenAt: number; latestAt: number }>
+  members: Map<string, { severity: FindingSeverity; observations: number; firstSeenAt: number; latestAt: number; algorithms: Set<string> }>
 }
 
 const slug = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'unknown'
 
 function route(observation: Observation, assetHasCertificates: boolean): { kind: FixKind; key: string; rootType: Accumulator['rootType']; label: string } | 'covered' | null {
-  if (observation.actionability === 'none' || observation.actionability === 'unclassified') return null
+  if (observation.actionability !== 'quantum' && observation.actionability !== 'classical') return null
   const name = observation.canonical?.canonical ?? observation.algorithm
   const sized = observation.keySize ? `${name}-${observation.keySize}` : name
   if (observation.actionability === 'classical') return { kind: 'classical-weakness', key: name, rootType: 'algorithm', label: sized }
@@ -279,12 +298,16 @@ export function buildClusters(
   observations: Observation[],
   certificates: CertificateIdentity[],
   assets: Map<string, EstateAsset>,
-  jobs: Map<string, AssetJob>,
+  jobs: Map<string, AssetJob[]>,
+  queued: Set<string> = new Set(),
 ): ClusterBuild {
   const accumulators = new Map<string, Accumulator>()
   const affected = new Set<string>()
-  const assetsWithCertificates = new Set<string>()
-  for (const certificate of certificates) for (const id of certificate.assetIds) assetsWithCertificates.add(id)
+  const certificateKeysByAsset = new Set<string>()
+  for (const certificate of certificates) {
+    if (certificate.actionability !== 'quantum' && certificate.actionability !== 'classical') continue
+    for (const id of certificate.assetIds) certificateKeysByAsset.add(`${id}|${certificate.canonical?.canonical}|${certificate.keySize ?? ''}`)
+  }
 
   const touch = (kind: FixKind, key: string, rootType: Accumulator['rootType'], label: string, roleHint: CryptoRole) => {
     const id = `${kind}:${slug(key)}`
@@ -298,22 +321,23 @@ export function buildClusters(
     }
     return acc
   }
-  const addMember = (acc: Accumulator, assetId: string, severity: FindingSeverity, at: number) => {
+  const addMember = (acc: Accumulator, assetId: string, severity: FindingSeverity, at: number, algorithm: string) => {
     const member = acc.members.get(assetId)
     if (member) {
       member.observations += 1
       if (severity && worstSeverity([member.severity, severity]) !== member.severity) member.severity = severity
       if (at > 0) member.firstSeenAt = member.firstSeenAt > 0 ? Math.min(member.firstSeenAt, at) : at
       member.latestAt = Math.max(member.latestAt, at)
+      member.algorithms.add(algorithm)
     } else {
-      acc.members.set(assetId, { severity, observations: 1, firstSeenAt: at, latestAt: at })
+      acc.members.set(assetId, { severity, observations: 1, firstSeenAt: at, latestAt: at, algorithms: new Set([algorithm]) })
     }
   }
 
   let coveredByCertificate = 0
   for (const observation of observations) {
-    if (!observation.assetId) continue
-    const routed = route(observation, assetsWithCertificates.has(observation.assetId))
+    if (!assets.has(observation.assetId)) continue
+    const routed = route(observation, certificateKeysByAsset.has(`${observation.assetId}|${observation.canonical?.canonical}|${observation.keySize ?? ''}`))
     if (routed === null) continue
     affected.add(observation.assetId)
     if (routed === 'covered') { coveredByCertificate += 1; continue }
@@ -323,42 +347,50 @@ export function buildClusters(
     const algo = observation.canonical?.canonical ?? observation.algorithm
     acc.algorithms.set(algo, (acc.algorithms.get(algo) ?? 0) + 1)
     acc.deadlineInputs.push({ algorithm: observation.canonical?.canonical, classical: observation.actionability === 'classical' })
-    addMember(acc, observation.assetId, observation.severity, observation.observedAt)
+    addMember(acc, observation.assetId, observation.severity, observation.observedAt, algo)
   }
 
   for (const certificate of certificates) {
     if (certificate.actionability !== 'quantum' && certificate.actionability !== 'classical') continue
+    const deployments = [...certificate.assetIds].filter((id) => assets.has(id))
+    if (deployments.length === 0) continue
     const acc = touch('ca-reissue', certificate.issuerName || 'unknown-issuer', 'issuer', certificate.issuerName || 'Unknown issuer', 'certificate')
     acc.certificateKeys.add(certificate.key)
-    if (certificate.assetIds.size > 1) acc.reusedCertificates += 1
+    if (deployments.length > 1) acc.reusedCertificates += 1
     acc.componentKeys.add(certificate.key)
     const algo = certificate.canonical?.canonical ?? certificate.algorithm
     acc.algorithms.set(algo, (acc.algorithms.get(algo) ?? 0) + 1)
     acc.deadlineInputs.push({ algorithm: certificate.canonical?.canonical, classical: certificate.actionability === 'classical' })
-    for (const assetId of certificate.assetIds) {
+    for (const assetId of deployments) {
       affected.add(assetId)
       acc.observations += 1
-      addMember(acc, assetId, certificate.severity, certificate.observedAt)
+      addMember(acc, assetId, certificate.severity, certificate.observedAtByAsset.get(assetId) ?? 0, algo)
     }
   }
 
-  // Latest scan evidence per asset, for validation after a completed job.
-  const latestScanAt = new Map<string, number>()
-  for (const observation of observations) {
-    latestScanAt.set(observation.assetId, Math.max(latestScanAt.get(observation.assetId) ?? 0, observation.observedAt))
-  }
-  for (const certificate of certificates) {
-    for (const assetId of certificate.assetIds) latestScanAt.set(assetId, Math.max(latestScanAt.get(assetId) ?? 0, certificate.observedAt))
+  // A job identifies a fix only when its recorded source and replacement match
+  // a single fix on that asset. An asset alone is too broad for validation.
+  const matchingJobs = new Map<Accumulator, Map<string, AssetJob[]>>()
+  const matchesPerJob = new Map<string, number>()
+  for (const acc of accumulators.values()) {
+    const targets: AlgorithmFamily[] = acc.kind === 'key-exchange' || acc.kind === 'data-encryption' ? ['ml-kem']
+      : ['signing-keys', 'ca-reissue', 'certificate-keys'].includes(acc.kind) ? ['ml-dsa', 'slh-dsa'] : []
+    if (!targets.length) continue
+    const byAsset = new Map<string, AssetJob[]>()
+    for (const [assetId, member] of acc.members) {
+      const matches = jobs.get(assetId)?.filter((job) => job.source && member.algorithms.has(job.source) && job.target && targets.includes(job.target))
+      if (!matches?.length) continue
+      byAsset.set(assetId, matches)
+      for (const job of matches) matchesPerJob.set(job.id, (matchesPerJob.get(job.id) ?? 0) + 1)
+    }
+    matchingJobs.set(acc, byAsset)
   }
 
-  const statusOf = (assetId: string, member: { latestAt: number }): MemberStatus => {
-    const job = jobs.get(assetId)
-    if (!job) return 'open'
+  const statusOf = (assetId: string, job: AssetJob | undefined, member: { latestAt: number }): MemberStatus => {
+    if (!job || (queued.has(assetId) && job.phase === 'failed')) return queued.has(assetId) ? 'planned' : 'open'
     if (job.phase !== 'completed') return job.phase
-    const rescanned = (latestScanAt.get(assetId) ?? 0) > job.updatedAt
-    if (!rescanned) return 'awaiting-validation'
-    // A rescan after completion that still recorded this fix's vulnerable component.
-    return member.latestAt > job.updatedAt ? 'regressed' : 'validated'
+    if (job.completedAt && member.latestAt > Math.max(job.completedAt, job.validationAt)) return 'regressed'
+    return job.validationAt ? 'validated' : 'awaiting-validation'
   }
 
   const states: ClusterState[] = []
@@ -377,10 +409,13 @@ export function buildClusters(
     for (const [assetId, member] of acc.members) {
       const asset = assets.get(assetId)
       const weight = assetWeight(member.severity, asset)
-      const status = statusOf(assetId, member)
+      const job = matchingJobs.get(acc)?.get(assetId)?.[0]
+      const matched = job && matchesPerJob.get(job.id) === 1 ? job : undefined
+      const status = statusOf(assetId, matched, member)
       progress[status] += 1
       if (status !== 'validated') impact += weight
-      members.set(assetId, { severity: member.severity, observations: member.observations, firstSeenAt: member.firstSeenAt, status, weight })
+      members.set(assetId, { severity: member.severity, observations: member.observations, firstSeenAt: member.firstSeenAt, status, weight,
+        validatedAt: status === 'validated' ? matched?.validationAt ?? 0 : 0 })
       if (member.firstSeenAt > 0) firstSeenAt = Math.min(firstSeenAt, member.firstSeenAt)
       const env = asset?.environment ?? 'unknown'
       environments.set(env, (environments.get(env) ?? 0) + 1)

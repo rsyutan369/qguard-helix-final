@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express'
+import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import {
   buildExternalTrustIntelligence,
@@ -54,7 +55,8 @@ type AuthedRequest = Request & { user?: { id: string; email?: string | null }; t
 function tokenFromRequest(req: Request): string | null {
   const headerToken = getToken(req)
   if (headerToken) return headerToken
-  // EventSource cannot set an Authorization header; /stream passes it by query.
+  // Legacy EventSource clients still use this exact endpoint.
+  if (req.path !== '/stream') return null
   const queryToken = req.query.token
   return typeof queryToken === 'string' && queryToken.length > 0 ? queryToken : null
 }
@@ -348,15 +350,27 @@ router.get('/ecosystem', async (req: Request, res: Response) => {
   }
 })
 
+async function trustChainsSnapshot(req: AuthedRequest, force = false) {
+  const { intelligence } = await buildExternalTrust(req.token!, req.user!.id, force)
+  return { ...envelope(intelligence), ...intelligence.trust }
+}
+
 router.get('/trust', async (req: Request, res: Response) => {
   try {
-    const { token, user } = req as AuthedRequest
-    const { intelligence } = await buildExternalTrust(token!, user!.id)
-    res.json({ data: { ...envelope(intelligence), ...intelligence.trust } })
+    const data = await trustChainsSnapshot(req as AuthedRequest, str(req.query.refresh) === '1')
+    res.json({ data: { ...data, fingerprint: payloadFingerprint(data) } })
   } catch (error) {
     console.error('External trust chain error:', error)
     res.status(500).json({ error: { code: 'TRUST_ERROR', message: 'Failed to load trust chains' } })
   }
+})
+
+router.get('/trust/stream', (req: Request, res: Response) => {
+  streamLiveSnapshot(req, res, {
+    event: 'trust-chains',
+    intervalMs: 10_000,
+    build: () => trustChainsSnapshot(req as AuthedRequest),
+  })
 })
 
 router.get('/lab', async (req: Request, res: Response) => {

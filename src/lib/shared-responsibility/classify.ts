@@ -35,7 +35,7 @@ function normalizeSeverity(raw?: string): FindingSeverityLevel {
   if (s.includes('high')) return 'high'
   if (s.includes('medium') || s.includes('moderate')) return 'medium'
   if (s.includes('low')) return 'low'
-  if (s.includes('safe') || s.includes('info') || s.includes('none')) return 'safe'
+  if (/^(safe|info|informational|none|pqc[- ]ready)$/.test(s.trim())) return 'safe'
   return 'medium'
 }
 
@@ -152,13 +152,10 @@ function resolveDomain(input: OwnershipFindingInput, attribution: ProviderAttrib
 function resolveActionability(
   domain: ResponsibilityDomain,
   input: OwnershipFindingInput,
-  isProviderFrontedTransport: boolean,
 ): CustomerActionability {
   if (domain === 'customer') {
     return input.remediationAuthority === 'customer_admin_configurable' ? 'partial' : 'yes'
   }
-  // Provider-fronted TLS: edge is provider-managed but the origin is fixable.
-  if (domain === 'provider' && isProviderFrontedTransport) return 'partial'
   return 'no'
 }
 
@@ -222,7 +219,7 @@ function ownerLabels(
   input: OwnershipFindingInput,
 ): { ownerType: string; responsibleParty: string; remediationDomain: string } {
   if (domain === 'customer') {
-    const team = inferCustomerTeam(input)
+    const team = input.assetOwner || `Suggested: ${inferCustomerTeam(input)}`
     return { ownerType: 'Customer', responsibleParty: team, remediationDomain: team }
   }
   if (domain === 'provider') {
@@ -294,9 +291,9 @@ function recommendedActionFor(
     const name = attribution.attributed ? attribution.providerName : 'the provider'
     if (isProviderFrontedTransport) {
       return {
-        action: `Edge TLS is managed by ${name}: monitor its PQ roadmap and enable full-strict mode. Separately, upgrade your customer-controlled origin TLS to an ML-KEM hybrid.`,
-        status: 'Provider Managed (origin actionable)',
-        allowed: ['monitor_provider_roadmap', 'enable_full_strict', 'harden_origin', 'track_vendor_readiness'],
+        action: `Review the TLS termination evidence with ${name} and track its post-quantum roadmap. Verify the origin's ownership and TLS separately.`,
+        status: 'Provider edge indicated',
+        allowed: ['monitor_provider_roadmap', 'track_vendor_readiness'],
       }
     }
     return {
@@ -342,7 +339,7 @@ export interface OwnershipTag {
 export function quickOwnershipTag(input: OwnershipFindingInput, context: AttributionContext = {}): OwnershipTag {
   const attribution = attributeProvider(input, context)
   const domain = resolveDomain(input, attribution)
-  const customerActionable = resolveActionability(domain, input, false)
+  const customerActionable = normalizeSeverity(input.severity) === 'safe' ? 'no' : resolveActionability(domain, input)
   const { ownerType, responsibleParty } = ownerLabels(domain, attribution, input)
   const migrationDependencyStatus = deriveMigrationDependencyStatus(domain, attribution, customerActionable)
   return {
@@ -365,16 +362,21 @@ export function classifyFinding(input: OwnershipFindingInput, context: Attributi
   const edgeOrigin = classifyEdgeVsOrigin(input, attribution)
   const isProviderFrontedTransport = Boolean(edgeOrigin?.isProviderFronted) && domain === 'provider'
 
-  const customerActionable = resolveActionability(domain, input, isProviderFrontedTransport)
+  const safe = severity === 'safe'
+  const customerActionable = safe ? 'no' : resolveActionability(domain, input)
   const priority = resolvePriority(domain, severity, customerActionable)
   const complexity = resolveComplexity(domain, input, severity)
   const { effort, timeline } = effortFor(domain, complexity)
   const businessImpact = businessImpactFor(input, severity, domain)
   const { ownerType, responsibleParty, remediationDomain } = ownerLabels(domain, attribution, input)
-  const { action, status, allowed } = recommendedActionFor(domain, attribution, input, isProviderFrontedTransport)
+  const { action, status, allowed } = safe
+    ? { action: 'No migration action is indicated by this observation.', status: 'No action indicated', allowed: [] }
+    : recommendedActionFor(domain, attribution, input, isProviderFrontedTransport)
 
-  const migrationDependencyStatus = deriveMigrationDependencyStatus(domain, attribution, customerActionable)
-  const dependencyChain = buildDependencyChain(migrationDependencyStatus, attribution, domain, isTransportFinding(input))
+  const migrationDependencyStatus = safe ? 'ready' : deriveMigrationDependencyStatus(domain, attribution, customerActionable)
+  const dependencyChain = safe
+    ? { nodes: [], criticalPath: [], blockedBy: null, migrationDependencyStatus, summary: 'No migration dependencies indicated.' }
+    : buildDependencyChain(migrationDependencyStatus, attribution, domain, isTransportFinding(input))
   const confidence = computeConfidence(input, attribution, domain)
 
   const providerDependency =
@@ -398,8 +400,8 @@ export function classifyFinding(input: OwnershipFindingInput, context: Attributi
               : 'Industry Adoption'
       : null
 
-  const canFixLabel =
-    customerActionable === 'yes' ? 'Immediately actionable' : customerActionable === 'partial' ? 'Partially actionable' : 'Not customer-actionable'
+  const canFixLabel = safe ? 'No action indicated'
+    : customerActionable === 'yes' ? 'Immediately actionable' : customerActionable === 'partial' ? 'Partially actionable' : 'Not customer-actionable'
 
   const title =
     input.title ||
@@ -425,9 +427,9 @@ export function classifyFinding(input: OwnershipFindingInput, context: Attributi
     actionability: {
       canCustomerFix: customerActionable,
       label: canFixLabel,
-      reason:
-        domain === 'customer'
-          ? 'The organization owns this asset and controls the remediation path.'
+      reason: safe ? 'The scanner did not flag this observation for migration.'
+        : domain === 'customer'
+          ? 'The classifier routed this finding to customer review based on the available evidence.'
           : domain === 'provider'
             ? `${attribution.attributed ? attribution.providerName : 'The provider'} manages this cryptographic surface from outside the customer's control.`
             : 'Remediation depends on ecosystem participants (browsers, operating systems, hardware or standards).',
@@ -437,8 +439,8 @@ export function classifyFinding(input: OwnershipFindingInput, context: Attributi
     migrationDependencyStatus,
     businessImpact,
     migrationComplexity: complexity,
-    estimatedEffort: effort,
-    estimatedTimeline: timeline,
+    estimatedEffort: safe ? 'Not applicable' : effort,
+    estimatedTimeline: safe ? 'Not applicable' : timeline,
 
     attribution,
     dependencyChain,
@@ -450,7 +452,7 @@ export function classifyFinding(input: OwnershipFindingInput, context: Attributi
       confidence: confidence.overall,
       ownershipReason:
         domain === 'customer'
-          ? 'Asset is customer-owned / customer-deployed.'
+          ? input.assetOwner ? `Asset owner recorded as ${input.assetOwner}.` : 'Customer responsibility classification. No accountable owner was recorded for this finding.'
           : `${attribution.reason}`,
       actionabilityReason: canFixLabel,
       providerAttributionReason: attribution.reason,
@@ -460,6 +462,7 @@ export function classifyFinding(input: OwnershipFindingInput, context: Attributi
     recommendedAction: action,
     status,
     asset: input.assetName || input.location || input.host || 'Unknown asset',
+    assetId: input.assetId,
     assetType: input.assetType || 'asset',
     algorithm: input.algorithm || '',
     // Freshness travels with the finding. It was previously accepted on the

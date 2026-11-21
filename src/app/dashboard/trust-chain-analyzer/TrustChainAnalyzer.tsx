@@ -57,7 +57,7 @@ export default function TrustChainAnalyzer() {
   const vendorParam = useQueryParam('vendor')
   const assetParam = useQueryParam('asset')
   const focusParam = useQueryParam('focus')
-  const { data, state, error, live, lastGoodAt, refresh } = useTrustChains()
+  const { data, state, error, live, lastGoodAt, refresh, refreshing } = useTrustChains()
 
   const [search, setSearch] = useState('')
   const [riskFilter, setRiskFilter] = useState('all')
@@ -77,19 +77,19 @@ export default function TrustChainAnalyzer() {
     const term = search.trim().toLowerCase()
     return data.chains.filter((chain) => {
       if (vendorParam && chain.vendorId !== vendorParam) return false
+      if (assetParam && !chain.assetIds.includes(assetParam)) return false
       if (term && !`${chain.name} ${chain.certificate?.issuer ?? ''} ${chain.assetNames.join(' ')}`.toLowerCase().includes(term)) return false
       if (riskFilter !== 'all' && chain.risk !== riskFilter) return false
       if (stateFilter !== 'all' && chain.state !== stateFilter) return false
       return true
     })
-  }, [data, search, riskFilter, stateFilter, vendorParam])
+  }, [data, search, riskFilter, stateFilter, vendorParam, assetParam])
 
   useEffect(() => {
     if (!chains.length) { setActiveChainId(null); return }
     if (chains.some((chain) => chain.id === activeChainId)) return
-    const forAsset = assetParam ? chains.find((chain) => chain.assetIds.includes(assetParam)) : undefined
-    setActiveChainId((forAsset ?? chains[0]).id)
-  }, [chains, activeChainId, assetParam])
+    setActiveChainId(chains[0].id)
+  }, [chains, activeChainId])
 
   /** Graph selection drives the chain detail below it. */
   const onGraphSelect = useCallback((node: WorkflowNode | null) => {
@@ -140,10 +140,12 @@ export default function TrustChainAnalyzer() {
         icon={Link2}
         live={live}
         generatedAt={data?.generatedAt}
-        refreshing={state === 'loading'}
+        refreshing={refreshing || state === 'loading'}
         onRefresh={() => void refresh(true)}
         sophiaPrompt="Which trust chains are hardest to migrate, and which certificates create the most PQC migration risk?"
       />
+
+      {error && data && <ErrorState message={error} onRetry={() => void refresh(true)} lastGoodAt={lastGoodAt} />}
 
       {state === 'loading' && !data ? <SkeletonPage rows={3} /> : data && (
         <>
@@ -176,6 +178,11 @@ export default function TrustChainAnalyzer() {
                   Vendor context: chains whose CA this vendor operates. <a href="/dashboard/trust-chain-analyzer" className="underline">Show all</a>
                 </span>
               )}
+              {assetParam && (
+                <span className="rounded border border-cyan-400/25 bg-cyan-500/10 px-2.5 py-1.5 text-[9.5px] text-cyan-200">
+                  Selected asset only. <a href="/dashboard/trust-chain-analyzer" className="underline">Show all chains</a>
+                </span>
+              )}
             </div>
             <TrustGraph
               chains={chains}
@@ -187,7 +194,7 @@ export default function TrustChainAnalyzer() {
               onRetry={() => void refresh(true)}
               focusNodeId={graphFocus}
               onSelectNode={onGraphSelect}
-              filtered={filtersActive || Boolean(vendorParam)}
+              filtered={filtersActive || Boolean(vendorParam || assetParam)}
             />
             <p className="mt-2 text-[10px] leading-relaxed text-white/35">
               Arrows follow trust delegation: anchor → certificate authority → certificate → relying system. Dashed elements are inferred (for example a root that was not captured). Use <b>Trace</b> to explain why a path is trusted, untrusted or unknown.
@@ -237,7 +244,7 @@ export default function TrustChainAnalyzer() {
               {/* Chain selector */}
               <SectionCard title="Trust Chains" icon={Route}
                 right={<span className="font-mono text-[9px] uppercase tracking-widest text-white/30">{numberFmt(chains.length)}</span>}>
-                {(filtersActive || vendorParam) && (
+                {(filtersActive || vendorParam || assetParam) && (
                   <div className="mb-2 rounded border border-cyan-400/25 bg-cyan-500/10 px-2.5 py-1.5 text-[9.5px] text-cyan-200">
                     Filtered by the Trust Graph controls. <a href="#trust-graph" className="underline">Adjust</a>
                   </div>

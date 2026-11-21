@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 export const STATUS_ORDER: MemberStatus[] = ['validated', 'awaiting-validation', 'running', 'planned', 'open', 'failed', 'regressed']
 export const STATUS_TEXT: Record<MemberStatus, string> = {
   open: 'Not started', planned: 'Queued / planned', running: 'Executing', failed: 'Failed / rolled back',
-  'awaiting-validation': 'Awaiting rescan', validated: 'Validated', regressed: 'Still vulnerable after rescan',
+  'awaiting-validation': 'Awaiting evidence', validated: 'Validated', regressed: 'Still vulnerable after rescan',
 }
 const SEVERITY_TEXT: Record<string, string> = { critical: 'text-red-400', high: 'text-orange-400', medium: 'text-amber-300', low: 'text-slate-400', info: 'text-slate-400' }
 
@@ -28,19 +28,19 @@ export function StatusLegend() {
     <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400">
       {(['validated', 'running', 'open', 'failed'] as MemberStatus[]).map((status) => (
         <span key={status}><i className={`qe-dot qe-s-${status}`} aria-hidden="true" />
-          {status === 'running' ? 'In flight (queued, executing, awaiting rescan)' : status === 'failed' ? 'Exceptions (failed or still vulnerable)' : STATUS_TEXT[status]}
+          {status === 'running' ? 'In flight (queued, executing, awaiting evidence)' : status === 'failed' ? 'Exceptions (failed or still vulnerable)' : STATUS_TEXT[status]}
         </span>
       ))}
     </div>
   )
 }
 
-function FixMembers({ cluster, onOpenMap, onOpenCampaign }: { cluster: FixCluster; onOpenMap: () => void; onOpenCampaign: () => void }) {
+function FixMembers({ cluster, revision, onOpenMap, onOpenCampaign }: { cluster: FixCluster; revision: string; onOpenMap: () => void; onOpenCampaign: () => void }) {
   const [status, setStatus] = useState('all')
   const [q, setQ] = useState('')
   const [offset, setOffset] = useState(0)
   const limit = 25
-  const { data, state, error } = useEstateFix(cluster.id, { offset, limit, status, q })
+  const { data, state, error } = useEstateFix(cluster.id, { offset, limit, status, q }, revision)
 
   return (
     <div className="space-y-4 border-b border-white/10 bg-white/[0.02] px-4 py-4 lg:px-6">
@@ -82,6 +82,7 @@ function FixMembers({ cluster, onOpenMap, onOpenCampaign }: { cluster: FixCluste
       </div>
 
       {state === 'error' && <p role="alert" className="text-[12px] text-red-400">{error}</p>}
+      {data && data.revision !== revision && <p role="status" className="text-[12px] text-slate-400">This asset list and the overview use different snapshots.</p>}
       <div className="overflow-x-auto">
         <table className="w-full min-w-[720px] text-left text-[12px]">
           <thead className="text-[11px] text-slate-500">
@@ -125,8 +126,9 @@ function FixMembers({ cluster, onOpenMap, onOpenCampaign }: { cluster: FixCluste
   )
 }
 
-export function FixPlan({ clusters, selectedId, onSelect, onOpenMap, onOpenCampaign }: {
+export function FixPlan({ clusters, revision, selectedId, onSelect, onOpenMap, onOpenCampaign }: {
   clusters: FixCluster[]
+  revision: string
   selectedId: string | null
   onSelect: (id: string | null) => void
   onOpenMap: (id: string) => void
@@ -207,12 +209,12 @@ export function FixPlan({ clusters, selectedId, onSelect, onOpenMap, onOpenCampa
                 <span title={cluster.deadline.basis} className={cn('qe-col-wide text-[12px] font-semibold', cluster.deadline.year === 0 ? 'text-red-400' : cluster.deadline.year === 2030 ? 'text-amber-300' : 'text-slate-300')}>{cluster.deadline.label}</span>
                 <span className="qe-col-wide text-[12px] tabular-nums text-slate-300">≈{cluster.effort.days} d<span className="block text-[11px] text-slate-500">estimate</span></span>
               </button>
-              {expanded && <FixMembers cluster={cluster} onOpenMap={() => onOpenMap(cluster.id)} onOpenCampaign={() => onOpenCampaign(cluster.id)} />}
+              {expanded && <FixMembers cluster={cluster} revision={revision} onOpenMap={() => onOpenMap(cluster.id)} onOpenCampaign={() => onOpenCampaign(cluster.id)} />}
             </li>
           )
         })}
       </ul>
-      {filtered.length === 0 && <p className="p-8 text-center text-[13px] text-slate-500">No fixes match these filters.</p>}
+      {filtered.length === 0 && <p className="p-8 text-center text-[13px] text-slate-500">{clusters.length ? 'No fixes match these filters.' : 'No actionable fixes in the assessed evidence. Check evidence coverage for records that still need review.'}</p>}
       {filtered.length > visible.length && (
         <div className="p-4 text-center">
           <button type="button" onClick={() => setShowAll(true)} className="rounded-lg border border-white/12 px-4 py-2 text-[12px] font-semibold text-slate-200 hover:bg-white/5">Show all {filtered.length} fixes</button>

@@ -220,8 +220,10 @@ async function runtimeChecks() {
   fs.writeFileSync(path.join(lab, 'app', 'app.conf'), 'ssl_protocols TLSv1.2 TLSv1.3;\n')
 
   let policy: Json = {}
+  let migrationJob: Json | null = null
   const evidence: Json[] = []
   const telemetry: Json[] = []
+  const migrationReports: Json[] = []
   const recorder = http.createServer((req, res) => {
     let body = ''
     req.on('data', (chunk) => { body += chunk })
@@ -232,7 +234,11 @@ async function runtimeChecks() {
       if (url.endsWith('/agent/policy')) return reply({ policy, commands: [] })
       if (url.endsWith('/agent/evidence')) { evidence.push(...(parsed.evidence || [])); return reply({ evidenceCount: (parsed.evidence || []).length }) }
       if (url.endsWith('/agent/telemetry')) { telemetry.push(parsed); return reply({ accepted: true }) }
-      if (url.includes('/agent/remediation/jobs')) return reply({ jobs: [] })
+      if (url.endsWith('/agent/remediation/jobs')) return reply({ jobs: migrationJob ? [migrationJob] : [] })
+      if (url.includes('/agent/remediation/jobs/')) {
+        migrationReports.push(parsed)
+        return reply({ accepted: true })
+      }
       return reply({ accepted: true })
     })
   })
@@ -254,9 +260,9 @@ async function runtimeChecks() {
           QGUARD_ENVIRONMENT: 'lab',
           QGUARD_STATE_DIR: path.join(lab, 'state'),
           QGUARD_NATIVE_RUNTIME_ENABLED: 'false',
-          QGUARD_ENABLE_REMEDIATION: 'false',
+          QGUARD_ENABLE_REMEDIATION: migrationJob ? 'true' : 'false',
           QGUARD_ENABLE_CONFIG_PATCHES: 'false',
-          QGUARD_ENABLE_MIGRATION: 'false',
+          QGUARD_ENABLE_MIGRATION: migrationJob ? 'true' : 'false',
         },
         timeout: 120_000,
       })
@@ -285,6 +291,20 @@ async function runtimeChecks() {
     const started = telemetry.find((row) => row.eventType === 'agent_scan_started')
     const ran = (started?.metadata?.scanTypes || []) as string[]
     check('scanner handed runtime by its policy → runs without it', ran.includes('configs') && !ran.includes('runtime'), JSON.stringify(ran))
+
+    const emptyConfig = path.join(lab, 'app', 'empty.conf')
+    fs.writeFileSync(emptyConfig, '')
+    migrationJob = {
+      id: 'scoped-validation', name: 'Selected asset', jobType: 'pqc_migration',
+      adapter: 'local_configuration', target: 'tls://127.0.0.1:1',
+      filePath: emptyConfig,
+    }
+    check('migration operator handles an unavailable validation target', (await run('operator', ['configs'])) === 0)
+    const precheck = migrationReports.find((row) => row.eventType === 'agent-remediation-precheck')
+    check('migration blocks an endpoint outside policy, even with a selected file in policy',
+      precheck?.metadata?.probeFailure === 'The job endpoint is outside the agent policy.')
+    check('a file with no readable configuration cannot produce passing validation',
+      precheck?.validation?.passed === false && !migrationReports.some((row) => row.status === 'completed'))
   } finally {
     recorder.close()
     fs.rmSync(lab, { recursive: true, force: true })

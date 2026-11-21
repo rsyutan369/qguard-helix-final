@@ -52,7 +52,6 @@ import {
   EmptyState,
   HeaderButton,
   Panel,
-  PrimaryButton,
   Ring,
   SectionTitle,
   integerFmt,
@@ -158,12 +157,14 @@ const WINDOW_OVERSCAN = 6;
 function AssetCard({
   asset,
   active,
+  queued,
   onSelect,
   onQueue,
   busy,
 }: {
   asset: AssetSummaryRecord;
   active: boolean;
+  queued: boolean;
   onSelect: () => void;
   onQueue: () => void;
   busy: boolean;
@@ -190,19 +191,19 @@ function AssetCard({
         </div>
         <button
           type="button"
-          aria-label={asset.queued ? 'Already queued' : 'Add to migration queue'}
+          aria-label={`${queued ? 'Unqueue' : 'Queue'} ${asset.name}`}
           onClick={(event) => {
             event.stopPropagation();
             onQueue();
           }}
-          disabled={asset.queued || !asset.hasEvidence || busy}
+          disabled={(!queued && (!asset.hasEvidence || Boolean(asset.reservation))) || busy}
           className={`min-h-11 shrink-0 rounded-md border px-2 text-[10px] font-bold transition ${
-            asset.queued
+            queued
               ? 'border-emerald-400/40 bg-emerald-400/10 text-emerald-300'
               : 'border-white/12 bg-black/25 text-white/50 hover:border-cyan-400/50 hover:text-cyan-200'
           }`}
         >
-          {asset.queued ? 'Queued' : '+ Queue'}
+          {queued ? 'Unqueue' : asset.reservation === 'submitted' ? 'Submitted' : asset.reservation ? 'In execution' : 'Queue'}
         </button>
       </div>
 
@@ -267,7 +268,6 @@ export function AssetSelectorRail({
   onDequeue,
   onReorder,
   onApplyRecommended,
-  onDispatchQueue,
   busy,
   tab,
   page,
@@ -291,7 +291,6 @@ export function AssetSelectorRail({
   onDequeue: (id: string) => void;
   onReorder: (ids: string[]) => void;
   onApplyRecommended: () => void;
-  onDispatchQueue: () => void;
   busy: string | null;
   tab: 'assets' | 'queue';
   page: number;
@@ -305,6 +304,7 @@ export function AssetSelectorRail({
   const [rowHeight, setRowHeight] = useState(FALLBACK_ROW_HEIGHT);
   const listRef = useRef<HTMLDivElement | null>(null);
   const measureRef = useRef<HTMLDivElement | null>(null);
+  const queuedIds = useMemo(() => new Set(queue.map((entry) => entry.assetId)), [queue]);
 
   useEffect(() => {
     if (listRef.current) listRef.current.scrollTop = 0;
@@ -468,6 +468,7 @@ export function AssetSelectorRail({
                       <AssetCard
                         asset={asset}
                         active={asset.id === selectedId}
+                        queued={queuedIds.has(asset.id)}
                         onSelect={() => onSelect(asset.id)}
                         onQueue={() => onQueue(asset.id)}
                         busy={Boolean(busy)}
@@ -491,12 +492,10 @@ export function AssetSelectorRail({
       ) : (
         /* Queue tab */
         <>
-          <div className="flex flex-wrap gap-2 border-b border-white/8 p-3">
-            <button className="mp-button" onClick={onApplyRecommended} disabled={Boolean(busy) || queue.length < 2}>
-              {busy === 'prioritize' ? 'Sorting…' : 'Apply Recommended Order'}
-            </button>
-            <button className="mp-button" onClick={onDispatchQueue} disabled={!queue.length || Boolean(busy)}>
-              {busy === 'dispatch' ? 'Dispatching…' : 'Review queue execution'}
+          <div className="flex flex-wrap items-center gap-2 border-b border-white/8 p-3">
+            <p className="mp-muted w-full text-xs">The first asset becomes the first wave. Use the arrows to set the rest of your order.</p>
+            <button type="button" className="mp-button" onClick={onApplyRecommended} disabled={Boolean(busy) || queue.length < 2}>
+              {busy === 'prioritize' ? 'Sorting…' : 'Use recommended order'}
             </button>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
@@ -515,20 +514,22 @@ export function AssetSelectorRail({
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
-                        <button type="button" aria-label="Move up" disabled={index === 0} onClick={() => move(index, -1)} className="rounded border border-white/10 p-1 text-white/50 transition hover:text-cyan-200 disabled:opacity-30">
+                        <button type="button" aria-label={`Move ${entry.name} up`} disabled={Boolean(busy) || index === 0} onClick={() => move(index, -1)} className="rounded border border-white/10 p-1 text-white/50 transition hover:text-cyan-200 disabled:opacity-30">
                           <ArrowUp className="h-3 w-3" />
                         </button>
-                        <button type="button" aria-label="Move down" disabled={index === queue.length - 1} onClick={() => move(index, 1)} className="rounded border border-white/10 p-1 text-white/50 transition hover:text-cyan-200 disabled:opacity-30">
+                        <button type="button" aria-label={`Move ${entry.name} down`} disabled={Boolean(busy) || index === queue.length - 1} onClick={() => move(index, 1)} className="rounded border border-white/10 p-1 text-white/50 transition hover:text-cyan-200 disabled:opacity-30">
                           <ArrowDown className="h-3 w-3" />
                         </button>
-                        <button type="button" aria-label="Remove from queue" onClick={() => onDequeue(entry.assetId)} className="rounded border border-white/10 p-1 text-white/50 transition hover:border-red-400/50 hover:text-red-300">
+                        <button type="button" aria-label={`Unqueue ${entry.name}`} disabled={Boolean(busy)} onClick={() => onDequeue(entry.assetId)} className="rounded border border-white/10 p-1 text-white/50 transition hover:border-red-400/50 hover:text-red-300 disabled:opacity-30">
                           <Trash2 className="h-3 w-3" />
                         </button>
                       </div>
                     </div>
+                    {index > 0 && <button type="button" className="mp-button mt-2" disabled={Boolean(busy)} onClick={() => onReorder([entry.assetId, ...queue.filter((item) => item.assetId !== entry.assetId).map((item) => item.assetId)])}>Make first</button>}
                     <div className="mt-2 flex flex-wrap items-center gap-1.5">
                       <Chip tone={levelTone(entry.priority)}>{entry.priority}</Chip>
                       <Chip tone={statusTone(entry.migrationStatus)}>{entry.migrationStatus}</Chip>
+                      {entry.reservation && <Chip>{entry.reservation === 'submitted' ? 'Already submitted' : 'In Live Migration Ops'}</Chip>}
                       <Chip tone={POSTURE_TONE[entry.posture] || SLATEISH}>{entry.postureLabel}</Chip>
                     </div>
                     <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] text-white/45">
@@ -562,6 +563,8 @@ export function AssetPortfolioOverview({
   reconciliation,
   onSelect,
   onQueue,
+  queuedIds,
+  busy,
 }: {
   summary: PortfolioSummary;
   recommendedOrder: Array<{ rank: number; assetId: string; name: string; priority: string; priorityScore: number; riskScore: number; rationale: string }>;
@@ -573,6 +576,8 @@ export function AssetPortfolioOverview({
   };
   onSelect: (id: string) => void;
   onQueue: (id: string) => void;
+  queuedIds: Set<string>;
+  busy: boolean;
 }) {
   return (
     <div className="space-y-4">
@@ -580,7 +585,7 @@ export function AssetPortfolioOverview({
         <SectionTitle suffix={<Badge color={CYAN}>Asset-centric</Badge>}>Migration Portfolio</SectionTitle>
         <p className="mb-4 text-xs leading-relaxed text-white/55">
           Select an asset on the left to review its own migration intelligence — readiness, cryptography, vulnerabilities,
-          dependencies, downtime, rollback and approvals — then queue it or send it straight to Live Migration.
+          dependencies, downtime, rollback and approvals before adding it to your migration queue.
         </p>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
           <Stat label="Assets discovered" value={integerFmt(summary.total)} tone={CYAN} />
@@ -618,9 +623,11 @@ export function AssetPortfolioOverview({
                 <button
                   type="button"
                   onClick={() => onQueue(row.assetId)}
-                  className="shrink-0 rounded-md border border-white/12 bg-black/25 px-2 py-1 text-[9px] font-black uppercase text-white/55 transition hover:border-cyan-400/50 hover:text-cyan-200"
+                  aria-label={`${queuedIds.has(row.assetId) ? 'Unqueue' : 'Queue'} ${row.name}`}
+                  disabled={busy}
+                  className="mp-button shrink-0"
                 >
-                  + Queue
+                  {queuedIds.has(row.assetId) ? 'Unqueue' : 'Queue'}
                 </button>
               </div>
             ))}
@@ -708,7 +715,7 @@ export function AssetDossierView({
   loading,
   changedFields,
   onQueue,
-  onDispatch,
+  onReviewQueue,
   onClear,
   busy,
   children,
@@ -718,7 +725,7 @@ export function AssetDossierView({
   loading: boolean;
   changedFields: string[];
   onQueue: () => void;
-  onDispatch: () => void;
+  onReviewQueue: () => void;
   onClear: () => void;
   busy: string | null;
   children: ReactNode;
@@ -758,12 +765,10 @@ export function AssetDossierView({
             </div>
             <div className="flex shrink-0 flex-wrap items-center gap-2">
               <HeaderButton icon={X} onClick={onClear}>Clear selection</HeaderButton>
-              <HeaderButton icon={ListOrdered} onClick={onQueue} active={asset.queued}>
-                {asset.queued ? 'In queue' : 'Queue for Migration'}
-              </HeaderButton>
-              <PrimaryButton icon={Rocket} onClick={onDispatch} disabled={Boolean(busy) || !asset.hasEvidence}>
-                {busy === 'dispatch' ? 'Sending…' : 'Review execution'}
-              </PrimaryButton>
+              <button type="button" className="mp-button" onClick={onQueue} disabled={Boolean(busy) || (!asset.queued && (!asset.hasEvidence || Boolean(asset.reservation)))}>
+                <ListOrdered size={16} aria-hidden="true" /> {asset.queued ? 'Unqueue asset' : asset.reservation === 'submitted' ? 'Already submitted' : asset.reservation ? 'In Live Migration Ops' : 'Queue for migration'}
+              </button>
+              {asset.queued && <button type="button" className="mp-button mp-button-primary" onClick={onReviewQueue}>Review migration queue</button>}
             </div>
           </div>
           {!asset.hasEvidence ? (

@@ -7,25 +7,15 @@
  * are projections of one backend model. This hook is the only place any of them
  * talks to it, which is what makes their numbers agree by construction.
  *
- * Three cooperating channels:
- *   1. fetch()            authoritative first paint and every manual refresh.
- *   2. SSE                the live push, over fetch + ReadableStream with an
- *                         Authorization HEADER. EventSource cannot set headers,
- *                         which forces the bearer token into the query string
- *                         where it leaks into access logs and browser history.
- *   3. Supabase realtime  a debounced nudge when the tenant's own rows change,
- *                         so a scan or an attestation lands without waiting for
- *                         the next push.
- *
- * The stream carries the WHOLE view payload and the page swaps state atomically,
- * so the KPI strip, the charts and the tables can never render a half-applied
- * update. Exactly ONE stream and one realtime channel set exists per mounted
- * view, and both are torn down on unmount — there is no polling loop.
+ * Authenticated REST and SSE snapshots share the tenant model. The common
+ * live client validates frames, scopes state to the signed-in user and
+ * falls back to polling while it reconnects.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
-import { supabase } from '@/lib/supabase';
+import { useLiveModel } from './use-live-resource';
+import type { AssetComplianceScope } from '@/lib/governance/asset-scope';
 import type {
   AssetComplianceRecord,
   AuditEvent,
@@ -278,23 +268,24 @@ const REALTIME_TABLES = [
   'pqc_scan_results',
   'vulnerabilities',
   'scanner_alerts',
+  'scanner_evidence',
+  'agent_heartbeats',
   'scanner_agents',
   'connector_accounts',
   'migration_jobs',
+  'migration_plans',
   'migration_events',
   'compliance_evidence',
   'audit_logs',
   'vault_audit_logs',
   'vault_files',
   'security_events',
+  'user_security_events',
+  'auth_events',
   'governance_policies',
   'governance_evidence_anchors',
   'governance_control_assessments',
 ] as const;
-
-/** Reconnect backoff bounds for the SSE stream, in milliseconds. */
-const RETRY_MIN_MS = 3_000;
-const RETRY_MAX_MS = 30_000;
 
 export interface UseGovernanceResult<T extends GovernancePayload> {
   data: T | null;
@@ -310,179 +301,53 @@ export interface UseGovernanceResult<T extends GovernancePayload> {
 }
 
 export function useGovernanceView<T extends GovernancePayload>(view: GovernanceView): UseGovernanceResult<T> {
-  const { session, user } = useAuth();
-  const token = session?.access_token;
+  const url = GOVERNANCE_API_BASE[view];
+  const model = useLiveModel<T>({
+    url,
+    streamUrl: `${url}/stream`,
+    event: 'governance',
+    channelPrefix: `governance-${view}`,
+    realtimeTables: REALTIME_TABLES,
+    validate: (payload) => payload.view === view &&
+      typeof payload.generatedAt === 'string' && Number.isFinite(Date.parse(payload.generatedAt)) &&
+      Boolean(payload.totals && payload.telemetry && payload.scores && payload.facets),
+  });
+  return {
+    data: model.data,
+    state: model.state,
+    error: model.error,
+    live: model.live,
+    lastSyncedAt: model.lastVerifiedAt,
+    revision: model.data ? Date.parse(model.data.generatedAt) : 0,
+    refresh: model.refresh,
+    reconnect: model.reconnect,
+  };
+}
 
-  const [data, setData] = useState<T | null>(null);
-  const [state, setState] = useState<LoadState>('loading');
-  const [error, setError] = useState<string | null>(null);
-  const [live, setLive] = useState(false);
-  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
-  const [revision, setRevision] = useState(0);
+export function useGovernanceAccount() {
+  const { user, session } = useAuth();
+  const accountId = user && session?.user.id === user.id ? user.id : null;
+  return { accountId, token: accountId ? session?.access_token : undefined };
+}
 
-  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /** Guards against an out-of-order frame overwriting newer state. */
-  const lastGeneratedRef = useRef<number>(0);
-
-  const apply = useCallback((next: T) => {
-    const generated = Date.parse(next.generatedAt || '');
-    if (Number.isFinite(generated)) {
-      if (generated < lastGeneratedRef.current) return;
-      lastGeneratedRef.current = generated;
-    }
-    setData(next);
-    setState('success');
-    setError(null);
-    setLastSyncedAt(new Date().toISOString());
-    setRevision((current) => current + 1);
-  }, []);
-
-  const refresh = useCallback(
-    async (force = false) => {
-      if (!token) {
-        setState('success');
-        return;
-      }
-      setState((current) => (current === 'success' ? current : 'loading'));
-      try {
-        const response = await fetch(`${GOVERNANCE_API_BASE[view]}${force ? '?refresh=1' : ''}`, {
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-        if (!payload?.data) throw new Error('Governance response was empty');
-        apply(payload.data as T);
-      } catch (err) {
-        console.error(`Governance ${view} load failed:`, err);
-        setError(err instanceof Error ? err.message : 'Unable to load governance intelligence');
-        // Keep the last good model on screen; the header switches to a
-        // disconnected state so nothing reads as live.
-        setState((current) => (current === 'success' ? current : 'error'));
-      }
+export function useAssetComplianceScope(assetIds: string[]) {
+  const ids = [...new Set(assetIds)].sort();
+  const query = new URLSearchParams({ assets: ids.join(',') });
+  const path = `${GOVERNANCE_API_BASE.compliance}/asset-scope`;
+  return useLiveModel<AssetComplianceScope>({
+    url: `${path}?${query}`,
+    streamUrl: `${path}/stream?${query}`,
+    event: 'asset-compliance',
+    channelPrefix: 'asset-compliance',
+    realtimeTables: REALTIME_TABLES,
+    validate: (value) => {
+      if (typeof value.generatedAt !== 'string' || !Number.isFinite(Date.parse(value.generatedAt))) return false;
+      if (!Array.isArray(value.assets) || value.assets.length !== ids.length ||
+          JSON.stringify(value.assets.map((asset) => asset?.id).sort()) !== JSON.stringify(ids)) return false;
+      return ['controls', 'requirements', 'evidence', 'findings', 'violations', 'auditEvents', 'remediation', 'unavailableSources']
+        .every((key) => Array.isArray(value[key]));
     },
-    [token, view, apply],
-  );
-
-  const queueRefresh = useCallback(() => {
-    if (refreshTimer.current) clearTimeout(refreshTimer.current);
-    refreshTimer.current = setTimeout(() => {
-      refreshTimer.current = null;
-      void refresh();
-    }, 600);
-  }, [refresh]);
-
-  useEffect(
-    () => () => {
-      if (refreshTimer.current) clearTimeout(refreshTimer.current);
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (!token || !user) {
-      setState('success');
-      return;
-    }
-    void refresh();
-  }, [token, user, refresh]);
-
-  /* ---- SSE: header-authenticated, exponential backoff ------------- */
-  useEffect(() => {
-    if (!token) return;
-    const controller = new AbortController();
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let attempt = 0;
-    let cancelled = false;
-
-    const parseFrame = (frame: string) => {
-      let eventName = 'message';
-      const dataLines: string[] = [];
-      for (const line of frame.split('\n')) {
-        if (line.startsWith('event:')) eventName = line.slice(6).trim();
-        else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
-        // ':' comment lines are heartbeats — ignored.
-      }
-      if (!dataLines.length) return;
-      const body = dataLines.join('\n');
-      if (eventName === 'governance') {
-        try {
-          const parsed = JSON.parse(body) as T;
-          // Event validation: a frame for another view must never be applied.
-          if (parsed && typeof parsed === 'object' && parsed.view === view) apply(parsed);
-        } catch {
-          /* malformed frame — ignore rather than blank the page */
-        }
-      } else if (eventName === 'governance-error') {
-        try {
-          setError(String(JSON.parse(body)?.message || 'Governance stream error'));
-        } catch {
-          /* ignore */
-        }
-      }
-    };
-
-    const connect = async () => {
-      try {
-        const response = await fetch(`${GOVERNANCE_API_BASE[view]}/stream`, {
-          headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
-          signal: controller.signal,
-        });
-        if (!response.ok || !response.body) throw new Error(`SSE ${response.status}`);
-        attempt = 0;
-        setLive(true);
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let boundary = buffer.indexOf('\n\n');
-          while (boundary !== -1) {
-            parseFrame(buffer.slice(0, boundary));
-            buffer = buffer.slice(boundary + 2);
-            boundary = buffer.indexOf('\n\n');
-          }
-        }
-        throw new Error('stream ended');
-      } catch {
-        if (cancelled || controller.signal.aborted) return;
-        setLive(false);
-        attempt += 1;
-        const delay = Math.min(RETRY_MAX_MS, RETRY_MIN_MS * 2 ** Math.min(attempt - 1, 4));
-        if (retry) clearTimeout(retry);
-        retry = setTimeout(() => void connect(), delay);
-      }
-    };
-
-    void connect();
-    return () => {
-      cancelled = true;
-      controller.abort();
-      if (retry) clearTimeout(retry);
-      setLive(false);
-    };
-  }, [token, view, apply]);
-
-  /* ---- Supabase realtime: nudge on the tenant's own writes -------- */
-  useEffect(() => {
-    if (!user) return;
-    const channels = REALTIME_TABLES.map((table) =>
-      supabase
-        .channel(`governance-${view}-${table}`)
-        .on('postgres_changes', { event: '*', schema: 'public', table, filter: `user_id=eq.${user.id}` }, queueRefresh)
-        .subscribe(),
-    );
-    return () => {
-      for (const channel of channels) supabase.removeChannel(channel);
-    };
-  }, [user, view, queueRefresh]);
-
-  const reconnect = useCallback(() => {
-    void refresh(true);
-  }, [refresh]);
-
-  return { data, state, error, live, lastSyncedAt, revision, refresh, reconnect };
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -507,17 +372,16 @@ export const useRegulatoryMapping = () => useGovernanceView<RegulatoryPayload>('
  * through a table cannot land an older response on a newer drawer.
  */
 export function useGovernanceDetail(view: GovernanceView) {
-  const { session } = useAuth();
-  const token = session?.access_token;
+  const { token } = useGovernanceAccount();
   const [loading, setLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const inFlight = useRef<AbortController | null>(null);
 
-  useEffect(
+  useLayoutEffect(
     () => () => {
       inFlight.current?.abort();
     },
-    [],
+    [token, view],
   );
 
   const load = useCallback(
@@ -535,9 +399,11 @@ export function useGovernanceDetail(view: GovernanceView) {
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-        return (payload.data ?? null) as R | null;
+        if (controller.signal.aborted) return null;
+        if (!payload?.data) throw new Error('Governance detail response was empty');
+        return payload.data as R;
       } catch (err) {
-        if ((err as Error)?.name === 'AbortError') return null;
+        if (controller.signal.aborted) return null;
         console.error('Governance detail load failed:', err);
         setDetailError(err instanceof Error ? err.message : 'Unable to load detail');
         return null;
@@ -586,22 +452,26 @@ export function useGovernancePagedResource<T>(
   key: string,
   query: PagedQuery,
   revision: number,
+  enabled = true,
 ) {
-  const { session } = useAuth();
-  const token = session?.access_token;
-  const [rows, setRows] = useState<T[]>([]);
-  const [extra, setExtra] = useState<Record<string, unknown>>({});
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
+  const { accountId, token } = useGovernanceAccount();
   const serialized = JSON.stringify(query);
+  const scope = accountId && enabled ? JSON.stringify([accountId, view, path, key, serialized]) : null;
+  const [result, setResult] = useState<{
+    scope: string;
+    rows: T[];
+    extra: Record<string, unknown>;
+    total: number;
+  } | null>(null);
+  const [request, setRequest] = useState<{ scope: string; loading: boolean; error: string | null } | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
+  const retry = useCallback(() => setRetryCount((count) => count + 1), []);
 
   useEffect(() => {
-    if (!token) return;
+    if (!token || !scope) return;
     const controller = new AbortController();
+    setRequest({ scope, loading: true, error: null });
     const timer = setTimeout(async () => {
-      setLoading(true);
       try {
         const params = new URLSearchParams();
         for (const [name, value] of Object.entries(JSON.parse(serialized) as PagedQuery)) {
@@ -613,17 +483,17 @@ export function useGovernancePagedResource<T>(
           signal: controller.signal,
         });
         const payload = await response.json().catch(() => ({}));
+        if (controller.signal.aborted) return;
         if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-        setRows((payload.data?.[key] ?? []) as T[]);
-        setExtra((payload.data ?? {}) as Record<string, unknown>);
-        setTotal(Number(payload.data?.total ?? 0));
-        setError(null);
+        if (!Array.isArray(payload.data?.[key]) || !Number.isSafeInteger(payload.data?.total) || payload.data.total < 0) {
+          throw new Error('Governance inventory response was incomplete');
+        }
+        setResult({ scope, rows: payload.data[key] as T[], extra: payload.data, total: payload.data.total });
+        setRequest({ scope, loading: false, error: null });
       } catch (err) {
-        if ((err as Error)?.name === 'AbortError') return;
+        if (controller.signal.aborted) return;
         console.error('Governance table load failed:', err);
-        setError(err instanceof Error ? err.message : 'Unable to load rows');
-      } finally {
-        setLoading(false);
+        setRequest({ scope, loading: false, error: err instanceof Error ? err.message : 'Unable to load rows' });
       }
       // Debounced so typing in the search box does not fire a request per keystroke.
     }, 250);
@@ -632,9 +502,18 @@ export function useGovernancePagedResource<T>(
       controller.abort();
       clearTimeout(timer);
     };
-  }, [token, view, path, key, serialized, revision]);
+  }, [token, scope, view, path, key, serialized, revision, retryCount]);
 
-  return { rows, extra, total, loading, error };
+  const current = scope && result?.scope === scope ? result : null;
+  const currentRequest = scope && request?.scope === scope ? request : null;
+  return {
+    rows: current?.rows ?? [],
+    extra: current?.extra ?? {},
+    total: current?.total ?? 0,
+    loading: Boolean(token && scope && (currentRequest?.loading ?? true)),
+    error: currentRequest?.error ?? null,
+    retry,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -655,8 +534,7 @@ export interface GovernanceActionResult<T> {
  * when a store is not yet available — instead of a generic failure.
  */
 export function useGovernanceActions(view: GovernanceView) {
-  const { session } = useAuth();
-  const token = session?.access_token;
+  const { token } = useGovernanceAccount();
   const [pending, setPending] = useState<string | null>(null);
 
   const post = useCallback(

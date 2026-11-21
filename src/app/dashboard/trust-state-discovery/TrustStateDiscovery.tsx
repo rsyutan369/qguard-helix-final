@@ -60,41 +60,50 @@ import {
   TrustSkeleton,
   TrustStateBadge,
 } from '../_components/trust/primitives';
-import TrustGraph from '../_components/trust/TrustGraph';
+import DiscoveryTrustGraph from '../_components/trust/TrustGraph';
 import {
+  EMPTY_FILTERS,
   useTrustFabricDetail,
   useTrustFilters,
   useTrustPagedResource,
   useTrustStateDiscovery,
   type NodeDetail,
 } from '@/hooks/use-trust-fabric';
-import { TRUST_NODE_LABEL, TRUST_STATE_LABEL, type TrustNode } from '@/lib/trust-fabric/types';
+import { TRUST_NODE_LABEL, TRUST_STATE_LABEL, type TrustNode, type TrustRelationship } from '@/lib/trust-fabric/types';
+import { useAuth } from '@/contexts/auth-context';
 import { cn } from '@/lib/utils';
 
 const PAGE_SIZE = 25;
 
 export default function TrustStateDiscovery() {
+  const { user, session } = useAuth();
+  const account = user && session?.user.id === user.id ? user.id : 'signed-out';
+  return <TrustStateDiscoveryView key={account} />;
+}
+
+function TrustStateDiscoveryView() {
   const { data, state, error, live, lastSyncedAt, revision, refresh, reconnect } = useTrustStateDiscovery();
-  const { loadNode, loading: detailLoading } = useTrustFabricDetail('discovery');
+  const { loadNode, loading: detailLoading, detailError } = useTrustFabricDetail('discovery');
   const [searchParams] = useSearchParams();
-  const { filters, setFilter, activeCount, reset } = useTrustFilters({
+  const { filters, setFilter, setFilters, activeCount } = useTrustFilters({
     state: searchParams.get('state') ?? 'all',
     kind: searchParams.get('kind') ?? 'all',
     sort: 'state',
   });
   const [offset, setOffset] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
-  const [graphSelection, setGraphSelection] = useState<string | null>(null);
   const [detail, setDetail] = useState<NodeDetail | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerNodeId, setDrawerNodeId] = useState<string | null>(null);
+  const [detailRetry, setDetailRetry] = useState(0);
 
-  const query = useMemo(
+  const scope = useMemo(
     () => ({
       search: filters.search,
       kind: filters.kind,
       state: filters.state,
       environment: filters.environment,
       provider: filters.provider,
+      account: filters.account,
       region: filters.region,
       risk: filters.risk,
       posture: filters.posture,
@@ -102,45 +111,37 @@ export default function TrustStateDiscovery() {
       measured: filters.attribution === 'attributed' ? 'true' : filters.attribution === 'unattributed' ? 'false' : 'all',
       range: filters.range,
       sort: filters.sort,
-      limit: PAGE_SIZE,
-      offset,
     }),
-    [filters, offset],
+    [filters],
   );
 
-  const table = useTrustPagedResource<TrustNode>('discovery', '/nodes', 'nodes', query, revision);
+  const table = useTrustPagedResource<TrustNode>('discovery', '/nodes', 'nodes', { ...scope, limit: PAGE_SIZE, offset }, revision);
+  const scopedGraph = activeCount > 0 || filters.sort !== 'state';
+  const graph = useTrustPagedResource<TrustNode>('discovery', '/nodes', 'nodes',
+    { ...scope, limit: 80, includeRelationships: '1' }, revision, scopedGraph && Boolean(data));
+  const graphNodes = scopedGraph ? graph.rows : data?.nodes ?? [];
+  const graphRelationships = scopedGraph ? (graph.extra.relationships as TrustRelationship[] | undefined) ?? [] : data?.relationships ?? [];
+  const graphTotal = scopedGraph ? graph.total : data?.totals.nodes ?? 0;
+  const graphLinkTotal = scopedGraph ? (graph.extra.matchingRelationships as number | undefined) ?? 0 : data?.matchingRelationships ?? 0;
 
   useEffect(() => {
     setOffset(0);
   }, [filters]);
 
-  const openNode = useCallback(
-    async (id: string) => {
-      setDrawerOpen(true);
-      setDetail(null);
-      const result = await loadNode(id);
-      if (result) setDetail(result);
-    },
-    [loadNode],
-  );
+  const openNode = useCallback((id: string) => setDrawerNodeId(id), []);
+  useEffect(() => {
+    if (!drawerNodeId || !revision) return;
+    let active = true;
+    void loadNode(drawerNodeId).then((record) => { if (active) setDetail(record); });
+    return () => { active = false; };
+  }, [drawerNodeId, revision, loadNode, detailRetry]);
+  const visibleDetail = detail?.node.id === drawerNodeId ? detail : null;
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await refresh(true);
     setRefreshing(false);
   }, [refresh]);
-
-  /* ---- graph scope: honour the filters so the picture and the table agree -- */
-  const graphNodes = useMemo(() => {
-    if (!data) return [];
-    return data.nodes.filter((node) => {
-      if (filters.state !== 'all' && node.state !== filters.state) return false;
-      if (filters.kind !== 'all' && node.kind !== filters.kind) return false;
-      if (filters.environment !== 'all' && node.environment.toLowerCase() !== filters.environment) return false;
-      if (filters.provider !== 'all' && node.provider.toLowerCase() !== filters.provider) return false;
-      return true;
-    });
-  }, [data, filters]);
 
   const stateRows = useMemo(
     () =>
@@ -174,7 +175,8 @@ export default function TrustStateDiscovery() {
   if (!data) return null;
 
   const incompleteChains = data.incompleteChains;
-  const inferredNodes = data.totals.nodes - data.totals.measuredNodes;
+  const unmeasuredNodes = data.totals.nodes - data.totals.measuredNodes;
+  const partialEvidence = data.reads.some((read) => read.state === 'unavailable' || read.state === 'truncated');
 
   return (
     <div className={TRUST_SHELL_CLASS}>
@@ -212,7 +214,7 @@ export default function TrustStateDiscovery() {
       {!live ? <ConnectionLost onReconnect={reconnect} lastSyncedAt={lastSyncedAt} /> : null}
       {data.stale && data.staleSinceHours !== null ? <StaleBanner hours={data.staleSinceHours} onRefresh={() => void onRefresh()} /> : null}
 
-      {data.totals.nodes === 0 ? (
+      {data.totals.nodes === 0 && !partialEvidence ? (
         <NoDataState
           title="Nothing discovered yet"
           body="No telemetry or discovered assets are currently available for this scope. Trust subjects are discovered by agent collectors, cloud connectors and authorized scans — connect one and the relationship graph below will build itself from the results."
@@ -248,10 +250,10 @@ export default function TrustStateDiscovery() {
         />
         <TrustKpiTile
           index={3}
-          label="Inferred only"
-          value={inferredNodes}
-          detail="Known by name, never measured"
-          tone={inferredNodes > 0 ? 'warning' : 'good'}
+          label="Unmeasured"
+          value={unmeasuredNodes}
+          detail="No measurement recorded"
+          tone={unmeasuredNodes > 0 ? 'warning' : 'good'}
           onClick={() => setFilter('attribution', 'unattributed')}
           hint="Subjects present in inventory or referenced by an issuer string, with no collected evidence of their own."
         />
@@ -279,19 +281,102 @@ export default function TrustStateDiscovery() {
       <TrustPanel index={0}>
         <SectionLabel
           icon={Share2}
-          hint="Certificate authority down to cloud resource. Click a subject to focus its blast radius; dashed links and dimmed boxes are inferred, not measured. A CA is shown as a root only when its own self-issued certificate was collected."
-          meta={`${fmtNumber(graphNodes.length)} in scope`}
+          hint="Select a subject or relationship to inspect its evidence. Paths describe the links visible in this graph. The filters also apply to the subject inventory."
         >
           Trust relationship graph
         </SectionLabel>
-        <TrustGraph
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <SearchInput
+            value={filters.search}
+            onChange={(value) => setFilter('search', value)}
+            placeholder="Search subject, host, owner or region"
+          />
+          <FilterSelect
+            label="Type"
+            value={filters.kind}
+            onChange={(value) => setFilter('kind', value)}
+            options={[{ value: 'all', label: 'All' }, ...data.kindDistribution.map((row) => ({ value: row.kind, label: `${TRUST_NODE_LABEL[row.kind]} (${row.count})` }))]}
+          />
+          <FilterSelect
+            label="State"
+            value={filters.state}
+            onChange={(value) => setFilter('state', value)}
+            options={[{ value: 'all', label: 'All' }, ...data.stateDistribution.map((row) => ({ value: row.state, label: `${TRUST_STATE_LABEL[row.state]} (${row.count})` }))]}
+          />
+          <FilterSelect
+            label="Environment"
+            value={filters.environment}
+            onChange={(value) => setFilter('environment', value)}
+            options={[{ value: 'all', label: 'All' }, ...data.facets.environments.map((env) => ({ value: env.toLowerCase(), label: env }))]}
+          />
+          <FilterSelect
+            label="Cloud"
+            value={filters.provider}
+            onChange={(value) => setFilter('provider', value)}
+            options={[{ value: 'all', label: 'All' }, ...data.facets.providers.map((provider) => ({ value: provider.id, label: provider.label }))]}
+          />
+          <FilterSelect
+            label="Region"
+            value={filters.region}
+            onChange={(value) => setFilter('region', value)}
+            options={[{ value: 'all', label: 'All' }, ...data.facets.regions.map((region) => ({ value: region.toLowerCase(), label: region }))]}
+          />
+          <FilterSelect
+            label="Risk"
+            value={filters.risk}
+            onChange={(value) => setFilter('risk', value)}
+            options={[
+              { value: 'all', label: 'All' },
+              { value: 'critical', label: 'Critical' },
+              { value: 'high', label: 'High' },
+              { value: 'medium', label: 'Medium' },
+              { value: 'low', label: 'Low' },
+            ]}
+          />
+          <FilterSelect
+            label="Evidence"
+            value={filters.attribution}
+            onChange={(value) => setFilter('attribution', value)}
+            options={[
+              { value: 'all', label: 'All' },
+              { value: 'attributed', label: 'Measured' },
+              { value: 'unattributed', label: 'Unmeasured' },
+            ]}
+          />
+          <FilterSelect
+            label="Sort"
+            value={filters.sort}
+            onChange={(value) => setFilter('sort', value)}
+            options={[
+              { value: 'state', label: 'Worst state first' },
+              { value: 'risk', label: 'Highest risk' },
+              { value: 'blast', label: 'Largest blast radius' },
+              { value: 'expiry', label: 'Soonest expiry' },
+              { value: 'name', label: 'Name' },
+            ]}
+          />
+          {activeCount > 0 ? (
+            <button
+              type="button"
+              onClick={() => setFilters({ ...EMPTY_FILTERS, sort: 'state' })}
+              className="rounded-md border border-cyan-400/30 bg-cyan-500/10 px-2.5 py-1.5 text-[9.5px] font-black uppercase tracking-wider text-cyan-200 transition hover:bg-cyan-500/20"
+            >
+              Clear {activeCount} filter{activeCount === 1 ? '' : 's'}
+            </button>
+          ) : null}
+        </div>
+
+        <DiscoveryTrustGraph
           nodes={graphNodes}
-          relationships={data.relationships}
-          selectedId={graphSelection}
-          onSelect={(id) => {
-            setGraphSelection(id);
-            if (id) void openNode(id);
-          }}
+          relationships={graphRelationships}
+          matchingNodes={graphTotal}
+          matchingRelationships={graphLinkTotal}
+          filtered={activeCount > 0}
+          partialEvidence={partialEvidence}
+          loading={scopedGraph && graph.loading}
+          error={scopedGraph ? graph.error : null}
+          onRetry={graph.retry}
+          onInspect={openNode}
         />
       </TrustPanel>
 
@@ -395,95 +480,14 @@ export default function TrustStateDiscovery() {
       <TrustPanel index={4}>
         <SectionLabel
           icon={Filter}
-          hint="Server-side filtered and paged against the same snapshot the graph was built from."
+          hint="Shares the filters and Trust Fabric source used by the relationship graph."
           meta={`${fmtNumber(table.total)} matching`}
         >
           Discovered trust subjects
         </SectionLabel>
 
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <SearchInput
-            value={filters.search}
-            onChange={(value) => setFilter('search', value)}
-            placeholder="Search subject, host, owner or region"
-          />
-          <FilterSelect
-            label="Type"
-            value={filters.kind}
-            onChange={(value) => setFilter('kind', value)}
-            options={[{ value: 'all', label: 'All' }, ...data.kindDistribution.map((row) => ({ value: row.kind, label: `${TRUST_NODE_LABEL[row.kind]} (${row.count})` }))]}
-          />
-          <FilterSelect
-            label="State"
-            value={filters.state}
-            onChange={(value) => setFilter('state', value)}
-            options={[{ value: 'all', label: 'All' }, ...data.stateDistribution.map((row) => ({ value: row.state, label: `${TRUST_STATE_LABEL[row.state]} (${row.count})` }))]}
-          />
-          <FilterSelect
-            label="Environment"
-            value={filters.environment}
-            onChange={(value) => setFilter('environment', value)}
-            options={[{ value: 'all', label: 'All' }, ...data.facets.environments.map((env) => ({ value: env.toLowerCase(), label: env }))]}
-          />
-          <FilterSelect
-            label="Cloud"
-            value={filters.provider}
-            onChange={(value) => setFilter('provider', value)}
-            options={[{ value: 'all', label: 'All' }, ...data.facets.providers.map((provider) => ({ value: provider.id, label: provider.label }))]}
-          />
-          <FilterSelect
-            label="Region"
-            value={filters.region}
-            onChange={(value) => setFilter('region', value)}
-            options={[{ value: 'all', label: 'All' }, ...data.facets.regions.map((region) => ({ value: region.toLowerCase(), label: region }))]}
-          />
-          <FilterSelect
-            label="Risk"
-            value={filters.risk}
-            onChange={(value) => setFilter('risk', value)}
-            options={[
-              { value: 'all', label: 'All' },
-              { value: 'critical', label: 'Critical' },
-              { value: 'high', label: 'High' },
-              { value: 'medium', label: 'Medium' },
-              { value: 'low', label: 'Low' },
-            ]}
-          />
-          <FilterSelect
-            label="Evidence"
-            value={filters.attribution}
-            onChange={(value) => setFilter('attribution', value)}
-            options={[
-              { value: 'all', label: 'All' },
-              { value: 'attributed', label: 'Measured' },
-              { value: 'unattributed', label: 'Inferred only' },
-            ]}
-          />
-          <FilterSelect
-            label="Sort"
-            value={filters.sort}
-            onChange={(value) => setFilter('sort', value)}
-            options={[
-              { value: 'state', label: 'Worst state first' },
-              { value: 'risk', label: 'Highest risk' },
-              { value: 'blast', label: 'Largest blast radius' },
-              { value: 'expiry', label: 'Soonest expiry' },
-              { value: 'name', label: 'Name' },
-            ]}
-          />
-          {activeCount > 0 ? (
-            <button
-              type="button"
-              onClick={reset}
-              className="rounded-md border border-cyan-400/30 bg-cyan-500/10 px-2.5 py-1.5 text-[9.5px] font-black uppercase tracking-wider text-cyan-200 transition hover:bg-cyan-500/20"
-            >
-              Clear {activeCount} filter{activeCount === 1 ? '' : 's'}
-            </button>
-          ) : null}
-        </div>
-
         {table.error ? (
-          <ErrorState message={table.error} onRetry={() => void refresh()} />
+          <ErrorState message={table.error} onRetry={table.retry} />
         ) : table.loading && table.rows.length === 0 ? (
           <TrustSkeleton rows={6} height={44} />
         ) : table.rows.length === 0 ? (
@@ -591,21 +595,22 @@ export default function TrustStateDiscovery() {
       <ProvenanceFooter telemetry={data.telemetry} reads={data.reads} />
 
       <Drawer
-        open={drawerOpen}
+        open={drawerNodeId !== null}
         onClose={() => {
-          setDrawerOpen(false);
+          setDrawerNodeId(null);
           setDetail(null);
-          setGraphSelection(null);
         }}
-        title={detail?.node.label || 'Trust subject'}
-        subtitle={detail?.node.subtitle}
+        title={visibleDetail?.node.label || 'Trust subject'}
+        subtitle={visibleDetail?.node.subtitle}
       >
-        {detailLoading && !detail ? (
+        {detailLoading && !visibleDetail ? (
           <TrustSkeleton rows={5} height={52} />
-        ) : !detail ? (
-          <PanelEmpty>Subject detail could not be loaded.</PanelEmpty>
+        ) : detailError ? (
+          <ErrorState message={detailError} onRetry={() => setDetailRetry((count) => count + 1)} />
+        ) : !visibleDetail ? (
+          <TrustSkeleton rows={5} height={52} />
         ) : (
-          <NodeDrawerBody detail={detail} />
+          <NodeDrawerBody detail={visibleDetail} />
         )}
       </Drawer>
     </div>
@@ -626,7 +631,7 @@ function NodeDrawerBody({ detail }: { detail: NodeDetail }) {
           <TrustStateBadge state={node.state} size="sm" />
           <NodeKindBadge kind={node.kind} />
           {node.provider !== 'unattributed' ? <ProviderChip provider={node.provider as never} label={node.providerLabel} /> : null}
-          {!node.measured ? <Pill tone="warning">Inferred, not measured</Pill> : null}
+          {!node.measured ? <Pill tone="warning">{node.kind === 'intermediate-ca' ? 'Issuer inferred' : 'Unmeasured'}</Pill> : null}
         </div>
         <p className="rounded-lg border border-white/10 bg-black/25 p-2.5 text-[11px] leading-relaxed text-white/65">{node.stateReason}</p>
         <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[10.5px]">

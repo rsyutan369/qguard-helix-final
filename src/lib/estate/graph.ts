@@ -9,10 +9,10 @@
  * Anything left out is disclosed in `notices`.
  */
 import { searchTextOf, type WorkflowEdge, type WorkflowGraph, type WorkflowNode, type WorkflowStatus } from '@/components/trust-workflow/graph-model'
-import type { FindingSeverity } from '@/lib/scanner/exposure/types'
-import { ENVIRONMENT_LABEL, OWNER_SOURCE_LABEL, SEVERITY_RANK, type CertificateIdentity, type EstateAsset, type Observation } from './model'
+import type { FindingSeverity, QuantumStatus } from '@/lib/scanner/exposure/types'
+import { OWNER_SOURCE_LABEL, SEVERITY_RANK, type CertificateIdentity, type EstateAsset, type Observation } from './model'
 import { FIX_KIND_LABEL, MEMBER_STATUS_LABEL, type ClusterState, type MemberStatus } from './clusters'
-import type { Campaign } from './views'
+import { mapGroupValue, type Campaign, type MapAsset } from './views'
 
 export const ROOT_CAUSE_LIMIT = 40
 export const NEIGHBOURHOOD_LIMIT = 60
@@ -38,7 +38,12 @@ function memberStatus(status: MemberStatus, severity: FindingSeverity): Workflow
   return severityStatus(severity)
 }
 
-const slug = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'x'
+const nodeKey = (value: string) => encodeURIComponent(value.toLowerCase())
+
+const VERDICT_LABEL: Record<QuantumStatus, string> = {
+  pqc: 'Post-quantum', hybrid: 'Hybrid', resistant: 'Quantum-resistant', vulnerable: 'Quantum-vulnerable',
+  unknown: 'Unclassified', 'not-applicable': 'Not applicable',
+}
 
 class GraphBuilder {
   nodes = new Map<string, WorkflowNode>()
@@ -90,7 +95,7 @@ function rootNode(builder: GraphBuilder, state: ClusterState, layer: number) {
   const icon = type === 'issuer' ? 'intermediate-ca' : type === 'library' ? 'application' : 'algorithm'
   const kindLabel = type === 'issuer' ? 'Issuing CA' : type === 'library' ? 'Library' : 'Algorithm'
   return builder.node({
-    id: `root:${type}:${slug(label)}`,
+    id: `root:${type}:${nodeKey(label)}`,
     kind: `root-${type}`,
     kindLabel,
     label,
@@ -104,12 +109,12 @@ function rootNode(builder: GraphBuilder, state: ClusterState, layer: number) {
 
 function ownerNode(builder: GraphBuilder, owner: string | null, layer: number, source?: string) {
   return builder.node({
-    id: owner ? `owner:${slug(owner)}` : 'owner:unowned',
+    id: owner ? `owner:recorded:${nodeKey(owner)}` : 'owner:unowned',
     kind: 'owner',
     kindLabel: owner ? 'Owner' : 'No owner recorded',
     label: owner ?? 'Unowned',
     sublabel: source,
-    status: owner ? 'verified' : 'attention',
+    status: owner ? 'unknown' : 'attention',
     statusLabel: owner ? 'Accountable owner' : 'Assign an owner',
     icon: owner ? 'organization' : 'identity',
     shape: 'card',
@@ -139,7 +144,7 @@ export function rootCauseGraph(states: ClusterState[]): WorkflowGraph {
       const id = builder.node({ id: `owner-more:${c.id}`, kind: 'owner', kindLabel: 'Other owners', label: `${c.owners.length - 3}+ more owners`, status: 'unknown', statusLabel: `${rest} assets`, icon: 'group', shape: 'pill', layer: 2 })
       builder.edge(fix, id, 'owned-by', `${rest} assets`, 'explicit', 'Remaining owners of this fix, collapsed.')
     }
-    if (c.unownedAssets) builder.edge(fix, ownerNode(builder, null, 2), 'owned-by', `${c.unownedAssets} assets`, 'explicit', 'These assets have no owner on their record or tags.', 'attention')
+    if (c.unownedAssets) builder.edge(fix, ownerNode(builder, null, 2), 'owner-missing', `${c.unownedAssets} unassigned`, 'configured', 'No accountable owner was recorded for these fix members.', 'attention')
   }
   return builder.build(['Root cause', 'Fix', 'Accountable owner'])
 }
@@ -152,17 +157,29 @@ function assetNode(builder: GraphBuilder, asset: EstateAsset | undefined, assetI
   return builder.node({
     id: `asset:${assetId}`,
     kind: 'asset',
-    kindLabel: asset ? `${asset.type} · ${ENVIRONMENT_LABEL[asset.environment]}` : 'Asset',
+    kindLabel: asset ? [asset.type.replace(/[_-]+/g, ' '), mapGroupValue(asset, 'environment')].filter(Boolean).join(' · ') || 'Asset' : 'Asset',
     label: asset?.name ?? assetId,
     sublabel: asset?.service ?? undefined,
     status,
     statusLabel,
-    icon: asset?.internetFacing ? 'surface' : 'infrastructure',
+    icon: 'infrastructure',
     shape: 'card',
     layer,
-    badges: asset?.internetFacing ? [{ label: 'Internet-facing', status: 'attention' }] : undefined,
     entity: { type: 'asset', id: assetId },
   })
+}
+
+function linkOwner(builder: GraphBuilder, asset: EstateAsset, id: string, layer: number) {
+  if (!asset.owner) return
+  const source = asset.ownerSource ? OWNER_SOURCE_LABEL[asset.ownerSource] : 'asset record'
+  builder.edge(id, ownerNode(builder, asset.owner, layer, source), 'owned-by', 'Owned by', 'explicit', `Owner from ${source}.`)
+}
+
+function assetPosture(asset: MapAsset): [WorkflowStatus, string] {
+  if (asset.openFixes) return [severityStatus(asset.severity ?? 'info'), `${asset.openFixes} open ${asset.openFixes === 1 ? 'fix' : 'fixes'}`]
+  if (!asset.evidence.classified && !asset.evidence.unclassified) return ['unknown', 'No crypto evidence loaded']
+  if (asset.evidence.unclassified) return ['unknown', 'Unclassified evidence']
+  return ['unknown', 'No open fixes recorded']
 }
 
 export function fixNeighbourhood(state: ClusterState, assets: Map<string, EstateAsset>, certificates: CertificateIdentity[]): WorkflowGraph {
@@ -170,7 +187,8 @@ export function fixNeighbourhood(state: ClusterState, assets: Map<string, Estate
   const isCa = state.cluster.kind === 'ca-reissue'
   const root = rootNode(builder, state, 0)
   const fix = fixNode(builder, state, isCa ? 2 : 1)
-  const members = [...state.members.entries()].sort((a, b) => b[1].weight - a[1].weight)
+  const members = [...state.members.entries()].filter(([id]) => assets.has(id)).sort((a, b) => b[1].weight - a[1].weight)
+  if (members.length < state.members.size) builder.notices.push(`${state.members.size - members.length} fix members have no asset record in this snapshot.`)
   const shown = members.slice(0, NEIGHBOURHOOD_LIMIT)
   if (members.length > shown.length) builder.notices.push(`Showing the ${shown.length} highest-risk assets of ${members.length}. Open the fix's asset list for the rest.`)
 
@@ -181,7 +199,7 @@ export function fixNeighbourhood(state: ClusterState, assets: Map<string, Estate
     if (certs.length > certShown.length) builder.notices.push(`Showing 30 of ${certs.length} certificates (most widely deployed first).`)
     for (const certificate of certShown) {
       const id = builder.node({
-        id: `cert:${slug(certificate.key)}`,
+        id: `cert:${nodeKey(certificate.key)}`,
         kind: 'certificate',
         kindLabel: certificate.assetIds.size > 1 ? `Certificate · reused on ${certificate.assetIds.size} assets` : 'Certificate',
         label: certificate.subject || certificate.key,
@@ -193,7 +211,7 @@ export function fixNeighbourhood(state: ClusterState, assets: Map<string, Estate
         layer: 1,
         entity: { type: 'certificate', id: certificate.key },
       })
-      builder.edge(root, id, 'issued', 'Issued', 'observed', 'Issuer read from the certificate record.')
+      if (certificate.issuer) builder.edge(root, id, 'issued', 'Issued', 'observed', 'Issuer read from the certificate record.')
       builder.edge(id, fix, 'resolved-by', 'Re-issue', 'configured', 'This certificate is re-issued by the fix.')
     }
   } else {
@@ -205,8 +223,7 @@ export function fixNeighbourhood(state: ClusterState, assets: Map<string, Estate
     const status = memberStatus(member.status, member.severity)
     const id = assetNode(builder, asset, assetId, isCa ? 3 : 2, status, MEMBER_STATUS_LABEL[member.status])
     builder.edge(fix, id, 'applies-to', `${member.observations} finding${member.observations === 1 ? '' : 's'}`, 'observed', 'Scan evidence on this asset is resolved by the fix.', status)
-    const owner = ownerNode(builder, asset?.owner ?? null, isCa ? 4 : 3, asset?.ownerSource ? OWNER_SOURCE_LABEL[asset.ownerSource] : undefined)
-    builder.edge(id, owner, 'owned-by', 'Owned by', asset?.ownerSource === 'certificate subject' ? 'inferred' : 'explicit', asset?.ownerSource ? `Owner from ${OWNER_SOURCE_LABEL[asset.ownerSource]}.` : 'No owner recorded on the asset.')
+    if (asset) linkOwner(builder, asset, id, isCa ? 4 : 3)
   }
   return builder.build(isCa ? ['Issuing CA', 'Certificate', 'Fix', 'Asset', 'Owner'] : ['Root cause', 'Fix', 'Asset', 'Owner'])
 }
@@ -216,69 +233,79 @@ export function fixNeighbourhood(state: ClusterState, assets: Map<string, Estate
 /* ------------------------------------------------------------------ */
 
 export function assetNeighbourhood(
-  assetId: string,
+  asset: EstateAsset,
   assets: Map<string, EstateAsset>,
   observations: Observation[],
   certificates: CertificateIdentity[],
   states: ClusterState[],
   relationships: Array<{ source: string; target: string; type: string }>,
+  detail: (id: string) => MapAsset | null,
 ): WorkflowGraph {
   const builder = new GraphBuilder()
-  const asset = assets.get(assetId)
+  const assetId = asset.id
   const fixes = states.filter((state) => state.members.has(assetId))
-  const worst = fixes.map((state) => state.members.get(assetId)!).filter((m) => m.status !== 'validated')
-  const status: WorkflowStatus = worst.length ? memberStatus('open', worst.reduce((w, m) => (m.weight > w.weight ? m : w)).severity) : 'verified'
-  const center = assetNode(builder, asset, assetId, 2, status, worst.length ? `${worst.length} open fix(es)` : 'No open quantum fixes')
+  const posture = detail(assetId)
+  const [status, statusLabel] = posture ? assetPosture(posture) : ['unknown', 'Evidence unavailable'] as const
+  const center = assetNode(builder, asset, assetId, 2, status, statusLabel)
 
-  for (const certificate of certificates.filter((c) => c.assetIds.has(assetId)).slice(0, 12)) {
-    const issuer = builder.node({ id: `root:issuer:${slug(certificate.issuerName)}`, kind: 'root-issuer', kindLabel: 'Issuing CA', label: certificate.issuerName, status: severityStatus(certificate.severity), statusLabel: 'Issuer', icon: 'intermediate-ca', shape: 'shield', layer: 0 })
+  const assetCertificates = certificates.filter((c) => c.assetIds.has(assetId))
+  for (const certificate of assetCertificates.slice(0, 12)) {
     const cert = builder.node({
-      id: `cert:${slug(certificate.key)}`, kind: 'certificate',
+      id: `cert:${nodeKey(certificate.key)}`, kind: 'certificate',
       kindLabel: certificate.assetIds.size > 1 ? `Certificate · also on ${certificate.assetIds.size - 1} other asset(s)` : 'Certificate',
       label: certificate.subject || certificate.key, sublabel: `${certificate.algorithm}${certificate.keySize ? `-${certificate.keySize}` : ''}`,
-      status: certificate.actionability === 'none' ? 'verified' : severityStatus(certificate.severity),
-      statusLabel: certificate.actionability === 'none' ? 'Quantum-safe' : 'Quantum-vulnerable', icon: 'certificate', shape: 'document', layer: 1,
+      status: certificate.actionability === 'unclassified' ? 'unknown' : certificate.verdict === 'hybrid' ? 'hybrid'
+        : certificate.verdict === 'pqc' ? 'verified' : severityStatus(certificate.severity),
+      statusLabel: certificate.actionability === 'classical' ? 'Classically weak' : VERDICT_LABEL[certificate.verdict], icon: 'certificate', shape: 'document', layer: 1,
     })
-    builder.edge(issuer, cert, 'issued', 'Issued', 'observed', 'Issuer read from the certificate record.')
+    if (certificate.issuer) {
+      const issuer = builder.node({ id: `root:issuer:${nodeKey(certificate.issuer)}`, kind: 'root-issuer', kindLabel: 'Issuing CA', label: certificate.issuerName, status: 'unknown', statusLabel: 'Recorded issuer', icon: 'intermediate-ca', shape: 'shield', layer: 0 })
+      builder.edge(issuer, cert, 'issued', 'Issued', 'observed', 'Issuer read from the certificate record.')
+    }
     builder.edge(cert, center, 'authenticates', 'Presented by', 'observed', 'Certificate recorded on this asset.')
   }
+  if (assetCertificates.length > 12) builder.notices.push(`Showing 12 of ${assetCertificates.length} recorded certificates.`)
+  if (posture?.evidence.unclassified) builder.notices.push(`${posture.evidence.unclassified} evidence records could not be classified for this asset.`)
 
   const algorithms = new Map<string, Observation>()
   for (const observation of observations) {
-    if (observation.assetId !== assetId || observation.actionability === 'unclassified') continue
-    const key = `${observation.canonical?.canonical ?? observation.algorithm}|${observation.role}`
+    if (observation.assetId !== assetId || ['unclassified', 'context'].includes(observation.actionability)) continue
+    const key = observation.componentKey
     const existing = algorithms.get(key)
     if (!existing || SEVERITY_RANK[observation.severity] > SEVERITY_RANK[existing.severity]) algorithms.set(key, observation)
   }
   const algoList = [...algorithms.values()]
   for (const observation of algoList.slice(0, 14)) {
-    const name = observation.canonical?.canonical ?? observation.algorithm
+    const name = observation.verdict === 'hybrid' ? observation.algorithm : observation.canonical?.canonical ?? observation.algorithm
     const id = builder.node({
-      id: `algo:${slug(name)}:${observation.role}`, kind: 'algorithm', kindLabel: `Algorithm · ${observation.role}`,
+      id: `algo:${nodeKey(name)}:${observation.role}:${observation.keySize ?? ''}`, kind: 'algorithm', kindLabel: `Algorithm · ${observation.role}`,
       label: observation.keySize ? `${name}-${observation.keySize}` : name,
-      status: observation.actionability === 'none' ? 'verified' : severityStatus(observation.severity),
-      statusLabel: observation.actionability === 'none' ? (observation.verdict === 'hybrid' ? 'Hybrid' : 'Quantum-safe') : observation.actionability === 'classical' ? 'Broken today' : 'Quantum-vulnerable',
+      status: observation.verdict === 'hybrid' ? 'hybrid'
+        : observation.verdict === 'pqc' || observation.verdict === 'resistant' ? 'verified' : severityStatus(observation.severity),
+      statusLabel: observation.actionability === 'classical' ? 'Classically weak' : VERDICT_LABEL[observation.verdict],
       icon: observation.role === 'key-exchange' ? 'key-exchange' : observation.role === 'signature' ? 'signature' : 'algorithm', shape: 'pill', layer: 1,
     })
     builder.edge(id, center, 'used-by', 'Used by', 'observed', 'Recorded by a scan of this asset.')
   }
   if (algoList.length > 14) builder.notices.push(`Showing 14 of ${algoList.length} algorithm usages on this asset.`)
 
-  for (const state of fixes) {
+  for (const state of fixes.slice(0, 20)) {
     const fix = fixNode(builder, state, 3)
     const member = state.members.get(assetId)!
     builder.edge(center, fix, 'resolved-by', MEMBER_STATUS_LABEL[member.status], 'configured', 'This asset is in scope of the fix.', memberStatus(member.status, member.severity))
   }
-  builder.edge(center, ownerNode(builder, asset?.owner ?? null, 3, asset?.ownerSource ? OWNER_SOURCE_LABEL[asset.ownerSource] : undefined), 'owned-by', 'Owned by', 'explicit', asset?.ownerSource ? `Owner from ${OWNER_SOURCE_LABEL[asset.ownerSource]}.` : 'No owner recorded on the asset.')
+  if (fixes.length > 20) builder.notices.push(`Showing the 20 highest-priority fixes of ${fixes.length} for this asset.`)
+  linkOwner(builder, asset, center, 3)
 
   const related = relationships.filter((rel) => rel.source === assetId || rel.target === assetId)
   for (const rel of related.slice(0, 20)) {
     const otherId = rel.source === assetId ? rel.target : rel.source
-    const other = assetNode(builder, assets.get(otherId), otherId, 4, 'unknown', 'Related asset')
-    builder.edge(rel.source === assetId ? center : other, rel.source === assetId ? other : center, 'depends-on', rel.type || 'Depends on', 'explicit', `asset_relationships row: ${rel.type || 'depends-on'}`)
+    const otherPosture = detail(otherId)
+    if (!otherPosture) continue
+    const other = assetNode(builder, assets.get(otherId), otherId, 4, ...assetPosture(otherPosture))
+    builder.edge(rel.source === assetId ? center : other, rel.source === assetId ? other : center, rel.type || 'recorded-relationship', rel.type.replace(/[_-]+/g, ' ') || 'Recorded relationship', 'explicit', 'Read from the asset relationships register.')
   }
   if (related.length > 20) builder.notices.push(`Showing 20 of ${related.length} related assets.`)
-  if (!asset) builder.notices.push('This asset id is not in the loaded inventory.')
   return builder.build(['Issuing CA', 'Certificate / algorithm', 'Asset', 'Fixes & owner', 'Related assets'])
 }
 
@@ -312,5 +339,5 @@ export function campaignGraph(state: ClusterState, campaign: Campaign): Workflow
     if (previous) builder.edge(previous, id, 'next', '', 'configured', 'Pipeline order.')
     previous = id
   })
-  return builder.build(['Scope', 'Not started', 'Queued', 'Executing', 'Awaiting rescan', 'Validated'])
+  return builder.build(['Scope', 'Not started', 'Queued', 'Executing', 'Awaiting evidence', 'Validated'])
 }

@@ -117,6 +117,7 @@ export interface DetailContext {
 export interface VendorTrustWorkflowCanvasProps {
   graph: WorkflowGraph
   ariaLabel: string
+  searchPlaceholder?: string
   status: 'loading' | 'ready' | 'error'
   error?: string | null
   onRetry?: () => void
@@ -299,7 +300,7 @@ function usePrefersReducedMotion(): boolean {
 }
 
 function CanvasInner({
-  graph, ariaLabel, status, error, onRetry, empty, toolbarExtras, focusNodeId, onSelectNode,
+  graph, ariaLabel, searchPlaceholder = 'Find vendor, certificate, algorithm…', status, error, onRetry, empty, toolbarExtras, focusNodeId, onSelectNode,
   renderNodeDetail, renderEdgeDetail, enableTrace = false, explainPath, autoCollapseAbove = 3,
   height = 640, exportName,
 }: VendorTrustWorkflowCanvasProps) {
@@ -678,7 +679,7 @@ function CanvasInner({
             value={find}
             onChange={(event) => setFind(event.target.value)}
             onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); stepMatch(event.shiftKey ? -1 : 1) } }}
-            placeholder="Find vendor, certificate, algorithm…"
+            placeholder={searchPlaceholder}
           />
           {term.length >= 2 && <span className="qg-wf__find-count" aria-live="polite">{matches.length ? `${matchIndex + 1}/${matches.length}` : '0'}</span>}
         </label>
@@ -693,7 +694,9 @@ function CanvasInner({
         <div className="qg-wf__toolbar-group">
           <ToolButton label="Edge labels" icon={Tag} text="Labels" pressed={showLabels} onClick={() => setShowLabels((value) => !value)} />
           <ToolButton label="Evidence badges" icon={BadgeCheck} text="Evidence" pressed={showBadges} onClick={() => setShowBadges((value) => !value)} />
-          <ToolButton label="Show inferred relationships" icon={Waypoints} text="Inferred" pressed={showInferred} onClick={() => setShowInferred((value) => !value)} />
+          {graph.edges.some((edge) => edge.provenance === 'inferred') && (
+            <ToolButton label="Show inferred relationships" icon={Waypoints} text="Inferred" pressed={showInferred} onClick={() => setShowInferred((value) => !value)} />
+          )}
           {hasGroups && (
             <ToolButton
               label={allCollapsed ? 'Expand all groups' : 'Collapse all groups'}
@@ -806,7 +809,7 @@ function CanvasInner({
               <p className="qg-wf__text">From <b>{nodeById.get(trace.from)?.label ?? '—'}</b>. Now select the node to trace to.</p>
             )}
             {trace.from && trace.to && !tracedPath && (
-              <p className="qg-wf__text">No known relationship connects <b>{nodeById.get(trace.from)?.label}</b> and <b>{nodeById.get(trace.to)?.label}</b>. They sit in disconnected components of the graph.</p>
+              <p className="qg-wf__text">No path in the current graph connects <b>{nodeById.get(trace.from)?.label}</b> and <b>{nodeById.get(trace.to)?.label}</b>.</p>
             )}
             {tracedPath && (
               <>
@@ -857,7 +860,7 @@ function CanvasInner({
         {legendOpen && (
           <section className="qg-wf__panel qg-wf__legend" aria-label="Legend">
             <div className="qg-wf__section-title" style={{ margin: 0 }}>Status</div>
-            {(Object.keys(STATUS_META) as WorkflowStatus[]).map((key) => (
+            {(Object.keys(STATUS_META) as WorkflowStatus[]).filter((key) => graph.legend[key] !== undefined).map((key) => (
               <div key={key} className="qg-wf__legend-row" style={{ '--qg-wf-status': STATUS_META[key].color } as CSSProperties}>
                 <StatusGlyph status={key} /><span>{graph.legend[key] ?? STATUS_META[key].label}</span>
               </div>
@@ -927,7 +930,7 @@ function CanvasInner({
   )
 }
 
-export function DefaultEdgeDetail({ edge, nodeById }: { edge: WorkflowEdge; nodeById: Map<string, WorkflowNode> }) {
+export function DefaultEdgeDetail({ edge, nodeById, statusLabel }: { edge: WorkflowEdge; nodeById: Map<string, WorkflowNode>; statusLabel?: string }) {
   const source = nodeById.get(edge.source)
   const target = nodeById.get(edge.target)
   return (
@@ -939,7 +942,7 @@ export function DefaultEdgeDetail({ edge, nodeById }: { edge: WorkflowEdge; node
       <dl className="qg-wf__kv">
         <div><dt>Relationship</dt><dd>{edge.label}</dd></div>
         <div><dt>Provenance</dt><dd>{PROVENANCE_LABEL[edge.provenance]}</dd></div>
-        {edge.status && <div><dt>Status</dt><dd>{STATUS_META[edge.status].label}</dd></div>}
+        {edge.status && <div><dt>Status</dt><dd>{statusLabel ?? STATUS_META[edge.status].label}</dd></div>}
       </dl>
       <div>
         <div className="qg-wf__section-title">Evidence basis</div>

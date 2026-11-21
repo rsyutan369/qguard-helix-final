@@ -890,6 +890,19 @@ export const brandingSchema = z.object({
 });
 export type ReportBranding = z.infer<typeof brandingSchema>;
 
+export const ASSET_REPORT_LOGO_MAX_BYTES = 2 * 1024 * 1024;
+
+export const assetReportLogoSchema = z.string()
+  .max('data:image/jpeg;base64,'.length + 4 * Math.ceil(ASSET_REPORT_LOGO_MAX_BYTES / 3))
+  .regex(/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/)
+  .refine((value) => {
+    const encodedLength = value.length - value.indexOf(',') - 1;
+    const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+    return encodedLength % 4 === 0 && encodedLength / 4 * 3 - padding <= ASSET_REPORT_LOGO_MAX_BYTES;
+  })
+  .nullable()
+  .default(null);
+
 export const chartImageSchema = z.object({
   key: z.string(),
   title: z.string(),

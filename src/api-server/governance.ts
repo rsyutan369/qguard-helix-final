@@ -27,10 +27,13 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express'
+import { payloadFingerprint, streamLiveSnapshot } from './live-snapshot-stream'
 import { createAuthClient, getServerUser, getToken } from '@/lib/supabase-server'
 import { createSingleFlightCache } from '@/lib/single-flight-cache'
 import { buildSnapshot } from './quantum-readiness'
 import { buildPortfolio } from './migration-planner'
+import { isUnverifiedIssuanceRecord } from '@/lib/crypto/issuance-evidence'
+import { buildAssetComplianceScope, complianceAssetOption } from '@/lib/governance/asset-scope'
 import {
   buildGovernanceIntelligence,
   contentDigest,
@@ -39,6 +42,7 @@ import {
   buildSubjects,
   severityOrder,
   CONTROL_BY_ID,
+  MAX_COMPLIANCE_SELECTION,
   FRAMEWORK_BY_ID,
   REQUIREMENT_BY_ID,
   type CanonicalSnapshot,
@@ -91,15 +95,33 @@ interface FetchOutcome {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function fetchRows(client: any, table: string, limit: number, build: (query: any) => any): Promise<FetchOutcome> {
   try {
-    const { data, error } = await build(client.from(table))
+    const query = () => build(client.from(table)).order('id')
+    const { data, error, count } = await query()
     if (error) {
       // A missing table (42P01) or unknown column (42703) must degrade to "not
       // available" rather than to an empty array that reads as "measured zero".
       console.warn(`[governance] ${table} query skipped:`, error.message || error)
       return { rows: [], capped: false, available: false }
     }
-    const rows = (data as Row[]) || []
-    return { rows, capped: rows.length >= limit, available: true }
+    const fetched: Row[] = [...((data as Row[]) || [])]
+    const requested = typeof count === 'number' ? Math.min(count, limit) : fetched.length
+    // PostgREST can return fewer rows than the requested limit. Continue
+    // within the configured evidence window before marking coverage partial.
+    while (fetched.length > 0 && fetched.length < requested) {
+      const next = await query().range(fetched.length, Math.min(fetched.length + 999, requested - 1))
+      if (next.error || !next.data?.length) break
+      fetched.push(...next.data)
+    }
+    const seen = new Set<string>()
+    const unique = fetched.filter((row) => {
+      const id = str(row.id)
+      if (!id) return true
+      if (seen.has(id)) return false
+      seen.add(id)
+      return true
+    })
+    const rows = table === 'assets' ? unique.filter((row) => !(row.metadata as Row | null)?.consolidatedIntoAssetId) : unique
+    return { rows, capped: typeof count === 'number' ? unique.length < count : fetched.length >= limit, available: true }
   } catch (error) {
     console.warn(`[governance] ${table} query failed:`, (error as Error)?.message || error)
     return { rows: [], capped: false, available: false }
@@ -115,15 +137,8 @@ async function fetchRows(client: any, table: string, limit: number, build: (quer
  * the bearer token never enters a URL. The `?token=` fallback exists only so an
  * already-open legacy tab does not hard-fail across a deploy.
  */
-function tokenFromRequest(req: Request): string | null {
-  const header = getToken(req)
-  if (header) return header
-  const query = req.query.token
-  return typeof query === 'string' && query.length > 0 ? query : null
-}
-
 async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const token = tokenFromRequest(req)
+  const token = getToken(req)
   if (!token) {
     return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } })
   }
@@ -191,9 +206,9 @@ const modelCache = createSingleFlightCache<GovernanceIntelligence>(MODEL_TTL_MS)
  * SAME cached model so the rows it returns are guaranteed to match the counts
  * the dashboard rendered.
  */
-const rawCache = new Map<string, { at: number; inputs: GovernanceInputs }>()
+const rawByModel = new WeakMap<GovernanceIntelligence, GovernanceInputs>()
 
-async function computeModel(token: string, userId: string): Promise<GovernanceIntelligence> {
+async function computeModel(token: string, userId: string, force: boolean): Promise<GovernanceIntelligence> {
   const client = createAuthClient(token)
   if (!client) throw new Error('Database connection failed')
 
@@ -201,7 +216,7 @@ async function computeModel(token: string, userId: string): Promise<GovernanceIn
   // same 15s window, so asking for them here is nearly free — and it is what
   // guarantees these four pages agree with Quantum Readiness, Assets, CBOM,
   // Migration Planner, the Executive Command Center and every report.
-  const [snapshot, portfolio] = await Promise.all([buildSnapshot(token, userId), buildPortfolio(token, userId)])
+  const [snapshot, portfolio] = await Promise.all([buildSnapshot(token, userId, undefined, force), buildPortfolio(token, userId, force)])
 
   const [
     assets,
@@ -233,86 +248,86 @@ async function computeModel(token: string, userId: string): Promise<GovernanceIn
     controlAssessments,
   ] = await Promise.all([
     fetchRows(client, 'assets', CAP.assets, (q) =>
-      q.select('id, name, type, environment, region, service_owner, criticality, status, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.assets),
+      q.select('id, name, type, environment, region, service_owner, criticality, status, metadata, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.assets),
     ),
     fetchRows(client, 'crypto_inventory', CAP.cryptoInventory, (q) =>
-      q.select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, metadata, discovered_at, created_at').eq('user_id', userId).order('discovered_at', { ascending: false }).limit(CAP.cryptoInventory),
+      q.select('id, asset_id, item_type, name, algorithm, key_size, protocol, exposure_level, is_vulnerable, is_quantum_safe, metadata, discovered_at, created_at', { count: 'exact' }).eq('user_id', userId).order('discovered_at', { ascending: false }).limit(CAP.cryptoInventory),
     ),
     fetchRows(client, 'certificates', CAP.certificates, (q) =>
-      q.select('id, asset_id, name, subject, issuer, algorithm, key_size, status, not_after, is_quantum_safe, is_expiring_soon, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.certificates),
+      q.select('id, asset_id, name, subject, issuer, algorithm, key_size, status, not_after, is_quantum_safe, is_expiring_soon, metadata, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.certificates),
     ),
     fetchRows(client, 'generated_keys', CAP.generatedKeys, (q) =>
-      q.select('id, algorithm, bit_length, entropy_source, quality_score, status, expires_at, revoked_at, rotated_from, label, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.generatedKeys),
+      q.select('id, algorithm, bit_length, entropy_source, quality_score, status, expires_at, revoked_at, rotated_from, label, metadata, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.generatedKeys),
     ),
     fetchRows(client, 'runtime_crypto_events', CAP.runtimeEvents, (q) =>
-      q.select('id, agent_id, asset_id, asset_name, host, source_type, event_type, operation_type, severity, protocol, tls_version, cipher_suite, key_exchange_algorithm, algorithm, key_size, is_pqc, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, metadata, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.runtimeEvents),
+      q.select('id, agent_id, asset_id, asset_name, host, source_type, event_type, operation_type, severity, protocol, tls_version, cipher_suite, key_exchange_algorithm, algorithm, key_size, is_pqc, is_legacy, downgrade_detected, shadow_crypto, hndl_risk, metadata, observed_at, created_at', { count: 'exact' }).eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.runtimeEvents),
     ),
     fetchRows(client, 'vault_files', CAP.vaultFiles, (q) =>
-      q.select('id, original_filename, mime_type, original_size, encryption_status, encryption_algorithm, signature_status, key_rotation_status, is_deleted, is_latest, uploaded_at, encrypted_at, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.vaultFiles),
+      q.select('id, original_filename, mime_type, original_size, encryption_status, encryption_algorithm, signature_status, key_rotation_status, is_deleted, is_latest, uploaded_at, encrypted_at, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.vaultFiles),
     ),
     fetchRows(client, 'pqc_scan_sessions', CAP.scanSessions, (q) =>
-      q.select('id, status, progress, total_assets, scanned_assets, findings_count, target_scope, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.scanSessions),
+      q.select('id, status, progress, total_assets, scanned_assets, findings_count, target_scope, started_at, completed_at, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.scanSessions),
     ),
     fetchRows(client, 'pqc_scan_results', CAP.scanResults, (q) =>
-      q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.scanResults),
+      q.select('id, scan_session_id, asset_id, finding_type, algorithm, threat_level, description, remediation, created_at', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.scanResults),
     ),
     fetchRows(client, 'crypto_exposures', CAP.cryptoExposures, (q) =>
-      q.select('id, asset_id, exposure_type, severity, description, detected_value, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.cryptoExposures),
+      q.select('id, asset_id, exposure_type, severity, description, detected_value, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.cryptoExposures),
     ),
     fetchRows(client, 'vulnerabilities', CAP.vulnerabilities, (q) =>
-      q.select('id, asset_id, title, description, severity, status, source, cvss_score, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.vulnerabilities),
+      q.select('id, asset_id, title, description, severity, status, source, cvss_score, metadata, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.vulnerabilities),
     ),
     fetchRows(client, 'scanner_alerts', CAP.scannerAlerts, (q) =>
-      q.select('id, agent_id, severity, category, title, message, recommendation, status, metadata, created_at, updated_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.scannerAlerts),
+      q.select('id, agent_id, severity, category, title, message, recommendation, status, metadata, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.scannerAlerts),
     ),
     fetchRows(client, 'scanner_evidence', CAP.scannerEvidence, (q) =>
-      q.select('id, asset_name, asset_type, host, target, evidence_type, source_type, observed_algorithm, protocol, key_size, confidence, observed_at, processed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.scannerEvidence),
+      q.select('id, asset_name, asset_type, host, target, evidence_type, source_type, observed_algorithm, protocol, key_size, confidence, observed_at, processed_at, created_at', { count: 'exact' }).eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.scannerEvidence),
     ),
     fetchRows(client, 'scanner_agents', CAP.scannerAgents, (q) =>
-      q.select('id, name, status, hostname, platform, last_seen_at, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.scannerAgents),
+      q.select('id, name, status, hostname, platform, last_seen_at, metadata, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.scannerAgents),
     ),
     fetchRows(client, 'connector_accounts', CAP.connectorAccounts, (q) =>
-      q.select('id, provider, display_name, status, capabilities, last_sync_at, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.connectorAccounts),
+      q.select('id, provider, display_name, status, capabilities, last_sync_at, metadata, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.connectorAccounts),
     ),
     fetchRows(client, 'agent_heartbeats', CAP.agentHeartbeats, (q) =>
-      q.select('id, agent_id, observed_at, created_at').eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.agentHeartbeats),
+      q.select('id, agent_id, observed_at, created_at', { count: 'exact' }).eq('user_id', userId).order('observed_at', { ascending: false }).limit(CAP.agentHeartbeats),
     ),
     fetchRows(client, 'migration_jobs', CAP.migrationJobs, (q) =>
-      q.select('id, asset_id, name, job_type, status, target_algorithm, progress, metadata, started_at, completed_at, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.migrationJobs),
+      q.select('id, asset_id, name, job_type, status, target_algorithm, progress, metadata, started_at, completed_at, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.migrationJobs),
     ),
     fetchRows(client, 'migration_plans', CAP.migrationPlans, (q) =>
       // Plan display names live in metadata.name, as written by Migration Planner.
-      q.select('id, status, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.migrationPlans),
+      q.select('id, status, metadata, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.migrationPlans),
     ),
     fetchRows(client, 'migration_events', CAP.migrationEvents, (q) =>
-      q.select('id, migration_id, event_type, message, severity, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.migrationEvents),
+      q.select('id, migration_id, event_type, message, severity, created_at', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.migrationEvents),
     ),
     fetchRows(client, 'compliance_evidence', CAP.complianceEvidence, (q) =>
-      q.select('id, asset_id, framework, control_id, evidence_type, description, status, metadata, created_at, updated_at').eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.complianceEvidence),
+      q.select('id, asset_id, framework, control_id, evidence_type, description, status, metadata, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).order('updated_at', { ascending: false }).limit(CAP.complianceEvidence),
     ),
     fetchRows(client, 'audit_logs', CAP.auditLogs, (q) =>
-      q.select('id, action, entity_type, entity_id, details, ip_address, user_agent, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.auditLogs),
+      q.select('id, action, entity_type, entity_id, details, ip_address, user_agent, created_at', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.auditLogs),
     ),
     fetchRows(client, 'vault_audit_logs', CAP.vaultAuditLogs, (q) =>
-      q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.vaultAuditLogs),
+      q.select('*', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.vaultAuditLogs),
     ),
     fetchRows(client, 'security_events', CAP.securityEvents, (q) =>
-      q.select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, created_at').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.securityEvents),
+      q.select('id, event_type, severity, message, asset_id, resource_name, resource_type, metadata, created_at', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.securityEvents),
     ),
     fetchRows(client, 'user_security_events', CAP.userSecurityEvents, (q) =>
-      q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.userSecurityEvents),
+      q.select('*', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.userSecurityEvents),
     ),
     fetchRows(client, 'auth_events', CAP.authEvents, (q) =>
-      q.select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.authEvents),
+      q.select('*', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }).limit(CAP.authEvents),
     ),
     fetchRows(client, 'governance_policies', CAP.governancePolicies, (q) =>
-      q.select('id, policy_id, enforcement, severity, parameters, note, updated_by, created_at, updated_at').eq('user_id', userId).limit(CAP.governancePolicies),
+      q.select('id, policy_id, enforcement, severity, parameters, note, updated_by, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).limit(CAP.governancePolicies),
     ),
     fetchRows(client, 'governance_evidence_anchors', CAP.evidenceAnchors, (q) =>
-      q.select('id, evidence_id, digest, first_digest, algorithm, anchored_at, reanchored_at, reanchor_count, created_at').eq('user_id', userId).limit(CAP.evidenceAnchors),
+      q.select('id, evidence_id, digest, first_digest, algorithm, anchored_at, reanchored_at, reanchor_count, created_at', { count: 'exact' }).eq('user_id', userId).limit(CAP.evidenceAnchors),
     ),
     fetchRows(client, 'governance_control_assessments', CAP.controlAssessments, (q) =>
-      q.select('id, control_id, owner, owner_email, review_note, attested_at, attested_by, exception_reason, exception_approved_by, exception_approved_at, exception_expires_at, created_at, updated_at').eq('user_id', userId).limit(CAP.controlAssessments),
+      q.select('id, control_id, owner, owner_email, review_note, attested_at, attested_by, exception_reason, exception_approved_by, exception_approved_at, exception_expires_at, created_at, updated_at', { count: 'exact' }).eq('user_id', userId).limit(CAP.controlAssessments),
     ),
   ])
 
@@ -383,6 +398,7 @@ async function computeModel(token: string, userId: string): Promise<GovernanceIn
     businessCriticality: asset.businessCriticality,
     internetFacing: asset.internetFacing,
     riskScore: asset.riskScore,
+    riskLevel: asset.riskLevel,
     readinessScore: asset.readinessScore,
     posture: asset.posture,
     postureLabel: asset.postureLabel,
@@ -427,23 +443,18 @@ async function computeModel(token: string, userId: string): Promise<GovernanceIn
     absentSources,
   }
 
-  rawCache.set(userId, { at: Date.now(), inputs })
-  if (rawCache.size > 200) {
-    const now = Date.now()
-    for (const [key, value] of rawCache) if (now - value.at > MODEL_TTL_MS * 4) rawCache.delete(key)
-  }
-
-  return buildGovernanceIntelligence(inputs)
+  const model = buildGovernanceIntelligence(inputs)
+  rawByModel.set(model, inputs)
+  return model
 }
 
 export async function buildGovernanceModel(token: string, userId: string, force = false): Promise<GovernanceIntelligence> {
-  return modelCache.get(userId, () => computeModel(token, userId), force)
+  return modelCache.get(userId, () => computeModel(token, userId, force), force)
 }
 
 /** Drops the tenant's cached model so the next read reflects a just-made write. */
 export function invalidateGovernanceModel(userId: string) {
   modelCache.delete(userId)
-  rawCache.delete(userId)
 }
 
 /**
@@ -636,6 +647,21 @@ function filterGaps(gaps: GovernanceIntelligence['gaps'], req: Request) {
 
 /** Rows shipped in the first paint. Deeper pages come from the paging routes. */
 const PAGE = { controls: 40, evidence: 50, audit: 60, gaps: 24, assets: 40, requirements: 60, policies: 40 } as const
+const isQuantumControl = (control: ControlRecord) => ['quantum', 'algorithm', 'key', 'transport', 'certificate', 'data', 'governance'].includes(control.domain)
+const isAuditGap = (gap: GovernanceIntelligence['gaps'][number]) => gap.domain === 'audit' || gap.kind === 'stale-evidence' || gap.kind === 'expired-evidence'
+const inventoryRevisions = new WeakMap<GovernanceIntelligence, string>()
+
+function inventoryRevision(model: GovernanceIntelligence) {
+  let revision = inventoryRevisions.get(model)
+  if (!revision) {
+    revision = payloadFingerprint({
+      controls: model.controls, policies: model.policies, evidence: model.evidence,
+      events: model.auditEvents, gaps: model.gaps, assets: model.assets, requirements: model.requirements,
+    })
+    inventoryRevisions.set(model, revision)
+  }
+  return revision
+}
 
 /** Fields every page shares, so the header is identical on all four. */
 function commonEnvelope(model: GovernanceIntelligence) {
@@ -650,6 +676,7 @@ function commonEnvelope(model: GovernanceIntelligence) {
     telemetry: model.telemetry,
     facets: model.facets,
     reconciliation: model.reconciliation,
+    inventoryRevision: inventoryRevision(model),
   }
 }
 
@@ -683,6 +710,21 @@ function controlSummary(control: ControlRecord) {
 }
 
 export type ControlSummary = ReturnType<typeof controlSummary>
+
+const projections = new WeakMap<GovernanceIntelligence, Map<GovernanceView, ReturnType<typeof projectView>>>()
+function projectedView(model: GovernanceIntelligence, view: GovernanceView) {
+  let views = projections.get(model)
+  if (!views) {
+    views = new Map()
+    projections.set(model, views)
+  }
+  let projection = views.get(view)
+  if (!projection) {
+    projection = projectView(model, view)
+    views.set(view, projection)
+  }
+  return projection
+}
 
 export function projectView(model: GovernanceIntelligence, view: GovernanceView) {
   const base = commonEnvelope(model)
@@ -724,7 +766,7 @@ export function projectView(model: GovernanceIntelligence, view: GovernanceView)
         policies: model.policies.slice(0, PAGE.policies),
         /* Quantum + algorithm + key + transport controls are this page's scope. */
         controls: model.controls
-          .filter((control) => ['quantum', 'algorithm', 'key', 'transport', 'certificate', 'data', 'governance'].includes(control.domain))
+          .filter(isQuantumControl)
           .slice()
           .sort((a, b) => statusRank(a.status) - statusRank(b.status) || b.weight - a.weight)
           .map(controlSummary),
@@ -751,7 +793,7 @@ export function projectView(model: GovernanceIntelligence, view: GovernanceView)
         evidence: model.evidence.slice(0, PAGE.evidence),
         /* Audit + evidence controls scope this page. */
         controls: model.controls.filter((control) => control.domain === 'audit').map(controlSummary),
-        gaps: model.gaps.filter((gap) => gap.domain === 'audit' || gap.kind === 'stale-evidence' || gap.kind === 'expired-evidence').slice(0, PAGE.gaps),
+        gaps: model.gaps.filter(isAuditGap).slice(0, PAGE.gaps),
         trend: model.trend,
         /* Integrity + retention rollups the vault header renders. */
         integrity: integrityRollup(model),
@@ -849,16 +891,20 @@ function custodyRollup(model: GovernanceIntelligence) {
  * (rather than re-querying) guarantees the paged rows come from the same
  * snapshot that produced the counts on screen.
  */
-async function evaluationInputsFor(token: string, userId: string): Promise<{ model: GovernanceIntelligence; controlInputs: ControlEvaluationInputs; policyContext: PolicyEvaluationContext; raw: GovernanceInputs } | null> {
-  const model = await buildGovernanceModel(token, userId)
-  const cached = rawCache.get(userId)
-  if (!cached) return null
-  const raw = cached.inputs
+type EvaluationSnapshot = { model: GovernanceIntelligence; controlInputs: ControlEvaluationInputs; policyContext: PolicyEvaluationContext; raw: GovernanceInputs }
+const evaluationSnapshots = new WeakMap<GovernanceIntelligence, EvaluationSnapshot>()
+
+async function evaluationInputsFor(token: string, userId: string, force = false): Promise<EvaluationSnapshot | null> {
+  const model = await buildGovernanceModel(token, userId, force)
+  const snapshot = evaluationSnapshots.get(model)
+  if (snapshot) return snapshot
+  const raw = rawByModel.get(model)
+  if (!raw) return null
   const subjects = buildSubjects({
     assets: raw.assets,
     cryptoInventory: raw.cryptoInventory,
     certificates: raw.certificates,
-    generatedKeys: raw.generatedKeys,
+    generatedKeys: raw.generatedKeys.filter((row) => !isUnverifiedIssuanceRecord(row)),
     runtimeEvents: raw.runtimeEvents,
     vaultFiles: raw.vaultFiles,
   })
@@ -893,7 +939,41 @@ async function evaluationInputsFor(token: string, userId: string): Promise<{ mod
     assessments: raw.controlAssessments,
     anchoringAvailable: raw.evidenceAnchors !== null,
   }
-  return { model, controlInputs, policyContext, raw }
+  const result = { model, controlInputs, policyContext, raw }
+  evaluationSnapshots.set(model, result)
+  return result
+}
+
+function registeredAssets(req: AuthedRequest) {
+  const client = createAuthClient(req.token!)
+  if (!client) throw new Error('Asset inventory connection unavailable')
+  return client.from('assets')
+    .select('id, name, type, environment, service_owner, status, metadata, updated_at, created_at', { count: 'exact' })
+    .eq('user_id', req.user!.id)
+    .is('metadata->>consolidatedIntoAssetId', null)
+}
+
+const complianceSelections = new WeakMap<GovernanceIntelligence, Map<string, ReturnType<typeof buildAssetComplianceScope>>>()
+
+async function readComplianceSelection(req: AuthedRequest, ids: string[], force = false) {
+  const { data, error } = await registeredAssets(req).in('id', ids)
+  if (error) throw new Error('Unable to verify the selected assets against the registered inventory')
+  const registered = data || []
+  if (registered.length !== ids.length) return null
+  const result = await evaluationInputsFor(req.token!, req.user!.id, force)
+  if (!result) throw new Error('Governance inputs are unavailable')
+  registered.sort((a, b) => String(a.name).localeCompare(String(b.name)) || String(a.id).localeCompare(String(b.id)))
+  const key = payloadFingerprint(registered)
+  let scopes = complianceSelections.get(result.model)
+  if (!scopes) {
+    scopes = new Map()
+    complianceSelections.set(result.model, scopes)
+  }
+  const cached = scopes.get(key)
+  if (cached) return cached
+  const scope = buildAssetComplianceScope(result.model, result.controlInputs, registered, result.raw.policyOverrides)
+  if (scopes.size < 24) scopes.set(key, scope)
+  return scope
 }
 
 /* ------------------------------------------------------------------ */
@@ -903,6 +983,10 @@ async function evaluationInputsFor(token: string, userId: string): Promise<{ mod
 function buildRouter(view: GovernanceView): Router {
   const router = Router()
   router.use(requireAuth)
+  router.use((_req, res, next) => {
+    res.setHeader('Cache-Control', 'private, no-store')
+    next()
+  })
 
   const model = (req: AuthedRequest, force = false) => buildGovernanceModel(req.token!, req.user!.id, force)
 
@@ -917,7 +1001,8 @@ function buildRouter(view: GovernanceView): Router {
   router.get('/', async (req: AuthedRequest, res: Response) => {
     try {
       const data = await model(req, str(req.query.refresh) === '1')
-      res.json({ data: projectView(data, view) })
+      const projection = projectedView(data, view)
+      res.json({ data: { ...projection, fingerprint: payloadFingerprint(projection) } })
     } catch (error) {
       fail(res, error, `failed to compute ${VIEW_LABEL[view]}`)
     }
@@ -931,52 +1016,69 @@ function buildRouter(view: GovernanceView): Router {
    * Every connected client of a tenant collapses onto the one cached model, and
    * identical frames are suppressed so an idle dashboard costs nothing.
    */
-  router.get('/stream', async (req: AuthedRequest, res: Response) => {
-    res.status(200)
-    res.setHeader('Content-Type', 'text/event-stream')
-    res.setHeader('Cache-Control', 'no-cache, no-transform')
-    res.setHeader('Connection', 'keep-alive')
-    res.setHeader('X-Accel-Buffering', 'no')
-    res.flushHeaders?.()
-
-    let closed = false
-    const send = (event: string, data: unknown) => {
-      if (closed) return
-      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
-    }
-
-    send('connected', { at: new Date().toISOString(), view })
-
-    let lastGeneratedAt = ''
-    const push = async () => {
-      try {
-        const data = await model(req)
-        if (data.generatedAt === lastGeneratedAt) return
-        lastGeneratedAt = data.generatedAt
-        send('governance', projectView(data, view))
-      } catch (error) {
-        send('governance-error', { message: error instanceof Error ? error.message : 'Governance telemetry unavailable' })
-      }
-    }
-
-    void push()
-    const interval = setInterval(() => void push(), 10_000)
-    const heartbeat = setInterval(() => {
-      if (!closed) res.write(': heartbeat\n\n')
-    }, 25_000)
-
-    req.on('close', () => {
-      closed = true
-      clearInterval(interval)
-      clearInterval(heartbeat)
+  router.get('/stream', (req: AuthedRequest, res: Response) => {
+    streamLiveSnapshot(req, res, {
+      event: 'governance',
+      build: async () => projectedView(await model(req), view),
+      intervalMs: 10_000,
     })
   })
+
+  if (view === 'compliance') {
+    router.get('/asset-options', async (req: AuthedRequest, res: Response) => {
+      try {
+        const offset = Math.max(0, Math.floor(num(req.query.offset)))
+        const limit = Math.max(1, Math.min(50, Math.floor(num(req.query.limit) || 20)))
+        const search = str(req.query.search).slice(0, 120)
+        const query = registeredAssets(req)
+        if (search) query.ilike('name', `%${search.replace(/[\\%_]/g, '\\$&')}%`)
+        const { data, error, count } = await query.order('name').order('id').range(offset, offset + limit - 1)
+        if (error || typeof count !== 'number') throw new Error('Registered asset inventory is unavailable')
+        res.json({ data: { assets: (data || []).map(complianceAssetOption), total: count } })
+      } catch (error) {
+        fail(res, error, 'failed to list registered assets')
+      }
+    })
+
+    const selectedIds = (req: AuthedRequest, res: Response) => {
+      const ids = [...new Set(str(req.query.assets).split(',').filter(Boolean).map((id) => id.toLowerCase()))]
+      if (!ids.length || ids.length > MAX_COMPLIANCE_SELECTION ||
+          ids.some((id) => !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id))) {
+        res.status(400).json({ error: { code: 'INVALID_ASSET_SCOPE', message: 'Choose a valid selection of registered assets.' } })
+        return null
+      }
+      return ids
+    }
+    router.get('/asset-scope', async (req: AuthedRequest, res: Response) => {
+      const ids = selectedIds(req, res)
+      if (!ids) return
+      try {
+        const scope = await readComplianceSelection(req, ids, str(req.query.refresh) === '1')
+        if (!scope) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'An asset in this selection is no longer available.' } })
+        res.json({ data: { ...scope, fingerprint: payloadFingerprint(scope) } })
+      } catch (error) {
+        fail(res, error, 'failed to load selected asset compliance')
+      }
+    })
+    router.get('/asset-scope/stream', (req: AuthedRequest, res: Response) => {
+      const ids = selectedIds(req, res)
+      if (!ids) return
+      streamLiveSnapshot(req, res, {
+        event: 'asset-compliance', intervalMs: 10_000,
+        build: async () => {
+          const scope = await readComplianceSelection(req, ids)
+          if (!scope) throw new Error('An asset in this selection is no longer available.')
+          return scope
+        },
+      })
+    })
+  }
 
   /* ---- Controls -------------------------------------------------- */
   router.get('/controls', async (req: AuthedRequest, res: Response) => {
     try {
       const data = await model(req)
-      const filtered = filterControls(data.controls, req)
+      const filtered = filterControls(view === 'quantum' ? data.controls.filter(isQuantumControl) : data.controls, req)
       const sort = str(req.query.sort)
       const sorted = filtered.slice().sort((a, b) => {
         if (sort === 'score') return (a.score ?? 101) - (b.score ?? 101)
@@ -1286,7 +1388,8 @@ function buildRouter(view: GovernanceView): Router {
           controls: data.controls.filter((control) => event.controlIds.includes(control.id)).map(controlSummary),
           asset: event.assetId ? data.assets.find((asset) => asset.assetId === event.assetId) ?? null : null,
           related: data.auditEvents
-            .filter((candidate) => candidate.id !== id && (candidate.assetId === event.assetId || candidate.source.table === event.source.table))
+            .filter((candidate) => candidate.id !== id &&
+              (event.assetId ? candidate.assetId === event.assetId : (candidate.source.table === event.source.table && candidate.source.recordId === event.source.recordId)))
             .slice(0, 12),
         },
       })
@@ -1492,7 +1595,8 @@ function buildRouter(view: GovernanceView): Router {
   router.get('/gaps', async (req: AuthedRequest, res: Response) => {
     try {
       const data = await model(req)
-      const page = paginate(filterGaps(data.gaps, req), req)
+      const scoped = view === 'audit' ? data.gaps.filter(isAuditGap) : view === 'quantum' ? data.gaps.filter((gap) => gap.domain !== 'audit') : data.gaps
+      const page = paginate(filterGaps(scoped, req), req)
       res.json({ data: { gaps: page.rows, total: page.total, limit: page.limit, offset: page.offset } })
     } catch (error) {
       fail(res, error, 'failed to load gaps')

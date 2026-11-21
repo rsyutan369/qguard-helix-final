@@ -22,6 +22,7 @@ import {
   FlaskConical,
   Gauge,
   Layers,
+  LockKeyhole,
   Radio,
   RefreshCw,
   Rocket,
@@ -34,10 +35,12 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/auth-context';
+import { supabase } from '@/lib/supabase';
 import { useMigrationPlan, type MigrationStrategy } from '@/hooks/use-migration-plan';
 import { DEFAULT_ASSET_FILTERS, useMigrationAssets, type AssetAlgorithm, type AssetDossier, type AssetSummaryRecord, type QueueEntry } from '@/hooks/use-migration-assets';
-import { AssetMigrationGuide, MigrationMonitoring, MigrationOverview, SCANNER_PATH } from './_planner-guide';
+import { AssetMigrationGuide, MigrationMonitoring, MigrationOverview, SCANNER_PATH, usePlannerExecution } from './_planner-guide';
 import { labReadiness, type LabRun } from '@/lib/migration/sandbox-lab';
+import { HANDOFF_REVIEW_FIELDS, isHeldMigrationWave, isVerifiedMigrationJob, parseHandoffReview, plannerStageAccess, type HandoffReview } from '@/lib/migration/planner-progress';
 import './migration-planner.css';
 import {
   AssetDossierSkeleton,
@@ -95,6 +98,8 @@ interface ApprovalPlan {
   assetIds: string[];
   scope: Array<HandoffAsset & { algorithms: AssetAlgorithm[]; preferredTarget: string | null }>;
   approval: { decision: string; decidedBy: string; decidedAt: string; reason: string } | null;
+  executionPlanId?: string | null;
+  executions?: { id: string; assetIds: string[]; ready: boolean; guided: boolean; handoffReview: (HandoffReview & { recordedBy: string; recordedAt: string }) | null }[];
   labEvidence?: Array<{ id: string; asset_id: string; attached_at: string }>;
 }
 
@@ -104,43 +109,73 @@ const PLAN_STATUS_TONES: Record<string, string> = {
   rejected: RED,
 };
 
-function ApprovalWorkflowPanel({ onDecision, queue, revision, onReviewExecution, busy: assetBusy }: {
-  onDecision: () => void;
+function useApprovalPlans(token: string | undefined, ownerId: string | undefined, revision: string | null, proposalId: string | null) {
+  const [result, setResult] = useState<{ ownerId?: string; plans: ApprovalPlan[]; error: string | null }>({ plans: [], error: null });
+  const loadedRequest = useRef(0);
+
+  const loadPlans = useCallback(async () => {
+    if (!token) return;
+    const requestId = ++loadedRequest.current;
+    try {
+      const query = new URLSearchParams({ proposals: '1' });
+      if (proposalId) query.set('proposalId', proposalId);
+      const response = await fetch(`/api/v1/migration-planner/plans?${query}`, { headers: { Authorization: `Bearer ${token}` } });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
+      if (requestId !== loadedRequest.current) return;
+      setResult({ ownerId, plans: payload.data || [], error: null });
+    } catch (err) {
+      if (requestId === loadedRequest.current) setResult((current) => ({
+        ownerId, plans: current.ownerId === ownerId ? current.plans : [],
+        error: err instanceof Error ? err.message : 'Could not load approval records.',
+      }));
+    }
+  }, [ownerId, token, proposalId]);
+
+  useEffect(() => {
+    void loadPlans();
+    return () => { ++loadedRequest.current; };
+  }, [loadPlans, revision]);
+  useEffect(() => {
+    if (!ownerId || !token) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const channel = supabase.channel(`migration-proposal-updates-${ownerId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'migration_plans', filter: `user_id=eq.${ownerId}` }, () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => void loadPlans(), 500);
+      }).subscribe();
+    return () => { clearTimeout(timer); void supabase.removeChannel(channel); };
+  }, [ownerId, token, loadPlans]);
+
+  return {
+    plans: result.ownerId === ownerId ? result.plans : [],
+    loadError: result.ownerId === ownerId ? result.error : null,
+    loading: Boolean(token && result.ownerId !== ownerId),
+    loadPlans,
+  };
+}
+
+function ApprovalWorkflowPanel({ onDecision, queue, plans, loadPlans, onReviewExecution, canRemoveCancelled, busy: assetBusy }: {
+  onDecision: (id: string) => void;
   queue: QueueEntry[];
-  revision: string | null;
+  plans: ApprovalPlan[];
+  loadPlans: () => Promise<void>;
   onReviewExecution: (proposal: ApprovalPlan) => void;
+  canRemoveCancelled: (proposalId: string, assetId: string) => boolean;
   busy: string | null;
 }) {
   const { session, user } = useAuth();
   const token = session?.access_token;
-  const [plans, setPlans] = useState<ApprovalPlan[]>([]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [name, setName] = useState('');
   const [targets, setTargets] = useState<Record<string, string>>({});
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const loadedRequest = useRef(0);
-
-  const loadPlans = useCallback(async () => {
-    if (!token) return;
-    const revision = ++loadedRequest.current;
-    try {
-      const response = await fetch('/api/v1/migration-planner/plans', { headers: { Authorization: `Bearer ${token}` } });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload?.error?.message || `HTTP ${response.status}`);
-      if (revision !== loadedRequest.current) return;
-      setPlans(payload.data || []);
-      setLoadError(null);
-    } catch (err) {
-      if (revision === loadedRequest.current) setLoadError(err instanceof Error ? err.message : 'Could not load approval records.');
-    }
-  }, [token]);
-
-  useEffect(() => {
-    void loadPlans();
-  }, [loadPlans, revision]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [removing, setRemoving] = useState<{ planId: string; assetId: string; name: string } | null>(null);
+  const availableQueue = queue.filter((asset) => !asset.reservation);
+  const selectedQueue = availableQueue.filter((asset) => selectedIds.includes(asset.assetId));
 
   const post = useCallback(
     async (path: string, body: unknown, okText: string) => {
@@ -158,8 +193,10 @@ function ApprovalWorkflowPanel({ onDecision, queue, revision, onReviewExecution,
         setMessage(okText);
         setRejectingId(null);
         setReason('');
+        setRemoving(null);
+        if (path === '/plans') setSelectedIds([]);
         await loadPlans();
-        onDecision();
+        if (payload?.data?.id) onDecision(payload.data.id);
       } catch (err) {
         setMessage(err instanceof Error ? err.message : 'Action failed');
       } finally {
@@ -183,21 +220,32 @@ function ApprovalWorkflowPanel({ onDecision, queue, revision, onReviewExecution,
       >
         Approval Workflow
       </SectionTitle>
-      <p className="mb-3 text-sm text-[var(--mp-muted)]">Save the current queue as a proposal with its asset order and evidence-based replacement candidates. Review it with the asset owner and test compatibility before approving execution.</p>
-      {loadError && <p role="alert" className="mb-3 text-sm text-[var(--mp-risk)]">{loadError}</p>}
+      <p className="mb-3 text-sm text-[var(--mp-muted)]">Select queued assets to include in the proposal. Your queue order sets the order of the selected assets.</p>
       {message && <p role="status" className="mb-3 text-sm">{message}</p>}
       <form className="mb-4 space-y-3" onSubmit={(event) => {
         event.preventDefault();
-        if (busy || !queue.length || queue.length > 50) return;
-        const selected = Object.fromEntries(queue.map((entry) => [entry.assetId, entry.targets?.includes(targets[entry.assetId]) ? targets[entry.assetId] : '']));
-        void post('/plans', { name, targets: selected, assetIds: queue.map((entry) => entry.assetId) }, 'Proposal saved and submitted for approval.');
+        if (busy || assetBusy || !selectedQueue.length || selectedQueue.length > 50) return;
+        const targetsForScope = Object.fromEntries(selectedQueue.map((entry) => [entry.assetId, entry.targets?.includes(targets[entry.assetId]) ? targets[entry.assetId] : '']));
+        void post('/plans', { name, targets: targetsForScope, assetIds: selectedQueue.map((entry) => entry.assetId) }, 'Selected assets submitted for approval.');
       }}>
         <label className="block text-xs">Plan name <input className="mp-field mt-1" value={name} onChange={(event) => setName(event.target.value)} maxLength={160} placeholder="PQC migration plan (optional)" /></label>
-        {queue.some((entry) => entry.targets?.length) && <details className="mp-disclosure">
+        {queue.length > 0 && <fieldset className="space-y-1">
+          <legend className="mb-1 text-sm font-semibold">Assets to submit ({selectedQueue.length} selected)</legend>
+          {availableQueue.length > 1 && availableQueue.length <= 50 && <button type="button" className="mp-button" disabled={busy} onClick={() => setSelectedIds(selectedQueue.length === availableQueue.length ? [] : availableQueue.map((asset) => asset.assetId))}>{selectedQueue.length === availableQueue.length ? 'Clear selection' : 'Select all available'}</button>}
+          <div className="max-h-56 overflow-y-auto">
+            {queue.map((entry) => <label key={entry.assetId} className="flex min-h-11 items-center gap-2 text-sm">
+              <input type="checkbox" checked={!entry.reservation && selectedIds.includes(entry.assetId)} disabled={busy || Boolean(entry.reservation)}
+                onChange={(event) => setSelectedIds((ids) => event.target.checked ? [...ids, entry.assetId] : ids.filter((id) => id !== entry.assetId))} />
+              <span className="break-words">{entry.name}</span>
+              {entry.reservation && <span className="mp-muted">{entry.reservation === 'submitted' ? 'Already submitted' : 'In Live Migration Ops'}</span>}
+            </label>)}
+          </div>
+        </fieldset>}
+        {selectedQueue.some((entry) => entry.targets?.length) && <details className="mp-disclosure">
           <summary>Choose preferred planning targets</summary>
           <p className="mp-muted mt-2">These candidates describe the proposed change. Confirm what the agent or connector can apply before execution.</p>
           <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            {queue.filter((entry) => entry.targets?.length).map((entry) => <label key={entry.assetId} className="block min-w-0 break-words text-xs">
+            {selectedQueue.filter((entry) => entry.targets?.length).map((entry) => <label key={entry.assetId} className="block min-w-0 break-words text-xs">
               {entry.name}
               <select className="mp-field mt-1" value={targets[entry.assetId] || ''} onChange={(event) => setTargets((current) => ({ ...current, [entry.assetId]: event.target.value }))}>
                 <option value="">Leave for compatibility review</option>
@@ -206,16 +254,16 @@ function ApprovalWorkflowPanel({ onDecision, queue, revision, onReviewExecution,
             </label>)}
           </div>
         </details>}
-        <button className="mp-button mp-button-primary" type="submit" disabled={busy || !user || !queue.length || queue.length > 50}>
-          <ScrollText size={16} aria-hidden="true" /> {busy ? 'Working…' : 'Submit queue for approval'}
+        <button className="mp-button mp-button-primary" type="submit" disabled={busy || Boolean(assetBusy) || !user || !selectedQueue.length || selectedQueue.length > 50}>
+          <ScrollText size={16} aria-hidden="true" /> {busy ? 'Working…' : 'Submit selected assets for approval'}
         </button>
-        {queue.length > 50 && <p className="w-full text-xs text-[var(--mp-risk)]">Review a batch of up to 50 assets.</p>}
+        {selectedQueue.length > 50 && <p className="w-full text-xs text-[var(--mp-risk)]">Select up to 50 assets.</p>}
       </form>
       {plans.length ? (
         <div className="space-y-2">
           {plans.map((plan) => {
             const tone = PLAN_STATUS_TONES[plan.status.toLowerCase()] || SLATEISH;
-            const canDispatch = plan.status === 'approved' && plan.scope.length > 0;
+            const canDispatch = plan.status === 'approved' && plan.approval?.decision === 'approve' && plan.scope.length > 0;
             return (
               <div key={plan.id} className="rounded-md border border-white/8 bg-white/[0.02] px-3 py-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -232,23 +280,34 @@ function ApprovalWorkflowPanel({ onDecision, queue, revision, onReviewExecution,
                   </div>
                   {plan.status === 'pending_approval' ? (
                     <div className="flex shrink-0 items-center gap-2">
-                      <button className="mp-button" disabled={busy} onClick={() => void post(`/plans/${encodeURIComponent(plan.id)}/approval`, { decision: 'approve' }, 'Approval recorded.')}>Approve</button>
+                      <button className="mp-button" disabled={busy || !plan.scope.length} onClick={() => void post(`/plans/${encodeURIComponent(plan.id)}/approval`, { decision: 'approve' }, 'Approval recorded. Open Execution & validation to review the handoff.')}>Approve proposal</button>
                       <button className="mp-button" disabled={busy} onClick={() => setRejectingId(rejectingId === plan.id ? null : plan.id)}>Reject</button>
                     </div>
                   ) : null}
-                  {canDispatch && <button className="mp-button" disabled={Boolean(assetBusy)} onClick={() => onReviewExecution(plan)}>Review approved execution</button>}
+                  {canDispatch && <button className="mp-button" disabled={Boolean(assetBusy)} onClick={() => onReviewExecution(plan)}>{plan.executionPlanId ? 'Track execution' : 'Continue to execution'}</button>}
                 </div>
                 {plan.scope.length > 0 && (
                   <details className="mp-disclosure mt-2">
                     <summary>{plan.scope.length} assets in approved or proposed scope</summary>
                     <ul className="space-y-2 px-2 py-2 text-xs">
-                      {plan.scope.map((asset) => <li key={asset.id} className="break-words"><strong>{asset.name}</strong> · {asset.priority} · {asset.owner}
+                      {plan.scope.map((asset, index) => {
+                        const batch = plan.executions?.find((execution) => execution.assetIds.includes(asset.id));
+                        return <li key={asset.id} className="break-words"><strong>{index + 1}. {asset.name}</strong> · {asset.priority} · {asset.owner}
                         {asset.preferredTarget && <p>Preferred target · {asset.preferredTarget}</p>}
                         {asset.algorithms.filter((algorithm) => algorithm.classification === 'vulnerable').map((algorithm) => <p key={`${algorithm.algorithm}:${algorithm.category}`} className="mp-muted">{algorithm.algorithm} → {algorithm.target}</p>)}
-                      </li>)}
+                        {plan.status === 'pending_approval' && <Link className="mp-button mt-1" to={`/dashboard/migration-sandbox?asset=${encodeURIComponent(asset.id)}`}>Test {asset.name} in Sandbox</Link>}
+                        {batch?.ready && <Link className="mp-button mt-1" to={`/dashboard/live-migration?${new URLSearchParams({ planId: batch.id, proposal: plan.id })}`}>Open in Live Migration Ops</Link>}
+                        {(!batch || canRemoveCancelled(plan.id, asset.id)) && ['approved', 'pending_approval'].includes(plan.status) && <button type="button" className="mp-button mt-1" disabled={busy} onClick={() => setRemoving({ planId: plan.id, assetId: asset.id, name: asset.name })}>Remove from proposal</button>}
+                        </li>;
+                      })}
                     </ul>
                   </details>
                 )}
+                {removing?.planId === plan.id && <div className="mp-actions mt-2" role="group" aria-label="Confirm removal from proposal">
+                  <p className="w-full text-sm">Remove {removing.name} from this proposal?</p>
+                  <button type="button" className="mp-button" disabled={busy} onClick={() => setRemoving(null)}>Keep asset</button>
+                  <button type="button" className="mp-button" disabled={busy} onClick={() => void post(`/plans/${encodeURIComponent(plan.id)}/remove-assets`, { assetIds: [removing.assetId] }, 'Asset removed from the proposal.')}>Confirm removal</button>
+                </div>}
                 {Boolean(plan.labEvidence?.length) && <div className="mt-2 flex flex-wrap gap-2">
                   {plan.labEvidence?.map((run) => <Link key={run.id} className="mp-button" to={`/dashboard/migration-sandbox?asset=${encodeURIComponent(run.asset_id || plan.assetIds[0] || '')}&runId=${encodeURIComponent(run.id)}`}>Sandbox evidence · {longDate(run.attached_at)}</Link>)}
                 </div>}
@@ -312,6 +371,7 @@ const VIEWS = [
 ] as const;
 type PlannerView = (typeof VIEWS)[number]['id'];
 type HandoffAsset = Pick<AssetSummaryRecord, 'id' | 'name' | 'type' | 'environment' | 'owner' | 'riskScore' | 'priority'>;
+const EMPTY_REVIEW: HandoffReview = { compatibilityEvidence: '', changeWindow: '', rollbackReference: '' };
 
 function SandboxReview({ runId, assetId, token }: { runId: string; assetId: string | null; token?: string }) {
   const [run, setRun] = useState<LabRun | null>(null);
@@ -344,12 +404,19 @@ export default function MigrationPlanner() {
   const [params, setParams] = useSearchParams();
   const { session } = useAuth();
   const { plan, error, sseConnected, transport, lastVerifiedAt, refresh } = useMigrationPlan();
-  const view = VIEWS.find((item) => item.id === params.get('view'))?.id ?? 'findings';
+  const requestedView = VIEWS.find((item) => item.id === params.get('view'))?.id ?? 'findings';
   const requestedAsset = params.get('asset');
+  const requestedProposal = params.get('proposal');
+  const requestedExecution = params.get('executionPlan');
   const labRun = params.get('labRun');
   const [refreshing, setRefreshing] = useState(false);
   const [evidenceExporting, setEvidenceExporting] = useState(false);
-  const [dispatch, setDispatch] = useState<{ assets: HandoffAsset[]; proposal?: ApprovalPlan } | null>(null);
+  const [dispatch, setDispatch] = useState<ApprovalPlan | null>(null);
+  const [handoffIds, setHandoffIds] = useState<string[]>([]);
+  const [retryBatchId, setRetryBatchId] = useState<string | null>(null);
+  const [handoffReview, setHandoffReview] = useState<HandoffReview>(EMPTY_REVIEW);
+  const [dispatchError, setDispatchError] = useState<string | null>(null);
+  const [releasingWave, setReleasingWave] = useState(false);
   const dispatchDialog = useRef<HTMLDialogElement>(null);
   const dossierTarget = useRef<HTMLDivElement>(null);
   const focusDossier = useRef(false);
@@ -395,6 +462,41 @@ export default function MigrationPlanner() {
     busy: assetBusy,
   } = assetWorkspace;
   const refreshAssets = assetWorkspace.refresh;
+  const { plans, loadError: approvalError, loading: proposalsLoading, loadPlans } = useApprovalPlans(session?.access_token, session?.user.id, lastVerifiedAt, requestedProposal);
+  const proposals = plans.filter((item) => item.scope.length > 0 && ['approved', 'pending_approval', 'rejected'].includes(item.status));
+  const proposal = requestedProposal ? proposals.find((item) => item.id === requestedProposal)
+    : proposals.find((item) => !requestedAsset || item.assetIds.includes(requestedAsset));
+  const approved = proposal?.status === 'approved' && proposal.approval?.decision === 'approve';
+  const batches = approved ? proposal.executions || [] : [];
+  const readyBatches = batches.filter((batch) => batch.ready);
+  const batch = readyBatches.find((item) => item.id === requestedExecution) ?? readyBatches[0];
+  const executionPlanId = batch?.id ?? null;
+  const execution = usePlannerExecution(approved ? proposal.id : null);
+  const sentIds = new Set(batches.flatMap((item) => item.assetIds));
+  const latestDispatch = dispatch ? proposals.find((item) => item.id === dispatch.id && item.status === 'approved') : undefined;
+  const dispatchOptions = latestDispatch?.scope.filter((asset) => {
+    const executionBatch = latestDispatch.executions?.find((item) => item.assetIds.includes(asset.id));
+    return retryBatchId ? executionBatch?.id === retryBatchId && !executionBatch.ready : !executionBatch;
+  }) || [];
+  const selectedHandoffIds = dispatchOptions.filter((asset) => handoffIds.includes(asset.id)).map((asset) => asset.id);
+  const scopeIds = new Set(proposal?.assetIds);
+  const jobsByAsset = new Map<string, (typeof execution.data.jobs)[number]>();
+  for (const job of execution.data.jobs) {
+    if (job.isSandbox || !job.assetId || !scopeIds.has(job.assetId)) continue;
+    const existing = jobsByAsset.get(job.assetId);
+    if (!existing || job.updatedAt > existing.updatedAt) jobsByAsset.set(job.assetId, job);
+  }
+  const verifiedIds = new Set([...jobsByAsset].filter(([, job]) => isVerifiedMigrationJob(job)).map(([id]) => id));
+  const executionVerified = Boolean(executionPlanId && execution.state === 'success' && !execution.error && scopeIds.size && verifiedIds.size === scopeIds.size);
+  const access = plannerStageAccess({ queued: queue.entries.length > 0, proposed: Boolean(proposal), approved, verified: executionVerified });
+  const view = access[requestedView] ? requestedView : access.execution ? 'execution' : access.planning ? 'planning' : 'findings';
+  const queuedIds = new Set(queue.entries.map((entry) => entry.assetId));
+  const reviewedAsset = dossier ? { ...dossier, queued: queuedIds.has(dossier.id) } : null;
+  const nextWave = batch?.guided && execution.state === 'success' && !execution.error
+    ? proposal?.scope.find((asset) => batch.assetIds.includes(asset.id) && !verifiedIds.has(asset.id)) : null;
+  const nextWaveJob = nextWave ? jobsByAsset.get(nextWave.id) : null;
+  const canReleaseWave = Boolean(nextWaveJob?.rawStatus === 'pending' && isHeldMigrationWave(nextWaveJob));
+  const checkingProgress = proposalsLoading || (!queue.planId && !queueError) || Boolean(executionPlanId && execution.state === 'loading');
 
   useEffect(() => { loadAsset(requestedAsset); }, [loadAsset, requestedAsset]);
   useEffect(() => {
@@ -410,6 +512,7 @@ export default function MigrationPlanner() {
   }, [dispatch]);
 
   const goTo = (nextView: PlannerView) => setParams((current) => {
+    if (!access[nextView]) return current;
     const next = new URLSearchParams(current);
     next.set('view', nextView);
     return next;
@@ -420,36 +523,71 @@ export default function MigrationPlanner() {
       const next = new URLSearchParams(current);
       if (id) next.set('asset', id);
       else next.delete('asset');
+      if (id !== requestedAsset) {
+        next.delete('proposal');
+        next.delete('executionPlan');
+        next.delete('labRun');
+      }
       next.set('view', 'findings');
       return next;
     });
   };
 
+  const selectProposal = (id: string, nextView: PlannerView = 'planning') => setParams((current) => {
+    const next = new URLSearchParams(current);
+    if (current.get('proposal') !== id) next.delete('executionPlan');
+    if (id) next.set('proposal', id);
+    else next.delete('proposal');
+    next.set('view', nextView);
+    return next;
+  });
+
+  const toggleQueue = (id: string) => void (queuedIds.has(id) ? dequeue(id) : enqueue([id]));
+
   const refreshPlanner = useCallback(async () => {
     setRefreshing(true);
-    try { await Promise.all([refresh(), refreshAssets()]); }
+    try { await Promise.all([refresh(), refreshAssets(), loadPlans()]); }
     finally { setRefreshing(false); }
-  }, [refresh, refreshAssets]);
+  }, [refresh, refreshAssets, loadPlans]);
 
-  const reviewQueue = (entries: QueueEntry[]) => {
-    if (entries.length > 50) {
-      setNotice('Choose a batch of up to 50 assets for execution.');
-      return;
-    }
-    setDispatch({ assets: entries.map((asset) => ({ ...asset, id: asset.assetId })) });
+  const openHandoff = (item: ApprovalPlan, retry?: NonNullable<ApprovalPlan['executions']>[number]) => {
+    setHandoffIds(retry?.assetIds ?? []);
+    setRetryBatchId(retry?.id ?? null);
+    setDispatch(item);
   };
 
   const executeHandoff = async () => {
-    if (!dispatch || assetBusy) return;
+    if (!dispatch || assetBusy || approvalError || !selectedHandoffIds.length) return;
+    const review = parseHandoffReview(handoffReview);
+    if (!review) return;
+    setDispatchError(null);
+    try {
+      const result = await sendToLiveMigration(dispatch.id, selectedHandoffIds, review);
+      dispatchDialog.current?.close();
+      navigate(`/dashboard/live-migration?${new URLSearchParams({ planId: result.planId, proposal: dispatch.id })}`);
+    } catch (err) {
+      setDispatchError(err instanceof Error ? err.message : 'Could not send the migration.');
+      void loadPlans();
+    }
+  };
+
+  const releaseWave = async () => {
+    const token = session?.access_token;
+    if (!token || !executionPlanId || !canReleaseWave || releasingWave) return;
+    setReleasingWave(true);
     setNotice(null);
     try {
-      const result = await sendToLiveMigration(dispatch.assets, {}, 'start', dispatch.proposal?.id);
-      dispatchDialog.current?.close();
-      navigate(result.liveMigrationUrl);
+      const response = await fetch(`/api/v1/migration/plans/${encodeURIComponent(executionPlanId)}/action`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: 'approve_next_phase' }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error?.message || 'Could not release the next wave.');
+      setNotice(`${nextWave?.name || 'Next wave'} released to Live Migration Ops.`);
+      await execution.refresh({ force: true });
     } catch (err) {
-      dispatchDialog.current?.close();
-      setNotice(err instanceof Error ? err.message : 'Could not queue the migration.');
-    }
+      setNotice(err instanceof Error ? err.message : 'Could not release the next wave.');
+    } finally { setReleasingWave(false); }
   };
 
   const openSandbox = (asset: AssetDossier) => navigate(`/dashboard/migration-sandbox?asset=${encodeURIComponent(asset.id)}`);
@@ -604,11 +742,36 @@ export default function MigrationPlanner() {
             </p>
           </div>
         ) : null}
-        <nav className="mp-nav" aria-label="Migration Planner sections">
-          {VIEWS.map(({ id, label, icon: Icon }) => (
-            <button key={id} type="button" aria-current={view === id ? 'page' : undefined} onClick={() => goTo(id)}><Icon size={17} aria-hidden="true" /> {label}</button>
-          ))}
-        </nav>
+        <section className="mp-card mp-intro" aria-labelledby="mp-progress-title">
+          <div className="mp-heading-row">
+            <div><h2 id="mp-progress-title">Migration progress</h2><p>Choose the assets and order, record approval, then verify each wave before moving forward.</p></div>
+            {proposals.length > 0 && <label className="block min-w-0 text-xs">
+              Proposal to track
+              <select className="mp-field mt-1" value={proposal?.id ?? ''} onChange={(event) => selectProposal(event.target.value)}>
+                <option value="" disabled>Choose a migration proposal</option>
+                {proposals.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.status.replaceAll('_', ' ')}</option>)}
+              </select>
+            </label>}
+          </div>
+          {approvalError && <p role="alert">{approvalError} <button type="button" className="mp-button" onClick={() => void loadPlans()}>Retry</button></p>}
+          <nav className="mp-stage-nav" aria-label="Migration workflow steps">
+            {VIEWS.map(({ id, label, icon: Icon }, index) => {
+              const status = {
+                findings: access.planning ? 'Assets selected' : 'Queue assessed assets',
+                planning: approved ? 'Approval recorded' : proposal?.status === 'pending_approval' ? 'Awaiting approval' : 'Submit and approve a proposal',
+                execution: executionVerified ? 'Validation passed' : executionPlanId ? `${verifiedIds.size} of ${scopeIds.size} assets verified` : 'Send the approved proposal',
+                analytics: access.analytics ? 'Available' : 'Requires passing validation',
+              }[id];
+              return <button key={id} type="button" aria-current={view === id ? 'step' : undefined} disabled={!access[id]} onClick={() => goTo(id)}>
+                <Icon size={17} aria-hidden="true" />
+                <span><strong>{index + 1}. {label}</strong><small>{status}</small></span>
+                {!access[id] && <LockKeyhole size={14} aria-label="Locked" />}
+              </button>;
+            })}
+          </nav>
+          {view !== requestedView && <p role="status">{checkingProgress ? 'Checking saved migration progress…' : `Finish the required earlier steps to open ${VIEWS.find((item) => item.id === requestedView)?.label}.`}</p>}
+          {view === 'findings' && queue.entries.length > 0 && <button type="button" className="mp-button mp-button-primary mt-3" onClick={() => goTo('planning')}>Review migration queue ({queue.entries.length}) <ArrowRight size={16} aria-hidden="true" /></button>}
+        </section>
 
         {view === 'findings' && <MigrationOverview summary={portfolio.generatedAt ? portfolio.summary : null} readiness={plan.hasData ? plan.hero.readinessScore : null} loading={portfolioLoading} />}
 
@@ -625,13 +788,12 @@ export default function MigrationPlanner() {
               setFilters={setFilters}
               selectedId={selectedId}
               onSelect={selectAsset}
-              onQueue={(id) => void enqueue([id])}
+              onQueue={toggleQueue}
               loading={portfolioLoading}
               queue={queue.entries}
               onDequeue={(id) => void dequeue(id)}
               onReorder={(ids) => void reorderQueue(ids)}
               onApplyRecommended={() => void applyRecommendedOrder()}
-              onDispatchQueue={() => reviewQueue(queue.entries)}
               busy={assetBusy}
               page={assetWorkspace.page}
               pageSize={assetWorkspace.pageSize}
@@ -645,14 +807,16 @@ export default function MigrationPlanner() {
                 <>
                   <section className="mp-card mp-intro">
                     <h2>Build a migration plan</h2>
-                    <p>Review the queue in priority order. Confirm targets with asset owners, test providers and dependencies in a representative environment, then submit the scope for change approval.</p>
+                    <p>Use <strong>Make first</strong> or the arrows to set the rollout order. Review the asset scope, target candidates and sandbox results before approving the proposal.</p>
                     <div className="mp-actions">
                       <button className="mp-button" onClick={() => goTo('findings')}>Review findings <ArrowRight size={16} aria-hidden="true" /></button>
-                      <Link className="mp-button" to="/dashboard/migration-sandbox">Open Migration Sandbox</Link>
+                      <Link className="mp-button" to={requestedAsset ? `/dashboard/migration-sandbox?asset=${encodeURIComponent(requestedAsset)}` : '/dashboard/migration-sandbox'}>Open Migration Sandbox</Link>
                     </div>
                     {queueError && <p role="alert">{queueError}</p>}
                   </section>
-                  <ApprovalWorkflowPanel queue={queue.entries} revision={lastVerifiedAt} onDecision={() => void refresh()} onReviewExecution={(proposal) => setDispatch({ assets: proposal.scope, proposal })} busy={assetBusy} />
+                  <ApprovalWorkflowPanel queue={queue.entries} plans={proposals} loadPlans={loadPlans} onDecision={(id) => { selectProposal(id); void refresh(); void refreshAssets(); }}
+                    onReviewExecution={(item) => selectProposal(item.id, 'execution')}
+                    canRemoveCancelled={(id, assetId) => id === proposal?.id && execution.state === 'success' && !execution.error && jobsByAsset.get(assetId)?.status === 'cancelled'} busy={assetBusy} />
                 </>
               ) : requestedAsset ? (
                 <div ref={dossierTarget} tabIndex={-1} className="min-w-0">
@@ -660,31 +824,29 @@ export default function MigrationPlanner() {
                     <h2>Could not load this asset</h2><p>{dossierError}</p>
                     <div className="mp-actions"><button className="mp-button" onClick={() => loadAsset(requestedAsset)}>Retry</button><button className="mp-button" onClick={() => selectAsset(null)}>Back to findings</button></div>
                   </div>}
-                  {dossier?.id === requestedAsset ? (
-                    <AssetDossierView asset={dossier} position={position} loading={dossierLoading} changedFields={changedFields}
-                      onQueue={() => dossier.queued ? goTo('planning') : void enqueue([dossier.id])}
-                      onDispatch={() => setDispatch({ assets: [dossier] })} onClear={() => selectAsset(null)} busy={assetBusy}>
-                      <AssetMigrationGuide key={dossier.id} asset={dossier} busy={Boolean(assetBusy) || evidenceExporting}
-                        onPlan={() => dossier.queued ? goTo('planning') : void enqueue([dossier.id])}
-                        onSandbox={() => void openSandbox(dossier)} onDispatch={() => setDispatch({ assets: [dossier] })}
-                        onReport={() => void exportAssetEvidence(dossier)} />
+                  {reviewedAsset?.id === requestedAsset ? (
+                    <AssetDossierView asset={reviewedAsset} position={position} loading={dossierLoading} changedFields={changedFields}
+                      onQueue={() => toggleQueue(reviewedAsset.id)} onReviewQueue={() => goTo('planning')} onClear={() => selectAsset(null)} busy={assetBusy}>
+                      <AssetMigrationGuide key={reviewedAsset.id} asset={reviewedAsset} busy={Boolean(assetBusy) || evidenceExporting}
+                        onPlan={() => reviewedAsset.queued ? goTo('planning') : toggleQueue(reviewedAsset.id)}
+                        onSandbox={() => void openSandbox(reviewedAsset)}
+                        onReport={() => void exportAssetEvidence(reviewedAsset)} />
                     </AssetDossierView>
                   ) : !dossierError ? <AssetDossierSkeleton /> : null}
                 </div>
               ) : (
                 <>
                   <section className="mp-card mp-intro">
-                    <h2>{portfolio.generatedAt && !portfolio.totalUnfiltered ? 'Discover your first assets' : 'Start with your highest-priority finding'}</h2>
-                    <p>{portfolio.generatedAt && !portfolio.totalUnfiltered ? 'Run a PQC discovery scan or connect an asset source. Detected algorithms and findings appear here when evidence is available.' : 'Select an asset to see the detected configuration, what it exposes, and what to do next.'}</p>
+                    <h2>{portfolio.generatedAt && !portfolio.totalUnfiltered ? 'Discover your first assets' : 'Choose the assets to migrate'}</h2>
+                    <p>{portfolio.generatedAt && !portfolio.totalUnfiltered ? 'Run a PQC discovery scan or connect an asset source. Detected algorithms and findings appear here when evidence is available.' : 'Search or filter the findings to review any asset. Use Queue to include it and Unqueue to remove it from the next proposal.'}</p>
                     <div className="mp-actions">
-                      {portfolio.recommendedOrder[0] && <button type="button" className="mp-button mp-button-primary" onClick={() => selectAsset(portfolio.recommendedOrder[0].assetId)}>Review {portfolio.recommendedOrder[0].name} <ArrowRight size={16} aria-hidden="true" /></button>}
                       <Link className="mp-button" to={SCANNER_PATH}>Open PQC Scanner</Link>
                       {portfolio.summary.vulnerableAssets > 0 && <button className="mp-button" onClick={() => setFilters({ ...DEFAULT_ASSET_FILTERS, posture: 'needs-migration' })}>Filter to vulnerable assets</button>}
                     </div>
                   </section>
                   {portfolio.generatedAt && portfolio.totalUnfiltered > 0 && <details className="mp-disclosure">
                     <summary>Recommended order and portfolio evidence</summary>
-                    <div className="mt-2"><AssetPortfolioOverview summary={portfolio.summary} recommendedOrder={portfolio.recommendedOrder} reconciliation={portfolio.reconciliation} onSelect={selectAsset} onQueue={(id) => void enqueue([id])} /></div>
+                    <div className="mt-2"><AssetPortfolioOverview summary={portfolio.summary} recommendedOrder={portfolio.recommendedOrder} reconciliation={portfolio.reconciliation} onSelect={selectAsset} onQueue={toggleQueue} queuedIds={queuedIds} busy={Boolean(assetBusy)} /></div>
                   </details>}
                 </>
               )}
@@ -692,9 +854,48 @@ export default function MigrationPlanner() {
           </section>
         )}
 
-        {view === 'execution' && <MigrationMonitoring />}
+        {view === 'execution' && proposal && <>
+          <section className="mp-card mp-intro">
+            <h2>{proposal.name}</h2>
+            <p>Approved by {proposal.approval?.decidedBy} · {longDate(proposal.approval?.decidedAt || '')}</p>
+            <p>Only the assets you select are sent to Live Migration Ops. Each handoff preserves their approved order.</p>
+            <div className="mp-actions mb-3">
+              {proposal.scope.some((asset) => !sentIds.has(asset.id)) && <button type="button" className="mp-button mp-button-primary" disabled={Boolean(assetBusy) || Boolean(approvalError)} onClick={() => openHandoff(proposal)}><Rocket size={16} aria-hidden="true" /> Select assets to send</button>}
+              {batches.filter((item) => !item.ready).map((item) => <button key={item.id} type="button" className="mp-button" disabled={Boolean(assetBusy)} onClick={() => openHandoff(proposal, item)}>Retry incomplete handoff ({item.assetIds.length} assets)</button>)}
+            </div>
+            {readyBatches.length > 1 && <label className="mb-3 block text-sm">Handoff to manage
+              <select className="mp-field mt-1" value={executionPlanId ?? ''} onChange={(event) => setParams((current) => {
+                const next = new URLSearchParams(current); next.set('executionPlan', event.target.value); return next;
+              })}>
+                {readyBatches.map((item) => <option key={item.id} value={item.id}>{proposal.scope.filter((asset) => item.assetIds.includes(asset.id)).map((asset) => asset.name).join(', ')}</option>)}
+              </select>
+            </label>}
+            {executionPlanId && <>
+              <p role="status">{verifiedIds.size} of {scopeIds.size} assets have verified execution. {executionVerified ? 'Program Analytics is available.' : 'Each asset needs a completed operation and passing validation.'}</p>
+              {batch?.handoffReview && <details className="mp-disclosure mb-3">
+                <summary>Recorded handoff requirements</summary>
+                <p className="mp-muted mt-2">Recorded by {batch.handoffReview.recordedBy} · {longDate(batch.handoffReview.recordedAt)}</p>
+                <dl className="mt-2 space-y-2 text-sm">
+                  {HANDOFF_REVIEW_FIELDS.map(({ key, label }) => <div key={key}><dt className="font-semibold">{label}</dt><dd className="mp-muted break-words">{batch.handoffReview?.[key]}</dd></div>)}
+                </dl>
+              </details>}
+              <ol>
+                {proposal.scope.map((asset, index) => {
+                  const job = jobsByAsset.get(asset.id);
+                  const status = verifiedIds.has(asset.id) ? 'Verified' : !job ? sentIds.has(asset.id) ? 'Awaiting operation evidence' : 'Ready to select' : job.rawStatus === 'pending' && isHeldMigrationWave(job) ? 'Waiting for release' : job.status.replaceAll('_', ' ');
+                  return <li key={asset.id}><strong>{index + 1}. {asset.name}</strong><span className="mp-muted">{status}</span></li>;
+                })}
+              </ol>
+              {canReleaseWave && <button type="button" className="mp-button mp-button-primary mt-3" disabled={releasingWave} onClick={() => void releaseWave()}>{releasingWave ? 'Releasing wave…' : `Release next wave · ${nextWave?.name}`}</button>}
+              {nextWave && !canReleaseWave && <p>Finish execution and review validation for <strong>{nextWave.name}</strong> in Live Migration Ops.</p>}
+              {executionVerified && <button type="button" className="mp-button mp-button-primary mt-3" onClick={() => goTo('analytics')}>Open Program Analytics <ArrowRight size={16} aria-hidden="true" /></button>}
+            </>}
+          </section>
+          {executionPlanId && <MigrationMonitoring execution={execution} planId={executionPlanId} proposalId={proposal.id} />}
+        </>}
 
         {view === 'analytics' && <div className="grid min-w-0 gap-4">
+        <section className="mp-card mp-intro"><h2>{proposal?.name} is verified</h2><p>Passing execution and validation are recorded for all {scopeIds.size} scoped assets. The program metrics below cover the workspace.</p></section>
         <WorkflowRail activeStage="planning" />
         {/* 9-stage workflow */}
         <Panel className="p-5">
@@ -1274,19 +1475,33 @@ export default function MigrationPlanner() {
 
         </div>}
 
-        <dialog ref={dispatchDialog} className="mp-dialog" aria-labelledby="mp-dispatch-heading" onClose={() => setDispatch(null)} onCancel={(event) => { if (assetBusy) event.preventDefault(); }}>
-          {dispatch && <>
-            <h2 id="mp-dispatch-heading">Confirm migration handoff</h2>
-            <p>{dispatch.proposal ? `Approved proposal ${dispatch.proposal.name}.` : 'Starting here records your approval for this execution.'} Confirm the compatibility check, change window, and rollback plan before queueing agent work.</p>
-            <ul className="max-h-48 space-y-1 overflow-y-auto text-sm">
-              {dispatch.assets.map((asset) => <li key={asset.id} className="break-words">{asset.name} · {asset.environment}</li>)}
-            </ul>
-            <p>Live Migration Ops shows agent and connector requirements, validation results, and execution controls.</p>
+        <dialog ref={dispatchDialog} className="mp-handoff-modal" aria-labelledby="mp-dispatch-heading" aria-describedby="mp-dispatch-description" onClose={() => { setDispatch(null); setHandoffIds([]); setRetryBatchId(null); setHandoffReview(EMPTY_REVIEW); setDispatchError(null); }} onCancel={(event) => { if (assetBusy) event.preventDefault(); }}>
+          {dispatch && <form className="space-y-3" onSubmit={(event) => { event.preventDefault(); void executeHandoff(); }}>
+            <h2 id="mp-dispatch-heading">Send to Live Migration Ops</h2>
+            <p id="mp-dispatch-description">Approved proposal {dispatch.name}. The first selected asset is released first. Other selected assets wait for their wave.</p>
+            <fieldset>
+              <legend className="text-sm font-semibold">Assets to send ({selectedHandoffIds.length} selected)</legend>
+              <div className="max-h-40 overflow-y-auto">
+                {dispatchOptions.map((asset) => <label key={asset.id} className="flex min-h-11 items-center gap-2 text-sm">
+                  <input type="checkbox" checked={handoffIds.includes(asset.id)} disabled={Boolean(assetBusy) || Boolean(retryBatchId)}
+                    onChange={(event) => setHandoffIds((ids) => event.target.checked ? [...ids, asset.id] : ids.filter((id) => id !== asset.id))} />
+                  <span className="break-words">{asset.name} · {asset.environment}</span>
+                </label>)}
+                {!dispatchOptions.length && <p className="mp-muted">There are no available assets in this selection. Review the current proposal.</p>}
+              </div>
+            </fieldset>
+            {HANDOFF_REVIEW_FIELDS.map(({ key, label, hint, placeholder }) => <div key={key}>
+              <label htmlFor={`mp-handoff-${key}`} className="block text-sm font-semibold">{label}</label>
+              <span id={`mp-review-${key}`} className="mp-muted block text-xs">{hint}</span>
+              <textarea id={`mp-handoff-${key}`} className="mp-field mt-1" rows={2} maxLength={500} required disabled={Boolean(assetBusy)} aria-describedby={`mp-review-${key}`} placeholder={placeholder}
+                value={handoffReview[key]} onChange={(event) => setHandoffReview((current) => ({ ...current, [key]: event.target.value }))} />
+            </div>)}
+            {dispatchError && <p role="alert" className="text-[var(--mp-risk)]">{dispatchError}</p>}
             <div className="mp-actions">
-              <button type="button" className="mp-button" autoFocus onClick={() => dispatchDialog.current?.close()} disabled={Boolean(assetBusy)}>Cancel</button>
-              <button type="button" className="mp-button mp-button-primary" onClick={() => void executeHandoff()} disabled={Boolean(assetBusy)}>{assetBusy === 'dispatch' ? 'Queueing…' : 'Queue migration'}</button>
+              <button type="button" className="mp-button" onClick={() => dispatchDialog.current?.close()} disabled={Boolean(assetBusy)}>Cancel</button>
+              <button type="submit" className="mp-button mp-button-primary" disabled={Boolean(assetBusy) || Boolean(approvalError) || !selectedHandoffIds.length || !parseHandoffReview(handoffReview)}>{assetBusy === 'dispatch' ? 'Sending…' : 'Send to Live Migration Ops'}</button>
             </div>
-          </>}
+          </form>}
         </dialog>
       </div>
     </div>

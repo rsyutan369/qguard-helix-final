@@ -19,6 +19,7 @@ export type NodePosture = 'vulnerable' | 'hybrid' | 'pqc' | 'migrating' | 'unkno
 export type NodeKind = 'asset' | 'external'
 
 export type PriorityLabel = 'Critical' | 'High' | 'Medium' | 'Low'
+export type BusinessCriticality = PriorityLabel | 'Unknown'
 
 /** Normalized enterprise asset category (drives icons, tiers, grouping). */
 export type AssetCategory =
@@ -80,8 +81,9 @@ export interface ExposureGraphNode {
   environment: string
   region: string
   owner: string
-  businessCriticality: PriorityLabel
+  businessCriticality: BusinessCriticality
   posture: NodePosture
+  cryptoPosture?: NodePosture
   riskScore: number
   priority: PriorityLabel
   priorityScore: number
@@ -90,12 +92,19 @@ export interface ExposureGraphNode {
   migrationTier: number
   tierLabel: string
   algorithms: string[]
+  algorithmCount?: number
   protocols: string[]
   certificates: NodeCertificate[]
   dependencies: number
   dependents: number
   blastRadius: number
   findingsCount: number
+  findingsRevision?: string
+  assetStatus?: string | null
+  migrationStatus?: string | null
+  lastEvidenceAt?: string | null
+  riskMeasured?: boolean
+  certificateCount?: number
   /** External nodes only — vendor / provider / issuer identity. */
   vendor?: string
 }
@@ -113,6 +122,29 @@ export interface ExposureGraphEdge {
   posture: NodePosture
   /** True when the link carries quantum-vulnerable crypto or joins a critical pair. */
   critical: boolean
+  provenance?: 'explicit' | 'observed' | 'inferred'
+  basis?: string
+}
+
+export interface ExposureFinding {
+  id: string
+  title: string
+  category: string
+  algorithm: string
+  severity: string
+  description: string
+  recommendation: string
+  detectedAt: string | null
+  sources: string[]
+}
+
+export interface ExposureFindingPage {
+  assetId: string
+  revision: string
+  total: number
+  offset: number
+  limit: number
+  findings: ExposureFinding[]
 }
 
 export interface ThirdPartyDependency {
@@ -125,9 +157,9 @@ export interface ThirdPartyDependency {
   tlsVersion: string | null
   certificate: string | null
   readiness: NodePosture
-  riskLevel: PriorityLabel
+  riskLevel: BusinessCriticality
   migrationCompatibility: string
-  businessCriticality: PriorityLabel
+  businessCriticality: BusinessCriticality
 }
 
 export interface MigrationWaveEntry {
@@ -155,7 +187,6 @@ export interface AdvisorRecommendation {
   title: string
   detail: string
   severity: 'critical' | 'high' | 'medium' | 'low' | string
-  confidencePct: number
   category: string
 }
 
@@ -166,7 +197,6 @@ export interface AdvisorEstimates {
   compatibilityScorePct: number
   estimatedDurationWeeks: number
   parallelWorkstreams: number
-  confidencePct: number
 }
 
 export interface ExposureSummary {
@@ -185,6 +215,10 @@ export interface ExposureSummary {
   certificateChains: number
   pkiObjects: number
   maxBlastRadius: number
+  assessedAssets?: number
+  mappedAssets?: number
+  inferredRelationships?: number
+  assessmentMeasured?: boolean
   migrationReadinessScore: number
   quantumReadinessScore: number
   quantumRiskScore: number
@@ -215,7 +249,7 @@ export interface ExposureIntelligence {
   migrationOrder: { waves: MigrationWaveEntry[]; clusters: MigrationCluster[]; blockers: MigrationBlocker[] }
   advisor: { recommendations: AdvisorRecommendation[]; estimates: AdvisorEstimates }
   riskPrioritization: RiskPriorityRow[]
-  evidence: { sources: string[]; note: string }
+  evidence: { sources: string[]; note: string; limitations?: string[] }
 }
 
 /* ------------------------------------------------------------------ */
@@ -315,7 +349,6 @@ export const EMPTY_EXPOSURE_INTELLIGENCE: ExposureIntelligence = {
       compatibilityScorePct: 0,
       estimatedDurationWeeks: 0,
       parallelWorkstreams: 1,
-      confidencePct: 0,
     },
   },
   riskPrioritization: [],

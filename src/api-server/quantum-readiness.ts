@@ -180,9 +180,9 @@ const snapshotCache = createSingleFlightCache<Awaited<ReturnType<typeof computeS
 type ScannerSnapshot = Awaited<ReturnType<typeof buildScannerIntelligence>>
 type ReportReadCoverage = ReportProvenance['dataCompleteness']
 
-export async function buildSnapshot(token: string, userId: string, reportScanner?: ScannerSnapshot) {
+export async function buildSnapshot(token: string, userId: string, reportScanner?: ScannerSnapshot, refresh = false) {
   if (reportScanner) return computeSnapshot(token, userId, reportScanner)
-  return snapshotCache.get(userId, () => computeSnapshot(token, userId))
+  return snapshotCache.get(userId, () => computeSnapshot(token, userId), refresh)
 }
 
 async function computeSnapshot(token: string, userId: string, reportScanner?: ScannerSnapshot) {

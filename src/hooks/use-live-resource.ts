@@ -24,6 +24,7 @@ const MAX_BACKOFF_MS = 30_000;
 const REALTIME_DEBOUNCE_MS = 600;
 
 export interface LiveResourceOptions<T> {
+  enabled?: boolean;
   url: string;
   streamUrl: string;
   /** Full-frame event name; `-unchanged` and `-error` are derived. */
@@ -103,10 +104,10 @@ function initialState<T>(data: T, authenticated: boolean): SnapshotState<T> {
 }
 
 export function useLiveResource<T>(options: LiveResourceOptions<T>): LiveResource<T> {
-  const { url, streamUrl, event, empty, normalize, validate, realtimeTables, channelPrefix, unwrap } = options;
+  const { enabled = true, url, streamUrl, event, empty, normalize, validate, realtimeTables, channelPrefix, unwrap } = options;
   const { session, user } = useAuth();
   const userId = user?.id;
-  const token = userId && userId === session?.user.id ? session.access_token : undefined;
+  const token = enabled && userId && userId === session?.user.id ? session.access_token : undefined;
   const authorized = Boolean(token);
   const scope = useMemo(() => ({}), [userId, authorized, url, streamUrl, event]);
   const activeScope = useRef<object | null>(null);

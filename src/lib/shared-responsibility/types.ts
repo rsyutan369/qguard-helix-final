@@ -237,6 +237,7 @@ export interface OwnershipFinding {
   recommendedAction: string
   status: string
   asset: string
+  assetId?: string
   assetType: string
   algorithm: string
   /**
@@ -260,6 +261,7 @@ export interface OwnershipFindingInput {
   location?: string
   assetId?: string
   assetName?: string
+  assetOwner?: string
   assetType?: string
   environment?: string
   severity?: string
@@ -294,6 +296,8 @@ export interface AttributionContext {
  */
 export interface SharedResponsibilityMatrixRow {
   findingId: string
+  /** Exact detail lookup ID, including any punctuation in source IDs. */
+  sourceFindingId?: string
   finding: string
   owner: string
   action: string
@@ -419,6 +423,7 @@ export interface SharedResponsibilityIntelligence {
   domainDistribution: { customer: number; provider: number; ecosystem: number }
   severityByDomain: { customer: SeverityBucket; provider: SeverityBucket; ecosystem: SeverityBucket }
   matrix: SharedResponsibilityMatrixRow[]
+  matrixTotal?: number
   findings: OwnershipFinding[]
   blockers: OwnershipFinding[]
   waves: MigrationWave[]

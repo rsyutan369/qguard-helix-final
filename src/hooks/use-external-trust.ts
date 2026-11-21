@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '@/contexts/auth-context'
+import { useLiveModel } from '@/hooks/use-live-resource'
 import type {
   BlastRadiusResult,
   DependencyChainStep,
@@ -160,7 +161,16 @@ export function useEcosystemMap(focus: string | null, options: { stream?: boolea
 }
 
 export function useTrustChains() {
-  return useTrustEndpoint<TrustPayload>('/trust')
+  return useLiveModel<TrustPayload>({
+    url: '/api/v1/external-trust/trust',
+    streamUrl: '/api/v1/external-trust/trust/stream',
+    event: 'trust-chains',
+    channelPrefix: 'trust-chains',
+    validate: (payload) => typeof payload.generatedAt === 'string' &&
+      Number.isFinite(Date.parse(payload.generatedAt)) && Array.isArray(payload.chains) &&
+      Array.isArray(payload.certificates) && Array.isArray(payload.findings) &&
+      Boolean(payload.evidence && payload.summary && payload.agility),
+  })
 }
 
 export function useHybridLab() {

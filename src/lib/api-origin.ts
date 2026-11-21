@@ -7,8 +7,8 @@
  * setting VITE_API_ORIGIN at build time routes those same-origin `/api/` calls
  * to the API origin — without touching any call site.
  *
- * Unset (local `npm run dev`, or a deployment that proxies /api on the same
- * origin), this module does nothing at all.
+ * The Vite dev server always keeps /api on its own origin. Deployments that
+ * proxy /api on the same origin can leave VITE_API_ORIGIN unset.
  *
  * Scope is deliberately narrow: only same-origin URLs whose path starts with
  * `/api/` are rewritten; credentials are never added (the API authenticates

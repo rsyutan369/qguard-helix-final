@@ -1023,6 +1023,12 @@ function normalizeSeverity(value: unknown, fallback: GovernanceSeverity): Govern
  * available). A disabled rule is still returned — with its population reported
  * and adherence null — so the UI can show what governance is NOT watching.
  */
+const violationsByPolicy = new WeakMap<PolicyRecord, PolicyViolation[]>()
+
+export function policyViolations(policy: PolicyRecord): PolicyViolation[] {
+  return violationsByPolicy.get(policy) ?? policy.violationSample
+}
+
 export function evaluatePolicies(
   context: PolicyEvaluationContext,
   overrides: Row[] | null,
@@ -1056,7 +1062,7 @@ export function evaluatePolicies(
     const compliantSubjects = Math.max(0, outcome.evaluated - new Set(violations.map((row) => row.id.split('::')[1])).size)
     const adherence = outcome.measured && outcome.evaluated > 0 ? clampPercent((compliantSubjects / outcome.evaluated) * 100) : null
 
-    return {
+    const record: PolicyRecord = {
       id: definition.id,
       title: definition.title,
       category: definition.category,
@@ -1083,6 +1089,8 @@ export function evaluatePolicies(
         .slice(0, VIOLATION_SAMPLE),
       lastEvaluatedAt: evaluatedAt,
     }
+    violationsByPolicy.set(record, violations)
+    return record
   })
 }
 

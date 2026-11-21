@@ -82,10 +82,10 @@ const STATUS_LABEL: Record<string, string> = {
 
 type StatusFilter = 'all' | 'restorable' | 'restoring' | 'restored' | 'restore_failed' | 'expired'
 
-export function SnapshotManager({ open, onOpenChange, focusAssetName, enabled }: { open: boolean; onOpenChange: (v: boolean) => void; focusAssetName?: string | null; enabled: boolean }) {
+export function SnapshotManager({ open, onOpenChange, initialSearch, enabled }: { open: boolean; onOpenChange: (v: boolean) => void; initialSearch?: string | null; enabled: boolean }) {
   const snap = useMigrationSnapshots(enabled)
   const [tab, setTab] = useState<'snapshots' | 'audit'>('snapshots')
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(initialSearch || '')
   const [status, setStatus] = useState<StatusFilter>('all')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [compareMode, setCompareMode] = useState(false)
@@ -103,9 +103,6 @@ export function SnapshotManager({ open, onOpenChange, focusAssetName, enabled }:
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open, onOpenChange])
-  // When opened from a job's Rollback, pre-filter to that asset's snapshots.
-  useEffect(() => { if (open && focusAssetName) setQuery(focusAssetName) }, [open, focusAssetName])
-
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     return snap.data.snapshots.filter((s) => {

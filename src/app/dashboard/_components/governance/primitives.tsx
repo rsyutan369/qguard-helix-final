@@ -964,7 +964,7 @@ export function ReconciliationPanel({ report }: { report: ReconciliationReport }
 /* ------------------------------------------------------------------ */
 
 const PIPELINE_COPY: Record<GovernanceTelemetry['pipelineStatus'], { label: string; tone: Tone; detail: string }> = {
-  live: { label: 'Evidence pipeline live', tone: 'good', detail: 'Governance evidence was recorded within the last 7 days.' },
+  live: { label: 'Recent evidence', tone: 'good', detail: 'Governance evidence was recorded within the last 7 days.' },
   'inventory-only': {
     label: 'Inventory only',
     tone: 'warning',
@@ -1034,7 +1034,7 @@ export function GovernanceProvenance({ telemetry }: { telemetry: GovernanceTelem
       {telemetry.absentSources.length ? (
         <p className="mt-2 text-[10px] leading-relaxed text-white/35">
           <span className="font-bold uppercase tracking-wider text-amber-300/70">Not available: </span>
-          {telemetry.absentSources.join(', ')} — controls that depend only on these sources report “not assessed”.
+          {telemetry.absentSources.join(', ')}. Figures using these sources may be incomplete.
         </p>
       ) : null}
 

@@ -154,9 +154,11 @@ export function ThirdPartySection({ data, onSelectNode }: { data: ExposureIntell
               {rows.map((row) => (
                 <tr key={row.id} className="border-b border-white/[0.04] transition hover:bg-white/[0.02]">
                   <td className="py-2.5 pr-3">
-                    <button type="button" onClick={() => onSelectNode(row.id)} className="max-w-[190px] truncate text-left font-bold text-white/85 transition hover:text-cyan-200">
-                      {row.vendor}
-                    </button>
+                    {row.connectedAssets > 0 ? (
+                      <button type="button" onClick={() => onSelectNode(row.id)} className="max-w-[190px] truncate text-left font-bold text-white/85 transition hover:text-cyan-200">
+                        {row.vendor}
+                      </button>
+                    ) : <span className="font-bold text-white/85">{row.vendor}</span>}
                     {row.certificate ? <div className="text-[10px] text-white/35">{row.certificate}</div> : null}
                   </td>
                   <td className="py-2.5 pr-3 text-white/55">{row.category}</td>
@@ -180,7 +182,7 @@ export function ThirdPartySection({ data, onSelectNode }: { data: ExposureIntell
                   </td>
                   <td className="py-2.5 pr-3 font-mono text-white/55">{row.tlsVersion || '—'}</td>
                   <td className="py-2.5 pr-3"><Badge color={POSTURE_COLOR[row.readiness]}>{POSTURE_LABEL[row.readiness]}</Badge></td>
-                  <td className="py-2.5 pr-3"><Badge color={PRIORITY_COLOR[row.riskLevel]}>{row.riskLevel}</Badge></td>
+                  <td className="py-2.5 pr-3"><Badge color={row.riskLevel === 'Unknown' ? POSTURE_COLOR.unknown : PRIORITY_COLOR[row.riskLevel]}>{row.riskLevel}</Badge></td>
                   <td className="py-2.5 max-w-[220px] text-white/50">{row.migrationCompatibility}</td>
                 </tr>
               ))}
@@ -217,7 +219,7 @@ export function RiskPrioritizationSection({ data, onSelectNode }: { data: Exposu
                 <th className="pb-2 pr-3">Environment</th>
                 <th className="pb-2 pr-3">Posture</th>
                 <th className="pb-2 pr-3">Priority</th>
-                <th className="pb-2 pr-3">Score</th>
+                <th className="pb-2 pr-3">Priority score</th>
                 <th className="pb-2 pr-3">Dependents</th>
                 <th className="pb-2">Priority Drivers</th>
               </tr>
@@ -287,18 +289,12 @@ export function AdvisorSection({ data }: { data: ExposureIntelligence }) {
                 </div>
                 <div className="mt-1.5 text-xs font-bold text-white/90">{rec.title}</div>
                 <p className="mt-1 text-[11px] leading-relaxed text-white/50">{rec.detail}</p>
-                <div className="mt-2 flex items-center gap-2">
-                  <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/5">
-                    <div className="h-full rounded-full bg-cyan-400/70" style={{ width: `${rec.confidencePct}%` }} />
-                  </div>
-                  <span className="font-mono text-[9.5px] text-white/40">{rec.confidencePct}% confidence</span>
-                </div>
               </div>
             ))}
           </div>
         ) : (
           <EmptyState
-            label={data.hasData ? 'No recommendations — dependency posture is healthy.' : 'No evidence available for recommendations yet.'}
+            label={data.hasData ? 'No recommendations from the loaded evidence.' : 'No evidence available for recommendations yet.'}
             hint={data.hasData ? undefined : 'Run a discovery scan to generate graph-aware migration guidance.'}
           />
         )}
@@ -308,7 +304,7 @@ export function AdvisorSection({ data }: { data: ExposureIntelligence }) {
         <SectionTitle>
           <span className="inline-flex items-center gap-2"><Link2 className="h-4 w-4 text-blue-300" /> Migration Estimates</span>
         </SectionTitle>
-        <div className="space-y-3">
+        {data.summary.assessmentMeasured ? <div className="space-y-3">
           <div className="flex items-center justify-around">
             <div className="flex flex-col items-center gap-1">
               <Ring value={estimates.migrationComplexity} color={estimates.migrationComplexity >= 60 ? RED : estimates.migrationComplexity >= 35 ? ORANGE : EMERALD} size={70} stroke={8}>
@@ -316,19 +312,18 @@ export function AdvisorSection({ data }: { data: ExposureIntelligence }) {
               </Ring>
               <span className="text-[9px] font-black uppercase tracking-wide text-white/45">Complexity · {estimates.complexityLevel}</span>
             </div>
-            <div className="flex flex-col items-center gap-1">
+            {data.summary.trustRelationships > 0 && <div className="flex flex-col items-center gap-1">
               <Ring value={estimates.compatibilityScorePct} color={estimates.compatibilityScorePct >= 70 ? EMERALD : estimates.compatibilityScorePct >= 40 ? ORANGE : RED} size={70} stroke={8}>
                 <span className="text-sm font-bold text-white">{estimates.compatibilityScorePct}%</span>
               </Ring>
-              <span className="text-[9px] font-black uppercase tracking-wide text-white/45">Trust Compatibility</span>
-            </div>
+              <span className="text-[9px] font-black uppercase tracking-wide text-white/45">PQC or hybrid at both ends</span>
+            </div>}
           </div>
           {(
             [
               { label: 'Business Impact', value: estimates.businessImpact, color: impactColor[estimates.businessImpact] },
               { label: 'Estimated Duration', value: estimates.estimatedDurationWeeks ? `${integerFmt(estimates.estimatedDurationWeeks)} weeks` : '—', color: CYAN },
-              { label: 'Parallel Workstreams', value: `${estimates.parallelWorkstreams}`, color: CYAN },
-              { label: 'Advisor Confidence', value: `${estimates.confidencePct}%`, color: CYAN },
+              { label: 'Estimated Workstreams', value: estimates.parallelWorkstreams ? integerFmt(estimates.parallelWorkstreams) : '—', color: CYAN },
             ] as Array<{ label: string; value: string; color: string }>
           ).map((row) => (
             <Fragment key={row.label}>
@@ -339,10 +334,9 @@ export function AdvisorSection({ data }: { data: ExposureIntelligence }) {
             </Fragment>
           ))}
           <p className="text-[10px] leading-relaxed text-white/35">
-            Estimates derive from the tenant's real dependency graph and mirror the Quantum Readiness Assessment Engine™ —
-            duration and workstreams are planning estimates, not commitments.
+            Planning estimates use the Quantum Readiness Assessment and recorded dependency links.
           </p>
-        </div>
+        </div> : <EmptyState label="Run a readiness assessment to populate migration estimates." />}
       </Panel>
     </section>
   );

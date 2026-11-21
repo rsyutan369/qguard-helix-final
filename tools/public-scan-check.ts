@@ -760,12 +760,9 @@ async function main(): Promise<void> {
     report.timeline.find((phase) => phase.key === 'today')?.description,
   )
   check(
-    'externally-sourced horizons are labelled as estimates, not measurements',
-    Boolean(
-      report.timeline
-        .find((phase) => phase.key === 'crqc')
-        ?.description.match(/industry estimate|not a measurement/i),
-    ),
+    'the CRQC horizon is presented as future context with an unknown arrival date',
+    report.timeline.some((phase) => phase.key === 'crqc' && phase.state === 'future' &&
+      /arrival date unknown/i.test(phase.horizon)),
   )
 
   // Sophia must agree with the badge and cite only real findings.
@@ -1238,11 +1235,13 @@ async function checkUnreachableEndpoint(): Promise<void> {
   }
 
   check(
-    'the rail marks tls/certificate/headers/quantum "unavailable", never "failed"',
-    ['tls', 'certificate', 'headers', 'quantum'].every((key) => stageStates.get(key) === 'unavailable') &&
-      ![...stageStates.values()].includes('failed'),
+    'the rail marks unmeasured TLS, certificate, header and quantum stages unavailable',
+    ['tls', 'certificate', 'headers', 'quantum'].every((key) => stageStates.get(key) === 'unavailable'),
     [...stageStates.entries()].map(([key, state]) => `${key}=${state}`).join(' '),
   )
+  if (report.reachability.state === 'unresolved') {
+    check('the rail identifies a failed DNS lookup', stageStates.get('dns') === 'failed', stageStates.get('dns'))
+  }
   check(
     'an unreachable endpoint fails fast instead of burning the whole budget',
     elapsed < 20_000,

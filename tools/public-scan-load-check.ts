@@ -17,24 +17,19 @@
  *     wedged scan times out and still frees its slot; a cancellation is never
  *     reported as a failure.
  *
- *   Part B — `createPublicScanRouter` over real HTTP with the DEFAULT limits
- *     10 / 100 / 1,000 simultaneous visitors with distinct addresses: every
- *     visitor either completes or is told — in the stream, readably — why not
- *     and when to retry; nobody sees a bare transport error; the server keeps
- *     answering while the line is long. Plus single-flight across 100 visitors
- *     of one site, abandonment over a real socket, rate-limit and cache rules,
- *     and the JSON API's status codes.
+ *   Part B — authenticated JSON/SSE, quota and error handling over real HTTP
+ *   with isolated account dependencies and deterministic scanner fixtures.
  *
  * Exits non-zero on any failure.
  */
 
 import express from 'express'
-import { spawn } from 'node:child_process'
 import type { AddressInfo } from 'node:net'
 import type { Server } from 'node:http'
-import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { PublicScanCoordinator, type CoordinatorOptions, type QueueEvent, type QueueTarget, type RunHooks } from '../src/api-server/public-scan-queue'
-import { createPublicScanRouter, publicScanLimitsFromEnv } from '../src/api-server/public-scan'
+import { createPublicScanRouter, type PublicScanRouterConfig } from '../src/api-server/public-scan'
+import type { PublicScanAccount } from '../src/api-server/public-scan-account'
+import { checkHostSyntax, canFollowRedirect } from '../src/lib/scanner/public-scan/safe-dns'
 import { ScanCancelledError } from '../src/lib/scanner/public-scan/engines'
 import type { PublicScanReport, PublicScanStage, PublicScanStageKey } from '../src/lib/scanner/public-scan/types'
 
@@ -341,310 +336,168 @@ async function partA(): Promise<void> {
 
 // ─── Part B — the HTTP/SSE layer ──────────────────────────────────────────────
 
-interface StreamOutcome {
-  status: number
-  contentType: string
-  events: Array<{ event: string; data: unknown }>
-  outcome: 'complete' | 'refused' | 'error' | 'transport'
-  refusalCode?: string
-  refusalMessage?: string
-  retryAfterSeconds?: number | null
-  firstEventMs: number | null
-  totalMs: number
-  /** The socket-level cause when the connection itself failed. */
-  transportError?: string
-}
-
-async function openStream(base: string, targetName: string, clientIp: string, options: { abortAfterMs?: number; accept?: string } = {}): Promise<StreamOutcome> {
-  const started = Date.now()
-  const controller = new AbortController()
-  if (options.abortAfterMs !== undefined) setTimeout(() => controller.abort(), options.abortAfterMs)
-  const events: StreamOutcome['events'] = []
-  let firstEventMs: number | null = null
-  try {
-    const response = await fetch(`${base}/stream?target=${encodeURIComponent(targetName)}`, {
-      headers: { accept: options.accept ?? 'text/event-stream', 'x-forwarded-for': clientIp },
-      signal: controller.signal,
-    })
-    const contentType = response.headers.get('content-type') ?? ''
-    if (!contentType.includes('text/event-stream')) {
-      const body = (await response.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null
-      return { status: response.status, contentType, events, outcome: 'refused', refusalCode: body?.error?.code, refusalMessage: body?.error?.message, firstEventMs, totalMs: Date.now() - started }
+function testAccounts() {
+  const accounts = new Map<string, { used: number; pending?: string }>()
+  let unavailable = false
+  const authenticate: NonNullable<PublicScanRouterConfig['authenticate']> = async (token) => {
+    const [id, state] = token.split('.')
+    if (!id || state !== 'valid') return null
+    return {
+      id,
+      async quota(operation, scanId) {
+        if (unavailable) throw new Error('Private database details')
+        const account = accounts.get(id) ?? { used: 0 }
+        accounts.set(id, account)
+        let status: Awaited<ReturnType<PublicScanAccount['quota']>>['status'] = 'ok'
+        if (operation === 'reserve') {
+          if (account.used === 3) status = 'exhausted'
+          else if (account.pending) status = 'active'
+          else account.pending = scanId
+        } else if (scanId && account.pending === scanId) {
+          if (operation === 'complete') account.used += 1
+          delete account.pending
+        }
+        return { status, usage: { limit: 3, remaining: 3 - account.used, resetAt: '2099-01-01T00:00:00Z', inProgress: !!account.pending } }
+      },
     }
-    const reader = response.body!.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    for (;;) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      let boundary: number
-      while ((boundary = buffer.indexOf('\n\n')) >= 0) {
-        const frame = buffer.slice(0, boundary)
-        buffer = buffer.slice(boundary + 2)
-        const name = /^event: (.+)$/m.exec(frame)?.[1]
-        const data = /^data: (.+)$/m.exec(frame)?.[1]
-        if (!name) continue
-        firstEventMs ??= Date.now() - started
-        events.push({ event: name, data: data ? JSON.parse(data) : null })
-      }
-    }
-    const last = events.at(-1)
-    const base0 = { status: response.status, contentType, events, firstEventMs, totalMs: Date.now() - started }
-    if (last?.event === 'scan-complete') return { ...base0, outcome: 'complete' }
-    if (last?.event === 'scan-refused') {
-      const payload = last.data as { code: string; message: string; retryAfterSeconds: number | null }
-      return { ...base0, outcome: 'refused', refusalCode: payload.code, refusalMessage: payload.message, retryAfterSeconds: payload.retryAfterSeconds }
-    }
-    if (last?.event === 'error') return { ...base0, outcome: 'error' }
-    return { ...base0, outcome: 'transport' }
-  } catch (error) {
-    const cause = (error as { cause?: { code?: string; message?: string } })?.cause
-    const transportError = String(cause?.code ?? cause?.message ?? (error as Error)?.message ?? error)
-    return { status: 0, contentType: '', events, outcome: 'transport', firstEventMs, totalMs: Date.now() - started, transportError }
   }
+  return { authenticate, outage: () => { unavailable = true } }
 }
 
-async function serve(router: express.Router): Promise<{ base: string; server: Server }> {
+async function serve(options: PublicScanRouterConfig): Promise<{ base: string; server: Server }> {
   const app = express()
-  app.use(express.json())
-  app.use('/api/v1/public-scan', router)
+  app.use('/api/v1/public-scan', createPublicScanRouter(options))
   const server = await new Promise<Server>((resolve) => {
-    const s = app.listen(0, '127.0.0.1', () => resolve(s))
+    const listening = app.listen(0, '127.0.0.1', () => resolve(listening))
   })
-  server.keepAliveTimeout = 60_000
   const { port } = server.address() as AddressInfo
   return { base: `http://127.0.0.1:${port}/api/v1/public-scan`, server }
 }
 
-const ip = (index: number) => `203.0.${Math.floor(index / 250)}.${(index % 250) + 1}`
-
-/** What the server process reports about itself after a load run. */
-interface ServerReport {
-  maxRunning: number
-  scans: number
-  eventLoopP99Ms: number
-  eventLoopMaxMs: number
-  rssMb: number
-  cpuMs: number
-}
-
-/**
- * Child mode (`--serve`): the REAL router with default limits and synthetic
- * scans, alone in its process. `/__synthetic` is this harness's own endpoint —
- * the production router has nothing like it.
- */
-async function serveChild(): Promise<void> {
-  const scan = syntheticScan({ durationMs: Number(process.env.LOAD_CHECK_SCAN_MS ?? 400) })
-  const lag = monitorEventLoopDelay({ resolution: 10 })
-  lag.enable()
-  const cpuAtStart = process.cpuUsage()
-  const app = express()
-  app.use(express.json())
-  app.use('/api/v1/public-scan', createPublicScanRouter({ run: scan.run, log: false, initialScanEstimateMs: Number(process.env.LOAD_CHECK_SCAN_MS ?? 400) }))
-  app.get('/__synthetic', (_req, res) => {
-    const cpu = process.cpuUsage(cpuAtStart)
-    const report: ServerReport = {
-      maxRunning: scan.maxRunning,
-      scans: [...scan.invocations.values()].reduce((sum, count) => sum + count, 0),
-      eventLoopP99Ms: Math.round(lag.percentile(99) / 1e6),
-      eventLoopMaxMs: Math.round(lag.max / 1e6),
-      rssMb: Math.round(process.memoryUsage().rss / 1_048_576),
-      cpuMs: Math.round((cpu.user + cpu.system) / 1000),
-    }
-    res.json(report)
-  })
-  const server = app.listen(0, '127.0.0.1', () => {
-    process.stdout.write(`PORT ${(server.address() as AddressInfo).port}\n`)
-  })
-  server.keepAliveTimeout = 60_000
-}
-
-async function spawnServer({ scanMs }: { scanMs: number }): Promise<{ base: string; root: string; stop: () => Promise<void> }> {
-  const child = spawn(process.execPath, [...process.execArgv, process.argv[1], '--serve'], {
-    stdio: ['ignore', 'pipe', 'inherit'],
-    env: { ...process.env, LOAD_CHECK_SCAN_MS: String(scanMs) },
-  })
-  const kill = () => child.kill()
-  process.once('exit', kill)
-  const port = await new Promise<number>((resolve, reject) => {
-    let buffer = ''
-    child.stdout!.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString()
-      const match = /PORT (\d+)/.exec(buffer)
-      if (match) resolve(Number(match[1]))
-    })
-    child.once('exit', (code) => reject(new Error(`load-check server exited early (${code})`)))
-  })
-  const root = `http://127.0.0.1:${port}`
-  return {
-    root,
-    base: `${root}/api/v1/public-scan`,
-    stop: async () => {
-      process.removeListener('exit', kill)
-      const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
-      child.kill()
-      await exited
-    },
-  }
-}
-
-/** Polls /capabilities while the load runs — the server must keep answering. */
-function responsivenessProbe(base: string) {
-  const latencies: number[] = []
-  let stop = false
-  const done = (async () => {
-    while (!stop) {
-      const started = Date.now()
-      try {
-        await fetch(`${base}/capabilities`).then((r) => r.json())
-        latencies.push(Date.now() - started)
-      } catch {
-        latencies.push(Number.POSITIVE_INFINITY)
-      }
-      await sleep(100)
-    }
-  })()
-  return {
-    async finish() {
-      stop = true
-      await done
-      const sorted = [...latencies].sort((a, b) => a - b)
-      return { samples: sorted.length, max: sorted.at(-1) ?? 0, p95: sorted[Math.floor(sorted.length * 0.95)] ?? 0 }
-    },
-  }
-}
-
 async function partB(): Promise<void> {
-  const defaults = publicScanLimitsFromEnv()
-  console.log(`\nPart B — HTTP/SSE layer, default limits: ${defaults.maxConcurrent} concurrent, line of ${defaults.maxQueue}, ${defaults.maxActivePerClient} per client while waiting, ${defaults.rateLimitPerMinute} new scans/min/client\n`)
+  console.log('\nB — Authenticated HTTP and SSE')
+  const accounts = testAccounts()
+  const scan = syntheticScan({ durationMs: 150 })
+  const options: PublicScanRouterConfig = {
+    log: false,
+    maxConcurrent: 2,
+    maxQueue: 3,
+    rateLimitPerMinute: 25,
+    abandonGraceMs: 30,
+    authenticate: accounts.authenticate,
+    verifyTarget: async (host) => host === 'private.example.com'
+      ? { ok: false, code: 'PRIVATE_TARGET', message: 'This hostname cannot be assessed publicly.' }
+      : { ok: true },
+    run: (target, hooks) => {
+      if (target.host === 'failure.example.com') throw new Error('Internal scanner error')
+      if (target.host === 'unreachable.example.com') {
+        return Promise.resolve({ ...syntheticReport(target), unreachable: true })
+      }
+      return scan.run(target, hooks)
+    },
+  }
+  const one = await serve(options)
+  const two = await serve(options)
 
-  /* The server runs in a process of its own, as it does in production. With
-     a thousand clients in the SAME process, the clients' own work starved the
-     accept loop and the OS refused connections (ECONNREFUSED before any byte)
-     — that measured the harness, not the server.
-
-     10 and 100 visitors arrive in the same instant. 1,000 arrive across 2.5s:
-     this Windows workstation refuses same-instant connects past roughly 230 to
-     ANY listener — a bare `node:http` server with no application code drops
-     768 of 1,000 same-instant connects, and none spread over 2s. 400 arrivals a
-     second still overruns the line within ~1.3s. */
-  for (const [visitors, spreadMs] of [[10, 0], [100, 0], [1_000, 2_500]] as const) {
-    /* ~15s real scans compressed to 400ms; the shape of the line is what is
-       under test, not the wall clock. */
-    const { base, root, stop } = await spawnServer({ scanMs: 400 })
-    const probe = responsivenessProbe(base)
-    const results = await Promise.all(Array.from({ length: visitors }, async (_, i) => {
-      if (spreadMs) await sleep(Math.floor((i * spreadMs) / visitors))
-      return openStream(base, `site${i}.load.example.com`, ip(i))
-    }))
-    const probeResult = await probe.finish()
-    const server = (await fetch(`${root}/__synthetic`).then((r) => r.json())) as ServerReport
-    await stop()
-
-    const completed = results.filter((r) => r.outcome === 'complete')
-    const queued = results.filter((r) => r.events.some((e) => e.event === 'scan-queued'))
-    const refused = results.filter((r) => r.outcome === 'refused')
-    const transport = results.filter((r) => r.outcome === 'transport' || r.outcome === 'error')
-    const expectedServed = Math.min(visitors, defaults.maxConcurrent + defaults.maxQueue)
-    const label = `B ${String(visitors).padStart(4)} visitors${spreadMs ? ` over ${spreadMs / 1000}s` : ' at once'}`
-
-    const causes = new Map<string, number>()
-    for (const r of transport) {
-      const cause = `${r.transportError ?? r.outcome} ${r.events.length ? `after ${r.events.length} events` : 'before any event'}`
-      causes.set(cause, (causes.get(cause) ?? 0) + 1)
-    }
-    check(`${label}: nobody sees a bare transport error`, transport.length === 0, `${transport.length} transport/error${causes.size ? ` ${JSON.stringify(Object.fromEntries(causes))}` : ''}`)
-    /* At least capacity + line complete. More can, when arrivals are still
-       connecting as the first scans finish and free a place. */
-    check(`${label}: every visitor completes or is refused — at least ${expectedServed} complete`, completed.length >= expectedServed && completed.length + refused.length === visitors, `${completed.length} complete, ${queued.length} waited in line`)
-    check(`${label}: anyone refused is told the line is full, readably, with a retry time`, refused.every((r) => r.status === 200 && r.refusalCode === 'QUEUE_FULL' && Boolean(r.refusalMessage) && (r.retryAfterSeconds ?? 0) >= 5), `${refused.length} refused${refused[0] ? ` — "${refused[0].refusalMessage}" (retry ${refused[0].retryAfterSeconds}s)` : ''}`)
-    check(`${label}: never more than ${defaults.maxConcurrent} scans at once`, server.maxRunning <= defaults.maxConcurrent && server.scans === completed.length, `peak ${server.maxRunning}, ${server.scans} scans for ${completed.length} reports`)
-    const firstEvent = Math.max(...results.map((r) => r.firstEventMs ?? Number.POSITIVE_INFINITY))
-    check(`${label}: every visitor hears from the server at once`, firstEvent < 2_000, `slowest first event ${firstEvent}ms`)
-    const positionsOk = queued.every((r) => {
-      const positions = r.events.filter((e) => e.event === 'scan-queued').map((e) => (e.data as { position: number }).position)
-      return positions.every((p, i) => i === 0 || p < positions[i - 1]) && r.events.some((e) => e.event === 'scan-started')
+  function request(
+    route: typeof one, path: string, id?: string,
+    target?: string | Record<string, string>, init: RequestInit = {},
+  ) {
+    const headers = new Headers(init.headers)
+    if (id) headers.set('authorization', `Bearer ${id}`)
+    if (target !== undefined) headers.set('content-type', 'application/json')
+    return fetch(route.base + path, {
+      ...init, headers, method: target === undefined ? 'GET' : 'POST',
+      body: target === undefined ? undefined : JSON.stringify(typeof target === 'string' ? { target } : target),
     })
-    check(`${label}: queue positions only move forward and end in scan-started`, positionsOk)
-    check(`${label}: the server keeps answering under the load`, probeResult.max < 1_000, `${probeResult.samples} probes, p95 ${probeResult.p95}ms, max ${probeResult.max}ms; server event loop p99 ${server.eventLoopP99Ms}ms, max ${server.eventLoopMaxMs}ms, rss ${server.rssMb}MB`)
-    const slowest = Math.max(...completed.map((r) => r.totalMs))
-    console.log(`        ${visitors} visitors: last report after ${(slowest / 1000).toFixed(1)}s of synthetic 0.4s scans (${Math.ceil(completed.length / defaults.maxConcurrent)} rounds of ${defaults.maxConcurrent})`)
   }
 
-  {
-    const scan = syntheticScan({ durationMs: 400 })
-    const { base, server } = await serve(createPublicScanRouter({ run: scan.run, log: false }))
-    const results = await Promise.all(Array.from({ length: 100 }, (_, i) => openStream(base, 'popular.example.com', ip(i))))
-    server.close()
-    check('B single-flight: 100 visitors of one site → 1 scan', scan.invocations.get('popular.example.com:443') === 1, `${scan.invocations.get('popular.example.com:443')} run(s)`)
-    check('B single-flight: all 100 receive the report', results.every((r) => r.outcome === 'complete'))
-    check('B single-flight: 99 are told they share it', results.filter((r) => r.events.some((e) => e.event === 'scan-shared')).length === 99)
-  }
+  const usage = async (route: typeof one, account: string) => (await (await request(route, '/usage', account)).json()).data
+  const alice = 'alice.valid.browser1'
+  const bob = 'bob.valid.browser'
+  try {
+    const denied = await request(one, '/stream', undefined, 'alpha.example.com')
+    check('Anonymous scan is rejected before scanner execution', denied.status === 401 && scan.invocations.size === 0)
+    check('Anonymous allowance is rejected', (await request(one, '/usage')).status === 401)
+    check('The API rejects expired sessions', (await request(one, '', 'alice.expired.browser', 'alpha.example.com')).status === 401)
+    check('Creation by GET is rejected', (await request(one, '/stream?target=alpha.example.com', alice)).status === 405)
+    const origin = await request(one, '/stream', alice, 'alpha.example.com', { headers: { origin: 'https://other.example' } })
+    check('Unapproved browser origins are refused', origin.status === 403)
 
-  {
-    const scan = syntheticScan({ durationMs: 3_000 })
-    const { base, server } = await serve(createPublicScanRouter({ run: scan.run, log: false, maxConcurrent: 2, abandonGraceMs: 300 }))
-    const leavers = [0, 1].map((i) => openStream(base, `leaver${i}.example.com`, ip(i), { abortAfterMs: 200 }))
-    await Promise.all(leavers)
-    await sleep(500)
-    const arrival = await openStream(base, 'arrival.example.com', ip(9), { abortAfterMs: 300 })
-    server.close()
-    check('B abandonment: closing the tab stops the scan after the grace period', scan.aborted.filter((k) => k.startsWith('leaver')).length === 2, `${scan.aborted.length} aborted`)
-    check('B abandonment: the next visitor starts at once instead of waiting', arrival.events.some((e) => e.event === 'scan-started') && !arrival.events.some((e) => e.event === 'scan-queued'))
-  }
+    check('The first session reads a full allowance', (await usage(one, alice)).remaining === 3)
+    const started = await request(one, '/stream', alice, 'HTTPS://Alpha.example.com/a?discarded=1')
+    const cancelledTwin = await request(two, '', 'alice.valid.other-device', 'race.example.com')
+    check('A concurrent request on a second API process cannot start for the same account', cancelledTwin.status === 409)
+    const bobScan = request(one, '', bob, 'beta.example.com')
+    const frames = await started.text()
+    check('Authenticated SSE delivers progress, a report and authoritative remaining usage',
+      started.status === 200 && frames.includes('event: stage') && frames.includes('event: scan-complete') &&
+      frames.includes('"remaining":2') && !frames.includes('discarded=1') &&
+      started.headers.get('cache-control')?.includes('no-store') === true)
+    const bobResult = await bobScan
+    check('A different authenticated account can scan concurrently', bobResult.status === 200 && (await bobResult.json()).usage.remaining === 2)
+    check('Reload and a second session see the same stored account allowance',
+      (await usage(two, 'alice.valid.browser2')).remaining === 2)
 
-  {
-    const scan = syntheticScan({ durationMs: 60 })
-    const { base, server } = await serve(createPublicScanRouter({ run: scan.run, log: false, rateLimitPerMinute: 5 }))
-    const invalid = await openStream(base, 'not a domain', ip(1))
-    check('B refusals are readable in-stream (invalid target → 200 + scan-refused)', invalid.status === 200 && invalid.outcome === 'refused' && invalid.refusalCode === 'INVALID_TARGET', `${invalid.status} ${invalid.refusalCode}`)
-    const plain = await openStream(base, 'not a domain', ip(1), { accept: 'application/json' })
-    check('B a non-EventSource caller still gets the HTTP status', plain.status === 400 && plain.refusalCode === 'INVALID_TARGET', `${plain.status}`)
+    const cached = await request(one, '', alice, 'alpha.example.com')
+    const cachedBody = await cached.json()
+    check('A reused report does not execute again or spend quota', cached.status === 200 &&
+      cachedBody.data.cached === true && cachedBody.usage.remaining === 2 && scan.invocations.get('alpha.example.com:443') === 1)
 
-    const mine: StreamOutcome[] = []
-    for (let i = 0; i < 6; i += 1) mine.push(await openStream(base, `rl${i}.example.com`, ip(2)))
-    check('B rate limit: five new scans a minute complete', mine.slice(0, 5).every((r) => r.outcome === 'complete'))
-    check('B rate limit: the sixth is told why and when, in-stream', mine[5].outcome === 'refused' && mine[5].refusalCode === 'RATE_LIMITED' && (mine[5].retryAfterSeconds ?? 0) > 0, `${mine[5].refusalCode} retry ${mine[5].retryAfterSeconds}s`)
-    const cachedHit = await openStream(base, 'rl0.example.com', ip(2))
-    check('B a recent result is served to a rate-limited visitor (cache before gates)', cachedHit.outcome === 'complete' && (cachedHit.events.at(-1)?.data as { report: { cached?: boolean } }).report.cached === true)
+    for (const input of ['localhost', 'https://127.0.0.1', 'https://169.254.169.254', 'https://[::1]',
+      'https://example.com:22', 'https://name:password@example.com', 'ftp://example.com', 'private.example.com']) {
+      const response = await request(one, '/stream', alice, input)
+      check(`Rejects restricted or invalid target: ${input}`, response.status === 400)
+    }
+    const oversized = await request(one, '', alice, 'a'.repeat(1_500))
+    check('Oversized JSON is rejected before admission', oversized.status === 413)
+    const extraFields = await request(one, '', alice, { target: 'alpha.example.com', accountId: 'bob' })
+    check('Client parameters cannot select another account', extraFields.status === 400)
+    const failedScan = await request(one, '', alice, 'failure.example.com')
+    check('Engine errors are generic and do not spend quota',
+      failedScan.status === 502 && !(await failedScan.text()).includes('Internal scanner error'))
+    const unreachable = await request(one, '', alice, 'unreachable.example.com')
+    check('Unreachable assessments explain the failure without spending quota',
+      unreachable.ok && (await unreachable.json()).usage.remaining === 2)
 
-    /* A fresh visitor: three refusals and a cache hit first, then five new
-       scans — all five must still be allowed, and only the sixth refused. */
-    for (let i = 0; i < 3; i += 1) await openStream(base, 'not a domain', ip(4))
-    const cachedForFresh = await openStream(base, 'rl1.example.com', ip(4))
-    const fresh: StreamOutcome[] = []
-    for (let i = 0; i < 5; i += 1) fresh.push(await openStream(base, `fresh${i}.example.com`, ip(4)))
-    const sixth = await openStream(base, 'fresh5.example.com', ip(4))
-    check('B refusals and cache hits are not charged to the visitor', cachedForFresh.outcome === 'complete' && fresh.every((r) => r.outcome === 'complete') && sixth.refusalCode === 'RATE_LIMITED', `${fresh.filter((r) => r.outcome === 'complete').length}/5 new scans allowed, sixth ${sixth.refusalCode ?? sixth.outcome}`)
+    const cancellation = new AbortController()
+    const abandoned = await request(one, '/stream', alice, 'abandoned.example.com', { signal: cancellation.signal })
+    check('Authenticated cancellation test opened a stream', abandoned.ok)
+    cancellation.abort()
+    check('Closing the stream cancels abandoned work',
+      await waitFor(() => scan.aborted.includes('abandoned.example.com:443'), 2_000))
+    check('Cancellation returns the reservation without consuming a scan', (await usage(one, alice)).remaining === 2)
+    for (const remaining of [1, 0]) {
+      const response = await request(two, '', alice, `quota-${remaining}.example.com`)
+      check(`Completing an uncached scan leaves ${remaining}/3`, response.ok && (await response.json()).usage.remaining === remaining)
+    }
+    const exhausted = await request(one, '/stream', 'alice.valid.other-device', 'alpha.example.com')
+    check('A fourth request is rejected with 429, reset and Retry-After before cache lookup',
+      exhausted.status === 429 && Number(exhausted.headers.get('retry-after')) > 0 &&
+      (await exhausted.json()).usage.remaining === 0)
+    check('Another account still has its own allowance', (await usage(two, bob)).remaining === 2)
 
-    /* Joining a scan someone else started is free even when over the limit. */
-    const slow = syntheticScan({ durationMs: 300 })
-    const joinServer = await serve(createPublicScanRouter({ run: slow.run, log: false, rateLimitPerMinute: 1 }))
-    await openStream(joinServer.base, 'spent.example.com', ip(5))
-    const running = openStream(joinServer.base, 'running.example.com', ip(6))
-    await sleep(40)
-    const overLimitJoin = await openStream(joinServer.base, 'running.example.com', ip(5))
-    await running
-    joinServer.server.close()
-    check('B a visitor over the limit may still watch a scan already running', overLimitJoin.outcome === 'complete' && overLimitJoin.events.some((e) => e.event === 'scan-shared'))
-    server.close()
-  }
+    accounts.outage()
+    const outage = await request(one, '', bob, 'no-database.example.com')
+    check('A quota outage fails closed without leaking backend errors',
+      outage.status === 503 && !(await outage.text()).includes('Private database details') &&
+      !scan.invocations.has('no-database.example.com:443'))
 
-  {
-    const scan = syntheticScan({ durationMs: 300 })
-    const { base, server } = await serve(createPublicScanRouter({ run: scan.run, log: false, maxConcurrent: 1 }))
-    const holder = openStream(base, 'holder.example.com', ip(1))
-    await sleep(40)
-    const busy = await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': ip(2) }, body: JSON.stringify({ target: 'other.example.com' }) })
-    const busyBody = (await busy.json()) as { error?: { code?: string } }
-    check('B JSON API at capacity: 503 + Retry-After + reason', busy.status === 503 && Number(busy.headers.get('retry-after')) >= 5 && busyBody.error?.code === 'SCANNER_BUSY', `${busy.status} ${busyBody.error?.code} retry-after ${busy.headers.get('retry-after')}`)
-    const joined = await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': ip(3) }, body: JSON.stringify({ target: 'holder.example.com' }) })
-    check('B JSON API joins a running scan at capacity', joined.status === 200)
-    await holder
-    const caps = (await fetch(`${base}/capabilities`).then((r) => r.json())) as { data: { limits: Record<string, number>; load: Record<string, number> } }
-    check('B capabilities disclose limits and live load (counts only)', caps.data.limits.concurrentScans === 1 && typeof caps.data.load.queued === 'number' && !JSON.stringify(caps.data.load).includes('example.com'))
-    server.close()
+    const rejected = await Promise.all(Array.from({ length: 8 }, () => request(two, '/usage')))
+    const throttled = await request(two, '/usage')
+    check('Repeated authentication failures are throttled', rejected.every((response) => response.status === 401) && throttled.status === 429)
+    check('Literal and redirect policy rejects special-use address ranges, credentials and unsupported ports',
+      !checkHostSyntax('0000:0000:0000:0000:0000:ffff:a9fe:a9fe').ok &&
+      !checkHostSyntax('64:ff9b::a9fe:a9fe').ok &&
+      !checkHostSyntax('168.63.129.16').ok &&
+      !canFollowRedirect('https://user@example.com').ok &&
+      !canFollowRedirect('https://example.com:2375').ok &&
+      checkHostSyntax('2606:4700::1111').ok)
+  } finally {
+    for (const { server } of [one, two]) {
+      server.closeAllConnections()
+      server.close()
+    }
   }
 }
 
@@ -656,5 +509,4 @@ async function main(): Promise<void> {
   process.exit(failed === 0 ? 0 : 1)
 }
 
-if (process.argv.includes('--serve')) void serveChild()
-else void main()
+void main().catch((error) => { console.error(error); process.exitCode = 1 })

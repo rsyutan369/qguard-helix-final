@@ -19,7 +19,6 @@ import ThemeToggle from '@/components/theme/ThemeToggle';
 import { useSubscription } from '@/hooks/use-subscription';
 import { canAccessPath, resolveRequiredTier, type AccessTier } from '@/lib/subscription-access';
 import { StarterDashboard } from '@/app/dashboard/_components/StarterDashboard';
-import { SiteFooter } from '@/components/SiteFooter';
 import { UpgradeRequired } from '@/components/subscription/UpgradeRequired';
 import { SophiaCopilot } from '@/components/copilot/SophiaCopilot';
 import { useTheme } from '@/contexts/theme-context';
@@ -305,14 +304,10 @@ export default function DashboardLayout() {
     }));
   };
 
-  // Every dashboard page wears the homepage look in Light mode: the `qh-cc`
-  // layer (command-center.css) plus the homepage's glow, letter reveal,
-  // fade-ups, scroll progress and smooth scrolling, scoped to <main>. The
-  // motion re-arms on each page change so the new page's reveals are found.
-  // Dark mode is untouched (every qh-cc rule is gated on the light theme).
+  // Live Migration uses native scrolling around the canvas and nested job lists.
   const { theme } = useTheme();
   const routeKey = location.pathname.replace(/\/+$/, '') || '/';
-  const commandCenterMotion = theme === 'light';
+  const commandCenterMotion = theme === 'light' && routeKey !== '/dashboard/live-migration';
   const [mainEl, setMainEl] = useState<HTMLElement | null>(null);
   const [glowEl, setGlowEl] = useState<HTMLCanvasElement | null>(null);
   const [scopeEl, setScopeEl] = useState<HTMLDivElement | null>(null);
@@ -321,9 +316,10 @@ export default function DashboardLayout() {
   // Page change: start the new page at the top and let it rise in (Light
   // mode; the animation is CSS-only, so reduced motion simply skips it).
   useEffect(() => {
-    if (!scopeEl || !commandCenterMotion) return;
+    if (!scopeEl || theme !== 'light') return;
     mainEl?.scrollTo({ top: 0 });
     scopeEl.removeAttribute('data-route-enter');
+    if (!commandCenterMotion) return;
     void scopeEl.offsetWidth; // restart the animation on the same element
     scopeEl.setAttribute('data-route-enter', '');
     // animationend bubbles from children; only the container's own ends it.
@@ -332,7 +328,7 @@ export default function DashboardLayout() {
     };
     scopeEl.addEventListener('animationend', clear);
     return () => scopeEl.removeEventListener('animationend', clear);
-  }, [routeKey, scopeEl, mainEl, commandCenterMotion]);
+  }, [routeKey, scopeEl, mainEl, commandCenterMotion, theme]);
 
   const sidebarWidth = collapsed ? 'w-[72px]' : 'w-[260px]';
   const isOwner = isOwnerEmail(user?.email);
@@ -382,7 +378,6 @@ export default function DashboardLayout() {
             Retry
           </button>
         </div>
-        <div className="mt-auto pt-8"><SiteFooter /></div>
       </div>
     );
   }
@@ -393,7 +388,6 @@ export default function DashboardLayout() {
       <div className="qg-dashboard-shell flex min-h-screen flex-col bg-[var(--qg-dashboard-bg)] text-slate-100">
         <NoAccessHeader />
         <UpgradeRequired requiredTier="starter" currentTier={subscription.tier} variant="no-subscription" />
-        <div className="mt-auto pt-8"><SiteFooter /></div>
       </div>
     );
   }
@@ -403,7 +397,6 @@ export default function DashboardLayout() {
     return (
       <>
         <StarterDashboard />
-        <SiteFooter />
       </>
     );
   }
@@ -616,7 +609,6 @@ export default function DashboardLayout() {
             <UpgradeRequired requiredTier={resolveRequiredTier(location.pathname)} currentTier={effectiveTier} />
           )}
         </div>
-        <SiteFooter />
       </main>
 
       <DefaultViewRedirect userId={user.id} tier={effectiveTier} />

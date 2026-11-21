@@ -24,7 +24,7 @@ import { buildAuditEvents, type AuditInputs } from './audit'
 import { isUnverifiedIssuanceRecord } from '../crypto/issuance-evidence'
 import { buildEvidence, freshnessOf, type EvidenceInputs } from './evidence'
 import { evaluateControls, type CanonicalSnapshot, type ControlEvaluationInputs } from './controls'
-import { evaluatePolicies, severityOrder, type PolicyEvaluationContext } from './policy'
+import { evaluatePolicies, policyViolations, severityOrder, type PolicyEvaluationContext } from './policy'
 import { buildSubjects, clampPercent, daysBetween, ms, newest, num, recordOf, str, type Row } from './subjects'
 import {
   CONTROL_DOMAIN_LABEL,
@@ -67,6 +67,7 @@ export interface PortfolioAsset {
   businessCriticality: string
   internetFacing: boolean
   riskScore: number
+  riskLevel?: string | null
   readinessScore: number
   posture: string
   postureLabel: string
@@ -163,7 +164,7 @@ function score(input: {
  * measured there, and `controlCoverage` is the number that says so. Reporting
  * both is what makes the headline honest.
  */
-function weightedCompliance(controls: ControlRecord[]): { value: number | null; measured: number; weight: number } {
+export function weightedCompliance(controls: ControlRecord[]): { value: number | null; measured: number; weight: number } {
   const scored = controls.filter((control) => control.measured && control.score !== null && control.status !== 'not-applicable')
   if (!scored.length) return { value: null, measured: 0, weight: 0 }
   const totalWeight = scored.reduce((sum, control) => sum + control.weight, 0)
@@ -186,7 +187,7 @@ function rollupStatus(statuses: ControlStatus[]): ControlStatus {
   return 'partial'
 }
 
-function buildRequirements(controls: ControlRecord[], evidence: EvidenceRecord[]): RequirementRecord[] {
+export function buildRequirements(controls: ControlRecord[], evidence: EvidenceRecord[], now: number): RequirementRecord[] {
   const controlById = new Map(controls.map((control) => [control.id, control]))
   const evidenceByRequirement = new Map<string, number>()
   for (const record of evidence) {
@@ -222,7 +223,7 @@ function buildRequirements(controls: ControlRecord[], evidence: EvidenceRecord[]
       controlsFailing: referenceOnly ? 0 : scoped.filter((control) => control.status === 'non-compliant' || control.status === 'partial').length,
       evidenceCount: evidenceByRequirement.get(definition.id) || 0,
       lastValidatedAt,
-      evidenceFreshness: freshnessOf(lastValidatedAt, Date.now()).state,
+      evidenceFreshness: freshnessOf(lastValidatedAt, now).state,
       unmeasuredControlIds: inScope.filter((control) => referenceOnly || !control.measured).map((control) => control.id),
     }
   })
@@ -402,7 +403,7 @@ function buildGaps(input: {
       controlIds,
       frameworkIds: [...new Set(controlIds.flatMap((id) => input.controls.find((control) => control.id === id)?.frameworkIds || []))],
       requirementIds: [...new Set(controlIds.flatMap((id) => input.controls.find((control) => control.id === id)?.requirementIds || []))],
-      assetIds: [...new Set(policy.violationSample.map((item) => item.assetId).filter((id): id is string => Boolean(id)))],
+      assetIds: [...new Set(policyViolations(policy).map((item) => item.assetId).filter((id): id is string => Boolean(id)))],
       route: policy.remediationRoute,
       impact: `Resolving these restores adherence on ${policy.evaluated} evaluated subject(s).`,
       detectedAt: policy.lastEvaluatedAt,
@@ -503,6 +504,7 @@ function buildAssetCompliance(input: {
 }): AssetComplianceRecord[] {
   const failingByAsset = new Map<string, Set<string>>()
   for (const control of input.controls) {
+    if (control.status !== 'non-compliant' && control.status !== 'partial') continue
     for (const assetId of control.affectedAssetIds) {
       const set = failingByAsset.get(assetId) || new Set<string>()
       set.add(control.id)
@@ -511,7 +513,7 @@ function buildAssetCompliance(input: {
   }
   const violationsByAsset = new Map<string, number>()
   for (const policy of input.policies) {
-    for (const item of policy.violationSample) {
+    for (const item of policyViolations(policy)) {
       if (!item.assetId) continue
       violationsByAsset.set(item.assetId, (violationsByAsset.get(item.assetId) || 0) + 1)
     }
@@ -540,19 +542,18 @@ function buildAssetCompliance(input: {
   const rows: AssetComplianceRecord[] = []
   const seen = new Set<string>()
 
-  const emit = (id: string, name: string, type: string, environment: string, owner: string, criticality: string, internetFacing: boolean, posture: string, postureLabel: string, riskScore: number, readinessScore: number, severityCounts: { critical: number; high: number } | null, lastEvidenceAt: string | null) => {
+  const emit = (id: string, name: string, type: string, environment: string, owner: string, criticality: string, internetFacing: boolean, posture: string, postureLabel: string, riskScore: number, readinessScore: number, lastEvidenceAt: string | null, riskLevel: string | null = null) => {
     if (seen.has(id)) return
     seen.add(id)
     const failingControls = failingByAsset.get(id)
     const assetEvidence = evidenceByAsset.get(id) || []
-    const openFindings = assetEvidence.filter((record) => record.kind === 'finding' && record.outcome === 'contradicting').length
-    const criticalFindings = severityCounts ? severityCounts.critical : assetEvidence.filter((record) => record.kind === 'finding' && record.severity === 'critical').length
+    const findings = assetEvidence.filter((record) => record.kind === 'finding' && record.outcome === 'contradicting')
+    const openFindings = findings.length
+    const criticalFindings = findings.filter((record) => record.severity === 'critical').length
     const freshness = freshnessOf(lastEvidenceAt, input.now)
-    const status: ControlStatus = assetEvidence.length === 0
-      ? 'not-assessed'
-      : failingControls && failingControls.size > 0
-        ? 'non-compliant'
-        : 'compliant'
+    const status: ControlStatus = failingControls?.size || openFindings > 0 || violationsByAsset.has(id)
+      ? 'non-compliant'
+      : assetEvidence.length > 0 ? 'partial' : 'not-assessed'
 
     rows.push({
       assetId: id,
@@ -565,6 +566,7 @@ function buildAssetCompliance(input: {
       posture,
       postureLabel,
       riskScore,
+      riskLevel,
       readinessScore,
       controlsInScope: input.controls.filter((control) => control.domain !== 'governance' && control.domain !== 'audit').length,
       controlsFailing: failingControls?.size || 0,
@@ -594,8 +596,8 @@ function buildAssetCompliance(input: {
       asset.postureLabel,
       asset.riskScore,
       asset.readinessScore,
-      asset.severityCounts,
       asset.lastEvidenceAt,
+      asset.riskLevel,
     )
   }
   for (const row of input.assets) {
@@ -616,7 +618,6 @@ function buildAssetCompliance(input: {
       0,
       0,
       null,
-      str(row.updated_at) || str(row.created_at) || null,
     )
   }
 
@@ -827,13 +828,17 @@ function buildReconciliation(input: {
 
 function buildTelemetry(input: GovernanceInputs, evidence: EvidenceRecord[], auditEvents: AuditEvent[], now: number): GovernanceTelemetry {
   const agentsOnline = input.scannerAgents.filter((agent) => {
-    const lastSeen = ms(agent.last_seen_at || agent.updated_at)
-    return (lastSeen > 0 && now - lastSeen <= 3_600_000) || /online|active|healthy|running/i.test(str(agent.status))
+    const lastSeen = ms(agent.last_seen_at)
+    const age = now - lastSeen
+    const disabled = ['offline', 'inactive', 'disabled', 'disconnected', 'revoked'].includes(str(agent.status).toLowerCase())
+    return !disabled && lastSeen > 0 && age >= 0 && age <= 3_600_000
   }).length
   const connectorsActive = input.connectorAccounts.filter((connector) =>
-    /connected|active|healthy|ok|synced/i.test(str(connector.status)),
+    ['connected', 'active', 'healthy', 'ok', 'synced'].includes(str(connector.status).toLowerCase()),
   ).length
-  const runningScans = input.scanSessions.filter((session) => /running|pending|queued|analyzing|scanning/i.test(str(session.status))).length
+  const runningScans = input.scanSessions.filter((session) =>
+    ['running', 'analyzing', 'scanning', 'in_progress'].includes(str(session.status).toLowerCase()),
+  ).length
 
   const lastScanAt = newest(...input.scanSessions.map((session) => session.completed_at || session.updated_at || session.created_at))
   const lastEvidenceAt = newest(...evidence.map((record) => record.occurredAt))
@@ -841,7 +846,7 @@ function buildTelemetry(input: GovernanceInputs, evidence: EvidenceRecord[], aud
 
   const hasInventory =
     input.snapshot.inventory.assetsAssessed > 0 || input.snapshot.inventory.cryptoComponents > 0 || input.cryptoInventory.length > 0
-  const recentEvidence = lastEvidenceAt ? now - ms(lastEvidenceAt) <= 7 * 86_400_000 : false
+  const recentEvidence = lastEvidenceAt ? now - ms(lastEvidenceAt) >= 0 && now - ms(lastEvidenceAt) <= 7 * 86_400_000 : false
   const pipelineStatus: GovernancePipelineStatus = recentEvidence
     ? 'live'
     : hasInventory
@@ -976,7 +981,7 @@ export function buildGovernanceIntelligence(inputs: GovernanceInputs): Governanc
   const controls = evaluateControls(controlInputs)
 
   /* 6. Roll up to requirements and frameworks. */
-  const requirements = buildRequirements(controls, evidence)
+  const requirements = buildRequirements(controls, evidence, now)
   const frameworks = buildFrameworks(requirements, controls, evidence, inputs.complianceEvidence, now)
 
   /* 7. Asset projection, gaps, trend, facets. */
@@ -1197,7 +1202,7 @@ export function buildGovernanceIntelligence(inputs: GovernanceInputs): Governanc
       criticalGaps: gaps.filter((gap) => gap.severity === 'critical').length,
       gaps: gaps.length,
       policies: policies.length,
-      policiesEnforced: policies.filter((policy) => policy.enforcement !== 'disabled').length,
+      policiesEnforced: policies.filter((policy) => policy.enforcement === 'enforced').length,
       policyViolations: policies.reduce((sum, policy) => sum + policy.violations, 0),
       criticalPolicyViolations: policies.reduce((sum, policy) => sum + policy.criticalViolations, 0),
       evidence: evidence.length,

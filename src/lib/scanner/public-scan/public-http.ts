@@ -12,6 +12,7 @@ interface WebRequestOptions {
   bodyLimit?: number
   requireHttps?: boolean
   userAgent?: string
+  signal?: AbortSignal
 }
 
 interface WebResponse {
@@ -42,7 +43,8 @@ async function readBody(response: IncomingMessage, limit: number): Promise<strin
 
 /** Read a public resource, validating every connection while preserving HTTP Host and TLS SNI. */
 export async function requestPublicWebResource(rawUrl: string, options: WebRequestOptions): Promise<WebResponse> {
-  const signal = AbortSignal.timeout(options.timeoutMs)
+  const timeout = AbortSignal.timeout(options.timeoutMs)
+  const signal = options.signal ? AbortSignal.any([timeout, options.signal]) : timeout
   let target = new URL(rawUrl)
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {

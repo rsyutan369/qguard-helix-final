@@ -45,18 +45,14 @@ async function main() {
   const elapsed2 = Date.now() - t2
   pass(res2.status === 200 && elapsed2 < 1500, `cached second call fast (${elapsed2}ms)`)
 
-  // Approval workflow round-trip
+  // The writable approval and dispatch round-trip runs in the isolated
+  // migration-planner-handoff-check. Keep the live probe free of plan writes.
   const submit = await fetch(`${ORIGIN}/api/v1/migration-planner/plans`, { method: 'POST', headers, body: JSON.stringify({ name: 'Workflow Live-Check Plan' }) })
-  const submitted = (await submit.json()).data
-  pass(submit.status === 201 && submitted?.status === 'pending_approval', `plan submitted (${submit.status}, status=${submitted?.status})`)
-  const approve = await fetch(`${ORIGIN}/api/v1/migration-planner/plans/${encodeURIComponent(submitted.id)}/approval`, { method: 'POST', headers, body: JSON.stringify({ decision: 'approve', reason: 'live-check' }) })
-  const approvedPlan = (await approve.json()).data
-  pass(approve.status === 200 && approvedPlan?.status === 'approved' && Boolean(approvedPlan?.approval?.decidedBy), `plan approved by ${approvedPlan?.approval?.decidedBy}`)
-  const list = await fetch(`${ORIGIN}/api/v1/migration-planner/plans`, { headers })
-  const plans = (await list.json()).data || []
-  pass(plans.some((p: { id: string; status: string }) => p.id === submitted.id && p.status === 'approved'), 'approved plan appears in the list')
-  const badDecision = await fetch(`${ORIGIN}/api/v1/migration-planner/plans/${encodeURIComponent(submitted.id)}/approval`, { method: 'POST', headers, body: JSON.stringify({ decision: 'nonsense' }) })
-  pass(badDecision.status === 400, `invalid decision rejected (${badDecision.status})`)
+  pass(submit.status === 400, `empty proposal rejected (${submit.status})`)
+  const start = await fetch(`${ORIGIN}/api/v1/migration/planner/create`, { method: 'POST', headers, body: JSON.stringify({ action: 'start' }) })
+  pass(start.status === 409, `start without an approved proposal rejected (${start.status})`)
+  const list = await fetch(`${ORIGIN}/api/v1/migration-planner/plans?proposals=1`, { headers })
+  pass(list.status === 200 && Array.isArray((await list.json()).data), 'proposal history loads')
 
   console.log(`\n${failures === 0 ? 'LIVE WORKFLOW CHECKS PASSED ✓' : `${failures} CHECK(S) FAILED ✗`}`)
   process.exit(failures === 0 ? 0 : 1)

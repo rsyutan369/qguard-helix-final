@@ -211,9 +211,16 @@ export default function AuditVault() {
         <div className="rounded-xl border border-cyan-400/25 bg-cyan-500/[0.07] px-4 py-2 text-[11px] font-semibold text-cyan-100">{notice}</div>
       ) : null}
 
+      {error ? <GovernanceError message={error} onRetry={reconnect} /> : null}
       {data.stale && data.staleSinceHours !== null ? <StaleBanner hours={data.staleSinceHours} onRefresh={() => void refresh(true)} /> : null}
 
-      {!data.hasData ? (
+      {(data.telemetry.absentSources.length > 0 || data.telemetry.truncated) && (
+        <div role="status" className="rounded-lg border border-[var(--qg-card-border)] bg-[var(--qg-card-bg-strong)] px-4 py-3 text-sm">
+          <strong>Evidence coverage is limited.</strong> Review the source coverage below before interpreting these results.
+        </div>
+      )}
+
+      {!data.hasData && data.telemetry.absentSources.length === 0 ? (
         <NoEvidenceState
           title="No audit records or evidence yet"
           detail="The vault records what your tenant actually does: scans, migrations, key and certificate lifecycle events, policy changes and attestations. Nothing has been recorded yet."
@@ -560,7 +567,7 @@ export default function AuditVault() {
         </div>
 
         {tab === 'timeline' ? (
-          events.loading && !events.rows.length ? (
+          events.error ? <GovernanceError message={events.error} onRetry={events.retry} /> : events.loading && !events.rows.length ? (
             <GovernanceSkeleton rows={6} height={38} />
           ) : events.rows.length ? (
             <>
@@ -615,7 +622,7 @@ export default function AuditVault() {
           ) : (
             <PanelEmpty>No audit records in this window.</PanelEmpty>
           )
-        ) : evidence.loading && !evidence.rows.length ? (
+        ) : evidence.error ? <GovernanceError message={evidence.error} onRetry={evidence.retry} /> : evidence.loading && !evidence.rows.length ? (
           <GovernanceSkeleton rows={6} height={38} />
         ) : evidence.rows.length ? (
           <>
@@ -727,7 +734,7 @@ export default function AuditVault() {
       </Panel>
 
       {/* ---- Vault gaps ------------------------------------------------ */}
-      {gaps.rows.length ? (
+      {gaps.error ? <GovernanceError message={gaps.error} onRetry={gaps.retry} /> : gaps.rows.length ? (
         <Panel>
           <SectionLabel icon={Archive} meta={`${fmtNumber(gaps.total)} gaps`} hint="Evidence and audit gaps: unanchored records, stale evidence, expired retention and unreviewed failures.">
             Evidence gaps

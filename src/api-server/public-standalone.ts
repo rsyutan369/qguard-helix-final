@@ -6,11 +6,8 @@ import { jsonErrorHandler, listenWithGracefulDrain } from './runtime/serve'
 /**
  * Public API entry (`npm run start:public-api`, the `public-api` image target).
  *
- * Serves the website's two backend features — the free Web assessment and the
- * Request Demo email — and nothing else (src/api-server/public-api.ts). Needs
- * no Supabase or payment credentials. What it does need is checked here and
- * reported at startup; none of it stops the process, because the scanner
- * works without email and the demo form says so when SMTP is missing.
+ * Serves the free Web assessment and website forms. Submission storage is
+ * configured on the API host and is independent of scanner readiness.
  */
 
 const port = Number(process.env.PORT || process.env.API_PORT || 8080)
@@ -30,7 +27,7 @@ if (isProduction) {
   }
   if (!process.env.SMTP_HOST) {
     logEvent('warn', 'config_warning', {
-      message: 'SMTP_HOST is not set: Request Demo answers 503 and tells visitors to email the inbox directly.',
+      message: 'SMTP_HOST is not set. Saved demo requests remain visible in the Admin Console without an email notification.',
     })
   }
 }

@@ -56,6 +56,7 @@ const PAGE_SIZE = 25;
 
 export default function AssetsMap() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const linkedAssetId = searchParams.get('asset');
   const sourceAgentId = searchParams.get('agentId');
   const sourceKindParam = searchParams.get('source');
   const sourceKind = sourceKindParam && Object.hasOwn(SCAN_SOURCE_LABELS, sourceKindParam) ? sourceKindParam as ScanSourceKind : null;
@@ -101,19 +102,21 @@ export default function AssetsMap() {
   const [studio, setStudio] = useState<{ open: boolean; scope: StudioScopeType; singleId: string | null }>({ open: false, scope: 'all', singleId: null });
 
   const filters = useMemo<RegisterFilter>(() => ({
+    assetId: linkedAssetId,
     agentId: sourceAgentId,
     sourceKind,
     query,
     statuses: statusFilter ? [statusFilter] : null,
     bands: bandFilter ? [bandFilter] : null,
     freshness: freshnessFilter ? [freshnessFilter] : null,
-  }), [query, statusFilter, bandFilter, freshnessFilter, sourceAgentId, sourceKind]);
+  }), [linkedAssetId, query, statusFilter, bandFilter, freshnessFilter, sourceAgentId, sourceKind]);
   const filtered = useMemo(
     () => sortRows(filterRows(register.rows, filters), sort),
     [register.rows, filters, sort],
   );
 
-  useEffect(() => setPage(1), [query, statusFilter, bandFilter, freshnessFilter, sort, sourceAgentId, sourceKind]);
+  useEffect(() => { if (linkedAssetId) setExpandedId(linkedAssetId); }, [linkedAssetId]);
+  useEffect(() => setPage(1), [query, statusFilter, bandFilter, freshnessFilter, sort, sourceAgentId, sourceKind, linkedAssetId]);
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   useEffect(() => setPage((current) => Math.min(current, pageCount)), [pageCount]);
   const pageRows = useMemo(() => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE), [filtered, page]);
@@ -150,6 +153,7 @@ export default function AssetsMap() {
   };
 
   const filterDescription = [
+    linkedAssetId && 'linked asset',
     query && `search "${query}"`,
     statusFilter && `status ${PQC_STATUS_META[statusFilter].short}`,
     bandFilter && `risk band ${REGISTER_BANDS.find((b) => b.key === bandFilter)?.label}`,
@@ -158,6 +162,7 @@ export default function AssetsMap() {
 
   const openStudio = (scope: StudioScopeType, single: AssetRegisterRow | null = null) => setStudio({ open: true, scope, singleId: single?.id ?? null });
   const openStudioDefault = () => openStudio(selectedRows.length ? 'selection' : filterDescription ? 'filtered' : 'all');
+  const closeStudio = useCallback(() => setStudio((current) => ({ ...current, open: false })), []);
 
   /* ---------------- states ---------------- */
   const hasSnapshot = source !== 'none';
@@ -304,6 +309,7 @@ export default function AssetsMap() {
                 </select>
               </label>
               {sourceAgentId ? <span className="flex items-center gap-2 text-[var(--qg-text-muted)]">Showing assets attributed to this agent across its recorded scans.<button type="button" className="font-bold text-[var(--qg-amber)] underline" onClick={() => setSearchParams((current) => { const next = new URLSearchParams(current); next.delete('agentId'); return next; })}>Show all agents</button></span> : null}
+              {linkedAssetId && <span className="flex flex-wrap items-center gap-2 text-[var(--qg-text-muted)]">Asset selected from a linked view.<button type="button" className="font-bold text-[var(--qg-amber)] underline" onClick={() => setSearchParams((current) => { const next = new URLSearchParams(current); next.delete('asset'); return next; })}>Show all assets</button></span>}
             </div>
             <RegisterToolbar
               query={query}
@@ -385,7 +391,7 @@ export default function AssetsMap() {
           <ReportStudio
             key={user.id}
             open={studio.open}
-            onClose={() => setStudio((current) => ({ ...current, open: false }))}
+            onClose={closeStudio}
             register={register}
             selection={selectedRows}
             filtered={filtered}

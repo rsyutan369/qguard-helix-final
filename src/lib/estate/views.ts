@@ -6,7 +6,7 @@ import {
   ENVIRONMENT_LABEL, ENVIRONMENT_ROLLOUT, OWNER_SOURCE_LABEL, SEVERITY_RANK, worstSeverity,
   type EnvironmentKey, type EstateAsset, type OwnerSource,
 } from './model'
-import { MEMBER_STATUS_LABEL, type AssetJob, type ClusterState, type FixKind, type MemberStatus } from './clusters'
+import { MEMBER_STATUS_LABEL, type ClusterState, type FixKind, type MemberStatus } from './clusters'
 import type { FindingSeverity } from '@/lib/scanner/exposure/types'
 
 /* ------------------------------------------------------------------ */
@@ -49,8 +49,8 @@ export function buildCampaign(state: ClusterState, assets: Map<string, EstateAss
     { key: 'open', label: 'Not started', count: counts.open, detail: 'No migration job yet', status: 'open' },
     { key: 'planned', label: 'Queued / planned', count: counts.planned, detail: 'Job created, waiting for approval or an agent', status: 'planned' },
     { key: 'running', label: 'Executing', count: counts.running, detail: 'Job running on the asset', status: 'running' },
-    { key: 'awaiting-validation', label: 'Awaiting rescan', count: counts['awaiting-validation'], detail: 'Job completed; no scan recorded since', status: 'awaiting-validation' },
-    { key: 'validated', label: 'Validated', count: counts.validated, detail: 'A scan after completion no longer shows the vulnerable component', status: 'validated' },
+    { key: 'awaiting-validation', label: 'Awaiting evidence', count: counts['awaiting-validation'], detail: 'Job completed and is awaiting a passing validation record for this fix', status: 'awaiting-validation' },
+    { key: 'validated', label: 'Validated', count: counts.validated, detail: 'A passing validation record confirms the completed job for this fix', status: 'validated' },
     { key: 'exceptions', label: 'Exceptions', count: exceptions, detail: `${counts.failed} failed / rolled back · ${counts.regressed} still vulnerable after rescan — re-planned in the next wave`, status: 'failed' },
   ]
 
@@ -87,7 +87,7 @@ export function buildCampaign(state: ClusterState, assets: Map<string, EstateAss
   // Gate: only the first not-yet-queued wave may start, and only when nothing in flight has failed.
   const inFlight = counts.planned + counts.running + counts['awaiting-validation']
   waves.forEach((wave, index) => {
-    if (index > 0) { wave.ready = false; wave.readinessNote = `Starts after wave ${index} is validated by rescan.`; return }
+    if (index > 0) { wave.ready = false; wave.readinessNote = `Starts after wave ${index} passes validation.`; return }
     if (exceptions > 0) { wave.ready = false; wave.readinessNote = `${exceptions} exception(s) must be resolved or rolled back first.`; return }
     if (inFlight > 0) { wave.ready = false; wave.readinessNote = `${inFlight} asset(s) still in flight — validate them first.`; return }
     wave.ready = true
@@ -99,7 +99,7 @@ export function buildCampaign(state: ClusterState, assets: Map<string, EstateAss
     stages,
     waves,
     waveSize,
-    gate: 'Waves run least-critical environment first. The next wave is released only when the previous one has no failures and every completed asset is validated by a rescan.',
+    gate: 'Waves start with the least critical environment. Complete validation and resolve exceptions before queueing the next wave.',
     completion: total ? Math.round((counts.validated / total) * 100) : 0,
   }
 }
@@ -130,6 +130,53 @@ export function rollupAssets(states: ClusterState[]): Map<string, AssetRollup> {
 /* ------------------------------------------------------------------ */
 
 export type MapDimension = 'owner' | 'service' | 'environment' | 'type'
+export const MAP_DIMENSIONS = ['owner', 'service', 'environment', 'type'] as const satisfies readonly MapDimension[]
+
+export interface MapAssetEvidence {
+  classified: number
+  unclassified: number
+  latestInventoryEvidenceAt: string | null
+}
+
+export interface MapAsset {
+  id: string
+  name: string
+  type: string | null
+  owner: string | null
+  ownerSource: OwnerSource | null
+  service: string | null
+  environment: string | null
+  status: string | null
+  migrationStatus: string | null
+  criticality: EstateAsset['criticality']
+  recordedScanAt: string | null
+  evidence: MapAssetEvidence
+  openFixes: number
+  validatedFixes: number
+  severity: FindingSeverity | null
+}
+
+export interface MapGroupDetail {
+  generatedAt: string
+  revision: string
+  group: MapGroup
+  members: MapAsset[]
+  offset: number
+  limit: number
+  total: number
+}
+
+export const EMPTY_MAP_EVIDENCE: MapAssetEvidence = { classified: 0, unclassified: 0, latestInventoryEvidenceAt: null }
+
+/** Shared by the summary and group members so the same metadata rules apply. */
+export function mapGroupValue(asset: EstateAsset, dimension: MapDimension): string | null {
+  if (dimension === 'owner') return asset.owner
+  if (dimension === 'service') return asset.service
+  if (dimension === 'environment') {
+    return asset.environment === 'unknown' ? asset.environmentRaw || null : ENVIRONMENT_LABEL[asset.environment]
+  }
+  return asset.type || null
+}
 
 export interface MapGroup {
   key: string
@@ -138,21 +185,28 @@ export interface MapGroup {
   affectedAssets: number
   openFixes: number
   criticalAssets: number
+  metadataMissing: boolean
+  assetsWithoutEvidence: number
+  assetsWithUnclassifiedEvidence: number
+  /** Percentage without an open fix in the snapshot. This is not a PQC verdict. */
   readiness: number
   worst: FindingSeverity
 }
 
-export function buildEstateMap(assets: EstateAsset[], rollup: Map<string, AssetRollup>, dimension: MapDimension): MapGroup[] {
+export function buildEstateMap(assets: EstateAsset[], rollup: Map<string, AssetRollup>, evidence: Map<string, MapAssetEvidence>, dimension: MapDimension): MapGroup[] {
   const groups = new Map<string, MapGroup>()
   for (const asset of assets) {
-    const raw = dimension === 'owner' ? asset.owner
-      : dimension === 'service' ? asset.service
-        : dimension === 'environment' ? ENVIRONMENT_LABEL[asset.environment]
-          : asset.type
-    const label = raw || (dimension === 'owner' ? 'Unowned' : dimension === 'service' ? 'No business service recorded' : 'Unspecified')
-    const key = label.toLowerCase()
-    const group = groups.get(key) ?? { key, label, assets: 0, affectedAssets: 0, openFixes: 0, criticalAssets: 0, readiness: 0, worst: 'info' as FindingSeverity }
+    const value = mapGroupValue(asset, dimension)
+    const label = value ?? (dimension === 'owner' ? 'Unowned' : dimension === 'service' ? 'No business service recorded' : 'Unspecified')
+    const key = value?.toLowerCase() ?? ''
+    const group = groups.get(key) ?? {
+      key, label, assets: 0, affectedAssets: 0, openFixes: 0, criticalAssets: 0, readiness: 0,
+      metadataMissing: value === null, assetsWithoutEvidence: 0, assetsWithUnclassifiedEvidence: 0, worst: 'info' as FindingSeverity,
+    }
     group.assets += 1
+    const recorded = evidence.get(asset.id)
+    if (!recorded) group.assetsWithoutEvidence += 1
+    if (recorded?.unclassified) group.assetsWithUnclassifiedEvidence += 1
     const asset_ = rollup.get(asset.id)
     if (asset_ && asset_.open > 0) {
       group.affectedAssets += 1
@@ -163,7 +217,7 @@ export function buildEstateMap(assets: EstateAsset[], rollup: Map<string, AssetR
     groups.set(key, group)
   }
   for (const group of groups.values()) group.readiness = group.assets ? Math.round(((group.assets - group.affectedAssets) / group.assets) * 100) : 0
-  return [...groups.values()].sort((a, b) => b.affectedAssets - a.affectedAssets || b.assets - a.assets)
+  return [...groups.values()].sort((a, b) => b.affectedAssets - a.affectedAssets || b.assets - a.assets || a.label.localeCompare(b.label))
 }
 
 /* ------------------------------------------------------------------ */
@@ -233,7 +287,7 @@ const STATUS_BUCKET: Record<MemberStatus, string> = {
   open: 'Not started',
   planned: 'In flight',
   running: 'In flight',
-  'awaiting-validation': 'Awaiting rescan',
+  'awaiting-validation': 'Awaiting evidence',
   validated: 'Validated',
   failed: 'Exceptions',
   regressed: 'Exceptions',
@@ -281,7 +335,7 @@ export function buildSankey(states: ClusterState[]): SankeyData {
 /* Burndown against the NIST IR 8547 dates                             */
 /* ------------------------------------------------------------------ */
 
-export interface BurndownPoint { month: string; at: number; discovered: number; validated: number; open: number }
+export interface BurndownPoint { month: string; discovered: number; validated: number; open: number }
 
 export interface Burndown {
   points: BurndownPoint[]
@@ -296,13 +350,13 @@ export interface Burndown {
 
 const DEADLINE_2030 = Date.UTC(2030, 11, 31)
 
-export function buildBurndown(states: ClusterState[], jobs: Map<string, AssetJob>, now: number): Burndown {
+export function buildBurndown(states: ClusterState[], now: number): Burndown {
   const discoveredAt: number[] = []
   const validatedAt: number[] = []
   for (const state of states) {
-    for (const [assetId, member] of state.members) {
+    for (const member of state.members.values()) {
       if (member.firstSeenAt > 0) discoveredAt.push(member.firstSeenAt)
-      if (member.status === 'validated') validatedAt.push(jobs.get(assetId)?.updatedAt ?? now)
+      if (member.validatedAt > 0) validatedAt.push(member.validatedAt)
     }
   }
   discoveredAt.sort((a, b) => a - b)
@@ -321,7 +375,7 @@ export function buildBurndown(states: ClusterState[], jobs: Map<string, AssetJob
       while (di < discoveredAt.length && discoveredAt[di] <= edge) di += 1
       while (vi < validatedAt.length && validatedAt[vi] <= edge) vi += 1
       // Memberships first seen before the window start are counted at the first point.
-      points.push({ month: new Date(cursor).toISOString().slice(0, 7), at: edge, discovered: di, validated: vi, open: di - vi })
+      points.push({ month: new Date(cursor).toISOString().slice(0, 7), discovered: di, validated: vi, open: Math.max(0, di - vi) })
       cursor = next.getTime()
     }
   }
@@ -339,7 +393,7 @@ export function buildBurndown(states: ClusterState[], jobs: Map<string, AssetJob
     validatedLast90Days,
     requiredPerMonth: Math.ceil(openNow / monthsLeft),
     projectedCompletion,
-    basis: 'One unit = one asset × one fix. "Discovered" uses the first scan that recorded it; "validated" uses the completion time of the job a later rescan confirmed. Illustrative target: end of 2030, when the general NIST IR 8547 deprecation window begins. This burndown does not determine deadlines for individual systems.',
+    basis: 'One unit is one asset × one fix. Discovery uses the first recorded observation. Validation uses the timestamp of the matching job’s passing validation record. The illustrative target is the end of 2030 and does not determine the deadline for individual systems.',
   }
 }
 

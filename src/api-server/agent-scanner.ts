@@ -46,6 +46,7 @@ import {
   authorizedCapabilities,
   clampAgentScanTypes,
   normaliseScopeList,
+  parseAgentTarget,
   resolveWriteAuthority,
 } from '@/lib/agent-installer/agent-scope'
 import {
@@ -2658,7 +2659,26 @@ function migrationMetricType(eventType: string, message: string, job: any) {
 
 function validationPassed(validation: Record<string, any>) {
   const status = String(validation.status || validation.result || '').toLowerCase()
-  return validation.passed === true || ['passed', 'success', 'successful', 'validated', 'valid'].includes(status)
+  if (validation.passed === false) return false
+  return status ? ['passed', 'success', 'successful', 'validated', 'valid'].includes(status) : validation.passed === true
+}
+
+function evidenceMatchesRemediationTarget(item: ScannerEvidenceRecord, job: any) {
+  const file = remediationFilePath(job)
+  if (file && item.filePath) {
+    const normalize = (value: string) => {
+      const path = posixPath.normalize(value.replace(/\\/g, '/'))
+      return /^[a-z]:\//i.test(path) || path.startsWith('//') ? path.toLowerCase() : path
+    }
+    if (normalize(file) === normalize(item.filePath)) return true
+  }
+  const target = remediationTarget(job)
+  const expected = target ? parseAgentTarget(target) : null
+  const observed = item.target ? parseAgentTarget(item.target) : null
+  return Boolean(expected &&
+    (item.host || observed?.host)?.toLowerCase() === expected.host.toLowerCase() &&
+    (item.port ?? observed?.port) === expected.port &&
+    (!observed || observed.type === expected.type))
 }
 
 async function persistMigrationExecution(client: SupabaseClient, agent: any, job: any, payload: {
@@ -5791,6 +5811,7 @@ router.get('/agent/remediation/jobs', requireAgentAuth, async (req: AgentRequest
     })
 
     claimedJobs.push({ ...job, metadata: nextMetadata, status: 'running', started_at: job.started_at || now, updated_at: now })
+    publishAgentEvent(agent.user_id, 'agent.migration_started', agent.id, { jobId: job.id, assetId: job.asset_id })
   }
 
   await client.from('agent_heartbeats').insert({
@@ -5925,12 +5946,12 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
     .slice(0, 200)
     .map((item: any) => normalizeEvidence(item, 'local-agent', agent))
     .filter(Boolean) as ScannerEvidenceRecord[]
-  // Same authorisation model as evidence/runtime uploads: an agent may always
-  // report on the host it is installed on; anything it reached stays allowlisted.
-  const evidence = normalizedEvidence.filter((item) => agentObservationInScope(item, policy, agent))
+  // An allowed observation can only validate the job for the target it measured.
+  const evidence = normalizedEvidence.filter((item) =>
+    agentObservationInScope(item, policy, agent) && evidenceMatchesRemediationTarget(item, job))
   const rejectedEvidenceCount = normalizedEvidence.length - evidence.length
   if (normalizedEvidence.length > 0 && evidence.length === 0) {
-    jsonError(res, 403, 'REMEDIATION_EVIDENCE_OUT_OF_POLICY', 'Validation evidence does not match this agent policy')
+    jsonError(res, 403, 'REMEDIATION_EVIDENCE_OUT_OF_POLICY', 'Validation evidence must match both the job target and the agent policy')
     return
   }
 
@@ -5939,6 +5960,9 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
     try {
       const association = await verifiedAgentBinding(client, agent)
       if (association.unavailable) return jsonError(res, 503, 'AGENT_BINDING_UNAVAILABLE', 'The device profile could not be verified')
+      if (job.asset_id && association.binding?.assetId !== job.asset_id) {
+        return jsonError(res, 409, 'REMEDIATION_ASSET_CHANGED', 'The agent is no longer bound to the selected job asset')
+      }
       evidenceResult = await processEvidenceBatch(client, agent.user_id, evidence, `agent-remediation:${agent.name || agent.id}`, {
         alertThreshold: policy.alertThreshold,
         binding: association.binding || undefined,
@@ -5947,7 +5971,7 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
       const hndlRiskCount = Array.isArray(evidenceResult.scanner2?.hndlRisks) ? evidenceResult.scanner2.hndlRisks.length : 0
       validation = {
         ...validation,
-        passed: isHndlJob ? hndlRiskCount === 0 : validation.passed !== false,
+        passed: validationPassed(validation) && (!isHndlJob || hndlRiskCount === 0),
         hndlRiskRemaining: hndlRiskCount > 0,
         hndlRiskCount,
         evidenceCount: evidenceResult.evidenceCount,
@@ -5964,9 +5988,9 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
 
   if (requestedStatus === 'completed') {
     const hndlValidated = validation.passed === true && validation.hndlRiskRemaining === false && Boolean(evidenceResult)
-    const pqcValidated = validationPassed(validation) || Boolean(evidenceResult)
+    const pqcValidated = validationPassed(validation) && Boolean(evidenceResult)
     if ((isHndlJob && !hndlValidated) || (!isHndlJob && !pqcValidated)) {
-      jsonError(res, 409, isHndlJob ? 'REMEDIATION_VALIDATION_REQUIRED' : 'MIGRATION_VALIDATION_REQUIRED', isHndlJob ? 'Completion requires fresh validation evidence proving no active HNDL risk remains' : 'Completion requires agent validation or evidence for the PQC migration job')
+      jsonError(res, 409, isHndlJob ? 'REMEDIATION_VALIDATION_REQUIRED' : 'MIGRATION_VALIDATION_REQUIRED', isHndlJob ? 'Completion requires fresh validation evidence proving no active HNDL risk remains' : 'Completion requires a passing validation backed by evidence for this migration target')
       return
     }
   }
@@ -6138,7 +6162,7 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
         findingCount: evidenceResult?.findingCount ?? 0,
         scanSessionId: evidenceResult?.links?.scanSessionId || null,
       },
-      status: validationPassed(validation) ? 'passed' : requestedStatus === 'completed' ? 'blocked' : 'recorded',
+      status: validationPassed(validation) && evidenceResult ? 'passed' : validation.passed === false ? 'failed' : 'recorded',
       type: isHndlJob ? 'hndl-risk-clearance' : 'pqc-migration-validation',
       metadata: {
         eventType,
@@ -6218,6 +6242,13 @@ router.post('/agent/remediation/jobs/:id/event', requireAgentAuth, async (req: A
       evidenceCount: evidence.length,
       rejectedEvidenceCount,
     },
+  })
+
+  publishAgentEvent(agent.user_id, nextStatus === 'completed' ? 'agent.migration_completed' : 'agent.migration_progress', agent.id, {
+    jobId: job.id,
+    assetId: job.asset_id,
+    status: nextStatus,
+    progress: updatePayload.progress,
   })
 
   res.json({
